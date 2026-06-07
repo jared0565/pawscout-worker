@@ -11,8 +11,9 @@ export default defineWorkersConfig({
         miniflare: {
           d1Databases: ['DB'],
           bindings: {
-            // 32-byte base64 test KEK (test-only; never a real secret)
-            PAWSCOUT_MASTER_KEY: 'dGVzdC1tYXN0ZXIta2V5LTMyLWJ5dGVzLWxvbmchIQ==',
+            // 32-byte base64 test KEK (test-only; never a real secret).
+            // Decodes to "test-master-key-32-bytes-long!!!" (exactly 32 bytes — AES-GCM requires 16/24/32).
+            PAWSCOUT_MASTER_KEY: 'dGVzdC1tYXN0ZXIta2V5LTMyLWJ5dGVzLWxvbmchISE=',
             TEST_MIGRATIONS: migrations
           }
         }
