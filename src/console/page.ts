@@ -5,10 +5,12 @@
 // API key from the <meta name="shopify-api-key"> tag, which MUST appear before the
 // script. `host` is read from the URL by App Bridge itself — no createApp needed.
 //
-// Contrast note: this renders inside Shopify admin's iframe, which may be in LIGHT or
-// DARK mode. We do NOT inherit the admin's colors — the page sets its own explicit
-// surface (#ffffff) and ink (#1a1a1a, 21:1 on white) so text is always legible. Never
-// remove these explicit colors or the page washes out to dark-on-dark in dark mode.
+// Theme note: this renders inside Shopify admin's iframe, which is usually DARK (admin
+// dark mode follows the OS color-scheme). The console must feel native, not alien — so
+// it defaults to a DARK palette congruent with Polaris dark, and flips to LIGHT only
+// when the environment prefers light (`@media (prefers-color-scheme: light)`). Colors
+// are explicit in BOTH modes — never inherit, or text washes out. Keep both palettes in
+// sync: every --token defined in :root must have a light counterpart in the media query.
 //
 // Feedback note: this app renders inside Shopify admin's cross-origin iframe, where
 // window.alert()/confirm() are silently blocked. ALL user feedback must be inline
@@ -18,13 +20,25 @@ export function consolePage(apiKey: string): Response {
   const html = `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="shopify-api-key" content="${apiKey}">
+<meta name="color-scheme" content="dark light">
 <script src="https://cdn.shopify.com/shopifycloud/app-bridge.js"></script>
 <style>
+  /* DARK is the default — it matches Shopify admin dark mode (the usual environment). */
   :root{
-    --bg:#f1f2f4; --surface:#ffffff; --ink:#1a1a1a; --subdued:#5c5f62;
-    --border:#d2d5d8; --accent:#008060; --accent-ink:#ffffff;
-    --ok-bg:#e3f1df; --ok-ink:#0c5132; --no-bg:#fff0f0; --no-ink:#8e1f0b;
-    --field:#ffffff; --field-border:#8a8d91; --code-bg:#f1f2f4;
+    color-scheme:dark light;
+    --bg:#1a1a1a; --surface:#2a2a2b; --ink:#e3e3e3; --subdued:#a8abb0;
+    --border:#444748; --accent:#e3e3e3; --accent-ink:#1a1a1a;
+    --ok-bg:#11331f; --ok-ink:#8fe0a6; --no-bg:#3a1714; --no-ink:#f4a39c;
+    --field:#1a1a1a; --field-border:#6a6e73; --code-bg:#1a1a1a; --shadow:rgba(0,0,0,.3);
+  }
+  /* LIGHT — only when the environment prefers it. Keep tokens in sync with the dark set. */
+  @media (prefers-color-scheme: light){
+    :root{
+      --bg:#f1f2f4; --surface:#ffffff; --ink:#1a1a1a; --subdued:#5c5f62;
+      --border:#d2d5d8; --accent:#008060; --accent-ink:#ffffff;
+      --ok-bg:#e3f1df; --ok-ink:#0c5132; --no-bg:#fff0f0; --no-ink:#8e1f0b;
+      --field:#ffffff; --field-border:#8a8d91; --code-bg:#f1f2f4; --shadow:rgba(0,0,0,.04);
+    }
   }
   *{box-sizing:border-box}
   body{
@@ -38,12 +52,12 @@ export function consolePage(apiKey: string): Response {
   .sub{color:var(--subdued);margin:0;font-size:13px}
   .card{
     background:var(--surface); border:1px solid var(--border); border-radius:12px;
-    padding:20px; margin-bottom:16px; box-shadow:0 1px 2px rgba(0,0,0,.04);
+    padding:20px; margin-bottom:16px; box-shadow:0 1px 2px var(--shadow);
   }
   .card h2{font-size:15px;margin:0 0 14px;color:var(--ink);font-weight:600;display:flex;align-items:center;gap:8px}
   .step{
     display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;
-    border-radius:50%;background:var(--ink);color:#fff;font-size:12px;font-weight:600;flex:0 0 auto;
+    border-radius:50%;background:var(--accent);color:var(--accent-ink);font-size:12px;font-weight:600;flex:0 0 auto;
   }
   label{display:block;font-weight:550;color:var(--ink);margin:0 0 6px}
   input[type=text],input[type=number]{
