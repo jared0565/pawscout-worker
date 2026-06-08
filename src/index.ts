@@ -1,9 +1,11 @@
 import { Hono } from 'hono';
+import { RequestedTokenType } from '@shopify/shopify-api';
 import type { Env } from './types';
 import { makeShopify } from './shopify';
 import { Vault } from './vault';
 import { beginAuth } from './auth/install';
 import { handleCallback } from './auth/callback';
+import { ensureInstalled } from './auth/ensure-installed';
 import { handleUninstall } from './auth/uninstall';
 import { resolveShopFromToken } from './console/session';
 import { connectCj, saveGates, saveCollectionMap, getStatus } from './console/routes';
@@ -19,13 +21,32 @@ app.get('/auth/callback', async (c) => {
   return handleCallback(makeShopify(c.env), c.env.DB, vault, c.req.raw);
 });
 
-app.get('/app', (c) => consolePage(c.env.SHOPIFY_API_KEY, c.req.query('host') ?? ''));
+app.get('/app', (c) => consolePage(c.env.SHOPIFY_API_KEY));
 
 // --- /api/* : session-token authed ---
+// Resolves the shop from the App Bridge session token and, on a managed install,
+// lazily mints + persists an offline access token via token exchange (first call only).
 async function shopOf(c: any): Promise<string | Response> {
   const shopify = makeShopify(c.env);
-  const r = await resolveShopFromToken(c.req.header('Authorization') ?? null, c.env.SHOPIFY_API_KEY, (t) => shopify.session.decodeSessionToken(t));
+  const authHeader = c.req.header('Authorization') ?? null;
+  const r = await resolveShopFromToken(authHeader, c.env.SHOPIFY_API_KEY, (t) => shopify.session.decodeSessionToken(t));
   if (!r.ok) return c.json({ ok: false, error: r.error }, r.status);
+
+  const sessionToken = authHeader!.slice('Bearer '.length); // authHeader is non-null once resolve succeeds
+  const vault = await Vault.fromMasterKey(c.env.PAWSCOUT_MASTER_KEY);
+  try {
+    await ensureInstalled(c.env.DB, vault, r.shop, sessionToken, async (shop, token) => {
+      const { session } = await shopify.auth.tokenExchange({
+        shop,
+        sessionToken: token,
+        requestedTokenType: RequestedTokenType.OfflineAccessToken
+      });
+      return { accessToken: session.accessToken ?? '', scope: session.scope ?? '' };
+    });
+  } catch {
+    // Never surface token-exchange internals (which can echo the grant) to the browser.
+    return c.json({ ok: false, error: 'Install handshake failed' }, 401);
+  }
   return r.shop;
 }
 
