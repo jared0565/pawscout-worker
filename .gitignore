@@ -2,3 +2,10 @@ node_modules/
 .wrangler/
 .dev.vars
 dist/
+
+# graphify — local dev tool, never deploy
+graphify-out/
+graphify/
+scripts/graphify_*.py
+pyproject.toml
+
