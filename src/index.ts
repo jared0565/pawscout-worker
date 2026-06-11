@@ -100,19 +100,24 @@ app.post('/api/collections', async (c) => {
 });
 
 // --- /proxy/* : storefront-facing via Shopify App Proxy (HMAC-signed) ---
+//
+// IMPORTANT: every /proxy/* response is HTTP 200 with an `ok` flag. Shopify's
+// App Proxy replaces non-2xx responses with a generic "There was an error in
+// the third-party application" page, which hides the JSON from both the theme
+// and anyone debugging. The theme checks the `ok` field, never the status.
 
 interface ProxyCtx { store: TenantStore; cfg: TenantConfig; tenant: TenantRow; vault: Vault }
 
 async function proxyCtx(c: Context<{ Bindings: Env }>): Promise<ProxyCtx | Response> {
   const auth = await verifyAppProxy(new URL(c.req.url), c.env.SHOPIFY_API_SECRET);
-  if (!auth.ok) return c.json({ ok: false, error: auth.error }, auth.status as 401);
+  if (!auth.ok) return c.json({ ok: false, error: auth.error });
   const store = new TenantStore(c.env.DB, auth.shop);
   const tenant = await store.getTenant();
   if (!tenant || tenant.status !== 'active' || !tenant.access_token_enc) {
-    return c.json({ ok: false, error: 'App not installed' }, 403);
+    return c.json({ ok: false, error: 'App not installed' });
   }
   const cfg = await store.getConfig();
-  if (!cfg) return c.json({ ok: false, error: 'Not configured' }, 403);
+  if (!cfg) return c.json({ ok: false, error: 'Not configured' });
   const vault = await Vault.fromMasterKey(c.env.PAWSCOUT_MASTER_KEY);
   return { store, cfg, tenant, vault };
 }
@@ -133,8 +138,9 @@ app.get('/proxy/search', async (c) => {
     const products = await searchBackfill(p.store, cjFor(p), p.cfg, q, have, limit);
     return c.json({ ok: true, products });
   } catch (e) {
-    console.warn(`search backfill failed: ${(e as Error).message}`);
-    return c.json({ ok: false, error: 'Search backfill unavailable' }, 503);
+    const detail = (e as Error).message; // CJ/auth failure reasons — never secret-bearing
+    console.warn(`search backfill failed: ${detail}`);
+    return c.json({ ok: false, error: `Search backfill unavailable: ${detail}` });
   }
 });
 
@@ -143,10 +149,10 @@ app.get('/proxy/search', async (c) => {
 app.get('/proxy/product', async (c) => {
   const p = await proxyCtx(c); if (p instanceof Response) return p;
   const pid = (c.req.query('pid') ?? '').trim();
-  if (!PID_RE.test(pid)) return c.json({ ok: false, error: 'Bad pid' }, 400);
+  if (!PID_RE.test(pid)) return c.json({ ok: false, error: 'Bad pid' });
   try {
     const detail = await getCachedDetail(p.store, cjFor(p), pid);
-    if (!detail) return c.json({ ok: false, error: 'Product unavailable' }, 404);
+    if (!detail) return c.json({ ok: false, error: 'Product unavailable' });
 
     let link = await p.store.getLink(pid);
     if (!link || link.state === 'ghost' || link.state === 'failed' || link.state === 'archived') {
@@ -161,14 +167,14 @@ app.get('/proxy/product', async (c) => {
     return c.json({ ok: true, product: buildPreview(detail, p.cfg, link?.state ?? 'importing', handle) });
   } catch (e) {
     console.warn(`product preview failed for ${pid}: ${(e as Error).message}`);
-    return c.json({ ok: false, error: 'Product unavailable' }, 503);
+    return c.json({ ok: false, error: 'Product unavailable' });
   }
 });
 
 app.get('/proxy/import-status', async (c) => {
   const p = await proxyCtx(c); if (p instanceof Response) return p;
   const pid = (c.req.query('pid') ?? '').trim();
-  if (!PID_RE.test(pid)) return c.json({ ok: false, error: 'Bad pid' }, 400);
+  if (!PID_RE.test(pid)) return c.json({ ok: false, error: 'Bad pid' });
   const link = await p.store.getLink(pid);
   const url = link?.state === 'imported' && link.handle ? `/products/${link.handle}` : null;
   return c.json({ ok: true, state: link?.state ?? 'unknown', url });
@@ -178,13 +184,13 @@ app.get('/proxy/import-status', async (c) => {
 app.post('/proxy/event', async (c) => {
   const p = await proxyCtx(c); if (p instanceof Response) return p;
   let body: { pid?: string; event?: string };
-  try { body = await c.req.json(); } catch { return c.json({ ok: false, error: 'Invalid JSON body' }, 400); }
+  try { body = await c.req.json(); } catch { return c.json({ ok: false, error: 'Invalid JSON body' }); }
   const pid = (body.pid ?? '').trim();
   const event = body.event ?? '';
   if (!PID_RE.test(pid) || (event !== 'view' && event !== 'atc')) {
-    return c.json({ ok: false, error: 'Bad event' }, 400);
+    return c.json({ ok: false, error: 'Bad event' });
   }
-  if (!(await p.store.getLink(pid))) return c.json({ ok: false, error: 'Unknown product' }, 404);
+  if (!(await p.store.getLink(pid))) return c.json({ ok: false, error: 'Unknown product' });
   await p.store.recordEvent(pid, event);
   return c.json({ ok: true });
 });
