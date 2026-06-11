@@ -1,163 +1,225 @@
 # PawScout Worker
 
-PawScout is an embedded Shopify app that handles **supplier intelligence and inventory population** for pet stores. It connects a store to the [CJdropshipping](https://cjdropshipping.com) supplier API, applies per-store quality gates to candidate products, and maps supplier categories onto the store's collections.
+PawScout is an embedded Shopify app that handles **supplier intelligence and demand-driven inventory population** for pet stores. It connects a store to the [CJdropshipping](https://cjdropshipping.com) supplier API, backfills storefront searches with quality-gated supplier products, imports them on demand, and continuously optimizes the catalog around what visitors actually view and buy.
 
 This repository is the **backend half** of the Active Paw project:
 
 | Repo | Role |
 |---|---|
-| [`active-paw-theme`](https://github.com/jared0565/active-paw-theme) | Shopify storefront theme (Liquid). Renders the collections and products. |
-| `pawscout-worker` (**this repo**) | Cloudflare Worker: Shopify app install/auth, encrypted credential vault, merchant console, supplier configuration. |
-
-The two halves meet at the **collection map**: the worker tags imported products (e.g. `cj-cat-pet-toys`) into the theme's collection handles (`pet-cleaning`, `pet-accessories`, `pet-health`, `pet-toys`, `more-to-love`), which the theme's sections render on the storefront.
+| [`active-paw-theme`](https://github.com/jared0565/active-paw-theme) | Shopify storefront theme (Liquid). Renders the grid, ghost cards, preview modal, and beacons. |
+| `pawscout-worker` (**this repo**) | Cloudflare Worker: app install/auth, encrypted credential vault, merchant console, search backfill, import-on-click, pricing, lifecycle crons. |
 
 Production URL: **https://pawscout.activepaw.co.uk** (Cloudflare custom domain route).
 
 ---
 
+## The search flywheel
+
+The goal: a visitor searching the store always sees up to **12 sellable products** (the grid display cap — never padded with weak matches), and the inventory self-optimizes over time.
+
+```
+Visitor searches ─→ store answers from its own catalog
+                      │
+                      ├─ ≥12 results → done
+                      │
+                      └─ <12 → theme calls /apps/pawscout/search (App Proxy)
+                                 │
+                                 PS: cached CJ search (30d) → quality gates →
+                                 pricing rule → dedupe vs imported → ghost cards
+                                 │
+            visitor clicks ghost → instant PREVIEW from cached data
+                                 │  (this view is the qualifying signal)
+                                 └→ background import: Shopify product created,
+                                    priced, tagged, published → CTA flips to
+                                    the real PDP → normal checkout
+```
+
+Products that never reach a preview are **never imported** — no catalog pollution. Imported products live or die by performance:
+
+- **Beacons**: the theme sends JS-only `view` / `atc` signals for imported products (JS-only filters most crawlers).
+- **30-day cull** (daily cron): imported products with **zero qualifying events in 30 days** are **archived** (never deleted — order history and URLs stay intact), with a 30-day grace period from import. Fresh search demand can revive an archived product (it's re-activated, not duplicated).
+- **Refill** (daily cron, capped per run): imports top gated CJ products for the most-searched **under-served keywords** (logged from real searches), then tops up mapped collections below `target`.
+- **Retention**: cached CJ data is purged after 30 days — the PS storage promise, enforced in code.
+
 ## Stack
 
-- **Runtime:** [Cloudflare Workers](https://developers.cloudflare.com/workers/) (`nodejs_compat`)
+- **Runtime:** [Cloudflare Workers](https://developers.cloudflare.com/workers/) (`nodejs_compat`) + cron triggers
 - **Router:** [Hono](https://hono.dev)
-- **Shopify:** [`@shopify/shopify-api`](https://github.com/Shopify/shopify-api-js) v11 with the `cf-worker` adapter, embedded app via App Bridge v4
+- **Shopify:** [`@shopify/shopify-api`](https://github.com/Shopify/shopify-api-js) v11 (cf-worker adapter), App Bridge v4, Admin GraphQL, App Proxy
 - **Database:** [D1](https://developers.cloudflare.com/d1/) (SQLite), migrations in `migrations/`
-- **Tests:** [Vitest](https://vitest.dev) with [`@cloudflare/vitest-pool-workers`](https://developers.cloudflare.com/workers/testing/vitest-integration/) — tests run inside workerd against an in-memory D1 with real migrations applied
+- **Tests:** [Vitest](https://vitest.dev) with [`@cloudflare/vitest-pool-workers`](https://developers.cloudflare.com/workers/testing/vitest-integration/) — 95 tests run inside workerd against an in-memory D1 with real migrations
 
 ## Project layout
 
 ```
 src/
-  index.ts              Hono app: route wiring only — logic lives in the modules below
-  types.ts              Env bindings, tenant/config types, Active Paw defaults
+  index.ts              Hono app + scheduled handler: route wiring only
+  types.ts              Env bindings, tenant/config types, defaults (gates, pricing, target)
   shopify.ts            shopifyApi() factory (embedded, offline tokens)
+  shopify-admin.ts      Minimal Admin GraphQL caller (shop + offline token)
   vault.ts              Envelope encryption: KEK → per-tenant DEK → sealed secrets
   tenant-store.ts       The ONLY module allowed to touch D1 (enforced by a test)
-  cj.ts                 CJdropshipping API-key validation
-  webhooks.ts           app/uninstalled webhook registration (Admin GraphQL, idempotent)
+  cj.ts                 CJ client: cached token manager + product search/detail
+  pricing.ts            Landed USD cost → GBP retail (multiplier, floor, min margin, FX, .99)
   validate.ts           Request-body validation for the console API
-  auth/
-    install.ts          GET /auth — begin legacy OAuth
-    callback.ts         GET /auth/callback — persist sealed token, seed config
-    ensure-installed.ts Managed-install path: lazy offline-token mint via token exchange
-    uninstall.ts        app/uninstalled webhook → status flip + secret purge
-  console/
-    page.ts             Embedded merchant console (single self-contained HTML page)
-    session.ts          App Bridge session-token → shop resolution
-    routes.ts           Console API handlers (status, connect-cj, gates, collections)
+  webhooks.ts           app/uninstalled webhook registration (idempotent)
+  jobs.ts               Daily crons: retention purge, performance cull, demand refill
+  auth/                 OAuth begin/callback, managed-install token exchange, uninstall
+  console/              Embedded merchant console (page, session, API handlers)
+  proxy/
+    verify.ts           Shopify App Proxy HMAC verification (constant-time, replay window)
+    search.ts           Search backfill: cache → gates → pricing → dedupe → ghost cards
+    import.ts           Preview builder + import-on-click (productSet, publish, revive)
 migrations/             D1 schema migrations
-tests/                  Vitest suites (53 tests) incl. an architectural guard test
-wrangler.toml           Worker config, D1 binding, public vars
+tests/                  Vitest suites (95 tests) incl. an architectural guard test
+wrangler.toml           Worker config, D1 binding, cron trigger, public vars
 ```
 
 ## How it works
 
 ### Install paths (two, both supported)
 
-1. **Managed installation** (Shopify's current default for embedded apps): Shopify installs the app *without* hitting our OAuth callback, then loads the console with a signed session token. On the first authenticated `/api/*` call, `ensureInstalled` mints an **offline access token via token exchange**, seals it, and persists it. Idempotent — a tenant that already holds a sealed token short-circuits, so it runs safely on every request.
-2. **Legacy OAuth**: `GET /auth?shop=…` → Shopify consent → `GET /auth/callback` → the same `persistInstall` path seals and stores the token, then redirects into the embedded console.
+1. **Managed installation**: Shopify installs without the OAuth callback; on the first authenticated `/api/*` call, `ensureInstalled` mints an offline token via **token exchange** and persists it. Idempotent.
+2. **Legacy OAuth**: `GET /auth?shop=…` → consent → `GET /auth/callback`.
 
-Both paths converge on `persistInstall`, which also **seeds tenant config** on first install (never on reinstall, so merchant settings survive): the Active Paw store gets the pre-built collection map; any other shop starts with an empty map and default gates. `persistInstall` then **registers the `app/uninstalled` webhook** via the Admin GraphQL API (`src/webhooks.ts`) — idempotent (a duplicate subscription counts as success) and best-effort (a registration failure logs a warning but never fails the install).
+Both converge on `persistInstall`: seals the token, seeds tenant config on first install only (Active Paw gets the pre-built collection map), and registers the `app/uninstalled` webhook (idempotent, best-effort).
 
 ### Security model
 
-Merchant secrets (Shopify offline tokens, CJ API keys) are stored with **envelope encryption**:
+Merchant secrets (Shopify offline tokens, CJ API keys, cached CJ access tokens) use **envelope encryption**:
 
 ```
 PAWSCOUT_MASTER_KEY (KEK, Worker secret, base64 32 bytes)
         └── wraps a random per-tenant DEK  (tenants.dek_wrapped)
                 └── seals each secret with AES-256-GCM, fresh IV per seal
-                        ├── tenants.access_token_enc
-                        └── supplier_credentials.api_key_enc
 ```
 
-- Plaintext secrets never touch D1; the master key never touches the repo or `wrangler.toml`.
-- **Uninstall = crypto-shredding**: the `app/uninstalled` webhook (HMAC-validated via `shopify.webhooks.validate`) empties `access_token_enc` *and* `dek_wrapped` and deletes all supplier credentials, making any residual ciphertext undecryptable.
-- `/api/*` requests are authenticated with **App Bridge session tokens**: JWT signature verified by `shopify.session.decodeSessionToken`, then `console/session.ts` requires the `aud` claim to equal the app's client ID (a token *without* an `aud` claim is rejected) and the destination to be a `*.myshopify.com` host.
-- Token-exchange failures are masked as a generic 401 so OAuth grant internals are never echoed to the browser.
-- Console API bodies are **validated server-side** (`src/validate.ts`) before persisting: gate values must be finite numbers in sane ranges, `relevance` must be a known mode, and collection-map handles/tags must be lowercase slugs. Invalid payloads get a `400` with a specific message; unknown fields are stripped.
-- **Tenant isolation is enforced architecturally**: every D1 access goes through `TenantStore`, which is constructed with a shop domain and binds it into every query. A guard test (`tests/guard.test.ts`) fails the build if any other module calls `prepare`/`exec`/`batch` directly.
+- Plaintext secrets never touch D1; the master key never touches the repo.
+- **Uninstall = crypto-shredding**: HMAC-validated webhook empties the sealed token *and* the wrapped DEK, and deletes supplier credentials + cached CJ tokens.
+- **Console** (`/api/*`): App Bridge session tokens — signature verified, `aud` must equal the client ID (missing `aud` is rejected), `*.myshopify.com` destination enforced.
+- **Storefront** (`/proxy/*`): Shopify **App Proxy** HMAC signatures verified with constant-time comparison and a replay window; the worker is never called cross-origin by the browser.
+- All console bodies are validated server-side (`validate.ts`); invalid payloads get `400`, unknown fields are stripped. CJ description HTML is stripped before it can reach a storefront preview.
+- **Tenant isolation enforced architecturally**: only `tenant-store.ts` may touch D1; a guard test fails the build otherwise.
 
-### Data model (`migrations/0001_init.sql`)
+### Pricing rule (`pricing.ts`)
 
-| Table | Purpose |
-|---|---|
-| `tenants` | One row per shop: sealed offline token, wrapped DEK, granted scopes, `active`/`uninstalled` status |
-| `supplier_credentials` | Sealed supplier API keys, keyed `(shop, supplier)` — currently `cj` only |
-| `tenant_config` | Per-shop JSON config: `collection_map`, quality `gates`, `target` product count |
+Landed USD supplier cost → GBP retail: `cost × fx × (1 + buffer) × multiplier`, with a hard multiplier **floor**, an absolute **minimum margin**, and `.99` rounding (always up, never below the computed price).
+
+Defaults target **~17% net margin** under the researched cost stack — ads ~33% of revenue (ROAS 3, the conservative case), payments ~2.5%, FX ~1.5%, refunds ~3%, fixed ~2%:
+
+| Field | Default | |
+|---|---|---|
+| `multiplier` | `2.5` | ~60% gross → ~17% net at ROAS 3; ~30% net if ads hit the 20% goal |
+| `floor` | `2.2` | below this you're working for the ad platform |
+| `minMarginGbp` | `6` | protects low-ticket items from fixed fees + CPC |
+| `fxUsdToGbp` | `0.78` | configured rate (console-editable) |
+| `fxBufferPct` | `2` | safety on conversion |
+
+Sales arriving through the on-site search flywheel carry near-zero acquisition cost and net far better than the model assumes. All values are per-tenant config, editable in the console.
 
 ### Quality gates
 
-Per-tenant filters applied to supplier candidates (defaults in `types.ts`):
-
 | Gate | Default | Meaning |
 |---|---|---|
-| `popularityFloor` | `50` | Minimum CJ `listedNum` (how many stores list the product) |
-| `priceMin` / `priceMax` | `5` / `80` | Source-price band (USD) |
-| `relevance` | `title` | Keyword-match strictness: `loose` \| `title` \| `strict` |
-| `target` | `16` | Products to populate per collection |
+| `popularityFloor` | `50` | Minimum CJ `listedNum` |
+| `priceMin` / `priceMax` | `5` / `80` | Source-cost band (USD) |
+| `relevance` | `title` | `loose` \| `title` (any keyword token in title) \| `strict` (all tokens) |
+| `target` | `12` | Products per collection AND the storefront grid display cap |
+
+### Data model (`migrations/`)
+
+| Table | Purpose |
+|---|---|
+| `tenants` | Sealed offline token, wrapped DEK, scopes, status |
+| `supplier_credentials` | Sealed supplier API keys (`cj`) |
+| `tenant_config` | Per-shop JSON: collection map, gates, pricing, target |
+| `search_cache` | CJ search/detail payloads per normalized keyword — 30-day TTL |
+| `search_log` | Demand signal: keyword, store hits, ghost hits per search |
+| `product_links` | CJ pid ↔ Shopify product: `ghost → importing → imported ⇄ archived / failed` |
+| `product_events` | Qualifying events (`view`/`atc`/`order`) for the cull |
+| `cj_tokens` | Sealed cached CJ access token (CJ allows ~1 auth refresh per 300s) |
 
 ## HTTP API
 
-| Method | Path | Auth | Description |
-|---|---|---|---|
-| `GET` | `/auth` | — | Begin legacy OAuth (`?shop=x.myshopify.com`) |
-| `GET` | `/auth/callback` | OAuth state | Complete OAuth, persist sealed token, redirect to `/app` |
-| `GET` | `/app` | — | Embedded merchant console (App Bridge v4 page) |
-| `POST` | `/api/status` | Session token | CJ connection state + current config |
-| `POST` | `/api/connect-cj` | Session token | Validate a CJ API key against CJ's auth endpoint, then store it sealed |
-| `POST` | `/api/gates` | Session token | Save quality gates (+ optional `target`); invalid bodies → `400` |
-| `POST` | `/api/collections` | Session token | Replace the collection map; invalid bodies → `400` |
-| `POST` | `/webhooks/uninstall` | Shopify HMAC | Mark tenant uninstalled, purge secrets |
+### Merchant console (App Bridge session token)
 
-The console page (`src/console/page.ts`) is deliberately a single dependency-free HTML response covering the full configuration surface: CJ connection, all four quality gates, the target count, and a collection-map editor. Notes that matter if you touch it: App Bridge is loaded **without SRI** (it's evergreen — a hash would break on Shopify's next ship); the palette is **dark-first** to match Shopify admin, with every CSS token mirrored in the light media query; and `alert()`/`confirm()` are silently blocked in the admin iframe, so all feedback must be inline DOM writes.
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/api/status` | CJ connection + full config |
+| `POST` | `/api/insights` | Top search keywords + fill rates, last 30 days |
+| `POST` | `/api/connect-cj` | Validate + store a sealed CJ key |
+| `POST` | `/api/gates` | Save gates (+ optional `target`); invalid → `400` |
+| `POST` | `/api/pricing` | Save the pricing rule; invalid → `400` |
+| `POST` | `/api/collections` | Replace the collection map; invalid → `400` |
+
+### Storefront (Shopify App Proxy, HMAC-signed)
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/proxy/search?q=&have=&limit=` | Gated, priced, deduped ghost cards for a keyword |
+| `GET` | `/proxy/product?pid=` | Instant preview + records the qualifying view + starts background import |
+| `GET` | `/proxy/import-status?pid=` | `{state, url}` — the theme polls this to flip the CTA |
+| `POST` | `/proxy/event` | `{pid, event: view\|atc}` performance beacons |
+
+### System
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/auth`, `/auth/callback` | Legacy OAuth |
+| `GET` | `/app` | Embedded merchant console |
+| `POST` | `/webhooks/uninstall` | HMAC-validated; marks uninstalled + purges secrets |
+| cron | `17 4 * * *` daily | Retention purge → cull → refill (capped, CJ-rate-paced) |
 
 ## Development
 
-### Prerequisites
-
-- Node 18+, a Cloudflare account with Wrangler access
-- A Shopify Partner app (client ID is in `wrangler.toml`; the secret is not)
-
-### Setup
-
 ```bash
 npm install
-
-# Local secrets — .dev.vars is gitignored
 cat > .dev.vars <<'EOF'
 SHOPIFY_API_SECRET=shpss_...
-PAWSCOUT_MASTER_KEY=<base64 of 32 random bytes>   # e.g. openssl rand -base64 32
+PAWSCOUT_MASTER_KEY=<base64 of 32 random bytes>   # openssl rand -base64 32
 EOF
-
-npm run migrate:local   # apply D1 migrations locally
-npm run dev             # wrangler dev
+npm run migrate:local
+npm run dev
 ```
-
-### Commands
 
 | Command | What it does |
 |---|---|
-| `npm run dev` | Local dev server (`wrangler dev`) |
-| `npm test` | Run the Vitest suite inside workerd (53 tests) |
-| `npm run typecheck` | `tsc --noEmit` (strict mode) |
+| `npm test` | 95 tests inside workerd |
+| `npm run typecheck` | `tsc --noEmit` (strict) |
 | `npm run migrate:local` / `migrate:remote` | Apply D1 migrations |
 | `npm run deploy` | Deploy to Cloudflare |
 
 ### Production secrets
-
-Set once per environment — never in `wrangler.toml`:
 
 ```bash
 wrangler secret put SHOPIFY_API_SECRET
 wrangler secret put PAWSCOUT_MASTER_KEY
 ```
 
-> ⚠️ `PAWSCOUT_MASTER_KEY` is the KEK for every tenant secret. Losing it orphans all sealed credentials (merchants must reinstall / reconnect); leaking it compromises them. Treat rotation as a re-encryption project, not a value swap.
+> ⚠️ `PAWSCOUT_MASTER_KEY` is the KEK for every tenant secret. Losing it orphans all sealed credentials; leaking it compromises them.
+
+### One-time Shopify setup (Partner Dashboard)
+
+The storefront integration requires the **App Proxy** to be configured on the app:
+
+- **Subpath prefix:** `apps` · **Subpath:** `pawscout`
+- **Proxy URL:** `https://pawscout.activepaw.co.uk/proxy`
+
+The theme then calls `/apps/pawscout/*` on the store's own domain and Shopify signs + forwards to the worker. Without this, ghost backfill, previews, and beacons no-op (the theme degrades gracefully).
+
+### Deploying the flywheel
+
+1. `npm run migrate:remote` (applies `0002_flywheel.sql`)
+2. `npm run deploy` (registers the cron trigger)
+3. Configure the App Proxy (above)
+4. Ship the theme half (`active-paw-theme`: `pawscout.js`, search/product/layout wiring)
 
 ### Testing notes
 
-Tests run in real workerd via `@cloudflare/vitest-pool-workers`, with migrations from `migrations/` applied to an in-memory D1 before each suite (see `vitest.config.ts` — the base64 key there is a test-only KEK, not a secret). External boundaries (Shopify token exchange, CJ auth) are injected as function parameters, so handlers are unit-tested without network access.
+Tests run in real workerd via `@cloudflare/vitest-pool-workers` with migrations applied to in-memory D1. External boundaries (Shopify Admin GraphQL, CJ API, token exchange) are injected as functions or fake `fetch` implementations — no network in tests. Cron logic is tested with backdated rows written directly by tests (production code still goes through `TenantStore` only, enforced by the guard test).
 
 ## Roadmap
 
-- Product sourcing/population itself (querying CJ, creating products, tagging into collections) is the next stage — this repo currently covers install, credential vaulting, and configuration.
+- **Orders webhook** (`orders/create`) as a stronger qualifying signal than add-to-cart — needs Shopify protected-customer-data approval, so ATC beacons stand in for now.
+- **Per-category pricing multipliers** (commodity vs problem-solver products).
+- **Automated FX rate refresh** (currently a console-configured value).
