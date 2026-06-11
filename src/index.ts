@@ -11,14 +11,20 @@ import { resolveShopFromToken } from './console/session';
 import { connectCj, saveGates, saveCollectionMap, getStatus } from './console/routes';
 import { consolePage } from './console/page';
 import { validateCjKey } from './cj';
+import { registerUninstallWebhook, type RegisterWebhook } from './webhooks';
+import { validateGatesPayload, validateCollectionMap } from './validate';
 
 const app = new Hono<{ Bindings: Env }>();
+
+function makeRegistrar(env: Env): RegisterWebhook {
+  return (shop, accessToken) => registerUninstallWebhook(shop, accessToken, env.SHOPIFY_APP_URL);
+}
 
 app.get('/auth', (c) => beginAuth(makeShopify(c.env), c.req.raw));
 
 app.get('/auth/callback', async (c) => {
   const vault = await Vault.fromMasterKey(c.env.PAWSCOUT_MASTER_KEY);
-  return handleCallback(makeShopify(c.env), c.env.DB, vault, c.req.raw);
+  return handleCallback(makeShopify(c.env), c.env.DB, vault, c.req.raw, makeRegistrar(c.env));
 });
 
 app.get('/app', (c) => consolePage(c.env.SHOPIFY_API_KEY));
@@ -42,7 +48,7 @@ async function shopOf(c: any): Promise<string | Response> {
         requestedTokenType: RequestedTokenType.OfflineAccessToken
       });
       return { accessToken: session.accessToken ?? '', scope: session.scope ?? '' };
-    });
+    }, makeRegistrar(c.env));
   } catch {
     // Never surface token-exchange internals (which can echo the grant) to the browser.
     return c.json({ ok: false, error: 'Install handshake failed' }, 401);
@@ -57,8 +63,24 @@ app.post('/api/connect-cj', async (c) => {
   const vault = await Vault.fromMasterKey(c.env.PAWSCOUT_MASTER_KEY);
   return c.json(await connectCj(c.env.DB, vault, s, apiKey, (k) => validateCjKey(k)));
 });
-app.post('/api/gates', async (c) => { const s = await shopOf(c); if (typeof s !== 'string') return s; await saveGates(c.env.DB, s, await c.req.json()); return c.json({ ok: true }); });
-app.post('/api/collections', async (c) => { const s = await shopOf(c); if (typeof s !== 'string') return s; await saveCollectionMap(c.env.DB, s, await c.req.json()); return c.json({ ok: true }); });
+app.post('/api/gates', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: unknown;
+  try { body = await c.req.json(); } catch { return c.json({ ok: false, error: 'Invalid JSON body' }, 400); }
+  const v = validateGatesPayload(body);
+  if (!v.ok) return c.json({ ok: false, error: v.error }, 400);
+  await saveGates(c.env.DB, s, v.value.gates, v.value.target);
+  return c.json({ ok: true });
+});
+app.post('/api/collections', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: unknown;
+  try { body = await c.req.json(); } catch { return c.json({ ok: false, error: 'Invalid JSON body' }, 400); }
+  const v = validateCollectionMap(body);
+  if (!v.ok) return c.json({ ok: false, error: v.error }, 400);
+  await saveCollectionMap(c.env.DB, s, v.value);
+  return c.json({ ok: true });
+});
 
 // --- uninstall webhook ---
 app.post('/webhooks/uninstall', async (c) => {

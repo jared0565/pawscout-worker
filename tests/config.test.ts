@@ -43,4 +43,13 @@ describe('console handlers', () => {
     expect(status.gates.popularityFloor).toBe(99);
     expect(JSON.stringify(status)).not.toContain('CJk@api@t'); // no secret in status payload
   });
+
+  it('saveGates updates the target when given, and preserves it when omitted', async () => {
+    await seedTenant('a.myshopify.com');
+    const gates = { popularityFloor: 50, priceMin: 5, priceMax: 80, relevance: 'title' as const };
+    await saveGates(env.DB, 'a.myshopify.com', gates, 32);
+    expect((await getStatus(env.DB, 'a.myshopify.com')).target).toBe(32);
+    await saveGates(env.DB, 'a.myshopify.com', gates);
+    expect((await getStatus(env.DB, 'a.myshopify.com')).target).toBe(32); // unchanged
+  });
 });

@@ -17,11 +17,11 @@ export async function connectCj(
   return { ok: true };
 }
 
-export async function saveGates(db: D1Database, shop: string, gates: Gates): Promise<void> {
+export async function saveGates(db: D1Database, shop: string, gates: Gates, target?: number): Promise<void> {
   const store = new TenantStore(db, shop);
   const cfg = await store.getConfig();
   if (!cfg) return;
-  await store.seedConfig({ ...cfg, gates });
+  await store.seedConfig({ ...cfg, gates, target: target ?? cfg.target });
 }
 
 export async function saveCollectionMap(db: D1Database, shop: string, map: Record<string, { handle: string; tag: string }>): Promise<void> {
