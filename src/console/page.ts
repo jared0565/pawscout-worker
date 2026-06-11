@@ -137,7 +137,7 @@ export function consolePage(apiKey: string): Response {
       </div>
       <div class="grow">
         <label for="tgt">Target per collection</label>
-        <input id="tgt" type="number" value="16" min="1" max="200" step="1">
+        <input id="tgt" type="number" value="12" min="1" max="200" step="1">
       </div>
       <button onclick="saveGates()">Save gates</button>
     </div>
@@ -153,6 +153,42 @@ export function consolePage(apiKey: string): Response {
       <button type="button" onclick="saveCollections()">Save collections</button>
     </div>
     <p id="mapmsg" class="msg muted"></p>
+  </section>
+
+  <section class="card">
+    <h2><span class="step">4</span> Pricing rule</h2>
+    <p class="sub" style="margin:0 0 12px">Landed USD supplier cost → GBP retail. Default 2.5× targets ~17% net after ads, fees and refunds.</p>
+    <div class="row">
+      <div class="grow">
+        <label for="pmult">Multiplier</label>
+        <input id="pmult" type="number" value="2.5" min="1" max="10" step="0.1">
+      </div>
+      <div class="grow">
+        <label for="pfloor">Floor</label>
+        <input id="pfloor" type="number" value="2.2" min="1" max="10" step="0.1">
+      </div>
+      <div class="grow">
+        <label for="pmm">Min margin (£)</label>
+        <input id="pmm" type="number" value="6" min="0" max="100" step="0.5">
+      </div>
+    </div>
+    <div class="row">
+      <div class="grow">
+        <label for="pfx">USD→GBP rate</label>
+        <input id="pfx" type="number" value="0.78" min="0.1" max="10" step="0.01">
+      </div>
+      <div class="grow">
+        <label for="pfxb">FX buffer (%)</label>
+        <input id="pfxb" type="number" value="2" min="0" max="20" step="0.5">
+      </div>
+      <button onclick="savePricing()">Save pricing</button>
+    </div>
+    <p id="pricingmsg" class="msg muted"></p>
+  </section>
+
+  <section class="card">
+    <h2>Search demand — last 30 days</h2>
+    <div id="insights"><p class="muted">Loading…</p></div>
   </section>
 
   <section class="card">
@@ -173,13 +209,14 @@ async function api(path,body){
   return r.json();
 }
 function renderStatus(s){
-  var g=s.gates||{};
+  var g=s.gates||{}; var p=s.pricing||{};
   var rows=''
     +'<dt>CJ supplier</dt><dd><span class="badge '+(s.cjConnected?'ok':'no')+'">'+(s.cjConnected?'Connected':'Not connected')+'</span></dd>'
     +'<dt>Popularity floor</dt><dd>'+esc(g.popularityFloor)+'</dd>'
     +'<dt>Price range</dt><dd>$'+esc(g.priceMin)+' – $'+esc(g.priceMax)+'</dd>'
     +'<dt>Relevance</dt><dd>'+esc(g.relevance)+'</dd>'
-    +'<dt>Target count</dt><dd>'+esc(s.target)+'</dd>';
+    +'<dt>Target count</dt><dd>'+esc(s.target)+'</dd>'
+    +'<dt>Pricing</dt><dd>'+esc(p.multiplier)+'× (floor '+esc(p.floor)+'×, min £'+esc(p.minMarginGbp)+')</dd>';
   var cm=s.collectionMap||{}; var keys=Object.keys(cm);
   var cols = keys.length
     ? keys.map(function(k){ var v=cm[k]||{}; return '<li><strong>'+esc(v.handle||k)+'</strong> <span class="muted">← tag</span> <code>'+esc(v.tag)+'</code></li>'; }).join('')
@@ -197,6 +234,12 @@ function populateForms(s){
   if(g.priceMax!=null) el('pmax').value=g.priceMax;
   if(g.relevance) el('rel').value=g.relevance;
   if(s.target!=null) el('tgt').value=s.target;
+  var p=s.pricing||{};
+  if(p.multiplier!=null) el('pmult').value=p.multiplier;
+  if(p.floor!=null) el('pfloor').value=p.floor;
+  if(p.minMarginGbp!=null) el('pmm').value=p.minMarginGbp;
+  if(p.fxUsdToGbp!=null) el('pfx').value=p.fxUsdToGbp;
+  if(p.fxBufferPct!=null) el('pfxb').value=p.fxBufferPct;
   var cm=s.collectionMap||{};
   el('maprows').textContent='';
   Object.keys(cm).forEach(function(k){ var v=cm[k]||{}; addMapRow(v.handle||k, v.tag||''); });
@@ -227,6 +270,20 @@ async function refresh(){
     setMsg('cjstatus','Could not reach PawScout. Reload the page.','no');
   }
 }
+async function loadInsights(){
+  try{
+    var r=await api('/insights');
+    var ks=(r&&r.keywords)||[];
+    if(!ks.length){ el('insights').innerHTML='<p class="muted">No storefront searches hit the backfill yet.</p>'; return; }
+    var rows=ks.map(function(k){
+      var fill=(Number(k.avg_store_hits)+Number(k.avg_ghost_hits)).toFixed(1);
+      return '<li><strong>'+esc(k.keyword_norm)+'</strong> <span class="muted">· '+esc(k.searches)+' searches · avg fill</span> <code>'+esc(fill)+'</code></li>';
+    }).join('');
+    el('insights').innerHTML='<ul class="cols">'+rows+'</ul>';
+  }catch(e){
+    el('insights').innerHTML='<p class="muted">Insights unavailable.</p>';
+  }
+}
 async function connectCj(){
   var btn=el('cjbtn'); btn.disabled=true; setMsg('cjstatus','Connecting…','muted');
   try{
@@ -252,6 +309,20 @@ async function saveGates(){
     else setMsg('gatesmsg','Failed: '+(r.error||'unknown error'),'no');
   }catch(e){ setMsg('gatesmsg','Failed: '+errText(e),'no'); }
 }
+async function savePricing(){
+  setMsg('pricingmsg','Saving…','muted');
+  try{
+    var r=await api('/pricing',{
+      multiplier:Number(el('pmult').value),
+      floor:Number(el('pfloor').value),
+      minMarginGbp:Number(el('pmm').value),
+      fxUsdToGbp:Number(el('pfx').value),
+      fxBufferPct:Number(el('pfxb').value)
+    });
+    if(r.ok){ setMsg('pricingmsg','Saved ✓','ok'); refresh(); }
+    else setMsg('pricingmsg','Failed: '+(r.error||'unknown error'),'no');
+  }catch(e){ setMsg('pricingmsg','Failed: '+errText(e),'no'); }
+}
 async function saveCollections(){
   setMsg('mapmsg','Saving…','muted');
   try{
@@ -270,6 +341,7 @@ async function saveCollections(){
   }catch(e){ setMsg('mapmsg','Failed: '+errText(e),'no'); }
 }
 refresh();
+loadInsights();
 </script>
 </body></html>`;
   return new Response(html, { headers: { 'Content-Type': 'text/html' } });
