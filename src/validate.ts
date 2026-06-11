@@ -1,4 +1,4 @@
-import type { Gates, TenantConfig } from './types';
+import type { Gates, Pricing, TenantConfig } from './types';
 
 export type Validation<T> = { ok: true; value: T } | { ok: false; error: string };
 
@@ -51,6 +51,37 @@ export function validateGatesPayload(body: unknown): Validation<{ gates: Gates; 
         relevance: b.relevance as Gates['relevance']
       },
       target
+    }
+  };
+}
+
+/** Validate the /api/pricing body. Bounds are wide but sane — the rule must never invert. */
+export function validatePricingPayload(body: unknown): Validation<Pricing> {
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+    return { ok: false, error: 'Body must be a JSON object' };
+  }
+  const b = body as Record<string, unknown>;
+  const ranges: [keyof Pricing, number, number][] = [
+    ['multiplier', 1, 10],
+    ['floor', 1, 10],
+    ['minMarginGbp', 0, 100],
+    ['fxUsdToGbp', 0.1, 10],
+    ['fxBufferPct', 0, 20]
+  ];
+  for (const [field, min, max] of ranges) {
+    const v = b[field];
+    if (!finite(v) || v < min || v > max) {
+      return { ok: false, error: `${field} must be a number between ${min} and ${max}` };
+    }
+  }
+  return {
+    ok: true,
+    value: {
+      multiplier: b.multiplier as number,
+      floor: b.floor as number,
+      minMarginGbp: b.minMarginGbp as number,
+      fxUsdToGbp: b.fxUsdToGbp as number,
+      fxBufferPct: b.fxBufferPct as number
     }
   };
 }

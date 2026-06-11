@@ -24,13 +24,30 @@ export interface Gates {
   relevance: 'loose' | 'title' | 'strict';
 }
 
+/**
+ * Pricing rule: landed USD supplier cost → GBP retail.
+ * Defaults target ~17% net under the researched cost stack
+ * (ads ~33% of revenue at ROAS 3, payments ~2.5%, FX, refunds, fixed).
+ */
+export interface Pricing {
+  multiplier: number;   // retail = landed cost × multiplier
+  floor: number;        // hard minimum multiplier
+  minMarginGbp: number; // absolute margin floor per unit
+  fxUsdToGbp: number;   // configured conversion rate
+  fxBufferPct: number;  // safety buffer on conversion, in percent
+}
+
 export interface TenantConfig {
   collectionMap: Record<string, { handle: string; tag: string }>;
   gates: Gates;
+  pricing: Pricing;
   target: number;
 }
 
 export const DEFAULT_GATES: Gates = { popularityFloor: 50, priceMin: 5, priceMax: 80, relevance: 'title' };
+export const DEFAULT_PRICING: Pricing = { multiplier: 2.5, floor: 2.2, minMarginGbp: 6, fxUsdToGbp: 0.78, fxBufferPct: 2 };
+// 12 = display cap of the storefront grid (4×3): show what we can sell, never pad.
+export const DEFAULT_TARGET = 12;
 
 export const ACTIVE_PAW_COLLECTION_MAP: TenantConfig['collectionMap'] = {
   'pet-cleaning': { handle: 'pet-cleaning', tag: 'cj-cat-pet-cleaning' },

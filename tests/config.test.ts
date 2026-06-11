@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
-import { connectCj, saveGates, getStatus } from '../src/console/routes';
+import { connectCj, saveGates, savePricing, getStatus } from '../src/console/routes';
 import { Vault } from '../src/vault';
 import { TenantStore } from '../src/tenant-store';
+import { DEFAULT_PRICING } from '../src/types';
 
 beforeEach(async () => { await applyD1Migrations(env.DB, env.TEST_MIGRATIONS); });
 
@@ -10,7 +11,12 @@ async function seedTenant(shop: string) {
   const vault = await Vault.fromMasterKey(env.PAWSCOUT_MASTER_KEY);
   const dek = await vault.newTenantDek();
   await new TenantStore(env.DB, shop).upsertTenant({ accessTokenEnc: await vault.seal(dek, 't'), dekWrapped: dek, scopes: 's' });
-  await new TenantStore(env.DB, shop).seedConfig({ collectionMap: {}, gates: { popularityFloor: 50, priceMin: 5, priceMax: 80, relevance: 'title' }, target: 16 });
+  await new TenantStore(env.DB, shop).seedConfig({
+    collectionMap: {},
+    gates: { popularityFloor: 50, priceMin: 5, priceMax: 80, relevance: 'title' },
+    pricing: DEFAULT_PRICING,
+    target: 16
+  });
   return vault;
 }
 
@@ -42,6 +48,14 @@ describe('console handlers', () => {
     expect(status.cjConnected).toBe(true);
     expect(status.gates.popularityFloor).toBe(99);
     expect(JSON.stringify(status)).not.toContain('CJk@api@t'); // no secret in status payload
+  });
+
+  it('savePricing persists the rule and getStatus returns it (defaults when unset)', async () => {
+    await seedTenant('a.myshopify.com');
+    expect((await getStatus(env.DB, 'a.myshopify.com')).pricing).toEqual(DEFAULT_PRICING);
+    const custom = { multiplier: 2.8, floor: 2.2, minMarginGbp: 5, fxUsdToGbp: 0.8, fxBufferPct: 1 };
+    await savePricing(env.DB, 'a.myshopify.com', custom);
+    expect((await getStatus(env.DB, 'a.myshopify.com')).pricing).toEqual(custom);
   });
 
   it('saveGates updates the target when given, and preserves it when omitted', async () => {

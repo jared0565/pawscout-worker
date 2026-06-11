@@ -1,8 +1,23 @@
-import type { TenantRow, TenantConfig } from './types';
+import { DEFAULT_PRICING, type TenantRow, type TenantConfig } from './types';
 
 interface SupplierCredRow {
   shop: string; supplier: string; api_key_enc: string; label: string | null; validated_at: string | null; created_at: string;
 }
+
+export interface CjTokenRow { shop: string; token_enc: string; expires_at: string; refreshed_at: string }
+
+export interface ProductLink {
+  shop: string;
+  cj_pid: string;
+  shopify_product_id: string | null;
+  handle: string | null;
+  category: string | null;
+  state: 'ghost' | 'importing' | 'imported' | 'archived' | 'failed';
+  created_at: string;
+  updated_at: string;
+}
+
+export interface KeywordDemand { keyword_norm: string; searches: number; avg_store_hits: number; avg_ghost_hits: number }
 
 export class TenantStore {
   constructor(private readonly db: D1Database, readonly shop: string) {}
@@ -32,21 +47,34 @@ export class TenantStore {
   async seedConfig(cfg: TenantConfig): Promise<void> {
     await this.db
       .prepare(
-        `INSERT INTO tenant_config (shop, collection_map, gates, target, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5)
-         ON CONFLICT(shop) DO UPDATE SET collection_map = ?2, gates = ?3, target = ?4, updated_at = ?5`
+        `INSERT INTO tenant_config (shop, collection_map, gates, pricing, target, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+         ON CONFLICT(shop) DO UPDATE SET collection_map = ?2, gates = ?3, pricing = ?4, target = ?5, updated_at = ?6`
       )
-      .bind(this.shop, JSON.stringify(cfg.collectionMap), JSON.stringify(cfg.gates), cfg.target, new Date().toISOString())
+      .bind(
+        this.shop,
+        JSON.stringify(cfg.collectionMap),
+        JSON.stringify(cfg.gates),
+        JSON.stringify(cfg.pricing),
+        cfg.target,
+        new Date().toISOString()
+      )
       .run();
   }
 
   async getConfig(): Promise<TenantConfig | null> {
     const row = await this.db
-      .prepare(`SELECT collection_map, gates, target FROM tenant_config WHERE shop = ?1`)
+      .prepare(`SELECT collection_map, gates, pricing, target FROM tenant_config WHERE shop = ?1`)
       .bind(this.shop)
-      .first<{ collection_map: string; gates: string; target: number }>();
+      .first<{ collection_map: string; gates: string; pricing: string; target: number }>();
     if (!row) return null;
-    return { collectionMap: JSON.parse(row.collection_map), gates: JSON.parse(row.gates), target: row.target };
+    return {
+      collectionMap: JSON.parse(row.collection_map),
+      gates: JSON.parse(row.gates),
+      // Tolerate pre-flywheel rows ('{}' default): fill missing fields from defaults.
+      pricing: { ...DEFAULT_PRICING, ...JSON.parse(row.pricing || '{}') },
+      target: row.target
+    };
   }
 
   async putSupplierCredential(supplier: string, apiKeyEnc: string, label: string): Promise<void> {
@@ -71,7 +99,175 @@ export class TenantStore {
   async deleteAllSecrets(): Promise<void> {
     await this.db.batch([
       this.db.prepare(`DELETE FROM supplier_credentials WHERE shop = ?1`).bind(this.shop),
+      this.db.prepare(`DELETE FROM cj_tokens WHERE shop = ?1`).bind(this.shop),
       this.db.prepare(`UPDATE tenants SET access_token_enc = '', dek_wrapped = '' WHERE shop = ?1`).bind(this.shop)
     ]);
   }
+
+  // --- CJ token cache ---
+
+  getCjToken(): Promise<CjTokenRow | null> {
+    return this.db.prepare(`SELECT * FROM cj_tokens WHERE shop = ?1`).bind(this.shop).first<CjTokenRow>();
+  }
+
+  async putCjToken(tokenEnc: string, expiresAt: string): Promise<void> {
+    const now = new Date().toISOString();
+    await this.db
+      .prepare(
+        `INSERT INTO cj_tokens (shop, token_enc, expires_at, refreshed_at) VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(shop) DO UPDATE SET token_enc = ?2, expires_at = ?3, refreshed_at = ?4`
+      )
+      .bind(this.shop, tokenEnc, expiresAt, now)
+      .run();
+  }
+
+  // --- search cache + demand log ---
+
+  async getSearchCache(cacheKey: string): Promise<string | null> {
+    const row = await this.db
+      .prepare(`SELECT payload FROM search_cache WHERE shop = ?1 AND cache_key = ?2 AND expires_at > ?3`)
+      .bind(this.shop, cacheKey, new Date().toISOString())
+      .first<{ payload: string }>();
+    return row?.payload ?? null;
+  }
+
+  async putSearchCache(cacheKey: string, payload: string, ttlDays: number): Promise<void> {
+    const now = Date.now();
+    await this.db
+      .prepare(
+        `INSERT INTO search_cache (shop, cache_key, payload, created_at, expires_at) VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT(shop, cache_key) DO UPDATE SET payload = ?3, created_at = ?4, expires_at = ?5`
+      )
+      .bind(this.shop, cacheKey, payload, new Date(now).toISOString(), new Date(now + ttlDays * 86400_000).toISOString())
+      .run();
+  }
+
+  async logSearch(keywordNorm: string, storeHits: number, ghostHits: number): Promise<void> {
+    await this.db
+      .prepare(`INSERT INTO search_log (shop, keyword_norm, store_hits, ghost_hits, created_at) VALUES (?1, ?2, ?3, ?4, ?5)`)
+      .bind(this.shop, keywordNorm, storeHits, ghostHits, new Date().toISOString())
+      .run();
+  }
+
+  /** Keywords searched since `sinceIso` whose combined fill stayed under `under`, most-searched first. */
+  async underfilledKeywords(sinceIso: string, under: number, limit: number): Promise<KeywordDemand[]> {
+    const rs = await this.db
+      .prepare(
+        `SELECT keyword_norm, COUNT(*) AS searches,
+                AVG(store_hits) AS avg_store_hits, AVG(ghost_hits) AS avg_ghost_hits
+         FROM search_log WHERE shop = ?1 AND created_at >= ?2
+         GROUP BY keyword_norm HAVING AVG(store_hits) + AVG(ghost_hits) < ?3
+         ORDER BY searches DESC LIMIT ?4`
+      )
+      .bind(this.shop, sinceIso, under, limit)
+      .all<KeywordDemand>();
+    return rs.results ?? [];
+  }
+
+  /** Recent demand overview for the console (all keywords, most-searched first). */
+  async recentSearches(sinceIso: string, limit: number): Promise<KeywordDemand[]> {
+    const rs = await this.db
+      .prepare(
+        `SELECT keyword_norm, COUNT(*) AS searches,
+                AVG(store_hits) AS avg_store_hits, AVG(ghost_hits) AS avg_ghost_hits
+         FROM search_log WHERE shop = ?1 AND created_at >= ?2
+         GROUP BY keyword_norm ORDER BY searches DESC LIMIT ?3`
+      )
+      .bind(this.shop, sinceIso, limit)
+      .all<KeywordDemand>();
+    return rs.results ?? [];
+  }
+
+  // --- product links + events ---
+
+  getLink(cjPid: string): Promise<ProductLink | null> {
+    return this.db
+      .prepare(`SELECT * FROM product_links WHERE shop = ?1 AND cj_pid = ?2`)
+      .bind(this.shop, cjPid)
+      .first<ProductLink>();
+  }
+
+  async getLinks(cjPids: string[]): Promise<Map<string, ProductLink>> {
+    const out = new Map<string, ProductLink>();
+    if (!cjPids.length) return out;
+    // D1 caps bound parameters; chunk to stay well under it.
+    for (let i = 0; i < cjPids.length; i += 50) {
+      const chunk = cjPids.slice(i, i + 50);
+      const placeholders = chunk.map((_, j) => `?${j + 2}`).join(',');
+      const rs = await this.db
+        .prepare(`SELECT * FROM product_links WHERE shop = ?1 AND cj_pid IN (${placeholders})`)
+        .bind(this.shop, ...chunk)
+        .all<ProductLink>();
+      for (const row of rs.results ?? []) out.set(row.cj_pid, row);
+    }
+    return out;
+  }
+
+  async putLink(link: { cjPid: string; state: ProductLink['state']; shopifyProductId?: string | null; handle?: string | null; category?: string | null }): Promise<void> {
+    const now = new Date().toISOString();
+    await this.db
+      .prepare(
+        `INSERT INTO product_links (shop, cj_pid, shopify_product_id, handle, category, state, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)
+         ON CONFLICT(shop, cj_pid) DO UPDATE SET
+           shopify_product_id = COALESCE(?3, shopify_product_id),
+           handle = COALESCE(?4, handle),
+           category = COALESCE(?5, category),
+           state = ?6, updated_at = ?7`
+      )
+      .bind(this.shop, link.cjPid, link.shopifyProductId ?? null, link.handle ?? null, link.category ?? null, link.state, now)
+      .run();
+  }
+
+  async recordEvent(cjPid: string, event: 'view' | 'atc' | 'order'): Promise<void> {
+    await this.db
+      .prepare(`INSERT INTO product_events (shop, cj_pid, event, created_at) VALUES (?1, ?2, ?3, ?4)`)
+      .bind(this.shop, cjPid, event, new Date().toISOString())
+      .run();
+  }
+
+  /** Imported products older than the grace cutoff with zero qualifying events since the window cutoff. */
+  async linksEligibleForArchive(cutoffIso: string): Promise<ProductLink[]> {
+    const rs = await this.db
+      .prepare(
+        `SELECT pl.* FROM product_links pl
+         WHERE pl.shop = ?1 AND pl.state = 'imported' AND pl.created_at < ?2
+           AND NOT EXISTS (
+             SELECT 1 FROM product_events pe
+             WHERE pe.shop = pl.shop AND pe.cj_pid = pl.cj_pid AND pe.created_at >= ?2
+           )`
+      )
+      .bind(this.shop, cutoffIso)
+      .all<ProductLink>();
+    return rs.results ?? [];
+  }
+
+  async countImportedByCategory(category: string): Promise<number> {
+    const row = await this.db
+      .prepare(`SELECT COUNT(*) AS n FROM product_links WHERE shop = ?1 AND category = ?2 AND state = 'imported'`)
+      .bind(this.shop, category)
+      .first<{ n: number }>();
+    return row?.n ?? 0;
+  }
+}
+
+// --- cross-tenant maintenance (cron jobs) — keep all raw D1 in this file ---
+
+export async function listActiveShops(db: D1Database): Promise<string[]> {
+  const rs = await db.prepare(`SELECT shop FROM tenants WHERE status = 'active' AND access_token_enc != ''`).all<{ shop: string }>();
+  return (rs.results ?? []).map((r) => r.shop);
+}
+
+/** Enforce the 30-day retention promise on cached supplier data. */
+export async function purgeExpiredSearchCache(db: D1Database): Promise<number> {
+  const r = await db.prepare(`DELETE FROM search_cache WHERE expires_at <= ?1`).bind(new Date().toISOString()).run();
+  return r.meta.changes ?? 0;
+}
+
+/** Trim event + demand logs we no longer need (keeps D1 small; nothing here is PII). */
+export async function trimOldLogs(db: D1Database, beforeIso: string): Promise<void> {
+  await db.batch([
+    db.prepare(`DELETE FROM product_events WHERE created_at < ?1`).bind(beforeIso),
+    db.prepare(`DELETE FROM search_log WHERE created_at < ?1`).bind(beforeIso)
+  ]);
 }

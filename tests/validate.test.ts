@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { validateGatesPayload, validateCollectionMap, MAX_COLLECTIONS } from '../src/validate';
+import { validateGatesPayload, validatePricingPayload, validateCollectionMap, MAX_COLLECTIONS } from '../src/validate';
 
 const GOOD_GATES = { popularityFloor: 50, priceMin: 5, priceMax: 80, relevance: 'title' };
 
@@ -27,6 +27,26 @@ describe('validateGatesPayload', () => {
     [{ ...GOOD_GATES, target: 1.5 }, 'fractional target']
   ] as [unknown, string][])('rejects %j (%s)', (body: unknown) => {
     expect(validateGatesPayload(body).ok).toBe(false);
+  });
+});
+
+describe('validatePricingPayload', () => {
+  const GOOD = { multiplier: 2.5, floor: 2.2, minMarginGbp: 6, fxUsdToGbp: 0.78, fxBufferPct: 2 };
+
+  it('accepts a valid payload and strips unknown fields', () => {
+    expect(validatePricingPayload({ ...GOOD, evil: 1 })).toEqual({ ok: true, value: GOOD });
+  });
+
+  it.each([
+    [null, 'not an object'],
+    [{ ...GOOD, multiplier: 0.5 }, 'multiplier below 1'],
+    [{ ...GOOD, multiplier: 99 }, 'multiplier above 10'],
+    [{ ...GOOD, floor: 'two' }, 'non-numeric floor'],
+    [{ ...GOOD, minMarginGbp: -1 }, 'negative margin'],
+    [{ ...GOOD, fxUsdToGbp: 0 }, 'zero FX rate'],
+    [{ ...GOOD, fxBufferPct: 50 }, 'buffer above cap']
+  ] as [unknown, string][])('rejects %j (%s)', (body: unknown) => {
+    expect(validatePricingPayload(body).ok).toBe(false);
   });
 });
 
