@@ -1,6 +1,7 @@
 import { Vault } from '../vault';
 import { TenantStore } from '../tenant-store';
 import { persistInstall } from './callback';
+import type { RegisterWebhook } from '../webhooks';
 
 export interface ExchangedToken {
   accessToken: string;
@@ -29,7 +30,8 @@ export async function ensureInstalled(
   vault: Vault,
   shop: string,
   sessionToken: string,
-  exchange: (shop: string, sessionToken: string) => Promise<ExchangedToken>
+  exchange: (shop: string, sessionToken: string) => Promise<ExchangedToken>,
+  registerWebhook?: RegisterWebhook
 ): Promise<void> {
   const store = new TenantStore(db, shop);
   const tenant = await store.getTenant();
@@ -37,5 +39,5 @@ export async function ensureInstalled(
 
   const { accessToken, scope } = await exchange(shop, sessionToken);
   if (!accessToken) throw new Error('token exchange returned no access token');
-  await persistInstall(db, vault, { shop, accessToken, scope });
+  await persistInstall(db, vault, { shop, accessToken, scope }, registerWebhook);
 }
