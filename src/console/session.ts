@@ -14,7 +14,8 @@ export async function resolveShopFromToken(
   } catch (e) {
     return { ok: false, status: 401, error: `Invalid session token: ${(e as Error).message}` };
   }
-  if (payload.aud && payload.aud !== apiKey) return { ok: false, status: 401, error: 'Audience mismatch' };
+  // Strict: a token without an `aud` claim is rejected, not waved through.
+  if (payload.aud !== apiKey) return { ok: false, status: 401, error: 'Audience mismatch' };
   const dest = payload.dest ?? '';
   const shop = dest.replace(/^https?:\/\//, '');
   if (!shop.endsWith('.myshopify.com')) return { ok: false, status: 401, error: 'Bad shop in token' };

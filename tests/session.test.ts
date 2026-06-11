@@ -16,4 +16,10 @@ describe('resolveShopFromToken', () => {
     const decode = async () => ({ dest: 'https://a.myshopify.com', aud: 'someone-else' });
     expect((await resolveShopFromToken('Bearer x', 'apikey', decode)).ok).toBe(false);
   });
+
+  it('rejects a token with no aud claim (strict audience)', async () => {
+    const decode = async () => ({ dest: 'https://a.myshopify.com' });
+    const r = await resolveShopFromToken('Bearer x', 'apikey', decode);
+    expect(r).toEqual({ ok: false, status: 401, error: 'Audience mismatch' });
+  });
 });
