@@ -33,6 +33,8 @@ src/
   vault.ts              Envelope encryption: KEK → per-tenant DEK → sealed secrets
   tenant-store.ts       The ONLY module allowed to touch D1 (enforced by a test)
   cj.ts                 CJdropshipping API-key validation
+  webhooks.ts           app/uninstalled webhook registration (Admin GraphQL, idempotent)
+  validate.ts           Request-body validation for the console API
   auth/
     install.ts          GET /auth — begin legacy OAuth
     callback.ts         GET /auth/callback — persist sealed token, seed config
@@ -43,7 +45,7 @@ src/
     session.ts          App Bridge session-token → shop resolution
     routes.ts           Console API handlers (status, connect-cj, gates, collections)
 migrations/             D1 schema migrations
-tests/                  Vitest suites (22 tests) incl. an architectural guard test
+tests/                  Vitest suites (53 tests) incl. an architectural guard test
 wrangler.toml           Worker config, D1 binding, public vars
 ```
 
@@ -54,7 +56,7 @@ wrangler.toml           Worker config, D1 binding, public vars
 1. **Managed installation** (Shopify's current default for embedded apps): Shopify installs the app *without* hitting our OAuth callback, then loads the console with a signed session token. On the first authenticated `/api/*` call, `ensureInstalled` mints an **offline access token via token exchange**, seals it, and persists it. Idempotent — a tenant that already holds a sealed token short-circuits, so it runs safely on every request.
 2. **Legacy OAuth**: `GET /auth?shop=…` → Shopify consent → `GET /auth/callback` → the same `persistInstall` path seals and stores the token, then redirects into the embedded console.
 
-Both paths converge on `persistInstall`, which also **seeds tenant config** on first install (never on reinstall, so merchant settings survive): the Active Paw store gets the pre-built collection map; any other shop starts with an empty map and default gates.
+Both paths converge on `persistInstall`, which also **seeds tenant config** on first install (never on reinstall, so merchant settings survive): the Active Paw store gets the pre-built collection map; any other shop starts with an empty map and default gates. `persistInstall` then **registers the `app/uninstalled` webhook** via the Admin GraphQL API (`src/webhooks.ts`) — idempotent (a duplicate subscription counts as success) and best-effort (a registration failure logs a warning but never fails the install).
 
 ### Security model
 
@@ -70,8 +72,9 @@ PAWSCOUT_MASTER_KEY (KEK, Worker secret, base64 32 bytes)
 
 - Plaintext secrets never touch D1; the master key never touches the repo or `wrangler.toml`.
 - **Uninstall = crypto-shredding**: the `app/uninstalled` webhook (HMAC-validated via `shopify.webhooks.validate`) empties `access_token_enc` *and* `dek_wrapped` and deletes all supplier credentials, making any residual ciphertext undecryptable.
-- `/api/*` requests are authenticated with **App Bridge session tokens** (JWT signature verified by `shopify.session.decodeSessionToken`; audience and `*.myshopify.com` destination checked in `console/session.ts`).
+- `/api/*` requests are authenticated with **App Bridge session tokens**: JWT signature verified by `shopify.session.decodeSessionToken`, then `console/session.ts` requires the `aud` claim to equal the app's client ID (a token *without* an `aud` claim is rejected) and the destination to be a `*.myshopify.com` host.
 - Token-exchange failures are masked as a generic 401 so OAuth grant internals are never echoed to the browser.
+- Console API bodies are **validated server-side** (`src/validate.ts`) before persisting: gate values must be finite numbers in sane ranges, `relevance` must be a known mode, and collection-map handles/tags must be lowercase slugs. Invalid payloads get a `400` with a specific message; unknown fields are stripped.
 - **Tenant isolation is enforced architecturally**: every D1 access goes through `TenantStore`, which is constructed with a shop domain and binds it into every query. A guard test (`tests/guard.test.ts`) fails the build if any other module calls `prepare`/`exec`/`batch` directly.
 
 ### Data model (`migrations/0001_init.sql`)
@@ -102,11 +105,11 @@ Per-tenant filters applied to supplier candidates (defaults in `types.ts`):
 | `GET` | `/app` | — | Embedded merchant console (App Bridge v4 page) |
 | `POST` | `/api/status` | Session token | CJ connection state + current config |
 | `POST` | `/api/connect-cj` | Session token | Validate a CJ API key against CJ's auth endpoint, then store it sealed |
-| `POST` | `/api/gates` | Session token | Save quality gates |
-| `POST` | `/api/collections` | Session token | Save the collection map |
+| `POST` | `/api/gates` | Session token | Save quality gates (+ optional `target`); invalid bodies → `400` |
+| `POST` | `/api/collections` | Session token | Replace the collection map; invalid bodies → `400` |
 | `POST` | `/webhooks/uninstall` | Shopify HMAC | Mark tenant uninstalled, purge secrets |
 
-The console page (`src/console/page.ts`) is deliberately a single dependency-free HTML response. Notes that matter if you touch it: App Bridge is loaded **without SRI** (it's evergreen — a hash would break on Shopify's next ship); the palette is **dark-first** to match Shopify admin; and `alert()`/`confirm()` are silently blocked in the admin iframe, so all feedback must be inline DOM writes.
+The console page (`src/console/page.ts`) is deliberately a single dependency-free HTML response covering the full configuration surface: CJ connection, all four quality gates, the target count, and a collection-map editor. Notes that matter if you touch it: App Bridge is loaded **without SRI** (it's evergreen — a hash would break on Shopify's next ship); the palette is **dark-first** to match Shopify admin, with every CSS token mirrored in the light media query; and `alert()`/`confirm()` are silently blocked in the admin iframe, so all feedback must be inline DOM writes.
 
 ## Development
 
@@ -135,7 +138,7 @@ npm run dev             # wrangler dev
 | Command | What it does |
 |---|---|
 | `npm run dev` | Local dev server (`wrangler dev`) |
-| `npm test` | Run the Vitest suite inside workerd (22 tests) |
+| `npm test` | Run the Vitest suite inside workerd (53 tests) |
 | `npm run typecheck` | `tsc --noEmit` (strict mode) |
 | `npm run migrate:local` / `migrate:remote` | Apply D1 migrations |
 | `npm run deploy` | Deploy to Cloudflare |
@@ -155,9 +158,6 @@ wrangler secret put PAWSCOUT_MASTER_KEY
 
 Tests run in real workerd via `@cloudflare/vitest-pool-workers`, with migrations from `migrations/` applied to an in-memory D1 before each suite (see `vitest.config.ts` — the base64 key there is a test-only KEK, not a secret). External boundaries (Shopify token exchange, CJ auth) are injected as function parameters, so handlers are unit-tested without network access.
 
-## Known gaps / roadmap
+## Roadmap
 
-- **Uninstall webhook registration** is not yet wired into the install flow (`src/auth/callback.ts` notes the omission) — the `/webhooks/uninstall` handler exists and is HMAC-validated, but the webhook must currently be registered out-of-band (Partner Dashboard / app config).
-- The console UI currently exposes only the popularity-floor gate; price band, relevance, and the collection-map editor are API-complete but not yet surfaced in the page.
-- `/api/gates` and `/api/collections` trust the request body shape; server-side validation of gate ranges and map entries is still to be added.
 - Product sourcing/population itself (querying CJ, creating products, tagging into collections) is the next stage — this repo currently covers install, credential vaulting, and configuration.
