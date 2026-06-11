@@ -11,9 +11,14 @@ export async function persistInstall(
   session: { shop: string; accessToken: string; scope: string },
   registerWebhook?: RegisterWebhook
 ): Promise<void> {
-  const dekWrapped = await vault.newTenantDek();
-  const accessTokenEnc = await vault.seal(dekWrapped, session.accessToken);
   const store = new TenantStore(db, session.shop);
+  // Re-auths/reinstalls MUST reuse the existing DEK: minting a fresh one would
+  // orphan every secret sealed under the old DEK (e.g. the CJ key). Only a
+  // first install — or a post-uninstall wipe, which empties dek_wrapped —
+  // gets a new DEK.
+  const existing = await store.getTenant();
+  const dekWrapped = existing?.dek_wrapped ? existing.dek_wrapped : await vault.newTenantDek();
+  const accessTokenEnc = await vault.seal(dekWrapped, session.accessToken);
   await store.upsertTenant({ accessTokenEnc, dekWrapped, scopes: session.scope });
 
   // Seed config only if absent (don't clobber a reinstall's settings).

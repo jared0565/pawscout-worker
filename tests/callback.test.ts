@@ -38,4 +38,35 @@ describe('persistInstall', () => {
     const tenant = await new TenantStore(env.DB, 'c.myshopify.com').getTenant();
     expect(await vault.open(tenant!.dek_wrapped, tenant!.access_token_enc)).toBe('shpat_y');
   });
+
+  it('reinstall reuses the DEK so sealed supplier credentials survive re-auth', async () => {
+    const vault = await Vault.fromMasterKey(env.PAWSCOUT_MASTER_KEY);
+    await persistInstall(env.DB, vault, { shop: 'd.myshopify.com', accessToken: 'tok1', scope: 's' });
+    const store = new TenantStore(env.DB, 'd.myshopify.com');
+    const before = await store.getTenant();
+    await store.putSupplierCredential('cj', await vault.seal(before!.dek_wrapped, 'cj-key'), 'cj');
+
+    // Re-auth (e.g. scope update): must NOT rotate the DEK.
+    await persistInstall(env.DB, vault, { shop: 'd.myshopify.com', accessToken: 'tok2', scope: 's2' });
+
+    const after = await store.getTenant();
+    expect(after!.dek_wrapped).toBe(before!.dek_wrapped);
+    expect(await vault.open(after!.dek_wrapped, after!.access_token_enc)).toBe('tok2'); // fresh token sealed
+    const cred = await store.getSupplierCredential('cj');
+    expect(await vault.open(after!.dek_wrapped, cred!.api_key_enc)).toBe('cj-key'); // still opens
+  });
+
+  it('a wiped tenant (post-uninstall) gets a brand-new DEK on reinstall', async () => {
+    const vault = await Vault.fromMasterKey(env.PAWSCOUT_MASTER_KEY);
+    await persistInstall(env.DB, vault, { shop: 'e.myshopify.com', accessToken: 'tok1', scope: 's' });
+    const store = new TenantStore(env.DB, 'e.myshopify.com');
+    const before = await store.getTenant();
+    await store.deleteAllSecrets(); // uninstall crypto-shred
+
+    await persistInstall(env.DB, vault, { shop: 'e.myshopify.com', accessToken: 'tok2', scope: 's' });
+    const after = await store.getTenant();
+    expect(after!.dek_wrapped).not.toBe('');
+    expect(after!.dek_wrapped).not.toBe(before!.dek_wrapped);
+    expect(await vault.open(after!.dek_wrapped, after!.access_token_enc)).toBe('tok2');
+  });
 });
