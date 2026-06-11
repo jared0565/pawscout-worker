@@ -7,6 +7,10 @@ routes = [
   { pattern = "pawscout.activepaw.co.uk", custom_domain = true }
 ]
 
+# Daily maintenance: cache retention purge, 30-day performance cull, demand-driven refill.
+[triggers]
+crons = ["17 4 * * *"]
+
 [[d1_databases]]
 binding = "DB"
 database_name = "pawscout"
