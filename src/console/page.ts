@@ -60,20 +60,23 @@ export function consolePage(apiKey: string): Response {
     border-radius:50%;background:var(--accent);color:var(--accent-ink);font-size:12px;font-weight:600;flex:0 0 auto;
   }
   label{display:block;font-weight:550;color:var(--ink);margin:0 0 6px}
-  input[type=text],input[type=number]{
+  input[type=text],input[type=number],select{
     width:100%; padding:9px 11px; border:1px solid var(--field-border); border-radius:8px;
     background:var(--field); color:var(--ink); font-size:14px; font-family:inherit;
   }
   input::placeholder{color:#8a8d91}
-  input:focus{outline:2px solid var(--accent);outline-offset:1px;border-color:var(--accent)}
+  input:focus,select:focus{outline:2px solid var(--accent);outline-offset:1px;border-color:var(--accent)}
   .row{display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap}
-  .row .grow{flex:1 1 220px}
+  .row .grow{flex:1 1 160px}
+  .row+.row{margin-top:10px}
   button{
     padding:9px 16px; border:0; border-radius:8px; background:var(--accent); color:var(--accent-ink);
     font-size:14px; font-weight:600; cursor:pointer; font-family:inherit; white-space:nowrap;
   }
   button:hover{filter:brightness(.94)}
   button:disabled{opacity:.55;cursor:default}
+  button.ghost{background:transparent;color:var(--ink);border:1px solid var(--field-border)}
+  button.ghost:hover{filter:none;background:var(--code-bg)}
   .msg{margin:10px 0 0;font-size:13px;min-height:18px}
   .badge{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:999px;font-size:12px;font-weight:600}
   .badge.ok{background:var(--ok-bg);color:var(--ok-ink)}
@@ -114,9 +117,42 @@ export function consolePage(apiKey: string): Response {
         <label for="pf">Popularity floor</label>
         <input id="pf" type="number" value="50" min="0">
       </div>
+      <div class="grow">
+        <label for="pmin">Price min ($)</label>
+        <input id="pmin" type="number" value="5" min="0" step="0.01">
+      </div>
+      <div class="grow">
+        <label for="pmax">Price max ($)</label>
+        <input id="pmax" type="number" value="80" min="0" step="0.01">
+      </div>
+    </div>
+    <div class="row">
+      <div class="grow">
+        <label for="rel">Relevance</label>
+        <select id="rel">
+          <option value="loose">Loose — any keyword match</option>
+          <option value="title" selected>Title — keyword in title</option>
+          <option value="strict">Strict — all keywords in title</option>
+        </select>
+      </div>
+      <div class="grow">
+        <label for="tgt">Target per collection</label>
+        <input id="tgt" type="number" value="16" min="1" max="200" step="1">
+      </div>
       <button onclick="saveGates()">Save gates</button>
     </div>
     <p id="gatesmsg" class="msg muted"></p>
+  </section>
+
+  <section class="card">
+    <h2><span class="step">3</span> Collection map</h2>
+    <p class="sub" style="margin:0 0 12px">Map each storefront collection handle to the supplier tag that fills it. Lowercase letters, digits and hyphens only.</p>
+    <div id="maprows"></div>
+    <div class="row">
+      <button class="ghost" type="button" onclick="addMapRow('','')">Add mapping</button>
+      <button type="button" onclick="saveCollections()">Save collections</button>
+    </div>
+    <p id="mapmsg" class="msg muted"></p>
   </section>
 
   <section class="card">
@@ -150,10 +186,41 @@ function renderStatus(s){
     : '<li class="muted">No collections mapped</li>';
   el('status').innerHTML='<dl class="kv">'+rows+'</dl><hr><div class="muted" style="font-weight:550;color:var(--ink)">Collection map</div><ul class="cols">'+cols+'</ul>';
 }
+// Forms are populated from the server exactly once — refresh() after a save
+// must not clobber fields the merchant is still editing.
+var formsPopulated=false;
+function populateForms(s){
+  if(formsPopulated) return; formsPopulated=true;
+  var g=s.gates||{};
+  if(g.popularityFloor!=null) el('pf').value=g.popularityFloor;
+  if(g.priceMin!=null) el('pmin').value=g.priceMin;
+  if(g.priceMax!=null) el('pmax').value=g.priceMax;
+  if(g.relevance) el('rel').value=g.relevance;
+  if(s.target!=null) el('tgt').value=s.target;
+  var cm=s.collectionMap||{};
+  el('maprows').textContent='';
+  Object.keys(cm).forEach(function(k){ var v=cm[k]||{}; addMapRow(v.handle||k, v.tag||''); });
+}
+function addMapRow(handle,tag){
+  var row=document.createElement('div'); row.className='row maprow';
+  function field(ph,val){
+    var d=document.createElement('div'); d.className='grow';
+    var i=document.createElement('input'); i.type='text'; i.placeholder=ph; i.value=val;
+    i.spellcheck=false; i.autocomplete='off';
+    d.appendChild(i); row.appendChild(d); return i;
+  }
+  field('collection handle (e.g. pet-toys)',handle);
+  field('supplier tag (e.g. cj-cat-pet-toys)',tag);
+  var rm=document.createElement('button'); rm.className='ghost'; rm.type='button'; rm.textContent='Remove';
+  rm.onclick=function(){ row.remove(); };
+  row.appendChild(rm);
+  el('maprows').appendChild(row);
+}
 async function refresh(){
   try{
     var s=await api('/status');
     renderStatus(s);
+    populateForms(s);
     setMsg('cjstatus', s.cjConnected?'Connected ✓':'Not connected — enter your CJ API key above.', s.cjConnected?'ok':'muted');
   }catch(e){
     el('status').innerHTML='<p class="msg no">Could not load configuration: '+esc(errText(e))+'</p>';
@@ -174,9 +241,33 @@ async function connectCj(){
 async function saveGates(){
   setMsg('gatesmsg','Saving…','muted');
   try{
-    await api('/gates',{popularityFloor:Number(el('pf').value),priceMin:5,priceMax:80,relevance:'title'});
-    setMsg('gatesmsg','Saved ✓','ok'); refresh();
+    var r=await api('/gates',{
+      popularityFloor:Number(el('pf').value),
+      priceMin:Number(el('pmin').value),
+      priceMax:Number(el('pmax').value),
+      relevance:el('rel').value,
+      target:Number(el('tgt').value)
+    });
+    if(r.ok){ setMsg('gatesmsg','Saved ✓','ok'); refresh(); }
+    else setMsg('gatesmsg','Failed: '+(r.error||'unknown error'),'no');
   }catch(e){ setMsg('gatesmsg','Failed: '+errText(e),'no'); }
+}
+async function saveCollections(){
+  setMsg('mapmsg','Saving…','muted');
+  try{
+    var map={};
+    var rows=el('maprows').querySelectorAll('.maprow');
+    for(var i=0;i<rows.length;i++){
+      var ins=rows[i].querySelectorAll('input');
+      var h=ins[0].value.trim(), t=ins[1].value.trim();
+      if(!h&&!t) continue;
+      if(!h||!t){ setMsg('mapmsg','Each mapping needs both a handle and a tag.','no'); return; }
+      map[h]={handle:h,tag:t};
+    }
+    var r=await api('/collections',map);
+    if(r.ok){ setMsg('mapmsg','Saved ✓','ok'); refresh(); }
+    else setMsg('mapmsg','Failed: '+(r.error||'unknown error'),'no');
+  }catch(e){ setMsg('mapmsg','Failed: '+errText(e),'no'); }
 }
 refresh();
 </script>
