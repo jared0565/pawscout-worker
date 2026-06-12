@@ -448,6 +448,22 @@ Phase 1 (manual, at launch):
       pin CJ's current dispute requirements into this doc when first seen
       in the dashboard.
 
+**Return-window rules (settled 2026-06-12 — policy page must follow):**
+- Change of mind: 14 days from delivery to cancel + 14 to return = the
+  CCR statutory minimum; lawful as-is. No CJ recovery exists for these
+  anyway, so the CJ 30-day window is irrelevant here.
+- Faulty/damaged/wrong item: CANNOT be capped at 14 days. CRA 2015 gives
+  a 30-day right to reject, 6-month fault presumption, multi-year claims.
+  A shorter cap is void AND stating it is a misleading-practice offence.
+- CJ-buffer fix instead: policy ASKS (never bars) prompt reporting —
+  "if your item arrives damaged or incorrect, please contact us within
+  7 days of delivery with photos — this lets us resolve fastest." Framed
+  as the fast path only; include "nothing in this policy affects your
+  statutory rights." Transit damage surfaces at unboxing, so this pulls
+  reports into days 1–3 ≈ 3 weeks of CJ-dispute buffer.
+- Accepted residual: valid fault reported near/after CJ's day-30 window
+  is refunded with no CJ recovery; rare, lives inside the 3% allowance.
+
 Phase 2 (W6 candidate — PawScout returns portal):
 - [ ] `/proxy/return` page (App Proxy HMAC, 200+ok rule): buyer picks
       claim type, uploads against a per-type checklist.
