@@ -133,7 +133,7 @@ export interface CjSearchItem {
   categoryName: string;
 }
 
-export interface CjVariant { vid: string; name: string; sellPriceUsd: number; sku: string }
+export interface CjVariant { vid: string; name: string; sellPriceUsd: number; sku: string; stock?: number }
 
 export interface CjDetail {
   pid: string;
@@ -143,6 +143,19 @@ export interface CjDetail {
   variants: CjVariant[];
   listedNum: number;
   categoryName: string;
+  /** Max stock across variants. 0 = none or unknown (confirm via stockByPid). */
+  stock?: number;
+}
+
+/** CJ exposes variant stock under several names depending on endpoint/era. */
+function parseVariantStock(v: Record<string, unknown>): number | undefined {
+  for (const k of ['variantQuantity', 'storageNum', 'inventoryNum', 'stock']) {
+    if (v[k] != null) {
+      const n = Number(v[k]);
+      if (Number.isFinite(n) && n >= 0) return n;
+    }
+  }
+  return undefined;
 }
 
 /** CJ price fields can be numbers, strings, or ranges like "5.99 -- 12.99" — take the first number. */
@@ -208,8 +221,10 @@ export class CjClient {
       vid: String(v.vid ?? ''),
       name: String(v.variantNameEn ?? v.variantName ?? 'Default'),
       sellPriceUsd: parseCjPrice(v.variantSellPrice ?? v.sellPrice),
-      sku: String(v.variantSku ?? '')
+      sku: String(v.variantSku ?? ''),
+      stock: parseVariantStock(v)
     })).filter((v) => v.vid && v.sellPriceUsd > 0);
+    const known = variants.map((v) => v.stock).filter((s): s is number => s !== undefined);
     return {
       pid: String(p.pid),
       nameEn: String(p.productNameEn ?? ''),
@@ -217,7 +232,21 @@ export class CjClient {
       descriptionHtml: String(p.description ?? ''),
       variants: variants.length ? variants : [{ vid: 'default', name: 'Default', sellPriceUsd: parseCjPrice(p.sellPrice), sku: String(p.productSku ?? '') }],
       listedNum: Number(p.listedNum ?? 0),
-      categoryName: String(p.categoryName ?? '')
+      categoryName: String(p.categoryName ?? ''),
+      stock: known.length ? Math.max(...known) : 0
     };
+  }
+
+  /** Per-variant stock totals from CJ's inventory endpoint (rows are per warehouse area; summed per vid). */
+  async stockByPid(pid: string): Promise<Map<string, number>> {
+    const data = await this.get('/product/stock/queryByPid', { pid });
+    const map = new Map<string, number>();
+    for (const row of Array.isArray(data) ? data : []) {
+      const r = row as Record<string, unknown>;
+      const vid = String(r.vid ?? '');
+      const n = Number(r.storageNum ?? r.num ?? 0);
+      if (vid && Number.isFinite(n) && n > 0) map.set(vid, (map.get(vid) ?? 0) + n);
+    }
+    return map;
   }
 }
