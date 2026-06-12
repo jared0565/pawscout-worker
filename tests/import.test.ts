@@ -46,6 +46,8 @@ function fakeAdmin(calls: Call[], overrides: Record<string, unknown> = {}): Admi
       return { publications: { nodes: [{ id: 'gid://shopify/Publication/9', name: 'Online Store' }] } };
     }
     if (query.includes('publishablePublish')) return { publishablePublish: { userErrors: [] } };
+    if (query.includes('pawscoutLocation')) return { location: { id: 'gid://shopify/Location/1' } };
+    if (query.includes('metafieldsSet')) return { metafieldsSet: { userErrors: [] } };
     if (query.includes('productUpdate')) return { productUpdate: { product: { id: 'gid://shopify/Product/1' }, userErrors: [] } };
     throw new Error(`unexpected query: ${query.slice(0, 40)}`);
   };
@@ -87,6 +89,40 @@ describe('importProduct', () => {
 
     const link = await store.getLink('P1');
     expect(link).toMatchObject({ state: 'imported', shopify_product_id: 'gid://shopify/Product/1', handle: 'dog-toy-rope', category: 'pet-toys' });
+  });
+
+  it('creates tracked DENY inventory at the primary location when stock is known', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const calls: Call[] = [];
+    const detail = {
+      ...DETAIL,
+      stock: 30,
+      variants: [
+        { vid: 'v1', name: 'Red', sellPriceUsd: 10, sku: 'S1', stock: 30 },
+        { vid: 'v2', name: 'Blue', sellPriceUsd: 12, sku: 'S2', stock: 15 }
+      ]
+    };
+    await importProduct(store, fakeAdmin(calls), CFG, detail);
+
+    const input = calls.find((c) => c.query.includes('productSet'))!.variables!.input as {
+      variants: { inventoryPolicy?: string; inventoryItem?: { tracked: boolean }; inventoryQuantities?: { locationId: string; quantity: number }[] }[];
+    };
+    expect(input.variants[0].inventoryPolicy).toBe('DENY');
+    expect(input.variants[0].inventoryItem).toEqual({ tracked: true });
+    expect(input.variants[0].inventoryQuantities![0]).toMatchObject({ locationId: 'gid://shopify/Location/1', quantity: 30 });
+    expect(input.variants[1].inventoryQuantities![0].quantity).toBe(15);
+    expect(calls.some((c) => c.query.includes('metafieldsSet'))).toBe(true);
+  });
+
+  it('imports untracked when stock is unknown (never tracked-at-zero)', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const calls: Call[] = [];
+    await importProduct(store, fakeAdmin(calls), CFG, DETAIL); // DETAIL has no stock
+    const input = calls.find((c) => c.query.includes('productSet'))!.variables!.input as {
+      variants: { inventoryPolicy?: string }[];
+    };
+    expect(input.variants[0].inventoryPolicy).toBeUndefined();
+    expect(calls.some((c) => c.query.includes('pawscoutLocation'))).toBe(false);
   });
 
   it('marks the link failed when Shopify rejects the product, without throwing', async () => {

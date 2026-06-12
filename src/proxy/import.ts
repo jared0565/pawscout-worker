@@ -3,6 +3,7 @@ import type { CjClient, CjDetail } from '../cj';
 import type { TenantStore } from '../tenant-store';
 import type { TenantConfig } from '../types';
 import { retailPriceGbp } from '../pricing';
+import { getPrimaryLocationId, setSupplierMetafields, MAX_TRACKED_QTY } from './inventory';
 
 export const IMPORT_TAG = 'cj-import';
 const MAX_IMAGES = 8;
@@ -168,6 +169,13 @@ export async function importProduct(
     const variants = dedupeVariantNames(detail.variants);
     const multi = variants.length > 1;
     const optionName = multi ? 'Style' : 'Title';
+
+    // W2: tracked inventory with policy DENY — Shopify itself blocks orders
+    // beyond last-known CJ stock. Unknown stock (or no location) imports
+    // untracked rather than tracked-at-zero, which would be unbuyable.
+    const productStock = detail.stock ?? 0;
+    const locationId = productStock > 0 ? await getPrimaryLocationId(admin) : null;
+
     const input = {
       title: detail.nameEn,
       descriptionHtml: detail.descriptionHtml,
@@ -178,7 +186,18 @@ export async function importProduct(
       variants: variants.map((v) => ({
         optionValues: [{ optionName, name: multi ? v.name : 'Default Title' }],
         price: retailPriceGbp(v.sellPriceUsd, cfg.pricing).toFixed(2),
-        sku: v.sku || undefined
+        sku: v.sku || undefined,
+        ...(locationId
+          ? {
+              inventoryPolicy: 'DENY',
+              inventoryItem: { tracked: true },
+              inventoryQuantities: [{
+                locationId,
+                name: 'available',
+                quantity: Math.min(v.stock ?? productStock, MAX_TRACKED_QTY)
+              }]
+            }
+          : {})
       }))
     };
 
@@ -209,6 +228,19 @@ export async function importProduct(
       handle: product.handle,
       category: cat
     });
+
+    // Supplier metafields (the theme's PDP renders these) — best-effort.
+    try {
+      // Import only happens at/above the stock floor (or stock-unknown), so
+      // 'available' is correct here; the daily sync keeps it honest after.
+      await setSupplierMetafields(admin, product.id, {
+        status: 'available',
+        qty: productStock,
+        checkedAt: new Date().toISOString()
+      });
+    } catch (e) {
+      console.warn(`supplier metafields failed for ${detail.pid}: ${(e as Error).message}`);
+    }
   } catch (e) {
     console.warn(`import failed for ${detail.pid}: ${(e as Error).message}`);
     await store.putLink({ cjPid: detail.pid, state: 'failed', category: cat });
