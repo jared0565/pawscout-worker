@@ -5,6 +5,16 @@ import { defaultFetch } from './safe-fetch';
 const CJ_BASE = 'https://developers.cjdropshipping.com/api2.0/v1';
 const CJ_AUTH_URL = `${CJ_BASE}/authentication/getAccessToken`;
 
+// Workers' fetch sends no User-Agent; some gateways throttle UA-less requests.
+const CJ_HEADERS = { 'User-Agent': 'PawScout/1.0 (+https://pawscout.activepaw.co.uk)', Accept: 'application/json' };
+
+/** CJ error responses carry the real reason in the body — keep it. */
+async function httpError(resp: Response): Promise<Error> {
+  let body = '';
+  try { body = (await resp.text()).slice(0, 300); } catch { /* body unavailable */ }
+  return new Error(`CJ HTTP ${resp.status}${body ? ` — ${body}` : ''}`);
+}
+
 // CJ allows roughly one auth refresh per 300s and tokens live ~15 days —
 // never authenticate per request; cache the token and refresh early.
 const REFRESH_COOLDOWN_MS = 300_000;
@@ -16,10 +26,10 @@ export async function validateCjKey(apiKey: string, fetchImpl: typeof fetch = de
   try {
     const resp = await fetchImpl(CJ_AUTH_URL, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...CJ_HEADERS },
       body: JSON.stringify({ apiKey })
     });
-    if (!resp.ok) return { ok: false, error: `CJ auth HTTP ${resp.status}` };
+    if (!resp.ok) return { ok: false, error: (await httpError(resp)).message };
     const data = (await resp.json()) as { result?: boolean; message?: string };
     return data.result ? { ok: true } : { ok: false, error: data.message || 'CJ rejected the key' };
   } catch (e) {
@@ -33,10 +43,10 @@ export async function cjAuthenticate(
 ): Promise<{ token: string; expiresAt: string }> {
   const resp = await fetchImpl(CJ_AUTH_URL, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...CJ_HEADERS },
     body: JSON.stringify({ apiKey })
   });
-  if (!resp.ok) throw new Error(`CJ auth HTTP ${resp.status}`);
+  if (!resp.ok) throw await httpError(resp);
   const data = (await resp.json()) as {
     result?: boolean;
     message?: string;
@@ -127,13 +137,13 @@ export class CjClient {
     // immediately by this call can 429. Back off briefly and retry.
     for (let attempt = 0; ; attempt++) {
       const resp = await this.fetchImpl(`${CJ_BASE}${path}?${qs}`, {
-        headers: { 'CJ-Access-Token': await this.token() }
+        headers: { 'CJ-Access-Token': await this.token(), ...CJ_HEADERS }
       });
       if (resp.status === 429 && attempt < 2) {
         await this.pause(1200 * (attempt + 1));
         continue;
       }
-      if (!resp.ok) throw new Error(`CJ HTTP ${resp.status}`);
+      if (!resp.ok) throw await httpError(resp);
       const data = (await resp.json()) as { result?: boolean; message?: string; data?: unknown };
       if (!data.result) throw new Error(data.message || 'CJ request failed');
       return data.data;
