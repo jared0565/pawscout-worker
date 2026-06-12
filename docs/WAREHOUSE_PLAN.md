@@ -342,7 +342,8 @@ to mechanical-gates behavior with zero errors; console shows model + 30-day cost
       the 2.5× rule from current CJ costs (e.g. £63.40→£17.99 paw cleaner,
       £303.32→£232.99 grooming table, every price now .99). Verified in
       Shopify.
-- [x] **RESOLVED (pending live verify): CJ stock endpoint renamed.**
+- [x] **RESOLVED + LIVE-VERIFIED 2026-06-12 19:19 UTC: CJ stock endpoint
+      renamed.**
       `/product/stock/queryByPid` → "Interface not found"; the live
       endpoint is **`/product/stock/getInventoryByPid`** (per-warehouse
       rows: areaEn/countryCode/totalInventoryNum — parser handles both
@@ -355,6 +356,12 @@ to mechanical-gates behavior with zero errors; console shows model + 30-day cost
       (bot-blocked for agents; read via a GitHub docs mirror + user's
       browser). While it was broken: quantity sync safely left quantities
       alone; replenishment admissions were refused (recovers tonight).
+      Live verification: 22/38 products fully synced (real quantities
+      capped 999/variant, supplier.* metafields stamped, razor comb now
+      tracked w/ 812 units); 16 still stock-unknown via BOTH routes this
+      run (left safely untouched — likely CJ rate-limit flakiness or
+      missing CJ inventory records; nightly sync retries, escalate to CJ
+      dashboard if any stay unknown for days). No product zeroed.
 
 ## 7a-ii. STRATEGY DECISION — shipping display, origin choice, returns
 ## (user-raised 2026-06-12; recommendation delivered same day; user
