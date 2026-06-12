@@ -336,6 +336,26 @@ to mechanical-gates behavior with zero errors; console shows model + 30-day cost
       pid 2007377705492574210 refused by the live stock floor (working as
       designed).
 
+## 7a-ii. OPEN STRATEGY QUESTION (user-raised 2026-06-12, answer pending)
+
+Shipping/pricing/returns strategy review requested. The user's framing:
+- Option under consideration: show PRODUCT price only in the shop; surface
+  shipping cost/time transparently on the PDP instead of baking freight into
+  the retail price (the current backlog plan bakes it in).
+- Rationale: with multiple CJ "From" origins, buyers could CHOOSE origin —
+  speed-sensitive buyers pick the near (pricier/faster) origin; price-
+  sensitive buyers pick the cheap (slower) one.
+- Also requested: factor RETURNS POLICY economics into net profit (the
+  current 17% model carries a flat 3% refunds line; dropship returns to CJ
+  are usually not economical — common practice is refund-without-return,
+  which changes the math).
+- Deliverable: a recommendation comparing (a) freight-in-price (backlog
+  item above), (b) product price + separate shipping at checkout, (c) hybrid
+  (free-over-threshold), each against UK buyer expectations, Shopify
+  shipping-rate mechanics, conversion impact, and net-margin protection;
+  plus a returns policy draft. NOT yet answered — pick this up next session
+  if interrupted.
+
 ## 7b. Phase W5 — Email marketing via Resend (designed, not yet scheduled)
 
 The user has a Resend account. Newsletter signups currently post through the
