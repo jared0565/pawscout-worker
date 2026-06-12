@@ -534,6 +534,15 @@ Pipeline:
       N days → PS emails the buyer an honest status update BEFORE they
       ask (biggest dropship trust differentiator). Confirm CJ neutral/
       no-logo packaging per order.
+- [ ] F8. Mistype protection (decided 2026-06-12): NO pre-payment
+      confirmation modal — checkout UI is Plus-only AND interstitials at
+      Pay Now are conversion poison (reflexive box-ticking catches no
+      typos). Instead: (a) Shopify checkout's native address autocomplete/
+      validation catches errors at entry; (b) customize the order-
+      confirmation EMAIL template (all plans) with a prominent "double-
+      check your delivery address — reply within 60 minutes to correct"
+      block, pairing with the F3 grace window; (c) F2 validation holds
+      CJ-unformattable addresses for proactive buyer contact.
 - [ ] HUMAN GATES (initial): first ~20 orders one-click approved in
       console before CJ submission; permanent manual review for fraud-
       flagged orders and orders > £100. Relax via config flag later.
