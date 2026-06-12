@@ -26,9 +26,11 @@
 
 **Open items predating W1:**
 
-- [ ] Verify the CJ key has been re-entered in the console *after* the DEK-reuse
-      fix was deployed (the original key was orphaned by a DEK rotation bug,
-      fixed in `fix(auth): reinstalls reuse the tenant DEK`).
+- [x] CJ key re-entered after the DEK-reuse fix (2026-06-11 23:15Z, validated;
+      CJ token minted and cached, expires 2026-12-08).
+- [ ] Deploy the CJ egress relay (`relay/` on Fly.io) and set worker secrets
+      `CJ_RELAY_URL` + `CJ_RELAY_TOKEN` — direct Worker→CJ calls 429
+      (see known traps: "one ip limit 3 users").
 - [ ] Verify end-to-end: `https://activepaw.co.uk/apps/pawscout/search?q=dog+toy`
       returns `{"ok":true,...}`.
 
@@ -302,3 +304,5 @@ Verify: `https://activepaw.co.uk/apps/pawscout/search?q=dog+toy` → `{"ok":true
 | `Decryption failed … AES-GCM` | Secret sealed under a rotated DEK. Reinstalls must reuse DEK (fixed); if it recurs, the credential is unrecoverable — delete row, re-enter key |
 | CJ auth failures right after connecting the key | CJ allows 1 auth per 300s and connect-validation consumes one; wait 5 min |
 | Worker 404 on `/proxy/*` | Old build deployed — `git pull && npm run deploy` |
+| `CJ HTTP 429 — code 1600200 "one ip limit 3 users"` | CJ caps **3 API accounts per source IP**; Workers egress IPs are shared and saturated. NOT a velocity problem — direct Worker→CJ calls can never be reliable. Fix: the `relay/` app on Fly.io with a static egress IP (`fly ips allocate-egress`, $3.60/mo); worker secrets `CJ_RELAY_URL` + `CJ_RELAY_TOKEN` route all CJ traffic through it (`relayedFetch` in `src/cj.ts`). See `relay/README.md` |
+| `Illegal invocation … incorrect this` in prod only | Raw global `fetch` stored as a default param; guard test now forbids it — always use `defaultFetch` from `src/safe-fetch.ts` |

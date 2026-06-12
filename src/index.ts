@@ -12,7 +12,7 @@ import { handleUninstall } from './auth/uninstall';
 import { resolveShopFromToken } from './console/session';
 import { connectCj, saveGates, savePricing, saveCollectionMap, getStatus, getInsights } from './console/routes';
 import { consolePage } from './console/page';
-import { validateCjKey, CjClient, CjTokenManager } from './cj';
+import { validateCjKey, CjClient, CjTokenManager, cjFetchFromEnv } from './cj';
 import { registerUninstallWebhook, type RegisterWebhook } from './webhooks';
 import { validateGatesPayload, validatePricingPayload, validateCollectionMap } from './validate';
 import { verifyAppProxy } from './proxy/verify';
@@ -69,7 +69,7 @@ app.post('/api/connect-cj', async (c) => {
   const s = await shopOf(c); if (typeof s !== 'string') return s;
   const { apiKey } = await c.req.json<{ apiKey: string }>();
   const vault = await Vault.fromMasterKey(c.env.PAWSCOUT_MASTER_KEY);
-  return c.json(await connectCj(c.env.DB, vault, s, apiKey, (k) => validateCjKey(k)));
+  return c.json(await connectCj(c.env.DB, vault, s, apiKey, (k) => validateCjKey(k, cjFetchFromEnv(c.env))));
 });
 app.post('/api/gates', async (c) => {
   const s = await shopOf(c); if (typeof s !== 'string') return s;
@@ -122,9 +122,10 @@ async function proxyCtx(c: Context<{ Bindings: Env }>): Promise<ProxyCtx | Respo
   return { store, cfg, tenant, vault };
 }
 
-function cjFor(p: ProxyCtx): CjClient {
-  const tokens = new CjTokenManager(p.store, p.vault);
-  return new CjClient(() => tokens.getToken());
+function cjFor(env: Env, p: ProxyCtx): CjClient {
+  const f = cjFetchFromEnv(env);
+  const tokens = new CjTokenManager(p.store, p.vault, f);
+  return new CjClient(() => tokens.getToken(), f);
 }
 
 const PID_RE = /^[\w-]{1,64}$/;
@@ -135,7 +136,7 @@ app.get('/proxy/search', async (c) => {
   const have = Math.max(0, Number(c.req.query('have')) || 0);
   const limit = Math.min(Math.max(1, Number(c.req.query('limit')) || 12), 12);
   try {
-    const products = await searchBackfill(p.store, cjFor(p), p.cfg, q, have, limit);
+    const products = await searchBackfill(p.store, cjFor(c.env, p), p.cfg, q, have, limit);
     return c.json({ ok: true, products });
   } catch (e) {
     const detail = (e as Error).message; // CJ/auth failure reasons — never secret-bearing
@@ -151,7 +152,7 @@ app.get('/proxy/product', async (c) => {
   const pid = (c.req.query('pid') ?? '').trim();
   if (!PID_RE.test(pid)) return c.json({ ok: false, error: 'Bad pid' });
   try {
-    const detail = await getCachedDetail(p.store, cjFor(p), pid);
+    const detail = await getCachedDetail(p.store, cjFor(c.env, p), pid);
     if (!detail) return c.json({ ok: false, error: 'Product unavailable' });
 
     let link = await p.store.getLink(pid);

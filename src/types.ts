@@ -5,6 +5,10 @@ export interface Env {
   SHOPIFY_APP_URL: string;
   SHOPIFY_SCOPES: string;
   PAWSCOUT_MASTER_KEY: string; // base64, 32 bytes
+  // CJ egress relay (relay/ on Fly.io) — optional: absent = direct CJ calls
+  // (fine locally, 429s in production: CJ caps 3 API users per source IP).
+  CJ_RELAY_URL?: string;
+  CJ_RELAY_TOKEN?: string;
 }
 
 export interface TenantRow {

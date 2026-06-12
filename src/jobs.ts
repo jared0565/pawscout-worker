@@ -1,5 +1,5 @@
 import { Vault } from './vault';
-import { CjClient, CjTokenManager, type CjSearchItem } from './cj';
+import { CjClient, CjTokenManager, cjFetchFromEnv, type CjSearchItem } from './cj';
 import { makeAdminGraphql, type AdminGraphql } from './shopify-admin';
 import { TenantStore, listActiveShops, purgeExpiredSearchCache, trimOldLogs } from './tenant-store';
 import { passesGates, normalizeKeyword, CACHE_TTL_DAYS } from './proxy/search';
@@ -129,8 +129,9 @@ export async function runDailyMaintenance(env: Env): Promise<void> {
       const admin = makeAdminGraphql(shop, accessToken);
       await cullStaleProducts(store, admin);
       if (await store.getSupplierCredential('cj')) {
-        const tokens = new CjTokenManager(store, vault);
-        const cj = new CjClient(() => tokens.getToken());
+        const f = cjFetchFromEnv(env);
+        const tokens = new CjTokenManager(store, vault, f);
+        const cj = new CjClient(() => tokens.getToken(), f);
         await refillCollections(store, cj, admin, cfg);
       }
     } catch (e) {

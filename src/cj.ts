@@ -2,8 +2,36 @@ import type { Vault } from './vault';
 import type { TenantStore } from './tenant-store';
 import { defaultFetch } from './safe-fetch';
 
-const CJ_BASE = 'https://developers.cjdropshipping.com/api2.0/v1';
+const CJ_ORIGIN = 'https://developers.cjdropshipping.com';
+const CJ_BASE = `${CJ_ORIGIN}/api2.0/v1`;
 const CJ_AUTH_URL = `${CJ_BASE}/authentication/getAccessToken`;
+
+export interface CjRelay { url: string; token: string }
+
+/**
+ * Route CJ traffic through the dedicated-egress relay (relay/). CJ allows at
+ * most 3 API users per source IP and Workers egress IPs are shared, so direct
+ * calls 429 with code 1600200 regardless of our own rate. Returns a fetch that
+ * rewrites CJ origins to the relay and authenticates with the shared token;
+ * non-CJ URLs pass through untouched.
+ */
+export function relayedFetch(relay: CjRelay, base: typeof fetch = defaultFetch): typeof fetch {
+  return ((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+    if (!url.startsWith(CJ_ORIGIN)) return base(input as Parameters<typeof fetch>[0], init);
+    const rewritten = relay.url.replace(/\/+$/, '') + '/cj' + url.slice(CJ_ORIGIN.length);
+    const headers = new Headers(init?.headers);
+    headers.set('X-Relay-Token', relay.token);
+    return base(rewritten, { ...init, headers });
+  }) as typeof fetch;
+}
+
+/** The fetch all CJ calls should use: relayed when configured, direct otherwise (local dev). */
+export function cjFetchFromEnv(env: { CJ_RELAY_URL?: string; CJ_RELAY_TOKEN?: string }): typeof fetch {
+  return env.CJ_RELAY_URL && env.CJ_RELAY_TOKEN
+    ? relayedFetch({ url: env.CJ_RELAY_URL, token: env.CJ_RELAY_TOKEN })
+    : defaultFetch;
+}
 
 // Workers' fetch sends no User-Agent; some gateways throttle UA-less requests.
 const CJ_HEADERS = { 'User-Agent': 'PawScout/1.0 (+https://pawscout.activepaw.co.uk)', Accept: 'application/json' };
