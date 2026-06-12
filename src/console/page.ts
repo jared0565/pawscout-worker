@@ -115,7 +115,7 @@ export function consolePage(apiKey: string): Response {
     <div class="row">
       <div class="grow">
         <label for="pf">Popularity floor</label>
-        <input id="pf" type="number" value="50" min="0">
+        <input id="pf" type="number" value="1" min="0">
       </div>
       <div class="grow">
         <label for="pmin">Price min ($)</label>

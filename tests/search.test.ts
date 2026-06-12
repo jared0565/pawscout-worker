@@ -39,7 +39,7 @@ describe('searchBackfill', () => {
     const store = new TenantStore(env.DB, 'a.myshopify.com');
     const items = [
       item({ pid: 'ok' }),
-      item({ pid: 'unpopular', listedNum: 5 }),
+      item({ pid: 'unpopular', listedNum: 0 }),
       item({ pid: 'pricey', sellPriceUsd: 500 }),
       item({ pid: 'offtopic', nameEn: 'Garden Hose' })
     ];

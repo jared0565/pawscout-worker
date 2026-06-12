@@ -3,6 +3,7 @@ import { env, applyD1Migrations } from 'cloudflare:test';
 import { persistInstall } from '../src/auth/callback';
 import { Vault } from '../src/vault';
 import { TenantStore } from '../src/tenant-store';
+import { DEFAULT_GATES } from '../src/types';
 
 beforeEach(async () => { await applyD1Migrations(env.DB, env.TEST_MIGRATIONS); });
 
@@ -17,7 +18,7 @@ describe('persistInstall', () => {
     expect(await vault.open(tenant!.dek_wrapped, tenant!.access_token_enc)).toBe('shpat_live');
 
     const cfg = await store.getConfig();
-    expect(cfg?.gates.popularityFloor).toBe(50); // DEFAULT_GATES
+    expect(cfg?.gates).toEqual(DEFAULT_GATES);
   });
 
   it('registers the uninstall webhook with the plaintext token after persisting', async () => {

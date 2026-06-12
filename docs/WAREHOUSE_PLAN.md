@@ -28,11 +28,12 @@
 
 - [x] CJ key re-entered after the DEK-reuse fix (2026-06-11 23:15Z, validated;
       CJ token minted and cached, expires 2026-12-08).
-- [ ] Deploy the CJ egress relay (`relay/` on Fly.io) and set worker secrets
-      `CJ_RELAY_URL` + `CJ_RELAY_TOKEN` — direct Worker→CJ calls 429
-      (see known traps: "one ip limit 3 users").
-- [ ] Verify end-to-end: `https://activepaw.co.uk/apps/pawscout/search?q=dog+toy`
-      returns `{"ok":true,...}`.
+- [x] CJ egress relay deployed (2026-06-12; see Production identifiers) and
+      worker secrets `CJ_RELAY_URL` + `CJ_RELAY_TOKEN` set.
+- [x] End-to-end verified 2026-06-12: search returns `{"ok":true,...}` through
+      proxy → worker → vault → relay → CJ.
+- [ ] Merchant console: set Popularity floor to 1 for the live shop (stored
+      config predates the calibrated default; one click in the console).
 
 **Production identifiers:**
 
@@ -92,6 +93,7 @@ Key invariants (do not violate):
 | LLM provider (W3) | **OpenRouter** (`OPENROUTER_API_KEY` secret) | model flexibility, cost-vs-quality testing |
 | Default LLM model | `anthropic/claude-haiku-4.5` via OpenRouter, per-task override in config | cheap default, swappable |
 | CJ cadence | all CJ work in paced background jobs, 1.1s gap | free tier = 1 req/s; auth 1/300s |
+| popularityFloor default | **1** (was 50) | measured CJ data 2026-06-12: listedNum is small-valued (max 5 in a 40-item sample); LLM curation (W3) is the real quality gate |
 | Retention | warehouse/cache rows 30 days unused; logs 90 days | PS storage promise |
 
 ---

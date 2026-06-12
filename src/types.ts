@@ -48,7 +48,10 @@ export interface TenantConfig {
   target: number;
 }
 
-export const DEFAULT_GATES: Gates = { popularityFloor: 50, priceMin: 5, priceMax: 80, relevance: 'title' };
+// popularityFloor: CJ listedNum is SMALL-VALUED in practice (max ~5 across a
+// typical 40-item search) — it counts listing merchants. 1 = "someone else
+// stocks this"; W3's LLM curation is the real quality gate.
+export const DEFAULT_GATES: Gates = { popularityFloor: 1, priceMin: 5, priceMax: 80, relevance: 'title' };
 export const DEFAULT_PRICING: Pricing = { multiplier: 2.5, floor: 2.2, minMarginGbp: 6, fxUsdToGbp: 0.78, fxBufferPct: 2 };
 // 12 = display cap of the storefront grid (4×3): show what we can sell, never pad.
 export const DEFAULT_TARGET = 12;
