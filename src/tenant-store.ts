@@ -13,6 +13,7 @@ export interface ProductLink {
   handle: string | null;
   category: string | null;
   state: 'ghost' | 'importing' | 'imported' | 'archived' | 'failed';
+  stock_paused: number; // 1 = inventory zeroed because CJ stock fell below floor
   created_at: string;
   updated_at: string;
 }
@@ -244,18 +245,37 @@ export class TenantStore {
       .run();
   }
 
-  /** Imported products older than the grace cutoff with zero qualifying events since the window cutoff. */
+  /**
+   * Imported products older than the grace cutoff with zero qualifying events
+   * since the window cutoff. Stock-paused products are exempt — they couldn't
+   * earn views while unsellable (W2.4).
+   */
   async linksEligibleForArchive(cutoffIso: string): Promise<ProductLink[]> {
     const rs = await this.db
       .prepare(
         `SELECT pl.* FROM product_links pl
-         WHERE pl.shop = ?1 AND pl.state = 'imported' AND pl.created_at < ?2
+         WHERE pl.shop = ?1 AND pl.state = 'imported' AND pl.stock_paused = 0 AND pl.created_at < ?2
            AND NOT EXISTS (
              SELECT 1 FROM product_events pe
              WHERE pe.shop = pl.shop AND pe.cj_pid = pl.cj_pid AND pe.created_at >= ?2
            )`
       )
       .bind(this.shop, cutoffIso)
+      .all<ProductLink>();
+    return rs.results ?? [];
+  }
+
+  async setStockPaused(cjPid: string, paused: boolean): Promise<void> {
+    await this.db
+      .prepare(`UPDATE product_links SET stock_paused = ?3, updated_at = ?4 WHERE shop = ?1 AND cj_pid = ?2`)
+      .bind(this.shop, cjPid, paused ? 1 : 0, new Date().toISOString())
+      .run();
+  }
+
+  async listImportedLinks(limit = 200): Promise<ProductLink[]> {
+    const rs = await this.db
+      .prepare(`SELECT * FROM product_links WHERE shop = ?1 AND state = 'imported' ORDER BY updated_at ASC LIMIT ${Math.min(Math.max(limit, 1), 500)}`)
+      .bind(this.shop)
       .all<ProductLink>();
     return rs.results ?? [];
   }
@@ -313,6 +333,18 @@ export class TenantStore {
          ORDER BY listed_num DESC LIMIT ${Math.min(Math.max(limit, 1), 100)}`
       )
       .bind(this.shop, ...clean.map((t) => `%${t}%`))
+      .all<WarehouseRow>();
+    return rs.results ?? [];
+  }
+
+  /** Available warehouse rows for a category, best (most-listed) first — promotion candidates. */
+  async warehouseByCategory(category: string, limit: number): Promise<WarehouseRow[]> {
+    const rs = await this.db
+      .prepare(
+        `SELECT * FROM warehouse_products WHERE shop = ?1 AND category = ?2 AND status = 'available'
+         ORDER BY listed_num DESC LIMIT ${Math.min(Math.max(limit, 1), 100)}`
+      )
+      .bind(this.shop, category)
       .all<WarehouseRow>();
     return rs.results ?? [];
   }
