@@ -337,6 +337,23 @@ to mechanical-gates behavior with zero errors; console shows model + 30-day cost
       pipeline (pid 2029158917514293249, £13.99, pet-grooming); nail shears
       pid 2007377705492574210 refused by the live stock floor (working as
       designed).
+- [x] **Catalog-wide price realignment EXECUTED 2026-06-12 17:30 UTC** via
+      the console Sync now button: all 37 CJ-linked products repriced to
+      the 2.5× rule from current CJ costs (e.g. £63.40→£17.99 paw cleaner,
+      £303.32→£232.99 grooming table, every price now .99). Verified in
+      Shopify.
+- [ ] **OPEN BLOCKER: CJ stock endpoint `/product/stock/queryByPid`
+      returns "Interface not found"** (worked at admission time; broke at
+      some point — CJ-side). Effects while broken: (a) quantity sync
+      leaves quantities untouched (SAFE by design — never zero on
+      unknown); (b) supplier.* metafields skipped; (c) **warehouse
+      replenishment admissions are refused** (stock-floor check can't
+      pass) — promotions from existing warehouse still work
+      (unknown→proceed). CJ errors now carry numeric code + path. Next:
+      read the code via `npx wrangler tail` during a sync, and/or check
+      CJ's docs (product.html → Inquiry inventory) for a renamed path —
+      browser only, the docs site bot-blocks automation. Candidate
+      fallbacks if renamed: queryByVid / queryBySku per variant.
 
 ## 7a-ii. STRATEGY DECISION — shipping display, origin choice, returns
 ## (user-raised 2026-06-12; recommendation delivered same day; user
