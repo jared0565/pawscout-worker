@@ -498,6 +498,51 @@ PREREQUISITES (W6 depends on the order-fulfilment phase):
 - [ ] Shopify protected-customer-data approval (read_orders) — same
       application the W4 orders/ROAS work needs; one approval covers both.
 
+## 7a-iv. Phase W-FULFIL — order→CJ fulfilment automation (designed
+## 2026-06-12; runs BEFORE W6 claims, which consumes its order mapping)
+
+Money-leg corrections vs the naive design (decided with user):
+- Customer payment = Shopify Payments → bank payout (PayPal optional as a
+  buyer-facing wallet only). Receipt = Shopify's automatic order
+  confirmation email — nothing to build.
+- Paying CJ: NOT per-order PayPal automation. Use the CJ WALLET: user
+  tops up balance (weekly, via PayPal/card), PS pays each order from
+  balance via API (`pay/payBalance`). PS alerts (console + email) when
+  balance < ~1 week of expected COGS.
+
+Pipeline:
+- [ ] F1. `orders/paid` webhook → PS (HMAC verify, same infra as
+      uninstall webhook). Needs protected-customer-data approval.
+- [ ] F2. Pre-spend verification: all line items map to CJ pids in
+      product_links; Shopify fraud risk not HIGH; address complete and
+      CJ-formattable; CJ stock ≥ floor at chosen origin; margin sanity —
+      amount paid still clears floor vs CURRENT CJ price. Any failure →
+      console hold queue, never a silent CJ order.
+- [ ] F3. Grace window: wait ~60 min after payment before CJ submission
+      (buyer edits/cancellations are cheap pre-CJ, expensive after).
+      Surface "edit or cancel within an hour" in the confirmation flow.
+- [ ] F4. createOrderV2 at preferred origin (UK warehouse when stocked) +
+      payBalance; store shopifyOrderId↔cjOrderId in D1 (new tables/
+      migration). CJ order confirmation recorded as receipt.
+- [ ] F5. Status poll (cron, more frequent than nightly): when tracking
+      number appears → Shopify fulfilmentCreate WITH tracking → Shopify
+      auto-sends shipping email + live order-status page (native).
+- [ ] F6. Delivery watch: CJ tracking milestones; DELIVERED starts the
+      returns/dispute clock; delivered+5d → review-request email (W5
+      Resend pipeline).
+- [ ] F7. Trust layer: proactive delay alert — no tracking movement for
+      N days → PS emails the buyer an honest status update BEFORE they
+      ask (biggest dropship trust differentiator). Confirm CJ neutral/
+      no-logo packaging per order.
+- [ ] HUMAN GATES (initial): first ~20 orders one-click approved in
+      console before CJ submission; permanent manual review for fraud-
+      flagged orders and orders > £100. Relax via config flag later.
+
+Prereqs: pricing finalized → checkout re-enabled; protected-data approval
+(one application covers W-FULFIL + W6 + W4 ROAS); initial CJ wallet
+top-up (user). Verify at build time: createOrderV2/payBalance exact
+params via relay; CJ no-logo packing flag.
+
 ## 7b. Phase W5 — Email marketing via Resend (designed, not yet scheduled)
 
 The user has a Resend account. Newsletter signups currently post through the
