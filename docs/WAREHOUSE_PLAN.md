@@ -309,6 +309,33 @@ to mechanical-gates behavior with zero errors; console shows model + 30-day cost
 
 ---
 
+## 7a. Backlog — findings from live operation (2026-06-12)
+
+- [ ] **CJ category-browse replenishment.** Field-proven need: 5 keyword
+      searches (~200 items) could not surface grooming scissors — CJ's text
+      search OR-matches single tokens (returned car parts for "grooming
+      scissors kit"). Teach replenish/search to browse CJ's category tree
+      (`product/list` by categoryId, category ids cached) so the warehouse
+      pulls from real categories; LLM curation still scores each candidate.
+- [ ] **Freight-aware pricing + origin warehouse selection.** CJ stocks
+      products in multiple "From" countries (CN main; US/UK/DE regional).
+      Impacts: (a) shipping TIME — UK warehouse 2–4 days vs CN 8–15 days;
+      (b) shipping COST — freight varies by origin+weight and is currently
+      NOT in our landed cost (pricing uses product cost only; the £6 min
+      margin partially shields cheap items). Fix: call CJ freightCalculate
+      at admission/import (cheapest origin with stock ≥ floor, default CN),
+      add freight to landed cost, store chosen origin on the link/warehouse
+      row, and show "Ships from UK" badge when origin is UK (conversion win).
+      Also note: stockByPid currently SUMS stock across all origins.
+- [ ] **Sync should activate inventory tracking on untracked variants**
+      (inventoryItemUpdate tracked:true before inventorySetQuantities) —
+      ghost-click imports whose CJ detail lacked stock import untracked and
+      the sync currently skips them with an error log.
+- [x] Scissors hunt outcome: razor grooming comb imported via ghost-click
+      pipeline (pid 2029158917514293249, £13.99, pet-grooming); nail shears
+      pid 2007377705492574210 refused by the live stock floor (working as
+      designed).
+
 ## 7b. Phase W5 — Email marketing via Resend (designed, not yet scheduled)
 
 The user has a Resend account. Newsletter signups currently post through the
