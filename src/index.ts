@@ -17,7 +17,7 @@ import { registerUninstallWebhook, type RegisterWebhook } from './webhooks';
 import { validateGatesPayload, validatePricingPayload, validateCollectionMap } from './validate';
 import { verifyAppProxy } from './proxy/verify';
 import { searchBackfill } from './proxy/search';
-import { buildPreview, getCachedDetail, importProduct } from './proxy/import';
+import { buildPreview, getDetailPreferWarehouse, confirmAndImport } from './proxy/import';
 import { makeAdminGraphql } from './shopify-admin';
 import { runDailyMaintenance } from './jobs';
 
@@ -152,7 +152,8 @@ app.get('/proxy/product', async (c) => {
   const pid = (c.req.query('pid') ?? '').trim();
   if (!PID_RE.test(pid)) return c.json({ ok: false, error: 'Bad pid' });
   try {
-    const detail = await getCachedDetail(p.store, cjFor(c.env, p), pid);
+    const cj = cjFor(c.env, p);
+    const detail = await getDetailPreferWarehouse(p.store, cj, pid);
     if (!detail) return c.json({ ok: false, error: 'Product unavailable' });
 
     let link = await p.store.getLink(pid);
@@ -160,7 +161,8 @@ app.get('/proxy/product', async (c) => {
       await p.store.putLink({ cjPid: pid, state: 'importing' });
       const accessToken = await p.vault.open(p.tenant.dek_wrapped, p.tenant.access_token_enc);
       const admin = makeAdminGraphql(p.store.shop, accessToken);
-      c.executionCtx.waitUntil(importProduct(p.store, admin, p.cfg, detail));
+      // Background: live stock confirm (the one CJ call near the request path), then import.
+      c.executionCtx.waitUntil(confirmAndImport(p.store, cj, admin, p.cfg, detail));
       link = await p.store.getLink(pid);
     }
     await p.store.recordEvent(pid, 'view');

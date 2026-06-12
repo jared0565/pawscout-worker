@@ -78,6 +78,46 @@ export async function getCachedDetail(store: TenantStore, cj: CjClient, pid: str
   return detail;
 }
 
+/** W1: the warehouse is the primary detail source — zero CJ calls when stocked. */
+export async function getDetailPreferWarehouse(store: TenantStore, cj: CjClient, pid: string): Promise<CjDetail | null> {
+  const row = await store.getWarehouseProduct(pid);
+  if (row) {
+    try { return JSON.parse(row.detail) as CjDetail; } catch { /* corrupt row — fall through */ }
+  }
+  return getCachedDetail(store, cj, pid);
+}
+
+/**
+ * The single CJ call left near the request path: a live stock confirmation
+ * before the (background) import, so we never list something CJ can't fulfil.
+ * Stock-unknown (endpoint failure) proceeds — the W2 daily sync corrects it.
+ */
+export async function confirmAndImport(
+  store: TenantStore,
+  cj: CjClient,
+  admin: AdminGraphql,
+  cfg: TenantConfig,
+  detail: CjDetail,
+  category?: string | null
+): Promise<void> {
+  let live: number | null = null;
+  try {
+    const m = await cj.stockByPid(detail.pid);
+    live = m.size ? Math.max(...m.values()) : 0;
+  } catch {
+    live = null; // unknown — don't block the sale path on a flaky stock endpoint
+  }
+  if (live !== null) {
+    await store.setWarehouseStock(detail.pid, live, live >= cfg.floors.stockFloor ? 'available' : 'low_stock');
+    if (live < cfg.floors.stockFloor) {
+      console.warn(`import blocked for ${detail.pid}: CJ stock ${live} < floor ${cfg.floors.stockFloor}`);
+      await store.putLink({ cjPid: detail.pid, state: 'failed', category: category ?? null });
+      return;
+    }
+  }
+  await importProduct(store, admin, cfg, detail, category);
+}
+
 const PRODUCT_SET = `mutation pawscoutImport($input: ProductSetInput!) {
   productSet(input: $input, synchronous: true) {
     product { id handle }
