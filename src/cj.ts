@@ -158,6 +158,14 @@ function parseVariantStock(v: Record<string, unknown>): number | undefined {
       if (Number.isFinite(n) && n >= 0) return n;
     }
   }
+  // features=enable_inventory shape: per-variant `inventories` rows, one per
+  // country/warehouse. A single origin must be able to fulfil — take the max.
+  if (Array.isArray(v.inventories)) {
+    const totals = (v.inventories as Record<string, unknown>[])
+      .map((r) => Number(r.totalInventory ?? r.totalInventoryNum ?? 0))
+      .filter((n) => Number.isFinite(n) && n >= 0);
+    if (totals.length) return Math.max(...totals);
+  }
   return undefined;
 }
 
@@ -215,7 +223,9 @@ export class CjClient {
   }
 
   async detail(pid: string): Promise<CjDetail | null> {
-    const p = (await this.get('/product/query', { pid })) as Record<string, unknown> | null;
+    // enable_inventory embeds per-variant inventories in the SAME response —
+    // saving the separate stock call that CJ renamed out from under us once.
+    const p = (await this.get('/product/query', { pid, features: 'enable_inventory' })) as Record<string, unknown> | null;
     if (!p?.pid) return null;
     let images: string[] = [];
     const set = p.productImageSet;
@@ -244,16 +254,28 @@ export class CjClient {
     };
   }
 
-  /** Per-variant stock totals from CJ's inventory endpoint (rows are per warehouse area; summed per vid). */
+  /**
+   * Per-variant stock totals from CJ's inventory endpoint.
+   * NB: CJ RENAMED this endpoint (the old /product/stock/queryByPid now
+   * answers "Interface not found"). The new shape returns per-warehouse rows
+   * (areaEn/countryCode/totalInventoryNum) which may or may not carry a vid —
+   * vid rows sum per variant; vid-less rows fold into a product-level '*'
+   * entry (callers take max(values) for product stock; per-vid lookups
+   * simply miss '*' and fall back).
+   */
   async stockByPid(pid: string): Promise<Map<string, number>> {
-    const data = await this.get('/product/stock/queryByPid', { pid });
+    const data = await this.get('/product/stock/getInventoryByPid', { pid });
     const map = new Map<string, number>();
+    let productLevel = 0;
     for (const row of Array.isArray(data) ? data : []) {
       const r = row as Record<string, unknown>;
       const vid = String(r.vid ?? '');
-      const n = Number(r.storageNum ?? r.num ?? 0);
-      if (vid && Number.isFinite(n) && n > 0) map.set(vid, (map.get(vid) ?? 0) + n);
+      const n = Number(r.storageNum ?? r.num ?? r.totalInventoryNum ?? r.totalInventory ?? 0);
+      if (!Number.isFinite(n) || n <= 0) continue;
+      if (vid) map.set(vid, (map.get(vid) ?? 0) + n);
+      else productLevel = Math.max(productLevel, n);
     }
+    if (!map.size && productLevel > 0) map.set('*', productLevel);
     return map;
   }
 }
