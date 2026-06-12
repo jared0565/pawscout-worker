@@ -9,3 +9,4 @@ graphify/
 scripts/graphify_*.py
 pyproject.toml
 
+.env

@@ -187,6 +187,27 @@ export function consolePage(apiKey: string): Response {
   </section>
 
   <section class="card">
+    <h2><span class="step">5</span> AI curation</h2>
+    <p class="sub" style="margin:0 0 12px">Scores supplier candidates and rewrites titles/descriptions at warehouse admission (via OpenRouter). Off = mechanical gates only.</p>
+    <div class="row">
+      <div class="grow">
+        <label for="llmmodel">Model (OpenRouter slug)</label>
+        <input id="llmmodel" type="text" value="anthropic/claude-haiku-4.5" spellcheck="false" autocomplete="off">
+      </div>
+      <div class="grow" style="flex:0 1 140px">
+        <label for="llmthresh">Min score</label>
+        <input id="llmthresh" type="number" value="60" min="0" max="100" step="5">
+      </div>
+      <div class="grow" style="flex:0 1 120px">
+        <label for="llmon">Enabled</label>
+        <select id="llmon"><option value="true" selected>On</option><option value="false">Off</option></select>
+      </div>
+      <button onclick="saveLlm()">Save AI</button>
+    </div>
+    <p id="llmmsg" class="msg muted"></p>
+  </section>
+
+  <section class="card">
     <h2>Search demand — last 30 days</h2>
     <div id="insights"><p class="muted">Loading…</p></div>
   </section>
@@ -240,6 +261,10 @@ function populateForms(s){
   if(p.minMarginGbp!=null) el('pmm').value=p.minMarginGbp;
   if(p.fxUsdToGbp!=null) el('pfx').value=p.fxUsdToGbp;
   if(p.fxBufferPct!=null) el('pfxb').value=p.fxBufferPct;
+  var l=s.llm||{};
+  if(l.model) el('llmmodel').value=l.model;
+  if(l.scoreThreshold!=null) el('llmthresh').value=l.scoreThreshold;
+  if(l.enabled!=null) el('llmon').value=String(l.enabled);
   var cm=s.collectionMap||{};
   el('maprows').textContent='';
   Object.keys(cm).forEach(function(k){ var v=cm[k]||{}; addMapRow(v.handle||k, v.tag||''); });
@@ -290,6 +315,9 @@ async function loadInsights(){
           return '<li><strong>'+esc(k.keyword_norm)+'</strong> <span class="muted">· '+esc(k.searches)+' searches · avg fill</span> <code>'+esc(fill)+'</code></li>';
         }).join('')+'</ul>';
     }
+    if(r&&r.llmSpend&&r.llmSpend.calls>0){
+      html+='<p class="muted" style="margin-top:10px">AI curation: '+esc(r.llmSpend.calls)+' calls · $'+esc(Number(r.llmSpend.costUsd).toFixed(4))+' (30 days)</p>';
+    }
     el('insights').innerHTML=html||'<p class="muted">No storefront searches hit the backfill yet.</p>';
   }catch(e){
     el('insights').innerHTML='<p class="muted">Insights unavailable.</p>';
@@ -333,6 +361,18 @@ async function savePricing(){
     if(r.ok){ setMsg('pricingmsg','Saved ✓','ok'); refresh(); }
     else setMsg('pricingmsg','Failed: '+(r.error||'unknown error'),'no');
   }catch(e){ setMsg('pricingmsg','Failed: '+errText(e),'no'); }
+}
+async function saveLlm(){
+  setMsg('llmmsg','Saving…','muted');
+  try{
+    var r=await api('/llm',{
+      enabled:el('llmon').value==='true',
+      model:el('llmmodel').value.trim(),
+      scoreThreshold:Number(el('llmthresh').value)
+    });
+    if(r.ok){ setMsg('llmmsg','Saved ✓','ok'); refresh(); }
+    else setMsg('llmmsg','Failed: '+(r.error||'unknown error'),'no');
+  }catch(e){ setMsg('llmmsg','Failed: '+errText(e),'no'); }
 }
 async function saveCollections(){
   setMsg('mapmsg','Saving…','muted');
