@@ -148,6 +148,12 @@ export interface CjDetail {
   /** W3 curation audit trail: original CJ title + admission score. */
   originalNameEn?: string;
   llmScore?: number;
+  /** Best stock per origin country (from enable_inventory), e.g. {CN: 1200, GB: 40}. */
+  origins?: Record<string, number>;
+  /** Cheapest freight to GB from the chosen origin, captured at admission/import. */
+  freightUsd?: number;
+  freightDays?: string;
+  origin?: string;
 }
 
 /** CJ exposes variant stock under several names depending on endpoint/era. */
@@ -167,6 +173,36 @@ function parseVariantStock(v: Record<string, unknown>): number | undefined {
     if (totals.length) return Math.max(...totals);
   }
   return undefined;
+}
+
+/** Aggregate per-country stock across variants (best variant per country). */
+function collectOrigins(variants: Record<string, unknown>[]): Record<string, number> | undefined {
+  const origins: Record<string, number> = {};
+  for (const v of variants) {
+    if (!Array.isArray(v.inventories)) continue;
+    for (const r of v.inventories as Record<string, unknown>[]) {
+      const cc = String(r.countryCode ?? '').toUpperCase();
+      const n = Number(r.totalInventory ?? r.totalInventoryNum ?? 0);
+      if (cc && Number.isFinite(n) && n > 0) origins[cc] = Math.max(origins[cc] ?? 0, n);
+    }
+  }
+  return Object.keys(origins).length ? origins : undefined;
+}
+
+/**
+ * Preferred dispatch origin: the UK warehouse when it can genuinely fulfil
+ * (stock ≥ floor) — 2–4 day delivery beats CN's 8–15 every time the margin
+ * allows — otherwise the best-stocked origin, defaulting to CN.
+ */
+export function chooseOrigin(detail: CjDetail, stockFloor: number): string {
+  const o = detail.origins ?? {};
+  if ((o.GB ?? o.UK ?? 0) >= stockFloor) return 'GB';
+  let best = 'CN';
+  let bestQty = o.CN ?? 0;
+  for (const [cc, qty] of Object.entries(o)) {
+    if (qty > bestQty) { best = cc; bestQty = qty; }
+  }
+  return best;
 }
 
 /** CJ price fields can be numbers, strings, or ranges like "5.99 -- 12.99" — take the first number. */
@@ -250,8 +286,52 @@ export class CjClient {
       variants: variants.length ? variants : [{ vid: 'default', name: 'Default', sellPriceUsd: parseCjPrice(p.sellPrice), sku: String(p.productSku ?? '') }],
       listedNum: Number(p.listedNum ?? 0),
       categoryName: String(p.categoryName ?? ''),
-      stock: known.length ? Math.max(...known) : 0
+      stock: known.length ? Math.max(...known) : 0,
+      origins: collectOrigins(Array.isArray(p.variants) ? (p.variants as Record<string, unknown>[]) : [])
     };
+  }
+
+  private async post(path: string, body: unknown): Promise<unknown> {
+    for (let attempt = 0; ; attempt++) {
+      const resp = await this.fetchImpl(`${CJ_BASE}${path}`, {
+        method: 'POST',
+        headers: { 'CJ-Access-Token': await this.token(), 'Content-Type': 'application/json', ...CJ_HEADERS },
+        body: JSON.stringify(body)
+      });
+      if (resp.status === 429 && attempt < 2) {
+        await this.pause(1200 * (attempt + 1));
+        continue;
+      }
+      if (!resp.ok) throw await httpError(resp);
+      const data = (await resp.json()) as { result?: boolean; message?: string; code?: number; data?: unknown };
+      if (!data.result) {
+        throw new Error(`${data.message || 'CJ request failed'}${data.code != null ? ` (CJ code ${data.code}, ${path})` : ''}`);
+      }
+      return data.data;
+    }
+  }
+
+  /**
+   * Cheapest freight quote for one unit of a variant from `fromCountry` to GB.
+   * Used at admission/import to keep the margin floor freight-aware; freight
+   * varies per variant (weight) so the caller passes a representative vid.
+   */
+  async freightEstimate(vid: string, fromCountry = 'CN'): Promise<{ priceUsd: number; days: string; name: string } | null> {
+    const data = await this.post('/logistic/freightCalculate', {
+      startCountryCode: fromCountry,
+      endCountryCode: 'GB',
+      products: [{ quantity: 1, vid }]
+    });
+    const rows = (Array.isArray(data) ? data : []) as Record<string, unknown>[];
+    const options = rows
+      .map((r) => ({
+        priceUsd: parseCjPrice(r.logisticPrice),
+        days: String(r.logisticAging ?? ''),
+        name: String(r.logisticName ?? '')
+      }))
+      .filter((o) => o.priceUsd > 0);
+    if (!options.length) return null;
+    return options.reduce((a, b) => (b.priceUsd < a.priceUsd ? b : a));
   }
 
   /**

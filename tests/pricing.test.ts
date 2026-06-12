@@ -25,6 +25,16 @@ describe('retailPriceGbp', () => {
     expect(retailPriceGbp(10, p)).toBe(25.99);
   });
 
+  it('freight disciplines the floor, never the multiplier sticker', () => {
+    // cheap+heavy: 2 USD cost, 10 USD freight. fx = 0.78×1.02 = 0.7956
+    // cost £1.59, ×2.5 = £3.98; floor = 1.59 + 7.96 + 6 = £15.55 → 15.99
+    expect(retailPriceGbp(2, DEFAULT_PRICING, 10)).toBe(15.99);
+    // same item without freight knowledge degrades to the old rule → 7.99
+    expect(retailPriceGbp(2, DEFAULT_PRICING)).toBe(7.99);
+    // expensive item: multiplier already clears cost+freight+margin — sticker unchanged
+    expect(retailPriceGbp(30, DEFAULT_PRICING, 5)).toBe(retailPriceGbp(30, DEFAULT_PRICING));
+  });
+
   it('rejects non-positive landed costs', () => {
     expect(() => retailPriceGbp(0, DEFAULT_PRICING)).toThrow();
     expect(() => retailPriceGbp(NaN, DEFAULT_PRICING)).toThrow();

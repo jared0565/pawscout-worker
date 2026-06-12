@@ -33,7 +33,7 @@ function detailOf(pid: string, stock = 50): CjDetail {
   };
 }
 
-interface CjFakeOpts { stock?: number; stockMap?: Map<string, number> }
+interface CjFakeOpts { stock?: number; stockMap?: Map<string, number>; freightUsd?: number }
 function fakeCj(items: CjSearchItem[], counters: { search: number; detail: number; stock: number }, opts: CjFakeOpts = {}): CjClient {
   return {
     search: async () => { counters.search++; return items; },
@@ -42,7 +42,8 @@ function fakeCj(items: CjSearchItem[], counters: { search: number; detail: numbe
       counters.stock++;
       if (opts.stockMap) return opts.stockMap;
       return new Map([[`v-${pid}`, opts.stock ?? 50]]);
-    }
+    },
+    freightEstimate: async () => (opts.freightUsd ? { priceUsd: opts.freightUsd, days: '8-12', name: 'CJPacket' } : null)
   } as unknown as CjClient;
 }
 
@@ -104,6 +105,19 @@ describe('TenantStore warehouse', () => {
 });
 
 describe('replenishWarehouse', () => {
+  it('admission captures origin and the cheapest freight on the stored detail', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const counters = { search: 0, detail: 0, stock: 0 };
+    await replenishWarehouse(store, fakeCj(items(1), counters, { freightUsd: 3.4 }), CFG, { pause: async () => {} });
+    const row = await store.getWarehouseProduct('p0');
+    expect(row).not.toBeNull();
+    const stored = JSON.parse(row!.detail);
+    expect(stored.origin).toBe('CN'); // no per-country data in fixture → CN default
+    expect(stored.freightUsd).toBe(3.4);
+    expect(stored.freightDays).toBe('8-12');
+  });
+
+
   it('fills a category to warehouseDepth with gated, stocked products', async () => {
     const store = new TenantStore(env.DB, SHOP);
     const counters = { search: 0, detail: 0, stock: 0 };

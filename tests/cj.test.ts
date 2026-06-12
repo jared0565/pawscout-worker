@@ -74,3 +74,50 @@ describe('CjClient stock endpoints (post-rename)', () => {
     expect(m.get('v2')).toBe(7);
   });
 });
+
+import { chooseOrigin } from '../src/cj';
+import type { CjDetail } from '../src/cj';
+
+describe('origins + freight', () => {
+  const base: CjDetail = {
+    pid: 'P', nameEn: 'T', images: [], descriptionHtml: '', listedNum: 1,
+    categoryName: 'c', variants: [{ vid: 'v1', name: 'D', sellPriceUsd: 5, sku: 's1' }]
+  };
+
+  it('chooseOrigin prefers a UK warehouse that can genuinely fulfil', () => {
+    expect(chooseOrigin({ ...base, origins: { CN: 5000, GB: 40 } }, 10)).toBe('GB');
+    expect(chooseOrigin({ ...base, origins: { CN: 5000, GB: 3 } }, 10)).toBe('CN'); // GB under floor
+    expect(chooseOrigin({ ...base, origins: { US: 900, CN: 100 } }, 10)).toBe('US'); // best stocked
+    expect(chooseOrigin(base, 10)).toBe('CN'); // no data → CN default
+  });
+
+  it('detail aggregates per-country origins across variants', async () => {
+    const { client } = clientWith(() => ({
+      pid: 'P1', productNameEn: 'Toy', productImage: 'https://i/1.jpg',
+      variants: [
+        { vid: 'v1', variantSellPrice: 5, variantSku: 's1', inventories: [{ countryCode: 'CN', totalInventory: 100 }, { countryCode: 'GB', totalInventory: 12 }] },
+        { vid: 'v2', variantSellPrice: 6, variantSku: 's2', inventories: [{ countryCode: 'CN', totalInventory: 300 }] }
+      ]
+    }));
+    const d = await client.detail('P1');
+    expect(d?.origins).toEqual({ CN: 300, GB: 12 });
+  });
+
+  it('freightEstimate POSTs to freightCalculate and returns the cheapest option', async () => {
+    const bodies: string[] = [];
+    const fakeFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      bodies.push(String(init?.body ?? ''));
+      expect(String(input)).toContain('/logistic/freightCalculate');
+      expect(init?.method).toBe('POST');
+      return new Response(JSON.stringify({ result: true, data: [
+        { logisticName: 'CJPacket', logisticPrice: 6.5, logisticAging: '8-12' },
+        { logisticName: 'Economy', logisticPrice: '4.20', logisticAging: '12-20' }
+      ] }), { status: 200 });
+    }) as typeof fetch;
+    const client = new CjClient(async () => 'tok', fakeFetch);
+    const f = await client.freightEstimate('v1', 'CN');
+    expect(f).toEqual({ priceUsd: 4.2, days: '12-20', name: 'Economy' });
+    expect(bodies[0]).toContain('"startCountryCode":"CN"');
+    expect(bodies[0]).toContain('"endCountryCode":"GB"');
+  });
+});

@@ -1,5 +1,5 @@
 import { Vault } from './vault';
-import { CjClient, CjTokenManager, cjFetchFromEnv, type CjSearchItem } from './cj';
+import { chooseOrigin, CjClient, CjTokenManager, cjFetchFromEnv, type CjSearchItem } from './cj';
 import { makeAdminGraphql, type AdminGraphql } from './shopify-admin';
 import { TenantStore, listActiveShops, purgeExpiredSearchCache, purgeUnusedWarehouse, trimOldLogs } from './tenant-store';
 import { passesGates, normalizeKeyword, CACHE_TTL_DAYS } from './proxy/search';
@@ -151,6 +151,20 @@ export async function syncStoreInventory(
       }
       const paused = stockKnown && maxStock < cfg.floors.stockFloor;
 
+      // Freight captured at admission/import lives on the stored warehouse
+      // detail; fresh details don't carry it (no extra CJ call here).
+      const wh = await store.getWarehouseProduct(link.cj_pid);
+      let freightUsd: number | undefined;
+      let storedOrigin: string | undefined;
+      if (wh) {
+        try {
+          const stored = JSON.parse(wh.detail) as CjDetail;
+          freightUsd = stored.freightUsd;
+          storedOrigin = stored.origin;
+        } catch { /* legacy row */ }
+      }
+      const origin = detail?.origins ? chooseOrigin(detail, cfg.floors.stockFloor) : storedOrigin;
+
       // SKU → vid mapping for per-variant quantities (fresh detail preferred).
       const skuToVid = new Map<string, string>();
       const skuToCost = new Map<string, number>();
@@ -159,13 +173,10 @@ export async function syncStoreInventory(
           skuToVid.set(v.sku, v.vid);
           skuToCost.set(v.sku, v.sellPriceUsd);
         }
-      } else {
-        const wh = await store.getWarehouseProduct(link.cj_pid);
-        if (wh) {
-          try {
-            for (const v of (JSON.parse(wh.detail) as CjDetail).variants) skuToVid.set(v.sku, v.vid);
-          } catch { /* fall back to uniform stock */ }
-        }
+      } else if (wh) {
+        try {
+          for (const v of (JSON.parse(wh.detail) as CjDetail).variants) skuToVid.set(v.sku, v.vid);
+        } catch { /* fall back to uniform stock */ }
       }
 
       const variants = await productInventoryItems(admin, link.shopify_product_id);
@@ -190,7 +201,7 @@ export async function syncStoreInventory(
       const priceUpdates = variants.flatMap((v) => {
         const cost = skuToCost.get(v.sku);
         if (cost === undefined || cost <= 0) return [];
-        const expected = retailPriceGbp(cost, cfg.pricing).toFixed(2);
+        const expected = retailPriceGbp(cost, cfg.pricing, freightUsd).toFixed(2);
         return expected === v.price ? [] : [{ id: v.variantId, price: expected }];
       });
       if (priceUpdates.length) await updateVariantPrices(admin, link.shopify_product_id, priceUpdates);
@@ -199,7 +210,8 @@ export async function syncStoreInventory(
         await setSupplierMetafields(admin, link.shopify_product_id, {
           status: paused ? 'out_of_stock' : maxStock < cfg.floors.stockFloor * 2 ? 'low_stock' : 'available',
           qty: maxStock,
-          checkedAt: new Date().toISOString()
+          checkedAt: new Date().toISOString(),
+          origin
         });
         await store.setStockPaused(link.cj_pid, paused);
         await store.setWarehouseStock(link.cj_pid, maxStock, paused ? 'low_stock' : 'available');
@@ -306,6 +318,21 @@ export async function replenishWarehouse(
           llmScore: curated.relevanceScore
         };
         if (curated.category) resolvedCategory = curated.category;
+      }
+    }
+
+    // Freight-aware floor (decided 2026-06-12): capture origin + cheapest
+    // freight at admission so the pricing min-margin sees true landed cost.
+    const origin = chooseOrigin(admittedDetail, cfg.floors.stockFloor);
+    admittedDetail = { ...admittedDetail, origin };
+    const freightVid = admittedDetail.variants[0]?.vid;
+    if (freightVid && freightVid !== 'default' && cjCalls < maxCjCalls) {
+      await spend();
+      try {
+        const f = await cj.freightEstimate(freightVid, origin);
+        if (f) admittedDetail = { ...admittedDetail, freightUsd: f.priceUsd, freightDays: f.days };
+      } catch (e) {
+        console.warn(`freight estimate failed for ${item.pid}: ${(e as Error).message}`);
       }
     }
 

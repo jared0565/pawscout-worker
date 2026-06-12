@@ -108,13 +108,15 @@ export async function setInventoryQuantities(
 export async function setSupplierMetafields(
   admin: AdminGraphql,
   productId: string,
-  m: { status: 'available' | 'low_stock' | 'out_of_stock'; qty: number; checkedAt: string }
+  m: { status: 'available' | 'low_stock' | 'out_of_stock'; qty: number; checkedAt: string; origin?: string }
 ): Promise<void> {
   const fields = [
     { key: 'name', type: 'single_line_text_field', value: 'CJ' },
     { key: 'status', type: 'single_line_text_field', value: m.status },
     { key: 'available_qty', type: 'number_integer', value: String(Math.max(0, Math.floor(m.qty))) },
-    { key: 'last_checked_at', type: 'date_time', value: m.checkedAt }
+    { key: 'last_checked_at', type: 'date_time', value: m.checkedAt },
+    // Dispatch origin country code — the theme's "Ships from UK" badge reads this.
+    ...(m.origin ? [{ key: 'origin', type: 'single_line_text_field', value: m.origin }] : [])
   ];
   const data = await admin(
     `mutation pawscoutMetafields($metafields: [MetafieldsSetInput!]!) {

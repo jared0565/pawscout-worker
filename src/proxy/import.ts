@@ -1,5 +1,5 @@
 import type { AdminGraphql } from '../shopify-admin';
-import type { CjClient, CjDetail } from '../cj';
+import { chooseOrigin, type CjClient, type CjDetail } from '../cj';
 import type { TenantStore } from '../tenant-store';
 import type { TenantConfig } from '../types';
 import { retailPriceGbp } from '../pricing';
@@ -47,7 +47,7 @@ export function resolveCategory(cfg: TenantConfig, detail: { categoryName: strin
 export function buildPreview(detail: CjDetail, cfg: TenantConfig, state: string, handle: string | null): PreviewProduct {
   const variants = dedupeVariantNames(detail.variants).map((v) => ({
     name: v.name,
-    price: retailPriceGbp(v.sellPriceUsd, cfg.pricing)
+    price: retailPriceGbp(v.sellPriceUsd, cfg.pricing, detail.freightUsd)
   }));
   return {
     pid: detail.pid,
@@ -101,6 +101,21 @@ export async function confirmAndImport(
   detail: CjDetail,
   category?: string | null
 ): Promise<void> {
+  // Freight-aware floor + origin badge: capture once at import time (ghost
+  // clicks arrive without it; warehouse promotions already carry it).
+  if (detail.freightUsd === undefined) {
+    detail = { ...detail, origin: detail.origin ?? chooseOrigin(detail, cfg.floors.stockFloor) };
+    const vid = detail.variants[0]?.vid;
+    if (vid && vid !== 'default') {
+      try {
+        const f = await cj.freightEstimate(vid, detail.origin);
+        if (f) detail = { ...detail, freightUsd: f.priceUsd, freightDays: f.days };
+      } catch (e) {
+        // Unknown freight degrades to the product-cost-only floor — never block the sale path.
+        console.warn(`freight estimate failed for ${detail.pid}: ${(e as Error).message}`);
+      }
+    }
+  }
   let live: number | null = null;
   try {
     const m = await cj.stockByPid(detail.pid);
@@ -185,7 +200,7 @@ export async function importProduct(
       productOptions: [{ name: optionName, values: multi ? variants.map((v) => ({ name: v.name })) : [{ name: 'Default Title' }] }],
       variants: variants.map((v) => ({
         optionValues: [{ optionName, name: multi ? v.name : 'Default Title' }],
-        price: retailPriceGbp(v.sellPriceUsd, cfg.pricing).toFixed(2),
+        price: retailPriceGbp(v.sellPriceUsd, cfg.pricing, detail.freightUsd).toFixed(2),
         sku: v.sku || undefined,
         ...(locationId
           ? {
@@ -236,7 +251,8 @@ export async function importProduct(
       await setSupplierMetafields(admin, product.id, {
         status: 'available',
         qty: productStock,
-        checkedAt: new Date().toISOString()
+        checkedAt: new Date().toISOString(),
+        origin: detail.origin
       });
     } catch (e) {
       console.warn(`supplier metafields failed for ${detail.pid}: ${(e as Error).message}`);
