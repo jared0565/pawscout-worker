@@ -282,6 +282,31 @@ describe('syncStoreInventory', () => {
     expect(String(variantReads[0].variables!.id)).toContain('B');
   });
 
+  it('a dead stock endpoint never zeroes the store and never blocks the price sync', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await insertLink('A', 'imported', 5);
+    const cj = {
+      // detail arrives with no usable stock; the stock endpoint is broken
+      detail: async (pid: string) => ({ ...detailOf(pid, 0, 10), stock: 0, variants: [{ vid: `v-${pid}`, name: 'Default', sellPriceUsd: 10, sku: `sku-${pid}` }] }),
+      stockByPid: async () => { throw new Error('Interface not found (CJ code 1600002, /product/stock/queryByPid)'); }
+    } as unknown as CjClient;
+
+    const calls: Call[] = [];
+    const errors: string[] = [];
+    const n = await syncStoreInventory(store, cj, shopAdmin(calls, '53.90', false), CFG, { pause: async () => {}, errors });
+
+    expect(n).toBe(1); // still counts: prices were synced
+    expect(errors[0]).toContain('stock unknown');
+    // quantities, tracking and stock metafields must all be left alone
+    expect(calls.some((c) => c.query.includes('inventorySetQuantities'))).toBe(false);
+    expect(calls.some((c) => c.query.includes('inventoryItemUpdate'))).toBe(false);
+    expect(calls.some((c) => c.query.includes('metafieldsSet'))).toBe(false);
+    expect((await store.getLink('A'))?.stock_paused).toBe(0); // never paused on unknown
+    // ...but the price realignment still went through
+    const reprice = calls.find((c) => c.query.includes('productVariantsBulkUpdate'))!;
+    expect((reprice.variables!.variants as { price: string }[])[0].price).toBe('19.99');
+  });
+
   it('a per-product Shopify failure never aborts the run', async () => {
     const store = new TenantStore(env.DB, SHOP);
     await insertLink('bad', 'imported', 5);

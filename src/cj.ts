@@ -188,8 +188,12 @@ export class CjClient {
         continue;
       }
       if (!resp.ok) throw await httpError(resp);
-      const data = (await resp.json()) as { result?: boolean; message?: string; data?: unknown };
-      if (!data.result) throw new Error(data.message || 'CJ request failed');
+      const data = (await resp.json()) as { result?: boolean; message?: string; code?: number; data?: unknown };
+      if (!data.result) {
+        // Keep CJ's numeric code — messages like "Interface not found" are
+        // useless without it when debugging endpoint deprecations.
+        throw new Error(`${data.message || 'CJ request failed'}${data.code != null ? ` (CJ code ${data.code}, ${path})` : ''}`);
+      }
       return data.data;
     }
   }

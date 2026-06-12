@@ -132,15 +132,24 @@ export async function syncStoreInventory(
 
       let stockMap = new Map<string, number>();
       let maxStock = detail?.stock ?? 0;
+      let stockKnown = maxStock > 0;
       if (detail) {
         for (const v of detail.variants) if (v.stock !== undefined) stockMap.set(v.vid, v.stock);
       }
-      if (!maxStock) {
-        await pause(CJ_CALL_GAP_MS);
-        stockMap = await cj.stockByPid(link.cj_pid);
-        maxStock = stockMap.size ? Math.max(...stockMap.values()) : 0;
+      if (!stockKnown) {
+        // A broken stock endpoint must NEVER zero the store or block the
+        // price sync — unknown means "leave quantities alone", not "0".
+        try {
+          await pause(CJ_CALL_GAP_MS);
+          stockMap = await cj.stockByPid(link.cj_pid);
+          maxStock = stockMap.size ? Math.max(...stockMap.values()) : 0;
+          stockKnown = true; // a successful empty answer IS knowledge: no stock
+        } catch (e) {
+          console.warn(`stock unknown for ${link.cj_pid}: ${(e as Error).message}`);
+          opts.errors?.push(`${link.cj_pid}: stock unknown (${(e as Error).message}) — prices still synced`);
+        }
       }
-      const paused = maxStock < cfg.floors.stockFloor;
+      const paused = stockKnown && maxStock < cfg.floors.stockFloor;
 
       // SKU → vid mapping for per-variant quantities (fresh detail preferred).
       const skuToVid = new Map<string, string>();
@@ -160,18 +169,20 @@ export async function syncStoreInventory(
       }
 
       const variants = await productInventoryItems(admin, link.shopify_product_id);
-      // Untracked variants (imports whose CJ detail lacked stock) must be
-      // activated first or the quantity write below errors out.
-      await enableTracking(admin, link.shopify_product_id, variants.filter((v) => !v.tracked));
-      await setInventoryQuantities(
-        admin,
-        locationId,
-        variants.map((v) => {
-          const vid = skuToVid.get(v.sku);
-          const qty = paused ? 0 : (vid !== undefined ? stockMap.get(vid) ?? maxStock : maxStock);
-          return { inventoryItemId: v.inventoryItemId, quantity: Math.min(qty, MAX_TRACKED_QTY) };
-        })
-      );
+      if (stockKnown) {
+        // Untracked variants (imports whose CJ detail lacked stock) must be
+        // activated first or the quantity write below errors out.
+        await enableTracking(admin, link.shopify_product_id, variants.filter((v) => !v.tracked));
+        await setInventoryQuantities(
+          admin,
+          locationId,
+          variants.map((v) => {
+            const vid = skuToVid.get(v.sku);
+            const qty = paused ? 0 : (vid !== undefined ? stockMap.get(vid) ?? maxStock : maxStock);
+            return { inventoryItemId: v.inventoryItemId, quantity: Math.min(qty, MAX_TRACKED_QTY) };
+          })
+        );
+      }
 
       // Price sync: retail must always equal the pricing rule applied to CJ's
       // CURRENT cost. Only variants whose SKU matches a CJ variant reprice;
@@ -184,13 +195,15 @@ export async function syncStoreInventory(
       });
       if (priceUpdates.length) await updateVariantPrices(admin, link.shopify_product_id, priceUpdates);
 
-      await setSupplierMetafields(admin, link.shopify_product_id, {
-        status: paused ? 'out_of_stock' : maxStock < cfg.floors.stockFloor * 2 ? 'low_stock' : 'available',
-        qty: maxStock,
-        checkedAt: new Date().toISOString()
-      });
-      await store.setStockPaused(link.cj_pid, paused);
-      await store.setWarehouseStock(link.cj_pid, maxStock, paused ? 'low_stock' : 'available');
+      if (stockKnown) {
+        await setSupplierMetafields(admin, link.shopify_product_id, {
+          status: paused ? 'out_of_stock' : maxStock < cfg.floors.stockFloor * 2 ? 'low_stock' : 'available',
+          qty: maxStock,
+          checkedAt: new Date().toISOString()
+        });
+        await store.setStockPaused(link.cj_pid, paused);
+        await store.setWarehouseStock(link.cj_pid, maxStock, paused ? 'low_stock' : 'available');
+      }
       synced++;
     } catch (e) {
       // Per-product failures (CJ hiccups, Shopify errors) log and move on; never abort the run.
