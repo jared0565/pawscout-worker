@@ -36,9 +36,23 @@
       console's Save-gates path works while building W1's console changes).
 - [x] **Flywheel verified end-to-end 2026-06-12**: 8 gated, priced ghost
       products returned from cache. Pre-W1 checklist CLOSED.
-- [ ] Theme half not yet live to visitors: merge theme repo's
-      `claude/stoic-pasteur-a2ol7z` → `shopify-deploy` when ready (user's call —
-      that push updates the live store within seconds).
+- [x] Theme MERGED to `shopify-deploy` 2026-06-12 (5e8952d → 9f47311) — ghost
+      cards, preview modal, and beacons are live to visitors.
+
+**Store state changes (2026-06-12, via Shopify MCP):**
+
+- Checkout/payments DISABLED by the user until the pricing strategy is final —
+  re-enable before any ad spend. Views/ATC signals unaffected.
+- New smart collection **Pet Grooming** (`pet-grooming`, tag
+  `cj-cat-pet-grooming`), added to the PawScout collection map; 11 existing
+  grooming products tagged into it; 5 grooming demand keywords seeded into
+  search_log (sourced from wowgrooming.co.uk's range).
+- One-time catalog retitle: 27 products with CJ keyword-soup titles (60-170
+  chars) rewritten to <=55-char UK-English titles. Handles/URLs unchanged.
+- NOTE: the W2 store-floor refill counts PawScout-imported links only; the 42
+  pre-existing products are invisible to it, so categories will grow by up to
+  8 imports each. Pending user decision whether refill should count actual
+  Shopify collection sizes instead.
 
 **Production identifiers:**
 
