@@ -1,4 +1,4 @@
-import type { Gates, Pricing, TenantConfig } from './types';
+import type { Gates, LlmConfig, Pricing, TenantConfig } from './types';
 
 export type Validation<T> = { ok: true; value: T } | { ok: false; error: string };
 
@@ -82,6 +82,39 @@ export function validatePricingPayload(body: unknown): Validation<Pricing> {
       minMarginGbp: b.minMarginGbp as number,
       fxUsdToGbp: b.fxUsdToGbp as number,
       fxBufferPct: b.fxBufferPct as number
+    }
+  };
+}
+
+// OpenRouter model slugs: "vendor/model" with dots, dashes, colons (variants).
+const MODEL_SLUG = /^[\w.-]+\/[\w.:-]+$/;
+
+/** Validate the /api/llm body. Model is a free-text OpenRouter slug — the cost-vs-quality knob. */
+export function validateLlmPayload(body: unknown): Validation<LlmConfig> {
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+    return { ok: false, error: 'Body must be a JSON object' };
+  }
+  const b = body as Record<string, unknown>;
+  if (typeof b.enabled !== 'boolean') return { ok: false, error: 'enabled must be true or false' };
+  if (typeof b.model !== 'string' || b.model.length > 100 || !MODEL_SLUG.test(b.model)) {
+    return { ok: false, error: 'model must be an OpenRouter slug like anthropic/claude-haiku-4.5' };
+  }
+  if (!finite(b.scoreThreshold) || b.scoreThreshold < 0 || b.scoreThreshold > 100) {
+    return { ok: false, error: 'scoreThreshold must be a number between 0 and 100' };
+  }
+  for (const k of ['curationModel', 'digestModel'] as const) {
+    if (b[k] !== undefined && b[k] !== '' && (typeof b[k] !== 'string' || (b[k] as string).length > 100 || !MODEL_SLUG.test(b[k] as string))) {
+      return { ok: false, error: `${k} must be an OpenRouter model slug` };
+    }
+  }
+  return {
+    ok: true,
+    value: {
+      enabled: b.enabled,
+      model: b.model,
+      scoreThreshold: b.scoreThreshold as number,
+      ...(b.curationModel ? { curationModel: b.curationModel as string } : {}),
+      ...(b.digestModel ? { digestModel: b.digestModel as string } : {})
     }
   };
 }

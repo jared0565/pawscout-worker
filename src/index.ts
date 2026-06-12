@@ -10,13 +10,14 @@ import { handleCallback } from './auth/callback';
 import { ensureInstalled } from './auth/ensure-installed';
 import { handleUninstall } from './auth/uninstall';
 import { resolveShopFromToken } from './console/session';
-import { connectCj, saveGates, savePricing, saveCollectionMap, getStatus, getInsights } from './console/routes';
+import { connectCj, saveGates, savePricing, saveLlm, saveCollectionMap, getStatus, getInsights } from './console/routes';
 import { consolePage } from './console/page';
 import { validateCjKey, CjClient, CjTokenManager, cjFetchFromEnv } from './cj';
 import { registerUninstallWebhook, type RegisterWebhook } from './webhooks';
-import { validateGatesPayload, validatePricingPayload, validateCollectionMap } from './validate';
+import { validateGatesPayload, validatePricingPayload, validateLlmPayload, validateCollectionMap } from './validate';
 import { verifyAppProxy } from './proxy/verify';
-import { searchBackfill } from './proxy/search';
+import { searchBackfill, normalizeKeyword } from './proxy/search';
+import { LlmClient, classifyKeyword } from './llm';
 import { buildPreview, getDetailPreferWarehouse, confirmAndImport } from './proxy/import';
 import { makeAdminGraphql } from './shopify-admin';
 import { runDailyMaintenance } from './jobs';
@@ -89,6 +90,15 @@ app.post('/api/pricing', async (c) => {
   await savePricing(c.env.DB, s, v.value);
   return c.json({ ok: true });
 });
+app.post('/api/llm', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: unknown;
+  try { body = await c.req.json(); } catch { return c.json({ ok: false, error: 'Invalid JSON body' }, 400); }
+  const v = validateLlmPayload(body);
+  if (!v.ok) return c.json({ ok: false, error: v.error }, 400);
+  await saveLlm(c.env.DB, s, v.value);
+  return c.json({ ok: true });
+});
 app.post('/api/collections', async (c) => {
   const s = await shopOf(c); if (typeof s !== 'string') return s;
   let body: unknown;
@@ -137,6 +147,12 @@ app.get('/proxy/search', async (c) => {
   const limit = Math.min(Math.max(1, Number(c.req.query('limit')) || 12), 12);
   try {
     const products = await searchBackfill(p.store, cjFor(c.env, p), p.cfg, q, have, limit);
+    // W3: classify new keywords in the background (cached 30d) — the NEXT
+    // search for this term benefits from category + synonyms. Never hot-path.
+    const llm = new LlmClient(c.env.OPENROUTER_API_KEY);
+    if (llm.available && p.cfg.llm.enabled) {
+      c.executionCtx.waitUntil(classifyKeyword(llm, p.store, p.cfg, normalizeKeyword(q)));
+    }
     return c.json({ ok: true, products });
   } catch (e) {
     const detail = (e as Error).message; // CJ/auth failure reasons — never secret-bearing

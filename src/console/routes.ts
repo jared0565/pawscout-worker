@@ -1,6 +1,6 @@
 import { Vault } from '../vault';
 import { TenantStore, type KeywordDemand } from '../tenant-store';
-import { DEFAULT_GATES, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_TARGET, type Floors, type Gates, type Pricing, type TenantConfig } from '../types';
+import { DEFAULT_GATES, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_TARGET, type Floors, type Gates, type LlmConfig, type Pricing, type TenantConfig } from '../types';
 import type { ValidateResult } from '../cj';
 
 export async function connectCj(
@@ -31,6 +31,13 @@ export async function savePricing(db: D1Database, shop: string, pricing: Pricing
   await store.seedConfig({ ...cfg, pricing });
 }
 
+export async function saveLlm(db: D1Database, shop: string, llm: LlmConfig): Promise<void> {
+  const store = new TenantStore(db, shop);
+  const cfg = await store.getConfig();
+  if (!cfg) return;
+  await store.seedConfig({ ...cfg, llm });
+}
+
 export async function saveCollectionMap(db: D1Database, shop: string, map: Record<string, { handle: string; tag: string }>): Promise<void> {
   const store = new TenantStore(db, shop);
   const cfg = await store.getConfig();
@@ -44,6 +51,7 @@ export interface Status {
   gates: Gates;
   pricing: Pricing;
   floors: Floors;
+  llm: LlmConfig;
   target: number;
 }
 
@@ -57,6 +65,7 @@ export async function getStatus(db: D1Database, shop: string): Promise<Status> {
     gates: cfg?.gates ?? DEFAULT_GATES,
     pricing: cfg?.pricing ?? DEFAULT_PRICING,
     floors: cfg?.floors ?? DEFAULT_FLOORS,
+    llm: cfg?.llm ?? DEFAULT_LLM,
     target: cfg?.target ?? DEFAULT_TARGET
   };
 }
@@ -67,7 +76,7 @@ export interface CategoryFill { key: string; imported: number; warehouse: number
 export async function getInsights(
   db: D1Database,
   shop: string
-): Promise<{ keywords: KeywordDemand[]; categories: CategoryFill[] }> {
+): Promise<{ keywords: KeywordDemand[]; categories: CategoryFill[]; llmSpend: { calls: number; costUsd: number } }> {
   const store = new TenantStore(db, shop);
   const since = new Date(Date.now() - 30 * 86400_000).toISOString();
   const cfg = await store.getConfig();
@@ -83,5 +92,9 @@ export async function getInsights(
       });
     }
   }
-  return { keywords: await store.recentSearches(since, 10), categories };
+  return {
+    keywords: await store.recentSearches(since, 10),
+    categories,
+    llmSpend: await store.llmSpendSince(since)
+  };
 }

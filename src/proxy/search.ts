@@ -2,6 +2,7 @@ import type { CjClient, CjSearchItem } from '../cj';
 import type { TenantStore, WarehouseRow } from '../tenant-store';
 import type { Gates, TenantConfig } from '../types';
 import { retailPriceGbp } from '../pricing';
+import { getKeywordMeta } from '../llm';
 
 export const CACHE_TTL_DAYS = 30; // PS retention promise: cached supplier data lives 30 days
 
@@ -75,7 +76,15 @@ export async function searchBackfill(
 ): Promise<GhostCard[]> {
   const kw = normalizeKeyword(query);
   if (!kw) return [];
-  const tokens = kw.split(' ').filter(Boolean);
+
+  // W3: classified keywords carry cached synonyms (e.g. "puppy chew" → "dog
+  // toy"), widening warehouse matching. Strict mode ignores them — expansion
+  // must never loosen an explicitly strict gate.
+  const meta = await getKeywordMeta(store, kw);
+  const expanded = cfg.gates.relevance !== 'strict' && meta?.synonyms.length
+    ? `${kw} ${meta.synonyms.join(' ')}`
+    : kw;
+  const tokens = [...new Set(expanded.split(' ').filter(Boolean))];
 
   const cards: GhostCard[] = [];
   const seen = new Set<string>();
@@ -83,7 +92,7 @@ export async function searchBackfill(
   // --- 1) warehouse ---
   const rows = await store.searchWarehouse(tokens, limit * 3);
   const ranked = rows
-    .filter((r) => warehousePasses(r, cfg, kw))
+    .filter((r) => warehousePasses(r, cfg, expanded))
     .map((r) => ({ r, hits: tokens.filter((t) => r.search_text.includes(t)).length }))
     .sort((a, b) => b.hits - a.hits || b.r.listed_num - a.r.listed_num);
 

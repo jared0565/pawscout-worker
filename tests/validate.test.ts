@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { validateGatesPayload, validatePricingPayload, validateCollectionMap, MAX_COLLECTIONS } from '../src/validate';
+import { validateGatesPayload, validatePricingPayload, validateLlmPayload, validateCollectionMap, MAX_COLLECTIONS } from '../src/validate';
 
 const GOOD_GATES = { popularityFloor: 50, priceMin: 5, priceMax: 80, relevance: 'title' };
 
@@ -47,6 +47,27 @@ describe('validatePricingPayload', () => {
     [{ ...GOOD, fxBufferPct: 50 }, 'buffer above cap']
   ] as [unknown, string][])('rejects %j (%s)', (body: unknown) => {
     expect(validatePricingPayload(body).ok).toBe(false);
+  });
+});
+
+describe('validateLlmPayload', () => {
+  const GOOD = { enabled: true, model: 'anthropic/claude-haiku-4.5', scoreThreshold: 60 };
+
+  it('accepts a valid payload, with optional per-task overrides', () => {
+    expect(validateLlmPayload(GOOD)).toEqual({ ok: true, value: GOOD });
+    const withOverride = validateLlmPayload({ ...GOOD, curationModel: 'openai/gpt-5-mini' });
+    expect(withOverride.ok && withOverride.value.curationModel).toBe('openai/gpt-5-mini');
+  });
+
+  it.each([
+    [null, 'not an object'],
+    [{ ...GOOD, enabled: 'yes' }, 'non-boolean enabled'],
+    [{ ...GOOD, model: 'no-slash' }, 'not a vendor/model slug'],
+    [{ ...GOOD, model: 'a/'.padEnd(120, 'x') }, 'oversized model'],
+    [{ ...GOOD, scoreThreshold: 150 }, 'threshold above 100'],
+    [{ ...GOOD, curationModel: '<script>' }, 'bad override slug']
+  ] as [unknown, string][])('rejects %j (%s)', (body: unknown) => {
+    expect(validateLlmPayload(body).ok).toBe(false);
   });
 });
 
