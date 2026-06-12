@@ -41,7 +41,9 @@
 | Worker | `pawscout-worker` on Cloudflare, custom domain `pawscout.activepaw.co.uk` |
 | D1 database | `pawscout`, id `85f80862-0b26-4515-82b6-3408124e3a59` |
 | Shop | `4qkudm-ez.myshopify.com` (storefront `activepaw.co.uk`) |
-| Worker secrets | `SHOPIFY_API_SECRET`, `PAWSCOUT_MASTER_KEY` (+ `OPENROUTER_API_KEY` from W3) |
+| CJ egress relay | `pawscout-relay` on Fly.io (org `fb-mac`, region `lhr`), `https://pawscout-relay.fly.dev`, static egress IP `209.71.82.110` ($3.60/mo) |
+| Worker secrets | `SHOPIFY_API_SECRET`, `PAWSCOUT_MASTER_KEY`, `CJ_RELAY_URL`, `CJ_RELAY_TOKEN` (+ `OPENROUTER_API_KEY` from W3) |
+| Relay secret | `RELAY_TOKEN` (Fly secret; must equal the worker's `CJ_RELAY_TOKEN`) |
 | Cron | `17 4 * * *` UTC daily |
 
 ## 2. Target architecture (what W1–W4 adds)
