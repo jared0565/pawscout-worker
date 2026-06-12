@@ -140,6 +140,7 @@ Sales arriving through the on-site search flywheel carry near-zero acquisition c
 | `product_links` | CJ pid ↔ Shopify product: `ghost → importing → imported ⇄ archived / failed` |
 | `product_events` | Qualifying events (`view`/`atc`/`order`) for the cull |
 | `cj_tokens` | Sealed cached CJ access token (CJ allows ~1 auth refresh per 300s) |
+| `llm_usage` | **W3**: per-call OpenRouter tokens + cost (curation/keyword tasks), 90-day retention |
 
 ## HTTP API
 
@@ -152,6 +153,7 @@ Sales arriving through the on-site search flywheel carry near-zero acquisition c
 | `POST` | `/api/connect-cj` | Validate + store a sealed CJ key |
 | `POST` | `/api/gates` | Save gates (+ optional `target`); invalid → `400` |
 | `POST` | `/api/pricing` | Save the pricing rule; invalid → `400` |
+| `POST` | `/api/llm` | Save the AI-curation config (OpenRouter model, threshold, on/off) |
 | `POST` | `/api/collections` | Replace the collection map; invalid → `400` |
 
 ### Storefront (Shopify App Proxy, HMAC-signed)

@@ -5,7 +5,7 @@
 > is enough to continue. Keep it updated: tick checkboxes as tasks land, and
 > append to the Decision Log when anything is decided differently.
 >
-> Last updated: 2026-06-12 (W1+W2 complete — deploy: migrate:remote applies 0004, then deploy) · Working branch (both repos): `claude/stoic-pasteur-a2ol7z`
+> Last updated: 2026-06-12 (W1+W2+W3 complete — deploy: migrate:remote applies 0005, deploy, and set OPENROUTER_API_KEY secret) · Working branch (both repos): `claude/stoic-pasteur-a2ol7z`
 
 ---
 
@@ -228,39 +228,39 @@ known stock (DENY policy).
 **Goal:** better products and better copy, at background time, model-swappable.
 
 ### W3.1 OpenRouter client (`src/llm.ts`)
-- [ ] Secret `OPENROUTER_API_KEY` (wrangler secret + `.dev.vars`; add to `Env`).
-- [ ] Thin client: `POST https://openrouter.ai/api/v1/chat/completions`,
+- [x] Secret `OPENROUTER_API_KEY` (wrangler secret + `.dev.vars`; add to `Env`).
+- [x] Thin client: `POST https://openrouter.ai/api/v1/chat/completions`,
       headers `Authorization: Bearer`, optional `HTTP-Referer`/`X-Title`
       attribution; injected `fetchImpl` for tests; strict JSON-mode prompts with
       schema validation on parse; **never throws into a job** — failures degrade
       to "no LLM" behavior.
-- [ ] Config in `tenant_config.llm`:
+- [x] Config in `tenant_config.llm`:
       `{ enabled: bool, model: 'anthropic/claude-haiku-4.5', curationModel?, digestModel? }`
       (per-task override = the cost-vs-quality testing knob). Console card to
       edit + on/off switch. Validation in `validate.ts`.
-- [ ] Cost visibility: log OpenRouter's returned usage/cost per call into a
+- [x] Cost visibility: log OpenRouter's returned usage/cost per call into a
       `llm_usage` table (migration `0005`): shop, task, model, tokens, cost_usd, created_at.
       Console shows 30-day spend.
 
 ### W3.2 Admission curation (in `replenishWarehouse`)
-- [ ] For each candidate passing mechanical gates: one LLM call returns
+- [x] For each candidate passing mechanical gates: one LLM call returns
       `{ relevanceScore: 0-100, category: <collection key|none>, title: <rewritten ≤70 chars>,
       description: <clean HTML ≤600 words>, seoTitle, seoDescription }`.
-- [ ] Admit only `relevanceScore ≥ threshold` (default 60, config). Rewritten
+- [x] Admit only `relevanceScore ≥ threshold` (default 60, config). Rewritten
       copy stored on the warehouse row and used at import (CJ original kept
       inside `detail` JSON for audit).
-- [ ] Batch + cap per night (~40 calls); skip silently when `enabled=false` or
+- [x] Batch + cap per night (~40 calls); skip silently when `enabled=false` or
       key missing (mechanical gates remain the baseline).
 
 ### W3.3 Keyword classification (search path, cached)
-- [ ] First time a keyword is seen: classify to category + synonyms
+- [x] First time a keyword is seen: classify to category + synonyms
       (ONE call, stored in `search_cache` under `kw-meta:`), improving warehouse
       matching. Subsequent searches: zero LLM calls. Hot-path rule respected:
       classification runs via `waitUntil`; the current search uses token match,
       the *next* one benefits.
 
 ### W3.4 Tests + docs
-- [ ] Client (fake fetch): success/JSON-parse-failure/HTTP-error degrade paths;
+- [x] Client (fake fetch): success/JSON-parse-failure/HTTP-error degrade paths;
       admission threshold honored; copy fields applied at import; usage rows
       written; config validation. README + this doc.
 
