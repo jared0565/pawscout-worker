@@ -58,6 +58,14 @@
 - Price sync added to the nightly job: retail = retailPriceGbp(CJ current
   cost) for every SKU-matched variant. Legacy prices (which predate the
   pricing engine — none end in .99) realign on the first post-deploy run.
+- Contact form: Shopify-native {% form 'contact' %} → emails
+  contact@activepaw.co.uk (mailbox confirmed set up by the user). Theme
+  mailto links aligned from support@ → contact@ (live 2026-06-12).
+  USER ACTION still open: enable captcha at Online Store → Preferences →
+  "Enable reCAPTCHA on contact and comment forms". Optional later: Shopify
+  Inbox app for an in-admin message inbox.
+- Social share row shipped to the PDP (FB / X / Pinterest / WhatsApp / copy
+  link; no third-party scripts) — live on shopify-deploy 2026-06-12.
 
 **Production identifiers:**
 
@@ -300,6 +308,33 @@ to mechanical-gates behavior with zero errors; console shows model + 30-day cost
       ingestion for true ROAS; ad-creative generation fed by the digest.
 
 ---
+
+## 7b. Phase W5 — Email marketing via Resend (designed, not yet scheduled)
+
+The user has a Resend account. Newsletter signups currently post through the
+contact form (arrive as plain emails — no list). Target design:
+
+- [ ] W5.1 Worker: `POST /proxy/subscribe` (App Proxy HMAC, 200+ok rule).
+      Validates the email, then (a) creates/updates the Shopify customer with
+      email-marketing consent via Admin GraphQL (consent state SUBSCRIBED,
+      single opt-in initially), and (b) adds the contact to a Resend Audience
+      via the Resend API. New secret: `RESEND_API_KEY`; config: audience id in
+      tenant_config (new `email` JSON column, migration). Idempotent on
+      repeat signups. Rate-limit/bot-guard: honeypot field + per-IP throttle.
+- [ ] W5.2 Theme: footer newsletter form posts to the proxy (AJAX, inline
+      success message) instead of /contact. Graceful no-JS fallback keeps the
+      current /contact behavior.
+- [ ] W5.3 Sending: campaigns/broadcasts authored in Resend's dashboard
+      against the Audience (no PawScout code needed initially). Domain setup
+      (user): verify activepaw.co.uk in Resend (SPF/DKIM records) so sends
+      come from @activepaw.co.uk.
+- [ ] W5.4 (ties into W4): weekly "new arrivals" broadcast — the W4 digest
+      pipeline drafts a product-picks email (top curated imports + demand
+      keywords) via Resend's send API; user approves/sends from Resend.
+      Strictly opt-in list, unsubscribe handled by Resend.
+- [ ] Compliance notes: UK PECR/GDPR — marketing only to subscribers from
+      this flow; consent recorded both in Shopify (source of truth) and
+      Resend; consider double opt-in before first real campaign.
 
 ## 8. Conventions & runbook (for any developer picking this up)
 
