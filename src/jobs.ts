@@ -59,7 +59,7 @@ export async function refillCollections(
   cj: CjClient,
   admin: AdminGraphql,
   cfg: TenantConfig,
-  opts: { maxImports?: number; pause?: (ms: number) => Promise<void>; now?: () => number } = {}
+  opts: { maxImports?: number; pause?: (ms: number) => Promise<void>; now?: () => number; curate?: (detail: CjDetail, context: string) => Promise<Curation | null> } = {}
 ): Promise<number> {
   const maxImports = opts.maxImports ?? MAX_IMPORTS_PER_RUN;
   const pause = opts.pause ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
@@ -72,7 +72,7 @@ export async function refillCollections(
     let detail: CjDetail;
     try { detail = JSON.parse(row.detail) as CjDetail; } catch { return false; }
     await pause(CJ_CALL_GAP_MS); // confirmAndImport makes one CJ stock call
-    await confirmAndImport(store, cj, admin, cfg, detail, category);
+    await confirmAndImport(store, cj, admin, cfg, detail, category, opts.curate);
     return (await store.getLink(row.cj_pid))?.state === 'imported';
   };
 
@@ -420,13 +420,12 @@ export async function runDailyMaintenance(env: Env): Promise<void> {
         const cj = new CjClient(() => tokens.getToken(), f);
         await refreshWarehouseStock(store, cj, cfg);
         const llm = new LlmClient(env.OPENROUTER_API_KEY);
-        await replenishWarehouse(store, cj, cfg, {
-          curate: llm.available && cfg.llm.enabled
-            ? (detail, context) => curateProduct(llm, store, cfg, detail, context)
-            : undefined
-        });
+        const curate = llm.available && cfg.llm.enabled
+          ? (detail: CjDetail, context: string) => curateProduct(llm, store, cfg, detail, context)
+          : undefined;
+        await replenishWarehouse(store, cj, cfg, { curate });
         await syncStoreInventory(store, cj, admin, cfg);
-        await refillCollections(store, cj, admin, cfg); // promote-from-warehouse (floor 8, target 12)
+        await refillCollections(store, cj, admin, cfg, { curate }); // promote-from-warehouse (floor 8, target 12)
       }
     } catch (e) {
       console.warn(`daily maintenance failed for ${shop}: ${(e as Error).message}`);

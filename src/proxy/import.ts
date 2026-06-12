@@ -1,5 +1,6 @@
 import type { AdminGraphql } from '../shopify-admin';
 import { chooseOrigin, type CjClient, type CjDetail } from '../cj';
+import type { Curation } from '../llm';
 import type { TenantStore } from '../tenant-store';
 import type { TenantConfig } from '../types';
 import { retailPriceGbp } from '../pricing';
@@ -99,8 +100,35 @@ export async function confirmAndImport(
   admin: AdminGraphql,
   cfg: TenantConfig,
   detail: CjDetail,
-  category?: string | null
+  category?: string | null,
+  curate?: (detail: CjDetail, context: string) => Promise<Curation | null>
 ): Promise<void> {
+  // Ghost-click curation gate (added 2026-06-12 after a "pet food" search
+  // imported a kitchen vacuum sealer): clicked ghosts must pass the SAME
+  // LLM relevance gate as warehouse admissions. Already-curated details
+  // (llmScore present) skip; a failed LLM degrades to mechanical gates.
+  if (curate && detail.llmScore === undefined) {
+    try {
+      const curated = await curate(detail, category ?? detail.categoryName);
+      if (curated) {
+        if (curated.relevanceScore < cfg.llm.scoreThreshold) {
+          console.warn(`import rejected by curation for ${detail.pid}: score ${curated.relevanceScore} < ${cfg.llm.scoreThreshold}`);
+          await store.putLink({ cjPid: detail.pid, state: 'failed', category: category ?? null });
+          return;
+        }
+        detail = {
+          ...detail,
+          nameEn: curated.title,
+          descriptionHtml: curated.descriptionHtml,
+          originalNameEn: detail.nameEn,
+          llmScore: curated.relevanceScore
+        };
+        if (curated.category) category = curated.category;
+      }
+    } catch (e) {
+      console.warn(`import curation failed for ${detail.pid}: ${(e as Error).message}`);
+    }
+  }
   // Freight-aware floor + origin badge: capture once at import time (ghost
   // clicks arrive without it; warehouse promotions already carry it).
   if (detail.freightUsd === undefined) {

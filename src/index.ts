@@ -17,7 +17,7 @@ import { registerUninstallWebhook, type RegisterWebhook } from './webhooks';
 import { validateGatesPayload, validatePricingPayload, validateLlmPayload, validateCollectionMap } from './validate';
 import { verifyAppProxy } from './proxy/verify';
 import { searchBackfill, normalizeKeyword } from './proxy/search';
-import { LlmClient, classifyKeyword } from './llm';
+import { LlmClient, classifyKeyword, curateProduct } from './llm';
 import { buildPreview, getDetailPreferWarehouse, confirmAndImport } from './proxy/import';
 import { makeAdminGraphql } from './shopify-admin';
 import { runDailyMaintenance, syncStoreInventory, refillCollections } from './jobs';
@@ -123,7 +123,11 @@ app.post('/api/sync', async (c) => {
 
   try {
     if (body.phase === 'refill') {
-      const imported = await refillCollections(store, cj, admin, cfg, { maxImports: REFILL_BATCH });
+      const syncLlm = new LlmClient(c.env.OPENROUTER_API_KEY);
+      const curate = syncLlm.available && cfg.llm.enabled
+        ? (d: Parameters<typeof curateProduct>[3], ctx: string) => curateProduct(syncLlm, store, cfg, d, ctx)
+        : undefined;
+      const imported = await refillCollections(store, cj, admin, cfg, { maxImports: REFILL_BATCH, curate });
       return c.json({ ok: true, phase: 'refill', imported, next: imported >= REFILL_BATCH ? 0 : null });
     }
     const offset = Math.max(0, Math.floor(Number(body.offset) || 0));
@@ -217,8 +221,12 @@ app.get('/proxy/product', async (c) => {
       await p.store.putLink({ cjPid: pid, state: 'importing' });
       const accessToken = await p.vault.open(p.tenant.dek_wrapped, p.tenant.access_token_enc);
       const admin = makeAdminGraphql(p.store.shop, accessToken);
-      // Background: live stock confirm (the one CJ call near the request path), then import.
-      c.executionCtx.waitUntil(confirmAndImport(p.store, cj, admin, p.cfg, detail));
+      // Background: curation gate + live stock confirm, then import.
+      const importLlm = new LlmClient(c.env.OPENROUTER_API_KEY);
+      const curate = importLlm.available && p.cfg.llm.enabled
+        ? (d: typeof detail, ctx: string) => curateProduct(importLlm, p.store, p.cfg, d, ctx)
+        : undefined;
+      c.executionCtx.waitUntil(confirmAndImport(p.store, cj, admin, p.cfg, detail, undefined, curate));
       link = await p.store.getLink(pid);
     }
     await p.store.recordEvent(pid, 'view');

@@ -240,6 +240,39 @@ describe('preview + confirmAndImport', () => {
     expect((await store.getWarehouseProduct('A'))?.status).toBe('low_stock');
   });
 
+  it('curation gate rejects an off-category ghost import before Shopify is touched', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const counters = { search: 0, detail: 0, stock: 0 };
+    const calls: string[] = [];
+    const curate = async () => ({ relevanceScore: 12, title: 'Vacuum Sealer', descriptionHtml: '<p>x</p>', category: null });
+    await confirmAndImport(store, fakeCj([], counters, { stock: 40 }), adminOk(calls), CFG, detailOf('A'), undefined, curate);
+    expect(calls).toEqual([]); // never reached Shopify
+    expect((await store.getLink('A'))?.state).toBe('failed');
+  });
+
+  it('curation rewrites the title on a passing ghost import and skips pre-curated details', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const counters = { search: 0, detail: 0, stock: 0 };
+    const calls: Array<{ q: string; v?: Record<string, unknown> }> = [];
+    const admin: AdminGraphql = async (q, v) => {
+      calls.push({ q, v });
+      if (q.includes('productSet')) return { productSet: { product: { id: 'gid://shopify/Product/9', handle: 'h' }, userErrors: [] } };
+      if (q.includes('publications(')) return { publications: { nodes: [] } };
+      if (q.includes('metafieldsSet')) return { metafieldsSet: { userErrors: [] } };
+      return { productUpdate: { product: { id: 'x' }, userErrors: [] } };
+    };
+    let curateCalls = 0;
+    const curate = async () => { curateCalls++; return { relevanceScore: 90, title: 'Tough Dog Rope Toy', descriptionHtml: '<p>good</p>', category: null }; };
+    await confirmAndImport(store, fakeCj([], counters, { stock: 40 }), admin, CFG, detailOf('A'), undefined, curate);
+    const set = calls.find((c) => c.q.includes('productSet'))!;
+    expect((set.v!.input as { title: string }).title).toBe('Tough Dog Rope Toy');
+    expect(curateCalls).toBe(1);
+
+    // already-curated detail (llmScore present) must NOT be re-scored
+    await confirmAndImport(store, fakeCj([], counters, { stock: 40 }), admin, CFG, { ...detailOf('B'), llmScore: 88 }, undefined, curate);
+    expect(curateCalls).toBe(1);
+  });
+
   it('proceeds on a stock-endpoint failure (unknown ≠ unavailable)', async () => {
     const store = new TenantStore(env.DB, SHOP);
     const cj = { stockByPid: async () => { throw new Error('CJ down'); } } as unknown as CjClient;
