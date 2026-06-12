@@ -1,6 +1,6 @@
 import { Vault } from '../vault';
 import { TenantStore, type KeywordDemand } from '../tenant-store';
-import { DEFAULT_GATES, DEFAULT_PRICING, DEFAULT_TARGET, type Gates, type Pricing, type TenantConfig } from '../types';
+import { DEFAULT_GATES, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_TARGET, type Floors, type Gates, type Pricing, type TenantConfig } from '../types';
 import type { ValidateResult } from '../cj';
 
 export async function connectCj(
@@ -43,6 +43,7 @@ export interface Status {
   collectionMap: TenantConfig['collectionMap'];
   gates: Gates;
   pricing: Pricing;
+  floors: Floors;
   target: number;
 }
 
@@ -55,6 +56,7 @@ export async function getStatus(db: D1Database, shop: string): Promise<Status> {
     collectionMap: cfg?.collectionMap ?? {},
     gates: cfg?.gates ?? DEFAULT_GATES,
     pricing: cfg?.pricing ?? DEFAULT_PRICING,
+    floors: cfg?.floors ?? DEFAULT_FLOORS,
     target: cfg?.target ?? DEFAULT_TARGET
   };
 }

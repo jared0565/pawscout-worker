@@ -1,4 +1,4 @@
-import { DEFAULT_PRICING, type TenantRow, type TenantConfig } from './types';
+import { DEFAULT_PRICING, DEFAULT_FLOORS, type TenantRow, type TenantConfig } from './types';
 
 interface SupplierCredRow {
   shop: string; supplier: string; api_key_enc: string; label: string | null; validated_at: string | null; created_at: string;
@@ -18,6 +18,22 @@ export interface ProductLink {
 }
 
 export interface KeywordDemand { keyword_norm: string; searches: number; avg_store_hits: number; avg_ghost_hits: number }
+
+export interface WarehouseRow {
+  shop: string;
+  cj_pid: string;
+  category: string | null;
+  title: string;
+  detail: string; // CjDetail JSON
+  price_usd: number;
+  listed_num: number;
+  stock: number;
+  search_text: string;
+  status: 'available' | 'low_stock' | 'stale';
+  fetched_at: string;
+  stock_checked_at: string;
+  created_at: string;
+}
 
 export class TenantStore {
   constructor(private readonly db: D1Database, readonly shop: string) {}
@@ -47,15 +63,16 @@ export class TenantStore {
   async seedConfig(cfg: TenantConfig): Promise<void> {
     await this.db
       .prepare(
-        `INSERT INTO tenant_config (shop, collection_map, gates, pricing, target, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-         ON CONFLICT(shop) DO UPDATE SET collection_map = ?2, gates = ?3, pricing = ?4, target = ?5, updated_at = ?6`
+        `INSERT INTO tenant_config (shop, collection_map, gates, pricing, floors, target, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+         ON CONFLICT(shop) DO UPDATE SET collection_map = ?2, gates = ?3, pricing = ?4, floors = ?5, target = ?6, updated_at = ?7`
       )
       .bind(
         this.shop,
         JSON.stringify(cfg.collectionMap),
         JSON.stringify(cfg.gates),
         JSON.stringify(cfg.pricing),
+        JSON.stringify(cfg.floors),
         cfg.target,
         new Date().toISOString()
       )
@@ -64,15 +81,16 @@ export class TenantStore {
 
   async getConfig(): Promise<TenantConfig | null> {
     const row = await this.db
-      .prepare(`SELECT collection_map, gates, pricing, target FROM tenant_config WHERE shop = ?1`)
+      .prepare(`SELECT collection_map, gates, pricing, floors, target FROM tenant_config WHERE shop = ?1`)
       .bind(this.shop)
-      .first<{ collection_map: string; gates: string; pricing: string; target: number }>();
+      .first<{ collection_map: string; gates: string; pricing: string; floors: string; target: number }>();
     if (!row) return null;
     return {
       collectionMap: JSON.parse(row.collection_map),
       gates: JSON.parse(row.gates),
       // Tolerate pre-flywheel rows ('{}' default): fill missing fields from defaults.
       pricing: { ...DEFAULT_PRICING, ...JSON.parse(row.pricing || '{}') },
+      floors: { ...DEFAULT_FLOORS, ...JSON.parse(row.floors || '{}') },
       target: row.target
     };
   }
@@ -249,6 +267,83 @@ export class TenantStore {
       .first<{ n: number }>();
     return row?.n ?? 0;
   }
+
+  // --- W1: PS-local product warehouse ---
+
+  async putWarehouseProduct(p: {
+    cjPid: string;
+    category: string | null;
+    title: string;
+    detailJson: string;
+    priceUsd: number;
+    listedNum: number;
+    stock: number;
+  }): Promise<void> {
+    const now = new Date().toISOString();
+    const searchText = `${p.title} ${p.category ?? ''}`.toLowerCase();
+    await this.db
+      .prepare(
+        `INSERT INTO warehouse_products
+           (shop, cj_pid, category, title, detail, price_usd, listed_num, stock, search_text, status, fetched_at, stock_checked_at, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'available', ?10, ?10, ?10)
+         ON CONFLICT(shop, cj_pid) DO UPDATE SET
+           category = COALESCE(?3, category), title = ?4, detail = ?5, price_usd = ?6,
+           listed_num = ?7, stock = ?8, search_text = ?9, status = 'available',
+           fetched_at = ?10, stock_checked_at = ?10`
+      )
+      .bind(this.shop, p.cjPid, p.category, p.title, p.detailJson, p.priceUsd, p.listedNum, p.stock, searchText, now)
+      .run();
+  }
+
+  getWarehouseProduct(cjPid: string): Promise<WarehouseRow | null> {
+    return this.db
+      .prepare(`SELECT * FROM warehouse_products WHERE shop = ?1 AND cj_pid = ?2`)
+      .bind(this.shop, cjPid)
+      .first<WarehouseRow>();
+  }
+
+  /** Available rows matching ANY token in title/category text (ranking happens in the caller). */
+  async searchWarehouse(tokens: string[], limit: number): Promise<WarehouseRow[]> {
+    const clean = tokens.map((t) => t.replace(/[%_]/g, '')).filter(Boolean).slice(0, 6);
+    if (!clean.length) return [];
+    const conds = clean.map((_, i) => `search_text LIKE ?${i + 2}`).join(' OR ');
+    const rs = await this.db
+      .prepare(
+        `SELECT * FROM warehouse_products WHERE shop = ?1 AND status = 'available' AND (${conds})
+         ORDER BY listed_num DESC LIMIT ${Math.min(Math.max(limit, 1), 100)}`
+      )
+      .bind(this.shop, ...clean.map((t) => `%${t}%`))
+      .all<WarehouseRow>();
+    return rs.results ?? [];
+  }
+
+  async countWarehouseAvailableByCategory(category: string): Promise<number> {
+    const row = await this.db
+      .prepare(`SELECT COUNT(*) AS n FROM warehouse_products WHERE shop = ?1 AND category = ?2 AND status = 'available'`)
+      .bind(this.shop, category)
+      .first<{ n: number }>();
+    return row?.n ?? 0;
+  }
+
+  async setWarehouseStock(cjPid: string, stock: number, status: 'available' | 'low_stock'): Promise<void> {
+    await this.db
+      .prepare(
+        `UPDATE warehouse_products SET stock = ?3, status = ?4, stock_checked_at = ?5
+         WHERE shop = ?1 AND cj_pid = ?2`
+      )
+      .bind(this.shop, cjPid, stock, status, new Date().toISOString())
+      .run();
+  }
+
+  /** Rows whose stock check or detail fetch is older than the cutoff (freshness cycle). */
+  async staleWarehouseRows(kind: 'stock' | 'detail', cutoffIso: string, limit: number): Promise<WarehouseRow[]> {
+    const field = kind === 'stock' ? 'stock_checked_at' : 'fetched_at';
+    const rs = await this.db
+      .prepare(`SELECT * FROM warehouse_products WHERE shop = ?1 AND ${field} < ?2 ORDER BY ${field} ASC LIMIT ${Math.min(Math.max(limit, 1), 100)}`)
+      .bind(this.shop, cutoffIso)
+      .all<WarehouseRow>();
+    return rs.results ?? [];
+  }
 }
 
 // --- cross-tenant maintenance (cron jobs) — keep all raw D1 in this file ---
@@ -270,4 +365,18 @@ export async function trimOldLogs(db: D1Database, beforeIso: string): Promise<vo
     db.prepare(`DELETE FROM product_events WHERE created_at < ?1`).bind(beforeIso),
     db.prepare(`DELETE FROM search_log WHERE created_at < ?1`).bind(beforeIso)
   ]);
+}
+
+/** Retention: drop warehouse rows that went unrefreshed past the cutoff and never got imported. */
+export async function purgeUnusedWarehouse(db: D1Database, beforeIso: string): Promise<number> {
+  const r = await db
+    .prepare(
+      `DELETE FROM warehouse_products WHERE fetched_at < ?1 AND NOT EXISTS (
+         SELECT 1 FROM product_links pl
+         WHERE pl.shop = warehouse_products.shop AND pl.cj_pid = warehouse_products.cj_pid AND pl.state = 'imported'
+       )`
+    )
+    .bind(beforeIso)
+    .run();
+  return r.meta.changes ?? 0;
 }

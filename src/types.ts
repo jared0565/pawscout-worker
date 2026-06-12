@@ -41,10 +41,18 @@ export interface Pricing {
   fxBufferPct: number;  // safety buffer on conversion, in percent
 }
 
+/** Inventory floors. Goals the crons work toward — never bypass gates to hit them. */
+export interface Floors {
+  warehouseDepth: number; // PS-local warehouse: products held per category
+  storeFloor: number;     // Shopify store: minimum listed per category (W2)
+  stockFloor: number;     // CJ units required to admit/sell a product
+}
+
 export interface TenantConfig {
   collectionMap: Record<string, { handle: string; tag: string }>;
   gates: Gates;
   pricing: Pricing;
+  floors: Floors;
   target: number;
 }
 
@@ -53,6 +61,7 @@ export interface TenantConfig {
 // stocks this"; W3's LLM curation is the real quality gate.
 export const DEFAULT_GATES: Gates = { popularityFloor: 1, priceMin: 5, priceMax: 80, relevance: 'title' };
 export const DEFAULT_PRICING: Pricing = { multiplier: 2.5, floor: 2.2, minMarginGbp: 6, fxUsdToGbp: 0.78, fxBufferPct: 2 };
+export const DEFAULT_FLOORS: Floors = { warehouseDepth: 20, storeFloor: 8, stockFloor: 10 };
 // 12 = display cap of the storefront grid (4×3): show what we can sell, never pad.
 export const DEFAULT_TARGET = 12;
 

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
 import { searchBackfill, normalizeKeyword, relevanceMatch } from '../src/proxy/search';
 import { TenantStore } from '../src/tenant-store';
-import { DEFAULT_GATES, DEFAULT_PRICING, type TenantConfig } from '../src/types';
+import { DEFAULT_GATES, DEFAULT_PRICING, DEFAULT_FLOORS, type TenantConfig } from '../src/types';
 import type { CjClient, CjSearchItem } from '../src/cj';
 
 beforeEach(async () => { await applyD1Migrations(env.DB, env.TEST_MIGRATIONS); });
@@ -11,6 +11,7 @@ const CFG: TenantConfig = {
   collectionMap: { 'pet-toys': { handle: 'pet-toys', tag: 'cj-cat-pet-toys' } },
   gates: DEFAULT_GATES, // floor 50, $5–80, title relevance
   pricing: DEFAULT_PRICING,
+  floors: DEFAULT_FLOORS,
   target: 12
 };
 

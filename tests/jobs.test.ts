@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
 import { cullStaleProducts, refillCollections } from '../src/jobs';
 import { TenantStore } from '../src/tenant-store';
-import { DEFAULT_GATES, DEFAULT_PRICING, type TenantConfig } from '../src/types';
+import { DEFAULT_GATES, DEFAULT_PRICING, DEFAULT_FLOORS, type TenantConfig } from '../src/types';
 import type { CjClient, CjSearchItem, CjDetail } from '../src/cj';
 import type { AdminGraphql } from '../src/shopify-admin';
 
@@ -71,6 +71,7 @@ describe('refillCollections', () => {
     collectionMap: { 'pet-toys': { handle: 'pet-toys', tag: 'cj-cat-pet-toys' } },
     gates: DEFAULT_GATES,
     pricing: DEFAULT_PRICING,
+    floors: DEFAULT_FLOORS,
     target: 2
   };
 

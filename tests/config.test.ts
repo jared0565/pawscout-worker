@@ -3,7 +3,7 @@ import { env, applyD1Migrations } from 'cloudflare:test';
 import { connectCj, saveGates, savePricing, getStatus } from '../src/console/routes';
 import { Vault } from '../src/vault';
 import { TenantStore } from '../src/tenant-store';
-import { DEFAULT_PRICING } from '../src/types';
+import { DEFAULT_PRICING, DEFAULT_FLOORS } from '../src/types';
 
 beforeEach(async () => { await applyD1Migrations(env.DB, env.TEST_MIGRATIONS); });
 
@@ -15,6 +15,7 @@ async function seedTenant(shop: string) {
     collectionMap: {},
     gates: { popularityFloor: 50, priceMin: 5, priceMax: 80, relevance: 'title' },
     pricing: DEFAULT_PRICING,
+    floors: DEFAULT_FLOORS,
     target: 16
   });
   return vault;
