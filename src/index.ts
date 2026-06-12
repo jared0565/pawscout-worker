@@ -20,7 +20,7 @@ import { searchBackfill, normalizeKeyword } from './proxy/search';
 import { LlmClient, classifyKeyword } from './llm';
 import { buildPreview, getDetailPreferWarehouse, confirmAndImport } from './proxy/import';
 import { makeAdminGraphql } from './shopify-admin';
-import { runDailyMaintenance } from './jobs';
+import { runDailyMaintenance, syncStoreInventory, refillCollections } from './jobs';
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -99,6 +99,44 @@ app.post('/api/llm', async (c) => {
   await saveLlm(c.env.DB, s, v.value);
   return c.json({ ok: true });
 });
+// Manual "Sync now": the nightly maintenance pieces, runnable on demand from
+// the console. Batched — each call does a slice of the work and tells the
+// caller where to resume, so no single request outlives proxy/browser limits.
+const SYNC_BATCH = 8; // ~2 paced CJ calls/product ≈ 20s/batch
+const REFILL_BATCH = 5;
+app.post('/api/sync', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: { phase?: string; offset?: number } = {};
+  try { body = await c.req.json(); } catch { /* defaults */ }
+  const store = new TenantStore(c.env.DB, s);
+  const tenant = await store.getTenant();
+  const cfg = await store.getConfig();
+  if (!tenant?.access_token_enc || !cfg) return c.json({ ok: false, error: 'Not configured' }, 400);
+  if (!(await store.getSupplierCredential('cj'))) return c.json({ ok: false, error: 'Connect CJ first' }, 400);
+
+  const vault = await Vault.fromMasterKey(c.env.PAWSCOUT_MASTER_KEY);
+  const accessToken = await vault.open(tenant.dek_wrapped, tenant.access_token_enc);
+  const admin = makeAdminGraphql(s, accessToken);
+  const f = cjFetchFromEnv(c.env);
+  const tokens = new CjTokenManager(store, vault, f);
+  const cj = new CjClient(() => tokens.getToken(), f);
+
+  try {
+    if (body.phase === 'refill') {
+      const imported = await refillCollections(store, cj, admin, cfg, { maxImports: REFILL_BATCH });
+      return c.json({ ok: true, phase: 'refill', imported, next: imported >= REFILL_BATCH ? 0 : null });
+    }
+    const offset = Math.max(0, Math.floor(Number(body.offset) || 0));
+    const total = (await store.listImportedLinks()).length;
+    const synced = await syncStoreInventory(store, cj, admin, cfg, { maxProducts: SYNC_BATCH, offset });
+    const next = offset + SYNC_BATCH;
+    return c.json({ ok: true, phase: 'inventory', synced, total, next: next < total ? next : null });
+  } catch (e) {
+    console.warn(`manual sync failed: ${(e as Error).message}`);
+    return c.json({ ok: false, error: `Sync failed: ${(e as Error).message}` }, 500);
+  }
+});
+
 app.post('/api/collections', async (c) => {
   const s = await shopOf(c); if (typeof s !== 'string') return s;
   let body: unknown;

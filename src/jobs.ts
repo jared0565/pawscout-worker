@@ -4,7 +4,7 @@ import { makeAdminGraphql, type AdminGraphql } from './shopify-admin';
 import { TenantStore, listActiveShops, purgeExpiredSearchCache, purgeUnusedWarehouse, trimOldLogs } from './tenant-store';
 import { passesGates, normalizeKeyword, CACHE_TTL_DAYS } from './proxy/search';
 import { confirmAndImport, getCachedDetail, resolveCategory } from './proxy/import';
-import { getPrimaryLocationId, productInventoryItems, setInventoryQuantities, setSupplierMetafields, updateVariantPrices, MAX_TRACKED_QTY } from './proxy/inventory';
+import { enableTracking, getPrimaryLocationId, productInventoryItems, setInventoryQuantities, setSupplierMetafields, updateVariantPrices, MAX_TRACKED_QTY } from './proxy/inventory';
 import { retailPriceGbp } from './pricing';
 import type { CjDetail } from './cj';
 import { LlmClient, curateProduct, type Curation } from './llm';
@@ -108,9 +108,10 @@ export async function syncStoreInventory(
   cj: CjClient,
   admin: AdminGraphql,
   cfg: TenantConfig,
-  opts: { maxProducts?: number; pause?: (ms: number) => Promise<void> } = {}
+  opts: { maxProducts?: number; offset?: number; pause?: (ms: number) => Promise<void> } = {}
 ): Promise<number> {
   const maxProducts = opts.maxProducts ?? 60;
+  const offset = opts.offset ?? 0;
   const pause = opts.pause ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const locationId = await getPrimaryLocationId(admin);
   if (!locationId) {
@@ -119,7 +120,7 @@ export async function syncStoreInventory(
   }
 
   let synced = 0;
-  for (const link of (await store.listImportedLinks()).slice(0, maxProducts)) {
+  for (const link of (await store.listImportedLinks()).slice(offset, offset + maxProducts)) {
     if (!link.shopify_product_id) continue;
     try {
       // Fresh CJ detail: source of truth for variant costs (price sync) and,
@@ -159,6 +160,9 @@ export async function syncStoreInventory(
       }
 
       const variants = await productInventoryItems(admin, link.shopify_product_id);
+      // Untracked variants (imports whose CJ detail lacked stock) must be
+      // activated first or the quantity write below errors out.
+      await enableTracking(admin, link.shopify_product_id, variants.filter((v) => !v.tracked));
       await setInventoryQuantities(
         admin,
         locationId,
@@ -189,7 +193,7 @@ export async function syncStoreInventory(
       await store.setWarehouseStock(link.cj_pid, maxStock, paused ? 'low_stock' : 'available');
       synced++;
     } catch (e) {
-      // Pre-W2 imports may be untracked — log and move on; never abort the run.
+      // Per-product failures (CJ hiccups, Shopify errors) log and move on; never abort the run.
       console.warn(`inventory sync failed for ${link.cj_pid}: ${(e as Error).message}`);
     }
   }

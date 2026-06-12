@@ -50,9 +50,10 @@ async function seedWarehouse(store: TenantStore, pid: string, category: string, 
 
 interface Call { query: string; variables?: Record<string, unknown> }
 
-function shopAdmin(calls: Call[], currentPrice = '99.99'): AdminGraphql {
+function shopAdmin(calls: Call[], currentPrice = '99.99', tracked = true): AdminGraphql {
   return async (query, variables) => {
     calls.push({ query, variables });
+    if (query.includes('inventoryItemUpdate')) return { inventoryItemUpdate: { userErrors: [] } };
     if (query.includes('productUpdate')) return { productUpdate: { product: { id: 'x' }, userErrors: [] } };
     if (query.includes('productSet')) {
       const title = (variables!.input as { title: string }).title;
@@ -62,7 +63,7 @@ function shopAdmin(calls: Call[], currentPrice = '99.99'): AdminGraphql {
     if (query.includes('publishablePublish')) return { publishablePublish: { userErrors: [] } };
     if (query.includes('pawscoutLocation')) return { location: { id: 'gid://shopify/Location/1' } };
     if (query.includes('pawscoutVariants')) {
-      return { product: { variants: { nodes: [{ id: 'gid://v/1', sku: (variables!.id as string).includes('A') ? 'sku-A' : 'sku-x', price: currentPrice, inventoryItem: { id: 'gid://inv/1' } }] } } };
+      return { product: { variants: { nodes: [{ id: 'gid://v/1', sku: (variables!.id as string).includes('A') ? 'sku-A' : 'sku-x', price: currentPrice, inventoryItem: { id: 'gid://inv/1', tracked } }] } } };
     }
     if (query.includes('productVariantsBulkUpdate')) return { productVariantsBulkUpdate: { userErrors: [] } };
     if (query.includes('inventorySetQuantities')) return { inventorySetQuantities: { userErrors: [] } };
@@ -231,6 +232,54 @@ describe('syncStoreInventory', () => {
     const calls: Call[] = [];
     await syncStoreInventory(store, cj, shopAdmin(calls, '19.99'), CFG, { pause: async () => {} });
     expect(calls.some((c) => c.query.includes('productVariantsBulkUpdate'))).toBe(false);
+  });
+
+  it('activates tracking + DENY on untracked variants before setting quantities', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await insertLink('A', 'imported', 5);
+    const cj = {
+      detail: async (pid: string) => detailOf(pid, 40, 10),
+      stockByPid: async () => new Map<string, number>()
+    } as unknown as CjClient;
+
+    const calls: Call[] = [];
+    // price already rule-exact so the only bulk update must be the DENY one
+    await syncStoreInventory(store, cj, shopAdmin(calls, '19.99', false), CFG, { pause: async () => {} });
+
+    const trackIdx = calls.findIndex((c) => c.query.includes('inventoryItemUpdate'));
+    const qtyIdx = calls.findIndex((c) => c.query.includes('inventorySetQuantities'));
+    expect(trackIdx).toBeGreaterThan(-1);
+    expect(trackIdx).toBeLessThan(qtyIdx); // activation must precede the quantity write
+    expect(calls[trackIdx].variables!.id).toBe('gid://inv/1');
+    const deny = calls.find((c) => c.query.includes('productVariantsBulkUpdate'))!;
+    expect((deny.variables!.variants as { inventoryPolicy: string }[])[0].inventoryPolicy).toBe('DENY');
+    expect((calls[qtyIdx].variables!.input as { quantities: { quantity: number }[] }).quantities[0].quantity).toBe(40);
+  });
+
+  it('already-tracked variants trigger no tracking mutations', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await insertLink('A', 'imported', 5);
+    const cj = {
+      detail: async (pid: string) => detailOf(pid, 40, 10),
+      stockByPid: async () => new Map<string, number>()
+    } as unknown as CjClient;
+    const calls: Call[] = [];
+    await syncStoreInventory(store, cj, shopAdmin(calls, '19.99', true), CFG, { pause: async () => {} });
+    expect(calls.some((c) => c.query.includes('inventoryItemUpdate'))).toBe(false);
+  });
+
+  it('offset resumes the run partway through the listed catalog', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await insertLink('A', 'imported', 5); // older updated_at → first in list
+    await insertLink('B', 'imported', 3);
+
+    const calls: Call[] = [];
+    const n = await syncStoreInventory(store, stockCj(40), shopAdmin(calls), CFG, { offset: 1, pause: async () => {} });
+
+    expect(n).toBe(1);
+    const variantReads = calls.filter((c) => c.query.includes('pawscoutVariants'));
+    expect(variantReads).toHaveLength(1);
+    expect(String(variantReads[0].variables!.id)).toContain('B');
   });
 
   it('a per-product Shopify failure never aborts the run', async () => {

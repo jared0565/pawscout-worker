@@ -208,6 +208,15 @@ export function consolePage(apiKey: string): Response {
   </section>
 
   <section class="card">
+    <h2>Maintenance</h2>
+    <p class="sub" style="margin:0 0 12px">Runs the nightly CJ sync on demand: every listed product gets current supplier stock, rule-aligned prices and tracking, then collections top up from the warehouse.</p>
+    <div class="row">
+      <button id="syncbtn" onclick="syncNow()">Sync now</button>
+    </div>
+    <p id="syncmsg" class="msg muted"></p>
+  </section>
+
+  <section class="card">
     <h2>Search demand — last 30 days</h2>
     <div id="insights"><p class="muted">Loading…</p></div>
   </section>
@@ -373,6 +382,32 @@ async function saveLlm(){
     if(r.ok){ setMsg('llmmsg','Saved ✓','ok'); refresh(); }
     else setMsg('llmmsg','Failed: '+(r.error||'unknown error'),'no');
   }catch(e){ setMsg('llmmsg','Failed: '+errText(e),'no'); }
+}
+async function syncNow(){
+  var btn=el('syncbtn'); btn.disabled=true;
+  try{
+    setMsg('syncmsg','Syncing prices & stock with CJ…','muted');
+    var offset=0, done=0, total=0;
+    for(;;){
+      var r=await api('/sync',{phase:'inventory',offset:offset});
+      if(!r.ok){ setMsg('syncmsg','Failed: '+(r.error||'unknown error'),'no'); return; }
+      done+=r.synced; total=r.total;
+      setMsg('syncmsg','Synced '+done+' of '+total+' products…','muted');
+      if(r.next==null) break;
+      offset=r.next;
+    }
+    setMsg('syncmsg','Topping up collections from the warehouse…','muted');
+    var promoted=0;
+    for(;;){
+      var p=await api('/sync',{phase:'refill'});
+      if(!p.ok){ setMsg('syncmsg','Sync done ('+done+' products) — refill failed: '+(p.error||'unknown error'),'no'); return; }
+      promoted+=p.imported;
+      if(p.next==null) break;
+    }
+    setMsg('syncmsg','Done ✓ '+done+' products synced'+(promoted?', '+promoted+' promoted from warehouse':'')+'.','ok');
+    loadInsights();
+  }catch(e){ setMsg('syncmsg','Failed: '+errText(e),'no'); }
+  finally{ btn.disabled=false; }
 }
 async function saveCollections(){
   setMsg('mapmsg','Saving…','muted');

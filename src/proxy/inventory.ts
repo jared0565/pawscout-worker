@@ -12,20 +12,52 @@ export async function getPrimaryLocationId(admin: AdminGraphql): Promise<string 
   }
 }
 
-export interface VariantInventory { variantId: string; sku: string; price: string; inventoryItemId: string }
+export interface VariantInventory { variantId: string; sku: string; price: string; inventoryItemId: string; tracked: boolean }
 
 export async function productInventoryItems(admin: AdminGraphql, productId: string): Promise<VariantInventory[]> {
   const data = await admin(
     `query pawscoutVariants($id: ID!) {
-      product(id: $id) { variants(first: 50) { nodes { id sku price inventoryItem { id } } } }
+      product(id: $id) { variants(first: 50) { nodes { id sku price inventoryItem { id tracked } } } }
     }`,
     { id: productId }
   );
-  const nodes = ((data.product as { variants?: { nodes?: { id: string; sku: string | null; price?: string; inventoryItem?: { id: string } }[] } } | null)
+  const nodes = ((data.product as { variants?: { nodes?: { id: string; sku: string | null; price?: string; inventoryItem?: { id: string; tracked?: boolean } }[] } } | null)
     ?.variants?.nodes) ?? [];
   return nodes
     .filter((n) => n.inventoryItem?.id)
-    .map((n) => ({ variantId: n.id, sku: n.sku ?? '', price: n.price ?? '', inventoryItemId: n.inventoryItem!.id }));
+    .map((n) => ({ variantId: n.id, sku: n.sku ?? '', price: n.price ?? '', inventoryItemId: n.inventoryItem!.id, tracked: n.inventoryItem!.tracked === true }));
+}
+
+/**
+ * Activate Shopify inventory tracking on untracked variants (ghost-click
+ * imports whose CJ detail lacked stock arrive untracked) and set their policy
+ * to DENY so a tracked zero can never oversell. Must run BEFORE
+ * inventorySetQuantities — quantity writes on untracked items error.
+ */
+export async function enableTracking(
+  admin: AdminGraphql,
+  productId: string,
+  variants: { variantId: string; inventoryItemId: string }[]
+): Promise<void> {
+  if (!variants.length) return;
+  for (const v of variants) {
+    const data = await admin(
+      `mutation pawscoutTrack($id: ID!) {
+        inventoryItemUpdate(id: $id, input: { tracked: true }) { userErrors { field message } }
+      }`,
+      { id: v.inventoryItemId }
+    );
+    const errs = (data.inventoryItemUpdate as { userErrors?: { message: string }[] } | undefined)?.userErrors ?? [];
+    if (errs.length) throw new Error(errs.map((e) => e.message).join('; '));
+  }
+  const data = await admin(
+    `mutation pawscoutDeny($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
+      productVariantsBulkUpdate(productId: $productId, variants: $variants) { userErrors { field message } }
+    }`,
+    { productId, variants: variants.map((v) => ({ id: v.variantId, inventoryPolicy: 'DENY' })) }
+  );
+  const errs = (data.productVariantsBulkUpdate as { userErrors?: { message: string }[] } | undefined)?.userErrors ?? [];
+  if (errs.length) throw new Error(errs.map((e) => e.message).join('; '));
 }
 
 /** Bulk price updates for a product's variants. Throws on userErrors. */
