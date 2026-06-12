@@ -1,7 +1,7 @@
 import { Vault } from './vault';
 import { CjClient, CjTokenManager, cjFetchFromEnv, type CjSearchItem } from './cj';
 import { makeAdminGraphql, type AdminGraphql } from './shopify-admin';
-import { TenantStore, listActiveShops, purgeExpiredSearchCache, trimOldLogs } from './tenant-store';
+import { TenantStore, listActiveShops, purgeExpiredSearchCache, purgeUnusedWarehouse, trimOldLogs } from './tenant-store';
 import { passesGates, normalizeKeyword, CACHE_TTL_DAYS } from './proxy/search';
 import { importProduct, getCachedDetail, resolveCategory } from './proxy/import';
 import type { Env, TenantConfig } from './types';
@@ -113,9 +113,144 @@ export async function refillCollections(
   return imported;
 }
 
+// --- W1: warehouse replenishment + freshness ---
+
+export interface ReplenishOpts {
+  maxCjCalls?: number;
+  maxAdmits?: number;
+  pause?: (ms: number) => Promise<void>;
+  now?: () => number;
+}
+
+/**
+ * Keep the PS-local warehouse stocked: demand keywords first (most-searched,
+ * under-served), then categories below `floors.warehouseDepth`. Admission =
+ * gates + stock ≥ `floors.stockFloor` + not already warehoused/imported.
+ * Budgets bound both CJ calls and admits per run; shortfalls just carry to the
+ * next night — quality and pacing always outrank the quota.
+ */
+export async function replenishWarehouse(
+  store: TenantStore,
+  cj: CjClient,
+  cfg: TenantConfig,
+  opts: ReplenishOpts = {}
+): Promise<number> {
+  const maxCjCalls = opts.maxCjCalls ?? 120;
+  const maxAdmits = opts.maxAdmits ?? 40;
+  const pause = opts.pause ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const now = opts.now ?? Date.now;
+  let cjCalls = 0;
+  let admitted = 0;
+
+  const spend = async (): Promise<void> => {
+    cjCalls++;
+    await pause(CJ_CALL_GAP_MS);
+  };
+
+  const search = async (keyword: string): Promise<CjSearchItem[]> => {
+    const kw = normalizeKeyword(keyword);
+    const cached = await store.getSearchCache(`kw:${kw}`);
+    let items: CjSearchItem[];
+    if (cached) {
+      items = JSON.parse(cached);
+    } else {
+      if (cjCalls >= maxCjCalls) return [];
+      await spend();
+      items = await cj.search(kw);
+      await store.putSearchCache(`kw:${kw}`, JSON.stringify(items), CACHE_TTL_DAYS);
+    }
+    return items.filter((i) => passesGates(i, cfg.gates, kw)).sort((a, b) => b.listedNum - a.listedNum);
+  };
+
+  const tryAdmit = async (item: CjSearchItem, category: string | null): Promise<boolean> => {
+    if (admitted >= maxAdmits || cjCalls >= maxCjCalls) return false;
+    if (await store.getWarehouseProduct(item.pid)) return false;
+    const link = await store.getLink(item.pid);
+    if (link && (link.state === 'imported' || link.state === 'importing')) return false;
+
+    await spend();
+    const detail = await getCachedDetail(store, cj, item.pid);
+    if (!detail) return false;
+
+    let stock = detail.stock ?? 0;
+    if (!stock) {
+      if (cjCalls >= maxCjCalls) return false;
+      await spend();
+      try {
+        const m = await cj.stockByPid(item.pid);
+        stock = m.size ? Math.max(...m.values()) : 0;
+      } catch {
+        stock = 0;
+      }
+    }
+    if (stock < cfg.floors.stockFloor) return false;
+
+    await store.putWarehouseProduct({
+      cjPid: item.pid,
+      category: category ?? resolveCategory(cfg, detail),
+      title: detail.nameEn,
+      detailJson: JSON.stringify({ ...detail, stock }),
+      priceUsd: Math.min(...detail.variants.map((v) => v.sellPriceUsd)),
+      listedNum: detail.listedNum,
+      stock
+    });
+    admitted++;
+    return true;
+  };
+
+  // 1) demand keywords (most-searched under-served, last 30 days)
+  const since = new Date(now() - 30 * 86400_000).toISOString();
+  for (const demand of await store.underfilledKeywords(since, cfg.target, 5)) {
+    if (admitted >= maxAdmits || cjCalls >= maxCjCalls) break;
+    for (const item of (await search(demand.keyword_norm)).slice(0, 5)) {
+      await tryAdmit(item, null);
+    }
+  }
+
+  // 2) categories below warehouse depth
+  for (const key of Object.keys(cfg.collectionMap)) {
+    if (admitted >= maxAdmits || cjCalls >= maxCjCalls) break;
+    let deficit = cfg.floors.warehouseDepth - (await store.countWarehouseAvailableByCategory(key));
+    if (deficit <= 0) continue;
+    for (const item of await search(key.replace(/-/g, ' '))) {
+      if (deficit <= 0 || admitted >= maxAdmits || cjCalls >= maxCjCalls) break;
+      if (await tryAdmit(item, key)) deficit--;
+    }
+  }
+  return admitted;
+}
+
+/** Freshness cycle: re-check stock on stale rows (and flag under-floor rows low_stock). */
+export async function refreshWarehouseStock(
+  store: TenantStore,
+  cj: CjClient,
+  cfg: TenantConfig,
+  opts: ReplenishOpts = {}
+): Promise<number> {
+  const maxCjCalls = opts.maxCjCalls ?? 30;
+  const pause = opts.pause ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const now = opts.now ?? Date.now;
+  const cutoff = new Date(now() - 48 * 3600_000).toISOString();
+  let checked = 0;
+  for (const row of await store.staleWarehouseRows('stock', cutoff, maxCjCalls)) {
+    if (checked >= maxCjCalls) break;
+    checked++;
+    await pause(CJ_CALL_GAP_MS);
+    try {
+      const m = await cj.stockByPid(row.cj_pid);
+      const stock = m.size ? Math.max(...m.values()) : 0;
+      await store.setWarehouseStock(row.cj_pid, stock, stock >= cfg.floors.stockFloor ? 'available' : 'low_stock');
+    } catch (e) {
+      console.warn(`stock refresh failed for ${row.cj_pid}: ${(e as Error).message}`);
+    }
+  }
+  return checked;
+}
+
 /** Daily cron entry point: retention purges, then per-tenant cull + refill. */
 export async function runDailyMaintenance(env: Env): Promise<void> {
   await purgeExpiredSearchCache(env.DB);
+  await purgeUnusedWarehouse(env.DB, new Date(Date.now() - 30 * 86400_000).toISOString());
   await trimOldLogs(env.DB, new Date(Date.now() - LOG_RETENTION_DAYS * 86400_000).toISOString());
 
   const vault = await Vault.fromMasterKey(env.PAWSCOUT_MASTER_KEY);
@@ -132,7 +267,9 @@ export async function runDailyMaintenance(env: Env): Promise<void> {
         const f = cjFetchFromEnv(env);
         const tokens = new CjTokenManager(store, vault, f);
         const cj = new CjClient(() => tokens.getToken(), f);
-        await refillCollections(store, cj, admin, cfg);
+        await refreshWarehouseStock(store, cj, cfg);
+        await replenishWarehouse(store, cj, cfg);
+        await refillCollections(store, cj, admin, cfg); // store-level fill (W2 reworks to promote-from-warehouse)
       }
     } catch (e) {
       console.warn(`daily maintenance failed for ${shop}: ${(e as Error).message}`);
