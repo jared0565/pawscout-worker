@@ -582,6 +582,17 @@ abandonment-for-coupons); no exit-intent popups (mobile-hostile, off-
 brand); no SMS recovery. Revisit discounts only as email #2, small,
 rotated, if data demands.
 
+**Discount guardrail (decided 2026-06-12):** net margin is 17%, so the
+break-even discount is ~17–18% — a 20% discount LOSES ~£1/order (£50
+order: full price nets +£8.50; 10% off nets +£3.80, i.e. 55% of profit
+gone; 20% off nets −£0.90; volume can't fix a per-order loss; 10% off
+needs 2.2× volume just to tread water). CEILING: 10%, single-use,
+first-order or slow-mover only — never blanket. Preferred levers in
+order: free-over-£50 threshold (self-funding), bundles/multi-buy (shared
+freight + second-item margin), first-order welcome code accounted as
+acquisition cost vs ad CPA. Sale events need room built into a genuine
+regular price first (UK rules ban fictitious was-prices).
+
 Measurement: abandonment + recovery rate → W4 digest; Shopify's native
 automation self-reports recovered sales from day one.
 
