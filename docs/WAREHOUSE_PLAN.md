@@ -392,6 +392,27 @@ economics for net-profit impact.
      cancellations. Keep the 3% refunds allowance; track actuals.
    - Mitigations: LLM size charts for harnesses/apparel (top return
      drivers); curated accurate descriptions (already live).
+   - **Refund-exposure math (user-raised 2026-06-12 follow-up — complete
+     refund obligation, full vs partial):**
+     - FULL return (whole order, change of mind): refund = all products +
+       original outbound delivery at basic rate (Express upgrade delta not
+       owed). Revenue nets to ZERO; sunk costs stay. £50 free-ship order:
+       ~£20 COGS + ~£6 freight + ~£1.45 Shopify fee (not returned on
+       refunds) ≈ **£27 loss ≈ full landed cost + fees**. Returned goods
+       have no salvage (no warehouse) except UK-origin restock to CJ UK or
+       faulty items recovered via CJ dispute (loss shrinks to ≈ the fee).
+     - PARTIAL return: refund the returned line item only — outbound-
+       shipping refund duty applies to full cancellation, not partial.
+       Apply the policy clawback: if the return drops the order below £50,
+       deduct the £4.99 delivery charge from the refund (must be stated in
+       the policy). Loss ≈ that item's product cost + proportional fee;
+       parcel freight already shared. Shopify supports per-line partial
+       refunds natively.
+     - Allowance sizing: a fully refunded order costs ~53–55% of its
+       revenue, so the model's 3%-of-revenue refunds line absorbs full-
+       loss refunds on ~5–6% of orders; pet-niche return rates run 2–5%
+       (apparel/harnesses are the risk subset). Adequate — track actuals
+       split full-vs-partial once orders flow.
 
 **Implementation queue once the user confirms:** (i) PDP delivery block in
 theme; (ii) freight-aware margin floor + origin preference + "Ships from
