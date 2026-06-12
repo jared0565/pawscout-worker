@@ -22,4 +22,13 @@ describe('tenant isolation guard', () => {
     }
     expect(offenders, `raw D1 access outside tenant-store.ts: ${offenders.join(', ')}`).toEqual([]);
   });
+
+  it('never defaults to the raw global fetch (workerd brand-checks `this` — use defaultFetch)', () => {
+    const offenders: string[] = [];
+    for (const [path, src] of Object.entries(sources)) {
+      if (path.endsWith('safe-fetch.ts')) continue;
+      if (/typeof fetch\s*=\s*fetch\b/.test(src)) offenders.push(path);
+    }
+    expect(offenders, `raw global fetch default (Illegal invocation in prod): ${offenders.join(', ')}`).toEqual([]);
+  });
 });

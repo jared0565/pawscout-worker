@@ -1,4 +1,5 @@
 import { LATEST_API_VERSION } from '@shopify/shopify-api';
+import { defaultFetch } from './safe-fetch';
 
 const MUTATION = `mutation pawscoutUninstallHook($url: URL!) {
   webhookSubscriptionCreate(topic: APP_UNINSTALLED, webhookSubscription: { callbackUrl: $url, format: JSON }) {
@@ -26,7 +27,7 @@ export async function registerUninstallWebhook(
   shop: string,
   accessToken: string,
   appUrl: string,
-  fetchImpl: typeof fetch = fetch
+  fetchImpl: typeof fetch = defaultFetch
 ): Promise<RegisterResult> {
   try {
     const resp = await fetchImpl(`https://${shop}/admin/api/${LATEST_API_VERSION}/graphql.json`, {

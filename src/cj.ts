@@ -1,5 +1,6 @@
 import type { Vault } from './vault';
 import type { TenantStore } from './tenant-store';
+import { defaultFetch } from './safe-fetch';
 
 const CJ_BASE = 'https://developers.cjdropshipping.com/api2.0/v1';
 const CJ_AUTH_URL = `${CJ_BASE}/authentication/getAccessToken`;
@@ -11,7 +12,7 @@ const EXPIRY_SAFETY_MS = 3_600_000;
 
 export type ValidateResult = { ok: true } | { ok: false; error: string };
 
-export async function validateCjKey(apiKey: string, fetchImpl: typeof fetch = fetch): Promise<ValidateResult> {
+export async function validateCjKey(apiKey: string, fetchImpl: typeof fetch = defaultFetch): Promise<ValidateResult> {
   try {
     const resp = await fetchImpl(CJ_AUTH_URL, {
       method: 'POST',
@@ -28,7 +29,7 @@ export async function validateCjKey(apiKey: string, fetchImpl: typeof fetch = fe
 
 export async function cjAuthenticate(
   apiKey: string,
-  fetchImpl: typeof fetch = fetch
+  fetchImpl: typeof fetch = defaultFetch
 ): Promise<{ token: string; expiresAt: string }> {
   const resp = await fetchImpl(CJ_AUTH_URL, {
     method: 'POST',
@@ -55,7 +56,7 @@ export class CjTokenManager {
   constructor(
     private readonly store: TenantStore,
     private readonly vault: Vault,
-    private readonly fetchImpl: typeof fetch = fetch,
+    private readonly fetchImpl: typeof fetch = defaultFetch,
     private readonly now: () => number = Date.now
   ) {}
 
@@ -116,7 +117,7 @@ export function parseCjPrice(v: unknown): number {
 export class CjClient {
   constructor(
     private readonly token: () => Promise<string>,
-    private readonly fetchImpl: typeof fetch = fetch
+    private readonly fetchImpl: typeof fetch = defaultFetch
   ) {}
 
   private async get(path: string, params: Record<string, string>): Promise<unknown> {
