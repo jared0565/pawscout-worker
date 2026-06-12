@@ -464,16 +464,39 @@ Phase 1 (manual, at launch):
 - Accepted residual: valid fault reported near/after CJ's day-30 window
   is refunded with no CJ recovery; rare, lives inside the 3% allowance.
 
-Phase 2 (W6 candidate — PawScout returns portal):
-- [ ] `/proxy/return` page (App Proxy HMAC, 200+ok rule): buyer picks
-      claim type, uploads against a per-type checklist.
-- [ ] LLM vision gate via OpenRouter (existing LlmClient + key): label
-      legible? packaging shown? photographed product matches our catalog
-      image for that SKU (doubles as fraud screen)? Instant "retake
-      showing X" instead of support round-trips.
-- [ ] Storage: R2 bucket for evidence bundles; deadline computed from
-      delivery date; console card lists open claims + days remaining.
-- [ ] Output: CJ-ready evidence bundle so filing is copy-paste.
+Phase 2 (W6 — automated claims pipeline; CONFIRMED feasible 2026-06-12):
+CJ API 2.0 has a disputes module — `POST /api2.0/v1/disputes/create` takes
+{orderId, businessDisputeId, disputeReasonId, expectType, refundType,
+messageText, imageUrl[], productInfoList[{lineItemId, quantity}]} plus
+companion list/confirm/cancel/getDisputeProducts endpoints (docs:
+developers.cjdropshipping.com/en/api/api2/api/dispute.html — site blocks
+bots; verify disputeReasonId enum + image constraints via the relay with
+our token at build time). imageUrl[] means R2-hosted evidence URLs can be
+passed straight through — full automation is possible end-to-end.
+
+Target pipeline: buyer initiates → PS gates evidence → auto-file to CJ:
+- [ ] `/proxy/return` page (App Proxy HMAC, 200+ok rule): order number +
+      email verified against Shopify; buyer picks line item + claim type.
+- [ ] Evidence intake: uploads → R2 bucket (new binding); LLM vision gate
+      via OpenRouter (label legible? packaging shown? product matches our
+      catalog image for that SKU — doubles as fraud screen); instant
+      "retake showing X" feedback; claim blocked until checklist green.
+- [ ] D1 claims tables + state machine: draft → evidence_complete →
+      filed → cj_accepted/cj_declined → refunded/closed; dispute deadline
+      computed from delivery date, surfaced in console.
+- [ ] Auto-file: disputes/create via relay (stored CJ orderId, reasonId,
+      refund expectType, R2 image URLs, line items); poll dispute list
+      for verdict; console claims card with days-remaining.
+- [ ] HUMAN GATE (initial): customer refund is one-click APPROVAL in the
+      console, not autonomous — relax to a config flag after ~a dozen
+      claims observed. Evidence gating + CJ filing fully automatic.
+
+PREREQUISITES (W6 depends on the order-fulfilment phase):
+- [ ] Order pipeline first: Shopify orders/create webhook → CJ
+      createOrder → store shopifyOrderId↔cjOrderId mapping in D1.
+      Does not exist yet (checkout disabled). Disputes reference cjOrderId.
+- [ ] Shopify protected-customer-data approval (read_orders) — same
+      application the W4 orders/ROAS work needs; one approval covers both.
 
 ## 7b. Phase W5 — Email marketing via Resend (designed, not yet scheduled)
 
