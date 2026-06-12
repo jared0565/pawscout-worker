@@ -6,6 +6,7 @@ import { passesGates, normalizeKeyword, CACHE_TTL_DAYS } from './proxy/search';
 import { confirmAndImport, getCachedDetail, resolveCategory } from './proxy/import';
 import { getPrimaryLocationId, productInventoryItems, setInventoryQuantities, setSupplierMetafields, MAX_TRACKED_QTY } from './proxy/inventory';
 import type { CjDetail } from './cj';
+import { LlmClient, curateProduct, type Curation } from './llm';
 import type { Env, TenantConfig } from './types';
 
 export const CULL_WINDOW_DAYS = 30; // grace period AND inactivity window
@@ -167,6 +168,8 @@ export interface ReplenishOpts {
   maxAdmits?: number;
   pause?: (ms: number) => Promise<void>;
   now?: () => number;
+  /** W3: admission curation — score + rewrite. null result = mechanical gates only. */
+  curate?: (detail: CjDetail, context: string) => Promise<Curation | null>;
 }
 
 /**
@@ -209,7 +212,7 @@ export async function replenishWarehouse(
     return items.filter((i) => passesGates(i, cfg.gates, kw)).sort((a, b) => b.listedNum - a.listedNum);
   };
 
-  const tryAdmit = async (item: CjSearchItem, category: string | null): Promise<boolean> => {
+  const tryAdmit = async (item: CjSearchItem, category: string | null, context: string): Promise<boolean> => {
     if (admitted >= maxAdmits || cjCalls >= maxCjCalls) return false;
     if (await store.getWarehouseProduct(item.pid)) return false;
     const link = await store.getLink(item.pid);
@@ -232,11 +235,32 @@ export async function replenishWarehouse(
     }
     if (stock < cfg.floors.stockFloor) return false;
 
+    // W3: LLM curation — quality score + rewritten copy. A failed/absent LLM
+    // degrades to mechanical gates; a low score is a hard reject.
+    let title = detail.nameEn;
+    let admittedDetail: CjDetail = { ...detail, stock };
+    let resolvedCategory = category ?? resolveCategory(cfg, detail);
+    if (opts.curate) {
+      const curated = await opts.curate(detail, context);
+      if (curated) {
+        if (curated.relevanceScore < cfg.llm.scoreThreshold) return false;
+        title = curated.title;
+        admittedDetail = {
+          ...admittedDetail,
+          nameEn: curated.title,
+          descriptionHtml: curated.descriptionHtml,
+          originalNameEn: detail.nameEn, // CJ original kept for audit
+          llmScore: curated.relevanceScore
+        };
+        if (curated.category) resolvedCategory = curated.category;
+      }
+    }
+
     await store.putWarehouseProduct({
       cjPid: item.pid,
-      category: category ?? resolveCategory(cfg, detail),
-      title: detail.nameEn,
-      detailJson: JSON.stringify({ ...detail, stock }),
+      category: resolvedCategory,
+      title,
+      detailJson: JSON.stringify(admittedDetail),
       priceUsd: Math.min(...detail.variants.map((v) => v.sellPriceUsd)),
       listedNum: detail.listedNum,
       stock
@@ -250,7 +274,7 @@ export async function replenishWarehouse(
   for (const demand of await store.underfilledKeywords(since, cfg.target, 5)) {
     if (admitted >= maxAdmits || cjCalls >= maxCjCalls) break;
     for (const item of (await search(demand.keyword_norm)).slice(0, 5)) {
-      await tryAdmit(item, null);
+      await tryAdmit(item, null, demand.keyword_norm);
     }
   }
 
@@ -261,7 +285,7 @@ export async function replenishWarehouse(
     if (deficit <= 0) continue;
     for (const item of await search(key.replace(/-/g, ' '))) {
       if (deficit <= 0 || admitted >= maxAdmits || cjCalls >= maxCjCalls) break;
-      if (await tryAdmit(item, key)) deficit--;
+      if (await tryAdmit(item, key, key.replace(/-/g, ' '))) deficit--;
     }
   }
   return admitted;
@@ -315,7 +339,12 @@ export async function runDailyMaintenance(env: Env): Promise<void> {
         const tokens = new CjTokenManager(store, vault, f);
         const cj = new CjClient(() => tokens.getToken(), f);
         await refreshWarehouseStock(store, cj, cfg);
-        await replenishWarehouse(store, cj, cfg);
+        const llm = new LlmClient(env.OPENROUTER_API_KEY);
+        await replenishWarehouse(store, cj, cfg, {
+          curate: llm.available && cfg.llm.enabled
+            ? (detail, context) => curateProduct(llm, store, cfg, detail, context)
+            : undefined
+        });
         await syncStoreInventory(store, cj, admin, cfg);
         await refillCollections(store, cj, admin, cfg); // promote-from-warehouse (floor 8, target 12)
       }
