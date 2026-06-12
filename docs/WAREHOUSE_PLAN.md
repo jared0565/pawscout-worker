@@ -552,6 +552,39 @@ Prereqs: pricing finalized → checkout re-enabled; protected-data approval
 top-up (user). Verify at build time: createOrderV2/payBalance exact
 params via relay; CJ no-logo packing flag.
 
+## 7a-v. Cart abandonment strategy (decided 2026-06-12)
+
+Baseline: ~70% abandonment is universal; target the recoverable 5–15%.
+
+Layer 1 — prevention (mostly already decided elsewhere): PDP delivery
+block + free-over-£50 bar kill surprise-cost abandonment; guest checkout
+ON (confirm at re-enable); honest delivery estimates up front; Shopify
+Payments wallets (Apple/Google Pay) + ADD PAYPAL as buyer option (UK
+trust signal for new stores); policies + contact email visible in footer.
+
+Layer 2 — at checkout re-enable (user action, free, no app):
+- [ ] Turn on Shopify's native abandoned-checkout email automation
+      (all plans, Marketing → Automations). Set delay to 1–4 HOURS (not
+      the 10h default — recovery decays fast); customize template (brand
+      voice, product image prominent, restore-cart link). This is the
+      majority of recovered revenue industry-wide.
+
+Layer 3 — W5 extension (Resend/sequence):
+- [ ] One follow-up at ~24h, max sequence = 2 emails total.
+- [ ] Carts at £40–49: "you're £X away from free delivery" nudge —
+      margin-positive incentive, no discount devaluation.
+- [ ] PECR: abandoners ride soft opt-in (email collected in negotiations
+      for a sale, similar goods, opt-out offered) — unsubscribe link
+      always.
+
+Deliberate NOs (decided): no discount codes in recovery emails (trains
+abandonment-for-coupons); no exit-intent popups (mobile-hostile, off-
+brand); no SMS recovery. Revisit discounts only as email #2, small,
+rotated, if data demands.
+
+Measurement: abandonment + recovery rate → W4 digest; Shopify's native
+automation self-reports recovered sales from day one.
+
 ## 7b. Phase W5 — Email marketing via Resend (designed, not yet scheduled)
 
 The user has a Resend account. Newsletter signups currently post through the
