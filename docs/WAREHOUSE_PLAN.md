@@ -593,6 +593,15 @@ freight + second-item margin), first-order welcome code accounted as
 acquisition cost vs ad CPA. Sale events need room built into a genuine
 regular price first (UK rules ban fictitious was-prices).
 
+**Compare-at wipe (executed 2026-06-12):** all legacy products (42 of
+43, ~440 variants — every batch except the flywheel-imported razor comb)
+carried fake compareAtPrice values ×1.28–1.35 above price, rendering
+permanent "save 20–26%" badges = fictitious was-prices (CPR risk + trust
+damage). Cleared to null via productVariantsBulkUpdate, zero errors;
+selling prices untouched. Import pipeline and nightly sync never set
+compareAtPrice, so the catalog stays clean; future sale badges must come
+from genuine promotions only.
+
 Measurement: abandonment + recovery rate → W4 digest; Shopify's native
 automation self-reports recovered sales from day one.
 
