@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
 import { importProduct, buildPreview, stripHtml, resolveCategory } from '../src/proxy/import';
 import { TenantStore } from '../src/tenant-store';
-import { DEFAULT_GATES, DEFAULT_PRICING, DEFAULT_FLOORS, type TenantConfig } from '../src/types';
+import { DEFAULT_GATES, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, type TenantConfig } from '../src/types';
 import type { CjDetail } from '../src/cj';
 import type { AdminGraphql } from '../src/shopify-admin';
 
@@ -16,6 +16,7 @@ const CFG: TenantConfig = {
   gates: DEFAULT_GATES,
   pricing: DEFAULT_PRICING,
   floors: DEFAULT_FLOORS,
+  llm: DEFAULT_LLM,
   target: 12
 };
 

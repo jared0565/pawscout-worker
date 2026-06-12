@@ -9,6 +9,8 @@ export interface Env {
   // (fine locally, 429s in production: CJ caps 3 API users per source IP).
   CJ_RELAY_URL?: string;
   CJ_RELAY_TOKEN?: string;
+  // OpenRouter (W3 LLM curation) — optional: absent = mechanical gates only.
+  OPENROUTER_API_KEY?: string;
 }
 
 export interface TenantRow {
@@ -48,11 +50,25 @@ export interface Floors {
   stockFloor: number;     // CJ units required to admit/sell a product
 }
 
+/**
+ * LLM curation (W3, via OpenRouter). `model` is an OpenRouter slug; per-task
+ * overrides are the cost-vs-quality testing knob. Disabled (or key missing) =
+ * mechanical gates only — the system never depends on the LLM to function.
+ */
+export interface LlmConfig {
+  enabled: boolean;
+  model: string;
+  curationModel?: string;
+  digestModel?: string;
+  scoreThreshold: number; // 0-100: minimum relevance score to admit
+}
+
 export interface TenantConfig {
   collectionMap: Record<string, { handle: string; tag: string }>;
   gates: Gates;
   pricing: Pricing;
   floors: Floors;
+  llm: LlmConfig;
   target: number;
 }
 
@@ -62,6 +78,7 @@ export interface TenantConfig {
 export const DEFAULT_GATES: Gates = { popularityFloor: 1, priceMin: 5, priceMax: 80, relevance: 'title' };
 export const DEFAULT_PRICING: Pricing = { multiplier: 2.5, floor: 2.2, minMarginGbp: 6, fxUsdToGbp: 0.78, fxBufferPct: 2 };
 export const DEFAULT_FLOORS: Floors = { warehouseDepth: 20, storeFloor: 8, stockFloor: 10 };
+export const DEFAULT_LLM: LlmConfig = { enabled: true, model: 'anthropic/claude-haiku-4.5', scoreThreshold: 60 };
 // 12 = display cap of the storefront grid (4×3): show what we can sell, never pad.
 export const DEFAULT_TARGET = 12;
 

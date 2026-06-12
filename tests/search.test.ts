@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
 import { searchBackfill, normalizeKeyword, relevanceMatch } from '../src/proxy/search';
 import { TenantStore } from '../src/tenant-store';
-import { DEFAULT_GATES, DEFAULT_PRICING, DEFAULT_FLOORS, type TenantConfig } from '../src/types';
+import { DEFAULT_GATES, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, type TenantConfig } from '../src/types';
 import type { CjClient, CjSearchItem } from '../src/cj';
 
 beforeEach(async () => { await applyD1Migrations(env.DB, env.TEST_MIGRATIONS); });
@@ -12,6 +12,7 @@ const CFG: TenantConfig = {
   gates: DEFAULT_GATES, // floor 50, $5–80, title relevance
   pricing: DEFAULT_PRICING,
   floors: DEFAULT_FLOORS,
+  llm: DEFAULT_LLM,
   target: 12
 };
 

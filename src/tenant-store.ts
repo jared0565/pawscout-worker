@@ -1,4 +1,4 @@
-import { DEFAULT_PRICING, DEFAULT_FLOORS, type TenantRow, type TenantConfig } from './types';
+import { DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, type TenantRow, type TenantConfig } from './types';
 
 interface SupplierCredRow {
   shop: string; supplier: string; api_key_enc: string; label: string | null; validated_at: string | null; created_at: string;
@@ -64,9 +64,9 @@ export class TenantStore {
   async seedConfig(cfg: TenantConfig): Promise<void> {
     await this.db
       .prepare(
-        `INSERT INTO tenant_config (shop, collection_map, gates, pricing, floors, target, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-         ON CONFLICT(shop) DO UPDATE SET collection_map = ?2, gates = ?3, pricing = ?4, floors = ?5, target = ?6, updated_at = ?7`
+        `INSERT INTO tenant_config (shop, collection_map, gates, pricing, floors, llm, target, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+         ON CONFLICT(shop) DO UPDATE SET collection_map = ?2, gates = ?3, pricing = ?4, floors = ?5, llm = ?6, target = ?7, updated_at = ?8`
       )
       .bind(
         this.shop,
@@ -74,6 +74,7 @@ export class TenantStore {
         JSON.stringify(cfg.gates),
         JSON.stringify(cfg.pricing),
         JSON.stringify(cfg.floors),
+        JSON.stringify(cfg.llm),
         cfg.target,
         new Date().toISOString()
       )
@@ -82,9 +83,9 @@ export class TenantStore {
 
   async getConfig(): Promise<TenantConfig | null> {
     const row = await this.db
-      .prepare(`SELECT collection_map, gates, pricing, floors, target FROM tenant_config WHERE shop = ?1`)
+      .prepare(`SELECT collection_map, gates, pricing, floors, llm, target FROM tenant_config WHERE shop = ?1`)
       .bind(this.shop)
-      .first<{ collection_map: string; gates: string; pricing: string; floors: string; target: number }>();
+      .first<{ collection_map: string; gates: string; pricing: string; floors: string; llm: string; target: number }>();
     if (!row) return null;
     return {
       collectionMap: JSON.parse(row.collection_map),
@@ -92,6 +93,7 @@ export class TenantStore {
       // Tolerate pre-flywheel rows ('{}' default): fill missing fields from defaults.
       pricing: { ...DEFAULT_PRICING, ...JSON.parse(row.pricing || '{}') },
       floors: { ...DEFAULT_FLOORS, ...JSON.parse(row.floors || '{}') },
+      llm: { ...DEFAULT_LLM, ...JSON.parse(row.llm || '{}') },
       target: row.target
     };
   }
@@ -245,6 +247,24 @@ export class TenantStore {
       .run();
   }
 
+  async logLlmUsage(task: string, model: string, promptTokens: number, completionTokens: number, costUsd: number): Promise<void> {
+    await this.db
+      .prepare(
+        `INSERT INTO llm_usage (shop, task, model, prompt_tokens, completion_tokens, cost_usd, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`
+      )
+      .bind(this.shop, task, model, promptTokens, completionTokens, costUsd, new Date().toISOString())
+      .run();
+  }
+
+  async llmSpendSince(sinceIso: string): Promise<{ calls: number; costUsd: number }> {
+    const row = await this.db
+      .prepare(`SELECT COUNT(*) AS calls, COALESCE(SUM(cost_usd), 0) AS cost FROM llm_usage WHERE shop = ?1 AND created_at >= ?2`)
+      .bind(this.shop, sinceIso)
+      .first<{ calls: number; cost: number }>();
+    return { calls: row?.calls ?? 0, costUsd: row?.cost ?? 0 };
+  }
+
   /**
    * Imported products older than the grace cutoff with zero qualifying events
    * since the window cutoff. Stock-paused products are exempt — they couldn't
@@ -395,7 +415,8 @@ export async function purgeExpiredSearchCache(db: D1Database): Promise<number> {
 export async function trimOldLogs(db: D1Database, beforeIso: string): Promise<void> {
   await db.batch([
     db.prepare(`DELETE FROM product_events WHERE created_at < ?1`).bind(beforeIso),
-    db.prepare(`DELETE FROM search_log WHERE created_at < ?1`).bind(beforeIso)
+    db.prepare(`DELETE FROM search_log WHERE created_at < ?1`).bind(beforeIso),
+    db.prepare(`DELETE FROM llm_usage WHERE created_at < ?1`).bind(beforeIso)
   ]);
 }
 
