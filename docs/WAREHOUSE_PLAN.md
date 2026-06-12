@@ -327,10 +327,12 @@ to mechanical-gates behavior with zero errors; console shows model + 30-day cost
       add freight to landed cost, store chosen origin on the link/warehouse
       row, and show "Ships from UK" badge when origin is UK (conversion win).
       Also note: stockByPid currently SUMS stock across all origins.
-- [ ] **Sync should activate inventory tracking on untracked variants**
-      (inventoryItemUpdate tracked:true before inventorySetQuantities) —
-      ghost-click imports whose CJ detail lacked stock import untracked and
-      the sync currently skips them with an error log.
+- [x] **Sync activates inventory tracking on untracked variants** (DONE
+      2026-06-12): inventoryItemUpdate tracked:true + inventoryPolicy DENY
+      before inventorySetQuantities. Also added: console **"Sync now"**
+      button → `POST /api/sync` (session-token authed, batched: inventory
+      phase 8 products/call with offset cursor, then refill phase 5
+      promotions/call) — the nightly sync, runnable on demand.
 - [x] Scissors hunt outcome: razor grooming comb imported via ghost-click
       pipeline (pid 2029158917514293249, £13.99, pet-grooming); nail shears
       pid 2007377705492574210 refused by the live stock floor (working as
