@@ -441,11 +441,24 @@ economics for net-profit impact.
        (apparel/harnesses are the risk subset). Adequate — track actuals
        split full-vs-partial once orders flow.
 
-**Implementation queue once the user confirms:** (i) PDP delivery block in
-theme; (ii) freight-aware margin floor + origin preference + "Ships from
-UK" badge (supersedes the § 7a freight item's price-in wording);
-(iii) remove Express rate (Shopify admin or GraphQL, needs user OK);
-(iv) write the Returns & Refunds policy page.
+**Implementation queue — EXECUTED 2026-06-12 evening:**
+(i) [x] PDP delivery-info block live (snippets/delivery-info.liquid;
+    replaced stale "over £150 ship free" copy; Ships-from-UK badge reads
+    supplier.origin; rates mirrored from Shopify settings — update the
+    snippet assigns if rates change).
+(ii) [x] Freight-aware margin floor + origin preference shipped
+    (pricing.retailPriceGbp freight param; CjClient.freightEstimate via
+    POST logistic/freightCalculate; chooseOrigin prefers GB ≥ stockFloor;
+    captured at admission + ghost import, reused by sync; supplier.origin
+    metafield). VERIFY freightCalculate response parse against live API
+    on first replenishment (params from docs mirror, not exercised live).
+(iii) [x] Express rate DELETED from the UK zone via deliveryProfileUpdate
+    (was £6.99 on everything incl. CN-origin items). Reintroduce only
+    with a UK-stock delivery profile.
+(iv) [x] Returns & Refunds policy text written — docs/RETURNS_POLICY.md;
+    USER ACTION: paste into Settings → Policies → Return and refund
+    policy (app token lacks write_legal_policies). The PDP delivery block
+    links /policies/refund-policy.
 
 ## 7a-iii. Returns evidence gating (user-approved direction 2026-06-12)
 
