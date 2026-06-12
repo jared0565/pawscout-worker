@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
-import { cullStaleProducts, refillCollections } from '../src/jobs';
+import { cullStaleProducts, refillCollections, syncStoreInventory } from '../src/jobs';
 import { TenantStore } from '../src/tenant-store';
 import { DEFAULT_GATES, DEFAULT_PRICING, DEFAULT_FLOORS, type TenantConfig } from '../src/types';
-import type { CjClient, CjSearchItem, CjDetail } from '../src/cj';
+import type { CjClient, CjDetail } from '../src/cj';
 import type { AdminGraphql } from '../src/shopify-admin';
 
 beforeEach(async () => { await applyD1Migrations(env.DB, env.TEST_MIGRATIONS); });
@@ -13,12 +13,12 @@ const DAY = 86400_000;
 
 // Tests write rows directly so they can backdate timestamps (the store API
 // always stamps "now"); production code still goes through TenantStore only.
-async function insertLink(cjPid: string, state: string, createdAgoDays: number): Promise<void> {
+async function insertLink(cjPid: string, state: string, createdAgoDays: number, stockPaused = 0): Promise<void> {
   const ts = new Date(Date.now() - createdAgoDays * DAY).toISOString();
   await env.DB.prepare(
-    `INSERT INTO product_links (shop, cj_pid, shopify_product_id, handle, category, state, created_at, updated_at)
-     VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6, ?6)`
-  ).bind(SHOP, cjPid, `gid://shopify/Product/${cjPid}`, `h-${cjPid}`, state, ts).run();
+    `INSERT INTO product_links (shop, cj_pid, shopify_product_id, handle, category, state, stock_paused, created_at, updated_at)
+     VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6, ?7, ?7)`
+  ).bind(SHOP, cjPid, `gid://shopify/Product/${cjPid}`, `h-${cjPid}`, state, stockPaused, ts).run();
 }
 
 async function insertEvent(cjPid: string, event: string, agoDays: number): Promise<void> {
@@ -27,20 +27,54 @@ async function insertEvent(cjPid: string, event: string, agoDays: number): Promi
     .bind(SHOP, cjPid, event, ts).run();
 }
 
-function archivingAdmin(archived: string[]): AdminGraphql {
+function detailOf(pid: string, stock = 50): CjDetail {
+  return {
+    pid,
+    nameEn: `Pet Toys ${pid}`,
+    images: ['https://i/1.jpg'],
+    descriptionHtml: 'desc',
+    variants: [{ vid: `v-${pid}`, name: 'Default', sellPriceUsd: 10, sku: `sku-${pid}`, stock }],
+    listedNum: 10,
+    categoryName: 'Pet Toys',
+    stock
+  };
+}
+
+async function seedWarehouse(store: TenantStore, pid: string, category: string, stock = 50): Promise<void> {
+  const d = detailOf(pid, stock);
+  await store.putWarehouseProduct({
+    cjPid: pid, category, title: d.nameEn, detailJson: JSON.stringify(d),
+    priceUsd: 10, listedNum: d.listedNum, stock
+  });
+}
+
+interface Call { query: string; variables?: Record<string, unknown> }
+
+function shopAdmin(calls: Call[]): AdminGraphql {
   return async (query, variables) => {
-    if (query.includes('productUpdate')) {
-      archived.push((variables!.input as { id: string }).id);
-      return { productUpdate: { product: { id: 'x' }, userErrors: [] } };
-    }
+    calls.push({ query, variables });
+    if (query.includes('productUpdate')) return { productUpdate: { product: { id: 'x' }, userErrors: [] } };
     if (query.includes('productSet')) {
       const title = (variables!.input as { title: string }).title;
       return { productSet: { product: { id: `gid://shopify/Product/${title}`, handle: title.toLowerCase().replace(/\s+/g, '-') }, userErrors: [] } };
     }
     if (query.includes('publications(')) return { publications: { nodes: [{ id: 'gid://p/1', name: 'Online Store' }] } };
     if (query.includes('publishablePublish')) return { publishablePublish: { userErrors: [] } };
-    throw new Error('unexpected query');
+    if (query.includes('pawscoutLocation')) return { location: { id: 'gid://shopify/Location/1' } };
+    if (query.includes('pawscoutVariants')) {
+      return { product: { variants: { nodes: [{ id: 'gid://v/1', sku: (variables!.id as string).includes('A') ? 'sku-A' : 'sku-x', inventoryItem: { id: 'gid://inv/1' } }] } } };
+    }
+    if (query.includes('inventorySetQuantities')) return { inventorySetQuantities: { userErrors: [] } };
+    if (query.includes('metafieldsSet')) return { metafieldsSet: { userErrors: [] } };
+    throw new Error(`unexpected query: ${query.slice(0, 40)}`);
   };
+}
+
+function stockCj(stock: number, counters = { search: 0, stock: 0 }): CjClient {
+  return {
+    search: async () => { counters.search++; return []; },
+    stockByPid: async (pid: string) => { counters.stock++; return new Map([[`v-${pid}`, stock]]); }
+  } as unknown as CjClient;
 }
 
 describe('cullStaleProducts', () => {
@@ -52,77 +86,128 @@ describe('cullStaleProducts', () => {
     await insertLink('sold', 'imported', 45);           // old but ATC in window → keep
     await insertEvent('sold', 'atc', 20);
     await insertLink('ghost', 'ghost', 45);             // never imported → not cull's business
+    await insertLink('paused', 'imported', 45, 1);      // W2: stock-paused → exempt
 
     const store = new TenantStore(env.DB, SHOP);
     const archived: string[] = [];
-    const n = await cullStaleProducts(store, archivingAdmin(archived));
+    const admin: AdminGraphql = async (query, variables) => {
+      archived.push((variables!.input as { id: string }).id);
+      return { productUpdate: { product: { id: 'x' }, userErrors: [] } };
+    };
+    const n = await cullStaleProducts(store, admin);
 
     expect(n).toBe(1);
     expect(archived).toEqual(['gid://shopify/Product/stale']);
-    expect((await store.getLink('stale'))?.state).toBe('archived');
+    expect((await store.getLink('paused'))?.state).toBe('imported'); // exempt while unsellable
     expect((await store.getLink('active'))?.state).toBe('imported');
-    expect((await store.getLink('sold'))?.state).toBe('imported');
-    expect((await store.getLink('fresh'))?.state).toBe('imported');
   });
 });
 
-describe('refillCollections', () => {
+describe('refillCollections (promote-from-warehouse)', () => {
   const CFG: TenantConfig = {
-    collectionMap: { 'pet-toys': { handle: 'pet-toys', tag: 'cj-cat-pet-toys' } },
+    collectionMap: {
+      'pet-toys': { handle: 'pet-toys', tag: 'cj-cat-pet-toys' },
+      'pet-health': { handle: 'pet-health', tag: 'cj-cat-pet-health' }
+    },
     gates: DEFAULT_GATES,
     pricing: DEFAULT_PRICING,
-    floors: DEFAULT_FLOORS,
+    floors: { ...DEFAULT_FLOORS, storeFloor: 1 },
     target: 2
   };
 
-  function fakeCj(items: CjSearchItem[]): CjClient {
-    return {
-      search: async () => items,
-      detail: async (pid: string): Promise<CjDetail> => ({
-        pid,
-        nameEn: `Pet Toys ${pid}`,
-        images: ['https://i/1.jpg'],
-        descriptionHtml: 'desc',
-        variants: [{ vid: 'v1', name: 'Default', sellPriceUsd: 10, sku: pid }],
-        listedNum: 100,
-        categoryName: 'Pet Toys'
-      })
-    } as unknown as CjClient;
-  }
-
-  const items = (n: number) =>
-    Array.from({ length: n }, (_, i): CjSearchItem => ({
-      pid: `p${i}`, nameEn: `Pet Toys ${i}`, image: 'https://i/1.jpg',
-      sellPriceUsd: 10, listedNum: 100 + i, categoryName: 'Pet Toys'
-    }));
-
-  it('fills a collection up to target and records categorized links', async () => {
+  it('promotes from the warehouse with zero CJ searches (stock confirms only)', async () => {
     const store = new TenantStore(env.DB, SHOP);
-    const archived: string[] = [];
-    const n = await refillCollections(store, fakeCj(items(5)), archivingAdmin(archived), CFG, { pause: async () => {} });
-    expect(n).toBe(2); // deficit = target 2 − 0 imported
+    for (const pid of ['A', 'B', 'C']) await seedWarehouse(store, pid, 'pet-toys');
+    const counters = { search: 0, stock: 0 };
+    const n = await refillCollections(store, stockCj(50, counters), shopAdmin([]), { ...CFG, collectionMap: { 'pet-toys': CFG.collectionMap['pet-toys'] } }, { pause: async () => {} });
+    expect(n).toBe(2); // target
+    expect(counters.search).toBe(0);
+    expect(counters.stock).toBe(2); // one live confirm per promotion
     expect(await store.countImportedByCategory('pet-toys')).toBe(2);
   });
 
-  it('does nothing when the collection already meets target', async () => {
+  it('raises every category to the floor before topping any up to target', async () => {
     const store = new TenantStore(env.DB, SHOP);
-    await store.putLink({ cjPid: 'a', state: 'imported', category: 'pet-toys', shopifyProductId: 'gid://a', handle: 'a' });
-    await store.putLink({ cjPid: 'b', state: 'imported', category: 'pet-toys', shopifyProductId: 'gid://b', handle: 'b' });
-    const n = await refillCollections(store, fakeCj(items(5)), archivingAdmin([]), CFG, { pause: async () => {} });
+    for (const pid of ['T1', 'T2', 'T3']) await seedWarehouse(store, pid, 'pet-toys');
+    for (const pid of ['H1', 'H2', 'H3']) await seedWarehouse(store, pid, 'pet-health');
+    // Cap of 2: a target-first strategy would put both in pet-toys.
+    const n = await refillCollections(store, stockCj(50), shopAdmin([]), CFG, { pause: async () => {}, maxImports: 2 });
+    expect(n).toBe(2);
+    expect(await store.countImportedByCategory('pet-toys')).toBe(1);
+    expect(await store.countImportedByCategory('pet-health')).toBe(1);
+  });
+
+  it('skips warehouse rows below the stock floor', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedWarehouse(store, 'low', 'pet-toys', 2);
+    const n = await refillCollections(store, stockCj(50), shopAdmin([]), CFG, { pause: async () => {} });
     expect(n).toBe(0);
   });
 
-  it('honors the per-run import cap', async () => {
+  it('a failed live stock confirm blocks the promotion', async () => {
     const store = new TenantStore(env.DB, SHOP);
-    const n = await refillCollections(store, fakeCj(items(5)), archivingAdmin([]), { ...CFG, target: 5 }, { maxImports: 1, pause: async () => {} });
+    await seedWarehouse(store, 'A', 'pet-toys'); // row says 50…
+    const n = await refillCollections(store, stockCj(1), shopAdmin([]), CFG, { pause: async () => {} }); // …CJ says 1
+    expect(n).toBe(0);
+    expect((await store.getLink('A'))?.state).toBe('failed');
+  });
+});
+
+describe('syncStoreInventory', () => {
+  const CFG: TenantConfig = {
+    collectionMap: {},
+    gates: DEFAULT_GATES,
+    pricing: DEFAULT_PRICING,
+    floors: DEFAULT_FLOORS,
+    target: 12
+  };
+
+  it('zeroes + pauses an under-floor product and writes supplier metafields', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await insertLink('A', 'imported', 5);
+    await seedWarehouse(store, 'A', 'pet-toys');
+
+    const calls: Call[] = [];
+    const n = await syncStoreInventory(store, stockCj(3), shopAdmin(calls), CFG, { pause: async () => {} });
     expect(n).toBe(1);
+
+    const inv = calls.find((c) => c.query.includes('inventorySetQuantities'))!;
+    const quantities = (inv.variables!.input as { quantities: { quantity: number }[] }).quantities;
+    expect(quantities.every((q) => q.quantity === 0)).toBe(true);
+
+    const meta = calls.find((c) => c.query.includes('metafieldsSet'))!;
+    const fields = meta.variables!.metafields as { key: string; value: string }[];
+    expect(fields.find((f) => f.key === 'status')?.value).toBe('out_of_stock');
+    expect(fields.find((f) => f.key === 'available_qty')?.value).toBe('3');
+
+    expect((await store.getLink('A'))?.stock_paused).toBe(1);
+    expect((await store.getWarehouseProduct('A'))?.status).toBe('low_stock');
   });
 
-  it('prioritizes under-served search keywords from the demand log', async () => {
+  it('restores quantities per-variant via the SKU↔vid map when stock recovers', async () => {
     const store = new TenantStore(env.DB, SHOP);
-    await store.logSearch('rope toy', 1, 0); // under target → demand
-    const cj = fakeCj(items(3));
-    const n = await refillCollections(store, cj, archivingAdmin([]), { ...CFG, collectionMap: {} }, { pause: async () => {} });
-    expect(n).toBeGreaterThan(0); // imported from keyword demand despite no collections mapped
+    await insertLink('A', 'imported', 5, 1); // currently paused
+    await seedWarehouse(store, 'A', 'pet-toys');
+
+    const calls: Call[] = [];
+    await syncStoreInventory(store, stockCj(40), shopAdmin(calls), CFG, { pause: async () => {} });
+
+    const inv = calls.find((c) => c.query.includes('inventorySetQuantities'))!;
+    const quantities = (inv.variables!.input as { quantities: { quantity: number }[] }).quantities;
+    expect(quantities[0].quantity).toBe(40); // sku-A ↔ v-A mapped exactly
+    expect((await store.getLink('A'))?.stock_paused).toBe(0);
+  });
+
+  it('a per-product Shopify failure never aborts the run', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await insertLink('bad', 'imported', 5);
+    await insertLink('A', 'imported', 5);
+    await seedWarehouse(store, 'A', 'pet-toys');
+    const admin: AdminGraphql = async (query, variables) => {
+      if (query.includes('pawscoutVariants') && String(variables!.id).includes('bad')) throw new Error('untracked legacy product');
+      return shopAdmin([])(query, variables);
+    };
+    const n = await syncStoreInventory(store, stockCj(40), admin, CFG, { pause: async () => {} });
+    expect(n).toBe(1); // 'A' synced; 'bad' logged and skipped
   });
 });

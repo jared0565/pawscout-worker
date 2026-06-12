@@ -3,12 +3,14 @@ import { CjClient, CjTokenManager, cjFetchFromEnv, type CjSearchItem } from './c
 import { makeAdminGraphql, type AdminGraphql } from './shopify-admin';
 import { TenantStore, listActiveShops, purgeExpiredSearchCache, purgeUnusedWarehouse, trimOldLogs } from './tenant-store';
 import { passesGates, normalizeKeyword, CACHE_TTL_DAYS } from './proxy/search';
-import { importProduct, getCachedDetail, resolveCategory } from './proxy/import';
+import { confirmAndImport, getCachedDetail, resolveCategory } from './proxy/import';
+import { getPrimaryLocationId, productInventoryItems, setInventoryQuantities, setSupplierMetafields, MAX_TRACKED_QTY } from './proxy/inventory';
+import type { CjDetail } from './cj';
 import type { Env, TenantConfig } from './types';
 
 export const CULL_WINDOW_DAYS = 30; // grace period AND inactivity window
 const LOG_RETENTION_DAYS = 90;
-const MAX_IMPORTS_PER_RUN = 6; // gentle daily fill — respects CJ rate limits
+const MAX_IMPORTS_PER_RUN = 30; // W2: promotions cost 1 CJ stock-check each — well within budget
 const CJ_CALL_GAP_MS = 1100; // CJ allows ~1 request/second
 
 const ARCHIVE = `mutation pawscoutArchive($input: ProductInput!) {
@@ -43,24 +45,12 @@ export async function cullStaleProducts(
   return archived;
 }
 
-async function gatedSearch(store: TenantStore, cj: CjClient, cfg: TenantConfig, keyword: string): Promise<CjSearchItem[]> {
-  const kw = normalizeKeyword(keyword);
-  let items: CjSearchItem[];
-  const cached = await store.getSearchCache(`kw:${kw}`);
-  if (cached) {
-    items = JSON.parse(cached);
-  } else {
-    items = await cj.search(kw);
-    await store.putSearchCache(`kw:${kw}`, JSON.stringify(items), CACHE_TTL_DAYS);
-  }
-  // Best-seller ordering: most-listed first.
-  return items.filter((i) => passesGates(i, cfg.gates, kw)).sort((a, b) => b.listedNum - a.listedNum);
-}
-
 /**
- * Demand-driven refill: import top gated CJ products for (1) the most-searched
- * under-served keywords, then (2) mapped collections below target. Capped per
- * run and paced for CJ's rate limits.
+ * W2.1 — store refill promotes FROM THE WAREHOUSE (no CJ search calls).
+ * Two passes over the mapped collections: first raise every category to
+ * `floors.storeFloor`, then top up toward `target`. Each promotion goes
+ * through confirmAndImport (one live CJ stock check, paced). A warehouse
+ * that can't supply a floor logs the shortfall — gates are never bypassed.
  */
 export async function refillCollections(
   store: TenantStore,
@@ -71,46 +61,103 @@ export async function refillCollections(
 ): Promise<number> {
   const maxImports = opts.maxImports ?? MAX_IMPORTS_PER_RUN;
   const pause = opts.pause ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
-  const now = opts.now ?? Date.now;
   let imported = 0;
 
-  const tryImport = async (item: CjSearchItem, category: string | null | undefined): Promise<boolean> => {
-    const link = await store.getLink(item.pid);
+  const promote = async (row: { cj_pid: string; detail: string; stock: number }, category: string): Promise<boolean> => {
+    if (row.stock < cfg.floors.stockFloor) return false;
+    const link = await store.getLink(row.cj_pid);
     if (link && (link.state === 'imported' || link.state === 'importing')) return false;
-    await pause(CJ_CALL_GAP_MS);
-    const detail = await getCachedDetail(store, cj, item.pid);
-    if (!detail) return false;
-    await importProduct(store, admin, cfg, detail, category);
-    const after = await store.getLink(item.pid);
-    return after?.state === 'imported';
+    let detail: CjDetail;
+    try { detail = JSON.parse(row.detail) as CjDetail; } catch { return false; }
+    await pause(CJ_CALL_GAP_MS); // confirmAndImport makes one CJ stock call
+    await confirmAndImport(store, cj, admin, cfg, detail, category);
+    return (await store.getLink(row.cj_pid))?.state === 'imported';
   };
 
-  // 1) Under-served search keywords (last 30 days), most-searched first.
-  const since = new Date(now() - 30 * 86400_000).toISOString();
-  for (const demand of await store.underfilledKeywords(since, cfg.target, 3)) {
-    if (imported >= maxImports) return imported;
-    const candidates = await gatedSearch(store, cj, cfg, demand.keyword_norm);
-    for (const item of candidates.slice(0, 3)) {
+  for (const goal of [cfg.floors.storeFloor, cfg.target]) {
+    for (const key of Object.keys(cfg.collectionMap)) {
       if (imported >= maxImports) return imported;
-      if (await tryImport(item, undefined)) imported++; // category resolved from CJ data
-    }
-  }
-
-  // 2) Mapped collections below target.
-  for (const key of Object.keys(cfg.collectionMap)) {
-    if (imported >= maxImports) break;
-    let deficit = cfg.target - (await store.countImportedByCategory(key));
-    if (deficit <= 0) continue;
-    const candidates = await gatedSearch(store, cj, cfg, key.replace(/-/g, ' '));
-    for (const item of candidates) {
-      if (deficit <= 0 || imported >= maxImports) break;
-      if (await tryImport(item, key)) {
-        imported++;
-        deficit--;
+      let deficit = goal - (await store.countImportedByCategory(key));
+      if (deficit <= 0) continue;
+      for (const row of await store.warehouseByCategory(key, 50)) {
+        if (deficit <= 0 || imported >= maxImports) break;
+        if (await promote(row, key)) {
+          imported++;
+          deficit--;
+        }
+      }
+      if (deficit > 0 && goal === cfg.floors.storeFloor) {
+        console.warn(`refill shortfall: ${key} is ${deficit} below the store floor (warehouse supply-limited)`);
       }
     }
   }
   return imported;
+}
+
+/**
+ * W2.3 — daily CJ→Shopify stock sync for every listed product:
+ * tracked quantities set absolutely (per-variant via SKU↔vid mapping when the
+ * warehouse detail provides it), products under the stock floor are zeroed and
+ * flagged stock_paused (cull-exempt), recoveries restore automatically, and
+ * the theme's supplier.* metafields get refreshed every run.
+ */
+export async function syncStoreInventory(
+  store: TenantStore,
+  cj: CjClient,
+  admin: AdminGraphql,
+  cfg: TenantConfig,
+  opts: { maxProducts?: number; pause?: (ms: number) => Promise<void> } = {}
+): Promise<number> {
+  const maxProducts = opts.maxProducts ?? 60;
+  const pause = opts.pause ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const locationId = await getPrimaryLocationId(admin);
+  if (!locationId) {
+    console.warn('inventory sync skipped: no primary location');
+    return 0;
+  }
+
+  let synced = 0;
+  for (const link of (await store.listImportedLinks()).slice(0, maxProducts)) {
+    if (!link.shopify_product_id) continue;
+    try {
+      await pause(CJ_CALL_GAP_MS);
+      const stockMap = await cj.stockByPid(link.cj_pid);
+      const maxStock = stockMap.size ? Math.max(...stockMap.values()) : 0;
+      const paused = maxStock < cfg.floors.stockFloor;
+
+      // SKU → vid mapping from the warehouse detail, for per-variant accuracy.
+      const skuToVid = new Map<string, string>();
+      const wh = await store.getWarehouseProduct(link.cj_pid);
+      if (wh) {
+        try {
+          for (const v of (JSON.parse(wh.detail) as CjDetail).variants) skuToVid.set(v.sku, v.vid);
+        } catch { /* fall back to uniform stock */ }
+      }
+
+      const variants = await productInventoryItems(admin, link.shopify_product_id);
+      await setInventoryQuantities(
+        admin,
+        locationId,
+        variants.map((v) => {
+          const vid = skuToVid.get(v.sku);
+          const qty = paused ? 0 : (vid !== undefined ? stockMap.get(vid) ?? maxStock : maxStock);
+          return { inventoryItemId: v.inventoryItemId, quantity: Math.min(qty, MAX_TRACKED_QTY) };
+        })
+      );
+      await setSupplierMetafields(admin, link.shopify_product_id, {
+        status: paused ? 'out_of_stock' : maxStock < cfg.floors.stockFloor * 2 ? 'low_stock' : 'available',
+        qty: maxStock,
+        checkedAt: new Date().toISOString()
+      });
+      await store.setStockPaused(link.cj_pid, paused);
+      await store.setWarehouseStock(link.cj_pid, maxStock, paused ? 'low_stock' : 'available');
+      synced++;
+    } catch (e) {
+      // Pre-W2 imports may be untracked — log and move on; never abort the run.
+      console.warn(`inventory sync failed for ${link.cj_pid}: ${(e as Error).message}`);
+    }
+  }
+  return synced;
 }
 
 // --- W1: warehouse replenishment + freshness ---
@@ -269,7 +316,8 @@ export async function runDailyMaintenance(env: Env): Promise<void> {
         const cj = new CjClient(() => tokens.getToken(), f);
         await refreshWarehouseStock(store, cj, cfg);
         await replenishWarehouse(store, cj, cfg);
-        await refillCollections(store, cj, admin, cfg); // store-level fill (W2 reworks to promote-from-warehouse)
+        await syncStoreInventory(store, cj, admin, cfg);
+        await refillCollections(store, cj, admin, cfg); // promote-from-warehouse (floor 8, target 12)
       }
     } catch (e) {
       console.warn(`daily maintenance failed for ${shop}: ${(e as Error).message}`);
