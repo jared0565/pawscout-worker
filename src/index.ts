@@ -128,9 +128,11 @@ app.post('/api/sync', async (c) => {
     }
     const offset = Math.max(0, Math.floor(Number(body.offset) || 0));
     const total = (await store.listImportedLinks()).length;
-    const synced = await syncStoreInventory(store, cj, admin, cfg, { maxProducts: SYNC_BATCH, offset });
+    const errors: string[] = [];
+    const synced = await syncStoreInventory(store, cj, admin, cfg, { maxProducts: SYNC_BATCH, offset, errors });
     const next = offset + SYNC_BATCH;
-    return c.json({ ok: true, phase: 'inventory', synced, total, next: next < total ? next : null });
+    // Surface a few per-product failures so the console isn't a black box.
+    return c.json({ ok: true, phase: 'inventory', synced, total, errors: errors.slice(0, 3), next: next < total ? next : null });
   } catch (e) {
     console.warn(`manual sync failed: ${(e as Error).message}`);
     return c.json({ ok: false, error: `Sync failed: ${(e as Error).message}` }, 500);

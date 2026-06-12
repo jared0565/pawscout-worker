@@ -291,7 +291,10 @@ describe('syncStoreInventory', () => {
       if (query.includes('pawscoutVariants') && String(variables!.id).includes('bad')) throw new Error('untracked legacy product');
       return shopAdmin([])(query, variables);
     };
-    const n = await syncStoreInventory(store, stockCj(40), admin, CFG, { pause: async () => {} });
+    const errors: string[] = [];
+    const n = await syncStoreInventory(store, stockCj(40), admin, CFG, { pause: async () => {}, errors });
     expect(n).toBe(1); // 'A' synced; 'bad' logged and skipped
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain('bad: untracked legacy product'); // surfaced to the console caller
   });
 });

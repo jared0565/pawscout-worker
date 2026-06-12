@@ -78,6 +78,11 @@ export function consolePage(apiKey: string): Response {
   button.ghost{background:transparent;color:var(--ink);border:1px solid var(--field-border)}
   button.ghost:hover{filter:none;background:var(--code-bg)}
   .msg{margin:10px 0 0;font-size:13px;min-height:18px}
+  .bar{height:6px;background:var(--code-bg);border:1px solid var(--border);border-radius:999px;overflow:hidden;margin-top:10px;display:none}
+  .bar.on{display:block}
+  .bar i{display:block;height:100%;width:0;background:var(--ok-ink);border-radius:999px;transition:width .4s ease}
+  .bar.pulse i{width:100%;animation:barpulse 1.2s ease-in-out infinite}
+  @keyframes barpulse{0%,100%{opacity:.35}50%{opacity:1}}
   .badge{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:999px;font-size:12px;font-weight:600}
   .badge.ok{background:var(--ok-bg);color:var(--ok-ink)}
   .badge.no{background:var(--no-bg);color:var(--no-ink)}
@@ -213,6 +218,7 @@ export function consolePage(apiKey: string): Response {
     <div class="row">
       <button id="syncbtn" onclick="syncNow()">Sync now</button>
     </div>
+    <div class="bar" id="syncbar"><i></i></div>
     <p id="syncmsg" class="msg muted"></p>
   </section>
 
@@ -383,30 +389,46 @@ async function saveLlm(){
     else setMsg('llmmsg','Failed: '+(r.error||'unknown error'),'no');
   }catch(e){ setMsg('llmmsg','Failed: '+errText(e),'no'); }
 }
+function syncBar(mode,frac){
+  var b=el('syncbar'); if(!b) return;
+  b.className='bar'+(mode==='off'?'':' on')+(mode==='pulse'?' pulse':'');
+  if(mode==='frac') b.querySelector('i').style.width=Math.round((frac||0)*100)+'%';
+}
 async function syncNow(){
   var btn=el('syncbtn'); btn.disabled=true;
+  var failures=[];
   try{
     setMsg('syncmsg','Syncing prices & stock with CJ…','muted');
-    var offset=0, done=0, total=0;
+    syncBar('frac',0);
+    var offset=0, done=0, attempted=0, total=0;
     for(;;){
       var r=await api('/sync',{phase:'inventory',offset:offset});
-      if(!r.ok){ setMsg('syncmsg','Failed: '+(r.error||'unknown error'),'no'); return; }
+      if(!r.ok){ syncBar('off'); setMsg('syncmsg','Failed: '+(r.error||'unknown error'),'no'); return; }
       done+=r.synced; total=r.total;
-      setMsg('syncmsg','Synced '+done+' of '+total+' products…','muted');
+      if(r.errors&&r.errors.length) failures=failures.concat(r.errors);
+      attempted=(r.next==null)?total:r.next;
+      syncBar('frac',total?attempted/total:1);
+      setMsg('syncmsg','Synced '+done+' of '+total+' products… ('+attempted+' checked)','muted');
       if(r.next==null) break;
       offset=r.next;
     }
     setMsg('syncmsg','Topping up collections from the warehouse…','muted');
+    syncBar('pulse');
     var promoted=0;
     for(;;){
       var p=await api('/sync',{phase:'refill'});
-      if(!p.ok){ setMsg('syncmsg','Sync done ('+done+' products) — refill failed: '+(p.error||'unknown error'),'no'); return; }
+      if(!p.ok){ syncBar('off'); setMsg('syncmsg','Sync done ('+done+' products) — refill failed: '+(p.error||'unknown error'),'no'); return; }
       promoted+=p.imported;
       if(p.next==null) break;
     }
-    setMsg('syncmsg','Done ✓ '+done+' products synced'+(promoted?', '+promoted+' promoted from warehouse':'')+'.','ok');
+    syncBar('off');
+    if(failures.length&&done<total){
+      setMsg('syncmsg','Synced '+done+' of '+total+' — '+(total-done)+' failed. First error: '+failures[0],'no');
+    } else {
+      setMsg('syncmsg','Done ✓ '+done+' products synced'+(promoted?', '+promoted+' promoted from warehouse':'')+'.','ok');
+    }
     loadInsights();
-  }catch(e){ setMsg('syncmsg','Failed: '+errText(e),'no'); }
+  }catch(e){ syncBar('off'); setMsg('syncmsg','Failed: '+errText(e),'no'); }
   finally{ btn.disabled=false; }
 }
 async function saveCollections(){

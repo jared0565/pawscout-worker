@@ -108,7 +108,7 @@ export async function syncStoreInventory(
   cj: CjClient,
   admin: AdminGraphql,
   cfg: TenantConfig,
-  opts: { maxProducts?: number; offset?: number; pause?: (ms: number) => Promise<void> } = {}
+  opts: { maxProducts?: number; offset?: number; pause?: (ms: number) => Promise<void>; errors?: string[] } = {}
 ): Promise<number> {
   const maxProducts = opts.maxProducts ?? 60;
   const offset = opts.offset ?? 0;
@@ -195,6 +195,7 @@ export async function syncStoreInventory(
     } catch (e) {
       // Per-product failures (CJ hiccups, Shopify errors) log and move on; never abort the run.
       console.warn(`inventory sync failed for ${link.cj_pid}: ${(e as Error).message}`);
+      opts.errors?.push(`${link.cj_pid}: ${(e as Error).message}`);
     }
   }
   return synced;
