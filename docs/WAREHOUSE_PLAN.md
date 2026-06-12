@@ -342,18 +342,19 @@ to mechanical-gates behavior with zero errors; console shows model + 30-day cost
       the 2.5× rule from current CJ costs (e.g. £63.40→£17.99 paw cleaner,
       £303.32→£232.99 grooming table, every price now .99). Verified in
       Shopify.
-- [ ] **OPEN BLOCKER: CJ stock endpoint `/product/stock/queryByPid`
-      returns "Interface not found"** (worked at admission time; broke at
-      some point — CJ-side). Effects while broken: (a) quantity sync
-      leaves quantities untouched (SAFE by design — never zero on
-      unknown); (b) supplier.* metafields skipped; (c) **warehouse
-      replenishment admissions are refused** (stock-floor check can't
-      pass) — promotions from existing warehouse still work
-      (unknown→proceed). CJ errors now carry numeric code + path. Next:
-      read the code via `npx wrangler tail` during a sync, and/or check
-      CJ's docs (product.html → Inquiry inventory) for a renamed path —
-      browser only, the docs site bot-blocks automation. Candidate
-      fallbacks if renamed: queryByVid / queryBySku per variant.
+- [x] **RESOLVED (pending live verify): CJ stock endpoint renamed.**
+      `/product/stock/queryByPid` → "Interface not found"; the live
+      endpoint is **`/product/stock/getInventoryByPid`** (per-warehouse
+      rows: areaEn/countryCode/totalInventoryNum — parser handles both
+      shapes). Better: `product/query` accepts
+      **`features=enable_inventory`** → per-variant `inventories`
+      (countryCode/totalInventory/cjInventory/factoryInventory) arrive
+      WITH the detail — one CJ call instead of two in sync + replenish.
+      Stock semantics fixed to **max single origin, never the sum**
+      (closes the § 7a stockByPid-sums note). Source: CJ docs product.html
+      (bot-blocked for agents; read via a GitHub docs mirror + user's
+      browser). While it was broken: quantity sync safely left quantities
+      alone; replenishment admissions were refused (recovers tonight).
 
 ## 7a-ii. STRATEGY DECISION — shipping display, origin choice, returns
 ## (user-raised 2026-06-12; recommendation delivered same day; user
