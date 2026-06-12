@@ -363,6 +363,20 @@ to mechanical-gates behavior with zero errors; console shows model + 30-day cost
       missing CJ inventory records; nightly sync retries, escalate to CJ
       dashboard if any stay unknown for days). No product zeroed.
 
+## 7a-i-b. Ghost-click curation gate (shipped 2026-06-12 23:57)
+
+Field incident: a storefront search for "pet food" backfilled CJ ghosts
+(CJ OR-matches tokens → "food" matched a kitchen vacuum sealer); one
+click imported it to the live store under more-to-love. Root cause:
+ghost-click imports bypassed W3 curation (which only gated warehouse
+admissions). Fix: `confirmAndImport` now takes a curate hook — score <
+threshold ⇒ link `failed` before Shopify is touched; passing imports get
+curated title/description/category; pre-curated details (llmScore set)
+skip re-scoring. Wired into /proxy/product, nightly refill, manual sync
+refill. The sealer itself was ARCHIVED (product 10863821160786, pid
+2606120903381607900) and its link set archived. Cost: ≈$0.0003/clicked
+ghost. LLM remains background-only (imports run in waitUntil).
+
 ## 7a-ii. STRATEGY DECISION — shipping display, origin choice, returns
 ## (user-raised 2026-06-12; recommendation delivered same day; user
 ##  decision pending — do not implement until the user confirms)
