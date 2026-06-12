@@ -48,7 +48,7 @@ Products that never reach a preview are **never imported** — no catalog pollut
 - **Router:** [Hono](https://hono.dev)
 - **Shopify:** [`@shopify/shopify-api`](https://github.com/Shopify/shopify-api-js) v11 (cf-worker adapter), App Bridge v4, Admin GraphQL, App Proxy
 - **Database:** [D1](https://developers.cloudflare.com/d1/) (SQLite), migrations in `migrations/`
-- **Tests:** [Vitest](https://vitest.dev) with [`@cloudflare/vitest-pool-workers`](https://developers.cloudflare.com/workers/testing/vitest-integration/) — 95 tests run inside workerd against an in-memory D1 with real migrations
+- **Tests:** [Vitest](https://vitest.dev) with [`@cloudflare/vitest-pool-workers`](https://developers.cloudflare.com/workers/testing/vitest-integration/) — 146 tests run inside workerd against an in-memory D1 with real migrations
 
 ## Project layout
 
@@ -72,7 +72,7 @@ src/
     search.ts           Search backfill: cache → gates → pricing → dedupe → ghost cards
     import.ts           Preview builder + import-on-click (productSet, publish, revive)
 migrations/             D1 schema migrations
-tests/                  Vitest suites (95 tests) incl. an architectural guard test
+tests/                  Vitest suites (146 tests) incl. an architectural guard test
 wrangler.toml           Worker config, D1 binding, cron trigger, public vars
 ```
 
@@ -188,7 +188,7 @@ npm run dev
 
 | Command | What it does |
 |---|---|
-| `npm test` | 95 tests inside workerd |
+| `npm test` | 146 tests inside workerd |
 | `npm run typecheck` | `tsc --noEmit` (strict) |
 | `npm run migrate:local` / `migrate:remote` | Apply D1 migrations |
 | `npm run deploy` | Deploy to Cloudflare |
