@@ -38,8 +38,9 @@ Products that never reach a preview are **never imported** — no catalog pollut
 
 - **Beacons**: the theme sends JS-only `view` / `atc` signals for imported products (JS-only filters most crawlers).
 - **30-day cull** (daily cron): imported products with **zero qualifying events in 30 days** are **archived** (never deleted — order history and URLs stay intact), with a 30-day grace period from import. Fresh search demand can revive an archived product (it's re-activated, not duplicated).
+- **Warehouse** (W1): a PS-local buffer of ≥20 gated, in-stock products per category (`floors.warehouseDepth`), replenished nightly — demand keywords first. Searches and previews serve from it with **zero CJ calls**; the only CJ call near the request path is a live stock confirmation before import (`floors.stockFloor`, default 10 units — never list what CJ can't fulfil).
 - **Refill** (daily cron, capped per run): imports top gated CJ products for the most-searched **under-served keywords** (logged from real searches), then tops up mapped collections below `target`.
-- **Retention**: cached CJ data is purged after 30 days — the PS storage promise, enforced in code.
+- **Retention**: cached CJ data and unrefreshed warehouse rows are purged after 30 days — the PS storage promise, enforced in code.
 
 ## Stack
 
@@ -133,6 +134,7 @@ Sales arriving through the on-site search flywheel carry near-zero acquisition c
 | `tenants` | Sealed offline token, wrapped DEK, scopes, status |
 | `supplier_credentials` | Sealed supplier API keys (`cj`) |
 | `tenant_config` | Per-shop JSON: collection map, gates, pricing, target |
+| `warehouse_products` | **W1**: PS-local buffer — ≥20 gated, in-stock, fully-detailed products per category; searches/previews serve from here with zero CJ calls |
 | `search_cache` | CJ search/detail payloads per normalized keyword — 30-day TTL |
 | `search_log` | Demand signal: keyword, store hits, ghost hits per search |
 | `product_links` | CJ pid ↔ Shopify product: `ghost → importing → imported ⇄ archived / failed` |

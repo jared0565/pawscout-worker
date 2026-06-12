@@ -5,7 +5,7 @@
 > is enough to continue. Keep it updated: tick checkboxes as tasks land, and
 > append to the Decision Log when anything is decided differently.
 >
-> Last updated: 2026-06-12 · Working branch (both repos): `claude/stoic-pasteur-a2ol7z`
+> Last updated: 2026-06-12 (W1 complete — deploy: migrate:remote + deploy) · Working branch (both repos): `claude/stoic-pasteur-a2ol7z`
 
 ---
 
@@ -108,7 +108,7 @@ Key invariants (do not violate):
 **Goal:** searches and previews served entirely from PS-local data.
 
 ### W1.1 Migration `0003_warehouse.sql`
-- [ ] New table:
+- [x] New table:
 ```sql
 CREATE TABLE warehouse_products (
   shop         TEXT NOT NULL,
@@ -128,11 +128,11 @@ CREATE TABLE warehouse_products (
 );
 CREATE INDEX idx_warehouse_lookup ON warehouse_products (shop, status, category);
 ```
-- [ ] `tenant_config` gains `floors` JSON (or extend gates):
+- [x] `tenant_config` gains `floors` JSON (or extend gates):
       `{ warehouseDepth: 20, storeFloor: 8, stockFloor: 10 }` + `DEFAULT_FLOORS` in `types.ts`.
 
 ### W1.2 `TenantStore` warehouse methods
-- [ ] `putWarehouseProduct`, `getWarehouseProduct`, `searchWarehouse(tokens, limit)`
+- [x] `putWarehouseProduct`, `getWarehouseProduct`, `searchWarehouse(tokens, limit)`
       (SQL `LIKE` over `search_text`, then relevance-rank in JS),
       `countWarehouseByCategory(status='available')`,
       `staleWarehouseRows(kind: 'stock'|'detail', cutoffIso)`,
@@ -140,41 +140,41 @@ CREATE INDEX idx_warehouse_lookup ON warehouse_products (shop, status, category)
       and `fetched_at` older than 30d).
 
 ### W1.3 CJ stock reading (`src/cj.ts`)
-- [ ] Extend `CjClient.detail()` normalization to capture per-variant stock
+- [x] Extend `CjClient.detail()` normalization to capture per-variant stock
       (CJ exposes warehouse inventory on variant objects / stock endpoints —
       verify exact field against live response, normalize to
       `variants[].stockUsd?` no — `variants[].stock: number` + `detail.minStock`).
-- [ ] Add `CjClient.stockByPid(pid)` if the detail payload proves insufficient.
+- [x] Add `CjClient.stockByPid(pid)` if the detail payload proves insufficient.
 
 ### W1.4 Replenishment job (`src/jobs.ts`)
-- [ ] `replenishWarehouse(store, cj, cfg, opts)`:
+- [x] `replenishWarehouse(store, cj, cfg, opts)`:
       1. demand keywords first: `underfilledKeywords(30d)` → CJ search → gated +
          `stock ≥ stockFloor` candidates → fetch details → admit to warehouse;
       2. then each category below `warehouseDepth`;
       3. paced 1.1s/call, per-run CJ call cap (~120), per-run admit cap (~40);
       4. admission = gates + stockFloor + dedupe vs existing warehouse/links.
-- [ ] Freshness pass in the same nightly run:
+- [x] Freshness pass in the same nightly run:
       stock re-check — store-linked products daily, warehouse-only rows > 48h old;
       full detail re-fetch for rows > 7 days old; mark `low_stock`/`stale`.
-- [ ] Wire into `runDailyMaintenance` (order: purge → freshness → cull → store
+- [x] Wire into `runDailyMaintenance` (order: purge → freshness → cull → store
       refill (W2) → replenish). Respect Workers CPU/duration limits: process in
       bounded batches; carry over to next night rather than exceeding caps.
 
 ### W1.5 Serve from warehouse
-- [ ] `searchBackfill`: query warehouse FIRST (status available, stock ≥ floor);
+- [x] `searchBackfill`: query warehouse FIRST (status available, stock ≥ floor);
       only on insufficient fill, optional single live CJ search (flag
       `liveFallback: true` for now), and always log fill rate.
-- [ ] `/proxy/product`: read detail from warehouse row (fallback: old
+- [x] `/proxy/product`: read detail from warehouse row (fallback: old
       `getCachedDetail` path); preview never waits on CJ.
-- [ ] Import-on-click: before `importProduct`, one live CJ stock/price confirm
+- [x] Import-on-click: before `importProduct`, one live CJ stock/price confirm
       (async, inside the existing background import); abort + mark row
       `low_stock` if below floor, prompting the "no longer available" path.
 
 ### W1.6 Tests + docs
-- [ ] Tests: admission respects gates/stock/dedupe; demand-priority ordering;
+- [x] Tests: admission respects gates/stock/dedupe; demand-priority ordering;
       freshness state transitions; searchBackfill warehouse-first (CJ fake
       asserts zero calls on warm warehouse); import-time stock abort.
-- [ ] README + this file updated; commit per task.
+- [x] README + this file updated; commit per task.
 
 **Acceptance (W1):** with a warmed warehouse, a storefront search and a ghost
 preview complete with **zero CJ calls**; nightly job maintains ≥20 available
