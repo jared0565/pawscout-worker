@@ -5,7 +5,7 @@
 > is enough to continue. Keep it updated: tick checkboxes as tasks land, and
 > append to the Decision Log when anything is decided differently.
 >
-> Last updated: 2026-06-12 (W1 complete — deploy: migrate:remote + deploy) · Working branch (both repos): `claude/stoic-pasteur-a2ol7z`
+> Last updated: 2026-06-12 (W1+W2 complete — deploy: migrate:remote applies 0004, then deploy) · Working branch (both repos): `claude/stoic-pasteur-a2ol7z`
 
 ---
 
@@ -187,33 +187,33 @@ per category or logs a shortfall; all tests green.
 **Goal:** store always sellable: ≥8/category listed, nothing unfulfillable.
 
 ### W2.1 Promote-from-warehouse refill
-- [ ] Rework `refillCollections`: deficits against `storeFloor` (8) first across
+- [x] Rework `refillCollections`: deficits against `storeFloor` (8) first across
       all categories, then top-up to `target` (12); candidates come FROM THE
       WAREHOUSE (no CJ search calls); raise per-run import cap to 30.
-- [ ] Persistent shortfall (warehouse can't supply) → recorded for console.
+- [x] Persistent shortfall (warehouse can't supply) → recorded for console.
 
 ### W2.2 Shopify tracked inventory
-- [ ] On import: create variants with `inventoryItem.tracked = true`, policy
+- [x] On import: create variants with `inventoryItem.tracked = true`, policy
       `DENY`, initial quantity = min(CJ stock, 999) at the store's primary
       location (`location` looked up once via Admin API, cached in tenant row or config).
-- [ ] Daily sync (`syncStoreInventory`): for every `state='imported'` link,
+- [x] Daily sync (`syncStoreInventory`): for every `state='imported'` link,
       CJ stock → `inventorySetQuantities`; below `stockFloor` → set 0
       (+ link flag `stock_paused=1`, new column, migration `0004`);
       recovered → restore quantity, clear flag.
 
 ### W2.3 Supplier metafields (theme already renders these)
-- [ ] Same sync writes product metafields:
+- [x] Same sync writes product metafields:
       `supplier.name="CJ"`, `supplier.status` (`available|low_stock|out_of_stock`),
       `supplier.available_qty`, `supplier.last_checked_at` (ISO).
       Use `metafieldsSet`; define metafield definitions once (idempotent setup
       step in the sync job).
 
 ### W2.4 Cull interaction
-- [ ] `linksEligibleForArchive` excludes `stock_paused=1` rows (a product CJ ran
+- [x] `linksEligibleForArchive` excludes `stock_paused=1` rows (a product CJ ran
       dry on is not "non-performing"); add tests.
 
 ### W2.5 Tests + docs
-- [ ] Floor-priority refill; inventory set/zero/restore transitions; metafield
+- [x] Floor-priority refill; inventory set/zero/restore transitions; metafield
       payload shape; cull exemption. README + this doc.
 
 **Acceptance (W2):** zeroing CJ stock for a listed product pauses it in Shopify
