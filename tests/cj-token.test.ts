@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
-import { CjTokenManager, parseCjPrice } from '../src/cj';
+import { CjTokenManager, CjClient, parseCjPrice } from '../src/cj';
 import { Vault } from '../src/vault';
 import { TenantStore } from '../src/tenant-store';
 
@@ -80,5 +80,26 @@ describe('parseCjPrice', () => {
     expect(parseCjPrice('7.99')).toBe(7.99);
     expect(parseCjPrice('5.99 -- 12.99')).toBe(5.99);
     expect(parseCjPrice(null)).toBe(0);
+  });
+});
+
+describe('CjClient 429 backoff', () => {
+  const ok = () =>
+    new Response(JSON.stringify({ result: true, data: { list: [] } }), { status: 200 });
+
+  it('retries after a 429 and succeeds', async () => {
+    let calls = 0;
+    const waits: number[] = [];
+    const fetchImpl = (async () => (++calls === 1 ? new Response('', { status: 429 }) : ok())) as typeof fetch;
+    const cj = new CjClient(async () => 't', fetchImpl, async (ms) => { waits.push(ms); });
+    expect(await cj.search('dog')).toEqual([]);
+    expect(calls).toBe(2);
+    expect(waits).toEqual([1200]);
+  });
+
+  it('gives up after repeated 429s with the status in the error', async () => {
+    const fetchImpl = (async () => new Response('', { status: 429 })) as typeof fetch;
+    const cj = new CjClient(async () => 't', fetchImpl, async () => {});
+    await expect(cj.search('dog')).rejects.toThrow('CJ HTTP 429');
   });
 });

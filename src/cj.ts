@@ -117,18 +117,27 @@ export function parseCjPrice(v: unknown): number {
 export class CjClient {
   constructor(
     private readonly token: () => Promise<string>,
-    private readonly fetchImpl: typeof fetch = defaultFetch
+    private readonly fetchImpl: typeof fetch = defaultFetch,
+    private readonly pause: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms))
   ) {}
 
   private async get(path: string, params: Record<string, string>): Promise<unknown> {
     const qs = new URLSearchParams(params).toString();
-    const resp = await this.fetchImpl(`${CJ_BASE}${path}?${qs}`, {
-      headers: { 'CJ-Access-Token': await this.token() }
-    });
-    if (!resp.ok) throw new Error(`CJ HTTP ${resp.status}`);
-    const data = (await resp.json()) as { result?: boolean; message?: string; data?: unknown };
-    if (!data.result) throw new Error(data.message || 'CJ request failed');
-    return data.data;
+    // CJ free tier allows ~1 request/second; a cold-token mint followed
+    // immediately by this call can 429. Back off briefly and retry.
+    for (let attempt = 0; ; attempt++) {
+      const resp = await this.fetchImpl(`${CJ_BASE}${path}?${qs}`, {
+        headers: { 'CJ-Access-Token': await this.token() }
+      });
+      if (resp.status === 429 && attempt < 2) {
+        await this.pause(1200 * (attempt + 1));
+        continue;
+      }
+      if (!resp.ok) throw new Error(`CJ HTTP ${resp.status}`);
+      const data = (await resp.json()) as { result?: boolean; message?: string; data?: unknown };
+      if (!data.result) throw new Error(data.message || 'CJ request failed');
+      return data.data;
+    }
   }
 
   async search(keyword: string, pageSize = 40): Promise<CjSearchItem[]> {
