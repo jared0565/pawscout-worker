@@ -145,6 +145,9 @@ export interface CjDetail {
   categoryName: string;
   /** Max stock across variants. 0 = none or unknown (confirm via stockByPid). */
   stock?: number;
+  /** W3 curation audit trail: original CJ title + admission score. */
+  originalNameEn?: string;
+  llmScore?: number;
 }
 
 /** CJ exposes variant stock under several names depending on endpoint/era. */
