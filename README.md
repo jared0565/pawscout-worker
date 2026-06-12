@@ -220,6 +220,11 @@ Tests run in real workerd via `@cloudflare/vitest-pool-workers` with migrations 
 
 ## Roadmap
 
+**The active plan is [`docs/WAREHOUSE_PLAN.md`](docs/WAREHOUSE_PLAN.md)** — the W1–W4
+warehouse evolution (PS-local product buffer, store floor + CJ→Shopify stock sync,
+LLM curation via OpenRouter, weekly intelligence digest), written to be resumable
+by any developer. Items below are post-W4:
+
 - **Orders webhook** (`orders/create`) as a stronger qualifying signal than add-to-cart — needs Shopify protected-customer-data approval, so ATC beacons stand in for now.
 - **Per-category pricing multipliers** (commodity vs problem-solver products).
 - **Automated FX rate refresh** (currently a console-configured value).
