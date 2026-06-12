@@ -49,10 +49,15 @@
   search_log (sourced from wowgrooming.co.uk's range).
 - One-time catalog retitle: 27 products with CJ keyword-soup titles (60-170
   chars) rewritten to <=55-char UK-English titles. Handles/URLs unchanged.
-- NOTE: the W2 store-floor refill counts PawScout-imported links only; the 42
-  pre-existing products are invisible to it, so categories will grow by up to
-  8 imports each. Pending user decision whether refill should count actual
-  Shopify collection sizes instead.
+- RESOLVED: 36 of the 42 legacy products (those carrying cj-pid tags) were
+  ADOPTED into product_links (state=imported, category from their cj-cat tag,
+  2026-06-12) — they now count toward floors/targets, get stock+price synced
+  nightly, and enter the cull lifecycle (30-day grace from adoption). The
+  6 without cj-pid tags have no CJ identity and stay outside PawScout
+  (manual pricing/stock; consider archiving or tagging them manually).
+- Price sync added to the nightly job: retail = retailPriceGbp(CJ current
+  cost) for every SKU-matched variant. Legacy prices (which predate the
+  pricing engine — none end in .99) realign on the first post-deploy run.
 
 **Production identifiers:**
 
