@@ -336,25 +336,68 @@ to mechanical-gates behavior with zero errors; console shows model + 30-day cost
       pid 2007377705492574210 refused by the live stock floor (working as
       designed).
 
-## 7a-ii. OPEN STRATEGY QUESTION (user-raised 2026-06-12, answer pending)
+## 7a-ii. STRATEGY DECISION — shipping display, origin choice, returns
+## (user-raised 2026-06-12; recommendation delivered same day; user
+##  decision pending — do not implement until the user confirms)
 
-Shipping/pricing/returns strategy review requested. The user's framing:
-- Option under consideration: show PRODUCT price only in the shop; surface
-  shipping cost/time transparently on the PDP instead of baking freight into
-  the retail price (the current backlog plan bakes it in).
-- Rationale: with multiple CJ "From" origins, buyers could CHOOSE origin —
-  speed-sensitive buyers pick the near (pricier/faster) origin; price-
-  sensitive buyers pick the cheap (slower) one.
-- Also requested: factor RETURNS POLICY economics into net profit (the
-  current 17% model carries a flat 3% refunds line; dropship returns to CJ
-  are usually not economical — common practice is refund-without-return,
-  which changes the math).
-- Deliverable: a recommendation comparing (a) freight-in-price (backlog
-  item above), (b) product price + separate shipping at checkout, (c) hybrid
-  (free-over-threshold), each against UK buyer expectations, Shopify
-  shipping-rate mechanics, conversion impact, and net-margin protection;
-  plus a returns policy draft. NOT yet answered — pick this up next session
-  if interrupted.
+Question as raised: show product price only in the shop with shipping
+transparency on the PDP vs baking freight into the retail price; let buyers
+choose the CJ "From" origin (speed vs price); and review returns-policy
+economics for net-profit impact.
+
+**Recommendation delivered (summary):**
+
+1. **Pricing model: hybrid (option c), which the store already runs.**
+   Live Shopify rates: UK Standard £4.99 flat, FREE over £50, Express
+   £6.99; EU £14.99; Int'l £23.99. Keep sticker = 2.5× product cost
+   (freight NOT in sticker — baking it in would double-dip with the £4.99
+   fee, overcharge multi-item carts, and make prices uncompetitive).
+   BUT make the MARGIN FLOOR freight-aware: enforce minMargin/floor
+   against (product cost + cheapest viable freight quote), so heavy/bulky
+   items can never go out underwater. This refines the § 7a backlog item:
+   freight informs the floor, it does not inflate the sticker.
+2. **PDP transparency block (theme):** delivery cost + estimated window on
+   every PDP ("FREE UK delivery over £50 · Standard £4.99 (8–12 working
+   days) · Ships from UK, 2–4 days" when origin is UK). Kills checkout
+   surprise — the top abandonment cause.
+3. **Origin: PS chooses, buyers don't.** Buyer-facing origin choice needs
+   per-origin variants/SKUs + split inventory + CJ mapping mess, and
+   Shopify Basic can't price origin-dependent rates without per-product
+   delivery profiles (mixed carts then SUM profile rates — confusing).
+   Instead PS auto-prefers the UK warehouse when stock ≥ floor and margin
+   holds; the buyer's speed lever is the Express rate. CAVEAT: Express
+   £6.99 is currently offered on EVERYTHING including CN-origin items that
+   cannot be expressed — remove Express until a UK-stock delivery profile
+   exists (Phase 2: custom profile for UK-origin products carrying
+   Express; default profile Standard-only).
+4. **Free-over-£50 threshold: keep.** At 2.5× a £50 order carries ~£17–20
+   COGS; absorbing £4–8 freight still clears margin, and the threshold
+   lifts AOV. Revisit with real order data.
+5. **Returns policy (UK law + dropship economics):**
+   - CCR 2013: 14-day change-of-mind on distance sales; we must refund
+     outbound shipping at basic rate; customer pays return postage ONLY if
+     the policy says so → policy MUST say so.
+   - CRA 2015: faulty/not-as-described = full refund incl. return costs,
+     30 days.
+   - Change-of-mind under ~£25 retail: refund-without-return ("keep it")
+     is cheaper than processing a return (product cost ~£7–10 vs postage +
+     admin). Case-by-case, never advertised, capped per customer.
+   - Higher value: contact-first, buyer pays return postage; never publish
+     the CN warehouse address; UK-origin items can return to CJ UK.
+   - Damaged/lost: photo evidence → CJ dispute (refunds product + freight
+     when valid; file within CJ's ~30-day post-delivery window) → refund
+     customer fully; net cost ≈ £0.
+   - Hidden drains: Shopify Payments keeps processing fees on refunds
+     (~2.9% lost per refunded order); outbound-shipping refunds on full
+     cancellations. Keep the 3% refunds allowance; track actuals.
+   - Mitigations: LLM size charts for harnesses/apparel (top return
+     drivers); curated accurate descriptions (already live).
+
+**Implementation queue once the user confirms:** (i) PDP delivery block in
+theme; (ii) freight-aware margin floor + origin preference + "Ships from
+UK" badge (supersedes the § 7a freight item's price-in wording);
+(iii) remove Express rate (Shopify admin or GraphQL, needs user OK);
+(iv) write the Returns & Refunds policy page.
 
 ## 7b. Phase W5 — Email marketing via Resend (designed, not yet scheduled)
 
