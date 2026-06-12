@@ -32,8 +32,13 @@
       worker secrets `CJ_RELAY_URL` + `CJ_RELAY_TOKEN` set.
 - [x] End-to-end verified 2026-06-12: search returns `{"ok":true,...}` through
       proxy → worker → vault → relay → CJ.
-- [ ] Merchant console: set Popularity floor to 1 for the live shop (stored
-      config predates the calibrated default; one click in the console).
+- [x] Live shop popularityFloor set to 1 (2026-06-12, via D1 — verify the
+      console's Save-gates path works while building W1's console changes).
+- [x] **Flywheel verified end-to-end 2026-06-12**: 8 gated, priced ghost
+      products returned from cache. Pre-W1 checklist CLOSED.
+- [ ] Theme half not yet live to visitors: merge theme repo's
+      `claude/stoic-pasteur-a2ol7z` → `shopify-deploy` when ready (user's call —
+      that push updates the live store within seconds).
 
 **Production identifiers:**
 
