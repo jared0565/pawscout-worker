@@ -420,6 +420,45 @@ UK" badge (supersedes the § 7a freight item's price-in wording);
 (iii) remove Express rate (Shopify admin or GraphQL, needs user OK);
 (iv) write the Returns & Refunds policy page.
 
+## 7a-iii. Returns evidence gating (user-approved direction 2026-06-12)
+
+Principle: **our buyer-evidence intake must mirror CJ's dispute bar** —
+never refund a faulty/damaged/wrong-item claim on less evidence than CJ
+requires, so every refund is already a CJ-recoverable claim (the −£0.85
+vs −£15.85 spread in the § 7a-ii refund math).
+
+CJ evidence expectations per claim type (VERIFY against CJ's live dispute
+policy before hard-coding; re-verify whenever a dispute is declined):
+- Damaged in transit: outer packaging all sides + shipping label with
+  barcode legible + the damage itself (separate clear shots).
+- Wrong item / missing parts: received item incl. SKU sticker/bag label,
+  next to packaging.
+- Not working: VIDEO demonstrating the defect (unboxing-style preferred).
+- Not delivered: tracking only; just file inside the window.
+- TIMING GATE: dispute window ≈ 30 days from delivered status. Perfect
+  evidence on day 31 = £0. Track the deadline per fulfilment.
+
+Phase 1 (manual, at launch):
+- [ ] Returns policy + support reply template state the exact required
+      shots per claim type BEFORE a refund is processed; policy says
+      "keep all packaging until your claim is resolved" (binned packaging
+      is the #1 evidence killer). Asking reasonable proof of fault before
+      refunding is lawful UK practice; don't stall once evidence is in.
+- [ ] Runbook: file the CJ dispute the SAME DAY the customer is refunded;
+      pin CJ's current dispute requirements into this doc when first seen
+      in the dashboard.
+
+Phase 2 (W6 candidate — PawScout returns portal):
+- [ ] `/proxy/return` page (App Proxy HMAC, 200+ok rule): buyer picks
+      claim type, uploads against a per-type checklist.
+- [ ] LLM vision gate via OpenRouter (existing LlmClient + key): label
+      legible? packaging shown? photographed product matches our catalog
+      image for that SKU (doubles as fraud screen)? Instant "retake
+      showing X" instead of support round-trips.
+- [ ] Storage: R2 bucket for evidence bundles; deadline computed from
+      delivery date; console card lists open claims + days remaining.
+- [ ] Output: CJ-ready evidence bundle so filing is copy-paste.
+
 ## 7b. Phase W5 — Email marketing via Resend (designed, not yet scheduled)
 
 The user has a Resend account. Newsletter signups currently post through the
