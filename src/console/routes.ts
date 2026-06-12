@@ -61,9 +61,27 @@ export async function getStatus(db: D1Database, shop: string): Promise<Status> {
   };
 }
 
-/** Search-demand readout for the console: top keywords of the last 30 days. */
-export async function getInsights(db: D1Database, shop: string): Promise<{ keywords: KeywordDemand[] }> {
+export interface CategoryFill { key: string; imported: number; warehouse: number; floor: number; target: number }
+
+/** Console readout: top search keywords (30d) + per-category fill vs floors. */
+export async function getInsights(
+  db: D1Database,
+  shop: string
+): Promise<{ keywords: KeywordDemand[]; categories: CategoryFill[] }> {
   const store = new TenantStore(db, shop);
   const since = new Date(Date.now() - 30 * 86400_000).toISOString();
-  return { keywords: await store.recentSearches(since, 10) };
+  const cfg = await store.getConfig();
+  const categories: CategoryFill[] = [];
+  if (cfg) {
+    for (const key of Object.keys(cfg.collectionMap)) {
+      categories.push({
+        key,
+        imported: await store.countImportedByCategory(key),
+        warehouse: await store.countWarehouseAvailableByCategory(key),
+        floor: cfg.floors.storeFloor,
+        target: cfg.target
+      });
+    }
+  }
+  return { keywords: await store.recentSearches(since, 10), categories };
 }

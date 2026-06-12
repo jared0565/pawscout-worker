@@ -273,13 +273,24 @@ async function refresh(){
 async function loadInsights(){
   try{
     var r=await api('/insights');
+    var html='';
+    var cats=(r&&r.categories)||[];
+    if(cats.length){
+      html+='<div class="muted" style="font-weight:550;color:var(--ink)">Category fill (store / warehouse)</div><ul class="cols">'
+        +cats.map(function(c){
+          var low=Number(c.imported)<Number(c.floor);
+          return '<li><strong>'+esc(c.key)+'</strong> <span class="badge '+(low?'no':'ok')+'">'+esc(c.imported)+' / '+esc(c.target)+' listed</span> <span class="muted">· floor '+esc(c.floor)+' · warehouse '+esc(c.warehouse)+'</span></li>';
+        }).join('')+'</ul><hr>';
+    }
     var ks=(r&&r.keywords)||[];
-    if(!ks.length){ el('insights').innerHTML='<p class="muted">No storefront searches hit the backfill yet.</p>'; return; }
-    var rows=ks.map(function(k){
-      var fill=(Number(k.avg_store_hits)+Number(k.avg_ghost_hits)).toFixed(1);
-      return '<li><strong>'+esc(k.keyword_norm)+'</strong> <span class="muted">· '+esc(k.searches)+' searches · avg fill</span> <code>'+esc(fill)+'</code></li>';
-    }).join('');
-    el('insights').innerHTML='<ul class="cols">'+rows+'</ul>';
+    if(ks.length){
+      html+='<div class="muted" style="font-weight:550;color:var(--ink)">Top searches — 30 days</div><ul class="cols">'
+        +ks.map(function(k){
+          var fill=(Number(k.avg_store_hits)+Number(k.avg_ghost_hits)).toFixed(1);
+          return '<li><strong>'+esc(k.keyword_norm)+'</strong> <span class="muted">· '+esc(k.searches)+' searches · avg fill</span> <code>'+esc(fill)+'</code></li>';
+        }).join('')+'</ul>';
+    }
+    el('insights').innerHTML=html||'<p class="muted">No storefront searches hit the backfill yet.</p>';
   }catch(e){
     el('insights').innerHTML='<p class="muted">Insights unavailable.</p>';
   }
