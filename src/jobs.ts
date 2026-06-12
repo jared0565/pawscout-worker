@@ -4,7 +4,8 @@ import { makeAdminGraphql, type AdminGraphql } from './shopify-admin';
 import { TenantStore, listActiveShops, purgeExpiredSearchCache, purgeUnusedWarehouse, trimOldLogs } from './tenant-store';
 import { passesGates, normalizeKeyword, CACHE_TTL_DAYS } from './proxy/search';
 import { confirmAndImport, getCachedDetail, resolveCategory } from './proxy/import';
-import { getPrimaryLocationId, productInventoryItems, setInventoryQuantities, setSupplierMetafields, MAX_TRACKED_QTY } from './proxy/inventory';
+import { getPrimaryLocationId, productInventoryItems, setInventoryQuantities, setSupplierMetafields, updateVariantPrices, MAX_TRACKED_QTY } from './proxy/inventory';
+import { retailPriceGbp } from './pricing';
 import type { CjDetail } from './cj';
 import { LlmClient, curateProduct, type Curation } from './llm';
 import type { Env, TenantConfig } from './types';
@@ -121,18 +122,40 @@ export async function syncStoreInventory(
   for (const link of (await store.listImportedLinks()).slice(0, maxProducts)) {
     if (!link.shopify_product_id) continue;
     try {
+      // Fresh CJ detail: source of truth for variant costs (price sync) and,
+      // when present, stock — saving the separate stock call.
       await pause(CJ_CALL_GAP_MS);
-      const stockMap = await cj.stockByPid(link.cj_pid);
-      const maxStock = stockMap.size ? Math.max(...stockMap.values()) : 0;
+      let detail: CjDetail | null = null;
+      try { detail = await cj.detail(link.cj_pid); } catch { detail = null; }
+      if (detail) await store.putSearchCache(`pid:${link.cj_pid}`, JSON.stringify(detail), 30);
+
+      let stockMap = new Map<string, number>();
+      let maxStock = detail?.stock ?? 0;
+      if (detail) {
+        for (const v of detail.variants) if (v.stock !== undefined) stockMap.set(v.vid, v.stock);
+      }
+      if (!maxStock) {
+        await pause(CJ_CALL_GAP_MS);
+        stockMap = await cj.stockByPid(link.cj_pid);
+        maxStock = stockMap.size ? Math.max(...stockMap.values()) : 0;
+      }
       const paused = maxStock < cfg.floors.stockFloor;
 
-      // SKU → vid mapping from the warehouse detail, for per-variant accuracy.
+      // SKU → vid mapping for per-variant quantities (fresh detail preferred).
       const skuToVid = new Map<string, string>();
-      const wh = await store.getWarehouseProduct(link.cj_pid);
-      if (wh) {
-        try {
-          for (const v of (JSON.parse(wh.detail) as CjDetail).variants) skuToVid.set(v.sku, v.vid);
-        } catch { /* fall back to uniform stock */ }
+      const skuToCost = new Map<string, number>();
+      if (detail) {
+        for (const v of detail.variants) {
+          skuToVid.set(v.sku, v.vid);
+          skuToCost.set(v.sku, v.sellPriceUsd);
+        }
+      } else {
+        const wh = await store.getWarehouseProduct(link.cj_pid);
+        if (wh) {
+          try {
+            for (const v of (JSON.parse(wh.detail) as CjDetail).variants) skuToVid.set(v.sku, v.vid);
+          } catch { /* fall back to uniform stock */ }
+        }
       }
 
       const variants = await productInventoryItems(admin, link.shopify_product_id);
@@ -145,6 +168,18 @@ export async function syncStoreInventory(
           return { inventoryItemId: v.inventoryItemId, quantity: Math.min(qty, MAX_TRACKED_QTY) };
         })
       );
+
+      // Price sync: retail must always equal the pricing rule applied to CJ's
+      // CURRENT cost. Only variants whose SKU matches a CJ variant reprice;
+      // unchanged prices are skipped to avoid pointless writes.
+      const priceUpdates = variants.flatMap((v) => {
+        const cost = skuToCost.get(v.sku);
+        if (cost === undefined || cost <= 0) return [];
+        const expected = retailPriceGbp(cost, cfg.pricing).toFixed(2);
+        return expected === v.price ? [] : [{ id: v.variantId, price: expected }];
+      });
+      if (priceUpdates.length) await updateVariantPrices(admin, link.shopify_product_id, priceUpdates);
+
       await setSupplierMetafields(admin, link.shopify_product_id, {
         status: paused ? 'out_of_stock' : maxStock < cfg.floors.stockFloor * 2 ? 'low_stock' : 'available',
         qty: maxStock,

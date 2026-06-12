@@ -27,13 +27,13 @@ async function insertEvent(cjPid: string, event: string, agoDays: number): Promi
     .bind(SHOP, cjPid, event, ts).run();
 }
 
-function detailOf(pid: string, stock = 50): CjDetail {
+function detailOf(pid: string, stock = 50, costUsd = 10): CjDetail {
   return {
     pid,
     nameEn: `Pet Toys ${pid}`,
     images: ['https://i/1.jpg'],
     descriptionHtml: 'desc',
-    variants: [{ vid: `v-${pid}`, name: 'Default', sellPriceUsd: 10, sku: `sku-${pid}`, stock }],
+    variants: [{ vid: `v-${pid}`, name: 'Default', sellPriceUsd: costUsd, sku: `sku-${pid}`, stock }],
     listedNum: 10,
     categoryName: 'Pet Toys',
     stock
@@ -50,7 +50,7 @@ async function seedWarehouse(store: TenantStore, pid: string, category: string, 
 
 interface Call { query: string; variables?: Record<string, unknown> }
 
-function shopAdmin(calls: Call[]): AdminGraphql {
+function shopAdmin(calls: Call[], currentPrice = '99.99'): AdminGraphql {
   return async (query, variables) => {
     calls.push({ query, variables });
     if (query.includes('productUpdate')) return { productUpdate: { product: { id: 'x' }, userErrors: [] } };
@@ -62,8 +62,9 @@ function shopAdmin(calls: Call[]): AdminGraphql {
     if (query.includes('publishablePublish')) return { publishablePublish: { userErrors: [] } };
     if (query.includes('pawscoutLocation')) return { location: { id: 'gid://shopify/Location/1' } };
     if (query.includes('pawscoutVariants')) {
-      return { product: { variants: { nodes: [{ id: 'gid://v/1', sku: (variables!.id as string).includes('A') ? 'sku-A' : 'sku-x', inventoryItem: { id: 'gid://inv/1' } }] } } };
+      return { product: { variants: { nodes: [{ id: 'gid://v/1', sku: (variables!.id as string).includes('A') ? 'sku-A' : 'sku-x', price: currentPrice, inventoryItem: { id: 'gid://inv/1' } }] } } };
     }
+    if (query.includes('productVariantsBulkUpdate')) return { productVariantsBulkUpdate: { userErrors: [] } };
     if (query.includes('inventorySetQuantities')) return { inventorySetQuantities: { userErrors: [] } };
     if (query.includes('metafieldsSet')) return { metafieldsSet: { userErrors: [] } };
     throw new Error(`unexpected query: ${query.slice(0, 40)}`);
@@ -198,6 +199,38 @@ describe('syncStoreInventory', () => {
     const quantities = (inv.variables!.input as { quantities: { quantity: number }[] }).quantities;
     expect(quantities[0].quantity).toBe(40); // sku-A ↔ v-A mapped exactly
     expect((await store.getLink('A'))?.stock_paused).toBe(0);
+  });
+
+  it('reprices variants from fresh CJ cost under the pricing rule', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await insertLink('A', 'imported', 5);
+    const cj = {
+      detail: async (pid: string) => detailOf(pid, 40, 10), // $10 cost -> £19.99 expected
+      stockByPid: async () => new Map<string, number>()
+    } as unknown as CjClient;
+
+    const calls: Call[] = [];
+    await syncStoreInventory(store, cj, shopAdmin(calls, '53.90'), CFG, { pause: async () => {} });
+
+    const reprice = calls.find((c) => c.query.includes('productVariantsBulkUpdate'))!;
+    expect(reprice).toBeDefined();
+    expect((reprice.variables!.variants as { price: string }[])[0].price).toBe('19.99');
+    // stock came from the detail payload — no separate stock call needed
+    const inv = calls.find((c) => c.query.includes('inventorySetQuantities'))!;
+    expect((inv.variables!.input as { quantities: { quantity: number }[] }).quantities[0].quantity).toBe(40);
+  });
+
+  it('skips the price write when retail already matches the rule', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await insertLink('A', 'imported', 5);
+    const cj = {
+      detail: async (pid: string) => detailOf(pid, 40, 10),
+      stockByPid: async () => new Map<string, number>()
+    } as unknown as CjClient;
+
+    const calls: Call[] = [];
+    await syncStoreInventory(store, cj, shopAdmin(calls, '19.99'), CFG, { pause: async () => {} });
+    expect(calls.some((c) => c.query.includes('productVariantsBulkUpdate'))).toBe(false);
   });
 
   it('a per-product Shopify failure never aborts the run', async () => {

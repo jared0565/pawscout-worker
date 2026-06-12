@@ -12,20 +12,37 @@ export async function getPrimaryLocationId(admin: AdminGraphql): Promise<string 
   }
 }
 
-export interface VariantInventory { variantId: string; sku: string; inventoryItemId: string }
+export interface VariantInventory { variantId: string; sku: string; price: string; inventoryItemId: string }
 
 export async function productInventoryItems(admin: AdminGraphql, productId: string): Promise<VariantInventory[]> {
   const data = await admin(
     `query pawscoutVariants($id: ID!) {
-      product(id: $id) { variants(first: 50) { nodes { id sku inventoryItem { id } } } }
+      product(id: $id) { variants(first: 50) { nodes { id sku price inventoryItem { id } } } }
     }`,
     { id: productId }
   );
-  const nodes = ((data.product as { variants?: { nodes?: { id: string; sku: string | null; inventoryItem?: { id: string } }[] } } | null)
+  const nodes = ((data.product as { variants?: { nodes?: { id: string; sku: string | null; price?: string; inventoryItem?: { id: string } }[] } } | null)
     ?.variants?.nodes) ?? [];
   return nodes
     .filter((n) => n.inventoryItem?.id)
-    .map((n) => ({ variantId: n.id, sku: n.sku ?? '', inventoryItemId: n.inventoryItem!.id }));
+    .map((n) => ({ variantId: n.id, sku: n.sku ?? '', price: n.price ?? '', inventoryItemId: n.inventoryItem!.id }));
+}
+
+/** Bulk price updates for a product's variants. Throws on userErrors. */
+export async function updateVariantPrices(
+  admin: AdminGraphql,
+  productId: string,
+  updates: { id: string; price: string }[]
+): Promise<void> {
+  if (!updates.length) return;
+  const data = await admin(
+    `mutation pawscoutPrices($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
+      productVariantsBulkUpdate(productId: $productId, variants: $variants) { userErrors { field message } }
+    }`,
+    { productId, variants: updates }
+  );
+  const errs = (data.productVariantsBulkUpdate as { userErrors?: { message: string }[] } | undefined)?.userErrors ?? [];
+  if (errs.length) throw new Error(errs.map((e) => e.message).join('; '));
 }
 
 /** Absolute-set available quantities (reason: correction). Throws on userErrors. */
