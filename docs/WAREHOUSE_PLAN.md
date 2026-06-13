@@ -377,6 +377,25 @@ refill. The sealer itself was ARCHIVED (product 10863821160786, pid
 2606120903381607900) and its link set archived. Cost: ≈$0.0003/clicked
 ghost. LLM remains background-only (imports run in waitUntil).
 
+## 7a-i-c. Inventory audit + sanitization (executed 2026-06-13 00:50)
+
+- Catalog 43→37 active. ARCHIVED the 6 demo/proposal products (no CJ
+  identity, unfulfillable; decision previously pending — user mandated).
+  With the vacuum sealer that makes 7 archived. **Invariant achieved:
+  every ACTIVE product is PawScout-managed (37 actives = 37 imported
+  links, 1:1).**
+- Relevance review of all 37 actives: clean — no further off-category
+  items.
+- warehouse_products: EMPTY in production (replenishment debuts with
+  tonight's cron, behind the LLM gate) — nothing to sanitize.
+- search_cache: all 12 kw:* rows purged (incl. "pet food" set carrying
+  the vacuum-sealer ghost and the polluted scissors sets); regenerate on
+  demand.
+- OPEN LEVER (user decision): ghost DISPLAY still mechanical-gated;
+  console → gates → relevance **strict** would require all search tokens
+  in title (kills "pet food"→sealer-type ghosts; fewer multi-word
+  backfill results).
+
 ## 7a-ii. STRATEGY DECISION — shipping display, origin choice, returns
 ## (user-raised 2026-06-12; recommendation delivered same day; user
 ##  decision pending — do not implement until the user confirms)
