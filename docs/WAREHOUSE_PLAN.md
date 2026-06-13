@@ -415,6 +415,26 @@ ghost. LLM remains background-only (imports run in waitUntil).
   only; then click the button. NOT yet run against production (awaiting
   user deploy + click).
 
+## 7a-i-e. Search quality fixes (2026-06-13, from a live "cat toys" review)
+
+Symptoms on /search?q=cat+toys: 8 results incl. 4 DOG toys (cross-category
+noise), and stuck at 8 (target 12 unmet).
+Root causes + fixes:
+- BUG: relevanceMatch strict did exact includes(), so a plural query token
+  ("toys") never matched a singular title ("Toy") — strict rejected almost
+  everything, so backfill returned 0 ghosts. FIXED: keywordTokens() stems
+  plurals (es>4 / s>3) + drops stopwords; shared by relevance gate AND
+  warehouse LIKE search. ("cat toys" now matches cat toys, rejects dog.)
+- Native Shopify search results were rendered UNFILTERED (PawScout gating
+  only governed ghosts). FIXED: main-search.liquid filters results to the
+  query (same stemming) with an empty->show-all fallback; "X products"
+  count + backfill data-have use the filtered count.
+- Dedupe: theme passes shown cj-pids (data-shown-pids) -> /proxy/search
+  ?exclude= -> searchBackfill seeds `seen`, so ghosts filling to 12 never
+  duplicate a card already on the page.
+- DEPLOY: worker code only (no migration) + theme already merged to
+  shopify-deploy. 178 tests.
+
 ## 7a-ii. STRATEGY DECISION — shipping display, origin choice, returns
 ## (user-raised 2026-06-12; recommendation delivered same day; user
 ##  decision pending — do not implement until the user confirms)
