@@ -3,7 +3,7 @@ import { chooseOrigin, CjClient, CjTokenManager, cjFetchFromEnv, type CjSearchIt
 import { makeAdminGraphql, type AdminGraphql } from './shopify-admin';
 import { TenantStore, listActiveShops, purgeExpiredSearchCache, purgeUnusedWarehouse, trimOldLogs } from './tenant-store';
 import { passesGates, normalizeKeyword, CACHE_TTL_DAYS } from './proxy/search';
-import { confirmAndImport, getCachedDetail, resolveCategory } from './proxy/import';
+import { confirmAndImport, getCachedDetail, resolveCategory, reconcileAddonVisibility } from './proxy/import';
 import { enableTracking, getPrimaryLocationId, productInventoryItems, setInventoryQuantities, setSupplierMetafields, updateVariantPrices, MAX_TRACKED_QTY } from './proxy/inventory';
 import { retailPriceGbp } from './pricing';
 import type { CjDetail } from './cj';
@@ -458,6 +458,7 @@ export async function runDailyMaintenance(env: Env): Promise<void> {
         await replenishWarehouse(store, cj, cfg, { curate });
         await syncStoreInventory(store, cj, admin, cfg);
         await refillCollections(store, cj, admin, cfg, { curate }); // promote-from-warehouse (floor 8, target 12)
+        await reconcileAddonVisibility(store, admin, cfg); // align hidden/visible add-ons to the toggle
       }
     } catch (e) {
       console.warn(`daily maintenance failed for ${shop}: ${(e as Error).message}`);

@@ -232,6 +232,15 @@ export function consolePage(apiKey: string): Response {
         <label for="addon">Enabled</label>
         <select id="addon"><option value="true" selected>On</option><option value="false">Off</option></select>
       </div>
+    </div>
+    <div class="row">
+      <div class="grow">
+        <label for="addvis">Visibility in storefront</label>
+        <select id="addvis">
+          <option value="true" selected>Hidden — add-on slots only (default)</option>
+          <option value="false">Visible — also in browsing &amp; search</option>
+        </select>
+      </div>
       <button onclick="saveAddons()">Save add-ons</button>
     </div>
     <p id="addmsg" class="msg muted"></p>
@@ -278,7 +287,7 @@ function renderStatus(s){
     +'<dt>Relevance</dt><dd>'+esc(g.relevance)+'</dd>'
     +'<dt>Target count</dt><dd>'+esc(s.target)+'</dd>'
     +'<dt>Pricing</dt><dd>'+esc(p.multiplier)+'× (floor '+esc(p.floor)+'×, min £'+esc(p.minMarginGbp)+')</dd>'
-    +(function(){ var a=s.addons||{}; return '<dt>Add-on lane</dt><dd>'+(a.enabled?('$'+esc(a.priceMinUsd)+' – $'+esc(a.priceMaxUsd)+' · pool '+esc(a.poolSize)):'Off')+'</dd>'; })();
+    +(function(){ var a=s.addons||{}; return '<dt>Add-on lane</dt><dd>'+(a.enabled?('$'+esc(a.priceMinUsd)+' – $'+esc(a.priceMaxUsd)+' · pool '+esc(a.poolSize)+' · '+(a.suppressFromBrowse?'hidden':'visible')):'Off')+'</dd>'; })();
   var cm=s.collectionMap||{}; var keys=Object.keys(cm);
   var cols = keys.length
     ? keys.map(function(k){ var v=cm[k]||{}; return '<li><strong>'+esc(v.handle||k)+'</strong> <span class="muted">← tag</span> <code>'+esc(v.tag)+'</code></li>'; }).join('')
@@ -311,6 +320,7 @@ function populateForms(s){
   if(a.priceMaxUsd!=null) el('addmax').value=a.priceMaxUsd;
   if(a.poolSize!=null) el('addpool').value=a.poolSize;
   if(a.enabled!=null) el('addon').value=String(a.enabled);
+  if(a.suppressFromBrowse!=null) el('addvis').value=String(a.suppressFromBrowse);
   var cm=s.collectionMap||{};
   el('maprows').textContent='';
   Object.keys(cm).forEach(function(k){ var v=cm[k]||{}; addMapRow(v.handle||k, v.tag||''); });
@@ -469,7 +479,8 @@ async function saveAddons(){
       enabled:el('addon').value==='true',
       priceMinUsd:Number(el('addmin').value),
       priceMaxUsd:Number(el('addmax').value),
-      poolSize:Number(el('addpool').value)
+      poolSize:Number(el('addpool').value),
+      suppressFromBrowse:el('addvis').value==='true'
     });
     if(r.ok){ setMsg('addmsg','Saved ✓','ok'); refresh(); }
     else setMsg('addmsg','Failed: '+(r.error||'unknown error'),'no');

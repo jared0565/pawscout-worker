@@ -18,7 +18,7 @@ import { validateGatesPayload, validatePricingPayload, validateLlmPayload, valid
 import { verifyAppProxy } from './proxy/verify';
 import { searchBackfill, normalizeKeyword } from './proxy/search';
 import { LlmClient, classifyKeyword, curateProduct } from './llm';
-import { buildPreview, getDetailPreferWarehouse, confirmAndImport } from './proxy/import';
+import { buildPreview, getDetailPreferWarehouse, confirmAndImport, reconcileAddonVisibility } from './proxy/import';
 import { makeAdminGraphql } from './shopify-admin';
 import { runDailyMaintenance, syncStoreInventory, refillCollections } from './jobs';
 
@@ -150,6 +150,20 @@ app.post('/api/addons', async (c) => {
   const v = validateAddonsPayload(body);
   if (!v.ok) return c.json({ ok: false, error: v.error }, 400);
   await saveAddons(c.env.DB, s, v.value);
+  // Apply the visibility toggle to existing add-ons immediately (best-effort;
+  // the config is already saved and the nightly cron also reconciles).
+  try {
+    const store = new TenantStore(c.env.DB, s);
+    const tenant = await store.getTenant();
+    const cfg = await store.getConfig();
+    if (tenant?.access_token_enc && cfg) {
+      const vault = await Vault.fromMasterKey(c.env.PAWSCOUT_MASTER_KEY);
+      const accessToken = await vault.open(tenant.dek_wrapped, tenant.access_token_enc);
+      c.executionCtx.waitUntil(reconcileAddonVisibility(store, makeAdminGraphql(s, accessToken), cfg));
+    }
+  } catch (e) {
+    console.warn(`addon reconcile (post-save) failed: ${(e as Error).message}`);
+  }
   return c.json({ ok: true });
 });
 app.post('/api/collections', async (c) => {

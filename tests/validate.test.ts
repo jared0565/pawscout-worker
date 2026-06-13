@@ -72,7 +72,7 @@ describe('validateLlmPayload', () => {
 });
 
 describe('validateAddonsPayload', () => {
-  const GOOD = { enabled: true, priceMinUsd: 0.5, priceMaxUsd: 5, poolSize: 12 };
+  const GOOD = { enabled: true, priceMinUsd: 0.5, priceMaxUsd: 5, poolSize: 12, suppressFromBrowse: true };
   it('accepts a clean band including a sub-$1 floor', () => {
     expect(validateAddonsPayload(GOOD)).toEqual({ ok: true, value: GOOD });
     expect(validateAddonsPayload({ ...GOOD, priceMinUsd: 0 }).ok).toBe(true);
@@ -84,11 +84,12 @@ describe('validateAddonsPayload', () => {
     expect(validateAddonsPayload({ ...GOOD, poolSize: 0 }).ok).toBe(false);
     expect(validateAddonsPayload({ ...GOOD, poolSize: 3.5 }).ok).toBe(false);
     expect(validateAddonsPayload({ ...GOOD, enabled: 'yes' }).ok).toBe(false);
+    expect(validateAddonsPayload({ ...GOOD, suppressFromBrowse: 'no' }).ok).toBe(false);
   });
   it('strips unknown fields', () => {
     const r = validateAddonsPayload({ ...GOOD, evil: 1 });
     expect(r.ok).toBe(true);
-    if (r.ok) expect(Object.keys(r.value).sort()).toEqual(['enabled', 'poolSize', 'priceMaxUsd', 'priceMinUsd']);
+    if (r.ok) expect(Object.keys(r.value).sort()).toEqual(['enabled', 'poolSize', 'priceMaxUsd', 'priceMinUsd', 'suppressFromBrowse']);
   });
 });
 

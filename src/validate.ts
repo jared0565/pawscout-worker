@@ -104,13 +104,17 @@ export function validateAddonsPayload(body: unknown): Validation<Addons> {
   if (!finite(b.poolSize) || !Number.isInteger(b.poolSize) || b.poolSize < 1 || b.poolSize > 50) {
     return { ok: false, error: 'poolSize must be an integer between 1 and 50' };
   }
+  if (typeof b.suppressFromBrowse !== 'boolean') {
+    return { ok: false, error: 'suppressFromBrowse must be true or false' };
+  }
   return {
     ok: true,
     value: {
       enabled: b.enabled,
       priceMinUsd: b.priceMinUsd,
       priceMaxUsd: b.priceMaxUsd,
-      poolSize: b.poolSize
+      poolSize: b.poolSize,
+      suppressFromBrowse: b.suppressFromBrowse
     }
   };
 }

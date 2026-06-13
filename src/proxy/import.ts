@@ -216,6 +216,14 @@ export async function importProduct(
     const multi = variants.length > 1;
     const optionName = multi ? 'Style' : 'Title';
 
+    // W-ADDON visibility: a suppressed add-on carries NO collection tag and is
+    // hidden from search; a VISIBLE add-on (toggle off) joins a real resolved
+    // collection so it appears in browsing & search like any product. Non-addon
+    // imports use their given category unchanged.
+    const isAddon = cat === ADDON_CATEGORY;
+    const addonVisible = isAddon && !cfg.addons.suppressFromBrowse;
+    const browseCat = isAddon ? (addonVisible ? resolveCategory(cfg, detail) : null) : cat;
+
     // W2: tracked inventory with policy DENY — Shopify itself blocks orders
     // beyond last-known CJ stock. Unknown stock (or no location) imports
     // untracked rather than tracked-at-zero, which would be unbuyable.
@@ -226,7 +234,7 @@ export async function importProduct(
       title: detail.nameEn,
       descriptionHtml: detail.descriptionHtml,
       status: 'ACTIVE',
-      tags: [IMPORT_TAG, `cj-pid-${detail.pid}`, ...(cat === ADDON_CATEGORY ? [ADDON_TAG] : []), ...(cat && cfg.collectionMap[cat] ? [cfg.collectionMap[cat].tag] : [])],
+      tags: [IMPORT_TAG, `cj-pid-${detail.pid}`, ...(isAddon ? [ADDON_TAG] : []), ...(browseCat && cfg.collectionMap[browseCat] ? [cfg.collectionMap[browseCat].tag] : [])],
       files: detail.images.slice(0, MAX_IMAGES).map((src) => ({ originalSource: src, contentType: 'IMAGE' })),
       productOptions: [{ name: optionName, values: multi ? variants.map((v) => ({ name: v.name })) : [{ name: 'Default Title' }] }],
       variants: variants.map((v) => ({
@@ -275,19 +283,12 @@ export async function importProduct(
       category: cat
     });
 
-    // W-ADDON: seo.hidden removes the product from storefront search and the
-    // sitemap while it stays buyable — fillers surface ONLY via the add-on
-    // widgets. Best-effort like the metafields below.
-    if (cat === ADDON_CATEGORY) {
+    // W-ADDON: hide a suppressed add-on from storefront search + sitemap while
+    // it stays buyable (surfaces only via the add-on widgets). A visible
+    // add-on is explicitly un-hidden. Best-effort.
+    if (isAddon) {
       try {
-        const hide = await admin(
-          `mutation pawscoutHide($metafields: [MetafieldsSetInput!]!) {
-            metafieldsSet(metafields: $metafields) { userErrors { field message } }
-          }`,
-          { metafields: [{ ownerId: product.id, namespace: 'seo', key: 'hidden', type: 'number_integer', value: '1' }] }
-        );
-        const hideErrs = (hide.metafieldsSet as { userErrors?: { message: string }[] } | undefined)?.userErrors ?? [];
-        if (hideErrs.length) console.warn(`seo.hidden failed for ${detail.pid}: ${hideErrs.map((e) => e.message).join('; ')}`);
+        await setSeoHidden(admin, product.id, cfg.addons.suppressFromBrowse);
       } catch (e) {
         console.warn(`seo.hidden failed for ${detail.pid}: ${(e as Error).message}`);
       }
@@ -310,4 +311,67 @@ export async function importProduct(
     console.warn(`import failed for ${detail.pid}: ${(e as Error).message}`);
     await store.putLink({ cjPid: detail.pid, state: 'failed', category: cat });
   }
+}
+
+
+/** Set the seo.hidden metafield (1 = hidden from storefront search + sitemap). */
+async function setSeoHidden(admin: AdminGraphql, productId: string, hidden: boolean): Promise<void> {
+  const data = await admin(
+    `mutation pawscoutHide($metafields: [MetafieldsSetInput!]!) {
+      metafieldsSet(metafields: $metafields) { userErrors { field message } }
+    }`,
+    { metafields: [{ ownerId: productId, namespace: 'seo', key: 'hidden', type: 'number_integer', value: hidden ? '1' : '0' }] }
+  );
+  const errs = (data.metafieldsSet as { userErrors?: { message: string }[] } | undefined)?.userErrors ?? [];
+  if (errs.length) throw new Error(errs.map((e) => e.message).join('; '));
+}
+
+/** Add or remove storefront tags on an existing product. */
+async function setProductTags(admin: AdminGraphql, productId: string, tags: string[], add: boolean): Promise<void> {
+  if (!tags.length) return;
+  const mut = add
+    ? `mutation pawscoutTagsAdd($id: ID!, $tags: [String!]!) { tagsAdd(id: $id, tags: $tags) { userErrors { field message } } }`
+    : `mutation pawscoutTagsRemove($id: ID!, $tags: [String!]!) { tagsRemove(id: $id, tags: $tags) { userErrors { field message } } }`;
+  const data = await admin(mut, { id: productId, tags });
+  const key = add ? 'tagsAdd' : 'tagsRemove';
+  const errs = (data[key] as { userErrors?: { message: string }[] } | undefined)?.userErrors ?? [];
+  if (errs.length) throw new Error(errs.map((e) => e.message).join('; '));
+}
+
+/**
+ * Align EXISTING add-on products to the current `addons.suppressFromBrowse`
+ * flag (the toggle changing affects already-imported fillers, not just new
+ * ones). Idempotent: sets seo.hidden and adds/removes the resolved collection
+ * tag. Pool is capped (≤ poolSize), so this is cheap. Called nightly.
+ */
+export async function reconcileAddonVisibility(
+  store: TenantStore,
+  admin: AdminGraphql,
+  cfg: TenantConfig
+): Promise<number> {
+  const suppress = cfg.addons.suppressFromBrowse;
+  const links = (await store.listImportedLinks(500)).filter(
+    (l) => l.category === ADDON_CATEGORY && l.shopify_product_id
+  );
+  let reconciled = 0;
+  for (const link of links) {
+    // Resolve the collection tag this filler would carry when visible.
+    let browseTag: string | null = null;
+    const wh = await store.getWarehouseProduct(link.cj_pid);
+    if (wh) {
+      try {
+        const d = JSON.parse(wh.detail) as CjDetail;
+        const bc = resolveCategory(cfg, d);
+        browseTag = bc && cfg.collectionMap[bc] ? cfg.collectionMap[bc].tag : null;
+      } catch { /* no detail → seo.hidden flip only */ }
+    }
+    try {
+      await setSeoHidden(admin, link.shopify_product_id!, suppress);
+      if (browseTag) await setProductTags(admin, link.shopify_product_id!, [browseTag], !suppress);
+      reconciled++;
+    } catch (e) {
+      console.warn(`addon visibility reconcile failed for ${link.cj_pid}: ${(e as Error).message}`);
+    }
+  }
+  return reconciled;
 }

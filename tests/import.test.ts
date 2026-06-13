@@ -92,6 +92,21 @@ describe('importProduct', () => {
     expect((await store.getLink('P1'))?.category).toBe('addons');
   });
 
+  it('a VISIBLE add-on joins a collection and is un-hidden (suppressFromBrowse=false)', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const calls: Call[] = [];
+    const visibleCfg = { ...CFG, addons: { ...CFG.addons, suppressFromBrowse: false } };
+    // DETAIL resolves to a mapped category (pet-toys) so it gets that collection tag.
+    await importProduct(store, fakeAdmin(calls), visibleCfg, DETAIL, 'addons');
+    const setCall = calls.find((c) => c.query.includes('productSet'))!;
+    const tags = (setCall.variables!.input as { tags: string[] }).tags;
+    expect(tags).toContain('cj-addon');
+    expect(tags.some((t) => t.startsWith('cj-cat-'))).toBe(true); // joined a real collection
+    // seo.hidden set to '0' (visible), not '1'
+    const hide = calls.find((c) => c.query.includes('pawscoutHide'))!;
+    expect((hide.variables!.metafields as { value: string }[])[0].value).toBe('0');
+  });
+
   it('non-addon imports never touch seo.hidden', async () => {
     const store = new TenantStore(env.DB, 'a.myshopify.com');
     const calls: Call[] = [];
