@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
-import { searchBackfill, normalizeKeyword, relevanceMatch } from '../src/proxy/search';
+import { searchBackfill, normalizeKeyword, relevanceMatch, keywordTokens } from '../src/proxy/search';
 import { TenantStore } from '../src/tenant-store';
 import { DEFAULT_GATES, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, type TenantConfig } from '../src/types';
 import type { CjClient, CjSearchItem } from '../src/cj';
@@ -34,6 +34,16 @@ describe('relevance + normalization', () => {
     expect(relevanceMatch('dog rope', 'Big Dog Bed', 'strict')).toBe(false);
     expect(relevanceMatch('dog rope', 'Dog Rope Toy', 'strict')).toBe(true);
     expect(relevanceMatch('cat tree', 'Dog Bed', 'loose')).toBe(true);
+  });
+  it('plural query matches a singular title (the strict "cat toys" bug)', () => {
+    // "toys" must match "Toy"; "cat toys" must accept cat toys, reject dog toys
+    expect(relevanceMatch('cat toys', 'Gravity Rolling Ball Cat Teaser Toy', 'strict')).toBe(true);
+    expect(relevanceMatch('cat toys', 'Squeaky Duck Chew Toy for Dogs', 'strict')).toBe(false);
+    expect(relevanceMatch('brushes', 'Pet Bath Brush', 'strict')).toBe(true);
+  });
+  it('drops stopwords so "toys for cats" behaves like "toy cat"', () => {
+    expect(keywordTokens('toys for cats')).toEqual(['toy', 'cat']);
+    expect(relevanceMatch('toys for cats', 'Smart Self-Rotating Cat Ball Toy', 'strict')).toBe(true);
   });
 });
 
@@ -88,5 +98,12 @@ describe('searchBackfill', () => {
     const items = Array.from({ length: 20 }, (_, i) => item({ pid: `p${i}` }));
     const cards = await searchBackfill(store, fakeCj(items), CFG, 'dog toy', 0, 3);
     expect(cards).toHaveLength(3);
+  });
+
+  it('excludes pids already shown on the page (no duplicate cards)', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const items = [item({ pid: 'shown' }), item({ pid: 'fresh' })];
+    const cards = await searchBackfill(store, fakeCj(items), CFG, 'dog toy', 4, 12, { exclude: ['shown'] });
+    expect(cards.map((c) => c.pid)).toEqual(['fresh']);
   });
 });

@@ -232,8 +232,11 @@ app.get('/proxy/search', async (c) => {
   const q = c.req.query('q') ?? '';
   const have = Math.max(0, Number(c.req.query('have')) || 0);
   const limit = Math.min(Math.max(1, Number(c.req.query('limit')) || 12), 12);
+  // CJ pids already rendered on the search page — excluded so a ghost never
+  // duplicates a card the visitor can already see.
+  const exclude = (c.req.query('exclude') ?? '').split(',').map((x) => x.trim()).filter(Boolean).slice(0, 50);
   try {
-    const products = await searchBackfill(p.store, cjFor(c.env, p), p.cfg, q, have, limit);
+    const products = await searchBackfill(p.store, cjFor(c.env, p), p.cfg, q, have, limit, { exclude });
     // W3: classify new keywords in the background (cached 30d) — the NEXT
     // search for this term benefits from category + synonyms. Never hot-path.
     const llm = new LlmClient(c.env.OPENROUTER_API_KEY);

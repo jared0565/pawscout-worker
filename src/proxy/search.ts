@@ -19,11 +19,37 @@ export function normalizeKeyword(q: string): string {
   return q.toLowerCase().trim().replace(/\s+/g, ' ').slice(0, 80);
 }
 
+// Words that carry no product meaning — dropped before matching so
+// "toys for cats" behaves like "toy cat".
+const STOPWORDS = new Set(['for', 'the', 'and', 'with', 'an', 'to', 'of', 'in', 'on', 'my', 'your', 'a']);
+
+/** Light plural → singular stem so "toys" matches a "Toy" title (the #1 search miss). */
+function stemToken(w: string): string {
+  if (w.length > 4 && w.endsWith('es')) return w.slice(0, -2); // brushes→brush, boxes→box
+  if (w.length > 3 && w.endsWith('s')) return w.slice(0, -1); // toys→toy, balls→ball
+  return w;
+}
+
+/** Significant, plural-normalised query tokens (stopwords + 1-char noise dropped). */
+export function keywordTokens(keyword: string): string[] {
+  return [
+    ...new Set(
+      keyword
+        .toLowerCase()
+        .split(/[^a-z0-9]+/)
+        .filter((t) => t.length >= 2 && !STOPWORDS.has(t))
+        .map(stemToken)
+    )
+  ];
+}
+
 export function relevanceMatch(keyword: string, title: string, mode: Gates['relevance']): boolean {
   if (mode === 'loose') return true; // trust the source's own match
   const t = title.toLowerCase();
-  const tokens = keyword.split(' ').filter(Boolean);
+  const tokens = keywordTokens(keyword);
   if (!tokens.length) return false;
+  // Stemmed tokens are singular roots; includes() still catches the plural
+  // form in the title ("toy" ⊂ "toys"), so matching works both directions.
   return mode === 'strict' ? tokens.every((tok) => t.includes(tok)) : tokens.some((tok) => t.includes(tok));
 }
 
@@ -72,7 +98,7 @@ export async function searchBackfill(
   query: string,
   storeHits: number,
   limit: number,
-  opts: { liveFallback?: boolean } = {}
+  opts: { liveFallback?: boolean; exclude?: string[] } = {}
 ): Promise<GhostCard[]> {
   const kw = normalizeKeyword(query);
   if (!kw) return [];
@@ -84,10 +110,12 @@ export async function searchBackfill(
   const expanded = cfg.gates.relevance !== 'strict' && meta?.synonyms.length
     ? `${kw} ${meta.synonyms.join(' ')}`
     : kw;
-  const tokens = [...new Set(expanded.split(' ').filter(Boolean))];
+  const tokens = keywordTokens(expanded);
 
   const cards: GhostCard[] = [];
-  const seen = new Set<string>();
+  // Seed `seen` with products already rendered on the page (passed by the
+  // theme) so backfill never duplicates a card the visitor can already see.
+  const seen = new Set<string>(opts.exclude ?? []);
 
   // --- 1) warehouse ---
   const rows = await store.searchWarehouse(tokens, limit * 3);
@@ -99,6 +127,7 @@ export async function searchBackfill(
   const whLinks = await store.getLinks(ranked.map((x) => x.r.cj_pid));
   for (const { r } of ranked) {
     if (cards.length >= limit) break;
+    if (seen.has(r.cj_pid)) continue;
     const link = whLinks.get(r.cj_pid);
     const imported = link?.state === 'imported' && link.handle;
     cards.push({
