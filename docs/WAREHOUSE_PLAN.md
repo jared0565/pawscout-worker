@@ -488,6 +488,34 @@ Live "dog toy": main grid correct (4 dog toys, catapult now valid), BUT:
   + a query-species helper), re-test, and confirm warehouse fill after the
   04:17Z cron.
 
+## 7a-i-h. Species-aware relevance (2026-06-13 22:20) — code done, live-verify PENDING
+
+Implements the resume item from 7a-i-g.
+- relevanceMatch: hard SPECIES gate first (cat product never matches a dog
+  query in ANY mode incl. loose), then word-boundary token matching.
+- NEW liveCjPasses(item, gates, keyword): for CJ listV2 results (which already
+  did category relevance) enforce price + popularityFloor + SPECIES-REQUIRED
+  (if the query names an animal, the product title must name that animal or
+  both). This (a) reaches the 12 target — any genuine dog product fills a
+  "dog toy" search, not only ones with the literal word "toy"; (b) blocks
+  species-less junk (advent calendars) and the wrong species. Used by BOTH
+  storefront backfill (src/proxy/search.ts CJ fallback) AND warehouse
+  replenishment (src/jobs.ts) so the warehouse stocks what searches surface.
+- Non-species queries (e.g. "slicker brush") keep category-token matching.
+- 184 vitest cases (incl. Herding-Ball-fills, cat-blocked, calendar-blocked,
+  price/popularity). DEPLOY: worker code only.
+
+HEADLESS-BROWSER VERIFY — BLOCKED FROM SANDBOX (documented attempt):
+- curl https://activepaw.co.uk/search?q=dog+toy -> HTTP 403 (Cloudflare
+  managed challenge; egress works, the request reaches the server).
+- Playwright chromium binary will NOT download (browser CDN off the egress
+  allowlist, same as pawscout-relay.fly.dev). No system chromium present.
+- => cannot run a headless browser here. Logic verified by unit tests; the
+  LIVE check is the user's browser, OR a CI runner with open network +
+  ability to solve/whitelist Cloudflare. "Reaches 12" also depends on CJ
+  listV2 supply for the term + warehouse stock (cron) — not artificially
+  capped anymore, but supply-dependent.
+
 ## 7a-ii. STRATEGY DECISION — shipping display, origin choice, returns
 ## (user-raised 2026-06-12; recommendation delivered same day; user
 ##  decision pending — do not implement until the user confirms)
