@@ -435,6 +435,29 @@ Root causes + fixes:
 - DEPLOY: worker code only (no migration) + theme already merged to
   shopify-deploy. 178 tests.
 
+## 7a-i-f. Search quality round 2 (2026-06-13, "catapult" + CJ supply)
+
+From a live "cat toys" review (still showed a dog toy; CJ website gives a
+rich list the API didn't):
+- BUG: substring match — "cat" matched "catapult" → "Pet Food Catapult
+  Feeder ... Dog Toy" wrongly passed. FIXED: relevanceMatch + the theme's
+  native filter now do WHOLE-WORD matching (stemmed word set / space-padded
+  Liquid), so a token only matches a real title word.
+- CJ supply: switched cj.search to /product/listV2 (CJ's elasticsearch —
+  what their website uses; the old /product/list keyword endpoint returned
+  advent calendars for "cat toys"). Safe: falls back to /product/list on
+  error or empty. Defensive multi-shape parser (list / content[].productList).
+- Species awareness: curation prompt now scores a product <20 if it targets
+  a different animal than the query context, and outputs petClass
+  (cat/dog/both/small-pet/other). Stored on the warehouse detail; imports get
+  a cj-pet-<class> tag. (Search-time species FILTER using the tag/class is a
+  future step once products are classified — new admissions get it now.)
+- popularityFloor 1->0 (live, via D1) — listedNum is mostly 0 and was
+  over-rejecting valid items; relevance + LLM curation are the real gates.
+- DEPLOY: worker code only + theme merged. AFTER deploy: purge kw:* search
+  cache so listV2 repopulates (old cache holds junk from /product/list).
+  178->179 tests.
+
 ## 7a-ii. STRATEGY DECISION — shipping display, origin choice, returns
 ## (user-raised 2026-06-12; recommendation delivered same day; user
 ##  decision pending — do not implement until the user confirms)
