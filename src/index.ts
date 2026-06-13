@@ -20,7 +20,7 @@ import { searchBackfill, normalizeKeyword } from './proxy/search';
 import { LlmClient, classifyKeyword, curateProduct } from './llm';
 import { buildPreview, getDetailPreferWarehouse, confirmAndImport, reconcileAddonVisibility } from './proxy/import';
 import { makeAdminGraphql } from './shopify-admin';
-import { runDailyMaintenance, syncStoreInventory, refillCollections } from './jobs';
+import { runDailyMaintenance, syncStoreInventory, refillCollections, sanitizeDescriptions } from './jobs';
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -165,6 +165,26 @@ app.post('/api/addons', async (c) => {
     console.warn(`addon reconcile (post-save) failed: ${(e as Error).message}`);
   }
   return c.json({ ok: true });
+});
+const SANITIZE_BATCH = 10;
+app.post('/api/sanitize', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: { offset?: number } = {};
+  try { body = await c.req.json(); } catch { /* defaults */ }
+  const store = new TenantStore(c.env.DB, s);
+  const tenant = await store.getTenant();
+  if (!tenant?.access_token_enc) return c.json({ ok: false, error: 'Not configured' }, 400);
+  const vault = await Vault.fromMasterKey(c.env.PAWSCOUT_MASTER_KEY);
+  const accessToken = await vault.open(tenant.dek_wrapped, tenant.access_token_enc);
+  const admin = makeAdminGraphql(s, accessToken);
+  const offset = Math.max(0, Math.floor(Number(body.offset) || 0));
+  try {
+    const r = await sanitizeDescriptions(store, admin, { offset, limit: SANITIZE_BATCH });
+    return c.json({ ok: true, ...r });
+  } catch (e) {
+    console.warn(`sanitize failed: ${(e as Error).message}`);
+    return c.json({ ok: false, error: `Sanitize failed: ${(e as Error).message}` }, 500);
+  }
 });
 app.post('/api/collections', async (c) => {
   const s = await shopOf(c); if (typeof s !== 'string') return s;

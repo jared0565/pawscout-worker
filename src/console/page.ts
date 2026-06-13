@@ -251,9 +251,11 @@ export function consolePage(apiKey: string): Response {
     <p class="sub" style="margin:0 0 12px">Runs the nightly CJ sync on demand: every listed product gets current supplier stock, rule-aligned prices and tracking, then collections top up from the warehouse.</p>
     <div class="row">
       <button id="syncbtn" onclick="syncNow()">Sync now</button>
+      <button class="ghost" id="sanbtn" onclick="sanitizeNow()">Clean up descriptions</button>
     </div>
     <div class="bar" id="syncbar"><i></i></div>
     <p id="syncmsg" class="msg muted"></p>
+    <p id="sanmsg" class="msg muted"></p>
   </section>
 
   <section class="card">
@@ -434,6 +436,23 @@ function syncBar(mode,frac){
   var b=el('syncbar'); if(!b) return;
   b.className='bar'+(mode==='off'?'':' on')+(mode==='pulse'?' pulse':'');
   if(mode==='frac') b.querySelector('i').style.width=Math.round((frac||0)*100)+'%';
+}
+async function sanitizeNow(){
+  var btn=el('sanbtn'); btn.disabled=true;
+  try{
+    setMsg('sanmsg','Cleaning product descriptions…','muted');
+    var offset=0, cleaned=0, total=0;
+    for(;;){
+      var r=await api('/sanitize',{offset:offset});
+      if(!r.ok){ setMsg('sanmsg','Failed: '+(r.error||'unknown error'),'no'); return; }
+      cleaned+=r.cleaned; total=r.total;
+      setMsg('sanmsg','Scanned '+Math.min(offset+10,total)+' of '+total+'… '+cleaned+' cleaned','muted');
+      if(r.next==null) break;
+      offset=r.next;
+    }
+    setMsg('sanmsg','Done ✓ '+cleaned+' description'+(cleaned===1?'':'s')+' cleaned of '+total+' scanned.','ok');
+  }catch(e){ setMsg('sanmsg','Failed: '+errText(e),'no'); }
+  finally{ btn.disabled=false; }
 }
 async function syncNow(){
   var btn=el('syncbtn'); btn.disabled=true;
