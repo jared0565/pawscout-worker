@@ -2,7 +2,7 @@ import { Vault } from './vault';
 import { chooseOrigin, CjClient, CjTokenManager, cjFetchFromEnv, type CjSearchItem } from './cj';
 import { makeAdminGraphql, type AdminGraphql } from './shopify-admin';
 import { TenantStore, listActiveShops, purgeExpiredSearchCache, purgeUnusedWarehouse, trimOldLogs } from './tenant-store';
-import { passesGates, normalizeKeyword, CACHE_TTL_DAYS } from './proxy/search';
+import { liveCjPasses, normalizeKeyword, CACHE_TTL_DAYS } from './proxy/search';
 import { confirmAndImport, getCachedDetail, resolveCategory, reconcileAddonVisibility } from './proxy/import';
 import { enableTracking, getPrimaryLocationId, productInventoryItems, setInventoryQuantities, setSupplierMetafields, updateVariantPrices, MAX_TRACKED_QTY } from './proxy/inventory';
 import { retailPriceGbp } from './pricing';
@@ -286,7 +286,11 @@ export async function replenishWarehouse(
       items = await cj.search(kw);
       await store.putSearchCache(`kw:${kw}`, JSON.stringify(items), CACHE_TTL_DAYS);
     }
-    return items.filter((i) => passesGates(i, gates, kw)).sort((a, b) => b.listedNum - a.listedNum);
+    // Trust listV2 relevance + enforce species/price (then the LLM curates):
+    // the same gate the storefront uses, so the warehouse stocks what searches
+    // can actually surface — and demand keywords like "dog toy" admit real dog
+    // products, not only ones with the literal word "toy".
+    return items.filter((i) => liveCjPasses(i, gates, kw)).sort((a, b) => b.listedNum - a.listedNum);
   };
 
   const tryAdmit = async (item: CjSearchItem, category: string | null, context: string, lane: 'main' | 'addon' = 'main'): Promise<boolean> => {

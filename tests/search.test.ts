@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
-import { searchBackfill, normalizeKeyword, relevanceMatch, keywordTokens } from '../src/proxy/search';
+import { searchBackfill, normalizeKeyword, relevanceMatch, keywordTokens, liveCjPasses, querySpecies } from '../src/proxy/search';
 import { TenantStore } from '../src/tenant-store';
 import { DEFAULT_GATES, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, type TenantConfig } from '../src/types';
 import type { CjClient, CjSearchItem } from '../src/cj';
@@ -33,7 +33,8 @@ describe('relevance + normalization', () => {
     expect(relevanceMatch('dog rope', 'Big Dog Bed', 'title')).toBe(true);
     expect(relevanceMatch('dog rope', 'Big Dog Bed', 'strict')).toBe(false);
     expect(relevanceMatch('dog rope', 'Dog Rope Toy', 'strict')).toBe(true);
-    expect(relevanceMatch('cat tree', 'Dog Bed', 'loose')).toBe(true);
+    expect(relevanceMatch('cat tree', 'Sisal Scratching Post', 'loose')).toBe(true); // loose trusts source
+    expect(relevanceMatch('cat tree', 'Dog Bed', 'loose')).toBe(false); // ...but the species gate still applies
   });
   it('plural query matches a singular title (the strict "cat toys" bug)', () => {
     // "toys" must match "Toy"; "cat toys" must accept cat toys, reject dog toys
@@ -50,6 +51,32 @@ describe('relevance + normalization', () => {
     expect(relevanceMatch('cat toys', 'Pet Food Catapult Feeder Funny Dog Toy', 'strict')).toBe(false);
     expect(relevanceMatch('cat', 'Catnip Scratcher', 'strict')).toBe(false); // "cat" not the word "catnip"
     expect(relevanceMatch('cat', 'Cats Love This', 'strict')).toBe(true); // plural title word still matches
+  });
+  it('species gate rejects the opposite animal in any mode', () => {
+    expect(querySpecies('dog toy')).toBe('dog');
+    expect(relevanceMatch('dog toy', 'Squeaky Cat Toy', 'title')).toBe(false); // cat in a dog search
+    expect(relevanceMatch('cat toy', 'Dog Chew Toy', 'loose')).toBe(false); // even loose
+  });
+});
+
+describe('liveCjPasses (species-required, trusts listV2 relevance)', () => {
+  const G = DEFAULT_GATES; // floor 1, $5-80, title
+  const it_ = (over: Partial<CjSearchItem>) => item({ listedNum: 5, ...over });
+  it('reaches fill: a real dog product passes "dog toy" without the literal word "toy"', () => {
+    expect(liveCjPasses(it_({ nameEn: 'Herding Ball for Dogs - Chew Resistant' }), G, 'dog toy')).toBe(true);
+    expect(liveCjPasses(it_({ nameEn: 'Squeaky Plush Puppy Friend' }), G, 'dog toy')).toBe(true);
+  });
+  it('blocks the wrong species and species-less junk for a species query', () => {
+    expect(liveCjPasses(it_({ nameEn: 'Electric Jumping Shrimp Cat Toy' }), G, 'dog toy')).toBe(false);
+    expect(liveCjPasses(it_({ nameEn: 'Basketball Advent Calendar 2026 Mini Toys' }), G, 'cat toys')).toBe(false);
+  });
+  it('still enforces price and popularity', () => {
+    expect(liveCjPasses(it_({ nameEn: 'Dog Toy', sellPriceUsd: 500 }), G, 'dog toy')).toBe(false);
+    expect(liveCjPasses(it_({ nameEn: 'Dog Toy', listedNum: 0 }), { ...G, popularityFloor: 1 }, 'dog toy')).toBe(false);
+  });
+  it('non-species query falls back to category-token matching', () => {
+    expect(liveCjPasses(it_({ nameEn: 'Steel Slicker Brush' }), G, 'slicker brush')).toBe(true);
+    expect(liveCjPasses(it_({ nameEn: 'Cotton Rope Knot' }), G, 'slicker brush')).toBe(false);
   });
 });
 

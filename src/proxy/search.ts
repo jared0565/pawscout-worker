@@ -43,7 +43,38 @@ export function keywordTokens(keyword: string): string[] {
   ];
 }
 
+// Species vocabulary — the single most important relevance signal in a
+// pet store (a "dog toy" search must never show cat products).
+const DOG_WORDS = new Set(['dog', 'dogs', 'puppy', 'puppies', 'pup', 'pups', 'canine', 'doggy', 'doggie']);
+const CAT_WORDS = new Set(['cat', 'cats', 'kitten', 'kittens', 'kitty', 'kitties', 'feline']);
+
+/** Detect the target animal named in free text. 'both' when dog AND cat appear. */
+function detectSpecies(text: string): 'dog' | 'cat' | 'both' | null {
+  let dog = false;
+  let cat = false;
+  for (const w of text.toLowerCase().split(/[^a-z]+/)) {
+    if (DOG_WORDS.has(w)) dog = true;
+    else if (CAT_WORDS.has(w)) cat = true;
+  }
+  return dog && cat ? 'both' : dog ? 'dog' : cat ? 'cat' : null;
+}
+
+/** The species a query names, if any. */
+export function querySpecies(keyword: string): 'dog' | 'cat' | 'both' | null {
+  return detectSpecies(keyword);
+}
+
+/** True only when query and title name DIFFERENT single species (dog vs cat). */
+export function speciesConflict(keyword: string, title: string): boolean {
+  const q = detectSpecies(keyword);
+  const t = detectSpecies(title);
+  if (!q || !t || q === 'both' || t === 'both') return false;
+  return q !== t;
+}
+
 export function relevanceMatch(keyword: string, title: string, mode: Gates['relevance']): boolean {
+  // Species gate FIRST — a cat product never matches a dog query, in any mode.
+  if (speciesConflict(keyword, title)) return false;
   if (mode === 'loose') return true; // trust the source's own match
   // Word-boundary match: build the SET of stemmed title words, so a query
   // token only matches a whole word. "cat" must NOT match "catapult"; "toys"
@@ -58,6 +89,26 @@ export function relevanceMatch(keyword: string, title: string, mode: Gates['rele
   const tokens = keywordTokens(keyword);
   if (!tokens.length) return false;
   return mode === 'strict' ? tokens.every((tok) => titleWords.has(tok)) : tokens.some((tok) => titleWords.has(tok));
+}
+
+/**
+ * Gate for LIVE CJ (listV2) results. listV2 is CJ's elasticsearch search and
+ * already did the category work, so we TRUST its relevance and instead enforce
+ * the two things it doesn't: price/quality and SPECIES. When the query names an
+ * animal, the product must be that animal — which both reaches the grid target
+ * (any genuine dog product fills a "dog toy" search, not just ones with the
+ * literal word "toy") AND blocks species-less junk (advent calendars) and the
+ * wrong species. Non-species queries fall back to category-token matching.
+ */
+export function liveCjPasses(item: CjSearchItem, gates: Gates, keyword: string): boolean {
+  if (item.listedNum < gates.popularityFloor) return false;
+  if (item.sellPriceUsd < gates.priceMin || item.sellPriceUsd > gates.priceMax) return false;
+  const qs = detectSpecies(keyword);
+  if (qs && qs !== 'both') {
+    const ts = detectSpecies(item.nameEn);
+    return ts === qs || ts === 'both';
+  }
+  return relevanceMatch(keyword, item.nameEn, gates.relevance);
 }
 
 export function passesGates(item: CjSearchItem, gates: Gates, keyword: string): boolean {
@@ -158,7 +209,7 @@ export async function searchBackfill(
       items = await cj.search(kw);
       await store.putSearchCache(`kw:${kw}`, JSON.stringify(items), CACHE_TTL_DAYS);
     }
-    const gated = items.filter((i) => !seen.has(i.pid) && passesGates(i, cfg.gates, kw));
+    const gated = items.filter((i) => !seen.has(i.pid) && liveCjPasses(i, cfg.gates, kw));
     const links = await store.getLinks(gated.map((i) => i.pid));
     for (const item of gated) {
       if (cards.length >= limit) break;
