@@ -32,8 +32,10 @@
       worker secrets `CJ_RELAY_URL` + `CJ_RELAY_TOKEN` set.
 - [x] End-to-end verified 2026-06-12: search returns `{"ok":true,...}` through
       proxy → worker → vault → relay → CJ.
-- [x] Live shop popularityFloor set to 1 (2026-06-12, via D1 — verify the
-      console's Save-gates path works while building W1's console changes).
+- [x] Live shop popularityFloor set to 1 (2026-06-12, via D1).
+      Console Save-gates path VERIFIED working end-to-end 2026-06-13
+      01:07Z (user saved relevance=strict via the console; confirmed in
+      tenant_config).
 - [x] **Flywheel verified end-to-end 2026-06-12**: 8 gated, priced ghost
       products returned from cache. Pre-W1 checklist CLOSED.
 - [x] Theme MERGED to `shopify-deploy` 2026-06-12 (5e8952d → 9f47311) — ghost
@@ -391,10 +393,9 @@ ghost. LLM remains background-only (imports run in waitUntil).
 - search_cache: all 12 kw:* rows purged (incl. "pet food" set carrying
   the vacuum-sealer ghost and the polluted scissors sets); regenerate on
   demand.
-- OPEN LEVER (user decision): ghost DISPLAY still mechanical-gated;
-  console → gates → relevance **strict** would require all search tokens
-  in title (kills "pet food"→sealer-type ghosts; fewer multi-word
-  backfill results).
+- [x] LEVER PULLED 2026-06-13 01:07Z: gates.relevance = **strict** (user,
+  via console) — all search tokens must appear in ghost titles; fewer
+  multi-word backfill results accepted as the trade.
 
 ## 7a-ii. STRATEGY DECISION — shipping display, origin choice, returns
 ## (user-raised 2026-06-12; recommendation delivered same day; user
