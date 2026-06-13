@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
 import { importProduct, buildPreview, stripHtml, resolveCategory } from '../src/proxy/import';
 import { TenantStore } from '../src/tenant-store';
-import { DEFAULT_GATES, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, type TenantConfig } from '../src/types';
+import { DEFAULT_GATES, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, type TenantConfig } from '../src/types';
 import type { CjDetail } from '../src/cj';
 import type { AdminGraphql } from '../src/shopify-admin';
 
@@ -17,6 +17,7 @@ const CFG: TenantConfig = {
   pricing: DEFAULT_PRICING,
   floors: DEFAULT_FLOORS,
   llm: DEFAULT_LLM,
+  addons: DEFAULT_ADDONS,
   target: 12
 };
 
@@ -77,6 +78,27 @@ describe('preview building', () => {
 });
 
 describe('importProduct', () => {
+  it("addon imports get the cj-addon tag, NO collection tag, and seo.hidden", async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const calls: Call[] = [];
+    await importProduct(store, fakeAdmin(calls), CFG, DETAIL, 'addons');
+
+    const setCall = calls.find((c) => c.query.includes('productSet'))!;
+    const input = setCall.variables!.input as Record<string, unknown>;
+    expect(input.tags).toEqual(['cj-import', 'cj-pid-P1', 'cj-addon']); // no cj-cat-* tag
+    const hide = calls.find((c) => c.query.includes('pawscoutHide'))!;
+    const mf = (hide.variables!.metafields as { namespace: string; key: string; value: string }[])[0];
+    expect(mf).toMatchObject({ namespace: 'seo', key: 'hidden', value: '1' });
+    expect((await store.getLink('P1'))?.category).toBe('addons');
+  });
+
+  it('non-addon imports never touch seo.hidden', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const calls: Call[] = [];
+    await importProduct(store, fakeAdmin(calls), CFG, DETAIL);
+    expect(calls.some((c) => c.query.includes('pawscoutHide'))).toBe(false);
+  });
+
   it('creates, publishes, and records the link with tags and computed prices', async () => {
     const store = new TenantStore(env.DB, 'a.myshopify.com');
     const calls: Call[] = [];

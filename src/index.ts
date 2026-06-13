@@ -247,6 +247,17 @@ app.get('/proxy/import-status', async (c) => {
   return c.json({ ok: true, state: link?.state ?? 'unknown', url });
 });
 
+// W-ADDON: hidden basket-filler handles for the PDP add-on row and the cart
+// drawer's free-delivery nudge. Returns handles only — the theme fetches
+// /products/{handle}.js itself (price/image/variant stay Shopify-fresh).
+app.get('/proxy/addons', async (c) => {
+  const p = await proxyCtx(c); if (p instanceof Response) return p;
+  if (!p.cfg.addons.enabled) return c.json({ ok: true, addons: [] });
+  const limit = Math.min(Math.max(1, Number(c.req.query('limit')) || 3), 6);
+  const addons = await p.store.listAddonHandles(limit);
+  return c.json({ ok: true, addons });
+});
+
 // Performance beacons from the theme (JS-only, which filters most crawlers).
 app.post('/proxy/event', async (c) => {
   const p = await proxyCtx(c); if (p instanceof Response) return p;

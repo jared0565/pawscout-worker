@@ -1,4 +1,4 @@
-import { DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, type TenantRow, type TenantConfig } from './types';
+import { DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, type TenantRow, type TenantConfig } from './types';
 
 interface SupplierCredRow {
   shop: string; supplier: string; api_key_enc: string; label: string | null; validated_at: string | null; created_at: string;
@@ -83,9 +83,9 @@ export class TenantStore {
 
   async getConfig(): Promise<TenantConfig | null> {
     const row = await this.db
-      .prepare(`SELECT collection_map, gates, pricing, floors, llm, target FROM tenant_config WHERE shop = ?1`)
+      .prepare(`SELECT collection_map, gates, pricing, floors, llm, addons, target FROM tenant_config WHERE shop = ?1`)
       .bind(this.shop)
-      .first<{ collection_map: string; gates: string; pricing: string; floors: string; llm: string; target: number }>();
+      .first<{ collection_map: string; gates: string; pricing: string; floors: string; llm: string; addons: string; target: number }>();
     if (!row) return null;
     return {
       collectionMap: JSON.parse(row.collection_map),
@@ -94,6 +94,7 @@ export class TenantStore {
       pricing: { ...DEFAULT_PRICING, ...JSON.parse(row.pricing || '{}') },
       floors: { ...DEFAULT_FLOORS, ...JSON.parse(row.floors || '{}') },
       llm: { ...DEFAULT_LLM, ...JSON.parse(row.llm || '{}') },
+      addons: { ...DEFAULT_ADDONS, ...JSON.parse(row.addons || '{}') },
       target: row.target
     };
   }
@@ -298,6 +299,20 @@ export class TenantStore {
       .bind(this.shop)
       .all<ProductLink>();
     return rs.results ?? [];
+  }
+
+  /** W-ADDON: hidden filler handles for the storefront widgets (random rotation). */
+  async listAddonHandles(limit = 4): Promise<string[]> {
+    const rs = await this.db
+      .prepare(
+        `SELECT handle FROM product_links
+         WHERE shop = ?1 AND category = 'addons' AND state = 'imported'
+           AND stock_paused = 0 AND handle IS NOT NULL
+         ORDER BY RANDOM() LIMIT ${Math.min(Math.max(limit, 1), 8)}`
+      )
+      .bind(this.shop)
+      .all<{ handle: string }>();
+    return (rs.results ?? []).map((r) => r.handle);
   }
 
   async countImportedByCategory(category: string): Promise<number> {

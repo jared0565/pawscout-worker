@@ -7,6 +7,9 @@ import { retailPriceGbp } from '../pricing';
 import { getPrimaryLocationId, setSupplierMetafields, MAX_TRACKED_QTY } from './inventory';
 
 export const IMPORT_TAG = 'cj-import';
+/** W-ADDON: hidden basket-fillers — buyable, but never browsable/searchable. */
+export const ADDON_TAG = 'cj-addon';
+const ADDON_CATEGORY = 'addons';
 const MAX_IMAGES = 8;
 
 export interface PreviewVariant { name: string; price: number }
@@ -223,7 +226,7 @@ export async function importProduct(
       title: detail.nameEn,
       descriptionHtml: detail.descriptionHtml,
       status: 'ACTIVE',
-      tags: [IMPORT_TAG, `cj-pid-${detail.pid}`, ...(cat && cfg.collectionMap[cat] ? [cfg.collectionMap[cat].tag] : [])],
+      tags: [IMPORT_TAG, `cj-pid-${detail.pid}`, ...(cat === ADDON_CATEGORY ? [ADDON_TAG] : []), ...(cat && cfg.collectionMap[cat] ? [cfg.collectionMap[cat].tag] : [])],
       files: detail.images.slice(0, MAX_IMAGES).map((src) => ({ originalSource: src, contentType: 'IMAGE' })),
       productOptions: [{ name: optionName, values: multi ? variants.map((v) => ({ name: v.name })) : [{ name: 'Default Title' }] }],
       variants: variants.map((v) => ({
@@ -271,6 +274,24 @@ export async function importProduct(
       handle: product.handle,
       category: cat
     });
+
+    // W-ADDON: seo.hidden removes the product from storefront search and the
+    // sitemap while it stays buyable — fillers surface ONLY via the add-on
+    // widgets. Best-effort like the metafields below.
+    if (cat === ADDON_CATEGORY) {
+      try {
+        const hide = await admin(
+          `mutation pawscoutHide($metafields: [MetafieldsSetInput!]!) {
+            metafieldsSet(metafields: $metafields) { userErrors { field message } }
+          }`,
+          { metafields: [{ ownerId: product.id, namespace: 'seo', key: 'hidden', type: 'number_integer', value: '1' }] }
+        );
+        const hideErrs = (hide.metafieldsSet as { userErrors?: { message: string }[] } | undefined)?.userErrors ?? [];
+        if (hideErrs.length) console.warn(`seo.hidden failed for ${detail.pid}: ${hideErrs.map((e) => e.message).join('; ')}`);
+      } catch (e) {
+        console.warn(`seo.hidden failed for ${detail.pid}: ${(e as Error).message}`);
+      }
+    }
 
     // Supplier metafields (the theme's PDP renders these) — best-effort.
     try {

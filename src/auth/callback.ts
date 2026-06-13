@@ -1,7 +1,7 @@
 import type { ShopifyApp } from '../shopify';
 import { Vault } from '../vault';
 import { TenantStore } from '../tenant-store';
-import { DEFAULT_GATES, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_TARGET, ACTIVE_PAW_COLLECTION_MAP, type TenantConfig } from '../types';
+import { DEFAULT_GATES, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_TARGET, ACTIVE_PAW_COLLECTION_MAP, type TenantConfig } from '../types';
 import type { RegisterWebhook } from '../webhooks';
 
 /** Pure-ish persistence: seal token, upsert tenant, seed config. Unit-tested. */
@@ -30,6 +30,7 @@ export async function persistInstall(
       pricing: DEFAULT_PRICING,
       floors: DEFAULT_FLOORS,
       llm: DEFAULT_LLM,
+  addons: DEFAULT_ADDONS,
       target: DEFAULT_TARGET
     };
     await store.seedConfig(cfg);

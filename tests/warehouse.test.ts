@@ -4,7 +4,7 @@ import { TenantStore, purgeUnusedWarehouse } from '../src/tenant-store';
 import { replenishWarehouse, refreshWarehouseStock } from '../src/jobs';
 import { searchBackfill } from '../src/proxy/search';
 import { confirmAndImport, getDetailPreferWarehouse } from '../src/proxy/import';
-import { DEFAULT_GATES, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, type TenantConfig } from '../src/types';
+import { DEFAULT_GATES, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, type TenantConfig } from '../src/types';
 import type { CjClient, CjSearchItem, CjDetail } from '../src/cj';
 import type { AdminGraphql } from '../src/shopify-admin';
 
@@ -16,7 +16,8 @@ const CFG: TenantConfig = {
   gates: DEFAULT_GATES,
   pricing: DEFAULT_PRICING,
   floors: { ...DEFAULT_FLOORS, warehouseDepth: 3 },
-  llm: DEFAULT_LLM, // small depth keeps tests fast
+  llm: DEFAULT_LLM,
+  addons: DEFAULT_ADDONS, // small depth keeps tests fast
   target: 12
 };
 
@@ -101,6 +102,40 @@ describe('TenantStore warehouse', () => {
     expect(dropped).toBe(1);
     expect(await store.getWarehouseProduct('old-unused')).toBeNull();
     expect(await store.getWarehouseProduct('old-imported')).not.toBeNull();
+  });
+});
+
+describe('replenishWarehouse — addon lane', () => {
+  it('admits cheap items under the addon band into the hidden addons category', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const counters = { search: 0, detail: 0, stock: 0 };
+    // $2 item: fails the main gate ($5-80) but fits the addon band ($1-5)
+    const cheap = items(1, { sellPriceUsd: 2 });
+    const cj = {
+      search: async () => { counters.search++; return cheap; },
+      detail: async (pid: string) => ({ ...detailOf(pid, 50), variants: [{ vid: `v-${pid}`, name: 'Default', sellPriceUsd: 2, sku: pid, stock: 50 }] }),
+      stockByPid: async (pid: string) => new Map([[`v-${pid}`, 50]]),
+      freightEstimate: async () => null
+    } as unknown as CjClient;
+    const admitted = await replenishWarehouse(store, cj, CFG, { pause: async () => {} });
+    expect(admitted).toBe(1);
+    const row = await store.getWarehouseProduct('p0');
+    expect(row?.category).toBe('addons');
+  });
+
+  it('addon lane is skipped when disabled and never exceeds the pool size', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const cheap = items(3, { sellPriceUsd: 2 });
+    const cj = {
+      search: async () => cheap,
+      detail: async (pid: string) => ({ ...detailOf(pid, 50), variants: [{ vid: `v-${pid}`, name: 'Default', sellPriceUsd: 2, sku: pid, stock: 50 }] }),
+      stockByPid: async (pid: string) => new Map([[`v-${pid}`, 50]]),
+      freightEstimate: async () => null
+    } as unknown as CjClient;
+    const off = await replenishWarehouse(store, cj, { ...CFG, addons: { ...CFG.addons, enabled: false } }, { pause: async () => {} });
+    expect(off).toBe(0);
+    const capped = await replenishWarehouse(store, cj, { ...CFG, addons: { ...CFG.addons, poolSize: 2 } }, { pause: async () => {} });
+    expect(capped).toBe(2);
   });
 });
 

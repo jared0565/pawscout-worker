@@ -69,17 +69,22 @@ export interface TenantConfig {
   pricing: Pricing;
   floors: Floors;
   llm: LlmConfig;
+  addons: Addons;
   target: number;
 }
 
 // popularityFloor: CJ listedNum is SMALL-VALUED in practice (max ~5 across a
 // typical 40-item search) — it counts listing merchants. 1 = "someone else
 // stocks this"; W3's LLM curation is the real quality gate.
+/** W-ADDON: hidden basket-filler lane — cheap, LLM-curated, capped pool. */
+export interface Addons { enabled: boolean; priceMinUsd: number; priceMaxUsd: number; poolSize: number }
+
 export const DEFAULT_GATES: Gates = { popularityFloor: 1, priceMin: 5, priceMax: 80, relevance: 'title' };
 export const DEFAULT_PRICING: Pricing = { multiplier: 2.5, floor: 2.2, minMarginGbp: 6, fxUsdToGbp: 0.78, fxBufferPct: 2 };
 export const DEFAULT_FLOORS: Floors = { warehouseDepth: 20, storeFloor: 8, stockFloor: 10 };
 export const DEFAULT_LLM: LlmConfig = { enabled: true, model: 'anthropic/claude-haiku-4.5', scoreThreshold: 60 };
 // 12 = display cap of the storefront grid (4×3): show what we can sell, never pad.
+export const DEFAULT_ADDONS: Addons = { enabled: true, priceMinUsd: 1, priceMaxUsd: 5, poolSize: 12 };
 export const DEFAULT_TARGET = 12;
 
 export const ACTIVE_PAW_COLLECTION_MAP: TenantConfig['collectionMap'] = {

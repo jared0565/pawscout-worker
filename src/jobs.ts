@@ -93,6 +93,18 @@ export async function refillCollections(
       }
     }
   }
+
+  // W-ADDON: top up the hidden filler pool (its own quota, never the category counts).
+  if (cfg.addons.enabled) {
+    let deficit = cfg.addons.poolSize - (await store.countImportedByCategory('addons'));
+    for (const row of await store.warehouseByCategory('addons', 50)) {
+      if (deficit <= 0 || imported >= maxImports) break;
+      if (await promote(row, 'addons')) {
+        imported++;
+        deficit--;
+      }
+    }
+  }
   return imported;
 }
 
@@ -262,7 +274,7 @@ export async function replenishWarehouse(
     await pause(CJ_CALL_GAP_MS);
   };
 
-  const search = async (keyword: string): Promise<CjSearchItem[]> => {
+  const search = async (keyword: string, gates = cfg.gates): Promise<CjSearchItem[]> => {
     const kw = normalizeKeyword(keyword);
     const cached = await store.getSearchCache(`kw:${kw}`);
     let items: CjSearchItem[];
@@ -274,10 +286,10 @@ export async function replenishWarehouse(
       items = await cj.search(kw);
       await store.putSearchCache(`kw:${kw}`, JSON.stringify(items), CACHE_TTL_DAYS);
     }
-    return items.filter((i) => passesGates(i, cfg.gates, kw)).sort((a, b) => b.listedNum - a.listedNum);
+    return items.filter((i) => passesGates(i, gates, kw)).sort((a, b) => b.listedNum - a.listedNum);
   };
 
-  const tryAdmit = async (item: CjSearchItem, category: string | null, context: string): Promise<boolean> => {
+  const tryAdmit = async (item: CjSearchItem, category: string | null, context: string, lane: 'main' | 'addon' = 'main'): Promise<boolean> => {
     if (admitted >= maxAdmits || cjCalls >= maxCjCalls) return false;
     if (await store.getWarehouseProduct(item.pid)) return false;
     const link = await store.getLink(item.pid);
@@ -320,6 +332,9 @@ export async function replenishWarehouse(
         if (curated.category) resolvedCategory = curated.category;
       }
     }
+    // W-ADDON: hidden fillers live under their own category key — never a
+    // browsable collection, never counted toward category floors/targets.
+    if (lane === 'addon') resolvedCategory = 'addons';
 
     // Freight-aware floor (decided 2026-06-12): capture origin + cheapest
     // freight at admission so the pricing min-margin sees true landed cost.
@@ -366,6 +381,23 @@ export async function replenishWarehouse(
     for (const item of await search(key.replace(/-/g, ' '))) {
       if (deficit <= 0 || admitted >= maxAdmits || cjCalls >= maxCjCalls) break;
       if (await tryAdmit(item, key, key.replace(/-/g, ' '))) deficit--;
+    }
+  }
+
+  // 3) W-ADDON: hidden basket-filler pool — sub-main-gate price band, SAME
+  // LLM curation, capped pool. Reuses the keyword caches the sweep above
+  // just filled, so this lane costs no extra CJ search calls.
+  if (cfg.addons.enabled) {
+    const addonGates = { ...cfg.gates, priceMin: cfg.addons.priceMinUsd, priceMax: cfg.addons.priceMaxUsd };
+    let deficit = cfg.addons.poolSize
+      - (await store.countWarehouseAvailableByCategory('addons'))
+      - (await store.countImportedByCategory('addons'));
+    for (const key of Object.keys(cfg.collectionMap)) {
+      if (deficit <= 0 || admitted >= maxAdmits || cjCalls >= maxCjCalls) break;
+      for (const item of await search(key.replace(/-/g, ' '), addonGates)) {
+        if (deficit <= 0 || admitted >= maxAdmits || cjCalls >= maxCjCalls) break;
+        if (await tryAdmit(item, null, 'cheap pet add-on: ' + key.replace(/-/g, ' '), 'addon')) deficit--;
+      }
     }
   }
   return admitted;

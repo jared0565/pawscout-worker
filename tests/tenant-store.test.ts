@@ -2,7 +2,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
 import { TenantStore } from '../src/tenant-store';
-import { DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM } from '../src/types';
+import { DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS } from '../src/types';
 
 beforeEach(async () => {
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
@@ -27,7 +27,8 @@ describe('TenantStore', () => {
     const a = new TenantStore(env.DB, 'a.myshopify.com');
     await a.upsertTenant({ accessTokenEnc: 't', dekWrapped: 'd', scopes: 's' });
     await a.seedConfig({ collectionMap: { x: { handle: 'x', tag: 'cj-cat-x' } }, gates: { popularityFloor: 10, priceMin: 1, priceMax: 9, relevance: 'title' }, pricing: DEFAULT_PRICING, floors: DEFAULT_FLOORS,
-  llm: DEFAULT_LLM, target: 16 });
+  llm: DEFAULT_LLM,
+  addons: DEFAULT_ADDONS, target: 16 });
     const cfg = await a.getConfig();
     expect(cfg?.collectionMap.x.tag).toBe('cj-cat-x');
     expect(await new TenantStore(env.DB, 'b.myshopify.com').getConfig()).toBeNull();
