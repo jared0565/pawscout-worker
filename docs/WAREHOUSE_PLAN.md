@@ -458,6 +458,36 @@ rich list the API didn't):
   cache so listV2 repopulates (old cache holds junk from /product/list).
   178->179 tests.
 
+## 7a-i-g. Search: dog-toy review (2026-06-13 ~22:00) — PARTIAL, OPEN
+
+Live "dog toy": main grid correct (4 dog toys, catapult now valid), BUT:
+- [x] FIXED + LIVE: the "Add more play value" bundle/offer section pulled
+  from the category collection UNFILTERED → leaked "Electric Jumping Shrimp
+  CAT Toy" into a dog search. Added a species guard (exclude opposite-species
+  offer products; q_species from query tokens). shopify-deploy updated.
+- [x] Purged kw:* search cache (13 rows) so listV2 repopulates fresh (old
+  rows were junk from /product/list); tonight's cron stocks the warehouse
+  from listV2.
+- [ ] OPEN — REACHING 12: backfill returned only 2 ghosts. Root causes:
+  (a) warehouse still near-empty (6 rows) — replenish was crippled by the
+  earlier bugs; tonight's cron (listV2 + word-boundary + floor 0 + fresh
+  cache) should finally stock it — VERIFY tomorrow.
+  (b) Strict 2-word relevance is too tight for filling: "dog toy" requires
+  BOTH "dog" AND "toy" as title words, so valid dog products without the
+  literal word "toy" (e.g. "Herding Ball for Dogs") are rejected. PROPOSED
+  FIX (next): SPECIES-AWARE relevance — when the query names a species,
+  REQUIRE that species (or species-neutral) and treat category words (toy)
+  as soft/optional; leverage petClass (now on new admissions) once the
+  catalog is classified. This reaches 12 AND keeps cats out of dog searches.
+- [ ] CONSTRAINT: sandbox network egress is blocked — CANNOT run a headless
+  browser against the live store from here (activepaw.co.uk 403s; App Proxy
+  needs Shopify HMAC). Live verification = user's browser. Verify via
+  deployed-bundle greps + D1 + vitest instead.
+- NOT "done" per user's bar (reach 12 + verify). Resume: implement
+  species-aware relevance in src/proxy/search.ts (relevanceMatch/passesGates
+  + a query-species helper), re-test, and confirm warehouse fill after the
+  04:17Z cron.
+
 ## 7a-ii. STRATEGY DECISION — shipping display, origin choice, returns
 ## (user-raised 2026-06-12; recommendation delivered same day; user
 ##  decision pending — do not implement until the user confirms)
