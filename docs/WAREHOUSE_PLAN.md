@@ -698,8 +698,11 @@ but must NEVER appear in browsing/search — they surface only as add-ons.
   Rendering API re-render.
 - Lifecycle: addons excluded from category floors/targets; normal stock
   sync, pricing rule (min-margin floor dominates) and 30-day cull apply.
-- DEPLOY: needs `npm run migrate:remote` (0006) before worker deploy.
-- First fills: tonight's/next cron stocks the addon pool; widgets stay
+- [x] DEPLOYED 2026-06-13 ~02:10Z: migration 0006 applied (addons col
+      present, reads '{}' → defaults) and worker bundle live (verified:
+      /proxy/addons, listAddonHandles, cj-addon, pawscoutHide, seo).
+      Theme widgets live on shopify-deploy.
+- First fills: the 04:17Z cron stocks the addon pool; widgets stay
   hidden until then (graceful empty state).
 
 ## 7b. Phase W5 — Email marketing via Resend (designed, not yet scheduled)
