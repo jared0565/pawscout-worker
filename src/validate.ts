@@ -1,4 +1,4 @@
-import type { Gates, LlmConfig, Pricing, TenantConfig } from './types';
+import type { Addons, Gates, LlmConfig, Pricing, TenantConfig } from './types';
 
 export type Validation<T> = { ok: true; value: T } | { ok: false; error: string };
 
@@ -82,6 +82,35 @@ export function validatePricingPayload(body: unknown): Validation<Pricing> {
       minMarginGbp: b.minMarginGbp as number,
       fxUsdToGbp: b.fxUsdToGbp as number,
       fxBufferPct: b.fxBufferPct as number
+    }
+  };
+}
+
+/** Validate the /api/addons body. The add-on band sits below the main price
+ * range; floor can go to $0 but max is capped to keep it a "filler" lane. */
+export function validateAddonsPayload(body: unknown): Validation<Addons> {
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+    return { ok: false, error: 'Body must be a JSON object' };
+  }
+  const b = body as Record<string, unknown>;
+  if (typeof b.enabled !== 'boolean') return { ok: false, error: 'enabled must be true or false' };
+  if (!finite(b.priceMinUsd) || b.priceMinUsd < 0) {
+    return { ok: false, error: 'priceMinUsd must be a number >= 0' };
+  }
+  if (!finite(b.priceMaxUsd) || b.priceMaxUsd <= b.priceMinUsd) {
+    return { ok: false, error: 'priceMaxUsd must be greater than priceMinUsd' };
+  }
+  if (b.priceMaxUsd > 50) return { ok: false, error: 'priceMaxUsd must be 50 or less' };
+  if (!finite(b.poolSize) || !Number.isInteger(b.poolSize) || b.poolSize < 1 || b.poolSize > 50) {
+    return { ok: false, error: 'poolSize must be an integer between 1 and 50' };
+  }
+  return {
+    ok: true,
+    value: {
+      enabled: b.enabled,
+      priceMinUsd: b.priceMinUsd,
+      priceMaxUsd: b.priceMaxUsd,
+      poolSize: b.poolSize
     }
   };
 }

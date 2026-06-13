@@ -1,6 +1,6 @@
 import { Vault } from '../vault';
 import { TenantStore, type KeywordDemand } from '../tenant-store';
-import { DEFAULT_GATES, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_TARGET, type Floors, type Gates, type LlmConfig, type Pricing, type TenantConfig } from '../types';
+import { DEFAULT_GATES, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_TARGET, type Addons, type Floors, type Gates, type LlmConfig, type Pricing, type TenantConfig } from '../types';
 import type { ValidateResult } from '../cj';
 
 export async function connectCj(
@@ -38,6 +38,13 @@ export async function saveLlm(db: D1Database, shop: string, llm: LlmConfig): Pro
   await store.seedConfig({ ...cfg, llm });
 }
 
+export async function saveAddons(db: D1Database, shop: string, addons: Addons): Promise<void> {
+  const store = new TenantStore(db, shop);
+  const cfg = await store.getConfig();
+  if (!cfg) return;
+  await store.seedConfig({ ...cfg, addons });
+}
+
 export async function saveCollectionMap(db: D1Database, shop: string, map: Record<string, { handle: string; tag: string }>): Promise<void> {
   const store = new TenantStore(db, shop);
   const cfg = await store.getConfig();
@@ -52,6 +59,7 @@ export interface Status {
   pricing: Pricing;
   floors: Floors;
   llm: LlmConfig;
+  addons: Addons;
   target: number;
 }
 
@@ -66,6 +74,7 @@ export async function getStatus(db: D1Database, shop: string): Promise<Status> {
     pricing: cfg?.pricing ?? DEFAULT_PRICING,
     floors: cfg?.floors ?? DEFAULT_FLOORS,
     llm: cfg?.llm ?? DEFAULT_LLM,
+    addons: cfg?.addons ?? DEFAULT_ADDONS,
     target: cfg?.target ?? DEFAULT_TARGET
   };
 }

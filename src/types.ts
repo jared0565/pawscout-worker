@@ -84,7 +84,7 @@ export const DEFAULT_PRICING: Pricing = { multiplier: 2.5, floor: 2.2, minMargin
 export const DEFAULT_FLOORS: Floors = { warehouseDepth: 20, storeFloor: 8, stockFloor: 10 };
 export const DEFAULT_LLM: LlmConfig = { enabled: true, model: 'anthropic/claude-haiku-4.5', scoreThreshold: 60 };
 // 12 = display cap of the storefront grid (4×3): show what we can sell, never pad.
-export const DEFAULT_ADDONS: Addons = { enabled: true, priceMinUsd: 1, priceMaxUsd: 5, poolSize: 12 };
+export const DEFAULT_ADDONS: Addons = { enabled: true, priceMinUsd: 0.5, priceMaxUsd: 5, poolSize: 12 };
 export const DEFAULT_TARGET = 12;
 
 export const ACTIVE_PAW_COLLECTION_MAP: TenantConfig['collectionMap'] = {

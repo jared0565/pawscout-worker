@@ -10,11 +10,11 @@ import { handleCallback } from './auth/callback';
 import { ensureInstalled } from './auth/ensure-installed';
 import { handleUninstall } from './auth/uninstall';
 import { resolveShopFromToken } from './console/session';
-import { connectCj, saveGates, savePricing, saveLlm, saveCollectionMap, getStatus, getInsights } from './console/routes';
+import { connectCj, saveGates, savePricing, saveLlm, saveAddons, saveCollectionMap, getStatus, getInsights } from './console/routes';
 import { consolePage } from './console/page';
 import { validateCjKey, CjClient, CjTokenManager, cjFetchFromEnv } from './cj';
 import { registerUninstallWebhook, type RegisterWebhook } from './webhooks';
-import { validateGatesPayload, validatePricingPayload, validateLlmPayload, validateCollectionMap } from './validate';
+import { validateGatesPayload, validatePricingPayload, validateLlmPayload, validateAddonsPayload, validateCollectionMap } from './validate';
 import { verifyAppProxy } from './proxy/verify';
 import { searchBackfill, normalizeKeyword } from './proxy/search';
 import { LlmClient, classifyKeyword, curateProduct } from './llm';
@@ -143,6 +143,15 @@ app.post('/api/sync', async (c) => {
   }
 });
 
+app.post('/api/addons', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: unknown;
+  try { body = await c.req.json(); } catch { return c.json({ ok: false, error: 'Invalid JSON body' }, 400); }
+  const v = validateAddonsPayload(body);
+  if (!v.ok) return c.json({ ok: false, error: v.error }, 400);
+  await saveAddons(c.env.DB, s, v.value);
+  return c.json({ ok: true });
+});
 app.post('/api/collections', async (c) => {
   const s = await shopOf(c); if (typeof s !== 'string') return s;
   let body: unknown;

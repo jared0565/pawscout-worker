@@ -213,6 +213,31 @@ export function consolePage(apiKey: string): Response {
   </section>
 
   <section class="card">
+    <h2><span class="step">6</span> Add-on / filler products</h2>
+    <p class="sub" style="margin:0 0 12px">A hidden pool of cheap, curated items that never appear in browsing or search — they surface only as "Complete the kit" picks on product pages and in the cart's free-delivery nudge. Set the supplier cost band below your main price range.</p>
+    <div class="row">
+      <div class="grow" style="flex:0 1 120px">
+        <label for="addmin">Cost min ($)</label>
+        <input id="addmin" type="number" value="0.5" min="0" step="0.1">
+      </div>
+      <div class="grow" style="flex:0 1 120px">
+        <label for="addmax">Cost max ($)</label>
+        <input id="addmax" type="number" value="5" min="0" max="50" step="0.1">
+      </div>
+      <div class="grow" style="flex:0 1 110px">
+        <label for="addpool">Pool size</label>
+        <input id="addpool" type="number" value="12" min="1" max="50" step="1">
+      </div>
+      <div class="grow" style="flex:0 1 110px">
+        <label for="addon">Enabled</label>
+        <select id="addon"><option value="true" selected>On</option><option value="false">Off</option></select>
+      </div>
+      <button onclick="saveAddons()">Save add-ons</button>
+    </div>
+    <p id="addmsg" class="msg muted"></p>
+  </section>
+
+  <section class="card">
     <h2>Maintenance</h2>
     <p class="sub" style="margin:0 0 12px">Runs the nightly CJ sync on demand: every listed product gets current supplier stock, rule-aligned prices and tracking, then collections top up from the warehouse.</p>
     <div class="row">
@@ -252,7 +277,8 @@ function renderStatus(s){
     +'<dt>Price range</dt><dd>$'+esc(g.priceMin)+' – $'+esc(g.priceMax)+'</dd>'
     +'<dt>Relevance</dt><dd>'+esc(g.relevance)+'</dd>'
     +'<dt>Target count</dt><dd>'+esc(s.target)+'</dd>'
-    +'<dt>Pricing</dt><dd>'+esc(p.multiplier)+'× (floor '+esc(p.floor)+'×, min £'+esc(p.minMarginGbp)+')</dd>';
+    +'<dt>Pricing</dt><dd>'+esc(p.multiplier)+'× (floor '+esc(p.floor)+'×, min £'+esc(p.minMarginGbp)+')</dd>'
+    +(function(){ var a=s.addons||{}; return '<dt>Add-on lane</dt><dd>'+(a.enabled?('$'+esc(a.priceMinUsd)+' – $'+esc(a.priceMaxUsd)+' · pool '+esc(a.poolSize)):'Off')+'</dd>'; })();
   var cm=s.collectionMap||{}; var keys=Object.keys(cm);
   var cols = keys.length
     ? keys.map(function(k){ var v=cm[k]||{}; return '<li><strong>'+esc(v.handle||k)+'</strong> <span class="muted">← tag</span> <code>'+esc(v.tag)+'</code></li>'; }).join('')
@@ -280,6 +306,11 @@ function populateForms(s){
   if(l.model) el('llmmodel').value=l.model;
   if(l.scoreThreshold!=null) el('llmthresh').value=l.scoreThreshold;
   if(l.enabled!=null) el('llmon').value=String(l.enabled);
+  var a=s.addons||{};
+  if(a.priceMinUsd!=null) el('addmin').value=a.priceMinUsd;
+  if(a.priceMaxUsd!=null) el('addmax').value=a.priceMaxUsd;
+  if(a.poolSize!=null) el('addpool').value=a.poolSize;
+  if(a.enabled!=null) el('addon').value=String(a.enabled);
   var cm=s.collectionMap||{};
   el('maprows').textContent='';
   Object.keys(cm).forEach(function(k){ var v=cm[k]||{}; addMapRow(v.handle||k, v.tag||''); });
@@ -430,6 +461,19 @@ async function syncNow(){
     loadInsights();
   }catch(e){ syncBar('off'); setMsg('syncmsg','Failed: '+errText(e),'no'); }
   finally{ btn.disabled=false; }
+}
+async function saveAddons(){
+  setMsg('addmsg','Saving…','muted');
+  try{
+    var r=await api('/addons',{
+      enabled:el('addon').value==='true',
+      priceMinUsd:Number(el('addmin').value),
+      priceMaxUsd:Number(el('addmax').value),
+      poolSize:Number(el('addpool').value)
+    });
+    if(r.ok){ setMsg('addmsg','Saved ✓','ok'); refresh(); }
+    else setMsg('addmsg','Failed: '+(r.error||'unknown error'),'no');
+  }catch(e){ setMsg('addmsg','Failed: '+errText(e),'no'); }
 }
 async function saveCollections(){
   setMsg('mapmsg','Saving…','muted');
