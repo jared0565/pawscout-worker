@@ -397,6 +397,24 @@ ghost. LLM remains background-only (imports run in waitUntil).
   via console) — all search tokens must appear in ghost titles; fewer
   multi-word backfill results accepted as the trade.
 
+## 7a-i-d. Inventory qty sync confirmed + description sanitize (2026-06-13)
+
+- QTY SYNC VERIFIED: the 04:18Z cron synced all previously-stale (never-
+  synced, qty 1-2) products with real CJ stock via the fixed
+  getInventoryByPid + enable_inventory path — e.g. grooming table 1->31,
+  sofa brush 1->999 (CJ 13,480), nail set 1->999 (CJ 30,000). NO products
+  remain < 2 qty. Display caps 999; true qty in supplier.available_qty.
+- Sofa Hair Removal Brush had a THIN description (Colour/Material only) ->
+  rewrote with a proper customer-facing body (2026-06-13, via MCP).
+- FINDING: legacy-adopted products carried INTERNAL dev notes in their
+  customer-facing descriptions ("demo-store dropshipping testing",
+  "traffic-testing workflows", "Demo category:"). BUILT a catalog-wide
+  sanitize: jobs.stripInternalNotes + sanitizeDescriptions (batched,
+  idempotent), /api/sanitize route, console "Clean up descriptions"
+  button. Current imports never add such notes (legacy-only). DEPLOY: code
+  only; then click the button. NOT yet run against production (awaiting
+  user deploy + click).
+
 ## 7a-ii. STRATEGY DECISION — shipping display, origin choice, returns
 ## (user-raised 2026-06-12; recommendation delivered same day; user
 ##  decision pending — do not implement until the user confirms)
