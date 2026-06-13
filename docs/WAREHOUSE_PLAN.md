@@ -691,7 +691,16 @@ but must NEVER appear in browsing/search — they surface only as add-ons.
   fillers land. NOTE: retail still obeys the pricing rule — the £6 min-
   margin floor dominates sub-~$4 cost, so a $0.50 item still retails
   ~£6.99 (huge margin %, not a sub-£6 sticker). True low-price fillers
-  would need an addon-specific minMargin — NOT built; flag if wanted.
+  would need an addon-specific minMargin — NOT built (user chose to keep
+  £6 min / £6.99 add-ons 2026-06-13).
+- VISIBILITY TOGGLE (built 2026-06-13): `addons.suppressFromBrowse`
+  (default true). Hidden = no collection tag + seo.hidden=1 (add-on slots
+  only). Visible = resolved collection tag + seo.hidden=0 (also in
+  browsing & search). Console card 6 dropdown. `reconcileAddonVisibility`
+  re-aligns EXISTING add-ons when flipped (nightly + best-effort on save).
+  product_links.category stays 'addons' either way → widgets always find
+  them and they never count toward category floors/targets. DEPLOY: code
+  only, no migration (field lives in the existing addons JSON column).
 - Worker: replenish addon lane (reuses category keyword caches → zero
   extra CJ searches; same LLM curation; admits under category 'addons');
   refill tops the pool to poolSize; import tags `cj-addon`, sets
