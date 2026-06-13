@@ -679,6 +679,29 @@ from genuine promotions only.
 Measurement: abandonment + recovery rate → W4 digest; Shopify's native
 automation self-reports recovered sales from day one.
 
+## 7a-iv-b. Phase W-ADDON — hidden basket-fillers (BUILT 2026-06-13 01:50)
+
+User decision: cheap-but-quality products ($1–5 cost) may enter inventory
+but must NEVER appear in browsing/search — they surface only as add-ons.
+
+- Config: `addons` JSON col (migration 0006) — defaults {enabled:true,
+  priceMinUsd:1, priceMaxUsd:5, poolSize:12}. Tunable via D1 (no console
+  card yet — backlog).
+- Worker: replenish addon lane (reuses category keyword caches → zero
+  extra CJ searches; same LLM curation; admits under category 'addons');
+  refill tops the pool to poolSize; import tags `cj-addon`, sets
+  `seo.hidden=1`, NO collection tag → buyable, invisible to search/
+  collections/sitemap; GET /proxy/addons returns random filler handles.
+- Theme: PDP "Complete the kit" row + cart-drawer free-delivery nudge
+  ("£X away from FREE UK delivery", server-rendered amount) — pawscout.js
+  fetches handles → /products/{handle}.js → one-tap add via Section
+  Rendering API re-render.
+- Lifecycle: addons excluded from category floors/targets; normal stock
+  sync, pricing rule (min-margin floor dominates) and 30-day cull apply.
+- DEPLOY: needs `npm run migrate:remote` (0006) before worker deploy.
+- First fills: tonight's/next cron stocks the addon pool; widgets stay
+  hidden until then (graceful empty state).
+
 ## 7b. Phase W5 — Email marketing via Resend (designed, not yet scheduled)
 
 The user has a Resend account. Newsletter signups currently post through the
