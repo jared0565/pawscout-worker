@@ -84,15 +84,17 @@ describe('parseCjPrice', () => {
 });
 
 describe('CjClient 429 backoff', () => {
+  // Non-empty listV2 payload so search() succeeds on the V2 path and doesn't
+  // fall back to /product/list — isolating the get() 429-retry behaviour.
   const ok = () =>
-    new Response(JSON.stringify({ result: true, data: { list: [] } }), { status: 200 });
+    new Response(JSON.stringify({ result: true, data: { list: [{ pid: 'p1', productNameEn: 'Dog Toy', sellPrice: '10', listedNum: 1 }] } }), { status: 200 });
 
   it('retries after a 429 and succeeds', async () => {
     let calls = 0;
     const waits: number[] = [];
     const fetchImpl = (async () => (++calls === 1 ? new Response('', { status: 429 }) : ok())) as typeof fetch;
     const cj = new CjClient(async () => 't', fetchImpl, async (ms) => { waits.push(ms); });
-    expect(await cj.search('dog')).toEqual([]);
+    expect(await cj.search('dog')).toHaveLength(1);
     expect(calls).toBe(2);
     expect(waits).toEqual([1200]);
   });

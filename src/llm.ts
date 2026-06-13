@@ -88,11 +88,14 @@ export class LlmClient {
 
 // --- W3.2 admission curation ---
 
+export type PetClass = 'cat' | 'dog' | 'both' | 'small-pet' | 'other';
+
 export interface Curation {
   relevanceScore: number;       // 0-100
   category: string | null;      // a collectionMap key, or null
   title: string;                // rewritten, <= 70 chars
   descriptionHtml: string;      // clean HTML
+  petClass: PetClass;           // target animal — for species-aware filtering
 }
 
 function clip(s: string, n: number): string {
@@ -119,11 +122,14 @@ export async function curateProduct(
     maxTokens: 1200,
     system:
       'You curate products for Active Paw, a UK online pet-care store (dogs and cats: grooming, toys, feeding, walking, health, daily care). ' +
-      'You receive a raw supplier listing. Respond with ONLY a JSON object: ' +
-      '{"relevanceScore": <0-100 integer — how strongly this is a quality, on-niche PET product matching the context; products for children or general household score under 30>, ' +
+      'You receive a raw supplier listing and the search CONTEXT that surfaced it. Respond with ONLY a JSON object: ' +
+      '{"relevanceScore": <0-100 integer — how strongly this is a quality, on-niche PET product matching the context. ' +
+      'Products for children or general household score under 30. ' +
+      'CRITICAL species rule: if the context targets one animal (e.g. "cat ...") but the product is clearly FOR a different animal (e.g. a dog harness, a dog chew), score it under 20 even if its description merely mentions the other animal in passing. A "cat toy" search must NOT accept dog products.>, ' +
       `"category": <one of ${JSON.stringify(categories)} or null>, ` +
       '"title": <rewritten product title, natural English, max 70 chars, no ALL CAPS, no year prefixes, no keyword stuffing>, ' +
-      '"descriptionHtml": <clean simple HTML description, max 200 words, factual, UK English, no medical claims, no supplier names>}',
+      '"descriptionHtml": <clean simple HTML description, max 200 words, factual, UK English, no medical claims, no supplier names>, ' +
+      '"petClass": <the product\'s actual target animal — one of "cat", "dog", "both" (genuinely suitable for either), "small-pet" (rabbit/hamster/bird/fish), or "other" (not animal-specific, e.g. a generic bowl)>}',
     user: JSON.stringify({
       context,
       supplierTitle: detail.nameEn,
@@ -140,11 +146,14 @@ export async function curateProduct(
       if (typeof o.title !== 'string' || !o.title.trim()) return null;
       if (typeof o.descriptionHtml !== 'string' || !o.descriptionHtml.trim()) return null;
       const category = typeof o.category === 'string' && categories.includes(o.category) ? o.category : null;
+      const PET_CLASSES = ['cat', 'dog', 'both', 'small-pet', 'other'];
+      const petClass = (typeof o.petClass === 'string' && PET_CLASSES.includes(o.petClass) ? o.petClass : 'other') as Curation['petClass'];
       return {
         relevanceScore: Math.round(score),
         category,
         title: clip(o.title.trim(), 80),
-        descriptionHtml: clip(o.descriptionHtml, 8000)
+        descriptionHtml: clip(o.descriptionHtml, 8000),
+        petClass
       };
     }
   });

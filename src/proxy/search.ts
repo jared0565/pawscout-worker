@@ -45,12 +45,19 @@ export function keywordTokens(keyword: string): string[] {
 
 export function relevanceMatch(keyword: string, title: string, mode: Gates['relevance']): boolean {
   if (mode === 'loose') return true; // trust the source's own match
-  const t = title.toLowerCase();
+  // Word-boundary match: build the SET of stemmed title words, so a query
+  // token only matches a whole word. "cat" must NOT match "catapult"; "toys"
+  // still matches "Toy" because both sides are stemmed to their singular root.
+  const titleWords = new Set(
+    title
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter(Boolean)
+      .map(stemToken)
+  );
   const tokens = keywordTokens(keyword);
   if (!tokens.length) return false;
-  // Stemmed tokens are singular roots; includes() still catches the plural
-  // form in the title ("toy" ⊂ "toys"), so matching works both directions.
-  return mode === 'strict' ? tokens.every((tok) => t.includes(tok)) : tokens.some((tok) => t.includes(tok));
+  return mode === 'strict' ? tokens.every((tok) => titleWords.has(tok)) : tokens.some((tok) => titleWords.has(tok));
 }
 
 export function passesGates(item: CjSearchItem, gates: Gates, keyword: string): boolean {

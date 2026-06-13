@@ -46,7 +46,8 @@ const GOOD_CURATION = {
   relevanceScore: 85,
   category: 'pet-toys',
   title: 'Bite-Resistant Cotton Rope Dog Toy',
-  descriptionHtml: '<p>A durable rope toy for daily play.</p>'
+  descriptionHtml: '<p>A durable rope toy for daily play.</p>',
+  petClass: 'dog' as const
 };
 
 describe('LlmClient', () => {

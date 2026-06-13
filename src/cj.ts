@@ -148,6 +148,8 @@ export interface CjDetail {
   /** W3 curation audit trail: original CJ title + admission score. */
   originalNameEn?: string;
   llmScore?: number;
+  /** LLM-assigned target animal (cat/dog/both/small-pet/other) for species filtering. */
+  petClass?: string;
   /** Best stock per origin country (from enable_inventory), e.g. {CN: 1200, GB: 40}. */
   origins?: Record<string, number>;
   /** Cheapest freight to GB from the chosen origin, captured at admission/import. */
@@ -205,6 +207,40 @@ export function chooseOrigin(detail: CjDetail, stockFloor: number): string {
   return best;
 }
 
+/** Map raw CJ product rows (list or listV2 shape) to CjSearchItem; field names vary by endpoint. */
+function mapCjSearchItems(list: unknown): CjSearchItem[] {
+  if (!Array.isArray(list)) return [];
+  return list
+    .map((raw) => {
+      const p = raw as Record<string, unknown>;
+      return {
+        pid: String(p.pid ?? p.productId ?? ''),
+        nameEn: String(p.productNameEn ?? p.productName ?? p.nameEn ?? ''),
+        image: String(p.productImage ?? p.bigImage ?? p.image ?? ''),
+        sellPriceUsd: parseCjPrice(p.sellPrice ?? p.price),
+        listedNum: Number(p.listedNum ?? p.listedCount ?? 0),
+        categoryName: String(p.categoryName ?? p.categoryNameEn ?? '')
+      };
+    })
+    .filter((p) => p.pid && p.nameEn);
+}
+
+/** listV2 nests products differently across CJ revisions — pull the product array from any known shape. */
+function extractV2List(data: Record<string, unknown> | null): Record<string, unknown>[] {
+  if (!data) return [];
+  if (Array.isArray(data.list)) return data.list as Record<string, unknown>[];
+  if (Array.isArray(data.productList)) return data.productList as Record<string, unknown>[];
+  if (Array.isArray(data.content)) {
+    const out: Record<string, unknown>[] = [];
+    for (const c of data.content as Record<string, unknown>[]) {
+      if (Array.isArray(c?.productList)) out.push(...(c.productList as Record<string, unknown>[]));
+      else out.push(c);
+    }
+    return out;
+  }
+  return [];
+}
+
 /** CJ price fields can be numbers, strings, or ranges like "5.99 -- 12.99" — take the first number. */
 export function parseCjPrice(v: unknown): number {
   if (typeof v === 'number' && Number.isFinite(v)) return v;
@@ -243,19 +279,32 @@ export class CjClient {
   }
 
   async search(keyword: string, pageSize = 40): Promise<CjSearchItem[]> {
+    // Prefer listV2 — CJ's elasticsearch search, which powers their website
+    // and returns far more relevant results than the legacy keyword endpoint
+    // (which OR-matched single words and surfaced advent calendars for "cat
+    // toys"). Fall back to /product/list if V2 errors or returns nothing.
+    try {
+      const v2 = await this.searchV2(keyword, pageSize);
+      if (v2.length) return v2;
+    } catch (e) {
+      console.warn(`CJ listV2 search failed, falling back to /product/list: ${(e as Error).message}`);
+    }
     const data = (await this.get('/product/list', {
       productNameEn: keyword,
       pageNum: '1',
       pageSize: String(pageSize)
     })) as { list?: Record<string, unknown>[] } | null;
-    return (data?.list ?? []).map((p) => ({
-      pid: String(p.pid ?? ''),
-      nameEn: String(p.productNameEn ?? ''),
-      image: String(p.productImage ?? ''),
-      sellPriceUsd: parseCjPrice(p.sellPrice),
-      listedNum: Number(p.listedNum ?? 0),
-      categoryName: String(p.categoryName ?? '')
-    })).filter((p) => p.pid && p.nameEn);
+    return mapCjSearchItems(data?.list);
+  }
+
+  /** CJ elasticsearch search (V2). Response shape varies — parsed defensively. */
+  private async searchV2(keyword: string, pageSize: number): Promise<CjSearchItem[]> {
+    const data = (await this.get('/product/listV2', {
+      keyWord: keyword,
+      pageNum: '1',
+      pageSize: String(pageSize)
+    })) as Record<string, unknown> | null;
+    return mapCjSearchItems(extractV2List(data));
   }
 
   async detail(pid: string): Promise<CjDetail | null> {

@@ -45,6 +45,12 @@ describe('relevance + normalization', () => {
     expect(keywordTokens('toys for cats')).toEqual(['toy', 'cat']);
     expect(relevanceMatch('toys for cats', 'Smart Self-Rotating Cat Ball Toy', 'strict')).toBe(true);
   });
+  it('word-boundary: "cat" must not match inside "catapult"', () => {
+    // the live bug: "Pet Food Catapult Feeder Funny Dog Toy" wrongly passed "cat toys"
+    expect(relevanceMatch('cat toys', 'Pet Food Catapult Feeder Funny Dog Toy', 'strict')).toBe(false);
+    expect(relevanceMatch('cat', 'Catnip Scratcher', 'strict')).toBe(false); // "cat" not the word "catnip"
+    expect(relevanceMatch('cat', 'Cats Love This', 'strict')).toBe(true); // plural title word still matches
+  });
 });
 
 describe('searchBackfill', () => {

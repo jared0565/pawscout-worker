@@ -327,7 +327,8 @@ export async function replenishWarehouse(
           nameEn: curated.title,
           descriptionHtml: curated.descriptionHtml,
           originalNameEn: detail.nameEn, // CJ original kept for audit
-          llmScore: curated.relevanceScore
+          llmScore: curated.relevanceScore,
+          petClass: curated.petClass
         };
         if (curated.category) resolvedCategory = curated.category;
       }

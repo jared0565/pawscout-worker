@@ -279,7 +279,7 @@ describe('preview + confirmAndImport', () => {
     const store = new TenantStore(env.DB, SHOP);
     const counters = { search: 0, detail: 0, stock: 0 };
     const calls: string[] = [];
-    const curate = async () => ({ relevanceScore: 12, title: 'Vacuum Sealer', descriptionHtml: '<p>x</p>', category: null });
+    const curate = async () => ({ relevanceScore: 12, title: 'Vacuum Sealer', descriptionHtml: '<p>x</p>', category: null, petClass: 'other' as const });
     await confirmAndImport(store, fakeCj([], counters, { stock: 40 }), adminOk(calls), CFG, detailOf('A'), undefined, curate);
     expect(calls).toEqual([]); // never reached Shopify
     expect((await store.getLink('A'))?.state).toBe('failed');
@@ -297,7 +297,7 @@ describe('preview + confirmAndImport', () => {
       return { productUpdate: { product: { id: 'x' }, userErrors: [] } };
     };
     let curateCalls = 0;
-    const curate = async () => { curateCalls++; return { relevanceScore: 90, title: 'Tough Dog Rope Toy', descriptionHtml: '<p>good</p>', category: null }; };
+    const curate = async () => { curateCalls++; return { relevanceScore: 90, title: 'Tough Dog Rope Toy', descriptionHtml: '<p>good</p>', category: null, petClass: 'dog' as const }; };
     await confirmAndImport(store, fakeCj([], counters, { stock: 40 }), admin, CFG, detailOf('A'), undefined, curate);
     const set = calls.find((c) => c.q.includes('productSet'))!;
     expect((set.v!.input as { title: string }).title).toBe('Tough Dog Rope Toy');

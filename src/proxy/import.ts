@@ -124,7 +124,8 @@ export async function confirmAndImport(
           nameEn: curated.title,
           descriptionHtml: curated.descriptionHtml,
           originalNameEn: detail.nameEn,
-          llmScore: curated.relevanceScore
+          llmScore: curated.relevanceScore,
+          petClass: curated.petClass
         };
         if (curated.category) category = curated.category;
       }
@@ -234,7 +235,7 @@ export async function importProduct(
       title: detail.nameEn,
       descriptionHtml: detail.descriptionHtml,
       status: 'ACTIVE',
-      tags: [IMPORT_TAG, `cj-pid-${detail.pid}`, ...(isAddon ? [ADDON_TAG] : []), ...(browseCat && cfg.collectionMap[browseCat] ? [cfg.collectionMap[browseCat].tag] : [])],
+      tags: [IMPORT_TAG, `cj-pid-${detail.pid}`, ...(isAddon ? [ADDON_TAG] : []), ...(detail.petClass ? [`cj-pet-${detail.petClass}`] : []), ...(browseCat && cfg.collectionMap[browseCat] ? [cfg.collectionMap[browseCat].tag] : [])],
       files: detail.images.slice(0, MAX_IMAGES).map((src) => ({ originalSource: src, contentType: 'IMAGE' })),
       productOptions: [{ name: optionName, values: multi ? variants.map((v) => ({ name: v.name })) : [{ name: 'Default Title' }] }],
       variants: variants.map((v) => ({
