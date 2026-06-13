@@ -685,8 +685,13 @@ User decision: cheap-but-quality products ($1–5 cost) may enter inventory
 but must NEVER appear in browsing/search — they surface only as add-ons.
 
 - Config: `addons` JSON col (migration 0006) — defaults {enabled:true,
-  priceMinUsd:1, priceMaxUsd:5, poolSize:12}. Tunable via D1 (no console
-  card yet — backlog).
+  priceMinUsd:0.5, priceMaxUsd:5, poolSize:12}. CONSOLE CARD 6 added
+  2026-06-13 (/api/addons + validateAddonsPayload): cost min/max, pool,
+  enabled. Floor lowered to $0.50 (user 2026-06-13) so the cheapest CJ
+  fillers land. NOTE: retail still obeys the pricing rule — the £6 min-
+  margin floor dominates sub-~$4 cost, so a $0.50 item still retails
+  ~£6.99 (huge margin %, not a sub-£6 sticker). True low-price fillers
+  would need an addon-specific minMargin — NOT built; flag if wanted.
 - Worker: replenish addon lane (reuses category keyword caches → zero
   extra CJ searches; same LLM curation; admits under category 'addons');
   refill tops the pool to poolSize; import tags `cj-addon`, sets
