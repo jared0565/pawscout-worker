@@ -654,8 +654,15 @@ Full audit of the ~53 active products across six fronts:
    (supplier leak + breakage risk). The sanitize sweep only stripped internal
    dev notes; the curation rewrite only ran on newly-imported products, so
    legacy adoptees kept CJ's text. Fixed the 3 highest-risk (dental) by hand.
-   RECOMMEND: a `reconcileDescriptions` LLM sweep (mirrors `reconcileHeroImages`)
-   to rewrite all legacy descriptions clean + claim-safe. Not built yet.
+   BUILT (2026-06-14): the `reconcileDescriptions` LLM sweep (`rewriteDescription`
+   in llm.ts + `needsDescriptionRewrite` marker gate) rewrites any listing whose
+   description still smells of raw CJ copy into clean, claim-safe HTML, and
+   rejects model output that still carries an <img>/hotlink/supplier marker.
+   Runs nightly (cap 40) + console "Rewrite legacy descriptions" button → POST
+   /api/descriptions. Live on next deploy; already-clean listings cost no LLM
+   calls (marker-gated). ALSO tidied the item-1 category split: consolidated nail
+   care into pet-grooming (3 moved from pet-health) and moved 3 dry-grooming
+   combs from pet-cleaning → pet-grooming.
 6. **Weak titles** — only "Electronic dog toy" (`…15911762`) is genuinely poor;
    its CJ description ("appropriate age: 3 years old+") is also suspect. Can't
    retitle accurately without seeing the images (vision, #4). Flagged.

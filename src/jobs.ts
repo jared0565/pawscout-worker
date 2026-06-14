@@ -3,11 +3,11 @@ import { chooseOrigin, CjClient, CjTokenManager, cjFetchFromEnv, type CjSearchIt
 import { makeAdminGraphql, type AdminGraphql } from './shopify-admin';
 import { TenantStore, listActiveShops, purgeExpiredSearchCache, purgeUnusedWarehouse, trimOldLogs } from './tenant-store';
 import { liveCjPasses, normalizeKeyword, CACHE_TTL_DAYS } from './proxy/search';
-import { confirmAndImport, getCachedDetail, resolveCategory, reconcileAddonVisibility, reconcileHeroImages } from './proxy/import';
+import { confirmAndImport, getCachedDetail, resolveCategory, reconcileAddonVisibility, reconcileHeroImages, reconcileDescriptions } from './proxy/import';
 import { enableTracking, getPrimaryLocationId, productInventoryItems, setInventoryQuantities, setSupplierMetafields, updateVariantPrices, MAX_TRACKED_QTY } from './proxy/inventory';
 import { retailPriceGbp } from './pricing';
 import type { CjDetail } from './cj';
-import { LlmClient, curateProduct, pickHeroImage, type Curation } from './llm';
+import { LlmClient, curateProduct, pickHeroImage, rewriteDescription, type Curation } from './llm';
 import type { Env, TenantConfig } from './types';
 
 export const CULL_WINDOW_DAYS = 30; // grace period AND inactivity window
@@ -522,6 +522,10 @@ export async function runDailyMaintenance(env: Env): Promise<void> {
         await refillCollections(store, cj, admin, cfg, { curate, pickHero }); // promote-from-warehouse (floor 8, target 12)
         await reconcileAddonVisibility(store, admin, cfg); // align hidden/visible add-ons to the toggle
         if (pickHero) await reconcileHeroImages(store, admin, cfg, pickHero, { max: 40 }); // vision: fix mismatched default images
+        if (llm.available && cfg.llm.enabled) {
+          const rewrite = (title: string, raw: string) => rewriteDescription(llm, store, cfg, title, raw);
+          await reconcileDescriptions(store, admin, cfg, rewrite, { max: 40 }); // clean raw/legacy supplier descriptions
+        }
       }
     } catch (e) {
       console.warn(`daily maintenance failed for ${shop}: ${(e as Error).message}`);

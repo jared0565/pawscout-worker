@@ -457,3 +457,58 @@ export async function reconcileHeroImages(
   }
   return { scanned, fixed };
 }
+
+const PRODUCT_DESC = `query pawscoutDesc($id: ID!) { product(id: $id) { title descriptionHtml } }`;
+
+const UPDATE_DESC = `mutation pawscoutDescSet($input: ProductInput!) {
+  productUpdate(input: $input) { product { id } userErrors { field message } }
+}`;
+
+/**
+ * True when a description still carries raw supplier copy that must not ship:
+ * hotlinked CJ images, CJ editor artifacts, supplier shipping/refund policy, or
+ * CJ boilerplate headings. Clean (LLM-rewritten) descriptions match none of these.
+ */
+export function needsDescriptionRewrite(html: string): boolean {
+  return /cjdropshipping|data-src=|data-uploadossfail|cj-description|working days|business days|returns? and refunds?|\brefunds?\b|packing list|applicable object|keywords:/i.test(html);
+}
+
+/**
+ * Maintenance sweep: rewrite legacy/raw product descriptions into clean,
+ * claim-safe copy. Only products whose current description still smells of raw
+ * CJ text are touched (so already-clean listings cost no LLM calls). `rewrite`
+ * is injected for testability. One product's failure never aborts the run.
+ */
+export async function reconcileDescriptions(
+  store: TenantStore,
+  admin: AdminGraphql,
+  cfg: TenantConfig,
+  rewrite: (title: string, rawHtml: string) => Promise<string | null>,
+  opts: { max?: number } = {}
+): Promise<{ scanned: number; rewritten: number }> {
+  const max = opts.max ?? 100;
+  const links = (await store.listImportedLinks(500)).filter((l) => l.shopify_product_id).slice(0, max);
+  let scanned = 0;
+  let rewritten = 0;
+  for (const link of links) {
+    scanned++;
+    try {
+      const data = await admin(PRODUCT_DESC, { id: link.shopify_product_id }) as {
+        product?: { title?: string; descriptionHtml?: string };
+      };
+      const html = data.product?.descriptionHtml ?? '';
+      if (!needsDescriptionRewrite(html)) continue;
+      const clean = await rewrite(data.product?.title ?? '', html);
+      if (!clean) continue;
+      const r = await admin(UPDATE_DESC, { input: { id: link.shopify_product_id, descriptionHtml: clean } }) as {
+        productUpdate?: { userErrors?: { message: string }[] };
+      };
+      const errs = r.productUpdate?.userErrors ?? [];
+      if (errs.length) throw new Error(errs.map((e) => e.message).join('; '));
+      rewritten++;
+    } catch (e) {
+      console.warn(`description reconcile failed for ${link.cj_pid}: ${(e as Error).message}`);
+    }
+  }
+  return { scanned, rewritten };
+}

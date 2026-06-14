@@ -229,6 +229,56 @@ export async function pickHeroImage(
   return result.value.index > 0 ? result.value.index : null;
 }
 
+// --- Description rewrite: clean a raw/legacy supplier description ---
+
+/**
+ * Rewrite a product description into clean, claim-safe UK-English HTML. Used to
+ * repair legacy listings that still carry raw CJ copy — supplier shipping/refund
+ * text, hotlinked images, and medical claims. Returns null on any failure, or if
+ * the output still smells of a hotlink/supplier marker (defensive). Never throws.
+ */
+export async function rewriteDescription(
+  llm: LlmClient,
+  store: TenantStore,
+  cfg: TenantConfig,
+  title: string,
+  rawHtml: string
+): Promise<string | null> {
+  if (!llm.available || !cfg.llm.enabled) return null;
+  const model = cfg.llm.curationModel ?? cfg.llm.model;
+  const currentText = rawHtml.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 2000);
+  if (!currentText) return null;
+
+  const result = await llm.json<{ descriptionHtml: string }>({
+    model,
+    maxTokens: 700,
+    system:
+      'You rewrite a pet-product description for a UK online pet store. Respond with ONLY JSON: ' +
+      '{"descriptionHtml": <clean HTML string>}. Rules: simple factual HTML using only <p>, <ul>, <li>, <strong>; ' +
+      'UK English; max ~150 words; keep accurate specs (material, size, contents, colours) when present; ' +
+      'NO medical or disease claims — never say a product prevents, treats or cures disease; phrase care benefits softly ' +
+      '("helps maintain", "supports"); NO supplier or brand names; NO shipping times, returns or refund policy; ' +
+      'NO <img> tags, NO external links or URLs; no ALL CAPS, no keyword stuffing. ' +
+      'For oral/dental products, add one short line to introduce gradually and consult a vet about existing concerns.',
+    user: JSON.stringify({ title, currentText }),
+    validate: (v) => {
+      const o = v as Record<string, unknown>;
+      if (typeof o !== 'object' || o === null) return null;
+      const d = typeof o.descriptionHtml === 'string' ? o.descriptionHtml.trim() : '';
+      if (!d) return null;
+      if (/cjdropshipping|<img|https?:\/\//i.test(d)) return null; // defensive: no hotlinks/supplier leak
+      return { descriptionHtml: clip(d, 6000) };
+    }
+  });
+
+  if (!result.ok) {
+    console.warn(`description rewrite failed for "${title}": ${result.error}`);
+    return null;
+  }
+  await store.logLlmUsage('description', result.usage.model, result.usage.promptTokens, result.usage.completionTokens, result.usage.costUsd);
+  return result.value.descriptionHtml;
+}
+
 // --- W3.3 keyword classification (cached; runs via waitUntil, never hot path) ---
 
 export interface KeywordMeta { category: string | null; synonyms: string[] }

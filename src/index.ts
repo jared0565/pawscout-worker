@@ -17,8 +17,8 @@ import { registerUninstallWebhook, type RegisterWebhook } from './webhooks';
 import { validateGatesPayload, validatePricingPayload, validateLlmPayload, validateAddonsPayload, validateCollectionMap } from './validate';
 import { verifyAppProxy } from './proxy/verify';
 import { searchBackfill, normalizeKeyword } from './proxy/search';
-import { LlmClient, classifyKeyword, curateProduct, pickHeroImage } from './llm';
-import { buildPreview, getDetailPreferWarehouse, confirmAndImport, reconcileAddonVisibility, reconcileHeroImages } from './proxy/import';
+import { LlmClient, classifyKeyword, curateProduct, pickHeroImage, rewriteDescription } from './llm';
+import { buildPreview, getDetailPreferWarehouse, confirmAndImport, reconcileAddonVisibility, reconcileHeroImages, reconcileDescriptions } from './proxy/import';
 import { makeAdminGraphql } from './shopify-admin';
 import { runDailyMaintenance, syncStoreInventory, refillCollections, sanitizeDescriptions } from './jobs';
 import { firecrawlCjSearch } from './firecrawl';
@@ -245,6 +245,31 @@ app.post('/api/hero-images', async (c) => {
     reconcileHeroImages(store, admin, cfg, pickHero, { max })
       .then((r) => console.log(`hero-image sweep: scanned ${r.scanned}, fixed ${r.fixed}`))
       .catch((e) => console.warn(`hero-image sweep failed: ${(e as Error).message}`))
+  );
+  return c.json({ ok: true, started: true, max });
+});
+// Clean raw/legacy supplier descriptions on demand: rewrite any listing whose
+// description still carries CJ copy (claims, supplier policy, hotlinked images)
+// into clean, claim-safe HTML. Background, LLM-gated.
+app.post('/api/descriptions', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: { max?: number } = {};
+  try { body = await c.req.json(); } catch { /* defaults */ }
+  const store = new TenantStore(c.env.DB, s);
+  const tenant = await store.getTenant();
+  const cfg = await store.getConfig();
+  if (!tenant?.access_token_enc || !cfg) return c.json({ ok: false, error: 'Not configured' }, 400);
+  const llm = new LlmClient(c.env.OPENROUTER_API_KEY);
+  if (!llm.available || !cfg.llm.enabled) return c.json({ ok: false, error: 'LLM not configured' }, 400);
+  const vault = await Vault.fromMasterKey(c.env.PAWSCOUT_MASTER_KEY);
+  const accessToken = await vault.open(tenant.dek_wrapped, tenant.access_token_enc);
+  const admin = makeAdminGraphql(s, accessToken);
+  const rewrite = (title: string, raw: string) => rewriteDescription(llm, store, cfg, title, raw);
+  const max = Math.min(200, Math.max(1, Math.floor(Number(body.max) || 100)));
+  c.executionCtx.waitUntil(
+    reconcileDescriptions(store, admin, cfg, rewrite, { max })
+      .then((r) => console.log(`description sweep: scanned ${r.scanned}, rewritten ${r.rewritten}`))
+      .catch((e) => console.warn(`description sweep failed: ${(e as Error).message}`))
   );
   return c.json({ ok: true, started: true, max });
 });

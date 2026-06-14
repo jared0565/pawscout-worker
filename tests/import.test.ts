@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
-import { importProduct, buildPreview, stripHtml, resolveCategory, confirmAndImport, reconcileHeroImages } from '../src/proxy/import';
+import { importProduct, buildPreview, stripHtml, resolveCategory, confirmAndImport, reconcileHeroImages, reconcileDescriptions, needsDescriptionRewrite } from '../src/proxy/import';
 import { TenantStore } from '../src/tenant-store';
 import { DEFAULT_GATES, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, type TenantConfig } from '../src/types';
 import type { CjClient, CjDetail } from '../src/cj';
@@ -264,5 +264,50 @@ describe('hero-image QA (vision)', () => {
     };
     const r = await reconcileHeroImages(store, admin, CFG, async () => 1);
     expect(r).toEqual({ scanned: 2, fixed: 1 }); // bad product swallowed, ok product fixed
+  });
+});
+
+describe('description QA', () => {
+  it('needsDescriptionRewrite flags raw CJ copy but not clean prose', () => {
+    expect(needsDescriptionRewrite('<img src="https://cf.cjdropshipping.com/x.jpg">')).toBe(true);
+    expect(needsDescriptionRewrite('<p>We accept returns and refunds within 30 days</p>')).toBe(true);
+    expect(needsDescriptionRewrite('<p>delivered within 1-3 working days</p>')).toBe(true);
+    expect(needsDescriptionRewrite('<div class="cj-description">...</div>')).toBe(true);
+    expect(needsDescriptionRewrite('<p>A soft finger toothbrush that helps maintain fresh breath.</p>')).toBe(false);
+  });
+
+  function descAdmin(calls: Call[], html: string): AdminGraphql {
+    return async (query, variables) => {
+      calls.push({ query, variables });
+      if (query.includes('pawscoutDesc') && query.includes('query')) {
+        return { product: { title: 'Finger Toothbrush', descriptionHtml: html } };
+      }
+      if (query.includes('productUpdate')) return { productUpdate: { product: { id: 'x' }, userErrors: [] } };
+      throw new Error(`unexpected query: ${query.slice(0, 40)}`);
+    };
+  }
+
+  it('rewrites a raw legacy description and skips an already-clean one', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    await store.putLink({ cjPid: 'raw', state: 'imported', shopifyProductId: 'gid://shopify/Product/raw', handle: 'r', category: 'pet-health' });
+    const callsRaw: Call[] = [];
+    const rewrite = async () => '<p>Clean copy.</p>';
+    const r1 = await reconcileDescriptions(store, descAdmin(callsRaw, '<div class="cj-description">prevent oral diseases</div>'), CFG, rewrite);
+    expect(r1).toEqual({ scanned: 1, rewritten: 1 });
+    expect(callsRaw.some((c) => c.query.includes('productUpdate'))).toBe(true);
+
+    const callsClean: Call[] = [];
+    const r2 = await reconcileDescriptions(store, descAdmin(callsClean, '<p>A soft toothbrush that helps maintain fresh breath.</p>'), CFG, rewrite);
+    expect(r2).toEqual({ scanned: 1, rewritten: 0 }); // clean → no LLM, no update
+    expect(callsClean.some((c) => c.query.includes('productUpdate'))).toBe(false);
+  });
+
+  it('skips when the rewrite returns null (LLM failure leaves the listing untouched)', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    await store.putLink({ cjPid: 'raw', state: 'imported', shopifyProductId: 'gid://shopify/Product/raw', handle: 'r', category: 'pet-health' });
+    const calls: Call[] = [];
+    const r = await reconcileDescriptions(store, descAdmin(calls, '<p>Keywords: cheap toy</p>'), CFG, async () => null);
+    expect(r).toEqual({ scanned: 1, rewritten: 0 });
+    expect(calls.some((c) => c.query.includes('productUpdate'))).toBe(false);
   });
 });

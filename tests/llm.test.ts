@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
-import { LlmClient, curateProduct, classifyKeyword, getKeywordMeta, pickHeroImage } from '../src/llm';
+import { LlmClient, curateProduct, classifyKeyword, getKeywordMeta, pickHeroImage, rewriteDescription } from '../src/llm';
 import { replenishWarehouse } from '../src/jobs';
 import { searchBackfill } from '../src/proxy/search';
 import { TenantStore } from '../src/tenant-store';
@@ -206,6 +206,38 @@ describe('pickHeroImage (vision)', () => {
   it('returns null when the LLM is unavailable', async () => {
     const store = new TenantStore(env.DB, SHOP);
     expect(await pickHeroImage(new LlmClient(undefined), store, CFG, 'Dog Toy', URLS)).toBeNull();
+  });
+});
+
+describe('rewriteDescription', () => {
+  const RAW = '<div class="cj-description"><p>prevent oral diseases. We accept returns and refunds within 30 days.</p><img src="https://cf.cjdropshipping.com/x.jpg"></div>';
+
+  it('returns clean rewritten HTML and logs usage', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const llm = new LlmClient('k', llmFetch({ descriptionHtml: '<p>A reusable finger toothbrush that helps maintain fresh breath.</p>' }));
+    const out = await rewriteDescription(llm, store, CFG, 'Silicone Finger Toothbrush', RAW);
+    expect(out).toBe('<p>A reusable finger toothbrush that helps maintain fresh breath.</p>');
+    const spend = await store.llmSpendSince(new Date(Date.now() - 60_000).toISOString());
+    expect(spend.calls).toBe(1);
+  });
+
+  it('rejects output that still contains a hotlink or supplier marker (defensive)', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const llm = new LlmClient('k', llmFetch({ descriptionHtml: '<p>Nice toy</p><img src="https://cf.cjdropshipping.com/y.jpg">' }));
+    expect(await rewriteDescription(llm, store, CFG, 'Toy', RAW)).toBeNull();
+  });
+
+  it('returns null on empty source text without calling the model', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    let called = false;
+    const fetchImpl = (async () => { called = true; return new Response('{}'); }) as unknown as typeof fetch;
+    expect(await rewriteDescription(new LlmClient('k', fetchImpl), store, CFG, 'X', '   ')).toBeNull();
+    expect(called).toBe(false);
+  });
+
+  it('returns null when the LLM is unavailable', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    expect(await rewriteDescription(new LlmClient(undefined), store, CFG, 'X', RAW)).toBeNull();
   });
 });
 

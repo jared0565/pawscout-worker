@@ -253,11 +253,13 @@ export function consolePage(apiKey: string): Response {
       <button id="syncbtn" onclick="syncNow()">Sync now</button>
       <button class="ghost" id="sanbtn" onclick="sanitizeNow()">Clean up descriptions</button>
       <button class="ghost" id="herobtn" onclick="heroImagesNow()">Fix default images</button>
+      <button class="ghost" id="descbtn" onclick="rewriteDescsNow()">Rewrite legacy descriptions</button>
     </div>
     <div class="bar" id="syncbar"><i></i></div>
     <p id="syncmsg" class="msg muted"></p>
     <p id="sanmsg" class="msg muted"></p>
     <p id="heromsg" class="msg muted"></p>
+    <p id="descmsg" class="msg muted"></p>
   </section>
 
   <section class="card">
@@ -473,6 +475,15 @@ async function heroImagesNow(){
     if(!r.ok){ setMsg('heromsg','Failed: '+(r.error||'unknown error'),'no'); return; }
     setMsg('heromsg','Started ✓ The AI is reviewing up to '+r.max+' listings and promoting the best default image. This runs in the background; refresh products in a minute.','ok');
   }catch(e){ setMsg('heromsg','Failed: '+errText(e),'no'); }
+  finally{ btn.disabled=false; }
+}
+async function rewriteDescsNow(){
+  var btn=el('descbtn'); btn.disabled=true;
+  try{
+    var r=await api('/descriptions',{max:200});
+    if(!r.ok){ setMsg('descmsg','Failed: '+(r.error||'unknown error'),'no'); return; }
+    setMsg('descmsg','Started ✓ The AI is rewriting any listings that still carry raw supplier copy (claims, supplier policy, hotlinked images) into clean descriptions. Runs in the background.','ok');
+  }catch(e){ setMsg('descmsg','Failed: '+errText(e),'no'); }
   finally{ btn.disabled=false; }
 }
 async function runDiag(){
