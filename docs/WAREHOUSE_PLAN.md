@@ -516,6 +516,30 @@ HEADLESS-BROWSER VERIFY — BLOCKED FROM SANDBOX (documented attempt):
   listV2 supply for the term + warehouse stock (cron) — not artificially
   capped anymore, but supply-dependent.
 
+## 7a-i-i. listV2 was never actually working (2026-06-14 02:40)
+
+User pushed back: "maybe OUR method is junk, not CJ's." Correct. Root cause
+of the junk "dog toy"/"cat toys" results:
+- listV2 returns the product id in `id` (NOT `pid`/`productId`); our mapper
+  read pid -> empty -> every listV2 row dropped -> searchV2 returned [] ->
+  cj.search SILENTLY FELL BACK to /product/list (the OR-matching keyword
+  endpoint that returns advent calendars, kids toys, an adult toy, dog
+  bowls/leashes/beds for "dog toy"). So we were never using listV2.
+- Also: listV2 takes `page`/`size` (not pageNum/pageSize) + orderBy:0
+  (best match). Fixed all three. Defensive mapper now reads both shapes.
+- CJ docs (acdc-digital/elvato CJ API Docs 015 mirror) confirm: listV2
+  data path = data.content[].productList; fields id/nameEn/bigImage/
+  sellPrice/listedNum/threeCategoryName; orderBy 0=best match default;
+  also has startSellPrice/endSellPrice + categoryId/lv2categoryList (future:
+  source-side price + category-browse).
+- Still NOT deployed by user as of this commit (deployed bundle had listV2
+  markers but NOT liveCjPasses/speciesConflict — i.e. the species round +
+  this id-fix both await one `git pull && npx wrangler deploy`).
+- VERIFY LOOP (works via our worker, no sandbox CJ access needed): after
+  deploy, purge kw:* cache, user searches "dog toy", then READ the new
+  kw:dog toy cache from D1 and compare titles to the old junk. If clean ->
+  listV2 fixed. 186 tests.
+
 ## 7a-ii. STRATEGY DECISION — shipping display, origin choice, returns
 ## (user-raised 2026-06-12; recommendation delivered same day; user
 ##  decision pending — do not implement until the user confirms)
