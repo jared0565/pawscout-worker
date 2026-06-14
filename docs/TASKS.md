@@ -41,13 +41,21 @@ Last updated: 2026-06-14.
       PS archives the rest. Best done with the image-quality signal/sales data.
 - [ ] **"Electronic dog toy"** (`…15911762`) — useless title + suspect "age 3+"
       spec. Review the images; retitle or archive (may not be a real dog product).
-- [ ] **Finalize pricing** (2.5× vs 2.6× / 20% net target). Gates checkout. → 7a-ii.
+- [x] **Finalize pricing** — LOCKED at **2.7×** (2026-06-14): ≈20% net on
+      cost-bound items, higher blended (the £6.99 min-margin floor governs the
+      cheap majority). Already live in `tenant_config.pricing`; code default left
+      at 2.5× (the per-tenant choice lives in D1). Re-sync to lock prices, then
+      checkout can go on. → 7a-ii.
 - [ ] **Add-on lane** — now overlaps the main $0.50 band; decide keep / repurpose /
       retire. → 7a-i-j (side effect note).
 
 ## 3. Pre-launch — mostly you (You)
 
-- [ ] **Finalize pricing → re-enable checkout** (currently disabled by design).
+- [x] **Pricing locked** (2.7× — see §2).
+- [ ] **Re-enable checkout** — pricing is decided. Steps: (1) run *Sync now* to
+      lock all live prices to 2.7×; (2) Settings → Payments → activate the
+      payment provider (merchant-only, not API); (3) if the store is
+      password-protected, Online Store → Preferences → remove the password.
 - [ ] **Cookie-consent banner** (PECR/GDPR) — Shopify setting.
 - [ ] **reCAPTCHA on the contact form** — Shopify setting.
 - [ ] **Set a shop phone** — else the privacy-policy template renders a blank
