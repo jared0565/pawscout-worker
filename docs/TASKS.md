@@ -95,6 +95,18 @@ Last updated: 2026-06-14.
 - [ ] **`freightCalculate` live response parse** — params from docs mirror, not yet
       exercised against the live API on a real replenishment. → 7a-ii.
 
+## 5b. API-version debt (PS — do WITH the next Shopify API bump)
+
+- [ ] **`inventorySetQuantities` → drop `ignoreCompareQuantity`** (Shopify monitoring
+      flagged it 2026-06-14; removed in API 2026-04; deadline ~Jan 2027 / 2025-07
+      sunset ~mid-2026). We currently call API **2025-07** (`LATEST_API_VERSION`),
+      where it still works — do NOT change it standalone (the replacement field
+      isn't valid on 2025-07 and would break the nightly sync). When
+      `@shopify/shopify-api` is upgraded to a 2026-04+ API version, replace the
+      top-level `ignoreCompareQuantity: true` with a per-quantity
+      `changeFromQuantity: null` in `src/proxy/inventory.ts` (code comment marks
+      the exact spot). Re-run the inventory-sync tests after.
+
 ## 6. Future / rollout (PS, recorded for later)
 
 - [ ] **White-label decoupling** — retire the `4qkudm-ez.` shop-sniff / hardcoded
