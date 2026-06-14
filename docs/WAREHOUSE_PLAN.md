@@ -759,10 +759,18 @@ economics for net-profit impact.
 (iii) [x] Express rate DELETED from the UK zone via deliveryProfileUpdate
     (was £6.99 on everything incl. CN-origin items). Reintroduce only
     with a UK-stock delivery profile.
-(iv) [x] Returns & Refunds policy text written — docs/RETURNS_POLICY.md;
-    USER ACTION: paste into Settings → Policies → Return and refund
-    policy (app token lacks write_legal_policies). The PDP delivery block
-    links /policies/refund-policy.
+(iv) [x] Returns & Refunds policy text written — docs/RETURNS_POLICY.md.
+    DONE (confirmed live 2026-06-14): all SIX shop policies are published —
+    REFUND, SHIPPING, TERMS_OF_SERVICE, LEGAL_NOTICE, CONTACT_INFORMATION
+    (trading address = Office 19589, 182-184 High Street North, East Ham,
+    London E6 2JA) and PRIVACY (Shopify standard GDPR template). The live
+    Returns policy implements the settled CCR2013/CRA2015 strategy (14-day
+    contact-first, evidence-based faulty claims, £4.99 clawback below £50,
+    statutory-rights preserved). The PDP delivery block links
+    /policies/refund-policy. MINOR: no shop phone set, so the privacy
+    template's "call {{ phone }}" renders blank — set a phone or ignore.
+    NOT policy-page work, still pending pre-launch: cookie-consent banner
+    (PECR/GDPR), reCAPTCHA on the contact form, re-enable checkout.
 
 ## 7a-iii. Returns evidence gating (user-approved direction 2026-06-12)
 
