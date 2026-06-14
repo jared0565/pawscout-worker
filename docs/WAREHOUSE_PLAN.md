@@ -923,6 +923,41 @@ contact form (arrive as plain emails — no list). Target design:
       this flow; consent recorded both in Shopify (source of truth) and
       Resend; consider double opt-in before first real campaign.
 
+## 7c. Reusability & white-label decoupling (principle — act at rollout)
+
+The theme is a **reusable, Shopify-standards-compliant theme by design**, not a
+one-off for this store. Treat that as a hard constraint going forward:
+
+- **Anything Shopify lets a merchant customize must stay merchant-customizable.**
+  Surface it the standard way — `config/settings_schema.json`, section/block
+  settings, `{% schema %}` defaults, theme app extensions — never hardcode a
+  value that Shopify's own guidelines expect to live in theme settings. If a
+  change would remove a knob the theme template normally exposes, that's a
+  regression against reusability, even if it "works" for Active Paw today.
+- **Decouple brand name from platform name.** Two distinct identities that are
+  currently entangled:
+  - **PawScout** = the platform/worker (the engine: search proxy, warehouse,
+    curation, fulfilment). Its name may itself change before public rollout.
+  - **Active Paw** = one *brand/storefront* — the first **spawn** of PawScout.
+    At rollout, "Active Paw" becomes a **variable** (a brand/tenant setting),
+    not a literal. Each new store onboarded is another spawn with its own brand
+    value; the theme installs clean and is branded purely through settings.
+- **Implication for both repos:** no brand string ("Active Paw") or platform
+  string ("PawScout") should be hardcoded where it drives customer-facing copy
+  or per-tenant behaviour. Theme → drive from a theme setting (brand name, logo,
+  colours, contact details already partly are). Worker → it's already
+  multi-tenant (`tenant_config` keyed by shop; `isActivePaw` shop-sniff in
+  `auth/callback.ts` and the `4qkudm-ez.` checks are the current shortcut to
+  retire — replace with a per-tenant brand/config field, not a hardcoded shop).
+- **Onboarding flow (future):** spawning a new brand = install theme → set brand
+  variables in theme settings → worker seeds `tenant_config` for that shop. No
+  code edits per brand.
+
+Not actionable now — recorded so the rollout work doesn't have to rediscover it.
+When we build onboarding, audit both repos for hardcoded "Active Paw"/"PawScout"
+and the `4qkudm-ez.` shop-sniff, and confirm every customizable surface is a
+theme setting.
+
 ## 8. Conventions & runbook (for any developer picking this up)
 
 **Conventions**
