@@ -18,14 +18,15 @@ Last updated: 2026-06-14.
 
 ## 1. Robustness hardening — stop known issues recurring (PS)
 
-- [ ] **Pet-relevance guard in the mechanical fallback.** When the LLM is down,
-      imports admit via price/stock/popularity gates that don't check pet-niche
-      — this is how the kitchen sharpener / garden shears got in. Add a hard
-      title/category pet-adjacency check to the non-LLM path. → 7a-i-m (#5 cause).
-- [ ] **Dedupe-at-admission.** Curation scores each item alone, so near-identical
-      products flood (the ~6 bath brushes, twin teeth-powders). Add a
-      similarity / normalized-title check at warehouse admission so one product
-      type → one listing. → 7a (dedupe backlog note).
+- [x] **Pet-relevance guard in the mechanical fallback** (done 2026-06-14).
+      `isLikelyPetProduct` (search.ts): an explicit pet token admits; with no pet
+      signal, a clear non-pet marker (kitchen/garden/human-grooming) rejects;
+      ambiguous admits. Enforced on the non-LLM path in `confirmAndImport` and
+      `replenishWarehouse`. → 7a-i-m (#5 cause).
+- [x] **Dedupe-at-admission** (done 2026-06-14). `titleSignature` (sorted
+      significant tokens) computed at warehouse admission against the existing
+      stock set; true duplicates / reorderings (incl. the twin teeth-powders) are
+      skipped, distinct items survive. → 7a (dedupe backlog note).
 - [ ] **Category re-audit (optional).** Nothing re-checks the LLM's initial
       collection assignment; mis-files (e.g. dental → grooming) can recur. Cheap
       periodic re-audit or a confidence check at import.
@@ -75,6 +76,9 @@ Last updated: 2026-06-14.
 ---
 
 ### Recently completed (this session)
+- Robustness: mechanical pet-relevance floor + dedupe-at-admission (the two
+  hardening items above) — closes the non-pet-during-LLM-outage hole and the
+  duplicate-flooding gap.
 - Search relevance fix (listV2 id-field, species gate, $0.50 floor) — verified.
 - `cj-cat-` → `cj-pet-` tag rename (code + live data + collections + config).
 - Vision hero-image QA at import + nightly sweep + `hero_sig` cost guard.

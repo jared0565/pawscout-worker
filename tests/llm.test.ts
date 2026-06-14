@@ -126,17 +126,50 @@ describe('replenishWarehouse with curation', () => {
 
   it('admits with rewritten copy and the curated category', async () => {
     const store = new TenantStore(env.DB, SHOP);
+    // Unique curated titles per product (dedupe-at-admission would collapse identical ones).
     const admitted = await replenishWarehouse(store, cjFake(), CFG, {
       pause: async () => {},
-      curate: async () => GOOD_CURATION
+      curate: async (d) => ({ ...GOOD_CURATION, title: `Cotton Rope Dog Toy ${d.pid}` })
     });
     expect(admitted).toBe(3);
     const row = await store.getWarehouseProduct('p3'); // best-seller ordering: highest listedNum admitted first
-    expect(row?.title).toBe('Bite-Resistant Cotton Rope Dog Toy');
+    expect(row?.title).toBe('Cotton Rope Dog Toy p3');
     const detail = JSON.parse(row!.detail) as CjDetail;
-    expect(detail.nameEn).toBe('Bite-Resistant Cotton Rope Dog Toy');
+    expect(detail.nameEn).toBe('Cotton Rope Dog Toy p3');
     expect(detail.originalNameEn).toContain('Pet Dog Toys'); // CJ original kept for audit
     expect(detail.llmScore).toBe(85);
+  });
+
+  it('mechanical fallback rejects non-pet items but keeps pet ones (LLM down)', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const cj = {
+      search: async () => [
+        { pid: 'pet', nameEn: 'Dog Chew Toy', image: 'https://i/x.jpg', sellPriceUsd: 10, listedNum: 30, categoryName: 'Pet Toys' },
+        { pid: 'junk', nameEn: 'Kitchen Knife Sharpener', image: 'https://i/x.jpg', sellPriceUsd: 10, listedNum: 20, categoryName: 'Home' }
+      ] as CjSearchItem[],
+      detail: async (pid: string): Promise<CjDetail> => ({ ...DETAIL, pid, nameEn: pid === 'junk' ? 'Kitchen Knife Sharpener' : 'Dog Chew Toy', categoryName: pid === 'junk' ? 'Home Kitchen' : 'Pet Toys' }),
+      stockByPid: async () => new Map([['v1', 50]])
+    } as unknown as CjClient;
+    const admitted = await replenishWarehouse(store, cj, CFG, { pause: async () => {} }); // no curate → mechanical path
+    expect(admitted).toBe(1);
+    expect(await store.getWarehouseProduct('pet')).not.toBeNull();
+    expect(await store.getWarehouseProduct('junk')).toBeNull(); // non-pet rejected by the floor
+  });
+
+  it('dedupe-at-admission skips a product already stocked under the same title signature', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await store.putWarehouseProduct({
+      cjPid: 'existing', category: 'pet-toys', title: 'Pet Teeth Cleaning Powder 100g',
+      detailJson: JSON.stringify({ ...DETAIL, pid: 'existing' }), priceUsd: 10, listedNum: 5, stock: 50
+    });
+    const cj = {
+      search: async () => [{ pid: 'dup', nameEn: 'Teeth Cleaning Powder 100g for Pets', image: 'https://i/x.jpg', sellPriceUsd: 10, listedNum: 40, categoryName: 'Pet Health' }] as CjSearchItem[],
+      detail: async (pid: string): Promise<CjDetail> => ({ ...DETAIL, pid, nameEn: 'Teeth Cleaning Powder 100g for Pets' }),
+      stockByPid: async () => new Map([['v1', 50]])
+    } as unknown as CjClient;
+    const admitted = await replenishWarehouse(store, cj, CFG, { pause: async () => {} });
+    expect(admitted).toBe(0); // same significant-title signature as the stocked product
+    expect(await store.getWarehouseProduct('dup')).toBeNull();
   });
 
   it('hard-rejects candidates scoring below the threshold', async () => {

@@ -4,6 +4,7 @@ import type { Curation, HeroPick } from '../llm';
 import type { TenantStore } from '../tenant-store';
 import type { TenantConfig } from '../types';
 import { retailPriceGbp } from '../pricing';
+import { isLikelyPetProduct } from './search';
 import { getPrimaryLocationId, setSupplierMetafields, MAX_TRACKED_QTY } from './inventory';
 
 export const IMPORT_TAG = 'cj-import';
@@ -133,6 +134,14 @@ export async function confirmAndImport(
     } catch (e) {
       console.warn(`import curation failed for ${detail.pid}: ${(e as Error).message}`);
     }
+  }
+  // Mechanical pet-relevance floor: if the LLM didn't admit this (no llmScore —
+  // curation absent or failed), reject clearly non-pet items the mechanical
+  // gates would otherwise pass (the kitchen/garden/human-tool class).
+  if (detail.llmScore === undefined && !isLikelyPetProduct(`${detail.nameEn} ${detail.categoryName ?? ''}`)) {
+    console.warn(`import blocked (not pet-relevant) for ${detail.pid}: ${detail.nameEn}`);
+    await store.putLink({ cjPid: detail.pid, state: 'failed', category: category ?? null });
+    return;
   }
   // Hero-image QA (vision): CJ's first image is often a single component or a
   // packaging shot. Promote the image that best matches the title to the front

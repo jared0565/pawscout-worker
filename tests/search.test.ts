@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
-import { searchBackfill, normalizeKeyword, relevanceMatch, keywordTokens, liveCjPasses, querySpecies } from '../src/proxy/search';
+import { searchBackfill, normalizeKeyword, relevanceMatch, keywordTokens, liveCjPasses, querySpecies, isLikelyPetProduct, titleSignature } from '../src/proxy/search';
 import { TenantStore } from '../src/tenant-store';
 import { DEFAULT_GATES, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, type TenantConfig } from '../src/types';
 import type { CjClient, CjSearchItem } from '../src/cj';
@@ -24,6 +24,34 @@ function item(over: Partial<CjSearchItem>): CjSearchItem {
 function fakeCj(items: CjSearchItem[], calls: string[] = []): CjClient {
   return { search: async (kw: string) => { calls.push(kw); return items; } } as unknown as CjClient;
 }
+
+describe('isLikelyPetProduct (mechanical floor)', () => {
+  it('admits anything with an explicit pet signal', () => {
+    expect(isLikelyPetProduct('Pet Grooming Scissors Set with Comb')).toBe(true);
+    expect(isLikelyPetProduct('Dog Nail Clipper')).toBe(true);
+    expect(isLikelyPetProduct('Cat Scratch Board')).toBe(true);
+  });
+  it('rejects clear non-pet tools that have no pet signal', () => {
+    expect(isLikelyPetProduct('Kitchen Knife Sharpener 5 In 1')).toBe(false);
+    expect(isLikelyPetProduct('21V Cordless Electric Pruning Shears Tree Branch Cutter')).toBe(false);
+    expect(isLikelyPetProduct('Hairdressing scissors')).toBe(false);
+    expect(isLikelyPetProduct('Barber scissors')).toBe(false);
+    expect(isLikelyPetProduct('Tailor scissors handmade scissors')).toBe(false);
+  });
+  it('admits ambiguous items (no signal either way) — the LLM tightens when up', () => {
+    expect(isLikelyPetProduct('Silicone Bath Brush')).toBe(true);
+  });
+});
+
+describe('titleSignature (dedupe)', () => {
+  it('collapses literal twins and reorderings to one signature', () => {
+    expect(titleSignature('Pet Teeth Cleaning Powder 100g')).toBe(titleSignature('Teeth Cleaning Powder 100g for Pets'));
+    expect(titleSignature('Silicone Bath Massage Brush')).toBe(titleSignature('Massage Silicone Brush Bath'));
+  });
+  it('keeps genuinely different products distinct', () => {
+    expect(titleSignature('Silicone Bath Brush')).not.toBe(titleSignature('Silicone Spa Massage Glove Brush'));
+  });
+});
 
 describe('relevance + normalization', () => {
   it('normalizes keywords', () => {

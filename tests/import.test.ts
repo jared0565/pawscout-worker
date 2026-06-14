@@ -207,6 +207,16 @@ describe('hero-image QA (vision)', () => {
     expect(files.map((f) => f.originalSource)).toEqual(['https://i/2.jpg', 'https://i/1.jpg']);
   });
 
+  it('confirmAndImport blocks a non-pet item on the mechanical fallback (no curation)', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const calls: Call[] = [];
+    const nonPet: CjDetail = { ...DETAIL, pid: 'JUNK', nameEn: 'Kitchen Knife Sharpener', categoryName: 'Home Kitchen' };
+    // no curate, no pickHero → mechanical path → pet-relevance floor rejects it.
+    await confirmAndImport(store, {} as unknown as CjClient, fakeAdmin(calls), CFG, nonPet, 'pet-toys');
+    expect(calls.some((c) => c.query.includes('productSet'))).toBe(false);
+    expect((await store.getLink('JUNK'))?.state).toBe('failed');
+  });
+
   it('confirmAndImport leaves order untouched when pickHero returns null', async () => {
     const store = new TenantStore(env.DB, 'a.myshopify.com');
     const calls: Call[] = [];

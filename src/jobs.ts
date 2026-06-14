@@ -2,7 +2,7 @@ import { Vault } from './vault';
 import { chooseOrigin, CjClient, CjTokenManager, cjFetchFromEnv, type CjSearchItem } from './cj';
 import { makeAdminGraphql, type AdminGraphql } from './shopify-admin';
 import { TenantStore, listActiveShops, purgeExpiredSearchCache, purgeUnusedWarehouse, trimOldLogs } from './tenant-store';
-import { liveCjPasses, normalizeKeyword, CACHE_TTL_DAYS } from './proxy/search';
+import { liveCjPasses, normalizeKeyword, CACHE_TTL_DAYS, isLikelyPetProduct, titleSignature } from './proxy/search';
 import { confirmAndImport, getCachedDetail, resolveCategory, reconcileAddonVisibility, reconcileHeroImages, reconcileDescriptions } from './proxy/import';
 import { enableTracking, getPrimaryLocationId, productInventoryItems, setInventoryQuantities, setSupplierMetafields, updateVariantPrices, MAX_TRACKED_QTY } from './proxy/inventory';
 import { retailPriceGbp } from './pricing';
@@ -268,6 +268,9 @@ export async function replenishWarehouse(
   const now = opts.now ?? Date.now;
   let cjCalls = 0;
   let admitted = 0;
+  // Dedupe-at-admission: signatures of every product already in the warehouse,
+  // so a near-identical item (incl. literal twins) is never admitted twice.
+  const seenTitleSigs = new Set((await store.warehouseTitles()).map(titleSignature));
 
   const spend = async (): Promise<void> => {
     cjCalls++;
@@ -321,6 +324,7 @@ export async function replenishWarehouse(
     let title = detail.nameEn;
     let admittedDetail: CjDetail = { ...detail, stock };
     let resolvedCategory = category ?? resolveCategory(cfg, detail);
+    let llmAdmitted = false;
     if (opts.curate) {
       const curated = await opts.curate(detail, context);
       if (curated) {
@@ -335,7 +339,22 @@ export async function replenishWarehouse(
           petClass: curated.petClass
         };
         if (curated.category) resolvedCategory = curated.category;
+        llmAdmitted = true;
       }
+    }
+    // Mechanical pet-relevance floor: when the LLM didn't admit (down/absent),
+    // reject items with no pet signal and a clear non-pet marker (kitchen/garden/
+    // human-grooming tools) that the mechanical gates would otherwise let in.
+    if (!llmAdmitted && !isLikelyPetProduct(`${detail.nameEn} ${detail.categoryName ?? ''}`)) {
+      console.warn(`admission blocked (not pet-relevant) for ${item.pid}: ${detail.nameEn}`);
+      return false;
+    }
+    // Dedupe-at-admission: skip a product whose significant-title signature is
+    // already stocked (true duplicates / reorderings; distinct items survive).
+    const sig = titleSignature(title);
+    if (sig && seenTitleSigs.has(sig)) {
+      console.warn(`admission skipped (duplicate of stocked product) for ${item.pid}: ${title}`);
+      return false;
     }
     // W-ADDON: hidden fillers live under their own category key — never a
     // browsable collection, never counted toward category floors/targets.
@@ -365,6 +384,7 @@ export async function replenishWarehouse(
       listedNum: detail.listedNum,
       stock
     });
+    if (sig) seenTitleSigs.add(sig); // guard against a second duplicate later in this run
     admitted++;
     return true;
   };

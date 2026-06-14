@@ -384,6 +384,15 @@ export class TenantStore {
     return rs.results ?? [];
   }
 
+  /** All warehouse titles (any status) — for dedupe-at-admission signatures. */
+  async warehouseTitles(): Promise<string[]> {
+    const rs = await this.db
+      .prepare(`SELECT title FROM warehouse_products WHERE shop = ?1`)
+      .bind(this.shop)
+      .all<{ title: string }>();
+    return (rs.results ?? []).map((r) => r.title);
+  }
+
   async countWarehouseAvailableByCategory(category: string): Promise<number> {
     const row = await this.db
       .prepare(`SELECT COUNT(*) AS n FROM warehouse_products WHERE shop = ?1 AND category = ?2 AND status = 'available'`)

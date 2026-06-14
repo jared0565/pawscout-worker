@@ -43,6 +43,53 @@ export function keywordTokens(keyword: string): string[] {
   ];
 }
 
+// --- Mechanical pet-relevance guard (LLM-free) ---
+// The LLM curation gate is the real niche filter, but admission degrades to
+// mechanical gates when the LLM is down — and those don't check pet-relevance,
+// which is how human/kitchen/garden tools slipped in once. This is the floor:
+// a clear pet signal always admits; with no pet signal, a clear NON-pet signal
+// rejects. Ambiguous (neither signal) admits — the LLM tightens it when up.
+const PET_TOKENS = new Set([
+  'pet', 'pets', 'dog', 'dogs', 'puppy', 'puppies', 'pup', 'pups', 'canine', 'doggy', 'doggie',
+  'cat', 'cats', 'kitten', 'kittens', 'kitty', 'feline', 'paw', 'paws', 'kennel', 'leash', 'collar',
+  'harness', 'litter', 'aquarium', 'fish', 'bird', 'rabbit', 'hamster', 'pup', 'kitties'
+]);
+// Distinctive non-pet markers (human grooming, kitchen, garden, power tools).
+const NONPET_MARKERS = [
+  'kitchen', 'knife sharpen', 'pruning', 'tree branch', 'branch cutter', 'garden', 'lawn',
+  'hairdress', 'barber', 'tailor', 'sewing', 'chainsaw', 'human hair', 'nail art', 'manicure'
+];
+
+/** LLM-free floor: would a human reasonably see this as a pet product? */
+export function isLikelyPetProduct(text: string): boolean {
+  const t = (text || '').toLowerCase();
+  const words = t.split(/[^a-z0-9]+/);
+  if (words.some((w) => PET_TOKENS.has(w))) return true; // explicit pet signal → admit
+  return !NONPET_MARKERS.some((m) => t.includes(m));     // no pet signal: reject only on a clear non-pet marker
+}
+
+// --- Title signature for dedupe-at-admission ---
+const TITLE_STOP = new Set(['a', 'an', 'the', 'and', 'or', 'for', 'with', 'of', 'to', 'your', 'in', 'on', 'by', 'pet', 'pets']);
+
+/**
+ * Order-independent fingerprint of a title's significant tokens. Two listings
+ * with the same significant words (incl. reorderings, and the literal twins like
+ * the duplicate "Pet Teeth Cleaning Powder 100g") collapse to one signature;
+ * genuinely different products (glove vs spa vs shampoo brush) do NOT — so it
+ * blocks true duplicates at admission without over-merging distinct items.
+ */
+export function titleSignature(title: string): string {
+  const toks = [
+    ...new Set(
+      (title || '')
+        .toLowerCase()
+        .split(/[^a-z0-9]+/)
+        .filter((t) => t.length >= 2 && !TITLE_STOP.has(t))
+    )
+  ].sort();
+  return toks.join(',');
+}
+
 // Species vocabulary — the single most important relevance signal in a
 // pet store (a "dog toy" search must never show cat products).
 const DOG_WORDS = new Set(['dog', 'dogs', 'puppy', 'puppies', 'pup', 'pups', 'canine', 'doggy', 'doggie']);
