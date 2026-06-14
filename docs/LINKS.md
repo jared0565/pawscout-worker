@@ -15,11 +15,20 @@ Stop re-hunting. Canonical IDs and the dashboard/admin URLs we keep needing.
 
 ## App config — Shopify Dev Dashboard (org 221233114, app 378577780737)
 Base: `https://dev.shopify.com/dashboard/221233114/apps/378577780737`
+Left nav: Monitoring · Logs · Versions · Settings.
 - Versions / release history (edit scopes, App URL, App Proxy, webhooks API
   version → here, via "Create version" → Release): `…/versions` ✓
-- Protected customer data access (Step 1 fields + Step 2 questionnaire):
-  from the app → **API access → Protected customer data access** (exact slug TBD;
-  `/customer_data` is NOT it). _Paste the real URL here when found._
+  (Active version as of 2026-06-14: `V1_14062026` — added order scopes.)
+- Settings (`…/settings`) ✓ — Client ID `6bc07cd8…` confirmed here, secret,
+  API contact `contact@activepaw.co.uk`. NOTE: **no Protected-customer-data
+  section on Settings** (neither real nor decoy app shows it here).
+- Monitoring (`…/monitoring`) — API-health / deprecated-API warnings.
+- **Protected customer data access:** location in the new Dev Dashboard is NOT
+  under Settings and not yet found. The Step 1/Step 2 page reached earlier was
+  via the *Partner* dashboard on the DECOY app — so it likely is NOT set on this
+  real app. VERIFY FUNCTIONALLY: place a test order → if `orders.hold_reasons`
+  contains `incomplete-address`, the shipping address is redacted (protected
+  data not granted on this app); if it queues with an address, it's fine.
 
 ## Store admin (admin.shopify.com/store/4qkudm-ez)
 - Apps: `/apps` · this app: `/apps` → PawScout
