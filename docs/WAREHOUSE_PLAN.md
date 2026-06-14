@@ -626,6 +626,40 @@ items can both pass (the powder pair). Consider a similarity/embedding (or
 normalized-title) dedupe at warehouse admission so one product type → one
 listing. Not built; recorded so the cause is known.
 
+## 7a-i-m. Catalog audit 1–6 (2026-06-14 14:30)
+
+Full audit of the ~53 active products across six fronts:
+
+1. **Category correctness** — fixed 2 clear mis-files: "Portable Teeth Cleaning
+   Wipe Tool" pet-grooming→**pet-health** (dental); "Suction-Cup Tug Ball &
+   Tooth-Cleaning Dog Toy" pet-health→**pet-toys** (it's a toy). Tag swap +
+   `product_links.category` updated. OPEN (subjective, not auto-changed):
+   nail-care is split across pet-health (3) and pet-grooming (3) — recommend
+   consolidating to grooming; and 3 dry-grooming combs (magic hair-removal,
+   detangling, slicker) sit under pet-cleaning — arguably pet-grooming. Left for
+   owner taxonomy call.
+2. **Near-duplicate redundancy** — catalog is concentrated: ~6 near-identical
+   silicone bath/massage brushes & gloves, ~7 grooming brushes/combs, 3
+   bathrobes/towels, 2 finger toothbrushes. None exact dupes. "Which to keep"
+   deferred — needs the image-quality/vision signal (#4) and/or sales data to
+   pick the best per cluster rather than guess.
+3. **Hero images catalog-wide** — BLOCKED on deploy; only heuristic done.
+4. **Image quality (watermarks/infographics/lifestyle)** — BLOCKED on vision.
+5. **Description compliance** — SYSTEMIC FINDING: the early-adopted legacy batch
+   (the 10837xxx/10838xxx ID range, ~30 products) still carry **raw CJ
+   descriptions** — embedded medical claims ("prevent oral diseases", "prevent
+   the disease"), the SUPPLIER's own refund/shipping policy ("we accept returns
+   and refunds within 30 days", "1-3 working days") which contradicts our
+   14-day contact-first policy, and hotlinked cf.cjdropshipping.com images
+   (supplier leak + breakage risk). The sanitize sweep only stripped internal
+   dev notes; the curation rewrite only ran on newly-imported products, so
+   legacy adoptees kept CJ's text. Fixed the 3 highest-risk (dental) by hand.
+   RECOMMEND: a `reconcileDescriptions` LLM sweep (mirrors `reconcileHeroImages`)
+   to rewrite all legacy descriptions clean + claim-safe. Not built yet.
+6. **Weak titles** — only "Electronic dog toy" (`…15911762`) is genuinely poor;
+   its CJ description ("appropriate age: 3 years old+") is also suspect. Can't
+   retitle accurately without seeing the images (vision, #4). Flagged.
+
 ## 7a-ii. STRATEGY DECISION — shipping display, origin choice, returns
 ## (user-raised 2026-06-12; recommendation delivered same day; user
 ##  decision pending — do not implement until the user confirms)
