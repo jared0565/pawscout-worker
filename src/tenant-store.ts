@@ -36,6 +36,25 @@ export interface WarehouseRow {
   created_at: string;
 }
 
+export interface OrderRow {
+  shop: string;
+  shopify_order_id: string;
+  order_name: string | null;
+  total_price: number | null;
+  currency: string | null;
+  financial_status: string | null;
+  risk_level: string | null;
+  status: 'received' | 'held' | 'queued' | 'submitted' | 'fulfilled' | 'cancelled' | 'error';
+  hold_reasons: string | null;
+  cj_order_id: string | null;
+  tracking_number: string | null;
+  address_json: string | null;
+  line_items_json: string | null;
+  fulfil_after: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export class TenantStore {
   constructor(private readonly db: D1Database, readonly shop: string) {}
 
@@ -207,6 +226,80 @@ export class TenantStore {
       .prepare(`SELECT * FROM product_links WHERE shop = ?1 AND cj_pid = ?2`)
       .bind(this.shop, cjPid)
       .first<ProductLink>();
+  }
+
+  /** Reverse lookup for the order pipeline: which CJ product backs a Shopify product. */
+  getLinkByShopifyProductId(shopifyProductId: string): Promise<ProductLink | null> {
+    return this.db
+      .prepare(`SELECT * FROM product_links WHERE shop = ?1 AND shopify_product_id = ?2 LIMIT 1`)
+      .bind(this.shop, shopifyProductId)
+      .first<ProductLink>();
+  }
+
+  // --- orders (W-FULFIL) ---
+
+  /**
+   * Idempotent insert — returns false if this Shopify order was already received
+   * (webhooks can fire more than once; we must never fulfil an order twice).
+   */
+  async insertOrderIfNew(o: {
+    shopifyOrderId: string; orderName: string | null; totalPrice: number | null; currency: string | null;
+    financialStatus: string | null; riskLevel: string | null; status: OrderRow['status'];
+    holdReasons: string[]; addressJson: string | null; lineItemsJson: string | null; fulfilAfter: string | null;
+  }): Promise<boolean> {
+    const now = new Date().toISOString();
+    const r = await this.db
+      .prepare(
+        `INSERT INTO orders
+           (shop, shopify_order_id, order_name, total_price, currency, financial_status, risk_level,
+            status, hold_reasons, address_json, line_items_json, fulfil_after, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13)
+         ON CONFLICT(shop, shopify_order_id) DO NOTHING`
+      )
+      .bind(this.shop, o.shopifyOrderId, o.orderName, o.totalPrice, o.currency, o.financialStatus, o.riskLevel,
+        o.status, JSON.stringify(o.holdReasons), o.addressJson, o.lineItemsJson, o.fulfilAfter, now)
+      .run();
+    return (r.meta.changes ?? 0) > 0;
+  }
+
+  getOrder(shopifyOrderId: string): Promise<OrderRow | null> {
+    return this.db
+      .prepare(`SELECT * FROM orders WHERE shop = ?1 AND shopify_order_id = ?2`)
+      .bind(this.shop, shopifyOrderId)
+      .first<OrderRow>();
+  }
+
+  async listOrders(status: string | null, limit = 100): Promise<OrderRow[]> {
+    const lim = Math.min(Math.max(limit, 1), 200);
+    const rs = status
+      ? await this.db.prepare(`SELECT * FROM orders WHERE shop = ?1 AND status = ?2 ORDER BY created_at DESC LIMIT ${lim}`).bind(this.shop, status).all<OrderRow>()
+      : await this.db.prepare(`SELECT * FROM orders WHERE shop = ?1 ORDER BY created_at DESC LIMIT ${lim}`).bind(this.shop).all<OrderRow>();
+    return rs.results ?? [];
+  }
+
+  /** Queued orders whose grace window has elapsed — ready for Stage-B auto-submit. */
+  async dueQueuedOrders(nowIso: string, limit = 20): Promise<OrderRow[]> {
+    const rs = await this.db
+      .prepare(`SELECT * FROM orders WHERE shop = ?1 AND status = 'queued' AND (fulfil_after IS NULL OR fulfil_after <= ?2) ORDER BY created_at ASC LIMIT ${Math.min(Math.max(limit, 1), 50)}`)
+      .bind(this.shop, nowIso)
+      .all<OrderRow>();
+    return rs.results ?? [];
+  }
+
+  async updateOrder(shopifyOrderId: string, fields: Partial<Pick<OrderRow, 'status' | 'hold_reasons' | 'cj_order_id' | 'tracking_number'>>): Promise<void> {
+    const now = new Date().toISOString();
+    await this.db
+      .prepare(
+        `UPDATE orders SET
+           status = COALESCE(?3, status),
+           hold_reasons = COALESCE(?4, hold_reasons),
+           cj_order_id = COALESCE(?5, cj_order_id),
+           tracking_number = COALESCE(?6, tracking_number),
+           updated_at = ?7
+         WHERE shop = ?1 AND shopify_order_id = ?2`
+      )
+      .bind(this.shop, shopifyOrderId, fields.status ?? null, fields.hold_reasons ?? null, fields.cj_order_id ?? null, fields.tracking_number ?? null, now)
+      .run();
   }
 
   async getLinks(cjPids: string[]): Promise<Map<string, ProductLink>> {

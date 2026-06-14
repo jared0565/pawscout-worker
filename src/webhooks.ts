@@ -1,8 +1,8 @@
 import { LATEST_API_VERSION } from '@shopify/shopify-api';
 import { defaultFetch } from './safe-fetch';
 
-const MUTATION = `mutation pawscoutUninstallHook($url: URL!) {
-  webhookSubscriptionCreate(topic: APP_UNINSTALLED, webhookSubscription: { callbackUrl: $url, format: JSON }) {
+const MUTATION = `mutation pawscoutHook($topic: WebhookSubscriptionTopic!, $url: URL!) {
+  webhookSubscriptionCreate(topic: $topic, webhookSubscription: { callbackUrl: $url, format: JSON }) {
     userErrors { message }
     webhookSubscription { id }
   }
@@ -16,24 +16,19 @@ interface CreateResponse {
   errors?: { message: string }[];
 }
 
-/**
- * Register the app/uninstalled webhook for a shop via the Admin GraphQL API.
- *
- * Idempotent: Shopify rejects a duplicate subscription with an
- * "address … has already been taken" userError, which counts as success here.
- * Never throws — install must not fail because webhook registration did.
- */
-export async function registerUninstallWebhook(
+/** Subscribe a shop to one webhook topic. Idempotent; never throws. */
+export async function registerWebhookTopic(
   shop: string,
   accessToken: string,
-  appUrl: string,
+  topic: string,
+  callbackUrl: string,
   fetchImpl: typeof fetch = defaultFetch
 ): Promise<RegisterResult> {
   try {
     const resp = await fetchImpl(`https://${shop}/admin/api/${LATEST_API_VERSION}/graphql.json`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Shopify-Access-Token': accessToken },
-      body: JSON.stringify({ query: MUTATION, variables: { url: `${appUrl}/webhooks/uninstall` } })
+      body: JSON.stringify({ query: MUTATION, variables: { topic, url: callbackUrl } })
     });
     if (!resp.ok) return { ok: false, error: `Shopify HTTP ${resp.status}` };
     const data = (await resp.json()) as CreateResponse;
@@ -45,4 +40,23 @@ export async function registerUninstallWebhook(
   } catch (e) {
     return { ok: false, error: (e as Error).message };
   }
+}
+
+/**
+ * Register every webhook the app needs (uninstall + paid orders) for a shop.
+ * Best-effort per topic — a missing `orders/paid` scope must not stop the
+ * uninstall hook (or the install) from registering. Reports the first failure.
+ */
+export async function registerWebhooks(
+  shop: string,
+  accessToken: string,
+  appUrl: string,
+  fetchImpl: typeof fetch = defaultFetch
+): Promise<RegisterResult> {
+  const results = await Promise.all([
+    registerWebhookTopic(shop, accessToken, 'APP_UNINSTALLED', `${appUrl}/webhooks/uninstall`, fetchImpl),
+    registerWebhookTopic(shop, accessToken, 'ORDERS_PAID', `${appUrl}/webhooks/orders-paid`, fetchImpl)
+  ]);
+  const failed = results.find((r) => !r.ok);
+  return failed ?? { ok: true };
 }

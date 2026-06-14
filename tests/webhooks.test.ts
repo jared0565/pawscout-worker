@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { registerUninstallWebhook } from '../src/webhooks';
+import { registerWebhookTopic, registerWebhooks } from '../src/webhooks';
 
 const APP_URL = 'https://pawscout.example.com';
 
@@ -10,7 +10,7 @@ function graphqlResponse(userErrors: { message: string }[]): Response {
   );
 }
 
-describe('registerUninstallWebhook', () => {
+describe('registerWebhookTopic', () => {
   it('posts the mutation to the shop with the offline token and succeeds', async () => {
     let captured: { url: string; init: RequestInit } | null = null;
     const fetchImpl = (async (url: any, init: any) => {
@@ -18,7 +18,7 @@ describe('registerUninstallWebhook', () => {
       return graphqlResponse([]);
     }) as typeof fetch;
 
-    const r = await registerUninstallWebhook('a.myshopify.com', 'shpat_tok', APP_URL, fetchImpl);
+    const r = await registerWebhookTopic('a.myshopify.com', 'shpat_tok', 'APP_UNINSTALLED', `${APP_URL}/webhooks/uninstall`, fetchImpl);
 
     expect(r.ok).toBe(true);
     expect(captured!.url).toMatch(/^https:\/\/a\.myshopify\.com\/admin\/api\/.+\/graphql\.json$/);
@@ -26,33 +26,53 @@ describe('registerUninstallWebhook', () => {
     expect(headers['X-Shopify-Access-Token']).toBe('shpat_tok');
     const body = JSON.parse(captured!.init.body as string);
     expect(body.variables.url).toBe(`${APP_URL}/webhooks/uninstall`);
-    expect(body.query).toContain('APP_UNINSTALLED');
+    expect(body.variables.topic).toBe('APP_UNINSTALLED');
   });
 
   it('treats a duplicate-subscription userError as success (idempotent)', async () => {
     const fetchImpl = (async () =>
       graphqlResponse([{ message: 'Address for this topic has already been taken' }])) as typeof fetch;
-    const r = await registerUninstallWebhook('a.myshopify.com', 't', APP_URL, fetchImpl);
+    const r = await registerWebhookTopic('a.myshopify.com', 't', 'ORDERS_PAID', `${APP_URL}/webhooks/orders-paid`, fetchImpl);
     expect(r.ok).toBe(true);
   });
 
   it('reports other userErrors as failure', async () => {
     const fetchImpl = (async () => graphqlResponse([{ message: 'Invalid callbackUrl' }])) as typeof fetch;
-    const r = await registerUninstallWebhook('a.myshopify.com', 't', APP_URL, fetchImpl);
+    const r = await registerWebhookTopic('a.myshopify.com', 't', 'ORDERS_PAID', `${APP_URL}/x`, fetchImpl);
     expect(r).toEqual({ ok: false, error: 'Invalid callbackUrl' });
   });
 
   it('reports an HTTP error without throwing', async () => {
     const fetchImpl = (async () => new Response('nope', { status: 500 })) as typeof fetch;
-    const r = await registerUninstallWebhook('a.myshopify.com', 't', APP_URL, fetchImpl);
+    const r = await registerWebhookTopic('a.myshopify.com', 't', 'APP_UNINSTALLED', `${APP_URL}/x`, fetchImpl);
     expect(r).toEqual({ ok: false, error: 'Shopify HTTP 500' });
   });
 
   it('reports a network failure without throwing', async () => {
-    const fetchImpl = (async () => {
-      throw new Error('connection reset');
-    }) as typeof fetch;
-    const r = await registerUninstallWebhook('a.myshopify.com', 't', APP_URL, fetchImpl);
+    const fetchImpl = (async () => { throw new Error('connection reset'); }) as typeof fetch;
+    const r = await registerWebhookTopic('a.myshopify.com', 't', 'APP_UNINSTALLED', `${APP_URL}/x`, fetchImpl);
     expect(r).toEqual({ ok: false, error: 'connection reset' });
+  });
+});
+
+describe('registerWebhooks (all topics)', () => {
+  it('subscribes to both uninstall and orders/paid', async () => {
+    const topics: string[] = [];
+    const fetchImpl = (async (_url: any, init: any) => {
+      topics.push(JSON.parse(init.body).variables.topic);
+      return graphqlResponse([]);
+    }) as typeof fetch;
+    const r = await registerWebhooks('a.myshopify.com', 't', APP_URL, fetchImpl);
+    expect(r.ok).toBe(true);
+    expect(topics.sort()).toEqual(['APP_UNINSTALLED', 'ORDERS_PAID']);
+  });
+
+  it('surfaces a failing topic (e.g. missing orders scope) without throwing', async () => {
+    const fetchImpl = (async (_url: any, init: any) => {
+      const topic = JSON.parse(init.body).variables.topic;
+      return topic === 'ORDERS_PAID' ? graphqlResponse([{ message: 'Not approved for orders' }]) : graphqlResponse([]);
+    }) as typeof fetch;
+    const r = await registerWebhooks('a.myshopify.com', 't', APP_URL, fetchImpl);
+    expect(r).toEqual({ ok: false, error: 'Not approved for orders' });
   });
 });

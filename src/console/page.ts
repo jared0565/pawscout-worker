@@ -247,6 +247,14 @@ export function consolePage(apiKey: string): Response {
   </section>
 
   <section class="card">
+    <h2>Fulfilment</h2>
+    <p class="sub" style="margin:0 0 12px">Paid orders flow here. Clean orders auto-fulfil after a short grace window; orders that trip a guardrail (unmapped item, incomplete address, high fraud risk, over £100) are <strong>held</strong> for you. Release a held order to send it for fulfilment, or cancel it.</p>
+    <div class="row"><button class="ghost" id="ordbtn" onclick="loadOrders()">Refresh orders</button></div>
+    <div id="ordlist"></div>
+    <p id="ordmsg" class="msg muted"></p>
+  </section>
+
+  <section class="card">
     <h2>Maintenance — run now</h2>
     <p class="sub" style="margin:0 0 12px">These run automatically every night. Use them here to apply changes on demand — after a bulk import, before launch, or to backfill the catalog without waiting for the nightly job.</p>
     <div class="row">
@@ -492,6 +500,33 @@ async function rewriteDescsNow(){
     setMsg('descmsg','Done ✓ '+rewritten+' description'+(rewritten===1?'':'s')+' rewritten of '+total+' scanned.','ok');
   }catch(e){ syncBar('off'); setMsg('descmsg','Failed: '+errText(e),'no'); }
   finally{ btn.disabled=false; }
+}
+async function loadOrders(){
+  var btn=el('ordbtn'); btn.disabled=true;
+  try{
+    var r=await api('/orders',{});
+    if(!r.ok){ setMsg('ordmsg','Failed: '+(r.error||'unknown error'),'no'); return; }
+    var list=el('ordlist');
+    if(!r.orders.length){ list.innerHTML=''; setMsg('ordmsg','No orders yet.','muted'); return; }
+    setMsg('ordmsg','','muted');
+    var rows=r.orders.map(function(o){
+      var holds=(o.holds&&o.holds.length)?(' · '+o.holds.join(', ')):'';
+      var act='';
+      if(o.status==='held') act='<button class="ghost" onclick="orderAction(\''+o.id+'\',\'release\')">Release</button> <button class="ghost" onclick="orderAction(\''+o.id+'\',\'cancel\')">Cancel</button>';
+      else if(o.status==='queued') act='<button class="ghost" onclick="orderAction(\''+o.id+'\',\'cancel\')">Cancel</button>';
+      var tn=o.tracking?(' · '+esc(o.tracking)):'';
+      return '<tr><td>'+esc(o.name||o.id)+'</td><td>'+esc((o.currency||'')+' '+(o.total!=null?o.total:''))+'</td><td><strong>'+esc(o.status)+'</strong>'+esc(holds)+tn+'</td><td>'+act+'</td></tr>';
+    }).join('');
+    list.innerHTML='<table style="width:100%;border-collapse:collapse;font-size:13px"><thead><tr><th style="text-align:left">Order</th><th style="text-align:left">Total</th><th style="text-align:left">Status</th><th></th></tr></thead><tbody>'+rows+'</tbody></table>';
+  }catch(e){ setMsg('ordmsg','Failed: '+errText(e),'no'); }
+  finally{ btn.disabled=false; }
+}
+async function orderAction(id,action){
+  try{
+    var r=await api('/order-action',{id:id,action:action});
+    if(!r.ok){ setMsg('ordmsg','Failed: '+(r.error||'unknown error'),'no'); return; }
+    loadOrders();
+  }catch(e){ setMsg('ordmsg','Failed: '+errText(e),'no'); }
 }
 async function fixCategoriesNow(){
   var btn=el('catbtn'); btn.disabled=true;

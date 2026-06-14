@@ -13,7 +13,7 @@ import { resolveShopFromToken } from './console/session';
 import { connectCj, saveGates, savePricing, saveLlm, saveAddons, saveCollectionMap, getStatus, getInsights } from './console/routes';
 import { consolePage } from './console/page';
 import { validateCjKey, CjClient, CjTokenManager, cjFetchFromEnv } from './cj';
-import { registerUninstallWebhook, type RegisterWebhook } from './webhooks';
+import { registerWebhooks, type RegisterWebhook } from './webhooks';
 import { validateGatesPayload, validatePricingPayload, validateLlmPayload, validateAddonsPayload, validateCollectionMap } from './validate';
 import { verifyAppProxy } from './proxy/verify';
 import { searchBackfill, normalizeKeyword } from './proxy/search';
@@ -21,12 +21,13 @@ import { LlmClient, classifyKeyword, curateProduct, pickHeroImage, rewriteDescri
 import { buildPreview, getDetailPreferWarehouse, confirmAndImport, reconcileAddonVisibility, reconcileHeroImages, reconcileDescriptions, reconcileCategories } from './proxy/import';
 import { makeAdminGraphql } from './shopify-admin';
 import { runDailyMaintenance, syncStoreInventory, refillCollections } from './jobs';
+import { parseOrderWebhook, validateOrder, FULFIL_GRACE_MINUTES } from './fulfil';
 import { firecrawlCjSearch } from './firecrawl';
 
 const app = new Hono<{ Bindings: Env }>();
 
 function makeRegistrar(env: Env): RegisterWebhook {
-  return (shop, accessToken) => registerUninstallWebhook(shop, accessToken, env.SHOPIFY_APP_URL);
+  return (shop, accessToken) => registerWebhooks(shop, accessToken, env.SHOPIFY_APP_URL);
 }
 
 app.get('/auth', (c) => beginAuth(makeShopify(c.env), c.req.raw));
@@ -279,6 +280,29 @@ app.post('/api/categories', async (c) => {
     return c.json({ ok: false, error: `Sweep failed: ${(e as Error).message}` }, 500);
   }
 });
+// W-FULFIL Stage A: the order queue (received / held / queued / submitted).
+app.post('/api/orders', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  const store = new TenantStore(c.env.DB, s);
+  const orders = (await store.listOrders(null, 50)).map((o) => ({
+    id: o.shopify_order_id, name: o.order_name, total: o.total_price, currency: o.currency,
+    status: o.status, holds: o.hold_reasons ? JSON.parse(o.hold_reasons) : [], cj: o.cj_order_id, tracking: o.tracking_number
+  }));
+  return c.json({ ok: true, orders });
+});
+// Operator override on a held/queued order (release to auto-fulfil, hold, cancel).
+app.post('/api/order-action', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: { id?: string; action?: string } = {};
+  try { body = await c.req.json(); } catch { return c.json({ ok: false, error: 'Invalid JSON body' }, 400); }
+  const map: Record<string, 'queued' | 'held' | 'cancelled'> = { release: 'queued', hold: 'held', cancel: 'cancelled' };
+  const status = map[body.action ?? ''];
+  if (!body.id || !status) return c.json({ ok: false, error: 'Bad request' }, 400);
+  const store = new TenantStore(c.env.DB, s);
+  if (!(await store.getOrder(body.id))) return c.json({ ok: false, error: 'Order not found' }, 404);
+  await store.updateOrder(body.id, { status });
+  return c.json({ ok: true, status });
+});
 app.post('/api/collections', async (c) => {
   const s = await shopOf(c); if (typeof s !== 'string') return s;
   let body: unknown;
@@ -424,6 +448,41 @@ app.post('/webhooks/uninstall', async (c) => {
   const shop = c.req.header('X-Shopify-Shop-Domain') ?? '';
   await handleUninstall(c.env.DB, shop);
   return c.text('ok');
+});
+
+// --- orders/paid webhook (W-FULFIL Stage A: receive + validate, no money leg) ---
+app.post('/webhooks/orders-paid', async (c) => {
+  const shopify = makeShopify(c.env);
+  const body = await c.req.text();
+  const valid = await shopify.webhooks.validate({ rawBody: body, rawRequest: c.req.raw });
+  if (!valid.valid) return c.text('invalid', 401);
+  const shop = c.req.header('X-Shopify-Shop-Domain') ?? '';
+  try {
+    const store = new TenantStore(c.env.DB, shop);
+    const cfg = await store.getConfig();
+    if (!cfg) return c.text('ok'); // not configured — ack so Shopify stops retrying
+    const order = parseOrderWebhook(JSON.parse(body));
+    if (!order.shopifyOrderId) return c.text('ok');
+    const { holds, lineItems } = await validateOrder(order, store, cfg);
+    const fulfilAfter = new Date(Date.now() + FULFIL_GRACE_MINUTES * 60_000).toISOString();
+    const isNew = await store.insertOrderIfNew({
+      shopifyOrderId: order.shopifyOrderId,
+      orderName: order.orderName || null,
+      totalPrice: order.totalPrice,
+      currency: order.currency,
+      financialStatus: order.financialStatus || null,
+      riskLevel: order.riskLevel,
+      status: holds.length ? 'held' : 'queued',
+      holdReasons: holds,
+      addressJson: order.address ? JSON.stringify(order.address) : null,
+      lineItemsJson: JSON.stringify(lineItems),
+      fulfilAfter: holds.length ? null : fulfilAfter
+    });
+    if (isNew) console.log(`order ${order.orderName} ${holds.length ? 'HELD (' + holds.join(',') + ')' : 'queued'}`);
+  } catch (e) {
+    console.warn(`orders-paid handler failed for ${shop}: ${(e as Error).message}`);
+  }
+  return c.text('ok'); // always 200 — a non-2xx makes Shopify retry the webhook
 });
 
 const worker: ExportedHandler<Env> = {

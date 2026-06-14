@@ -873,10 +873,21 @@ Money-leg corrections vs the naive design (decided with user):
   balance via API (`pay/payBalance`). PS alerts (console + email) when
   balance < ~1 week of expected COGS.
 
+Decision (2026-06-14): launch model = **auto-fulfil with guardrails** (not a
+manual queue) — clean orders auto-submit after the grace window; held orders
+wait for the operator. STAGE A SHIPPED 2026-06-14 (F1+F2 + console queue, no
+money leg): `registerWebhooks`/`registerWebhookTopic` (webhooks.ts) subscribe
+`ORDERS_PAID`; `/webhooks/orders-paid` (HMAC) → `parseOrderWebhook` +
+`validateOrder` (src/fulfil.ts) → `orders` table (migration 0007) status
+held|queued(+60-min `fulfil_after`); console **Fulfilment** card +
+`/api/orders`/`/api/order-action` (release/hold/cancel). Idempotent via
+`insertOrderIfNew`. Stage B (createOrderV2 + payBalance + tracking writeback)
+pending the prereqs below + CJ order-API verification via the relay.
+
 Pipeline:
-- [ ] F1. `orders/paid` webhook → PS (HMAC verify, same infra as
+- [x] F1. `orders/paid` webhook → PS (HMAC verify, same infra as
       uninstall webhook). Needs protected-customer-data approval.
-- [ ] F2. Pre-spend verification: all line items map to CJ pids in
+- [x] F2. Pre-spend verification: all line items map to CJ pids in
       product_links; Shopify fraud risk not HIGH; address complete and
       CJ-formattable; CJ stock ≥ floor at chosen origin; margin sanity —
       amount paid still clears floor vs CURRENT CJ price. Any failure →

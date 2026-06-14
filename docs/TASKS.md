@@ -63,8 +63,21 @@ Last updated: 2026-06-14.
 
 ## 4. Unbuilt phases — when there are orders/data (PS, designed not built)
 
-- [ ] **W-FULFIL** — order → CJ fulfilment automation. Needed BEFORE the first
-      order ships. → 7a-iv.
+- [~] **W-FULFIL** — order → CJ fulfilment automation (auto-fulfil w/ guardrails).
+      - [x] **Stage A (built 2026-06-14):** `orders/paid` webhook (`registerWebhooks`
+            + `/webhooks/orders-paid`), `orders` table (migration 0007), order
+            parse + guardrail validation (`src/fulfil.ts`: unmapped-items,
+            incomplete-address, high-risk, over-£100, not-paid → hold; else queued
+            w/ 60-min grace), console **Fulfilment** card + `/api/orders` /
+            `/api/order-action`. Idempotent on webhook retries. No money leg yet.
+      - [ ] **PREREQS (You — start now; one is slow):** (1) Protected customer
+            data approval (app config) — without it the address is redacted and we
+            can't fulfil; (2) add `read_orders` + `write_merchant_managed_fulfillment_orders`
+            scopes, then clear `tenants.access_token_enc` to re-mint; (3) top up
+            the CJ wallet. Deploy needs `npm run migrate:remote` (new 0007).
+      - [ ] **Stage B (PS, after prereqs + CJ API verified via relay):** the queued
+            cron → `createOrderV2` + `payBalance`, store `shopifyOrderId↔cjOrderId`,
+            tracking poll → Shopify `fulfillmentCreate`, balance-low alert. → 7a-iv F4–F8.
 - [ ] **W6** — automated CJ damage/claims pipeline (consumes W-FULFIL mapping).
       → 7a-iii / 7a (claims).
 - [ ] **W5** — Resend email marketing (opt-in, GDPR/PECR). → 7b.
