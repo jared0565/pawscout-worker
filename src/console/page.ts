@@ -472,34 +472,42 @@ async function heroImagesNow(){
   var btn=el('herobtn'); btn.disabled=true;
   try{
     setMsg('heromsg','Reviewing product images…','muted');
+    syncBar('frac',0);
     var offset=0, fixed=0, scanned=0, total=0;
     for(;;){
       var r=await api('/hero-images',{offset:offset});
-      if(!r.ok){ setMsg('heromsg','Failed: '+(r.error||'unknown error'),'no'); return; }
+      if(!r.ok){ syncBar('off'); setMsg('heromsg','Failed: '+(r.error||'unknown error'),'no'); return; }
       fixed+=r.fixed; scanned+=r.scanned; total=r.total;
+      var attempted=(r.next==null)?total:r.next;
+      syncBar('frac',total?attempted/total:1);
       setMsg('heromsg','Reviewed '+Math.min(offset+r.scanned,total)+' of '+total+'… '+fixed+' default image'+(fixed===1?'':'s')+' fixed','muted');
       if(r.next==null) break;
       offset=r.next;
     }
+    syncBar('off');
     setMsg('heromsg','Done ✓ '+fixed+' default image'+(fixed===1?'':'s')+' fixed across '+total+' product'+(total===1?'':'s')+'.','ok');
-  }catch(e){ setMsg('heromsg','Failed: '+errText(e),'no'); }
+  }catch(e){ syncBar('off'); setMsg('heromsg','Failed: '+errText(e),'no'); }
   finally{ btn.disabled=false; }
 }
 async function rewriteDescsNow(){
   var btn=el('descbtn'); btn.disabled=true;
   try{
     setMsg('descmsg','Checking descriptions for raw supplier copy…','muted');
+    syncBar('frac',0);
     var offset=0, rewritten=0, total=0;
     for(;;){
       var r=await api('/descriptions',{offset:offset});
-      if(!r.ok){ setMsg('descmsg','Failed: '+(r.error||'unknown error'),'no'); return; }
+      if(!r.ok){ syncBar('off'); setMsg('descmsg','Failed: '+(r.error||'unknown error'),'no'); return; }
       rewritten+=r.rewritten; total=r.total;
+      var attempted=(r.next==null)?total:r.next;
+      syncBar('frac',total?attempted/total:1);
       setMsg('descmsg','Scanned '+Math.min(offset+r.scanned,total)+' of '+total+'… '+rewritten+' rewritten','muted');
       if(r.next==null) break;
       offset=r.next;
     }
+    syncBar('off');
     setMsg('descmsg','Done ✓ '+rewritten+' description'+(rewritten===1?'':'s')+' rewritten of '+total+' scanned.','ok');
-  }catch(e){ setMsg('descmsg','Failed: '+errText(e),'no'); }
+  }catch(e){ syncBar('off'); setMsg('descmsg','Failed: '+errText(e),'no'); }
   finally{ btn.disabled=false; }
 }
 async function runDiag(){
