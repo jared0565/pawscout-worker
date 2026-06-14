@@ -17,8 +17,8 @@ import { registerUninstallWebhook, type RegisterWebhook } from './webhooks';
 import { validateGatesPayload, validatePricingPayload, validateLlmPayload, validateAddonsPayload, validateCollectionMap } from './validate';
 import { verifyAppProxy } from './proxy/verify';
 import { searchBackfill, normalizeKeyword } from './proxy/search';
-import { LlmClient, classifyKeyword, curateProduct } from './llm';
-import { buildPreview, getDetailPreferWarehouse, confirmAndImport, reconcileAddonVisibility } from './proxy/import';
+import { LlmClient, classifyKeyword, curateProduct, pickHeroImage } from './llm';
+import { buildPreview, getDetailPreferWarehouse, confirmAndImport, reconcileAddonVisibility, reconcileHeroImages } from './proxy/import';
 import { makeAdminGraphql } from './shopify-admin';
 import { runDailyMaintenance, syncStoreInventory, refillCollections, sanitizeDescriptions } from './jobs';
 import { firecrawlCjSearch } from './firecrawl';
@@ -128,7 +128,10 @@ app.post('/api/sync', async (c) => {
       const curate = syncLlm.available && cfg.llm.enabled
         ? (d: Parameters<typeof curateProduct>[3], ctx: string) => curateProduct(syncLlm, store, cfg, d, ctx)
         : undefined;
-      const imported = await refillCollections(store, cj, admin, cfg, { maxImports: REFILL_BATCH, curate });
+      const pickHero = syncLlm.available && cfg.llm.enabled
+        ? (title: string, urls: string[]) => pickHeroImage(syncLlm, store, cfg, title, urls)
+        : undefined;
+      const imported = await refillCollections(store, cj, admin, cfg, { maxImports: REFILL_BATCH, curate, pickHero });
       return c.json({ ok: true, phase: 'refill', imported, next: imported >= REFILL_BATCH ? 0 : null });
     }
     const offset = Math.max(0, Math.floor(Number(body.offset) || 0));
@@ -220,6 +223,31 @@ app.post('/api/sanitize', async (c) => {
     return c.json({ ok: false, error: `Sanitize failed: ${(e as Error).message}` }, 500);
   }
 });
+// Vision hero-image QA, on demand: re-pick the default image for already-listed
+// products and promote the best representative shot (fixes "set" listings whose
+// default image is a single component). Runs in the background.
+app.post('/api/hero-images', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: { max?: number } = {};
+  try { body = await c.req.json(); } catch { /* defaults */ }
+  const store = new TenantStore(c.env.DB, s);
+  const tenant = await store.getTenant();
+  const cfg = await store.getConfig();
+  if (!tenant?.access_token_enc || !cfg) return c.json({ ok: false, error: 'Not configured' }, 400);
+  const llm = new LlmClient(c.env.OPENROUTER_API_KEY);
+  if (!llm.available || !cfg.llm.enabled) return c.json({ ok: false, error: 'LLM not configured' }, 400);
+  const vault = await Vault.fromMasterKey(c.env.PAWSCOUT_MASTER_KEY);
+  const accessToken = await vault.open(tenant.dek_wrapped, tenant.access_token_enc);
+  const admin = makeAdminGraphql(s, accessToken);
+  const pickHero = (title: string, urls: string[]) => pickHeroImage(llm, store, cfg, title, urls);
+  const max = Math.min(200, Math.max(1, Math.floor(Number(body.max) || 100)));
+  c.executionCtx.waitUntil(
+    reconcileHeroImages(store, admin, cfg, pickHero, { max })
+      .then((r) => console.log(`hero-image sweep: scanned ${r.scanned}, fixed ${r.fixed}`))
+      .catch((e) => console.warn(`hero-image sweep failed: ${(e as Error).message}`))
+  );
+  return c.json({ ok: true, started: true, max });
+});
 app.post('/api/collections', async (c) => {
   const s = await shopOf(c); if (typeof s !== 'string') return s;
   let body: unknown;
@@ -306,7 +334,10 @@ app.get('/proxy/product', async (c) => {
       const curate = importLlm.available && p.cfg.llm.enabled
         ? (d: typeof detail, ctx: string) => curateProduct(importLlm, p.store, p.cfg, d, ctx)
         : undefined;
-      c.executionCtx.waitUntil(confirmAndImport(p.store, cj, admin, p.cfg, detail, undefined, curate));
+      const pickHero = importLlm.available && p.cfg.llm.enabled
+        ? (title: string, urls: string[]) => pickHeroImage(importLlm, p.store, p.cfg, title, urls)
+        : undefined;
+      c.executionCtx.waitUntil(confirmAndImport(p.store, cj, admin, p.cfg, detail, undefined, curate, pickHero));
       link = await p.store.getLink(pid);
     }
     await p.store.recordEvent(pid, 'view');

@@ -574,6 +574,34 @@ SIDE EFFECT: the add-on lane (addons.priceMin 0.5–5) now fully overlaps the
 main band -> mostly redundant (main admits $0.50+ as visible products).
 Revisit whether to keep/repurpose the hidden add-on lane.
 
+## 7a-i-k. Hero-image QA via vision LLM (shipped 2026-06-14)
+
+Trigger: a "Pet Grooming Scissors Set with Comb & Storage Bag" listing whose
+DEFAULT image was a single comb, not the set. CJ's first image is often a lone
+component, packaging, or an infographic — a recurring polish problem the LLM
+should catch and fix, not just this one product.
+
+Built (`pickHeroImage` in `src/llm.ts`): a vision pass over a product's images.
+`LlmClient.json` now accepts `images: string[]` and sends them as multimodal
+`image_url` content blocks. Given the TITLE + images (in order), the model
+returns the 0-based index of the image that best represents the WHOLE product
+(prefers the all-items-together shot for a "set"/"kit"/"with X" title; avoids
+packaging-only / size-chart / infographic / lone-component shots). Returns null
+on index 0 (already correct), <2 images, or any failure — never throws, never
+blocks import. Uses the curation model (`anthropic/claude-haiku-4.5`, multimodal).
+
+Wired in three places:
+- New imports: `confirmAndImport` takes an injected `pickHero` and reorders
+  `detail.images` so the chosen shot is first → it becomes the featured image.
+  (index.ts ghost-click path + manual-sync refill + nightly `refillCollections`.)
+- Existing catalog: `reconcileHeroImages` (in `import.ts`) sweeps imported
+  products, reads their Shopify media, and `productReorderMedia`-promotes the
+  chosen image to position 0 when it isn't already featured. One product's
+  failure never aborts the sweep. Runs nightly (capped 40/run) and on demand.
+- Console: Maintenance card → **"Fix default images"** button → POST
+  `/api/hero-images` (background, LLM-gated). Manual fix already applied live to
+  the scissors-set product via `productReorderMedia` (set shot → featured).
+
 ## 7a-ii. STRATEGY DECISION — shipping display, origin choice, returns
 ## (user-raised 2026-06-12; recommendation delivered same day; user
 ##  decision pending — do not implement until the user confirms)

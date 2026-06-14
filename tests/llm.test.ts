@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
-import { LlmClient, curateProduct, classifyKeyword, getKeywordMeta } from '../src/llm';
+import { LlmClient, curateProduct, classifyKeyword, getKeywordMeta, pickHeroImage } from '../src/llm';
 import { replenishWarehouse } from '../src/jobs';
 import { searchBackfill } from '../src/proxy/search';
 import { TenantStore } from '../src/tenant-store';
@@ -156,6 +156,56 @@ describe('replenishWarehouse with curation', () => {
     });
     expect(admitted).toBe(3);
     expect((await store.getWarehouseProduct('p3'))?.title).toBe('Pet Dog Toys p3'); // CJ title kept
+  });
+});
+
+describe('pickHeroImage (vision)', () => {
+  const URLS = ['https://i/0.jpg', 'https://i/1.jpg', 'https://i/2.jpg'];
+
+  it('sends the images as vision content blocks alongside the text', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    let body: any;
+    const fetchImpl = (async (_url: string, init: RequestInit) => {
+      body = JSON.parse(init.body as string);
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: JSON.stringify({ index: 2, reason: 'shows full set' }) } }],
+        usage: { prompt_tokens: 80, completion_tokens: 10, cost: 0.0003 }
+      }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const llm = new LlmClient('k', fetchImpl);
+    const idx = await pickHeroImage(llm, store, CFG, 'Pet Grooming Scissors Set with Comb', URLS);
+    expect(idx).toBe(2);
+    const content = body.messages[1].content;
+    expect(Array.isArray(content)).toBe(true);
+    expect(content.filter((c: any) => c.type === 'image_url').map((c: any) => c.image_url.url)).toEqual(URLS);
+    const spend = await store.llmSpendSince(new Date(Date.now() - 60_000).toISOString());
+    expect(spend.calls).toBe(1);
+  });
+
+  it('returns null when the model picks index 0 (already correct — no reorder)', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const llm = new LlmClient('k', llmFetch({ index: 0, reason: 'fine' }));
+    expect(await pickHeroImage(llm, store, CFG, 'Dog Toy', URLS)).toBeNull();
+  });
+
+  it('returns null with fewer than 2 images (nothing to choose) without calling the LLM', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    let called = false;
+    const fetchImpl = (async () => { called = true; return new Response('{}'); }) as unknown as typeof fetch;
+    const llm = new LlmClient('k', fetchImpl);
+    expect(await pickHeroImage(llm, store, CFG, 'Dog Toy', ['https://i/0.jpg'])).toBeNull();
+    expect(called).toBe(false);
+  });
+
+  it('rejects an out-of-range index from the model', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const llm = new LlmClient('k', llmFetch({ index: 9, reason: 'oops' }));
+    expect(await pickHeroImage(llm, store, CFG, 'Dog Toy', URLS)).toBeNull();
+  });
+
+  it('returns null when the LLM is unavailable', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    expect(await pickHeroImage(new LlmClient(undefined), store, CFG, 'Dog Toy', URLS)).toBeNull();
   });
 });
 

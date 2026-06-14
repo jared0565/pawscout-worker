@@ -104,7 +104,8 @@ export async function confirmAndImport(
   cfg: TenantConfig,
   detail: CjDetail,
   category?: string | null,
-  curate?: (detail: CjDetail, context: string) => Promise<Curation | null>
+  curate?: (detail: CjDetail, context: string) => Promise<Curation | null>,
+  pickHero?: (title: string, imageUrls: string[]) => Promise<number | null>
 ): Promise<void> {
   // Ghost-click curation gate (added 2026-06-12 after a "pet food" search
   // imported a kitchen vacuum sealer): clicked ghosts must pass the SAME
@@ -131,6 +132,22 @@ export async function confirmAndImport(
       }
     } catch (e) {
       console.warn(`import curation failed for ${detail.pid}: ${(e as Error).message}`);
+    }
+  }
+  // Hero-image QA (vision): CJ's first image is often a single component or a
+  // packaging shot. Promote the image that best matches the title to the front
+  // so it becomes the featured/default image. Best-effort; never blocks import.
+  if (pickHero && detail.images.length > 1) {
+    try {
+      const hero = await pickHero(detail.nameEn, detail.images);
+      if (hero !== null && hero > 0 && hero < detail.images.length) {
+        const imgs = [...detail.images];
+        const [chosen] = imgs.splice(hero, 1);
+        imgs.unshift(chosen);
+        detail = { ...detail, images: imgs };
+      }
+    } catch (e) {
+      console.warn(`hero-image pick failed for ${detail.pid}: ${(e as Error).message}`);
     }
   }
   // Freight-aware floor + origin badge: capture once at import time (ghost
@@ -375,4 +392,68 @@ export async function reconcileAddonVisibility(
     }
   }
   return reconciled;
+}
+
+const PRODUCT_MEDIA = `query pawscoutMedia($id: ID!) {
+  product(id: $id) {
+    title
+    featuredMedia { ... on MediaImage { id } }
+    media(first: 12) { nodes { ... on MediaImage { id image { url } } } }
+  }
+}`;
+
+const REORDER_MEDIA = `mutation pawscoutReorder($id: ID!, $moves: [MoveInput!]!) {
+  productReorderMedia(id: $id, moves: $moves) {
+    mediaUserErrors { field message }
+    userErrors { field message }
+  }
+}`;
+
+/**
+ * Maintenance sweep (vision): re-pick the hero image for already-imported
+ * products and promote it to the featured slot when CJ's first image isn't the
+ * best representation of the title (e.g. a "set" whose default shot is one
+ * component). Best-effort per product; one bad product never aborts the run.
+ * `pickHero` is injected (same closure the import path uses) for testability.
+ */
+export async function reconcileHeroImages(
+  store: TenantStore,
+  admin: AdminGraphql,
+  cfg: TenantConfig,
+  pickHero: (title: string, imageUrls: string[]) => Promise<number | null>,
+  opts: { max?: number } = {}
+): Promise<{ scanned: number; fixed: number }> {
+  const max = opts.max ?? 100;
+  const links = (await store.listImportedLinks(500)).filter((l) => l.shopify_product_id).slice(0, max);
+  let scanned = 0;
+  let fixed = 0;
+  for (const link of links) {
+    scanned++;
+    try {
+      const data = await admin(PRODUCT_MEDIA, { id: link.shopify_product_id }) as {
+        product?: {
+          title?: string;
+          featuredMedia?: { id?: string } | null;
+          media?: { nodes?: { id?: string; image?: { url?: string } }[] };
+        };
+      };
+      const p = data.product;
+      const nodes = (p?.media?.nodes ?? []).filter(
+        (n): n is { id: string; image: { url: string } } => !!n?.id && !!n?.image?.url
+      );
+      if (nodes.length < 2) continue;
+      const hero = await pickHero(p?.title ?? '', nodes.map((n) => n.image.url));
+      if (hero === null || hero <= 0 || hero >= nodes.length) continue;
+      if (p?.featuredMedia?.id === nodes[hero].id) continue; // already featured
+      const r = await admin(REORDER_MEDIA, { id: link.shopify_product_id, moves: [{ id: nodes[hero].id, newPosition: '0' }] }) as {
+        productReorderMedia?: { mediaUserErrors?: { message: string }[]; userErrors?: { message: string }[] };
+      };
+      const errs = [...(r.productReorderMedia?.mediaUserErrors ?? []), ...(r.productReorderMedia?.userErrors ?? [])];
+      if (errs.length) throw new Error(errs.map((e) => e.message).join('; '));
+      fixed++;
+    } catch (e) {
+      console.warn(`hero-image reconcile failed for ${link.cj_pid}: ${(e as Error).message}`);
+    }
+  }
+  return { scanned, fixed };
 }

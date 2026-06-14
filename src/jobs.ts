@@ -3,11 +3,11 @@ import { chooseOrigin, CjClient, CjTokenManager, cjFetchFromEnv, type CjSearchIt
 import { makeAdminGraphql, type AdminGraphql } from './shopify-admin';
 import { TenantStore, listActiveShops, purgeExpiredSearchCache, purgeUnusedWarehouse, trimOldLogs } from './tenant-store';
 import { liveCjPasses, normalizeKeyword, CACHE_TTL_DAYS } from './proxy/search';
-import { confirmAndImport, getCachedDetail, resolveCategory, reconcileAddonVisibility } from './proxy/import';
+import { confirmAndImport, getCachedDetail, resolveCategory, reconcileAddonVisibility, reconcileHeroImages } from './proxy/import';
 import { enableTracking, getPrimaryLocationId, productInventoryItems, setInventoryQuantities, setSupplierMetafields, updateVariantPrices, MAX_TRACKED_QTY } from './proxy/inventory';
 import { retailPriceGbp } from './pricing';
 import type { CjDetail } from './cj';
-import { LlmClient, curateProduct, type Curation } from './llm';
+import { LlmClient, curateProduct, pickHeroImage, type Curation } from './llm';
 import type { Env, TenantConfig } from './types';
 
 export const CULL_WINDOW_DAYS = 30; // grace period AND inactivity window
@@ -59,7 +59,7 @@ export async function refillCollections(
   cj: CjClient,
   admin: AdminGraphql,
   cfg: TenantConfig,
-  opts: { maxImports?: number; pause?: (ms: number) => Promise<void>; now?: () => number; curate?: (detail: CjDetail, context: string) => Promise<Curation | null> } = {}
+  opts: { maxImports?: number; pause?: (ms: number) => Promise<void>; now?: () => number; curate?: (detail: CjDetail, context: string) => Promise<Curation | null>; pickHero?: (title: string, imageUrls: string[]) => Promise<number | null> } = {}
 ): Promise<number> {
   const maxImports = opts.maxImports ?? MAX_IMPORTS_PER_RUN;
   const pause = opts.pause ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
@@ -72,7 +72,7 @@ export async function refillCollections(
     let detail: CjDetail;
     try { detail = JSON.parse(row.detail) as CjDetail; } catch { return false; }
     await pause(CJ_CALL_GAP_MS); // confirmAndImport makes one CJ stock call
-    await confirmAndImport(store, cj, admin, cfg, detail, category, opts.curate);
+    await confirmAndImport(store, cj, admin, cfg, detail, category, opts.curate, opts.pickHero);
     return (await store.getLink(row.cj_pid))?.state === 'imported';
   };
 
@@ -514,10 +514,14 @@ export async function runDailyMaintenance(env: Env): Promise<void> {
         const curate = llm.available && cfg.llm.enabled
           ? (detail: CjDetail, context: string) => curateProduct(llm, store, cfg, detail, context)
           : undefined;
+        const pickHero = llm.available && cfg.llm.enabled
+          ? (title: string, urls: string[]) => pickHeroImage(llm, store, cfg, title, urls)
+          : undefined;
         await replenishWarehouse(store, cj, cfg, { curate });
         await syncStoreInventory(store, cj, admin, cfg);
-        await refillCollections(store, cj, admin, cfg, { curate }); // promote-from-warehouse (floor 8, target 12)
+        await refillCollections(store, cj, admin, cfg, { curate, pickHero }); // promote-from-warehouse (floor 8, target 12)
         await reconcileAddonVisibility(store, admin, cfg); // align hidden/visible add-ons to the toggle
+        if (pickHero) await reconcileHeroImages(store, admin, cfg, pickHero, { max: 40 }); // vision: fix mismatched default images
       }
     } catch (e) {
       console.warn(`daily maintenance failed for ${shop}: ${(e as Error).message}`);

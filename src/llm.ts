@@ -28,10 +28,19 @@ export class LlmClient {
     model: string;
     system: string;
     user: string;
+    images?: string[]; // image URLs — sent as vision content blocks alongside `user`
     maxTokens?: number;
     validate: (v: unknown) => T | null;
   }): Promise<LlmJson<T>> {
     if (!this.apiKey) return { ok: false, error: 'OPENROUTER_API_KEY not set' };
+    // Vision: when images are supplied, the user message becomes a content array
+    // (OpenAI/OpenRouter multimodal shape) instead of a plain string.
+    const userContent = opts.images && opts.images.length
+      ? [
+          { type: 'text', text: opts.user },
+          ...opts.images.map((url) => ({ type: 'image_url', image_url: { url } }))
+        ]
+      : opts.user;
     try {
       const resp = await this.fetchImpl(OPENROUTER_URL, {
         method: 'POST',
@@ -48,7 +57,7 @@ export class LlmClient {
           usage: { include: true }, // OpenRouter returns per-call cost
           messages: [
             { role: 'system', content: opts.system },
-            { role: 'user', content: opts.user }
+            { role: 'user', content: userContent }
           ]
         })
       });
@@ -164,6 +173,60 @@ export async function curateProduct(
   }
   await store.logLlmUsage('curation', result.usage.model, result.usage.promptTokens, result.usage.completionTokens, result.usage.costUsd);
   return result.value;
+}
+
+// --- Hero-image QA (vision): pick the best default image for a listing ---
+
+const MAX_HERO_IMAGES = 8; // cap vision cost; CJ rarely puts the set shot past #8
+
+/**
+ * Vision pass: given a product TITLE and its images (in current order, index 0
+ * first), return the 0-based index of the image that best represents the whole
+ * product — so the caller can promote it to the featured slot. Catches the
+ * "title says SET but the default image is one comb" class of mismatch.
+ *
+ * Returns null when: no LLM, fewer than 2 images, the model fails/validation,
+ * or the model picks index 0 (already correct — nothing to do). Never throws.
+ */
+export async function pickHeroImage(
+  llm: LlmClient,
+  store: TenantStore,
+  cfg: TenantConfig,
+  title: string,
+  imageUrls: string[]
+): Promise<number | null> {
+  if (!llm.available || !cfg.llm.enabled) return null;
+  const urls = imageUrls.slice(0, MAX_HERO_IMAGES);
+  if (urls.length < 2) return null; // nothing to choose between
+  const model = cfg.llm.curationModel ?? cfg.llm.model;
+
+  const result = await llm.json<{ index: number; reason: string }>({
+    model,
+    maxTokens: 150,
+    images: urls,
+    system:
+      'You choose the best HERO (main/default) image for a pet-product listing. ' +
+      'You are given the product TITLE and its images in order (image index 0 is shown first). ' +
+      'Pick the single image that best represents the WHOLE product as the title describes it. Rules: ' +
+      'for a "set"/"kit"/"bundle"/"with X & Y" title, prefer the image showing ALL the included items together, NOT one component on its own; ' +
+      'prefer a clear, well-lit shot of the actual product over packaging-only, a size chart, a text/infographic graphic, a lifestyle-only scene, or an extreme close-up of one detail. ' +
+      'Respond with ONLY JSON: {"index": <0-based integer of the best image>, "reason": <short phrase, max 12 words>}.',
+    user: JSON.stringify({ title, imageCount: urls.length, note: 'Images follow in order; the first image is index 0.' }),
+    validate: (v) => {
+      const o = v as Record<string, unknown>;
+      if (typeof o !== 'object' || o === null) return null;
+      const idx = Number(o.index);
+      if (!Number.isInteger(idx) || idx < 0 || idx >= urls.length) return null;
+      return { index: idx, reason: typeof o.reason === 'string' ? clip(o.reason, 120) : '' };
+    }
+  });
+
+  if (!result.ok) {
+    console.warn(`hero-image pick failed for "${title}": ${result.error}`);
+    return null;
+  }
+  await store.logLlmUsage('hero-image', result.usage.model, result.usage.promptTokens, result.usage.completionTokens, result.usage.costUsd);
+  return result.value.index > 0 ? result.value.index : null;
 }
 
 // --- W3.3 keyword classification (cached; runs via waitUntil, never hot path) ---
