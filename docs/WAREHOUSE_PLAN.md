@@ -540,6 +540,30 @@ of the junk "dog toy"/"cat toys" results:
   kw:dog toy cache from D1 and compare titles to the old junk. If clean ->
   listV2 fixed. 186 tests.
 
+## 7a-i-j. listV2 FIX VERIFIED + price floor 0.50 (2026-06-14 03:08)
+
+Firecrawl search diagnostic (console "Search source diagnostic" -> /api/
+search-diag, stores diag:ours / diag:web to D1) PROVED the listV2 id-field
+fix: diag:ours:dog toy returned 25 CLEAN dog toys (Cotton String Dog Toy,
+Aggressive Chew Dog Toy, Dog Rope Toy, Dog Teething Toy, ...) — zero junk.
+User's hypothesis (our method, not CJ's, was junk) confirmed. (Firecrawl
+diag:web returned 0 — CJ site render/scrape hiccup; moot since our own
+listV2 is now clean. Firecrawl client kept for future supply/category use;
+the scrape may need URL-format/waitFor tuning if used later.)
+
+NEW finding from the same data: the clean dog toys cost $0.50–$5 to source,
+but priceMin was $5 -> filtered ~22 of 25. The £6 min-margin rule floors
+ALL retail at £6.99 regardless of cost, so the $5 source floor wasn't
+protecting price — it was hiding most of CJ's (cheap) pet catalog.
+DECISION (user 2026-06-14): main gate priceMin 5 -> **0.50** (live via D1;
+{"popularityFloor":0,"priceMin":0.5,"priceMax":80,"relevance":"strict"}).
+kw:* cache purged so storefront repopulates with fixed listV2 + new floor.
+Quality now gated by listV2 relevance + species + LLM curation, not price.
+
+SIDE EFFECT: the add-on lane (addons.priceMin 0.5–5) now fully overlaps the
+main band -> mostly redundant (main admits $0.50+ as visible products).
+Revisit whether to keep/repurpose the hidden add-on lane.
+
 ## 7a-ii. STRATEGY DECISION — shipping display, origin choice, returns
 ## (user-raised 2026-06-12; recommendation delivered same day; user
 ##  decision pending — do not implement until the user confirms)
