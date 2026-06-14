@@ -11,6 +11,9 @@ export interface Env {
   CJ_RELAY_TOKEN?: string;
   // OpenRouter (W3 LLM curation) — optional: absent = mechanical gates only.
   OPENROUTER_API_KEY?: string;
+  // Firecrawl — optional: scrapes CJ's website search for diagnostics /
+  // higher-quality supply (absent = feature off).
+  FIRECRAWL_API_KEY?: string;
 }
 
 export interface TenantRow {

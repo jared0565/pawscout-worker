@@ -259,6 +259,16 @@ export function consolePage(apiKey: string): Response {
   </section>
 
   <section class="card">
+    <h2>Search source diagnostic</h2>
+    <p class="sub" style="margin:0 0 12px">Compares what our CJ <code>listV2</code> search returns vs CJ's own website (via Firecrawl) for a query — to verify relevance.</p>
+    <div class="row">
+      <div class="grow"><label for="diagq">Query</label><input id="diagq" type="text" value="dog toy" spellcheck="false"></div>
+      <button id="diagbtn" onclick="runDiag()">Compare</button>
+    </div>
+    <div id="diagout" class="msg muted"></div>
+  </section>
+
+  <section class="card">
     <h2>Search demand — last 30 days</h2>
     <div id="insights"><p class="muted">Loading…</p></div>
   </section>
@@ -452,6 +462,19 @@ async function sanitizeNow(){
     }
     setMsg('sanmsg','Done ✓ '+cleaned+' description'+(cleaned===1?'':'s')+' cleaned of '+total+' scanned.','ok');
   }catch(e){ setMsg('sanmsg','Failed: '+errText(e),'no'); }
+  finally{ btn.disabled=false; }
+}
+async function runDiag(){
+  var btn=el('diagbtn'); btn.disabled=true;
+  var out=el('diagout');
+  out.className='msg muted'; out.textContent='Running CJ listV2 + Firecrawl (can take ~30s)…';
+  try{
+    var r=await api('/search-diag',{q:el('diagq').value});
+    if(!r.ok){ out.className='msg no'; out.textContent='Failed: '+(r.error||'unknown'); return; }
+    function fmt(list){ return (list||[]).map(function(x){ return '• '+esc(x.title)+(x.price!=null?(' — '+esc(x.price)):''); }).join('<br>'); }
+    out.className='msg';
+    out.innerHTML='<strong>Our listV2 ('+r.oursCount+')</strong><br>'+fmt(r.ours)+'<hr><strong>CJ website / Firecrawl ('+r.webCount+')</strong><br>'+fmt(r.web);
+  }catch(e){ out.className='msg no'; out.textContent='Failed: '+errText(e); }
   finally{ btn.disabled=false; }
 }
 async function syncNow(){

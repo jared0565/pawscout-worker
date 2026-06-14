@@ -21,6 +21,7 @@ import { LlmClient, classifyKeyword, curateProduct } from './llm';
 import { buildPreview, getDetailPreferWarehouse, confirmAndImport, reconcileAddonVisibility } from './proxy/import';
 import { makeAdminGraphql } from './shopify-admin';
 import { runDailyMaintenance, syncStoreInventory, refillCollections, sanitizeDescriptions } from './jobs';
+import { firecrawlCjSearch } from './firecrawl';
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -166,6 +167,39 @@ app.post('/api/addons', async (c) => {
   }
   return c.json({ ok: true });
 });
+// Search diagnostic: compare our CJ listV2 results against CJ's own website
+// search (scraped via Firecrawl, which renders from its servers and gets past
+// CJ's bot protection). Stores both lists to D1 (diag:* keys) for offline
+// comparison. Session-token authed.
+app.post('/api/search-diag', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: { q?: string } = {};
+  try { body = await c.req.json(); } catch { /* defaults */ }
+  const q = (body.q || 'dog toy').trim().slice(0, 60);
+  const store = new TenantStore(c.env.DB, s);
+  if (!(await store.getTenant())) return c.json({ ok: false, error: 'No tenant' }, 400);
+  const vault = await Vault.fromMasterKey(c.env.PAWSCOUT_MASTER_KEY);
+  const f = cjFetchFromEnv(c.env);
+  const cj = new CjClient(() => new CjTokenManager(store, vault, f).getToken(), f);
+
+  let ours: { title: string; price: number }[] = [];
+  try {
+    ours = (await cj.search(q)).slice(0, 25).map((i) => ({ title: i.nameEn, price: i.sellPriceUsd }));
+  } catch (e) { ours = [{ title: `ERROR: ${(e as Error).message}`, price: 0 }]; }
+
+  let web: { title: string; price?: string }[] = [];
+  if (c.env.FIRECRAWL_API_KEY) {
+    try { web = (await firecrawlCjSearch(c.env.FIRECRAWL_API_KEY, q)).slice(0, 25); }
+    catch (e) { web = [{ title: `ERROR: ${(e as Error).message}` }]; }
+  } else {
+    web = [{ title: 'FIRECRAWL_API_KEY not set' }];
+  }
+
+  await store.putSearchCache(`diag:ours:${q}`, JSON.stringify(ours), 1);
+  await store.putSearchCache(`diag:web:${q}`, JSON.stringify(web), 1);
+  return c.json({ ok: true, q, oursCount: ours.length, webCount: web.length, ours, web });
+});
+
 const SANITIZE_BATCH = 10;
 app.post('/api/sanitize', async (c) => {
   const s = await shopOf(c); if (typeof s !== 'string') return s;
