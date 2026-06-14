@@ -179,14 +179,20 @@ export async function curateProduct(
 
 const MAX_HERO_IMAGES = 8; // cap vision cost; CJ rarely puts the set shot past #8
 
+/** Result of a hero-image decision. `ok:false` = couldn't decide (don't cache). */
+export interface HeroPick { ok: boolean; index: number | null }
+
 /**
  * Vision pass: given a product TITLE and its images (in current order, index 0
  * first), return the 0-based index of the image that best represents the whole
  * product — so the caller can promote it to the featured slot. Catches the
  * "title says SET but the default image is one comb" class of mismatch.
  *
- * Returns null when: no LLM, fewer than 2 images, the model fails/validation,
- * or the model picks index 0 (already correct — nothing to do). Never throws.
+ * Returns a HeroPick: `ok:false` means we couldn't decide (no LLM or a failure)
+ * and the caller should NOT cache the result — retry later. `ok:true` means the
+ * model (or the trivial <2-image case) gave a definitive answer: `index` is the
+ * 0-based image to promote, or null when the current first image is already best.
+ * Never throws.
  */
 export async function pickHeroImage(
   llm: LlmClient,
@@ -194,10 +200,10 @@ export async function pickHeroImage(
   cfg: TenantConfig,
   title: string,
   imageUrls: string[]
-): Promise<number | null> {
-  if (!llm.available || !cfg.llm.enabled) return null;
+): Promise<HeroPick> {
+  if (!llm.available || !cfg.llm.enabled) return { ok: false, index: null };
   const urls = imageUrls.slice(0, MAX_HERO_IMAGES);
-  if (urls.length < 2) return null; // nothing to choose between
+  if (urls.length < 2) return { ok: true, index: null }; // nothing to choose — definitively fine
   const model = cfg.llm.curationModel ?? cfg.llm.model;
 
   const result = await llm.json<{ index: number; reason: string }>({
@@ -223,10 +229,10 @@ export async function pickHeroImage(
 
   if (!result.ok) {
     console.warn(`hero-image pick failed for "${title}": ${result.error}`);
-    return null;
+    return { ok: false, index: null };
   }
   await store.logLlmUsage('hero-image', result.usage.model, result.usage.promptTokens, result.usage.completionTokens, result.usage.costUsd);
-  return result.value.index > 0 ? result.value.index : null;
+  return { ok: true, index: result.value.index > 0 ? result.value.index : null };
 }
 
 // --- Description rewrite: clean a raw/legacy supplier description ---

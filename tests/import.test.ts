@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
-import { importProduct, buildPreview, stripHtml, resolveCategory, confirmAndImport, reconcileHeroImages, reconcileDescriptions, needsDescriptionRewrite } from '../src/proxy/import';
+import { importProduct, buildPreview, stripHtml, resolveCategory, confirmAndImport, reconcileHeroImages, reconcileDescriptions, needsDescriptionRewrite, mediaSignature } from '../src/proxy/import';
 import { TenantStore } from '../src/tenant-store';
 import { DEFAULT_GATES, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, type TenantConfig } from '../src/types';
 import type { CjClient, CjDetail } from '../src/cj';
@@ -202,7 +202,7 @@ describe('hero-image QA (vision)', () => {
     const store = new TenantStore(env.DB, 'a.myshopify.com');
     const calls: Call[] = [];
     // DETAIL.images = [.../1.jpg, .../2.jpg]; pickHero returns index 1 → it moves to front.
-    await confirmAndImport(store, cjStub(), fakeAdmin(calls), CFG, DETAIL, 'pet-toys', undefined, async () => 1);
+    await confirmAndImport(store, cjStub(), fakeAdmin(calls), CFG, DETAIL, 'pet-toys', undefined, async () => ({ ok: true, index: 1 }));
     const files = (calls.find((c) => c.query.includes('productSet'))!.variables!.input as { files: { originalSource: string }[] }).files;
     expect(files.map((f) => f.originalSource)).toEqual(['https://i/2.jpg', 'https://i/1.jpg']);
   });
@@ -210,42 +210,68 @@ describe('hero-image QA (vision)', () => {
   it('confirmAndImport leaves order untouched when pickHero returns null', async () => {
     const store = new TenantStore(env.DB, 'a.myshopify.com');
     const calls: Call[] = [];
-    await confirmAndImport(store, cjStub(), fakeAdmin(calls), CFG, DETAIL, 'pet-toys', undefined, async () => null);
+    await confirmAndImport(store, cjStub(), fakeAdmin(calls), CFG, DETAIL, 'pet-toys', undefined, async () => ({ ok: true, index: null }));
     const files = (calls.find((c) => c.query.includes('productSet'))!.variables!.input as { files: { originalSource: string }[] }).files;
     expect(files.map((f) => f.originalSource)).toEqual(['https://i/1.jpg', 'https://i/2.jpg']);
   });
 
-  function heroAdmin(calls: Call[], featuredId: string, nodes: { id: string; url: string }[]): AdminGraphql {
+  function heroAdmin(calls: Call[], featuredId: string, nodes: { id: string; url: string }[], sig?: string): AdminGraphql {
     return async (query, variables) => {
       calls.push({ query, variables });
       if (query.includes('pawscoutMedia')) {
-        return { product: { title: 'Grooming Set', featuredMedia: { id: featuredId }, media: { nodes: nodes.map((n) => ({ id: n.id, image: { url: n.url } })) } } };
+        return { product: { title: 'Grooming Set', featuredMedia: { id: featuredId }, metafield: sig ? { value: sig } : null, media: { nodes: nodes.map((n) => ({ id: n.id, image: { url: n.url } })) } } };
       }
       if (query.includes('productReorderMedia')) return { productReorderMedia: { mediaUserErrors: [], userErrors: [] } };
+      if (query.includes('metafieldsSet')) return { metafieldsSet: { userErrors: [] } };
       throw new Error(`unexpected query: ${query.slice(0, 40)}`);
     };
   }
 
-  it('reconcileHeroImages reorders the chosen media to position 0', async () => {
+  it('reconcileHeroImages reorders the chosen media to position 0 and records the signature', async () => {
     const store = new TenantStore(env.DB, 'a.myshopify.com');
     await store.putLink({ cjPid: 'P1', state: 'imported', shopifyProductId: 'gid://shopify/Product/1', handle: 'h1', category: 'pet-toys' });
     const calls: Call[] = [];
     const admin = heroAdmin(calls, 'gid://m/0', [{ id: 'gid://m/0', url: 'https://i/0.jpg' }, { id: 'gid://m/1', url: 'https://i/1.jpg' }, { id: 'gid://m/2', url: 'https://i/2.jpg' }]);
-    const r = await reconcileHeroImages(store, admin, CFG, async () => 2);
+    const r = await reconcileHeroImages(store, admin, CFG, async () => ({ ok: true, index: 2 }));
     expect(r).toEqual({ scanned: 1, fixed: 1, total: 1, next: null });
-    const move = calls.find((c) => c.query.includes('productReorderMedia'))!;
-    expect(move.variables!.moves).toEqual([{ id: 'gid://m/2', newPosition: '0' }]);
+    expect(calls.find((c) => c.query.includes('productReorderMedia'))!.variables!.moves).toEqual([{ id: 'gid://m/2', newPosition: '0' }]);
+    expect(calls.some((c) => c.query.includes('metafieldsSet'))).toBe(true); // signature cached
   });
 
-  it('reconcileHeroImages skips a product whose chosen image is already featured', async () => {
+  it('reconcileHeroImages skips (no LLM call) a product already checked at this media state', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    await store.putLink({ cjPid: 'P1', state: 'imported', shopifyProductId: 'gid://shopify/Product/1', handle: 'h1', category: 'pet-toys' });
+    const ids = ['gid://m/0', 'gid://m/1', 'gid://m/2'];
+    const sig = mediaSignature(ids);
+    const calls: Call[] = [];
+    const admin = heroAdmin(calls, 'gid://m/0', ids.map((id) => ({ id, url: id + '.jpg' })), sig);
+    let pickCalls = 0;
+    const r = await reconcileHeroImages(store, admin, CFG, async () => { pickCalls++; return { ok: true, index: 2 }; });
+    expect(r).toEqual({ scanned: 1, fixed: 0, total: 1, next: null });
+    expect(pickCalls).toBe(0); // signature matched → no vision call
+    expect(calls.some((c) => c.query.includes('productReorderMedia'))).toBe(false);
+  });
+
+  it('reconcileHeroImages does NOT cache when the model could not decide (ok:false)', async () => {
     const store = new TenantStore(env.DB, 'a.myshopify.com');
     await store.putLink({ cjPid: 'P1', state: 'imported', shopifyProductId: 'gid://shopify/Product/1', handle: 'h1', category: 'pet-toys' });
     const calls: Call[] = [];
-    // pickHero picks index 2, but media[2] is already the featured one → no reorder.
+    const admin = heroAdmin(calls, 'gid://m/0', [{ id: 'gid://m/0', url: 'https://i/0.jpg' }, { id: 'gid://m/1', url: 'https://i/1.jpg' }]);
+    const r = await reconcileHeroImages(store, admin, CFG, async () => ({ ok: false, index: null }));
+    expect(r).toEqual({ scanned: 1, fixed: 0, total: 1, next: null });
+    expect(calls.some((c) => c.query.includes('metafieldsSet'))).toBe(false); // not cached → retried next run
+  });
+
+  it('reconcileHeroImages records the signature even when no reorder is needed (index already featured)', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    await store.putLink({ cjPid: 'P1', state: 'imported', shopifyProductId: 'gid://shopify/Product/1', handle: 'h1', category: 'pet-toys' });
+    const calls: Call[] = [];
+    // pickHero picks index 2, but media[2] is already the featured one → no reorder, but still cached.
     const admin = heroAdmin(calls, 'gid://m/2', [{ id: 'gid://m/0', url: 'https://i/0.jpg' }, { id: 'gid://m/1', url: 'https://i/1.jpg' }, { id: 'gid://m/2', url: 'https://i/2.jpg' }]);
-    const r = await reconcileHeroImages(store, admin, CFG, async () => 2);
+    const r = await reconcileHeroImages(store, admin, CFG, async () => ({ ok: true, index: 2 }));
     expect(r).toEqual({ scanned: 1, fixed: 0, total: 1, next: null });
     expect(calls.some((c) => c.query.includes('productReorderMedia'))).toBe(false);
+    expect(calls.some((c) => c.query.includes('metafieldsSet'))).toBe(true);
   });
 
   it('reconcileHeroImages never lets one product failure abort the sweep', async () => {
@@ -257,12 +283,13 @@ describe('hero-image QA (vision)', () => {
       calls.push({ query, variables });
       if (query.includes('pawscoutMedia')) {
         if ((variables!.id as string).includes('bad')) throw new Error('media fetch boom');
-        return { product: { title: 'OK', featuredMedia: { id: 'gid://m/0' }, media: { nodes: [{ id: 'gid://m/0', image: { url: 'https://i/0.jpg' } }, { id: 'gid://m/1', image: { url: 'https://i/1.jpg' } }] } } };
+        return { product: { title: 'OK', featuredMedia: { id: 'gid://m/0' }, metafield: null, media: { nodes: [{ id: 'gid://m/0', image: { url: 'https://i/0.jpg' } }, { id: 'gid://m/1', image: { url: 'https://i/1.jpg' } }] } } };
       }
       if (query.includes('productReorderMedia')) return { productReorderMedia: { mediaUserErrors: [], userErrors: [] } };
+      if (query.includes('metafieldsSet')) return { metafieldsSet: { userErrors: [] } };
       throw new Error('unexpected');
     };
-    const r = await reconcileHeroImages(store, admin, CFG, async () => 1);
+    const r = await reconcileHeroImages(store, admin, CFG, async () => ({ ok: true, index: 1 }));
     expect(r).toEqual({ scanned: 2, fixed: 1, total: 2, next: null }); // bad product swallowed, ok product fixed
   });
 });

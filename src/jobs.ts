@@ -7,7 +7,7 @@ import { confirmAndImport, getCachedDetail, resolveCategory, reconcileAddonVisib
 import { enableTracking, getPrimaryLocationId, productInventoryItems, setInventoryQuantities, setSupplierMetafields, updateVariantPrices, MAX_TRACKED_QTY } from './proxy/inventory';
 import { retailPriceGbp } from './pricing';
 import type { CjDetail } from './cj';
-import { LlmClient, curateProduct, pickHeroImage, rewriteDescription, type Curation } from './llm';
+import { LlmClient, curateProduct, pickHeroImage, rewriteDescription, type Curation, type HeroPick } from './llm';
 import type { Env, TenantConfig } from './types';
 
 export const CULL_WINDOW_DAYS = 30; // grace period AND inactivity window
@@ -59,7 +59,7 @@ export async function refillCollections(
   cj: CjClient,
   admin: AdminGraphql,
   cfg: TenantConfig,
-  opts: { maxImports?: number; pause?: (ms: number) => Promise<void>; now?: () => number; curate?: (detail: CjDetail, context: string) => Promise<Curation | null>; pickHero?: (title: string, imageUrls: string[]) => Promise<number | null> } = {}
+  opts: { maxImports?: number; pause?: (ms: number) => Promise<void>; now?: () => number; curate?: (detail: CjDetail, context: string) => Promise<Curation | null>; pickHero?: (title: string, imageUrls: string[]) => Promise<HeroPick> } = {}
 ): Promise<number> {
   const maxImports = opts.maxImports ?? MAX_IMPORTS_PER_RUN;
   const pause = opts.pause ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));

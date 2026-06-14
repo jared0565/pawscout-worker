@@ -1,6 +1,6 @@
 import type { AdminGraphql } from '../shopify-admin';
 import { chooseOrigin, type CjClient, type CjDetail } from '../cj';
-import type { Curation } from '../llm';
+import type { Curation, HeroPick } from '../llm';
 import type { TenantStore } from '../tenant-store';
 import type { TenantConfig } from '../types';
 import { retailPriceGbp } from '../pricing';
@@ -105,7 +105,7 @@ export async function confirmAndImport(
   detail: CjDetail,
   category?: string | null,
   curate?: (detail: CjDetail, context: string) => Promise<Curation | null>,
-  pickHero?: (title: string, imageUrls: string[]) => Promise<number | null>
+  pickHero?: (title: string, imageUrls: string[]) => Promise<HeroPick>
 ): Promise<void> {
   // Ghost-click curation gate (added 2026-06-12 after a "pet food" search
   // imported a kitchen vacuum sealer): clicked ghosts must pass the SAME
@@ -140,9 +140,9 @@ export async function confirmAndImport(
   if (pickHero && detail.images.length > 1) {
     try {
       const hero = await pickHero(detail.nameEn, detail.images);
-      if (hero !== null && hero > 0 && hero < detail.images.length) {
+      if (hero.ok && hero.index !== null && hero.index > 0 && hero.index < detail.images.length) {
         const imgs = [...detail.images];
-        const [chosen] = imgs.splice(hero, 1);
+        const [chosen] = imgs.splice(hero.index, 1);
         imgs.unshift(chosen);
         detail = { ...detail, images: imgs };
       }
@@ -398,6 +398,7 @@ const PRODUCT_MEDIA = `query pawscoutMedia($id: ID!) {
   product(id: $id) {
     title
     featuredMedia { ... on MediaImage { id } }
+    metafield(namespace: "pawscout", key: "hero_sig") { value }
     media(first: 12) { nodes { ... on MediaImage { id image { url } } } }
   }
 }`;
@@ -408,6 +409,23 @@ const REORDER_MEDIA = `mutation pawscoutReorder($id: ID!, $moves: [MoveInput!]!)
     userErrors { field message }
   }
 }`;
+
+const SET_HERO_SIG = `mutation pawscoutHeroSig($mf: [MetafieldsSetInput!]!) {
+  metafieldsSet(metafields: $mf) { userErrors { field message } }
+}`;
+
+/**
+ * Order-independent fingerprint of a product's media set. Reordering (which the
+ * sweep itself does) leaves it unchanged; adding/removing an image changes it.
+ * Stored in the pawscout.hero_sig metafield so the sweep can skip a product it
+ * has already vision-checked at this exact media state — the spend saver.
+ */
+export function mediaSignature(mediaIds: string[]): string {
+  const s = [...mediaIds].sort().join(',');
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193); }
+  return (h >>> 0).toString(16);
+}
 
 /**
  * Maintenance sweep (vision): re-pick the hero image for already-imported
@@ -423,7 +441,7 @@ export async function reconcileHeroImages(
   store: TenantStore,
   admin: AdminGraphql,
   cfg: TenantConfig,
-  pickHero: (title: string, imageUrls: string[]) => Promise<number | null>,
+  pickHero: (title: string, imageUrls: string[]) => Promise<HeroPick>,
   opts: { offset?: number; limit?: number } = {}
 ): Promise<{ scanned: number; fixed: number; total: number; next: number | null }> {
   const offset = Math.max(0, opts.offset ?? 0);
@@ -440,6 +458,7 @@ export async function reconcileHeroImages(
         product?: {
           title?: string;
           featuredMedia?: { id?: string } | null;
+          metafield?: { value?: string } | null;
           media?: { nodes?: { id?: string; image?: { url?: string } }[] };
         };
       };
@@ -448,15 +467,20 @@ export async function reconcileHeroImages(
         (n): n is { id: string; image: { url: string } } => !!n?.id && !!n?.image?.url
       );
       if (nodes.length < 2) continue;
+      const sig = mediaSignature(nodes.map((n) => n.id));
+      if (p?.metafield?.value === sig) continue; // already vision-checked at this media state — no LLM call
       const hero = await pickHero(p?.title ?? '', nodes.map((n) => n.image.url));
-      if (hero === null || hero <= 0 || hero >= nodes.length) continue;
-      if (p?.featuredMedia?.id === nodes[hero].id) continue; // already featured
-      const r = await admin(REORDER_MEDIA, { id: link.shopify_product_id, moves: [{ id: nodes[hero].id, newPosition: '0' }] }) as {
-        productReorderMedia?: { mediaUserErrors?: { message: string }[]; userErrors?: { message: string }[] };
-      };
-      const errs = [...(r.productReorderMedia?.mediaUserErrors ?? []), ...(r.productReorderMedia?.userErrors ?? [])];
-      if (errs.length) throw new Error(errs.map((e) => e.message).join('; '));
-      fixed++;
+      if (!hero.ok) continue; // couldn't decide (LLM down/failed) — don't cache, retry next run
+      if (hero.index !== null && hero.index > 0 && hero.index < nodes.length && p?.featuredMedia?.id !== nodes[hero.index].id) {
+        const r = await admin(REORDER_MEDIA, { id: link.shopify_product_id, moves: [{ id: nodes[hero.index].id, newPosition: '0' }] }) as {
+          productReorderMedia?: { mediaUserErrors?: { message: string }[]; userErrors?: { message: string }[] };
+        };
+        const errs = [...(r.productReorderMedia?.mediaUserErrors ?? []), ...(r.productReorderMedia?.userErrors ?? [])];
+        if (errs.length) throw new Error(errs.map((e) => e.message).join('; '));
+        fixed++;
+      }
+      // Record the check (reordered or not) so unchanged media is never re-visioned.
+      await admin(SET_HERO_SIG, { mf: [{ ownerId: link.shopify_product_id, namespace: 'pawscout', key: 'hero_sig', type: 'single_line_text_field', value: sig }] });
     } catch (e) {
       console.warn(`hero-image reconcile failed for ${link.cj_pid}: ${(e as Error).message}`);
     }

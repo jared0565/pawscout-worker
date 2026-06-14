@@ -599,7 +599,16 @@ Wired in three places:
 - Existing catalog: `reconcileHeroImages` (in `import.ts`) sweeps imported
   products, reads their Shopify media, and `productReorderMedia`-promotes the
   chosen image to position 0 when it isn't already featured. One product's
-  failure never aborts the sweep. Runs nightly (capped 40/run) and on demand.
+  failure never aborts the sweep. Runs nightly (batched) and on demand.
+- COST GUARD (2026-06-14): vision was ~80% of all LLM spend ($0.44 of ~$0.57
+  lifetime) because the sweep re-visioned the whole catalog nightly. Now each
+  product stores an order-independent media fingerprint in the
+  `pawscout.hero_sig` metafield (`mediaSignature` = FNV hash of the sorted media
+  IDs). The sweep skips any product whose current fingerprint matches — so a
+  product is vision-checked ONCE, and again only if images are added/removed.
+  `pickHeroImage` returns `{ok,index}`: `ok:false` (LLM down/failed) is never
+  cached (retried next run); `ok:true` (incl. "image 0 is fine") caches the sig.
+  Reordering doesn't change the fingerprint (set-based), so it never re-triggers.
 - Console: Maintenance card → **"Fix default images"** button → POST
   `/api/hero-images` (background, LLM-gated). Manual fix already applied live to
   the scissors-set product via `productReorderMedia` (set shot → featured).

@@ -173,8 +173,8 @@ describe('pickHeroImage (vision)', () => {
       }), { status: 200 });
     }) as unknown as typeof fetch;
     const llm = new LlmClient('k', fetchImpl);
-    const idx = await pickHeroImage(llm, store, CFG, 'Pet Grooming Scissors Set with Comb', URLS);
-    expect(idx).toBe(2);
+    const pick = await pickHeroImage(llm, store, CFG, 'Pet Grooming Scissors Set with Comb', URLS);
+    expect(pick).toEqual({ ok: true, index: 2 });
     const content = body.messages[1].content;
     expect(Array.isArray(content)).toBe(true);
     expect(content.filter((c: any) => c.type === 'image_url').map((c: any) => c.image_url.url)).toEqual(URLS);
@@ -182,30 +182,30 @@ describe('pickHeroImage (vision)', () => {
     expect(spend.calls).toBe(1);
   });
 
-  it('returns null when the model picks index 0 (already correct — no reorder)', async () => {
+  it('is ok with index null when the model picks image 0 (already correct — cacheable)', async () => {
     const store = new TenantStore(env.DB, SHOP);
     const llm = new LlmClient('k', llmFetch({ index: 0, reason: 'fine' }));
-    expect(await pickHeroImage(llm, store, CFG, 'Dog Toy', URLS)).toBeNull();
+    expect(await pickHeroImage(llm, store, CFG, 'Dog Toy', URLS)).toEqual({ ok: true, index: null });
   });
 
-  it('returns null with fewer than 2 images (nothing to choose) without calling the LLM', async () => {
+  it('is ok with index null for fewer than 2 images, without calling the LLM', async () => {
     const store = new TenantStore(env.DB, SHOP);
     let called = false;
     const fetchImpl = (async () => { called = true; return new Response('{}'); }) as unknown as typeof fetch;
     const llm = new LlmClient('k', fetchImpl);
-    expect(await pickHeroImage(llm, store, CFG, 'Dog Toy', ['https://i/0.jpg'])).toBeNull();
+    expect(await pickHeroImage(llm, store, CFG, 'Dog Toy', ['https://i/0.jpg'])).toEqual({ ok: true, index: null });
     expect(called).toBe(false);
   });
 
-  it('rejects an out-of-range index from the model', async () => {
+  it('is NOT ok (retryable) on an out-of-range index from the model', async () => {
     const store = new TenantStore(env.DB, SHOP);
     const llm = new LlmClient('k', llmFetch({ index: 9, reason: 'oops' }));
-    expect(await pickHeroImage(llm, store, CFG, 'Dog Toy', URLS)).toBeNull();
+    expect(await pickHeroImage(llm, store, CFG, 'Dog Toy', URLS)).toEqual({ ok: false, index: null });
   });
 
-  it('returns null when the LLM is unavailable', async () => {
+  it('is NOT ok (retryable) when the LLM is unavailable', async () => {
     const store = new TenantStore(env.DB, SHOP);
-    expect(await pickHeroImage(new LlmClient(undefined), store, CFG, 'Dog Toy', URLS)).toBeNull();
+    expect(await pickHeroImage(new LlmClient(undefined), store, CFG, 'Dog Toy', URLS)).toEqual({ ok: false, index: null });
   });
 });
 
