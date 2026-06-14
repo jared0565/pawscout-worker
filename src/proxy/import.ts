@@ -4,7 +4,7 @@ import type { Curation, HeroPick } from '../llm';
 import type { TenantStore } from '../tenant-store';
 import type { TenantConfig } from '../types';
 import { retailPriceGbp } from '../pricing';
-import { isLikelyPetProduct } from './search';
+import { isLikelyPetProduct, signaledCategory } from './search';
 import { getPrimaryLocationId, setSupplierMetafields, MAX_TRACKED_QTY } from './inventory';
 
 export const IMPORT_TAG = 'cj-import';
@@ -556,4 +556,46 @@ export async function reconcileDescriptions(
     }
   }
   return { scanned, rewritten, total, next: offset + limit < total ? offset + limit : null };
+}
+
+const PRODUCT_TITLE = `query pawscoutTitle($id: ID!) { product(id: $id) { title } }`;
+
+/**
+ * Category re-audit (LLM-free): re-files an imported product only when its title
+ * points unambiguously at a SINGLE collection different from where it sits
+ * (`signaledCategory`). Conservative by design — a product with mixed or no
+ * signal is left exactly where curation/import put it, so this never fights a
+ * reasonable LLM placement. Swaps the collection tag and updates the link.
+ * Batched; one product's failure never aborts the run.
+ */
+export async function reconcileCategories(
+  store: TenantStore,
+  admin: AdminGraphql,
+  cfg: TenantConfig,
+  opts: { offset?: number; limit?: number } = {}
+): Promise<{ scanned: number; moved: number; total: number; next: number | null }> {
+  const offset = Math.max(0, opts.offset ?? 0);
+  const limit = opts.limit ?? 25;
+  const all = (await store.listImportedLinks(500)).filter((l) => l.shopify_product_id);
+  const total = all.length;
+  const links = all.slice(offset, offset + limit);
+  let scanned = 0;
+  let moved = 0;
+  for (const link of links) {
+    scanned++;
+    try {
+      const current = link.category;
+      if (!current || current === ADDON_CATEGORY || !cfg.collectionMap[current]) continue; // unmapped / hidden lane
+      const data = await admin(PRODUCT_TITLE, { id: link.shopify_product_id }) as { product?: { title?: string } };
+      const signaled = signaledCategory(data.product?.title ?? '');
+      if (!signaled || signaled === current || !cfg.collectionMap[signaled]) continue;
+      await setProductTags(admin, link.shopify_product_id!, [cfg.collectionMap[current].tag], false);
+      await setProductTags(admin, link.shopify_product_id!, [cfg.collectionMap[signaled].tag], true);
+      await store.putLink({ cjPid: link.cj_pid, state: 'imported', category: signaled });
+      moved++;
+    } catch (e) {
+      console.warn(`category reconcile failed for ${link.cj_pid}: ${(e as Error).message}`);
+    }
+  }
+  return { scanned, moved, total, next: offset + limit < total ? offset + limit : null };
 }

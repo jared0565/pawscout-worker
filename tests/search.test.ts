@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
-import { searchBackfill, normalizeKeyword, relevanceMatch, keywordTokens, liveCjPasses, querySpecies, isLikelyPetProduct, titleSignature } from '../src/proxy/search';
+import { searchBackfill, normalizeKeyword, relevanceMatch, keywordTokens, liveCjPasses, querySpecies, isLikelyPetProduct, titleSignature, signaledCategory } from '../src/proxy/search';
 import { TenantStore } from '../src/tenant-store';
 import { DEFAULT_GATES, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, type TenantConfig } from '../src/types';
 import type { CjClient, CjSearchItem } from '../src/cj';
@@ -50,6 +50,21 @@ describe('titleSignature (dedupe)', () => {
   });
   it('keeps genuinely different products distinct', () => {
     expect(titleSignature('Silicone Bath Brush')).not.toBe(titleSignature('Silicone Spa Massage Glove Brush'));
+  });
+});
+
+describe('signaledCategory (category re-audit)', () => {
+  it('returns the single clear category', () => {
+    expect(signaledCategory('Pet Dental Wipes for Teeth & Gum Care')).toBe('pet-health');
+    expect(signaledCategory('Self-Cleaning Slicker Brush for Dogs')).toBe('pet-grooming');
+    expect(signaledCategory('No-Pull Reflective Dog Harness')).toBe('pet-accessories');
+  });
+  it('returns null when signals are mixed (leave it where it is)', () => {
+    expect(signaledCategory('Suction-Cup Tug Ball & Tooth-Cleaning Dog Toy')).toBeNull(); // toy + tooth
+    expect(signaledCategory('Pet Bath Brush Cat Dog Massage Comb')).toBeNull(); // bath + comb
+  });
+  it('returns null when no signal matches', () => {
+    expect(signaledCategory('Mystery Gadget')).toBeNull();
   });
 });
 

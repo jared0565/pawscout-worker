@@ -253,11 +253,13 @@ export function consolePage(apiKey: string): Response {
       <button id="syncbtn" onclick="syncNow()">Sync now</button>
       <button class="ghost" id="herobtn" onclick="heroImagesNow()">Fix default images</button>
       <button class="ghost" id="descbtn" onclick="rewriteDescsNow()">Rewrite legacy descriptions</button>
+      <button class="ghost" id="catbtn" onclick="fixCategoriesNow()">Re-file categories</button>
     </div>
     <div class="bar" id="syncbar"><i></i></div>
     <p id="syncmsg" class="msg muted"></p>
     <p id="heromsg" class="msg muted"></p>
     <p id="descmsg" class="msg muted"></p>
+    <p id="catmsg" class="msg muted"></p>
   </section>
 
   <section class="card">
@@ -489,6 +491,27 @@ async function rewriteDescsNow(){
     syncBar('off');
     setMsg('descmsg','Done ✓ '+rewritten+' description'+(rewritten===1?'':'s')+' rewritten of '+total+' scanned.','ok');
   }catch(e){ syncBar('off'); setMsg('descmsg','Failed: '+errText(e),'no'); }
+  finally{ btn.disabled=false; }
+}
+async function fixCategoriesNow(){
+  var btn=el('catbtn'); btn.disabled=true;
+  try{
+    setMsg('catmsg','Re-checking collection assignments…','muted');
+    syncBar('frac',0);
+    var offset=0, moved=0, total=0;
+    for(;;){
+      var r=await api('/categories',{offset:offset});
+      if(!r.ok){ syncBar('off'); setMsg('catmsg','Failed: '+(r.error||'unknown error'),'no'); return; }
+      moved+=r.moved; total=r.total;
+      var attempted=(r.next==null)?total:r.next;
+      syncBar('frac',total?attempted/total:1);
+      setMsg('catmsg','Checked '+Math.min(offset+r.scanned,total)+' of '+total+'… '+moved+' re-filed','muted');
+      if(r.next==null) break;
+      offset=r.next;
+    }
+    syncBar('off');
+    setMsg('catmsg','Done ✓ '+moved+' product'+(moved===1?'':'s')+' re-filed to a clearer collection ('+total+' checked).','ok');
+  }catch(e){ syncBar('off'); setMsg('catmsg','Failed: '+errText(e),'no'); }
   finally{ btn.disabled=false; }
 }
 async function runDiag(){

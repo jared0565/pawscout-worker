@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
-import { importProduct, buildPreview, stripHtml, resolveCategory, confirmAndImport, reconcileHeroImages, reconcileDescriptions, needsDescriptionRewrite, mediaSignature } from '../src/proxy/import';
+import { importProduct, buildPreview, stripHtml, resolveCategory, confirmAndImport, reconcileHeroImages, reconcileDescriptions, needsDescriptionRewrite, mediaSignature, reconcileCategories } from '../src/proxy/import';
 import { TenantStore } from '../src/tenant-store';
 import { DEFAULT_GATES, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, type TenantConfig } from '../src/types';
 import type { CjClient, CjDetail } from '../src/cj';
@@ -359,5 +359,55 @@ describe('description QA', () => {
     expect(b1).toMatchObject({ scanned: 2, rewritten: 2, total: 3, next: 2 });
     const b2 = await reconcileDescriptions(store, admin, CFG, rewrite, { offset: b1.next!, limit: 2 });
     expect(b2).toMatchObject({ scanned: 1, rewritten: 1, total: 3, next: null });
+  });
+});
+
+describe('reconcileCategories (re-audit)', () => {
+  const CATCFG: TenantConfig = {
+    ...CFG,
+    collectionMap: {
+      'pet-toys': { handle: 'pet-toys', tag: 'cj-pet-toys' },
+      'pet-health': { handle: 'pet-health', tag: 'cj-pet-health' },
+      'pet-grooming': { handle: 'pet-grooming', tag: 'cj-pet-grooming' },
+      'pet-accessories': { handle: 'pet-accessories', tag: 'cj-pet-accessories' },
+      'more-to-love': { handle: 'more-to-love', tag: 'cj-pet-more-to-love' }
+    }
+  };
+  function catAdmin(calls: Call[], title: string): AdminGraphql {
+    return async (query, variables) => {
+      calls.push({ query, variables });
+      if (query.includes('pawscoutTitle')) return { product: { title } };
+      if (query.includes('tagsAdd')) return { tagsAdd: { userErrors: [] } };
+      if (query.includes('tagsRemove')) return { tagsRemove: { userErrors: [] } };
+      throw new Error(`unexpected query: ${query.slice(0, 40)}`);
+    };
+  }
+
+  it('re-files a product whose title clearly belongs elsewhere', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    await store.putLink({ cjPid: 'P1', state: 'imported', shopifyProductId: 'gid://shopify/Product/1', handle: 'h1', category: 'pet-grooming' });
+    const calls: Call[] = [];
+    const r = await reconcileCategories(store, catAdmin(calls, 'Pet Dental Wipes for Teeth & Gum Care'), CATCFG);
+    expect(r).toMatchObject({ scanned: 1, moved: 1 });
+    expect(calls.find((c) => c.query.includes('tagsRemove'))!.variables!.tags).toEqual(['cj-pet-grooming']);
+    expect(calls.find((c) => c.query.includes('tagsAdd'))!.variables!.tags).toEqual(['cj-pet-health']);
+    expect((await store.getLink('P1'))?.category).toBe('pet-health');
+  });
+
+  it('leaves a product with mixed signals where it is', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    await store.putLink({ cjPid: 'P2', state: 'imported', shopifyProductId: 'gid://shopify/Product/2', handle: 'h2', category: 'pet-toys' });
+    const calls: Call[] = [];
+    const r = await reconcileCategories(store, catAdmin(calls, 'Tug Ball Tooth-Cleaning Dog Toy'), CATCFG);
+    expect(r.moved).toBe(0);
+    expect(calls.some((c) => c.query.includes('tagsAdd'))).toBe(false);
+    expect((await store.getLink('P2'))?.category).toBe('pet-toys');
+  });
+
+  it('does not move a product already in its signaled category', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    await store.putLink({ cjPid: 'P3', state: 'imported', shopifyProductId: 'gid://shopify/Product/3', handle: 'h3', category: 'pet-health' });
+    const r = await reconcileCategories(store, catAdmin([], 'Pet Dental Wipes'), CATCFG);
+    expect(r.moved).toBe(0);
   });
 });

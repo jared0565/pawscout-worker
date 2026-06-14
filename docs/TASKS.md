@@ -27,9 +27,12 @@ Last updated: 2026-06-14.
       significant tokens) computed at warehouse admission against the existing
       stock set; true duplicates / reorderings (incl. the twin teeth-powders) are
       skipped, distinct items survive. → 7a (dedupe backlog note).
-- [ ] **Category re-audit (optional).** Nothing re-checks the LLM's initial
-      collection assignment; mis-files (e.g. dental → grooming) can recur. Cheap
-      periodic re-audit or a confidence check at import.
+- [x] **Category re-audit** (done 2026-06-14). `signaledCategory` (search.ts)
+      maps a title to ONE collection from keyword signals; `reconcileCategories`
+      (import.ts) re-files a product only when its title points unambiguously at
+      a different mapped collection — mixed/no signal is left alone, so it never
+      overrides a reasonable LLM placement. Nightly + console "Re-file
+      categories" button → POST /api/categories. LLM-free.
 
 ## 2. Deferred decisions — your call (You, then PS executes)
 
@@ -76,9 +79,9 @@ Last updated: 2026-06-14.
 ---
 
 ### Recently completed (this session)
-- Robustness: mechanical pet-relevance floor + dedupe-at-admission (the two
-  hardening items above) — closes the non-pet-during-LLM-outage hole and the
-  duplicate-flooding gap.
+- Robustness: mechanical pet-relevance floor + dedupe-at-admission + category
+  re-audit — closes the non-pet-during-LLM-outage hole, the duplicate-flooding
+  gap, and category drift. (All three hardening items above are LLM-free.)
 - Search relevance fix (listV2 id-field, species gate, $0.50 floor) — verified.
 - `cj-cat-` → `cj-pet-` tag rename (code + live data + collections + config).
 - Vision hero-image QA at import + nightly sweep + `hero_sig` cost guard.

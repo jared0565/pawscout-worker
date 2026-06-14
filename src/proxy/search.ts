@@ -90,6 +90,32 @@ export function titleSignature(title: string): string {
   return toks.join(',');
 }
 
+// --- Category signal (LLM-free): map a title to ONE collection, or nothing ---
+// Keyed to the standard Active Paw collections; a sweep only re-files a product
+// when its title points unambiguously at a single category that differs from
+// where it sits — so it never overrides a reasonable (possibly LLM-made) call.
+const CATEGORY_SIGNALS: Record<string, string[]> = {
+  'pet-health': ['dental', 'teeth', 'tooth', 'toothbrush', 'oral', 'tartar', 'gum', 'dewormer', 'supplement', 'vitamin', 'wound', 'first aid'],
+  'pet-toys': ['toy', 'toys', 'ball', 'chew', 'squeaky', 'squeak', 'teaser', 'catnip', 'scratcher', 'fetch', 'plush', 'kicker', 'wand'],
+  'pet-cleaning': ['bath', 'shampoo', 'towel', 'bathrobe', 'wash', 'shower', 'paw clean', 'paw cleaner'],
+  'pet-grooming': ['comb', 'nail clipper', 'nail grinder', 'grinder', 'scissor', 'deshed', 'shedding', 'grooming', 'trimmer', 'clipper', 'slicker', 'detangle', 'detangling', 'razor'],
+  'pet-accessories': ['leash', 'harness', 'collar', 'bowl', 'feeder', 'water bottle', 'carrier', 'diaper', 'airtag', 'raincoat', 'apparel']
+};
+
+/** The single collection a title clearly belongs to, or null if 0 or >1 match. */
+export function signaledCategory(title: string): string | null {
+  const t = (title || '').toLowerCase();
+  const tokens = t.split(/[^a-z0-9]+/).filter(Boolean);
+  const matched = new Set<string>();
+  for (const [cat, signals] of Object.entries(CATEGORY_SIGNALS)) {
+    for (const sig of signals) {
+      const hit = sig.includes(' ') ? t.includes(sig) : tokens.some((tok) => tok === sig || tok.startsWith(sig));
+      if (hit) { matched.add(cat); break; }
+    }
+  }
+  return matched.size === 1 ? [...matched][0] : null;
+}
+
 // Species vocabulary — the single most important relevance signal in a
 // pet store (a "dog toy" search must never show cat products).
 const DOG_WORDS = new Set(['dog', 'dogs', 'puppy', 'puppies', 'pup', 'pups', 'canine', 'doggy', 'doggie']);

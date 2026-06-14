@@ -3,7 +3,7 @@ import { chooseOrigin, CjClient, CjTokenManager, cjFetchFromEnv, type CjSearchIt
 import { makeAdminGraphql, type AdminGraphql } from './shopify-admin';
 import { TenantStore, listActiveShops, purgeExpiredSearchCache, purgeUnusedWarehouse, trimOldLogs } from './tenant-store';
 import { liveCjPasses, normalizeKeyword, CACHE_TTL_DAYS, isLikelyPetProduct, titleSignature } from './proxy/search';
-import { confirmAndImport, getCachedDetail, resolveCategory, reconcileAddonVisibility, reconcileHeroImages, reconcileDescriptions } from './proxy/import';
+import { confirmAndImport, getCachedDetail, resolveCategory, reconcileAddonVisibility, reconcileHeroImages, reconcileDescriptions, reconcileCategories } from './proxy/import';
 import { enableTracking, getPrimaryLocationId, productInventoryItems, setInventoryQuantities, setSupplierMetafields, updateVariantPrices, MAX_TRACKED_QTY } from './proxy/inventory';
 import { retailPriceGbp } from './pricing';
 import type { CjDetail } from './cj';
@@ -487,6 +487,10 @@ export async function runDailyMaintenance(env: Env): Promise<void> {
         await syncStoreInventory(store, cj, admin, cfg);
         await refillCollections(store, cj, admin, cfg, { curate, pickHero }); // promote-from-warehouse (floor 8, target 12)
         await reconcileAddonVisibility(store, admin, cfg); // align hidden/visible add-ons to the toggle
+        for (let off: number | null = 0, i = 0; off !== null && i < 30; i++) {
+          const r = await reconcileCategories(store, admin, cfg, { offset: off, limit: 25 }); // re-file unambiguous mis-categorised products
+          off = r.next;
+        }
         // Drain the batched vision/description sweeps over multiple iterations
         // (each batch finishes well inside the request budget; the loop walks
         // the whole catalog). Safety cap stops a runaway if `next` never clears.

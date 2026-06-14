@@ -18,7 +18,7 @@ import { validateGatesPayload, validatePricingPayload, validateLlmPayload, valid
 import { verifyAppProxy } from './proxy/verify';
 import { searchBackfill, normalizeKeyword } from './proxy/search';
 import { LlmClient, classifyKeyword, curateProduct, pickHeroImage, rewriteDescription } from './llm';
-import { buildPreview, getDetailPreferWarehouse, confirmAndImport, reconcileAddonVisibility, reconcileHeroImages, reconcileDescriptions } from './proxy/import';
+import { buildPreview, getDetailPreferWarehouse, confirmAndImport, reconcileAddonVisibility, reconcileHeroImages, reconcileDescriptions, reconcileCategories } from './proxy/import';
 import { makeAdminGraphql } from './shopify-admin';
 import { runDailyMaintenance, syncStoreInventory, refillCollections } from './jobs';
 import { firecrawlCjSearch } from './firecrawl';
@@ -254,6 +254,28 @@ app.post('/api/descriptions', async (c) => {
     return c.json({ ok: true, ...r });
   } catch (e) {
     console.warn(`description sweep failed: ${(e as Error).message}`);
+    return c.json({ ok: false, error: `Sweep failed: ${(e as Error).message}` }, 500);
+  }
+});
+// Category re-audit (LLM-free): re-file products whose title unambiguously
+// points at a different collection. One batch per call (offset cursor).
+app.post('/api/categories', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: { offset?: number } = {};
+  try { body = await c.req.json(); } catch { /* defaults */ }
+  const store = new TenantStore(c.env.DB, s);
+  const tenant = await store.getTenant();
+  const cfg = await store.getConfig();
+  if (!tenant?.access_token_enc || !cfg) return c.json({ ok: false, error: 'Not configured' }, 400);
+  const vault = await Vault.fromMasterKey(c.env.PAWSCOUT_MASTER_KEY);
+  const accessToken = await vault.open(tenant.dek_wrapped, tenant.access_token_enc);
+  const admin = makeAdminGraphql(s, accessToken);
+  const offset = Math.max(0, Math.floor(Number(body.offset) || 0));
+  try {
+    const r = await reconcileCategories(store, admin, cfg, { offset, limit: SWEEP_BATCH });
+    return c.json({ ok: true, ...r });
+  } catch (e) {
+    console.warn(`category sweep failed: ${(e as Error).message}`);
     return c.json({ ok: false, error: `Sweep failed: ${(e as Error).message}` }, 500);
   }
 });
