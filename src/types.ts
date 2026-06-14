@@ -95,5 +95,6 @@ export const ACTIVE_PAW_COLLECTION_MAP: TenantConfig['collectionMap'] = {
   'pet-accessories': { handle: 'pet-accessories', tag: 'cj-pet-accessories' },
   'pet-health': { handle: 'pet-health', tag: 'cj-pet-health' },
   'pet-toys': { handle: 'pet-toys', tag: 'cj-pet-toys' },
+  'pet-grooming': { handle: 'pet-grooming', tag: 'cj-pet-grooming' },
   'more-to-love': { handle: 'more-to-love', tag: 'cj-pet-more-to-love' }
 };
