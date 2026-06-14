@@ -602,6 +602,30 @@ Wired in three places:
   `/api/hero-images` (background, LLM-gated). Manual fix already applied live to
   the scissors-set product via `productReorderMedia` (set shot → featured).
 
+## 7a-i-l. Inventory sweep — non-pet products + duplicate (2026-06-14 14:20)
+
+Reviewing the scissors-set product surfaced a worse problem than the wrong
+thumbnail: **non-pet products were live**, a "scissors / grooming scissors"
+search having pulled in human/kitchen/garden tools that curation let through.
+Archived 6 (Shopify status ARCHIVED) AND removed from the PawScout pipeline —
+deleted their `warehouse_products` rows and set `product_links.state='archived'`
+— because archiving alone doesn't stick: `refillCollections` re-promotes any
+warehouse row whose link isn't imported/importing, so junk would revive nightly.
+The 6: scissors sharpener, kitchen knife sharpener, garden pruning shears,
+hairdressing/tailor/barber scissors. (Two also still had raw CJ-soup titles the
+retitle pass missed — moot, now archived.)
+
+Duplicate: "Pet Teeth Cleaning Powder 100g" listed twice — two DIFFERENT CJ
+SKUs (CJCT243272001AZ vs CJYD236798001AZ) imported 20s apart, same product type.
+Kept Listing A (pet-health, canonical handle, £13.99); archived Listing B
+(`…862034`, was mis-filed under pet-grooming, £12.99) + pipeline cleanup.
+
+GAP / BACKLOG (dedupe-at-admission): curation scores each candidate in
+isolation — no "we already stock this product type" check — so near-identical
+items can both pass (the powder pair). Consider a similarity/embedding (or
+normalized-title) dedupe at warehouse admission so one product type → one
+listing. Not built; recorded so the cause is known.
+
 ## 7a-ii. STRATEGY DECISION — shipping display, origin choice, returns
 ## (user-raised 2026-06-12; recommendation delivered same day; user
 ##  decision pending — do not implement until the user confirms)
