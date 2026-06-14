@@ -235,7 +235,7 @@ export async function importProduct(
       title: detail.nameEn,
       descriptionHtml: detail.descriptionHtml,
       status: 'ACTIVE',
-      tags: [IMPORT_TAG, `cj-pid-${detail.pid}`, ...(isAddon ? [ADDON_TAG] : []), ...(detail.petClass ? [`cj-pet-${detail.petClass}`] : []), ...(browseCat && cfg.collectionMap[browseCat] ? [cfg.collectionMap[browseCat].tag] : [])],
+      tags: [IMPORT_TAG, `cj-pid-${detail.pid}`, ...(isAddon ? [ADDON_TAG] : []), ...(detail.petClass ? [`cj-species-${detail.petClass}`] : []), ...(browseCat && cfg.collectionMap[browseCat] ? [cfg.collectionMap[browseCat].tag] : [])],
       files: detail.images.slice(0, MAX_IMAGES).map((src) => ({ originalSource: src, contentType: 'IMAGE' })),
       productOptions: [{ name: optionName, values: multi ? variants.map((v) => ({ name: v.name })) : [{ name: 'Default Title' }] }],
       variants: variants.map((v) => ({

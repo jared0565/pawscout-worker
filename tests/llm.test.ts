@@ -11,7 +11,7 @@ beforeEach(async () => { await applyD1Migrations(env.DB, env.TEST_MIGRATIONS); }
 
 const SHOP = 'a.myshopify.com';
 const CFG: TenantConfig = {
-  collectionMap: { 'pet-toys': { handle: 'pet-toys', tag: 'cj-cat-pet-toys' } },
+  collectionMap: { 'pet-toys': { handle: 'pet-toys', tag: 'cj-pet-toys' } },
   gates: DEFAULT_GATES,
   pricing: DEFAULT_PRICING,
   floors: { ...DEFAULT_FLOORS, warehouseDepth: 3 },

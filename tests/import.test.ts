@@ -10,8 +10,8 @@ beforeEach(async () => { await applyD1Migrations(env.DB, env.TEST_MIGRATIONS); }
 
 const CFG: TenantConfig = {
   collectionMap: {
-    'pet-toys': { handle: 'pet-toys', tag: 'cj-cat-pet-toys' },
-    'more-to-love': { handle: 'more-to-love', tag: 'cj-cat-more-to-love' }
+    'pet-toys': { handle: 'pet-toys', tag: 'cj-pet-pet-toys' },
+    'more-to-love': { handle: 'more-to-love', tag: 'cj-pet-more-to-love' }
   },
   gates: DEFAULT_GATES,
   pricing: DEFAULT_PRICING,
@@ -85,7 +85,7 @@ describe('importProduct', () => {
 
     const setCall = calls.find((c) => c.query.includes('productSet'))!;
     const input = setCall.variables!.input as Record<string, unknown>;
-    expect(input.tags).toEqual(['cj-import', 'cj-pid-P1', 'cj-addon']); // no cj-cat-* tag
+    expect(input.tags).toEqual(['cj-import', 'cj-pid-P1', 'cj-addon']); // no cj-pet-* tag
     const hide = calls.find((c) => c.query.includes('pawscoutHide'))!;
     const mf = (hide.variables!.metafields as { namespace: string; key: string; value: string }[])[0];
     expect(mf).toMatchObject({ namespace: 'seo', key: 'hidden', value: '1' });
@@ -101,7 +101,7 @@ describe('importProduct', () => {
     const setCall = calls.find((c) => c.query.includes('productSet'))!;
     const tags = (setCall.variables!.input as { tags: string[] }).tags;
     expect(tags).toContain('cj-addon');
-    expect(tags.some((t) => t.startsWith('cj-cat-'))).toBe(true); // joined a real collection
+    expect(tags.some((t) => t.startsWith('cj-pet-'))).toBe(true); // joined a real collection
     // seo.hidden set to '0' (visible), not '1'
     const hide = calls.find((c) => c.query.includes('pawscoutHide'))!;
     expect((hide.variables!.metafields as { value: string }[])[0].value).toBe('0');
@@ -121,7 +121,7 @@ describe('importProduct', () => {
 
     const setCall = calls.find((c) => c.query.includes('productSet'))!;
     const input = setCall.variables!.input as Record<string, unknown>;
-    expect(input.tags).toEqual(['cj-import', 'cj-pid-P1', 'cj-cat-pet-toys']);
+    expect(input.tags).toEqual(['cj-import', 'cj-pid-P1', 'cj-pet-pet-toys']);
     expect((input.variants as { price: string }[]).map((v) => v.price)).toEqual(['19.99', '23.99']);
     expect(calls.some((c) => c.query.includes('publishablePublish'))).toBe(true);
 

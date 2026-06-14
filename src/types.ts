@@ -91,9 +91,9 @@ export const DEFAULT_ADDONS: Addons = { enabled: true, priceMinUsd: 0.5, priceMa
 export const DEFAULT_TARGET = 12;
 
 export const ACTIVE_PAW_COLLECTION_MAP: TenantConfig['collectionMap'] = {
-  'pet-cleaning': { handle: 'pet-cleaning', tag: 'cj-cat-pet-cleaning' },
-  'pet-accessories': { handle: 'pet-accessories', tag: 'cj-cat-pet-accessories' },
-  'pet-health': { handle: 'pet-health', tag: 'cj-cat-pet-health' },
-  'pet-toys': { handle: 'pet-toys', tag: 'cj-cat-pet-toys' },
-  'more-to-love': { handle: 'more-to-love', tag: 'cj-cat-more-to-love' }
+  'pet-cleaning': { handle: 'pet-cleaning', tag: 'cj-pet-cleaning' },
+  'pet-accessories': { handle: 'pet-accessories', tag: 'cj-pet-accessories' },
+  'pet-health': { handle: 'pet-health', tag: 'cj-pet-health' },
+  'pet-toys': { handle: 'pet-toys', tag: 'cj-pet-toys' },
+  'more-to-love': { handle: 'more-to-love', tag: 'cj-pet-more-to-love' }
 };

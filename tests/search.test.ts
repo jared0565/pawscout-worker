@@ -8,7 +8,7 @@ import type { CjClient, CjSearchItem } from '../src/cj';
 beforeEach(async () => { await applyD1Migrations(env.DB, env.TEST_MIGRATIONS); });
 
 const CFG: TenantConfig = {
-  collectionMap: { 'pet-toys': { handle: 'pet-toys', tag: 'cj-cat-pet-toys' } },
+  collectionMap: { 'pet-toys': { handle: 'pet-toys', tag: 'cj-pet-toys' } },
   gates: DEFAULT_GATES, // floor 50, $5–80, title relevance
   pricing: DEFAULT_PRICING,
   floors: DEFAULT_FLOORS,

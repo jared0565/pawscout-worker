@@ -41,12 +41,22 @@
 - [x] Theme MERGED to `shopify-deploy` 2026-06-12 (5e8952d → 9f47311) — ghost
       cards, preview modal, and beacons are live to visitors.
 
+**Collection-tag rename (2026-06-14):** the `cj-cat-*` prefix was misleading
+(reads as "cat" the animal, not "category"). Renamed to `cj-pet-*` across the
+collection map (`cj-pet-cleaning`, `cj-pet-accessories`, `cj-pet-health`,
+`cj-pet-toys`, `cj-pet-grooming`, `cj-pet-more-to-love`). The LLM species tag —
+formerly `cj-pet-{class}` — moved to `cj-species-{class}` to keep the two
+namespaces distinct. Production re-tag done in a safe order: add new tags to all
+products → switch the 6 smart-collection rules → remove old tags → update
+`tenant_config.collection_map`, so no product ever drops out of a collection
+mid-migration. Older "cj-cat" mentions below are historical.
+
 **Store state changes (2026-06-12, via Shopify MCP):**
 
 - Checkout/payments DISABLED by the user until the pricing strategy is final —
   re-enable before any ad spend. Views/ATC signals unaffected.
 - New smart collection **Pet Grooming** (`pet-grooming`, tag
-  `cj-cat-pet-grooming`), added to the PawScout collection map; 11 existing
+  `cj-pet-grooming`), added to the PawScout collection map; 11 existing
   grooming products tagged into it; 5 grooming demand keywords seeded into
   search_log (sourced from wowgrooming.co.uk's range).
 - One-time catalog retitle: 27 products with CJ keyword-soup titles (60-170

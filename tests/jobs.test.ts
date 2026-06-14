@@ -108,8 +108,8 @@ describe('cullStaleProducts', () => {
 describe('refillCollections (promote-from-warehouse)', () => {
   const CFG: TenantConfig = {
     collectionMap: {
-      'pet-toys': { handle: 'pet-toys', tag: 'cj-cat-pet-toys' },
-      'pet-health': { handle: 'pet-health', tag: 'cj-cat-pet-health' }
+      'pet-toys': { handle: 'pet-toys', tag: 'cj-pet-pet-toys' },
+      'pet-health': { handle: 'pet-health', tag: 'cj-pet-pet-health' }
     },
     gates: DEFAULT_GATES,
     pricing: DEFAULT_PRICING,

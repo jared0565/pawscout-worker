@@ -26,11 +26,11 @@ describe('TenantStore', () => {
   it('reads/writes config scoped to shop', async () => {
     const a = new TenantStore(env.DB, 'a.myshopify.com');
     await a.upsertTenant({ accessTokenEnc: 't', dekWrapped: 'd', scopes: 's' });
-    await a.seedConfig({ collectionMap: { x: { handle: 'x', tag: 'cj-cat-x' } }, gates: { popularityFloor: 10, priceMin: 1, priceMax: 9, relevance: 'title' }, pricing: DEFAULT_PRICING, floors: DEFAULT_FLOORS,
+    await a.seedConfig({ collectionMap: { x: { handle: 'x', tag: 'cj-pet-x' } }, gates: { popularityFloor: 10, priceMin: 1, priceMax: 9, relevance: 'title' }, pricing: DEFAULT_PRICING, floors: DEFAULT_FLOORS,
   llm: DEFAULT_LLM,
   addons: DEFAULT_ADDONS, target: 16 });
     const cfg = await a.getConfig();
-    expect(cfg?.collectionMap.x.tag).toBe('cj-cat-x');
+    expect(cfg?.collectionMap.x.tag).toBe('cj-pet-x');
     expect(await new TenantStore(env.DB, 'b.myshopify.com').getConfig()).toBeNull();
   });
 

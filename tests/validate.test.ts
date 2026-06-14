@@ -95,8 +95,8 @@ describe('validateAddonsPayload', () => {
 
 describe('validateCollectionMap', () => {
   it('accepts a valid map and returns a clean copy', () => {
-    const r = validateCollectionMap({ 'pet-toys': { handle: 'pet-toys', tag: 'cj-cat-pet-toys', extra: 1 } });
-    expect(r).toEqual({ ok: true, value: { 'pet-toys': { handle: 'pet-toys', tag: 'cj-cat-pet-toys' } } });
+    const r = validateCollectionMap({ 'pet-toys': { handle: 'pet-toys', tag: 'cj-pet-toys', extra: 1 } });
+    expect(r).toEqual({ ok: true, value: { 'pet-toys': { handle: 'pet-toys', tag: 'cj-pet-toys' } } });
   });
 
   it('accepts an empty map (clears all mappings)', () => {

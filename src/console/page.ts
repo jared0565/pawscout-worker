@@ -346,7 +346,7 @@ function addMapRow(handle,tag){
     d.appendChild(i); row.appendChild(d); return i;
   }
   field('collection handle (e.g. pet-toys)',handle);
-  field('supplier tag (e.g. cj-cat-pet-toys)',tag);
+  field('supplier tag (e.g. cj-pet-toys)',tag);
   var rm=document.createElement('button'); rm.className='ghost'; rm.type='button'; rm.textContent='Remove';
   rm.onclick=function(){ row.remove(); };
   row.appendChild(rm);
