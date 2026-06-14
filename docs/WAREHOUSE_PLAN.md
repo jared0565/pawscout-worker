@@ -418,12 +418,14 @@ ghost. LLM remains background-only (imports run in waitUntil).
   rewrote with a proper customer-facing body (2026-06-13, via MCP).
 - FINDING: legacy-adopted products carried INTERNAL dev notes in their
   customer-facing descriptions ("demo-store dropshipping testing",
-  "traffic-testing workflows", "Demo category:"). BUILT a catalog-wide
-  sanitize: jobs.stripInternalNotes + sanitizeDescriptions (batched,
-  idempotent), /api/sanitize route, console "Clean up descriptions"
-  button. Current imports never add such notes (legacy-only). DEPLOY: code
-  only; then click the button. NOT yet run against production (awaiting
-  user deploy + click).
+  "traffic-testing workflows", "Demo category:"). Built a catalog-wide
+  sanitize (jobs.stripInternalNotes + sanitizeDescriptions, /api/sanitize,
+  console "Clean up descriptions").
+  RETIRED 2026-06-14: superseded by the `reconcileDescriptions` LLM sweep
+  (7a-i-m), which produces fully clean copy and inherently drops dev-notes.
+  Removed the job, route, button, and its test; the Maintenance card is now
+  "Maintenance — run now" with three buttons (Sync now, Fix default images,
+  Rewrite legacy descriptions) — all on-demand versions of nightly cron steps.
 
 ## 7a-i-e. Search quality fixes (2026-06-13, from a live "cat toys" review)
 

@@ -435,60 +435,6 @@ export async function refreshWarehouseStock(
   return checked;
 }
 
-// --- description sanitize: strip internal dev/testing notes from product bodies ---
-
-// The legacy adoption step (a prior session) appended internal monitoring notes
-// to product descriptions — they ended up customer-facing. Strip any <p> block
-// carrying one of these unmistakable internal markers. Current imports never add
-// them, so this is a one-time (idempotent) cleanup.
-const INTERNAL_NOTE_RE =
-  /\s*<p>(?:(?!<\/p>)[\s\S])*?(?:demo-store|traffic-testing|paid traffic is scaled|Demo category:|imported from CJ Dropshipping for|dropshipping testing)(?:(?!<\/p>)[\s\S])*?<\/p>/gi;
-
-/** Pure: remove internal-note paragraphs from a product description. */
-export function stripInternalNotes(html: string): string {
-  return html.replace(INTERNAL_NOTE_RE, '');
-}
-
-const PRODUCT_BODY = `query pawscoutBody($id: ID!) { product(id: $id) { descriptionHtml } }`;
-const PRODUCT_CLEAN = `mutation pawscoutClean($product: ProductUpdateInput!) {
-  productUpdate(product: $product) { product { id } userErrors { field message } }
-}`;
-
-/**
- * One-time catalog cleanup: strip internal dev/testing notes from every listed
- * product's description. Batched (offset cursor) so a single request stays
- * bounded; idempotent (a clean body is left untouched, no write).
- */
-export async function sanitizeDescriptions(
-  store: TenantStore,
-  admin: AdminGraphql,
-  opts: { offset?: number; limit?: number } = {}
-): Promise<{ cleaned: number; scanned: number; total: number; next: number | null }> {
-  const limit = opts.limit ?? 10;
-  const offset = opts.offset ?? 0;
-  const links = await store.listImportedLinks(500);
-  const slice = links.slice(offset, offset + limit);
-  let cleaned = 0;
-  for (const link of slice) {
-    if (!link.shopify_product_id) continue;
-    try {
-      const data = await admin(PRODUCT_BODY, { id: link.shopify_product_id });
-      const body = (data.product as { descriptionHtml?: string } | null)?.descriptionHtml ?? '';
-      const next = stripInternalNotes(body);
-      if (next !== body) {
-        const upd = await admin(PRODUCT_CLEAN, { product: { id: link.shopify_product_id, descriptionHtml: next } });
-        const errs = (upd.productUpdate as { userErrors?: { message: string }[] } | undefined)?.userErrors ?? [];
-        if (errs.length) throw new Error(errs.map((e) => e.message).join('; '));
-        cleaned++;
-      }
-    } catch (e) {
-      console.warn(`description sanitize failed for ${link.cj_pid}: ${(e as Error).message}`);
-    }
-  }
-  const nextOffset = offset + limit;
-  return { cleaned, scanned: slice.length, total: links.length, next: nextOffset < links.length ? nextOffset : null };
-}
-
 /** Daily cron entry point: retention purges, then per-tenant cull + refill. */
 export async function runDailyMaintenance(env: Env): Promise<void> {
   await purgeExpiredSearchCache(env.DB);
