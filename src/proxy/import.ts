@@ -415,16 +415,22 @@ const REORDER_MEDIA = `mutation pawscoutReorder($id: ID!, $moves: [MoveInput!]!)
  * best representation of the title (e.g. a "set" whose default shot is one
  * component). Best-effort per product; one bad product never aborts the run.
  * `pickHero` is injected (same closure the import path uses) for testability.
+ *
+ * Batched (offset/limit) so each call finishes well inside a request's time
+ * budget — the console loops with `next` for progress; the cron drains it.
  */
 export async function reconcileHeroImages(
   store: TenantStore,
   admin: AdminGraphql,
   cfg: TenantConfig,
   pickHero: (title: string, imageUrls: string[]) => Promise<number | null>,
-  opts: { max?: number } = {}
-): Promise<{ scanned: number; fixed: number }> {
-  const max = opts.max ?? 100;
-  const links = (await store.listImportedLinks(500)).filter((l) => l.shopify_product_id).slice(0, max);
+  opts: { offset?: number; limit?: number } = {}
+): Promise<{ scanned: number; fixed: number; total: number; next: number | null }> {
+  const offset = Math.max(0, opts.offset ?? 0);
+  const limit = opts.limit ?? 8;
+  const all = (await store.listImportedLinks(500)).filter((l) => l.shopify_product_id);
+  const total = all.length;
+  const links = all.slice(offset, offset + limit);
   let scanned = 0;
   let fixed = 0;
   for (const link of links) {
@@ -455,7 +461,7 @@ export async function reconcileHeroImages(
       console.warn(`hero-image reconcile failed for ${link.cj_pid}: ${(e as Error).message}`);
     }
   }
-  return { scanned, fixed };
+  return { scanned, fixed, total, next: offset + limit < total ? offset + limit : null };
 }
 
 const PRODUCT_DESC = `query pawscoutDesc($id: ID!) { product(id: $id) { title descriptionHtml } }`;
@@ -478,16 +484,22 @@ export function needsDescriptionRewrite(html: string): boolean {
  * claim-safe copy. Only products whose current description still smells of raw
  * CJ text are touched (so already-clean listings cost no LLM calls). `rewrite`
  * is injected for testability. One product's failure never aborts the run.
+ *
+ * Batched (offset/limit) so each call finishes inside a request's time budget —
+ * the console loops with `next` for progress; the cron drains it.
  */
 export async function reconcileDescriptions(
   store: TenantStore,
   admin: AdminGraphql,
   cfg: TenantConfig,
   rewrite: (title: string, rawHtml: string) => Promise<string | null>,
-  opts: { max?: number } = {}
-): Promise<{ scanned: number; rewritten: number }> {
-  const max = opts.max ?? 100;
-  const links = (await store.listImportedLinks(500)).filter((l) => l.shopify_product_id).slice(0, max);
+  opts: { offset?: number; limit?: number } = {}
+): Promise<{ scanned: number; rewritten: number; total: number; next: number | null }> {
+  const offset = Math.max(0, opts.offset ?? 0);
+  const limit = opts.limit ?? 8;
+  const all = (await store.listImportedLinks(500)).filter((l) => l.shopify_product_id);
+  const total = all.length;
+  const links = all.slice(offset, offset + limit);
   let scanned = 0;
   let rewritten = 0;
   for (const link of links) {
@@ -510,5 +522,5 @@ export async function reconcileDescriptions(
       console.warn(`description reconcile failed for ${link.cj_pid}: ${(e as Error).message}`);
     }
   }
-  return { scanned, rewritten };
+  return { scanned, rewritten, total, next: offset + limit < total ? offset + limit : null };
 }

@@ -232,7 +232,7 @@ describe('hero-image QA (vision)', () => {
     const calls: Call[] = [];
     const admin = heroAdmin(calls, 'gid://m/0', [{ id: 'gid://m/0', url: 'https://i/0.jpg' }, { id: 'gid://m/1', url: 'https://i/1.jpg' }, { id: 'gid://m/2', url: 'https://i/2.jpg' }]);
     const r = await reconcileHeroImages(store, admin, CFG, async () => 2);
-    expect(r).toEqual({ scanned: 1, fixed: 1 });
+    expect(r).toEqual({ scanned: 1, fixed: 1, total: 1, next: null });
     const move = calls.find((c) => c.query.includes('productReorderMedia'))!;
     expect(move.variables!.moves).toEqual([{ id: 'gid://m/2', newPosition: '0' }]);
   });
@@ -244,7 +244,7 @@ describe('hero-image QA (vision)', () => {
     // pickHero picks index 2, but media[2] is already the featured one → no reorder.
     const admin = heroAdmin(calls, 'gid://m/2', [{ id: 'gid://m/0', url: 'https://i/0.jpg' }, { id: 'gid://m/1', url: 'https://i/1.jpg' }, { id: 'gid://m/2', url: 'https://i/2.jpg' }]);
     const r = await reconcileHeroImages(store, admin, CFG, async () => 2);
-    expect(r).toEqual({ scanned: 1, fixed: 0 });
+    expect(r).toEqual({ scanned: 1, fixed: 0, total: 1, next: null });
     expect(calls.some((c) => c.query.includes('productReorderMedia'))).toBe(false);
   });
 
@@ -263,7 +263,7 @@ describe('hero-image QA (vision)', () => {
       throw new Error('unexpected');
     };
     const r = await reconcileHeroImages(store, admin, CFG, async () => 1);
-    expect(r).toEqual({ scanned: 2, fixed: 1 }); // bad product swallowed, ok product fixed
+    expect(r).toEqual({ scanned: 2, fixed: 1, total: 2, next: null }); // bad product swallowed, ok product fixed
   });
 });
 
@@ -293,12 +293,12 @@ describe('description QA', () => {
     const callsRaw: Call[] = [];
     const rewrite = async () => '<p>Clean copy.</p>';
     const r1 = await reconcileDescriptions(store, descAdmin(callsRaw, '<div class="cj-description">prevent oral diseases</div>'), CFG, rewrite);
-    expect(r1).toEqual({ scanned: 1, rewritten: 1 });
+    expect(r1).toEqual({ scanned: 1, rewritten: 1, total: 1, next: null });
     expect(callsRaw.some((c) => c.query.includes('productUpdate'))).toBe(true);
 
     const callsClean: Call[] = [];
     const r2 = await reconcileDescriptions(store, descAdmin(callsClean, '<p>A soft toothbrush that helps maintain fresh breath.</p>'), CFG, rewrite);
-    expect(r2).toEqual({ scanned: 1, rewritten: 0 }); // clean → no LLM, no update
+    expect(r2).toEqual({ scanned: 1, rewritten: 0, total: 1, next: null }); // clean → no LLM, no update
     expect(callsClean.some((c) => c.query.includes('productUpdate'))).toBe(false);
   });
 
@@ -307,7 +307,20 @@ describe('description QA', () => {
     await store.putLink({ cjPid: 'raw', state: 'imported', shopifyProductId: 'gid://shopify/Product/raw', handle: 'r', category: 'pet-health' });
     const calls: Call[] = [];
     const r = await reconcileDescriptions(store, descAdmin(calls, '<p>Keywords: cheap toy</p>'), CFG, async () => null);
-    expect(r).toEqual({ scanned: 1, rewritten: 0 });
+    expect(r).toEqual({ scanned: 1, rewritten: 0, total: 1, next: null });
     expect(calls.some((c) => c.query.includes('productUpdate'))).toBe(false);
+  });
+
+  it('pages through the catalog with the offset/next cursor', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    for (const pid of ['p1', 'p2', 'p3']) {
+      await store.putLink({ cjPid: pid, state: 'imported', shopifyProductId: `gid://shopify/Product/${pid}`, handle: pid, category: 'pet-health' });
+    }
+    const admin = descAdmin([], '<div class="cj-description">raw</div>');
+    const rewrite = async () => '<p>Clean.</p>';
+    const b1 = await reconcileDescriptions(store, admin, CFG, rewrite, { offset: 0, limit: 2 });
+    expect(b1).toMatchObject({ scanned: 2, rewritten: 2, total: 3, next: 2 });
+    const b2 = await reconcileDescriptions(store, admin, CFG, rewrite, { offset: b1.next!, limit: 2 });
+    expect(b2).toMatchObject({ scanned: 1, rewritten: 1, total: 3, next: null });
   });
 });

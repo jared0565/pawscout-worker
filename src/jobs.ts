@@ -521,10 +521,21 @@ export async function runDailyMaintenance(env: Env): Promise<void> {
         await syncStoreInventory(store, cj, admin, cfg);
         await refillCollections(store, cj, admin, cfg, { curate, pickHero }); // promote-from-warehouse (floor 8, target 12)
         await reconcileAddonVisibility(store, admin, cfg); // align hidden/visible add-ons to the toggle
-        if (pickHero) await reconcileHeroImages(store, admin, cfg, pickHero, { max: 40 }); // vision: fix mismatched default images
+        // Drain the batched vision/description sweeps over multiple iterations
+        // (each batch finishes well inside the request budget; the loop walks
+        // the whole catalog). Safety cap stops a runaway if `next` never clears.
+        if (pickHero) {
+          for (let off: number | null = 0, i = 0; off !== null && i < 30; i++) {
+            const r = await reconcileHeroImages(store, admin, cfg, pickHero, { offset: off, limit: 8 });
+            off = r.next;
+          }
+        }
         if (llm.available && cfg.llm.enabled) {
           const rewrite = (title: string, raw: string) => rewriteDescription(llm, store, cfg, title, raw);
-          await reconcileDescriptions(store, admin, cfg, rewrite, { max: 40 }); // clean raw/legacy supplier descriptions
+          for (let off: number | null = 0, i = 0; off !== null && i < 30; i++) {
+            const r = await reconcileDescriptions(store, admin, cfg, rewrite, { offset: off, limit: 8 });
+            off = r.next;
+          }
         }
       }
     } catch (e) {

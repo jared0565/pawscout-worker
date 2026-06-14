@@ -204,6 +204,7 @@ app.post('/api/search-diag', async (c) => {
 });
 
 const SANITIZE_BATCH = 10;
+const SWEEP_BATCH = 6; // LLM/vision sweeps: small batch keeps each call inside the request budget
 app.post('/api/sanitize', async (c) => {
   const s = await shopOf(c); if (typeof s !== 'string') return s;
   let body: { offset?: number } = {};
@@ -225,10 +226,11 @@ app.post('/api/sanitize', async (c) => {
 });
 // Vision hero-image QA, on demand: re-pick the default image for already-listed
 // products and promote the best representative shot (fixes "set" listings whose
-// default image is a single component). Runs in the background.
+// default image is a single component). One batch per call (offset cursor) so
+// the console can loop with progress; returns counts + `next`.
 app.post('/api/hero-images', async (c) => {
   const s = await shopOf(c); if (typeof s !== 'string') return s;
-  let body: { max?: number } = {};
+  let body: { offset?: number } = {};
   try { body = await c.req.json(); } catch { /* defaults */ }
   const store = new TenantStore(c.env.DB, s);
   const tenant = await store.getTenant();
@@ -240,20 +242,21 @@ app.post('/api/hero-images', async (c) => {
   const accessToken = await vault.open(tenant.dek_wrapped, tenant.access_token_enc);
   const admin = makeAdminGraphql(s, accessToken);
   const pickHero = (title: string, urls: string[]) => pickHeroImage(llm, store, cfg, title, urls);
-  const max = Math.min(200, Math.max(1, Math.floor(Number(body.max) || 100)));
-  c.executionCtx.waitUntil(
-    reconcileHeroImages(store, admin, cfg, pickHero, { max })
-      .then((r) => console.log(`hero-image sweep: scanned ${r.scanned}, fixed ${r.fixed}`))
-      .catch((e) => console.warn(`hero-image sweep failed: ${(e as Error).message}`))
-  );
-  return c.json({ ok: true, started: true, max });
+  const offset = Math.max(0, Math.floor(Number(body.offset) || 0));
+  try {
+    const r = await reconcileHeroImages(store, admin, cfg, pickHero, { offset, limit: SWEEP_BATCH });
+    return c.json({ ok: true, ...r });
+  } catch (e) {
+    console.warn(`hero-image sweep failed: ${(e as Error).message}`);
+    return c.json({ ok: false, error: `Sweep failed: ${(e as Error).message}` }, 500);
+  }
 });
 // Clean raw/legacy supplier descriptions on demand: rewrite any listing whose
 // description still carries CJ copy (claims, supplier policy, hotlinked images)
-// into clean, claim-safe HTML. Background, LLM-gated.
+// into clean, claim-safe HTML. One batch per call (offset cursor); LLM-gated.
 app.post('/api/descriptions', async (c) => {
   const s = await shopOf(c); if (typeof s !== 'string') return s;
-  let body: { max?: number } = {};
+  let body: { offset?: number } = {};
   try { body = await c.req.json(); } catch { /* defaults */ }
   const store = new TenantStore(c.env.DB, s);
   const tenant = await store.getTenant();
@@ -265,13 +268,14 @@ app.post('/api/descriptions', async (c) => {
   const accessToken = await vault.open(tenant.dek_wrapped, tenant.access_token_enc);
   const admin = makeAdminGraphql(s, accessToken);
   const rewrite = (title: string, raw: string) => rewriteDescription(llm, store, cfg, title, raw);
-  const max = Math.min(200, Math.max(1, Math.floor(Number(body.max) || 100)));
-  c.executionCtx.waitUntil(
-    reconcileDescriptions(store, admin, cfg, rewrite, { max })
-      .then((r) => console.log(`description sweep: scanned ${r.scanned}, rewritten ${r.rewritten}`))
-      .catch((e) => console.warn(`description sweep failed: ${(e as Error).message}`))
-  );
-  return c.json({ ok: true, started: true, max });
+  const offset = Math.max(0, Math.floor(Number(body.offset) || 0));
+  try {
+    const r = await reconcileDescriptions(store, admin, cfg, rewrite, { offset, limit: SWEEP_BATCH });
+    return c.json({ ok: true, ...r });
+  } catch (e) {
+    console.warn(`description sweep failed: ${(e as Error).message}`);
+    return c.json({ ok: false, error: `Sweep failed: ${(e as Error).message}` }, 500);
+  }
 });
 app.post('/api/collections', async (c) => {
   const s = await shopOf(c); if (typeof s !== 'string') return s;
