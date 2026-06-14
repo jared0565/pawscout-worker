@@ -214,12 +214,13 @@ function mapCjSearchItems(list: unknown): CjSearchItem[] {
     .map((raw) => {
       const p = raw as Record<string, unknown>;
       return {
-        pid: String(p.pid ?? p.productId ?? ''),
-        nameEn: String(p.productNameEn ?? p.productName ?? p.nameEn ?? ''),
+        // listV2 returns the product id in `id`; /product/list uses `pid`.
+        pid: String(p.pid ?? p.productId ?? p.id ?? ''),
+        nameEn: String(p.productNameEn ?? p.nameEn ?? p.productName ?? ''),
         image: String(p.productImage ?? p.bigImage ?? p.image ?? ''),
         sellPriceUsd: parseCjPrice(p.sellPrice ?? p.price),
         listedNum: Number(p.listedNum ?? p.listedCount ?? 0),
-        categoryName: String(p.categoryName ?? p.categoryNameEn ?? '')
+        categoryName: String(p.categoryName ?? p.threeCategoryName ?? p.categoryNameEn ?? '')
       };
     })
     .filter((p) => p.pid && p.nameEn);
@@ -297,12 +298,19 @@ export class CjClient {
     return mapCjSearchItems(data?.list);
   }
 
-  /** CJ elasticsearch search (V2). Response shape varies — parsed defensively. */
+  /**
+   * CJ elasticsearch search (V2) — the relevance-ranked search behind CJ's
+   * website. listV2 uses `page`/`size` (NOT pageNum/pageSize), defaults
+   * orderBy=0 (best match), and returns the product id in `id` (NOT `pid`) —
+   * getting any of these wrong makes it return nothing and silently fall back
+   * to the junky keyword endpoint.
+   */
   private async searchV2(keyword: string, pageSize: number): Promise<CjSearchItem[]> {
     const data = (await this.get('/product/listV2', {
       keyWord: keyword,
-      pageNum: '1',
-      pageSize: String(pageSize)
+      page: '1',
+      size: String(Math.min(pageSize, 100)),
+      orderBy: '0' // 0 = best match (relevance) — explicit, matches the website
     })) as Record<string, unknown> | null;
     return mapCjSearchItems(extractV2List(data));
   }

@@ -121,3 +121,47 @@ describe('origins + freight', () => {
     expect(bodies[0]).toContain('"endCountryCode":"GB"');
   });
 });
+
+describe('CjClient.search — listV2 first (real shape: id, nameEn, content[].productList)', () => {
+  it('parses listV2 results and uses the `id` field as pid (the fallback bug)', async () => {
+    const urls: string[] = [];
+    const fakeFetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      urls.push(url);
+      if (url.includes('/product/listV2')) {
+        return new Response(JSON.stringify({
+          result: true,
+          data: { content: [{ productList: [
+            { id: '111', nameEn: 'Herding Ball for Dogs', bigImage: 'https://i/d.jpg', sellPrice: '9.00', listedNum: 3, threeCategoryName: 'Dog Toys' }
+          ] }] }
+        }), { status: 200 });
+      }
+      // legacy fallback should NOT be reached
+      return new Response(JSON.stringify({ result: true, data: { list: [{ pid: 'JUNK', productNameEn: 'Advent Calendar Toys' }] } }), { status: 200 });
+    }) as typeof fetch;
+    const cj = new CjClient(async () => 'tok', fakeFetch);
+    const items = await cj.search('dog toy');
+    expect(urls[0]).toContain('/product/listV2');
+    expect(urls[0]).toContain('orderBy=0');
+    expect(urls[0]).toContain('page=1');
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ pid: '111', nameEn: 'Herding Ball for Dogs', sellPriceUsd: 9, listedNum: 3 });
+    expect(urls.some((u) => u.includes('/product/list?'))).toBe(false); // never fell back
+  });
+
+  it('falls back to /product/list only when listV2 is empty', async () => {
+    const urls: string[] = [];
+    const fakeFetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      urls.push(url);
+      if (url.includes('/product/listV2')) {
+        return new Response(JSON.stringify({ result: true, data: { content: [] } }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ result: true, data: { list: [{ pid: 'L1', productNameEn: 'Dog Rope', sellPrice: '7' }] } }), { status: 200 });
+    }) as typeof fetch;
+    const cj = new CjClient(async () => 'tok', fakeFetch);
+    const items = await cj.search('dog toy');
+    expect(items.map((i) => i.pid)).toEqual(['L1']);
+    expect(urls.some((u) => u.includes('/product/list?'))).toBe(true);
+  });
+});
