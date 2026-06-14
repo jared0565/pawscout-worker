@@ -97,3 +97,29 @@ describe('order store', () => {
     expect((await store.listOrders('queued')).length).toBe(0);
   });
 });
+
+describe('GDPR redaction', () => {
+  async function seedOrder(store: TenantStore, id: string) {
+    await store.insertOrderIfNew({ shopifyOrderId: id, orderName: '#' + id, totalPrice: 10, currency: 'GBP', financialStatus: 'paid', riskLevel: null, status: 'queued', holdReasons: [], addressJson: '{"name":"Jane"}', lineItemsJson: null, fulfilAfter: null });
+  }
+
+  it('customers/redact erases only the named orders', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedOrder(store, 'keep'); await seedOrder(store, 'gone1'); await seedOrder(store, 'gone2');
+    const removed = await store.redactOrders(['gone1', 'gone2']);
+    expect(removed).toBe(2);
+    expect(await store.getOrder('gone1')).toBeNull();
+    expect(await store.getOrder('keep')).not.toBeNull();
+  });
+
+  it('shop/redact purges all shop data (orders, links, config, tenant)', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await store.upsertTenant({ accessTokenEnc: 't', dekWrapped: 'd', scopes: 's' });
+    await store.putLink({ cjPid: 'P1', state: 'imported', shopifyProductId: 'gid://1', handle: 'h', category: 'pet-toys' });
+    await seedOrder(store, 'o1');
+    await store.redactShop();
+    expect(await store.getOrder('o1')).toBeNull();
+    expect(await store.getLink('P1')).toBeNull();
+    expect(await store.getTenant()).toBeNull();
+  });
+});

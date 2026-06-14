@@ -43,9 +43,10 @@ export async function registerWebhookTopic(
 }
 
 /**
- * Register every webhook the app needs (uninstall + paid orders) for a shop.
- * Best-effort per topic — a missing `orders/paid` scope must not stop the
- * uninstall hook (or the install) from registering. Reports the first failure.
+ * Register every webhook the app needs for a shop: uninstall, paid orders, and
+ * the three mandatory GDPR/privacy topics. Best-effort per topic — a missing
+ * `orders/paid` scope must not stop the others (or the install). Reports the
+ * first failure (after attempting all).
  */
 export async function registerWebhooks(
   shop: string,
@@ -53,10 +54,14 @@ export async function registerWebhooks(
   appUrl: string,
   fetchImpl: typeof fetch = defaultFetch
 ): Promise<RegisterResult> {
-  const results = await Promise.all([
-    registerWebhookTopic(shop, accessToken, 'APP_UNINSTALLED', `${appUrl}/webhooks/uninstall`, fetchImpl),
-    registerWebhookTopic(shop, accessToken, 'ORDERS_PAID', `${appUrl}/webhooks/orders-paid`, fetchImpl)
-  ]);
+  const topics: [string, string][] = [
+    ['APP_UNINSTALLED', `${appUrl}/webhooks/uninstall`],
+    ['ORDERS_PAID', `${appUrl}/webhooks/orders-paid`],
+    ['CUSTOMERS_DATA_REQUEST', `${appUrl}/webhooks/customers-data-request`],
+    ['CUSTOMERS_REDACT', `${appUrl}/webhooks/customers-redact`],
+    ['SHOP_REDACT', `${appUrl}/webhooks/shop-redact`]
+  ];
+  const results = await Promise.all(topics.map(([t, u]) => registerWebhookTopic(shop, accessToken, t, u, fetchImpl)));
   const failed = results.find((r) => !r.ok);
   return failed ?? { ok: true };
 }

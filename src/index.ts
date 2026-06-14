@@ -485,6 +485,40 @@ app.post('/webhooks/orders-paid', async (c) => {
   return c.text('ok'); // always 200 — a non-2xx makes Shopify retry the webhook
 });
 
+// --- GDPR mandatory webhooks (HMAC-verified; all return 200) ---
+async function gdprWebhook(c: Context<{ Bindings: Env }>, handle: (store: TenantStore, payload: Record<string, unknown>) => Promise<void>): Promise<Response> {
+  const shopify = makeShopify(c.env);
+  const body = await c.req.text();
+  const valid = await shopify.webhooks.validate({ rawBody: body, rawRequest: c.req.raw });
+  if (!valid.valid) return c.text('invalid', 401);
+  const shop = c.req.header('X-Shopify-Shop-Domain') ?? '';
+  try {
+    await handle(new TenantStore(c.env.DB, shop), JSON.parse(body) as Record<string, unknown>);
+  } catch (e) {
+    console.warn(`gdpr webhook failed for ${shop}: ${(e as Error).message}`);
+  }
+  return c.text('ok');
+}
+// What personal data we hold for a customer = the shipping address on their orders.
+app.post('/webhooks/customers-data-request', (c) =>
+  gdprWebhook(c, async (_store, p) => {
+    const ids = Array.isArray(p.orders_requested) ? p.orders_requested.map(String) : [];
+    console.log(`customers/data_request: shop holds order shipping data for orders [${ids.join(',')}] — operator to provide to the data subject`);
+  }));
+// Erase the PII we hold for the named orders.
+app.post('/webhooks/customers-redact', (c) =>
+  gdprWebhook(c, async (store, p) => {
+    const ids = Array.isArray(p.orders_to_redact) ? p.orders_to_redact.map(String) : [];
+    const n = await store.redactOrders(ids);
+    console.log(`customers/redact: erased ${n} order row(s)`);
+  }));
+// Purge ALL data for the shop (~48h after uninstall).
+app.post('/webhooks/shop-redact', (c) =>
+  gdprWebhook(c, async (store) => {
+    await store.redactShop();
+    console.log('shop/redact: shop data purged');
+  }));
+
 const worker: ExportedHandler<Env> = {
   fetch: (req, env, ctx) => app.fetch(req, env, ctx),
   scheduled: (_controller, env, ctx) => {

@@ -145,6 +145,41 @@ export class TenantStore {
     ]);
   }
 
+  // --- GDPR (Shopify mandatory privacy webhooks) ---
+
+  /** customers/redact: erase the PII we hold for the named orders (their address). */
+  async redactOrders(orderIds: string[]): Promise<number> {
+    if (!orderIds.length) return 0;
+    let removed = 0;
+    for (let i = 0; i < orderIds.length; i += 50) {
+      const chunk = orderIds.slice(i, i + 50);
+      const ph = chunk.map((_, j) => `?${j + 2}`).join(',');
+      const r = await this.db
+        .prepare(`DELETE FROM orders WHERE shop = ?1 AND shopify_order_id IN (${ph})`)
+        .bind(this.shop, ...chunk)
+        .run();
+      removed += r.meta.changes ?? 0;
+    }
+    return removed;
+  }
+
+  /** shop/redact: purge ALL data for this shop (sent ~48h after uninstall). */
+  async redactShop(): Promise<void> {
+    await this.db.batch([
+      this.db.prepare(`DELETE FROM orders WHERE shop = ?1`).bind(this.shop),
+      this.db.prepare(`DELETE FROM product_events WHERE shop = ?1`).bind(this.shop),
+      this.db.prepare(`DELETE FROM product_links WHERE shop = ?1`).bind(this.shop),
+      this.db.prepare(`DELETE FROM warehouse_products WHERE shop = ?1`).bind(this.shop),
+      this.db.prepare(`DELETE FROM search_cache WHERE shop = ?1`).bind(this.shop),
+      this.db.prepare(`DELETE FROM search_log WHERE shop = ?1`).bind(this.shop),
+      this.db.prepare(`DELETE FROM llm_usage WHERE shop = ?1`).bind(this.shop),
+      this.db.prepare(`DELETE FROM supplier_credentials WHERE shop = ?1`).bind(this.shop),
+      this.db.prepare(`DELETE FROM cj_tokens WHERE shop = ?1`).bind(this.shop),
+      this.db.prepare(`DELETE FROM tenant_config WHERE shop = ?1`).bind(this.shop),
+      this.db.prepare(`DELETE FROM tenants WHERE shop = ?1`).bind(this.shop)
+    ]);
+  }
+
   // --- CJ token cache ---
 
   getCjToken(): Promise<CjTokenRow | null> {

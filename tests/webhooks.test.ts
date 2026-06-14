@@ -56,7 +56,7 @@ describe('registerWebhookTopic', () => {
 });
 
 describe('registerWebhooks (all topics)', () => {
-  it('subscribes to both uninstall and orders/paid', async () => {
+  it('subscribes to uninstall, orders/paid, and the three GDPR topics', async () => {
     const topics: string[] = [];
     const fetchImpl = (async (_url: any, init: any) => {
       topics.push(JSON.parse(init.body).variables.topic);
@@ -64,7 +64,7 @@ describe('registerWebhooks (all topics)', () => {
     }) as typeof fetch;
     const r = await registerWebhooks('a.myshopify.com', 't', APP_URL, fetchImpl);
     expect(r.ok).toBe(true);
-    expect(topics.sort()).toEqual(['APP_UNINSTALLED', 'ORDERS_PAID']);
+    expect(topics.sort()).toEqual(['APP_UNINSTALLED', 'CUSTOMERS_DATA_REQUEST', 'CUSTOMERS_REDACT', 'ORDERS_PAID', 'SHOP_REDACT']);
   });
 
   it('surfaces a failing topic (e.g. missing orders scope) without throwing', async () => {

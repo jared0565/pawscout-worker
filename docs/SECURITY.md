@@ -27,9 +27,10 @@ access, supplier/data exposure):
 - **Encryption** — in transit (TLS everywhere); at rest (Cloudflare D1 storage
   encryption); app credentials additionally envelope-encrypted (AES-GCM).
 - **Retention & erasure** — order data kept only as long as needed to fulfil and
-  support the order. Erasure requests honoured (manually today; the
-  `customers/redact` / `customers/data_request` / `shop/redact` webhooks are the
-  planned automation — see TASKS.md).
+  support the order. Shopify's mandatory privacy webhooks are implemented:
+  `customers/redact` erases the named orders' PII, `customers/data_request` is
+  logged for the operator to fulfil, and `shop/redact` purges all shop data
+  (~48h after uninstall).
 - **Access** — least-privilege; sealed tokens; 2FA on the Shopify and Cloudflare
   accounts; access logged via Cloudflare request logs + app processing logs.
 - **Test/prod separation** — tests run on an isolated workerd DB; production D1
