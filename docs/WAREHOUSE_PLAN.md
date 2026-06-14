@@ -1084,21 +1084,13 @@ theme setting.
 ## 8. Conventions & runbook (for any developer picking this up)
 
 **Admin / dashboard links (the real app — don't confuse with duplicates)**
-- **App management (Dev Dashboard):**
-  https://dev.shopify.com/dashboard/221233114/apps/378577780737/versions
-  This is where the LIVE PawScout app's config lives — access scopes, App Proxy,
-  webhooks API version, URLs. Edit by **creating a new version → Release**.
-  - Dev Dashboard account/org id: `221233114` · app id: `378577780737`
-  - Live app **Client ID** = `SHOPIFY_API_KEY` in `wrangler.toml` (token exchange
-    uses this). Confirm any app you edit matches it before releasing.
+- See **`docs/LINKS.md`** — canonical IDs + dashboard/admin URLs (Dev Dashboard
+  app `378577780737` in org `221233114`; the decoy duplicate; store-admin
+  settings; OAuth re-grant; and what the agent can self-verify vs what needs you).
 - TRAP (cost us a long detour 2026-06-14): there is an **empty duplicate**
   "PawScout" (client id `0416eedd…`, 0 installs, no scopes/App Proxy) under a
   DIFFERENT Partner org (`4969856`). It is NOT the live app — never edit/release
-  it. The live app is the Dev Dashboard one above (org `221233114`). The store
-  Shopify account email is getrealmarketing.net@gmail.com.
-- Store admin: https://admin.shopify.com/store/4qkudm-ez
-- Worker (Cloudflare): `pawscout-worker`; `SHOPIFY_API_KEY` var = the live app's
-  client id (source of truth if dashboards are ambiguous).
+  it. The live app is in Dev Dashboard org `221233114`, client id `6bc07cd8…`.
 
 **Conventions**
 - TypeScript strict; tests in workerd (`npm test`), 1 commit per task,
