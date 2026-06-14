@@ -75,6 +75,10 @@ Last updated: 2026-06-14.
             can't fulfil; (2) add `read_orders` + `write_merchant_managed_fulfillment_orders`
             scopes, then clear `tenants.access_token_enc` to re-mint; (3) top up
             the CJ wallet. Deploy needs `npm run migrate:remote` (new 0007).
+            **App config lives here (Dev Dashboard, real app):**
+            https://dev.shopify.com/dashboard/221233114/apps/378577780737/versions
+            (edit via new version → Release. NOT the empty `0416eedd` duplicate in
+            org 4969856 — see WAREHOUSE_PLAN §8 Admin links.)
       - [ ] **Stage B (PS, after prereqs + CJ API verified via relay):** the queued
             cron → `createOrderV2` + `payBalance`, store `shopifyOrderId↔cjOrderId`,
             tracking poll → Shopify `fulfillmentCreate`, balance-low alert. → 7a-iv F4–F8.
