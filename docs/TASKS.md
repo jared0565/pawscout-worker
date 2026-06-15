@@ -79,6 +79,13 @@ Last updated: 2026-06-14.
             can't fulfil; (2) add `read_orders` + `write_merchant_managed_fulfillment_orders`
             scopes, then clear `tenants.access_token_enc` to re-mint; (3) top up
             the CJ wallet. Deploy needs `npm run migrate:remote` (new 0007).
+            **CJ wallet funding (2026-06-15):** wire transfer min is **$2000** (too
+            high); **Payoneer has NO minimum** (CJ's recommended method, ~2% bonus);
+            PayPal needs contacting a CJ agent. NOT urgent — wallet only needed for
+            automated Stage B, and there are no orders yet. Low-amount route: fund
+            Payoneer via its "request/collect a payment" paid by own card (~3% fee,
+            grey-area self-funding), then recharge CJ from Payoneer; OR ask CJ
+            support re PayPal. First manual orders need only ~$30–50 of balance.
             **App config lives here (Dev Dashboard, real app):**
             https://dev.shopify.com/dashboard/221233114/apps/378577780737/versions
             (edit via new version → Release. NOT the empty `0416eedd` duplicate in
