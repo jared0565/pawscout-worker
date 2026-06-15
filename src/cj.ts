@@ -462,13 +462,14 @@ export class CjClient {
   }
 
   /** Order status + tracking number (poll until trackNumber appears). */
-  async getOrderDetail(orderId: string): Promise<{ orderId: string; orderNum: string; trackNumber: string; logisticName: string; status: string } | null> {
+  async getOrderDetail(orderId: string): Promise<{ orderId: string; orderNum: string; trackNumber: string; trackUrl: string; logisticName: string; status: string } | null> {
     const d = (await this.get('/shopping/order/getOrderDetail', { orderId })) as Record<string, unknown> | null;
     if (!d) return null;
     return {
       orderId: String(d.orderId ?? orderId),
       orderNum: String(d.orderNum ?? ''),
       trackNumber: String(d.trackNumber ?? ''),
+      trackUrl: String(d.trackingUrl ?? d.trackUrl ?? d.logisticTrackUrl ?? ''),
       logisticName: String(d.logisticName ?? ''),
       status: String(d.orderStatus ?? d.status ?? '')
     };

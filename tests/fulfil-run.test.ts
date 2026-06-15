@@ -30,7 +30,7 @@ function fakeCj(spy: { create: unknown[]; pay: string[] }, over: Partial<Record<
     freightEstimate: async () => ({ priceUsd: 2, days: '8-12', name: 'CJPacket' }),
     createOrder: async (input: { orderNumber: string }) => { spy.create.push(input); return { orderId: 'CJORD-' + input.orderNumber, orderNum: input.orderNumber }; },
     payBalance: async (id: string) => { spy.pay.push(id); },
-    getOrderDetail: async (id: string) => ({ orderId: id, orderNum: '', trackNumber: 'TRK1', logisticName: 'CJPacket', status: 'shipped' }),
+    getOrderDetail: async (id: string) => ({ orderId: id, orderNum: '', trackNumber: 'TRK1', trackUrl: '', logisticName: 'CJPacket', status: 'shipped' }),
     ...over
   } as unknown as CjClient;
 }
@@ -158,9 +158,9 @@ describe('processDueOrders', () => {
 });
 
 describe('pollTracking', () => {
-  function fulfilAdmin(calls: { q: string }[]): AdminGraphql {
-    return (async (query: string) => {
-      calls.push({ q: query });
+  function fulfilAdmin(calls: { q: string; v?: any }[]): AdminGraphql {
+    return (async (query: string, vars?: unknown) => {
+      calls.push({ q: query, v: vars });
       if (query.includes('fulfillmentOrders')) return { order: { fulfillmentOrders: { nodes: [{ id: 'gid://fo/1', status: 'OPEN' }] } } };
       if (query.includes('fulfillmentCreateV2')) return { fulfillmentCreateV2: { fulfillment: { id: 'f1', status: 'SUCCESS' }, userErrors: [] } };
       throw new Error('unexpected: ' + query.slice(0, 30));
@@ -171,11 +171,26 @@ describe('pollTracking', () => {
     const store = new TenantStore(env.DB, SHOP);
     await store.insertOrderIfNew({ shopifyOrderId: 'O1', orderName: '#1', totalPrice: 15, currency: 'GBP', financialStatus: 'paid', riskLevel: null, status: 'submitted', holdReasons: [], addressJson: null, lineItemsJson: null, fulfilAfter: null });
     await store.updateOrder('O1', { cj_order_id: 'CJORD-O1' });
-    const calls: { q: string }[] = [];
+    const calls: { q: string; v?: any }[] = [];
     const r = await pollTracking(store, fakeCj({ create: [], pay: [] }), fulfilAdmin(calls));
     expect(r).toEqual({ checked: 1, fulfilled: 1 });
-    expect(calls.some((c) => c.q.includes('fulfillmentCreateV2'))).toBe(true);
+    const fulfil = calls.find((c) => c.q.includes('fulfillmentCreateV2'));
+    expect(fulfil).toBeTruthy();
+    // a working tracking link is passed (17track fallback when CJ gives no url)
+    expect(fulfil!.v.f.trackingInfo.url).toBe('https://t.17track.net/en#nums=TRK1');
+    expect(fulfil!.v.f.trackingInfo.number).toBe('TRK1');
     expect(await store.getOrder('O1')).toMatchObject({ status: 'fulfilled', tracking_number: 'TRK1' });
+  });
+
+  it('uses CJ\'s own tracking url when present (not the 17track fallback)', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await store.insertOrderIfNew({ shopifyOrderId: 'O3', orderName: '#3', totalPrice: 15, currency: 'GBP', financialStatus: 'paid', riskLevel: null, status: 'submitted', holdReasons: [], addressJson: null, lineItemsJson: null, fulfilAfter: null });
+    await store.updateOrder('O3', { cj_order_id: 'CJORD-O3' });
+    const cj = fakeCj({ create: [], pay: [] }, { getOrderDetail: async (id: string) => ({ orderId: id, orderNum: '', trackNumber: 'TRK9', trackUrl: 'https://track.cj.example/TRK9', logisticName: 'CJPacket', status: 'shipped' }) });
+    const calls: { q: string; v?: any }[] = [];
+    await pollTracking(store, cj, fulfilAdmin(calls));
+    const fulfil = calls.find((c) => c.q.includes('fulfillmentCreateV2'));
+    expect(fulfil!.v.f.trackingInfo.url).toBe('https://track.cj.example/TRK9');
   });
 
   it('fulfils an awaiting-payment order once the owner pays and tracking appears', async () => {
@@ -192,7 +207,7 @@ describe('pollTracking', () => {
     const store = new TenantStore(env.DB, SHOP);
     await store.insertOrderIfNew({ shopifyOrderId: 'O1', orderName: '#1', totalPrice: 15, currency: 'GBP', financialStatus: 'paid', riskLevel: null, status: 'submitted', holdReasons: [], addressJson: null, lineItemsJson: null, fulfilAfter: null });
     await store.updateOrder('O1', { cj_order_id: 'CJORD-O1' });
-    const cj = fakeCj({ create: [], pay: [] }, { getOrderDetail: async (id: string) => ({ orderId: id, orderNum: '', trackNumber: '', logisticName: '', status: 'processing' }) });
+    const cj = fakeCj({ create: [], pay: [] }, { getOrderDetail: async (id: string) => ({ orderId: id, orderNum: '', trackNumber: '', trackUrl: '', logisticName: '', status: 'processing' }) });
     const r = await pollTracking(store, cj, fulfilAdmin([]));
     expect(r).toEqual({ checked: 1, fulfilled: 0 });
     expect((await store.getOrder('O1'))?.status).toBe('submitted');

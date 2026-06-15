@@ -32,8 +32,16 @@ const FULFILL = `mutation pawscoutFulfill($f: FulfillmentV2Input!) {
   fulfillmentCreateV2(fulfillment: $f) { fulfillment { id status } userErrors { field message } }
 }`;
 
+/** Build the buyer-facing tracking URL: prefer CJ's own URL, else a universal
+ * 17track lookup by number (CJ's carriers are rarely in Shopify's recognised list,
+ * so without a url the buyer would see a bare, unclickable number). */
+function trackingUrlFor(trackNumber: string, cjUrl: string): string {
+  if (cjUrl && /^https?:\/\//i.test(cjUrl)) return cjUrl;
+  return `https://t.17track.net/en#nums=${encodeURIComponent(trackNumber)}`;
+}
+
 /** Write a tracking number back to Shopify (fulfils the order's open fulfillment orders). */
-async function writeTracking(admin: AdminGraphql, orderGid: string, trackNumber: string, company: string): Promise<void> {
+async function writeTracking(admin: AdminGraphql, orderGid: string, trackNumber: string, company: string, url: string): Promise<void> {
   const data = await admin(FULFILLMENT_ORDERS, { id: orderGid }) as {
     order?: { fulfillmentOrders?: { nodes?: { id: string; status: string }[] } };
   };
@@ -44,7 +52,9 @@ async function writeTracking(admin: AdminGraphql, orderGid: string, trackNumber:
   const r = await admin(FULFILL, {
     f: {
       lineItemsByFulfillmentOrder: fos.map((fo) => ({ fulfillmentOrderId: fo.id })),
-      trackingInfo: { number: trackNumber, ...(company ? { company } : {}) },
+      // url gives the buyer a working "Track your order" button; company is the
+      // displayed carrier name (Shopify still uses our url for the link).
+      trackingInfo: { number: trackNumber, ...(company ? { company } : {}), ...(url ? { url } : {}) },
       notifyCustomer: true
     }
   }) as { fulfillmentCreateV2?: { userErrors?: { message: string }[] } };
@@ -194,7 +204,8 @@ export async function pollTracking(
     try {
       const detail = await cj.getOrderDetail(o.cj_order_id!);
       if (!detail?.trackNumber) continue;
-      await writeTracking(admin, `gid://shopify/Order/${o.shopify_order_id}`, detail.trackNumber, detail.logisticName);
+      const url = trackingUrlFor(detail.trackNumber, detail.trackUrl);
+      await writeTracking(admin, `gid://shopify/Order/${o.shopify_order_id}`, detail.trackNumber, detail.logisticName, url);
       await store.updateOrder(o.shopify_order_id, { status: 'fulfilled', tracking_number: detail.trackNumber });
       fulfilled++;
     } catch (e) {
