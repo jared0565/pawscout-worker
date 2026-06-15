@@ -415,4 +415,67 @@ export class CjClient {
     if (!map.size && productLevel > 0) map.set('*', productLevel);
     return map;
   }
+
+  // --- order API (W-FULFIL Stage B) ---
+
+  /**
+   * Create a CJ order (unpaid). Returns the CJ order id; pay it separately via
+   * payBalance. Field names per the CJ order API; createOrderV2 needs the variant
+   * id (vid), not the product pid. Throws (CJ userError) on bad fields/stock —
+   * the caller marks the order errored and never pays.
+   */
+  async createOrder(input: {
+    orderNumber: string;
+    address: { name: string; phone: string; address1: string; address2?: string; city: string; province: string; zip: string; countryCode: string };
+    products: { vid: string; quantity: number }[];
+    fromCountryCode: string;
+    logisticName?: string;
+    remark?: string;
+  }): Promise<{ orderId: string; orderNum: string }> {
+    const a = input.address;
+    const data = (await this.post('/shopping/order/createOrderV2', {
+      orderNumber: input.orderNumber,
+      shippingCountryCode: a.countryCode,
+      shippingCountry: a.countryCode,
+      shippingProvince: a.province,
+      shippingCity: a.city,
+      shippingZip: a.zip,
+      shippingCustomerName: a.name,
+      shippingPhone: a.phone,
+      shippingAddress: [a.address1, a.address2].filter(Boolean).join(', '),
+      fromCountryCode: input.fromCountryCode,
+      ...(input.logisticName ? { logisticName: input.logisticName } : {}),
+      remark: input.remark ?? '',
+      payType: 2, // pay from wallet balance (settled later via payBalance)
+      products: input.products.map((p) => ({ vid: p.vid, quantity: p.quantity }))
+    })) as Record<string, unknown> | string | null;
+    if (typeof data === 'string') return { orderId: data, orderNum: input.orderNumber };
+    const d = (data ?? {}) as Record<string, unknown>;
+    const orderId = String(d.orderId ?? d.id ?? '');
+    if (!orderId) throw new Error('CJ createOrder returned no orderId');
+    return { orderId, orderNum: String(d.orderNum ?? input.orderNumber) };
+  }
+
+  /** Pay a created CJ order from the wallet balance — THE money leg. */
+  async payBalance(orderId: string): Promise<void> {
+    await this.post('/shopping/pay/payBalance', { orderId });
+  }
+
+  /** Order status + tracking number (poll until trackNumber appears). */
+  async getOrderDetail(orderId: string): Promise<{ orderId: string; orderNum: string; trackNumber: string; logisticName: string; status: string } | null> {
+    const d = (await this.get('/shopping/order/getOrderDetail', { orderId })) as Record<string, unknown> | null;
+    if (!d) return null;
+    return {
+      orderId: String(d.orderId ?? orderId),
+      orderNum: String(d.orderNum ?? ''),
+      trackNumber: String(d.trackNumber ?? ''),
+      logisticName: String(d.logisticName ?? ''),
+      status: String(d.orderStatus ?? d.status ?? '')
+    };
+  }
+
+  /** Read-only: list recent CJ orders. Used to verify the order API + field names without creating/paying. */
+  async getOrderList(pageSize = 5): Promise<unknown> {
+    return this.get('/shopping/order/list', { pageNum: '1', pageSize: String(pageSize) });
+  }
 }

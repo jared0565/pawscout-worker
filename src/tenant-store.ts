@@ -1,4 +1,4 @@
-import { DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, type TenantRow, type TenantConfig } from './types';
+import { DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, type TenantRow, type TenantConfig, type Fulfil } from './types';
 
 interface SupplierCredRow {
   shop: string; supplier: string; api_key_enc: string; label: string | null; validated_at: string | null; created_at: string;
@@ -102,9 +102,9 @@ export class TenantStore {
 
   async getConfig(): Promise<TenantConfig | null> {
     const row = await this.db
-      .prepare(`SELECT collection_map, gates, pricing, floors, llm, addons, target FROM tenant_config WHERE shop = ?1`)
+      .prepare(`SELECT collection_map, gates, pricing, floors, llm, addons, fulfil, target FROM tenant_config WHERE shop = ?1`)
       .bind(this.shop)
-      .first<{ collection_map: string; gates: string; pricing: string; floors: string; llm: string; addons: string; target: number }>();
+      .first<{ collection_map: string; gates: string; pricing: string; floors: string; llm: string; addons: string; fulfil: string; target: number }>();
     if (!row) return null;
     return {
       collectionMap: JSON.parse(row.collection_map),
@@ -114,8 +114,17 @@ export class TenantStore {
       floors: { ...DEFAULT_FLOORS, ...JSON.parse(row.floors || '{}') },
       llm: { ...DEFAULT_LLM, ...JSON.parse(row.llm || '{}') },
       addons: { ...DEFAULT_ADDONS, ...JSON.parse(row.addons || '{}') },
+      fulfil: { ...DEFAULT_FULFIL, ...JSON.parse(row.fulfil || '{}') },
       target: row.target
     };
+  }
+
+  /** Set the fulfilment flags (e.g. flip autopay on once the CJ wallet is funded). */
+  async saveFulfil(fulfil: Fulfil): Promise<void> {
+    await this.db
+      .prepare(`UPDATE tenant_config SET fulfil = ?2, updated_at = ?3 WHERE shop = ?1`)
+      .bind(this.shop, JSON.stringify(fulfil), new Date().toISOString())
+      .run();
   }
 
   async putSupplierCredential(supplier: string, apiKeyEnc: string, label: string): Promise<void> {

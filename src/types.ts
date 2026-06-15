@@ -66,6 +66,13 @@ export interface LlmConfig {
   scoreThreshold: number; // 0-100: minimum relevance score to admit
 }
 
+/**
+ * W-FULFIL Stage B. `autopay` is the hard money-leg gate: while false, the order
+ * pipeline never creates or pays CJ orders (orders just queue for manual handling).
+ * Flip it on only once the CJ wallet is funded.
+ */
+export interface Fulfil { autopay: boolean }
+
 export interface TenantConfig {
   collectionMap: Record<string, { handle: string; tag: string }>;
   gates: Gates;
@@ -73,6 +80,7 @@ export interface TenantConfig {
   floors: Floors;
   llm: LlmConfig;
   addons: Addons;
+  fulfil: Fulfil;
   target: number;
 }
 
@@ -88,6 +96,8 @@ export const DEFAULT_FLOORS: Floors = { warehouseDepth: 20, storeFloor: 8, stock
 export const DEFAULT_LLM: LlmConfig = { enabled: true, model: 'anthropic/claude-haiku-4.5', scoreThreshold: 60 };
 // 12 = display cap of the storefront grid (4×3): show what we can sell, never pad.
 export const DEFAULT_ADDONS: Addons = { enabled: true, priceMinUsd: 0.5, priceMaxUsd: 5, poolSize: 12, suppressFromBrowse: true };
+// autopay OFF by default — Stage B never spends until the operator enables it.
+export const DEFAULT_FULFIL: Fulfil = { autopay: false };
 export const DEFAULT_TARGET = 12;
 
 export const ACTIVE_PAW_COLLECTION_MAP: TenantConfig['collectionMap'] = {

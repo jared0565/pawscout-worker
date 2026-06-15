@@ -7,9 +7,10 @@ routes = [
   { pattern = "pawscout.activepaw.co.uk", custom_domain = true }
 ]
 
-# Daily maintenance: cache retention purge, 30-day performance cull, demand-driven refill.
+# Daily maintenance (17 4) = cache purge, cull, replenish, sweeps.
+# Every 15 min = W-FULFIL order pipeline (submit due orders + poll tracking).
 [triggers]
-crons = ["17 4 * * *"]
+crons = ["17 4 * * *", "*/15 * * * *"]
 
 [[d1_databases]]
 binding = "DB"

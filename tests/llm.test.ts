@@ -4,7 +4,7 @@ import { LlmClient, curateProduct, classifyKeyword, getKeywordMeta, pickHeroImag
 import { replenishWarehouse } from '../src/jobs';
 import { searchBackfill } from '../src/proxy/search';
 import { TenantStore } from '../src/tenant-store';
-import { DEFAULT_GATES, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, type TenantConfig } from '../src/types';
+import { DEFAULT_GATES, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, type TenantConfig } from '../src/types';
 import type { CjClient, CjSearchItem, CjDetail } from '../src/cj';
 
 beforeEach(async () => { await applyD1Migrations(env.DB, env.TEST_MIGRATIONS); });
@@ -16,7 +16,7 @@ const CFG: TenantConfig = {
   pricing: DEFAULT_PRICING,
   floors: { ...DEFAULT_FLOORS, warehouseDepth: 3 },
   llm: DEFAULT_LLM,
-  addons: DEFAULT_ADDONS,
+  addons: DEFAULT_ADDONS, fulfil: DEFAULT_FULFIL,
   target: 12
 };
 

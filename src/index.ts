@@ -21,6 +21,7 @@ import { LlmClient, classifyKeyword, curateProduct, pickHeroImage, rewriteDescri
 import { buildPreview, getDetailPreferWarehouse, confirmAndImport, reconcileAddonVisibility, reconcileHeroImages, reconcileDescriptions, reconcileCategories } from './proxy/import';
 import { makeAdminGraphql } from './shopify-admin';
 import { runDailyMaintenance, syncStoreInventory, refillCollections } from './jobs';
+import { runOrderPipeline } from './fulfil-run';
 import { parseOrderWebhook, validateOrder, FULFIL_GRACE_MINUTES } from './fulfil';
 import { firecrawlCjSearch } from './firecrawl';
 
@@ -100,6 +101,18 @@ app.post('/api/llm', async (c) => {
   if (!v.ok) return c.json({ ok: false, error: v.error }, 400);
   await saveLlm(c.env.DB, s, v.value);
   return c.json({ ok: true });
+});
+// W-FULFIL Stage B: toggle auto-fulfilment (the money leg). OFF by default;
+// only flip ON once the CJ wallet is funded.
+app.post('/api/fulfil', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: { autopay?: unknown } = {};
+  try { body = await c.req.json(); } catch { return c.json({ ok: false, error: 'Invalid JSON body' }, 400); }
+  const store = new TenantStore(c.env.DB, s);
+  if (!(await store.getConfig())) return c.json({ ok: false, error: 'Not configured' }, 400);
+  const autopay = body.autopay === true;
+  await store.saveFulfil({ autopay });
+  return c.json({ ok: true, autopay });
 });
 // Manual "Sync now": the nightly maintenance pieces, runnable on demand from
 // the console. Batched — each call does a slice of the work and tells the
@@ -284,11 +297,29 @@ app.post('/api/categories', async (c) => {
 app.post('/api/orders', async (c) => {
   const s = await shopOf(c); if (typeof s !== 'string') return s;
   const store = new TenantStore(c.env.DB, s);
+  const cfg = await store.getConfig();
   const orders = (await store.listOrders(null, 50)).map((o) => ({
     id: o.shopify_order_id, name: o.order_name, total: o.total_price, currency: o.currency,
     status: o.status, holds: o.hold_reasons ? JSON.parse(o.hold_reasons) : [], cj: o.cj_order_id, tracking: o.tracking_number
   }));
-  return c.json({ ok: true, orders });
+  return c.json({ ok: true, orders, autopay: cfg?.fulfil.autopay ?? false });
+});
+// Read-only CJ order-API check: lists recent CJ orders to verify the order
+// endpoints + field names work, WITHOUT creating or paying anything.
+app.post('/api/cj-order-diag', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  const store = new TenantStore(c.env.DB, s);
+  if (!(await store.getSupplierCredential('cj'))) return c.json({ ok: false, error: 'CJ not connected' }, 400);
+  const vault = await Vault.fromMasterKey(c.env.PAWSCOUT_MASTER_KEY);
+  const f = cjFetchFromEnv(c.env);
+  const cj = new CjClient(() => new CjTokenManager(store, vault, f).getToken(), f);
+  try {
+    const data = await cj.getOrderList(5);
+    await store.putSearchCache('diag:cj-orders', JSON.stringify(data).slice(0, 4000), 1);
+    return c.json({ ok: true, sample: data });
+  } catch (e) {
+    return c.json({ ok: false, error: `CJ order API: ${(e as Error).message}` }, 200);
+  }
 });
 // Operator override on a held/queued order (release to auto-fulfil, hold, cancel).
 app.post('/api/order-action', async (c) => {
@@ -519,10 +550,12 @@ app.post('/webhooks/shop-redact', (c) =>
     console.log('shop/redact: shop data purged');
   }));
 
+const DAILY_CRON = '17 4 * * *';
 const worker: ExportedHandler<Env> = {
   fetch: (req, env, ctx) => app.fetch(req, env, ctx),
-  scheduled: (_controller, env, ctx) => {
-    ctx.waitUntil(runDailyMaintenance(env));
+  scheduled: (controller, env, ctx) => {
+    // Daily cron → full maintenance; the frequent cron → order pipeline (submit + track).
+    ctx.waitUntil(controller.cron === DAILY_CRON ? runDailyMaintenance(env) : runOrderPipeline(env));
   }
 };
 

@@ -249,7 +249,12 @@ export function consolePage(apiKey: string): Response {
   <section class="card">
     <h2>Fulfilment</h2>
     <p class="sub" style="margin:0 0 12px">Paid orders flow here. Clean orders auto-fulfil after a short grace window; orders that trip a guardrail (unmapped item, incomplete address, high fraud risk, over £100) are <strong>held</strong> for you. Release a held order to send it for fulfilment, or cancel it.</p>
-    <div class="row"><button class="ghost" id="ordbtn" onclick="loadOrders()">Refresh orders</button></div>
+    <div class="row">
+      <button class="ghost" id="ordbtn" onclick="loadOrders()">Refresh orders</button>
+      <button class="ghost" id="autopaybtn" onclick="toggleAutopay()">Auto-fulfil: …</button>
+      <button class="ghost" id="cjdiagbtn" onclick="verifyCjOrders()">Verify CJ order API</button>
+    </div>
+    <p class="sub" style="margin:0 0 8px">Auto-fulfil OFF = paid orders just queue (you place them in CJ by hand). Turn it ON only once your CJ wallet is funded — then queued orders are created &amp; paid on CJ automatically and tracking is written back.</p>
     <div id="ordlist"></div>
     <p id="ordmsg" class="msg muted"></p>
   </section>
@@ -501,11 +506,50 @@ async function rewriteDescsNow(){
   }catch(e){ syncBar('off'); setMsg('descmsg','Failed: '+errText(e),'no'); }
   finally{ btn.disabled=false; }
 }
+var currentAutopay=false;
+function renderAutopay(){
+  var b=el('autopaybtn'); if(!b) return;
+  b.textContent='Auto-fulfil: '+(currentAutopay?'ON — pause':'OFF — enable');
+}
+var armEnable=false;
+async function setAutopay(want){
+  var b=el('autopaybtn'); b.disabled=true;
+  try{
+    var r=await api('/fulfil',{autopay:want});
+    if(!r.ok){ setMsg('ordmsg','Failed: '+(r.error||'unknown error'),'no'); return; }
+    currentAutopay=r.autopay; renderAutopay();
+    setMsg('ordmsg','Auto-fulfilment is now '+(currentAutopay?'ON — queued orders will be created & paid on CJ automatically.':'OFF — orders just queue.'),currentAutopay?'ok':'muted');
+  }catch(e){ setMsg('ordmsg','Failed: '+errText(e),'no'); }
+  finally{ b.disabled=false; }
+}
+async function toggleAutopay(){
+  if(currentAutopay){ armEnable=false; await setAutopay(false); return; } // turning OFF — no confirm
+  // turning ON spends money: inline two-click confirm (alert/confirm are blocked in the admin iframe)
+  if(!armEnable){
+    armEnable=true;
+    setMsg('ordmsg','⚠ Enabling auto-fulfil will CREATE AND PAY orders on CJ from your wallet. Click the button again within 8s to confirm.','no');
+    setTimeout(function(){ if(armEnable){ armEnable=false; setMsg('ordmsg','Enable cancelled.','muted'); } },8000);
+    return;
+  }
+  armEnable=false;
+  await setAutopay(true);
+}
+async function verifyCjOrders(){
+  var b=el('cjdiagbtn'); b.disabled=true;
+  setMsg('ordmsg','Checking CJ order API (read-only)…','muted');
+  try{
+    var r=await api('/cj-order-diag',{});
+    if(!r.ok){ setMsg('ordmsg','CJ order API check failed: '+(r.error||'unknown'),'no'); return; }
+    setMsg('ordmsg','CJ order API reachable ✓ (read-only list returned).','ok');
+  }catch(e){ setMsg('ordmsg','Failed: '+errText(e),'no'); }
+  finally{ b.disabled=false; }
+}
 async function loadOrders(){
   var btn=el('ordbtn'); btn.disabled=true;
   try{
     var r=await api('/orders',{});
     if(!r.ok){ setMsg('ordmsg','Failed: '+(r.error||'unknown error'),'no'); return; }
+    currentAutopay=!!r.autopay; renderAutopay();
     var list=el('ordlist');
     if(!r.orders.length){ list.innerHTML=''; setMsg('ordmsg','No orders yet.','muted'); return; }
     setMsg('ordmsg','','muted');
