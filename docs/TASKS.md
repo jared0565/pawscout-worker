@@ -70,6 +70,10 @@ Last updated: 2026-06-14.
             incomplete-address, high-risk, over-£100, not-paid → hold; else queued
             w/ 60-min grace), console **Fulfilment** card + `/api/orders` /
             `/api/order-action`. Idempotent on webhook retries. No money leg yet.
+            **VERIFIED LIVE 2026-06-14** via a draft-order-marked-paid (#1001):
+            webhook fired → validated → **queued** with the full shipping address
+            present (protected data flows; not redacted) and line item mapped to
+            its cjPid. Test order then marked cancelled in D1.
       - [ ] **PREREQS (You — start now; one is slow):** (1) Protected customer
             data approval (app config) — without it the address is redacted and we
             can't fulfil; (2) add `read_orders` + `write_merchant_managed_fulfillment_orders`
