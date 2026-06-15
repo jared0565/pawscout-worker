@@ -37,6 +37,13 @@ Left nav: Monitoring · Logs · Versions · Settings.
 - Store details (shop phone): `/settings/general` ✓
 - Policies (returns/shipping/terms/privacy/legal): `/settings/legal` ✓
 
+## CJdropshipping (supplier)
+- Dashboard: `https://app.cjdropshipping.com` (log in with the CJ account whose
+  API key is linked to PawScout). Wallet top-up: account menu / My CJ → Balance
+  → Recharge (PayPal/card). Exact deep link not verifiable (CJ SPA; not reachable
+  by the agent's tools). Stage B `payBalance` draws from THIS wallet.
+- API base (via the Fly relay, not direct): `https://developers.cjdropshipping.com/api2.0/v1`.
+
 ## Worker / recovery
 - OAuth re-grant (use after adding scopes — re-mints token WITH new scopes +
   registers webhooks): `https://pawscout.activepaw.co.uk/auth?shop=4qkudm-ez.myshopify.com` ✓
