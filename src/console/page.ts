@@ -259,9 +259,11 @@ export function consolePage(apiKey: string): Response {
       <button class="ghost" id="ordbtn" onclick="loadOrders()">Refresh</button>
     </div>
     <div class="row" style="margin-top:6px">
-      <input id="testemailto" type="email" placeholder="you@example.com" value="fbmacagba@gmail.com" style="flex:1;min-width:200px">
+      <input id="alertemail" type="email" placeholder="alerts@example.com" value="fbm2k11@gmail.com" style="flex:1;min-width:200px">
+      <button class="ghost" id="savealertbtn" onclick="saveAlertEmail()">Save alert email</button>
       <button class="ghost" id="testemailbtn" onclick="sendTestEmail()">Send test email</button>
     </div>
+    <p class="sub" style="margin:6px 0 0">PawScout emails this address whenever it creates an order in CJ that is awaiting your payment, so you can pay it ASAP.</p>
     <p class="sub" style="margin:0 0 8px"><strong>Manual</strong>: orders just queue — you pay in CJ by hand. <strong>CJ app</strong>: CJ's own Shopify app fulfils; PawScout stays out. <strong>PawScout auto</strong>: PawScout creates + pays + tracks automatically — only after the CJ wallet is funded AND CJ's native order-import is OFF (else duplicate orders). <strong>Create-only</strong> (PawScout mode only): PawScout creates the CJ order but does NOT pay it — it shows below as <em>awaiting-payment</em> with the CJ order id, you pay it in CJ, and tracking still flows back automatically. Use this until the wallet is funded.</p>
     <div id="awaitbanner" class="msg" style="display:none"></div>
     <div id="ordlist"></div>
@@ -554,14 +556,26 @@ async function setMode(mode){
   }
   armPawscout=false; await applyMode('pawscout');
 }
+function alertEmailVal(){ return (el('alertemail')&&el('alertemail').value||'').trim(); }
 async function sendTestEmail(){
-  var b=el('testemailbtn'); var to=(el('testemailto')&&el('testemailto').value||'').trim();
-  if(!to||to.indexOf('@')<0){ setMsg('ordmsg','Enter a valid recipient email.','no'); return; }
+  var b=el('testemailbtn'); var to=alertEmailVal();
+  if(!to||to.indexOf('@')<0){ setMsg('ordmsg','Enter a valid email.','no'); return; }
   b.disabled=true; setMsg('ordmsg','Sending test email to '+to+'…','muted');
   try{
     var r=await api('/test-email',{to:to});
     if(!r.ok){ setMsg('ordmsg','Test email failed: '+(r.error||'unknown'),'no'); return; }
     setMsg('ordmsg','Test email sent ✓ (Resend id '+(r.id||'?')+'). Check '+to+' (and spam).','ok');
+  }catch(e){ setMsg('ordmsg','Failed: '+errText(e),'no'); }
+  finally{ b.disabled=false; }
+}
+async function saveAlertEmail(){
+  var b=el('savealertbtn'); var to=alertEmailVal();
+  if(to&&to.indexOf('@')<0){ setMsg('ordmsg','Enter a valid email (or clear it to disable alerts).','no'); return; }
+  b.disabled=true;
+  try{
+    var r=await api('/fulfil',{mode:currentMode,alertEmail:to});
+    if(!r.ok){ setMsg('ordmsg','Failed: '+(r.error||'unknown'),'no'); return; }
+    setMsg('ordmsg',to?('Alert email saved — PawScout will notify '+to+' on each CJ order awaiting payment.'):'Alert email cleared — no awaiting-payment emails will be sent.','ok');
   }catch(e){ setMsg('ordmsg','Failed: '+errText(e),'no'); }
   finally{ b.disabled=false; }
 }
@@ -581,6 +595,7 @@ async function loadOrders(){
     var r=await api('/orders',{});
     if(!r.ok){ setMsg('ordmsg','Failed: '+(r.error||'unknown error'),'no'); return; }
     currentMode=r.mode||'manual'; currentCreateOnly=!!r.createOnly; renderMode();
+    if(r.alertEmail&&el('alertemail')) el('alertemail').value=r.alertEmail;
     var list=el('ordlist');
     var awaiting=(r.orders||[]).filter(function(o){return o.status==='awaiting-payment';});
     var banner=el('awaitbanner');

@@ -96,6 +96,29 @@ describe('processDueOrders', () => {
     expect((await store.getOrder('O1'))?.cj_order_id).toBe('CJORD-O1');
   });
 
+  it('fires the notify callback once when an order becomes awaiting-payment (createOnly)', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedWarehouse(store, 'CJ1', 'S1', 'v1');
+    await seedOrder(store, 'O1', [{ sku: 'S1', quantity: 1, cjPid: 'CJ1' }]);
+    const notes: { cjOrderId: string; orderName: string }[] = [];
+    const r = await processDueOrders(store, fakeCj({ create: [], pay: [] }), noAdmin, cfg('pawscout', true), {
+      notify: async (n) => { notes.push({ cjOrderId: n.cjOrderId, orderName: n.orderName }); }
+    });
+    expect(r).toMatchObject({ awaiting: 1 });
+    expect(notes).toEqual([{ cjOrderId: 'CJORD-O1', orderName: '#O1' }]);
+  });
+
+  it('a notify failure does not fail the order (still awaiting-payment)', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedWarehouse(store, 'CJ1', 'S1', 'v1');
+    await seedOrder(store, 'O1', [{ sku: 'S1', quantity: 1, cjPid: 'CJ1' }]);
+    const r = await processDueOrders(store, fakeCj({ create: [], pay: [] }), noAdmin, cfg('pawscout', true), {
+      notify: async () => { throw new Error('resend down'); }
+    });
+    expect(r).toMatchObject({ awaiting: 1, errored: 0 });
+    expect((await store.getOrder('O1'))?.status).toBe('awaiting-payment');
+  });
+
   it('insufficient balance downgrades to awaiting-payment, not error', async () => {
     const store = new TenantStore(env.DB, SHOP);
     await seedWarehouse(store, 'CJ1', 'S1', 'v1');

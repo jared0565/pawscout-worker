@@ -2,6 +2,7 @@ import { Vault } from './vault';
 import { TenantStore, listActiveShops } from './tenant-store';
 import { makeAdminGraphql, type AdminGraphql } from './shopify-admin';
 import { CjClient, CjTokenManager, cjFetchFromEnv, chooseOrigin, type CjDetail } from './cj';
+import { sendEmail } from './email';
 import type { Env, TenantConfig } from './types';
 import type { OrderLineItem, OrderAddress } from './fulfil';
 
@@ -58,6 +59,16 @@ function looksLikeInsufficientBalance(msg: string): boolean {
   return /insufficient|not enough|balance|余额|recharge|top.?up|payment failed/i.test(msg);
 }
 
+/** Owner alert payload when an order is created in CJ and is awaiting manual payment. */
+export interface AwaitingPaymentNotice {
+  shopifyOrderId: string;
+  orderName: string;
+  cjOrderId: string;
+  total: number | null;
+  currency: string | null;
+  reason: string;
+}
+
 /**
  * Submit queued orders to CJ and (optionally) pay them. GATED on
  * cfg.fulfil.mode==='pawscout' — a no-op in 'manual'/'cj' (orders stay queued /
@@ -73,13 +84,17 @@ function looksLikeInsufficientBalance(msg: string): boolean {
  *    'awaiting-payment' (owner pays it manually) rather than 'error'. Any other
  *    failure → 'error' (operator releases it to retry). One failure never aborts
  *    the batch.
+ *
+ * opts.notify fires once, at the transition into 'awaiting-payment' (best-effort;
+ * a notify failure never fails the order). The order is not reprocessed once
+ * awaiting-payment, so it's emailed exactly once.
  */
 export async function processDueOrders(
   store: TenantStore,
   cj: CjClient,
   admin: AdminGraphql,
   cfg: TenantConfig,
-  opts: { now?: () => number; max?: number } = {}
+  opts: { now?: () => number; max?: number; notify?: (n: AwaitingPaymentNotice) => Promise<void> } = {}
 ): Promise<{ submitted: number; awaiting: number; errored: number; skipped: boolean }> {
   if (cfg.fulfil.mode !== 'pawscout') return { submitted: 0, awaiting: 0, errored: 0, skipped: true }; // 'manual'/'cj' → PawScout doesn't pay
   void admin; // (admin reserved for future create-side checks; tracking writeback is in pollTracking)
@@ -89,6 +104,17 @@ export async function processDueOrders(
   let submitted = 0;
   let awaiting = 0;
   let errored = 0;
+  const markAwaiting = async (o: typeof due[number], cjOrderId: string, reason: string) => {
+    await store.updateOrder(o.shopify_order_id, { status: 'awaiting-payment', hold_reasons: JSON.stringify([reason]) });
+    awaiting++;
+    if (opts.notify) {
+      try {
+        await opts.notify({ shopifyOrderId: o.shopify_order_id, orderName: o.order_name ?? o.shopify_order_id, cjOrderId, total: o.total_price, currency: o.currency, reason });
+      } catch (e) {
+        console.warn(`awaiting-payment notify failed for ${o.order_name ?? o.shopify_order_id}: ${(e as Error).message}`);
+      }
+    }
+  };
   for (const o of due) {
     try {
       const lineItems = JSON.parse(o.line_items_json ?? '[]') as OrderLineItem[];
@@ -121,8 +147,7 @@ export async function processDueOrders(
 
       if (createOnly) {
         // Interim: created but unpaid — owner pays it manually in CJ.
-        await store.updateOrder(o.shopify_order_id, { status: 'awaiting-payment', hold_reasons: JSON.stringify([`awaiting-payment: pay CJ order ${cjOrderId} manually`]) });
-        awaiting++;
+        await markAwaiting(o, cjOrderId, `awaiting-payment: pay CJ order ${cjOrderId} manually`);
         continue;
       }
 
@@ -132,8 +157,7 @@ export async function processDueOrders(
         const msg = (payErr as Error).message;
         if (looksLikeInsufficientBalance(msg)) {
           // The CJ order exists; the owner can top up + pay it manually. Don't error.
-          await store.updateOrder(o.shopify_order_id, { status: 'awaiting-payment', hold_reasons: JSON.stringify([`awaiting-payment: fund CJ wallet, then pay CJ order ${cjOrderId}`]) });
-          awaiting++;
+          await markAwaiting(o, cjOrderId, `awaiting-payment: fund CJ wallet, then pay CJ order ${cjOrderId}`);
           continue;
         }
         throw payErr; // genuine pay failure → error branch
@@ -180,6 +204,23 @@ export async function pollTracking(
   return { checked, fulfilled };
 }
 
+/** Build the awaiting-payment email callback, or undefined when email isn't configured. */
+function makeAwaitingPaymentNotify(env: Env, alertEmail: string | undefined): ((n: AwaitingPaymentNotice) => Promise<void>) | undefined {
+  if (!env.RESEND_API_KEY || !alertEmail) return undefined;
+  return async (n: AwaitingPaymentNotice) => {
+    const amount = n.total != null ? `${n.currency ?? ''} ${n.total}`.trim() : '';
+    const r = await sendEmail(env.RESEND_API_KEY!, {
+      to: alertEmail,
+      subject: `Active Paw — order ${n.orderName} awaiting payment in CJ`,
+      text: `Order ${n.orderName}${amount ? ` (${amount})` : ''} has been created in CJ and is awaiting your payment.\n\nCJ order id: ${n.cjOrderId}\n\nPay it in CJ at https://app.cjdropshipping.com to start fulfilment. Tracking will sync back to Shopify automatically once paid.`,
+      html: `<p>Order <strong>${n.orderName}</strong>${amount ? ` (${amount})` : ''} has been created in CJ and is <strong>awaiting your payment</strong>.</p>`
+        + `<p>CJ order id: <strong>${n.cjOrderId}</strong></p>`
+        + `<p>Pay it in CJ at <a href="https://app.cjdropshipping.com">app.cjdropshipping.com</a> to start fulfilment. Tracking will sync back to Shopify automatically once paid.</p>`
+    });
+    if (!r.ok) throw new Error(r.error); // surfaced + logged by markAwaiting's catch
+  };
+}
+
 /** Cron entry (runs more often than the daily job): submit due orders + poll tracking, per tenant. */
 export async function runOrderPipeline(env: Env): Promise<void> {
   const vault = await Vault.fromMasterKey(env.PAWSCOUT_MASTER_KEY);
@@ -194,7 +235,8 @@ export async function runOrderPipeline(env: Env): Promise<void> {
       const admin = makeAdminGraphql(shop, accessToken);
       const f = cjFetchFromEnv(env);
       const cj = new CjClient(() => new CjTokenManager(store, vault, f).getToken(), f);
-      await processDueOrders(store, cj, admin, cfg);
+      const notify = makeAwaitingPaymentNotify(env, cfg.fulfil.alertEmail);
+      await processDueOrders(store, cj, admin, cfg, notify ? { notify } : {});
       await pollTracking(store, cj, admin);
     } catch (e) {
       console.warn(`order pipeline failed for ${shop}: ${(e as Error).message}`);

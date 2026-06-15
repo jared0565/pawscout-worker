@@ -86,6 +86,9 @@ export interface Fulfil {
   // writes the shipment back. A safety net also kicks in when payBalance fails
   // for insufficient balance even with createOnly off.
   createOnly?: boolean;
+  // alertEmail: owner address that gets an email each time an order is created in
+  // CJ and is awaiting payment (so the owner can pay it ASAP). Empty = no email.
+  alertEmail?: string;
 }
 
 export interface TenantConfig {

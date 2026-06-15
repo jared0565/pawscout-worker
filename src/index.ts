@@ -108,17 +108,23 @@ app.post('/api/llm', async (c) => {
 // AND CJ's native order-import is off (else duplicate CJ orders).
 app.post('/api/fulfil', async (c) => {
   const s = await shopOf(c); if (typeof s !== 'string') return s;
-  let body: { mode?: unknown; createOnly?: unknown } = {};
+  let body: { mode?: unknown; createOnly?: unknown; alertEmail?: unknown } = {};
   try { body = await c.req.json(); } catch { return c.json({ ok: false, error: 'Invalid JSON body' }, 400); }
   const mode = body.mode;
   if (mode !== 'manual' && mode !== 'pawscout' && mode !== 'cj') return c.json({ ok: false, error: 'Bad mode' }, 400);
   const store = new TenantStore(c.env.DB, s);
   const cfg = await store.getConfig();
   if (!cfg) return c.json({ ok: false, error: 'Not configured' }, 400);
-  // createOnly: omitted → keep the current value; present → set it.
+  // createOnly / alertEmail: omitted → keep the current value; present → set it.
   const createOnly = body.createOnly === undefined ? (cfg.fulfil.createOnly === true) : body.createOnly === true;
-  await store.saveFulfil({ mode, createOnly });
-  return c.json({ ok: true, mode, createOnly });
+  let alertEmail = cfg.fulfil.alertEmail;
+  if (body.alertEmail !== undefined) {
+    const v = typeof body.alertEmail === 'string' ? body.alertEmail.trim() : '';
+    if (v && !v.includes('@')) return c.json({ ok: false, error: 'Invalid alert email' }, 400);
+    alertEmail = v || undefined;
+  }
+  await store.saveFulfil({ mode, createOnly, ...(alertEmail ? { alertEmail } : {}) });
+  return c.json({ ok: true, mode, createOnly, alertEmail: alertEmail ?? '' });
 });
 // Resend connectivity test: sends a one-off email using the RESEND_API_KEY
 // secret, from inside the Worker (the secret is never exposed outside). Proves
@@ -326,7 +332,7 @@ app.post('/api/orders', async (c) => {
     id: o.shopify_order_id, name: o.order_name, total: o.total_price, currency: o.currency,
     status: o.status, holds: o.hold_reasons ? JSON.parse(o.hold_reasons) : [], cj: o.cj_order_id, tracking: o.tracking_number
   }));
-  return c.json({ ok: true, orders, mode: cfg?.fulfil.mode ?? 'manual', createOnly: cfg?.fulfil.createOnly === true });
+  return c.json({ ok: true, orders, mode: cfg?.fulfil.mode ?? 'manual', createOnly: cfg?.fulfil.createOnly === true, alertEmail: cfg?.fulfil.alertEmail ?? '' });
 });
 // Read-only CJ order-API check: lists recent CJ orders to verify the order
 // endpoints + field names work, WITHOUT creating or paying anything.

@@ -142,6 +142,17 @@ Last updated: 2026-06-14.
       Console has a **Create-only: ON/OFF** toggle (PawScout mode only).
       **AP is live on `{"mode":"pawscout","createOnly":true}`** (set in D1
       2026-06-15). 243 tests. Takes effect on next deploy.
+- [x] **PS — awaiting-payment owner email (built 2026-06-15).** When an order
+      enters `awaiting-payment`, PS emails the owner once (order name, total, CJ
+      order id, pay link) so they can pay in CJ ASAP. `src/email.ts` `sendEmail()`
+      (Resend, `RESEND_API_KEY` secret) + a `notify` callback injected into
+      `processDueOrders` (best-effort — a send failure never fails the order;
+      the order is not reprocessed, so it emails exactly once). Recipient =
+      `fulfil.alertEmail` (console **Save alert email** / **Send test email**
+      buttons + `/api/test-email`). **AP live alertEmail = fbm2k11@gmail.com**
+      (the Resend account address — required while sending from the shared
+      `onboarding@resend.dev`; verify activepaw.co.uk in Resend to send from the
+      domain to anyone). 250 tests. Takes effect on next deploy.
 
 ## 5. Verification debt — confirm against live, not assumed (PS)
 
