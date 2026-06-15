@@ -83,9 +83,13 @@ Last updated: 2026-06-14.
             https://dev.shopify.com/dashboard/221233114/apps/378577780737/versions
             (edit via new version → Release. NOT the empty `0416eedd` duplicate in
             org 4969856 — see WAREHOUSE_PLAN §8 Admin links.)
-      - [ ] **Stage B (PS, after prereqs + CJ API verified via relay):** the queued
-            cron → `createOrderV2` + `payBalance`, store `shopifyOrderId↔cjOrderId`,
-            tracking poll → Shopify `fulfillmentCreate`, balance-low alert. → 7a-iv F4–F8.
+      - [~] **Stage B (PS):** CJ API contract documented (read-only verification
+            2026-06-15 — see WAREHOUSE_PLAN §7a-iv "Stage B build spec":
+            createOrderV2 / payBalance / getOrderDetail / freightCalculate). To
+            build: queued cron → resolve `vid` from sku → createOrderV2 →
+            payBalance → tracking poll → Shopify `fulfillmentCreate`; balance-low
+            alert. STILL NEEDS: CJ wallet funded (You) + confirm exact CJ field
+            names via a read-only getOrderList through the relay (PS, at build).
 - [ ] **W6** — automated CJ damage/claims pipeline (consumes W-FULFIL mapping).
       → 7a-iii / 7a (claims).
 - [ ] **W5** — Resend email marketing (opt-in, GDPR/PECR). → 7b.

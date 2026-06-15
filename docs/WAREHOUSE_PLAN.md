@@ -926,6 +926,33 @@ Prereqs: pricing finalized → checkout re-enabled; protected-data approval
 top-up (user). Verify at build time: createOrderV2/payBalance exact
 params via relay; CJ no-logo packing flag.
 
+**Stage B build spec — CJ order API (read-only verification 2026-06-15).**
+CJ docs site 403s bots on both .com/.cn mirrors; contract below is from the CJ
+SDK + search. CONFIRM exact field names via a read-only `getOrderList`/
+`getOrderDetail` through the relay when building (don't call create/pay to test).
+Base `https://developers.cjdropshipping.com/api2.0/v1`, routed via the relay.
+1. **createOrderV2** — POST `/shopping/order/createOrderV2`
+   - `orderNumber` (our ref = shopify_order_id), `shippingCustomerName`,
+     `shippingPhone`, `shippingAddress`, `shippingCity`, `shippingProvince`,
+     `shippingCountry`, `shippingCountryCode`, `shippingZip` (+`shippingCounty`/
+     `houseNumber` where the country needs them), `email`, `remark`,
+     `fromCountryCode` (origin; UK-preferred), `logisticName`, `payType`.
+   - `products: [{ vid, quantity, storeLineItemId }]` — needs the CJ **variant id
+     (`vid`)**, NOT the pid we store. Resolve `vid` by matching each order line's
+     `sku` against the product's stored `CjDetail.variants` (warehouse_products.detail).
+   - response: `orderId` (CJ) + `orderNum` → store as `orders.cj_order_id`.
+2. **payBalance** — POST `/shopping/pay/payBalance` — `{ orderId }`. THE money
+   leg: pays from the CJ wallet. Guard: never call if `cj_order_id` already set.
+3. **getOrderDetail** — GET `/shopping/order/getOrderDetail?orderId=` — returns
+   `trackNumber`, `logisticName`, status. Poll → when `trackNumber` appears,
+   Shopify `fulfillmentCreate` with tracking → status `fulfilled`.
+4. **freightCalculate** — POST `/logistic/freightCalculate` — pick `logisticName`
+   (cheapest viable for the chosen origin); we already estimate freight at admission.
+Flow: cron `dueQueuedOrders` → resolve vids + logisticName → createOrderV2 →
+store cj_order_id (status `submitted`) → payBalance → poll getOrderDetail →
+fulfillmentCreate (status `fulfilled`). Balance-low alert when wallet < ~1wk COGS.
+Idempotent on `shopify_order_id`. Requires: CJ wallet funded + field-name confirm.
+
 ## 7a-v. Cart abandonment strategy (decided 2026-06-12)
 
 Baseline: ~70% abandonment is universal; target the recoverable 5–15%.
