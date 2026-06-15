@@ -22,7 +22,7 @@ import { LlmClient, classifyKeyword, curateProduct, pickHeroImage, rewriteDescri
 import { buildPreview, getDetailPreferWarehouse, confirmAndImport, reconcileAddonVisibility, reconcileHeroImages, reconcileDescriptions, reconcileCategories } from './proxy/import';
 import { makeAdminGraphql } from './shopify-admin';
 import { runDailyMaintenance, syncStoreInventory, refillCollections } from './jobs';
-import { runOrderPipeline } from './fulfil-run';
+import { runOrderPipeline, runOrderPipelineForShop } from './fulfil-run';
 import { parseOrderWebhook, validateOrder, FULFIL_GRACE_MINUTES } from './fulfil';
 import { firecrawlCjSearch } from './firecrawl';
 
@@ -143,6 +143,20 @@ app.post('/api/test-email', async (c) => {
     html: `<p>This is a test email from <strong>PawScout</strong> for ${s}.</p><p>If you received it, Resend is wired up correctly — owner alerts (e.g. "order awaiting payment in CJ") can now go to your inbox.</p>`
   });
   return c.json(r.ok ? { ok: true, id: r.id } : { ok: false, error: r.error }, 200);
+});
+// On-demand order pipeline: same work as the every-15-min cron (create due CJ
+// orders + poll tracking), runnable from the console so the owner can force a
+// fulfilment run without waiting for the next tick.
+app.post('/api/fulfil-run', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  const vault = await Vault.fromMasterKey(c.env.PAWSCOUT_MASTER_KEY);
+  try {
+    const r = await runOrderPipelineForShop(c.env, vault, s);
+    if (!r) return c.json({ ok: false, error: 'Not configured / CJ not connected' }, 200);
+    return c.json({ ok: true, ...r });
+  } catch (e) {
+    return c.json({ ok: false, error: (e as Error).message }, 200);
+  }
 });
 // Manual "Sync now": the nightly maintenance pieces, runnable on demand from
 // the console. Batched — each call does a slice of the work and tells the

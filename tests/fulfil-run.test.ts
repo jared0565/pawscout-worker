@@ -28,6 +28,7 @@ async function seedOrder(store: TenantStore, id: string, lineItems: unknown[], e
 function fakeCj(spy: { create: unknown[]; pay: string[] }, over: Partial<Record<string, unknown>> = {}): CjClient {
   return {
     freightEstimate: async () => ({ priceUsd: 2, days: '8-12', name: 'CJPacket' }),
+    detail: async () => null, // live-lookup fallback; overridden per-test
     createOrder: async (input: { orderNumber: string }) => { spy.create.push(input); return { orderId: 'CJORD-' + input.orderNumber, orderNum: input.orderNumber }; },
     payBalance: async (id: string) => { spy.pay.push(id); },
     getOrderDetail: async (id: string) => ({ orderId: id, orderNum: '', trackNumber: 'TRK1', trackUrl: '', logisticName: 'CJPacket', status: 'shipped' }),
@@ -59,6 +60,18 @@ describe('processDueOrders', () => {
     expect(spy.pay).toEqual(['CJORD-O1']);
     const o = await store.getOrder('O1');
     expect(o).toMatchObject({ status: 'submitted', cj_order_id: 'CJORD-O1' });
+  });
+
+  it('resolves the vid via a live CJ lookup when there is NO warehouse row', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    // No seedWarehouse — mimics a live product that has been culled from the pool.
+    await seedOrder(store, 'O1', [{ sku: 'S9', quantity: 1, cjPid: 'CJ9' }]);
+    const spy = { create: [] as any[], pay: [] as string[] };
+    const liveDetail: CjDetail = { pid: 'CJ9', nameEn: 'X', images: [], descriptionHtml: '', variants: [{ vid: 'vLIVE', name: 'R', sellPriceUsd: 10, sku: 'S9' }], listedNum: 1, categoryName: 'Pet Toys', origins: { CN: 100 } };
+    const cj = fakeCj(spy, { detail: async (pid: string) => (pid === 'CJ9' ? liveDetail : null) });
+    const r = await processDueOrders(store, cj, noAdmin, cfg('pawscout', true));
+    expect(r).toMatchObject({ awaiting: 1, errored: 0 });
+    expect(spy.create[0].products).toEqual([{ vid: 'vLIVE', quantity: 1 }]);
   });
 
   it('errors (no pay) when the vid cannot be resolved', async () => {

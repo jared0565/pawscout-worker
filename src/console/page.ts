@@ -256,6 +256,7 @@ export function consolePage(apiKey: string): Response {
       <button class="ghost" onclick="setMode('pawscout')">PawScout auto</button>
       <button class="ghost" id="createonlybtn" onclick="toggleCreateOnly()">Create-only: …</button>
       <button class="ghost" id="cjdiagbtn" onclick="verifyCjOrders()">Verify CJ order API</button>
+      <button class="ghost" id="runbtn" onclick="runFulfilNow()">Run fulfilment now</button>
       <button class="ghost" id="ordbtn" onclick="loadOrders()">Refresh</button>
     </div>
     <div class="row" style="margin-top:6px">
@@ -576,6 +577,17 @@ async function saveAlertEmail(){
     var r=await api('/fulfil',{mode:currentMode,alertEmail:to});
     if(!r.ok){ setMsg('ordmsg','Failed: '+(r.error||'unknown'),'no'); return; }
     setMsg('ordmsg',to?('Alert email saved — PawScout will notify '+to+' on each CJ order awaiting payment.'):'Alert email cleared — no awaiting-payment emails will be sent.','ok');
+  }catch(e){ setMsg('ordmsg','Failed: '+errText(e),'no'); }
+  finally{ b.disabled=false; }
+}
+async function runFulfilNow(){
+  var b=el('runbtn'); b.disabled=true;
+  setMsg('ordmsg','Running fulfilment (create due CJ orders + poll tracking)…','muted');
+  try{
+    var r=await api('/fulfil-run',{});
+    if(!r.ok){ setMsg('ordmsg','Fulfilment run failed: '+(r.error||'unknown'),'no'); return; }
+    setMsg('ordmsg','Fulfilment run ✓ — created/awaiting '+(r.awaiting||0)+', submitted '+(r.submitted||0)+', errored '+(r.errored||0)+', tracking checked '+(r.checked||0)+', fulfilled '+(r.fulfilled||0)+'.',(r.errored?'no':'ok'));
+    loadOrders();
   }catch(e){ setMsg('ordmsg','Failed: '+errText(e),'no'); }
   finally{ b.disabled=false; }
 }

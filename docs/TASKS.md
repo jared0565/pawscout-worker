@@ -182,6 +182,15 @@ Last updated: 2026-06-14.
 ---
 
 ### Recently completed (this session)
+- **Fulfilment vid-resolution gap fixed (2026-06-15).** Surfaced while prepping
+  the live fulfilment test: only 32 of 69 imported products had a
+  `warehouse_products` row, and `resolveLine` read the CJ `vid` ONLY from there —
+  so ~54% of live orders would have errored instead of being created in CJ.
+  `resolveLine` now falls back to a live `cj.detail(pid)` lookup when the
+  warehouse row is missing/mismatched. Added `runOrderPipelineForShop` +
+  `POST /api/fulfil-run` + console **Run fulfilment now** button for on-demand /
+  controlled fulfilment runs. 252 tests.
+
 - Robustness: mechanical pet-relevance floor + dedupe-at-admission + category
   re-audit — closes the non-pet-during-LLM-outage hole, the duplicate-flooding
   gap, and category drift. (All three hardening items above are LLM-free.)

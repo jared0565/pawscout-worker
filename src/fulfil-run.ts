@@ -11,18 +11,32 @@ import type { OrderLineItem, OrderAddress } from './fulfil';
 // cfg.fulfil.mode is 'pawscout' — otherwise orders just sit queued ('manual') or
 // are left to CJ's native Shopify app ('cj').
 
-/** Resolve a line's CJ variant id (vid) + dispatch origin from the warehouse detail. */
-async function resolveLine(store: TenantStore, cjPid: string, sku: string, stockFloor: number): Promise<{ vid: string; origin: string } | null> {
-  const wh = await store.getWarehouseProduct(cjPid);
-  if (!wh) return null;
-  let detail: CjDetail;
-  try { detail = JSON.parse(wh.detail) as CjDetail; } catch { return null; }
+/** Match a line's sku to a CJ variant id (vid) + dispatch origin within one CjDetail. */
+function matchVariant(detail: CjDetail, sku: string, stockFloor: number): { vid: string; origin: string } | null {
   const variants = detail.variants ?? [];
   // Match by sku; fall back to the sole variant when there's only one.
   const v = (sku && variants.find((x) => x.sku === sku)) || (variants.length === 1 ? variants[0] : undefined);
   if (!v?.vid || v.vid === 'default') return null;
   const origin = detail.origin ?? chooseOrigin(detail, stockFloor);
   return { vid: v.vid, origin };
+}
+
+/**
+ * Resolve a line's CJ vid + origin. Tries the warehouse pool first (no API call),
+ * then falls back to a live CJ product lookup — imported/live products are NOT
+ * guaranteed to have a warehouse_products row (the pool is culled/refreshed), so
+ * without this fallback ~half of live orders would fail to resolve.
+ */
+async function resolveLine(store: TenantStore, cj: CjClient, cjPid: string, sku: string, stockFloor: number): Promise<{ vid: string; origin: string } | null> {
+  const wh = await store.getWarehouseProduct(cjPid);
+  if (wh) {
+    try {
+      const m = matchVariant(JSON.parse(wh.detail) as CjDetail, sku, stockFloor);
+      if (m) return m;
+    } catch { /* fall through to a live CJ lookup */ }
+  }
+  const live = await cj.detail(cjPid).catch(() => null);
+  return live ? matchVariant(live, sku, stockFloor) : null;
 }
 
 const FULFILLMENT_ORDERS = `query pawscoutFOs($id: ID!) {
@@ -134,7 +148,7 @@ export async function processDueOrders(
       const products: { vid: string; quantity: number }[] = [];
       let origin = 'CN';
       for (const li of lineItems) {
-        const resolved = li.cjPid ? await resolveLine(store, li.cjPid, li.sku ?? '', cfg.floors.stockFloor) : null;
+        const resolved = li.cjPid ? await resolveLine(store, cj, li.cjPid, li.sku ?? '', cfg.floors.stockFloor) : null;
         if (!resolved) throw new Error(`could not resolve vid for ${li.sku ?? li.cjPid}`);
         products.push({ vid: resolved.vid, quantity: li.quantity });
         origin = resolved.origin; // last wins; CJ order ships from one origin
@@ -232,23 +246,31 @@ function makeAwaitingPaymentNotify(env: Env, alertEmail: string | undefined): ((
   };
 }
 
+/** Run the order pipeline (submit due orders + poll tracking) for ONE shop. Returns
+ * null when the shop isn't ready (no token / no CJ). Shared by the cron and the
+ * on-demand "Run fulfilment now" endpoint. */
+export async function runOrderPipelineForShop(env: Env, vault: Vault, shop: string): Promise<{ submitted: number; awaiting: number; errored: number; checked: number; fulfilled: number } | null> {
+  const store = new TenantStore(env.DB, shop);
+  const tenant = await store.getTenant();
+  const cfg = await store.getConfig();
+  if (!tenant?.access_token_enc || !cfg) return null;
+  if (!(await store.getSupplierCredential('cj'))) return null;
+  const accessToken = await vault.open(tenant.dek_wrapped, tenant.access_token_enc);
+  const admin = makeAdminGraphql(shop, accessToken);
+  const f = cjFetchFromEnv(env);
+  const cj = new CjClient(() => new CjTokenManager(store, vault, f).getToken(), f);
+  const notify = makeAwaitingPaymentNotify(env, cfg.fulfil.alertEmail);
+  const p = await processDueOrders(store, cj, admin, cfg, notify ? { notify } : {});
+  const t = await pollTracking(store, cj, admin);
+  return { submitted: p.submitted, awaiting: p.awaiting, errored: p.errored, checked: t.checked, fulfilled: t.fulfilled };
+}
+
 /** Cron entry (runs more often than the daily job): submit due orders + poll tracking, per tenant. */
 export async function runOrderPipeline(env: Env): Promise<void> {
   const vault = await Vault.fromMasterKey(env.PAWSCOUT_MASTER_KEY);
   for (const shop of await listActiveShops(env.DB)) {
-    const store = new TenantStore(env.DB, shop);
     try {
-      const tenant = await store.getTenant();
-      const cfg = await store.getConfig();
-      if (!tenant?.access_token_enc || !cfg) continue;
-      if (!(await store.getSupplierCredential('cj'))) continue;
-      const accessToken = await vault.open(tenant.dek_wrapped, tenant.access_token_enc);
-      const admin = makeAdminGraphql(shop, accessToken);
-      const f = cjFetchFromEnv(env);
-      const cj = new CjClient(() => new CjTokenManager(store, vault, f).getToken(), f);
-      const notify = makeAwaitingPaymentNotify(env, cfg.fulfil.alertEmail);
-      await processDueOrders(store, cj, admin, cfg, notify ? { notify } : {});
-      await pollTracking(store, cj, admin);
+      await runOrderPipelineForShop(env, vault, shop);
     } catch (e) {
       console.warn(`order pipeline failed for ${shop}: ${(e as Error).message}`);
     }
