@@ -79,13 +79,13 @@ Last updated: 2026-06-14.
             can't fulfil; (2) add `read_orders` + `write_merchant_managed_fulfillment_orders`
             scopes, then clear `tenants.access_token_enc` to re-mint; (3) top up
             the CJ wallet. Deploy needs `npm run migrate:remote` (new 0007).
-            **CJ wallet funding (2026-06-15):** wire transfer min is **$2000** (too
-            high); **Payoneer has NO minimum** (CJ's recommended method, ~2% bonus);
-            PayPal needs contacting a CJ agent. NOT urgent — wallet only needed for
-            automated Stage B, and there are no orders yet. Low-amount route: fund
-            Payoneer via its "request/collect a payment" paid by own card (~3% fee,
-            grey-area self-funding), then recharge CJ from Payoneer; OR ask CJ
-            support re PayPal. First manual orders need only ~$30–50 of balance.
+            **CJ wallet funding (updated 2026-06-15):** wire min **$2000** (too
+            high); **Payoneer DROPPED** by owner (too cumbersome — KYC/docs not
+            worth a one-off). Path forward = **PayPal top-up via CJ support**
+            (see the drafted request in §4b). INTERIM until any wallet is funded:
+            AP runs `pawscout` mode but with NO balance `payBalance` fails, so the
+            desired interim behaviour is **PS creates the CJ order + notifies the
+            owner, who pays it manually in CJ** — see the build note in §4b.
             **App config lives here (Dev Dashboard, real app):**
             https://dev.shopify.com/dashboard/221233114/apps/378577780737/versions
             (edit via new version → Release. NOT the empty `0416eedd` duplicate in
@@ -110,6 +110,30 @@ Last updated: 2026-06-14.
 - [ ] **W5** — Resend email marketing (opt-in, GDPR/PECR). → 7b.
 - [ ] **W4** — intelligence digest; needs ≥2 weeks of live data first. → §7.
 - [ ] **CJ category-browse replenishment** — supply is keyword-driven only today.
+
+## 4b. CJ payment — interim plan + PayPal request (2026-06-15)
+
+**Decisions:** AP = `pawscout` mode (set in D1), CJ native order-sync to be
+**uninstalled** (PS sole bridge). Payoneer dropped.
+
+- [ ] **You — uninstall the CJ Shopify app** (admin → apps → CJdropshipping →
+      Uninstall) to stop CJ auto-importing orders. Safe: PS uses the CJ **API
+      key** (not the app), so search/import/inventory/fulfilment are unaffected.
+- [ ] **You — send CJ this PayPal request** (paste; fill the bracket):
+      > Subject: Enable PayPal top-up for my CJ wallet
+      > Hi CJ team — I'd like to fund my CJ wallet by PayPal. The wire-transfer
+      > minimum ($2000) is too high for my current volume and Payoneer isn't
+      > workable for me. Please (1) enable PayPal as a top-up method on my account
+      > and send the PayPal top-up details, and (2) advise any low-minimum or
+      > auto-recharge PayPal option for order payment. CJ account: [your CJ email].
+      > Connected store: activepaw.co.uk. Thanks!
+- [ ] **PS — build "create + notify, manual-pay" interim** so AP can fulfil
+      before any wallet is funded: in `pawscout` mode, if `payBalance` fails for
+      lack of balance (or via a `createOnly` sub-flag), PS still **creates** the
+      CJ order, leaves it `submitted`-unpaid (cj_order_id set), and **alerts the
+      owner to pay it in CJ** (console flag now; email when W5/Resend lands).
+      Owner pays in CJ → tracking poll still writes it back. Avoids the current
+      behaviour where an unfunded order just goes to `error`.
 
 ## 5. Verification debt — confirm against live, not assumed (PS)
 
