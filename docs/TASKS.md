@@ -95,13 +95,16 @@ Last updated: 2026-06-14.
             `processDueOrders` (resolve `vid` from sku → createOrderV2 →
             payBalance, retry-safe via `cj_order_id` guard) + `pollTracking` →
             Shopify `fulfillmentCreateV2` with tracking, in `src/fulfil-run.ts`;
-            every-15-min cron (wrangler.toml). **Money leg gated behind the
-            `autopay` flag (migration 0008, default OFF)** — console Fulfilment
-            card has the toggle (inline 2-click confirm) + "Verify CJ order API"
-            (read-only) button. 239 tests.
-            GO-LIVE: deploy (`npm run migrate:remote` for 0008) → click "Verify
-            CJ order API" (read-only; I read `diag:cj-orders` from D1 to confirm
-            field names) → fund CJ wallet → flip **autopay ON**. Watch first few.
+            every-15-min cron (wrangler.toml). **White-label `fulfilMode` toggle**
+            (migration 0008, JSON `fulfil` column; DEFAULT 'manual'):
+            `manual` = queue only; `pawscout` = PS creates+pays+tracks (the money
+            leg, requires CJ native order-import OFF); `cj` = CJ's own app fulfils,
+            PS stays out. Console Fulfilment card = 3 mode buttons (2-click confirm
+            on `pawscout`) + read-only "Verify CJ order API". Read-only verify
+            CONFIRMED CJ field names + that CJ's native sync already imports orders
+            correctly (order #1001: right address). 239 tests.
+            GO-LIVE: deploy → "Verify CJ order API" → fund CJ wallet → set mode to
+            `pawscout` (after turning OFF CJ native import) OR `cj` (use CJ's app).
 - [ ] **W6** — automated CJ damage/claims pipeline (consumes W-FULFIL mapping).
       → 7a-iii / 7a (claims).
 - [ ] **W5** — Resend email marketing (opt-in, GDPR/PECR). → 7b.

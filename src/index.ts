@@ -102,17 +102,19 @@ app.post('/api/llm', async (c) => {
   await saveLlm(c.env.DB, s, v.value);
   return c.json({ ok: true });
 });
-// W-FULFIL Stage B: toggle auto-fulfilment (the money leg). OFF by default;
-// only flip ON once the CJ wallet is funded.
+// W-FULFIL Stage B: set the fulfilment mode (manual | pawscout | cj).
+// 'pawscout' is the money leg — only choose it once the CJ wallet is funded
+// AND CJ's native order-import is off (else duplicate CJ orders).
 app.post('/api/fulfil', async (c) => {
   const s = await shopOf(c); if (typeof s !== 'string') return s;
-  let body: { autopay?: unknown } = {};
+  let body: { mode?: unknown } = {};
   try { body = await c.req.json(); } catch { return c.json({ ok: false, error: 'Invalid JSON body' }, 400); }
+  const mode = body.mode;
+  if (mode !== 'manual' && mode !== 'pawscout' && mode !== 'cj') return c.json({ ok: false, error: 'Bad mode' }, 400);
   const store = new TenantStore(c.env.DB, s);
   if (!(await store.getConfig())) return c.json({ ok: false, error: 'Not configured' }, 400);
-  const autopay = body.autopay === true;
-  await store.saveFulfil({ autopay });
-  return c.json({ ok: true, autopay });
+  await store.saveFulfil({ mode });
+  return c.json({ ok: true, mode });
 });
 // Manual "Sync now": the nightly maintenance pieces, runnable on demand from
 // the console. Batched — each call does a slice of the work and tells the
@@ -302,7 +304,7 @@ app.post('/api/orders', async (c) => {
     id: o.shopify_order_id, name: o.order_name, total: o.total_price, currency: o.currency,
     status: o.status, holds: o.hold_reasons ? JSON.parse(o.hold_reasons) : [], cj: o.cj_order_id, tracking: o.tracking_number
   }));
-  return c.json({ ok: true, orders, autopay: cfg?.fulfil.autopay ?? false });
+  return c.json({ ok: true, orders, mode: cfg?.fulfil.mode ?? 'manual' });
 });
 // Read-only CJ order-API check: lists recent CJ orders to verify the order
 // endpoints + field names work, WITHOUT creating or paying anything.

@@ -67,11 +67,16 @@ export interface LlmConfig {
 }
 
 /**
- * W-FULFIL Stage B. `autopay` is the hard money-leg gate: while false, the order
- * pipeline never creates or pays CJ orders (orders just queue for manual handling).
- * Flip it on only once the CJ wallet is funded.
+ * W-FULFIL Stage B fulfilment ownership (per-tenant; white-label toggle):
+ *  - 'manual'   — PawScout queues orders only; you pay/fulfil by hand. (default, safe)
+ *  - 'pawscout' — PawScout owns fulfilment end-to-end (create + pay + track). The
+ *                 money leg. REQUIRES CJ's native Shopify order-import to be OFF
+ *                 for this store, or you get duplicate CJ orders.
+ *  - 'cj'       — CJ's own Shopify app owns fulfilment; PawScout stays out (no
+ *                 create/pay/track) and just shows orders for visibility.
  */
-export interface Fulfil { autopay: boolean }
+export type FulfilMode = 'manual' | 'pawscout' | 'cj';
+export interface Fulfil { mode: FulfilMode }
 
 export interface TenantConfig {
   collectionMap: Record<string, { handle: string; tag: string }>;
@@ -96,8 +101,8 @@ export const DEFAULT_FLOORS: Floors = { warehouseDepth: 20, storeFloor: 8, stock
 export const DEFAULT_LLM: LlmConfig = { enabled: true, model: 'anthropic/claude-haiku-4.5', scoreThreshold: 60 };
 // 12 = display cap of the storefront grid (4×3): show what we can sell, never pad.
 export const DEFAULT_ADDONS: Addons = { enabled: true, priceMinUsd: 0.5, priceMaxUsd: 5, poolSize: 12, suppressFromBrowse: true };
-// autopay OFF by default — Stage B never spends until the operator enables it.
-export const DEFAULT_FULFIL: Fulfil = { autopay: false };
+// fulfilment mode 'manual' by default — Stage B never spends until set to 'pawscout'.
+export const DEFAULT_FULFIL: Fulfil = { mode: 'manual' };
 export const DEFAULT_TARGET = 12;
 
 export const ACTIVE_PAW_COLLECTION_MAP: TenantConfig['collectionMap'] = {

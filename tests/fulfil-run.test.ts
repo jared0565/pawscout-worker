@@ -9,8 +9,8 @@ import type { AdminGraphql } from '../src/shopify-admin';
 beforeEach(async () => { await applyD1Migrations(env.DB, env.TEST_MIGRATIONS); });
 
 const SHOP = 'a.myshopify.com';
-function cfg(autopay: boolean): TenantConfig {
-  return { collectionMap: {}, gates: DEFAULT_GATES, pricing: DEFAULT_PRICING, floors: DEFAULT_FLOORS, llm: DEFAULT_LLM, addons: DEFAULT_ADDONS, fulfil: { autopay }, target: 12 };
+function cfg(mode: 'manual' | 'pawscout' | 'cj'): TenantConfig {
+  return { collectionMap: {}, gates: DEFAULT_GATES, pricing: DEFAULT_PRICING, floors: DEFAULT_FLOORS, llm: DEFAULT_LLM, addons: DEFAULT_ADDONS, fulfil: { mode }, target: 12 };
 }
 const ADDRESS = { name: 'Jane', phone: '07000', address1: '1 St', address2: '', city: 'London', province: 'England', zip: 'E1 1AA', countryCode: 'GB' };
 const PAST = new Date(Date.now() - 1000).toISOString();
@@ -42,7 +42,7 @@ describe('processDueOrders', () => {
     await seedWarehouse(store, 'CJ1', 'S1', 'v1');
     await seedOrder(store, 'O1', [{ sku: 'S1', quantity: 1, cjPid: 'CJ1' }]);
     const spy = { create: [] as unknown[], pay: [] as string[] };
-    const r = await processDueOrders(store, fakeCj(spy), noAdmin, cfg(false));
+    const r = await processDueOrders(store, fakeCj(spy), noAdmin, cfg('manual'));
     expect(r).toMatchObject({ skipped: true, submitted: 0 });
     expect(spy.create.length + spy.pay.length).toBe(0);
     expect((await store.getOrder('O1'))?.status).toBe('queued');
@@ -53,7 +53,7 @@ describe('processDueOrders', () => {
     await seedWarehouse(store, 'CJ1', 'S1', 'v1');
     await seedOrder(store, 'O1', [{ sku: 'S1', quantity: 2, cjPid: 'CJ1' }]);
     const spy = { create: [] as any[], pay: [] as string[] };
-    const r = await processDueOrders(store, fakeCj(spy), noAdmin, cfg(true));
+    const r = await processDueOrders(store, fakeCj(spy), noAdmin, cfg('pawscout'));
     expect(r).toMatchObject({ submitted: 1, errored: 0 });
     expect(spy.create[0].products).toEqual([{ vid: 'v1', quantity: 2 }]);
     expect(spy.pay).toEqual(['CJORD-O1']);
@@ -65,7 +65,7 @@ describe('processDueOrders', () => {
     const store = new TenantStore(env.DB, SHOP);
     await seedOrder(store, 'O1', [{ sku: 'MISSING', quantity: 1, cjPid: 'CJ-UNKNOWN' }]); // no warehouse row
     const spy = { create: [] as unknown[], pay: [] as string[] };
-    const r = await processDueOrders(store, fakeCj(spy), noAdmin, cfg(true));
+    const r = await processDueOrders(store, fakeCj(spy), noAdmin, cfg('pawscout'));
     expect(r).toMatchObject({ submitted: 0, errored: 1 });
     expect(spy.create.length).toBe(0);
     expect((await store.getOrder('O1'))?.status).toBe('error');
@@ -77,7 +77,7 @@ describe('processDueOrders', () => {
     await seedOrder(store, 'O1', [{ sku: 'S1', quantity: 1, cjPid: 'CJ1' }]);
     const spy = { create: [] as unknown[], pay: [] as string[] };
     const cj = fakeCj(spy, { createOrder: async () => { throw new Error('CJ stock 0'); } });
-    const r = await processDueOrders(store, cj, noAdmin, cfg(true));
+    const r = await processDueOrders(store, cj, noAdmin, cfg('pawscout'));
     expect(r).toMatchObject({ submitted: 0, errored: 1 });
     expect(spy.pay.length).toBe(0);
     expect((await store.getOrder('O1'))?.status).toBe('error');
@@ -89,7 +89,7 @@ describe('processDueOrders', () => {
     await seedOrder(store, 'O1', [{ sku: 'S1', quantity: 1, cjPid: 'CJ1' }], { cjOrderId: undefined });
     await store.updateOrder('O1', { cj_order_id: 'CJORD-EXISTING' }); // simulate created-but-unpaid
     const spy = { create: [] as unknown[], pay: [] as string[] };
-    const r = await processDueOrders(store, fakeCj(spy), noAdmin, cfg(true));
+    const r = await processDueOrders(store, fakeCj(spy), noAdmin, cfg('pawscout'));
     expect(r).toMatchObject({ submitted: 1 });
     expect(spy.create.length).toBe(0); // did NOT duplicate the CJ order
     expect(spy.pay).toEqual(['CJORD-EXISTING']);

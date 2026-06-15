@@ -953,6 +953,18 @@ store cj_order_id (status `submitted`) → payBalance → poll getOrderDetail �
 fulfillmentCreate (status `fulfilled`). Balance-low alert when wallet < ~1wk COGS.
 Idempotent on `shopify_order_id`. Requires: CJ wallet funded + field-name confirm.
 
+BUILT + verified 2026-06-15. Read-only `getOrderList` confirmed the field names
+AND surfaced that **CJ's native Shopify app is already importing orders into CJ**
+(test order #1001 was in CJ, status CREATED/unpaid, with the CORRECT shipping
+address — "Andy Chou" in the list view was just the account name, the order
+detail had the right recipient). So two systems can fulfil; to avoid double
+orders this is now a **per-tenant `fulfilMode` toggle** (white-label):
+- `manual` (default) — PS queues only; pay by hand.
+- `pawscout` — PS owns create+pay+track. REQUIRES CJ native order-import OFF.
+- `cj` — CJ's native app owns fulfilment; PS stays out (visibility only).
+Decision NOT to build the hybrid (CJ creates + PS pays) — two systems on the
+payment leg = double-pay risk. `processDueOrders` is gated to `mode==='pawscout'`.
+
 ## 7a-v. Cart abandonment strategy (decided 2026-06-12)
 
 Baseline: ~70% abandonment is universal; target the recoverable 5–15%.

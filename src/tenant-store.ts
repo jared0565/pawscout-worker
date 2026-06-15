@@ -119,7 +119,7 @@ export class TenantStore {
     };
   }
 
-  /** Set the fulfilment flags (e.g. flip autopay on once the CJ wallet is funded). */
+  /** Set the fulfilment mode (manual | pawscout | cj). */
   async saveFulfil(fulfil: Fulfil): Promise<void> {
     await this.db
       .prepare(`UPDATE tenant_config SET fulfil = ?2, updated_at = ?3 WHERE shop = ?1`)

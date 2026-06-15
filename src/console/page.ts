@@ -248,13 +248,16 @@ export function consolePage(apiKey: string): Response {
 
   <section class="card">
     <h2>Fulfilment</h2>
-    <p class="sub" style="margin:0 0 12px">Paid orders flow here. Clean orders auto-fulfil after a short grace window; orders that trip a guardrail (unmapped item, incomplete address, high fraud risk, over £100) are <strong>held</strong> for you. Release a held order to send it for fulfilment, or cancel it.</p>
+    <p class="sub" style="margin:0 0 10px">Paid orders flow here. Guardrails (unmapped item, incomplete address, high fraud risk, over £100) put an order on <strong>hold</strong> for you; clean ones queue.</p>
+    <p class="sub" style="margin:0 0 6px">Fulfilment mode: <strong id="modelabel">…</strong></p>
     <div class="row">
-      <button class="ghost" id="ordbtn" onclick="loadOrders()">Refresh orders</button>
-      <button class="ghost" id="autopaybtn" onclick="toggleAutopay()">Auto-fulfil: …</button>
+      <button class="ghost" onclick="setMode('manual')">Manual</button>
+      <button class="ghost" onclick="setMode('cj')">CJ app</button>
+      <button class="ghost" onclick="setMode('pawscout')">PawScout auto</button>
       <button class="ghost" id="cjdiagbtn" onclick="verifyCjOrders()">Verify CJ order API</button>
+      <button class="ghost" id="ordbtn" onclick="loadOrders()">Refresh</button>
     </div>
-    <p class="sub" style="margin:0 0 8px">Auto-fulfil OFF = paid orders just queue (you place them in CJ by hand). Turn it ON only once your CJ wallet is funded — then queued orders are created &amp; paid on CJ automatically and tracking is written back.</p>
+    <p class="sub" style="margin:0 0 8px"><strong>Manual</strong>: orders just queue — you pay in CJ by hand. <strong>CJ app</strong>: CJ's own Shopify app fulfils; PawScout stays out. <strong>PawScout auto</strong>: PawScout creates + pays + tracks automatically — only after the CJ wallet is funded AND CJ's native order-import is OFF (else duplicate orders).</p>
     <div id="ordlist"></div>
     <p id="ordmsg" class="msg muted"></p>
   </section>
@@ -506,33 +509,30 @@ async function rewriteDescsNow(){
   }catch(e){ syncBar('off'); setMsg('descmsg','Failed: '+errText(e),'no'); }
   finally{ btn.disabled=false; }
 }
-var currentAutopay=false;
-function renderAutopay(){
-  var b=el('autopaybtn'); if(!b) return;
-  b.textContent='Auto-fulfil: '+(currentAutopay?'ON — pause':'OFF — enable');
+var currentMode='manual';
+var armPawscout=false;
+function renderMode(){
+  var l=el('modelabel'); if(!l) return;
+  l.textContent=({manual:'Manual (queue only)',cj:'CJ app (PawScout not managing)',pawscout:'PawScout auto (create + pay + track)'}[currentMode]||currentMode);
 }
-var armEnable=false;
-async function setAutopay(want){
-  var b=el('autopaybtn'); b.disabled=true;
+async function applyMode(mode){
   try{
-    var r=await api('/fulfil',{autopay:want});
+    var r=await api('/fulfil',{mode:mode});
     if(!r.ok){ setMsg('ordmsg','Failed: '+(r.error||'unknown error'),'no'); return; }
-    currentAutopay=r.autopay; renderAutopay();
-    setMsg('ordmsg','Auto-fulfilment is now '+(currentAutopay?'ON — queued orders will be created & paid on CJ automatically.':'OFF — orders just queue.'),currentAutopay?'ok':'muted');
+    currentMode=r.mode; renderMode();
+    setMsg('ordmsg','Fulfilment mode set to '+r.mode+'.',r.mode==='pawscout'?'ok':'muted');
   }catch(e){ setMsg('ordmsg','Failed: '+errText(e),'no'); }
-  finally{ b.disabled=false; }
 }
-async function toggleAutopay(){
-  if(currentAutopay){ armEnable=false; await setAutopay(false); return; } // turning OFF — no confirm
-  // turning ON spends money: inline two-click confirm (alert/confirm are blocked in the admin iframe)
-  if(!armEnable){
-    armEnable=true;
-    setMsg('ordmsg','⚠ Enabling auto-fulfil will CREATE AND PAY orders on CJ from your wallet. Click the button again within 8s to confirm.','no');
-    setTimeout(function(){ if(armEnable){ armEnable=false; setMsg('ordmsg','Enable cancelled.','muted'); } },8000);
+async function setMode(mode){
+  if(mode!=='pawscout'){ armPawscout=false; await applyMode(mode); return; }
+  // PawScout mode spends money: inline two-click confirm (confirm() is blocked in the admin iframe)
+  if(!armPawscout){
+    armPawscout=true;
+    setMsg('ordmsg','⚠ PawScout mode auto-CREATES and PAYS CJ orders from your wallet. First fund the CJ wallet AND turn OFF CJ native order-import (else duplicate orders). Click PawScout auto again within 8s to confirm.','no');
+    setTimeout(function(){ if(armPawscout){ armPawscout=false; setMsg('ordmsg','Cancelled.','muted'); } },8000);
     return;
   }
-  armEnable=false;
-  await setAutopay(true);
+  armPawscout=false; await applyMode('pawscout');
 }
 async function verifyCjOrders(){
   var b=el('cjdiagbtn'); b.disabled=true;
@@ -549,7 +549,7 @@ async function loadOrders(){
   try{
     var r=await api('/orders',{});
     if(!r.ok){ setMsg('ordmsg','Failed: '+(r.error||'unknown error'),'no'); return; }
-    currentAutopay=!!r.autopay; renderAutopay();
+    currentMode=r.mode||'manual'; renderMode();
     var list=el('ordlist');
     if(!r.orders.length){ list.innerHTML=''; setMsg('ordmsg','No orders yet.','muted'); return; }
     setMsg('ordmsg','','muted');

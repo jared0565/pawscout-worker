@@ -7,7 +7,8 @@ import type { OrderLineItem, OrderAddress } from './fulfil';
 
 // W-FULFIL Stage B: turn queued orders into paid CJ orders, then write tracking
 // back to Shopify. The money leg (createOrder + payBalance) only runs when
-// cfg.fulfil.autopay is true — otherwise orders just sit queued for manual handling.
+// cfg.fulfil.mode is 'pawscout' — otherwise orders just sit queued ('manual') or
+// are left to CJ's native Shopify app ('cj').
 
 /** Resolve a line's CJ variant id (vid) + dispatch origin from the warehouse detail. */
 async function resolveLine(store: TenantStore, cjPid: string, sku: string, stockFloor: number): Promise<{ vid: string; origin: string } | null> {
@@ -51,8 +52,8 @@ async function writeTracking(admin: AdminGraphql, orderGid: string, trackNumber:
 }
 
 /**
- * Submit queued orders to CJ and pay them. GATED on cfg.fulfil.autopay — a
- * no-op when off (orders stay queued). createOrder is skipped when cj_order_id
+ * Submit queued orders to CJ and pay them. GATED on cfg.fulfil.mode==='pawscout'
+ * — a no-op in 'manual'/'cj' (orders stay queued / left to CJ's app). createOrder is skipped when cj_order_id
  * is already set (so a pay-retry never duplicates the CJ order). Any failure
  * marks the order `error` (operator releases it to retry); one failure never
  * aborts the batch.
@@ -64,7 +65,7 @@ export async function processDueOrders(
   cfg: TenantConfig,
   opts: { now?: () => number; max?: number } = {}
 ): Promise<{ submitted: number; errored: number; skipped: boolean }> {
-  if (!cfg.fulfil.autopay) return { submitted: 0, errored: 0, skipped: true };
+  if (cfg.fulfil.mode !== 'pawscout') return { submitted: 0, errored: 0, skipped: true }; // 'manual'/'cj' → PawScout doesn't pay
   void admin; // (admin reserved for future create-side checks; tracking writeback is in pollTracking)
   const nowIso = new Date(opts.now ? opts.now() : Date.now()).toISOString();
   const due = await store.dueQueuedOrders(nowIso, opts.max ?? 10);
