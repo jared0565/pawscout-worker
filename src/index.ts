@@ -15,6 +15,7 @@ import { consolePage } from './console/page';
 import { validateCjKey, CjClient, CjTokenManager, cjFetchFromEnv } from './cj';
 import { registerWebhooks, type RegisterWebhook } from './webhooks';
 import { validateGatesPayload, validatePricingPayload, validateLlmPayload, validateAddonsPayload, validateCollectionMap } from './validate';
+import { sendEmail } from './email';
 import { verifyAppProxy } from './proxy/verify';
 import { searchBackfill, normalizeKeyword } from './proxy/search';
 import { LlmClient, classifyKeyword, curateProduct, pickHeroImage, rewriteDescription } from './llm';
@@ -118,6 +119,24 @@ app.post('/api/fulfil', async (c) => {
   const createOnly = body.createOnly === undefined ? (cfg.fulfil.createOnly === true) : body.createOnly === true;
   await store.saveFulfil({ mode, createOnly });
   return c.json({ ok: true, mode, createOnly });
+});
+// Resend connectivity test: sends a one-off email using the RESEND_API_KEY
+// secret, from inside the Worker (the secret is never exposed outside). Proves
+// the key + send path before the awaiting-payment owner alert (W5) is wired in.
+app.post('/api/test-email', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  if (!c.env.RESEND_API_KEY) return c.json({ ok: false, error: 'RESEND_API_KEY secret not set on the Worker' }, 200);
+  let body: { to?: unknown } = {};
+  try { body = await c.req.json(); } catch { /* default recipient */ }
+  const to = typeof body.to === 'string' && body.to.includes('@') ? body.to : '';
+  if (!to) return c.json({ ok: false, error: 'Provide a recipient email' }, 200);
+  const r = await sendEmail(c.env.RESEND_API_KEY, {
+    to,
+    subject: 'Active Paw — PawScout test email',
+    text: `This is a test email from PawScout for ${s}. If you received it, Resend is wired up correctly.`,
+    html: `<p>This is a test email from <strong>PawScout</strong> for ${s}.</p><p>If you received it, Resend is wired up correctly — owner alerts (e.g. "order awaiting payment in CJ") can now go to your inbox.</p>`
+  });
+  return c.json(r.ok ? { ok: true, id: r.id } : { ok: false, error: r.error }, 200);
 });
 // Manual "Sync now": the nightly maintenance pieces, runnable on demand from
 // the console. Batched — each call does a slice of the work and tells the

@@ -14,6 +14,8 @@ export interface Env {
   // Firecrawl — optional: scrapes CJ's website search for diagnostics /
   // higher-quality supply (absent = feature off).
   FIRECRAWL_API_KEY?: string;
+  // Resend (W5 email + owner alerts) — optional: absent = email features off.
+  RESEND_API_KEY?: string;
 }
 
 export interface TenantRow {

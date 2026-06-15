@@ -258,6 +258,10 @@ export function consolePage(apiKey: string): Response {
       <button class="ghost" id="cjdiagbtn" onclick="verifyCjOrders()">Verify CJ order API</button>
       <button class="ghost" id="ordbtn" onclick="loadOrders()">Refresh</button>
     </div>
+    <div class="row" style="margin-top:6px">
+      <input id="testemailto" type="email" placeholder="you@example.com" value="fbmacagba@gmail.com" style="flex:1;min-width:200px">
+      <button class="ghost" id="testemailbtn" onclick="sendTestEmail()">Send test email</button>
+    </div>
     <p class="sub" style="margin:0 0 8px"><strong>Manual</strong>: orders just queue — you pay in CJ by hand. <strong>CJ app</strong>: CJ's own Shopify app fulfils; PawScout stays out. <strong>PawScout auto</strong>: PawScout creates + pays + tracks automatically — only after the CJ wallet is funded AND CJ's native order-import is OFF (else duplicate orders). <strong>Create-only</strong> (PawScout mode only): PawScout creates the CJ order but does NOT pay it — it shows below as <em>awaiting-payment</em> with the CJ order id, you pay it in CJ, and tracking still flows back automatically. Use this until the wallet is funded.</p>
     <div id="awaitbanner" class="msg" style="display:none"></div>
     <div id="ordlist"></div>
@@ -549,6 +553,17 @@ async function setMode(mode){
     return;
   }
   armPawscout=false; await applyMode('pawscout');
+}
+async function sendTestEmail(){
+  var b=el('testemailbtn'); var to=(el('testemailto')&&el('testemailto').value||'').trim();
+  if(!to||to.indexOf('@')<0){ setMsg('ordmsg','Enter a valid recipient email.','no'); return; }
+  b.disabled=true; setMsg('ordmsg','Sending test email to '+to+'…','muted');
+  try{
+    var r=await api('/test-email',{to:to});
+    if(!r.ok){ setMsg('ordmsg','Test email failed: '+(r.error||'unknown'),'no'); return; }
+    setMsg('ordmsg','Test email sent ✓ (Resend id '+(r.id||'?')+'). Check '+to+' (and spam).','ok');
+  }catch(e){ setMsg('ordmsg','Failed: '+errText(e),'no'); }
+  finally{ b.disabled=false; }
 }
 async function verifyCjOrders(){
   var b=el('cjdiagbtn'); b.disabled=true;
