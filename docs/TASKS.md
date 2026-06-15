@@ -127,13 +127,21 @@ Last updated: 2026-06-14.
       > and send the PayPal top-up details, and (2) advise any low-minimum or
       > auto-recharge PayPal option for order payment. CJ account: [your CJ email].
       > Connected store: activepaw.co.uk. Thanks!
-- [ ] **PS — build "create + notify, manual-pay" interim** so AP can fulfil
-      before any wallet is funded: in `pawscout` mode, if `payBalance` fails for
-      lack of balance (or via a `createOnly` sub-flag), PS still **creates** the
-      CJ order, leaves it `submitted`-unpaid (cj_order_id set), and **alerts the
-      owner to pay it in CJ** (console flag now; email when W5/Resend lands).
-      Owner pays in CJ → tracking poll still writes it back. Avoids the current
-      behaviour where an unfunded order just goes to `error`.
+- [x] **PS — "create + notify, manual-pay" interim (built 2026-06-15).** In
+      `pawscout` mode AP can fulfil before the wallet is funded. New `createOnly`
+      sub-flag on the `fulfil` config (`{mode,createOnly}`): when ON, PS **creates**
+      the CJ order and stops, leaving it status **`awaiting-payment`** with its
+      `cj_order_id` set. **Safety net** (even with createOnly OFF): if `payBalance`
+      fails for insufficient balance, the created order is downgraded to
+      `awaiting-payment` instead of `error` (a non-balance pay error still errors).
+      The owner pays the order in CJ; `pollTracking` now also polls
+      `awaiting-payment` orders, so tracking still writes back + marks fulfilled.
+      **Notification (interim):** the console Fulfilment card shows a red banner
+      "N order(s) created in CJ awaiting your payment" listing the CJ order ids,
+      and each row shows its `CJ <id>`. Email is still pending W5/Resend.
+      Console has a **Create-only: ON/OFF** toggle (PawScout mode only).
+      **AP is live on `{"mode":"pawscout","createOnly":true}`** (set in D1
+      2026-06-15). 243 tests. Takes effect on next deploy.
 
 ## 5. Verification debt — confirm against live, not assumed (PS)
 

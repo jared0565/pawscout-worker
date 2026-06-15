@@ -254,10 +254,12 @@ export function consolePage(apiKey: string): Response {
       <button class="ghost" onclick="setMode('manual')">Manual</button>
       <button class="ghost" onclick="setMode('cj')">CJ app</button>
       <button class="ghost" onclick="setMode('pawscout')">PawScout auto</button>
+      <button class="ghost" id="createonlybtn" onclick="toggleCreateOnly()">Create-only: …</button>
       <button class="ghost" id="cjdiagbtn" onclick="verifyCjOrders()">Verify CJ order API</button>
       <button class="ghost" id="ordbtn" onclick="loadOrders()">Refresh</button>
     </div>
-    <p class="sub" style="margin:0 0 8px"><strong>Manual</strong>: orders just queue — you pay in CJ by hand. <strong>CJ app</strong>: CJ's own Shopify app fulfils; PawScout stays out. <strong>PawScout auto</strong>: PawScout creates + pays + tracks automatically — only after the CJ wallet is funded AND CJ's native order-import is OFF (else duplicate orders).</p>
+    <p class="sub" style="margin:0 0 8px"><strong>Manual</strong>: orders just queue — you pay in CJ by hand. <strong>CJ app</strong>: CJ's own Shopify app fulfils; PawScout stays out. <strong>PawScout auto</strong>: PawScout creates + pays + tracks automatically — only after the CJ wallet is funded AND CJ's native order-import is OFF (else duplicate orders). <strong>Create-only</strong> (PawScout mode only): PawScout creates the CJ order but does NOT pay it — it shows below as <em>awaiting-payment</em> with the CJ order id, you pay it in CJ, and tracking still flows back automatically. Use this until the wallet is funded.</p>
+    <div id="awaitbanner" class="msg" style="display:none"></div>
     <div id="ordlist"></div>
     <p id="ordmsg" class="msg muted"></p>
   </section>
@@ -510,17 +512,31 @@ async function rewriteDescsNow(){
   finally{ btn.disabled=false; }
 }
 var currentMode='manual';
+var currentCreateOnly=false;
 var armPawscout=false;
 function renderMode(){
   var l=el('modelabel'); if(!l) return;
-  l.textContent=({manual:'Manual (queue only)',cj:'CJ app (PawScout not managing)',pawscout:'PawScout auto (create + pay + track)'}[currentMode]||currentMode);
+  var base=({manual:'Manual (queue only)',cj:'CJ app (PawScout not managing)',pawscout:'PawScout auto (create + pay + track)'}[currentMode]||currentMode);
+  l.textContent=base+((currentMode==='pawscout'&&currentCreateOnly)?' — create-only (you pay in CJ)':'');
+  var cb=el('createonlybtn');
+  if(cb){ cb.textContent='Create-only: '+(currentCreateOnly?'ON':'OFF'); cb.disabled=(currentMode!=='pawscout'); }
 }
 async function applyMode(mode){
   try{
     var r=await api('/fulfil',{mode:mode});
     if(!r.ok){ setMsg('ordmsg','Failed: '+(r.error||'unknown error'),'no'); return; }
-    currentMode=r.mode; renderMode();
+    currentMode=r.mode; currentCreateOnly=!!r.createOnly; renderMode();
     setMsg('ordmsg','Fulfilment mode set to '+r.mode+'.',r.mode==='pawscout'?'ok':'muted');
+  }catch(e){ setMsg('ordmsg','Failed: '+errText(e),'no'); }
+}
+async function toggleCreateOnly(){
+  if(currentMode!=='pawscout'){ setMsg('ordmsg','Create-only only applies in PawScout auto mode.','muted'); return; }
+  try{
+    var next=!currentCreateOnly;
+    var r=await api('/fulfil',{mode:'pawscout',createOnly:next});
+    if(!r.ok){ setMsg('ordmsg','Failed: '+(r.error||'unknown error'),'no'); return; }
+    currentMode=r.mode; currentCreateOnly=!!r.createOnly; renderMode();
+    setMsg('ordmsg',currentCreateOnly?'Create-only ON — PawScout will create CJ orders and leave them for you to pay in CJ.':'Create-only OFF — PawScout will pay CJ orders from the wallet balance.',currentCreateOnly?'muted':'ok');
   }catch(e){ setMsg('ordmsg','Failed: '+errText(e),'no'); }
 }
 async function setMode(mode){
@@ -549,8 +565,17 @@ async function loadOrders(){
   try{
     var r=await api('/orders',{});
     if(!r.ok){ setMsg('ordmsg','Failed: '+(r.error||'unknown error'),'no'); return; }
-    currentMode=r.mode||'manual'; renderMode();
+    currentMode=r.mode||'manual'; currentCreateOnly=!!r.createOnly; renderMode();
     var list=el('ordlist');
+    var awaiting=(r.orders||[]).filter(function(o){return o.status==='awaiting-payment';});
+    var banner=el('awaitbanner');
+    if(banner){
+      if(awaiting.length){
+        var ids=awaiting.map(function(o){return esc(o.cj||o.name||o.id);}).join(', ');
+        banner.className='msg no'; banner.style.display='';
+        banner.textContent='⚠ '+awaiting.length+' order(s) created in CJ awaiting your payment. Pay these CJ order(s) in app.cjdropshipping.com: '+ids+'. Tracking will sync back automatically once paid.';
+      } else { banner.style.display='none'; banner.textContent=''; }
+    }
     if(!r.orders.length){ list.innerHTML=''; setMsg('ordmsg','No orders yet.','muted'); return; }
     setMsg('ordmsg','','muted');
     var rows=r.orders.map(function(o){
@@ -559,7 +584,8 @@ async function loadOrders(){
       if(o.status==='held') act='<button class="ghost" data-act="release" data-id="'+esc(o.id)+'">Release</button> <button class="ghost" data-act="cancel" data-id="'+esc(o.id)+'">Cancel</button>';
       else if(o.status==='queued') act='<button class="ghost" data-act="cancel" data-id="'+esc(o.id)+'">Cancel</button>';
       var tn=o.tracking?(' · '+esc(o.tracking)):'';
-      return '<tr><td>'+esc(o.name||o.id)+'</td><td>'+esc((o.currency||'')+' '+(o.total!=null?o.total:''))+'</td><td><strong>'+esc(o.status)+'</strong>'+esc(holds)+tn+'</td><td>'+act+'</td></tr>';
+      var cjid=((o.status==='awaiting-payment'||o.status==='submitted')&&o.cj)?(' · CJ '+esc(o.cj)):'';
+      return '<tr><td>'+esc(o.name||o.id)+'</td><td>'+esc((o.currency||'')+' '+(o.total!=null?o.total:''))+'</td><td><strong>'+esc(o.status)+'</strong>'+esc(holds)+cjid+tn+'</td><td>'+act+'</td></tr>';
     }).join('');
     list.innerHTML='<table style="width:100%;border-collapse:collapse;font-size:13px"><thead><tr><th style="text-align:left">Order</th><th style="text-align:left">Total</th><th style="text-align:left">Status</th><th></th></tr></thead><tbody>'+rows+'</tbody></table>';
     var bts=list.querySelectorAll('button[data-act]');

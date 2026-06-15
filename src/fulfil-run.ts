@@ -51,12 +51,28 @@ async function writeTracking(admin: AdminGraphql, orderGid: string, trackNumber:
   if (errs.length) throw new Error(errs.map((e) => e.message).join('; '));
 }
 
+/** A payBalance failure that means "wallet has no/insufficient funds" — recoverable
+ * by the owner topping up + paying in CJ, NOT a code/data bug. We downgrade these
+ * to 'awaiting-payment' instead of 'error'. CJ phrases it a few ways. */
+function looksLikeInsufficientBalance(msg: string): boolean {
+  return /insufficient|not enough|balance|余额|recharge|top.?up|payment failed/i.test(msg);
+}
+
 /**
- * Submit queued orders to CJ and pay them. GATED on cfg.fulfil.mode==='pawscout'
- * — a no-op in 'manual'/'cj' (orders stay queued / left to CJ's app). createOrder is skipped when cj_order_id
- * is already set (so a pay-retry never duplicates the CJ order). Any failure
- * marks the order `error` (operator releases it to retry); one failure never
- * aborts the batch.
+ * Submit queued orders to CJ and (optionally) pay them. GATED on
+ * cfg.fulfil.mode==='pawscout' — a no-op in 'manual'/'cj' (orders stay queued /
+ * left to CJ's app). createOrder is skipped when cj_order_id is already set (so a
+ * pay-retry never duplicates the CJ order).
+ *
+ * Payment legs:
+ *  - cfg.fulfil.createOnly === true → PS creates the CJ order and STOPS, leaving
+ *    it 'awaiting-payment' (owner pays it manually in CJ; tracking poll picks it
+ *    up afterwards). This is the interim path while the CJ wallet is unfunded.
+ *  - otherwise PS calls payBalance. On success → 'submitted'. If payBalance fails
+ *    for insufficient balance, the CJ order still exists, so we downgrade to
+ *    'awaiting-payment' (owner pays it manually) rather than 'error'. Any other
+ *    failure → 'error' (operator releases it to retry). One failure never aborts
+ *    the batch.
  */
 export async function processDueOrders(
   store: TenantStore,
@@ -64,12 +80,14 @@ export async function processDueOrders(
   admin: AdminGraphql,
   cfg: TenantConfig,
   opts: { now?: () => number; max?: number } = {}
-): Promise<{ submitted: number; errored: number; skipped: boolean }> {
-  if (cfg.fulfil.mode !== 'pawscout') return { submitted: 0, errored: 0, skipped: true }; // 'manual'/'cj' → PawScout doesn't pay
+): Promise<{ submitted: number; awaiting: number; errored: number; skipped: boolean }> {
+  if (cfg.fulfil.mode !== 'pawscout') return { submitted: 0, awaiting: 0, errored: 0, skipped: true }; // 'manual'/'cj' → PawScout doesn't pay
   void admin; // (admin reserved for future create-side checks; tracking writeback is in pollTracking)
+  const createOnly = cfg.fulfil.createOnly === true;
   const nowIso = new Date(opts.now ? opts.now() : Date.now()).toISOString();
   const due = await store.dueQueuedOrders(nowIso, opts.max ?? 10);
   let submitted = 0;
+  let awaiting = 0;
   let errored = 0;
   for (const o of due) {
     try {
@@ -100,7 +118,26 @@ export async function processDueOrders(
         cjOrderId = created.orderId;
         await store.updateOrder(o.shopify_order_id, { cj_order_id: cjOrderId }); // persist BEFORE paying (no re-create on retry)
       }
-      await cj.payBalance(cjOrderId);
+
+      if (createOnly) {
+        // Interim: created but unpaid — owner pays it manually in CJ.
+        await store.updateOrder(o.shopify_order_id, { status: 'awaiting-payment', hold_reasons: JSON.stringify([`awaiting-payment: pay CJ order ${cjOrderId} manually`]) });
+        awaiting++;
+        continue;
+      }
+
+      try {
+        await cj.payBalance(cjOrderId);
+      } catch (payErr) {
+        const msg = (payErr as Error).message;
+        if (looksLikeInsufficientBalance(msg)) {
+          // The CJ order exists; the owner can top up + pay it manually. Don't error.
+          await store.updateOrder(o.shopify_order_id, { status: 'awaiting-payment', hold_reasons: JSON.stringify([`awaiting-payment: fund CJ wallet, then pay CJ order ${cjOrderId}`]) });
+          awaiting++;
+          continue;
+        }
+        throw payErr; // genuine pay failure → error branch
+      }
       await store.updateOrder(o.shopify_order_id, { status: 'submitted' });
       submitted++;
     } catch (e) {
@@ -109,7 +146,7 @@ export async function processDueOrders(
       errored++;
     }
   }
-  return { submitted, errored, skipped: false };
+  return { submitted, awaiting, errored, skipped: false };
 }
 
 /** Poll submitted CJ orders; when a tracking number appears, write it to Shopify and mark fulfilled. */
@@ -119,7 +156,13 @@ export async function pollTracking(
   admin: AdminGraphql,
   opts: { max?: number } = {}
 ): Promise<{ checked: number; fulfilled: number }> {
-  const submitted = (await store.listOrders('submitted', opts.max ?? 30)).filter((o) => o.cj_order_id);
+  // Poll both PS-paid ('submitted') and owner-pays-manually ('awaiting-payment')
+  // orders: in either case a tracking number means CJ has shipped it.
+  const max = opts.max ?? 30;
+  const submitted = [
+    ...(await store.listOrders('submitted', max)),
+    ...(await store.listOrders('awaiting-payment', max))
+  ].filter((o) => o.cj_order_id);
   let checked = 0;
   let fulfilled = 0;
   for (const o of submitted) {

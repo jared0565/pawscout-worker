@@ -44,7 +44,7 @@ export interface OrderRow {
   currency: string | null;
   financial_status: string | null;
   risk_level: string | null;
-  status: 'received' | 'held' | 'queued' | 'submitted' | 'fulfilled' | 'cancelled' | 'error';
+  status: 'received' | 'held' | 'queued' | 'submitted' | 'awaiting-payment' | 'fulfilled' | 'cancelled' | 'error';
   hold_reasons: string | null;
   cj_order_id: string | null;
   tracking_number: string | null;

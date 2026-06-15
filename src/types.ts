@@ -76,7 +76,15 @@ export interface LlmConfig {
  *                 create/pay/track) and just shows orders for visibility.
  */
 export type FulfilMode = 'manual' | 'pawscout' | 'cj';
-export interface Fulfil { mode: FulfilMode }
+export interface Fulfil {
+  mode: FulfilMode;
+  // createOnly: in 'pawscout' mode, PS creates the CJ order but does NOT pay it
+  // (the wallet may be unfunded). The order is left 'awaiting-payment' with its
+  // cj_order_id set; the owner pays it manually in CJ and the tracking poll then
+  // writes the shipment back. A safety net also kicks in when payBalance fails
+  // for insufficient balance even with createOnly off.
+  createOnly?: boolean;
+}
 
 export interface TenantConfig {
   collectionMap: Record<string, { handle: string; tag: string }>;
