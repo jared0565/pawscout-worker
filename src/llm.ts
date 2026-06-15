@@ -179,8 +179,13 @@ export async function curateProduct(
 
 const MAX_HERO_IMAGES = 8; // cap vision cost; CJ rarely puts the set shot past #8
 
-/** Result of a hero-image decision. `ok:false` = couldn't decide (don't cache). */
-export interface HeroPick { ok: boolean; index: number | null }
+/** Result of a hero-image decision. `ok:false` = couldn't decide (don't cache).
+ * `index` = 0-based image to promote to hero (null = current first is fine).
+ * `drop` = 0-based indices of images that DON'T belong to this listing (a
+ * different animal than the title names, an unrelated product, or a duplicate)
+ * and should be removed so they never surface in Shopify. The hero is never in
+ * `drop`; `drop` is `[]` when nothing should be removed. */
+export interface HeroPick { ok: boolean; index: number | null; drop?: number[] }
 
 /**
  * Vision pass: given a product TITLE and its images (in current order, index 0
@@ -201,38 +206,44 @@ export async function pickHeroImage(
   title: string,
   imageUrls: string[]
 ): Promise<HeroPick> {
-  if (!llm.available || !cfg.llm.enabled) return { ok: false, index: null };
+  if (!llm.available || !cfg.llm.enabled) return { ok: false, index: null, drop: [] };
   const urls = imageUrls.slice(0, MAX_HERO_IMAGES);
-  if (urls.length < 2) return { ok: true, index: null }; // nothing to choose — definitively fine
+  if (urls.length < 2) return { ok: true, index: null, drop: [] }; // nothing to choose/vet — definitively fine
   const model = cfg.llm.curationModel ?? cfg.llm.model;
 
-  const result = await llm.json<{ index: number; reason: string }>({
+  const result = await llm.json<{ index: number; drop: number[]; reason: string }>({
     model,
-    maxTokens: 150,
+    maxTokens: 200,
     images: urls,
     system:
-      'You choose the best HERO (main/default) image for a pet-product listing. ' +
-      'You are given the product TITLE and its images in order (image index 0 is shown first). ' +
-      'Pick the single image that best represents the WHOLE product as the title describes it. Rules: ' +
-      'for a "set"/"kit"/"bundle"/"with X & Y" title, prefer the image showing ALL the included items together, NOT one component on its own; ' +
-      'prefer a clear, well-lit shot of the actual product over packaging-only, a size chart, a text/infographic graphic, a lifestyle-only scene, or an extreme close-up of one detail. ' +
-      'Respond with ONLY JSON: {"index": <0-based integer of the best image>, "reason": <short phrase, max 12 words>}.',
+      'You curate the image gallery for a pet-product listing. ' +
+      'You are given the product TITLE and its images in order (image index 0 is shown first). Do two things:\n' +
+      '1) HERO: pick the single image that best represents the WHOLE product as the title describes it. ' +
+      'For a "set"/"kit"/"bundle"/"with X & Y" title, prefer the image showing ALL the included items together, NOT one component alone; ' +
+      'prefer a clear, well-lit product shot over packaging-only, a size chart, a text/infographic graphic, a lifestyle-only scene, or an extreme close-up of one detail.\n' +
+      '2) DROP: list the indices of images that DO NOT BELONG to this listing — an image showing a DIFFERENT animal than the title names (e.g. the title says "dog" but the image shows a cat), an unrelated product, or a near-duplicate. ' +
+      'Be CONSERVATIVE: only drop an image you are confident is incongruent with the title; when unsure, KEEP it (do not drop). The hero must NOT be in drop. ' +
+      'If the title names an animal, the hero MUST feature that animal when any image does.\n' +
+      'Respond with ONLY JSON: {"index": <0-based hero index>, "drop": [<0-based indices to remove>], "reason": <short phrase, max 12 words>}.',
     user: JSON.stringify({ title, imageCount: urls.length, note: 'Images follow in order; the first image is index 0.' }),
     validate: (v) => {
       const o = v as Record<string, unknown>;
       if (typeof o !== 'object' || o === null) return null;
       const idx = Number(o.index);
       if (!Number.isInteger(idx) || idx < 0 || idx >= urls.length) return null;
-      return { index: idx, reason: typeof o.reason === 'string' ? clip(o.reason, 120) : '' };
+      const drop = Array.isArray(o.drop)
+        ? [...new Set(o.drop.map(Number).filter((n) => Number.isInteger(n) && n >= 0 && n < urls.length && n !== idx))]
+        : [];
+      return { index: idx, drop, reason: typeof o.reason === 'string' ? clip(o.reason, 120) : '' };
     }
   });
 
   if (!result.ok) {
     console.warn(`hero-image pick failed for "${title}": ${result.error}`);
-    return { ok: false, index: null };
+    return { ok: false, index: null, drop: [] };
   }
   await store.logLlmUsage('hero-image', result.usage.model, result.usage.promptTokens, result.usage.completionTokens, result.usage.costUsd);
-  return { ok: true, index: result.value.index > 0 ? result.value.index : null };
+  return { ok: true, index: result.value.index > 0 ? result.value.index : null, drop: result.value.drop };
 }
 
 // --- Description rewrite: clean a raw/legacy supplier description ---

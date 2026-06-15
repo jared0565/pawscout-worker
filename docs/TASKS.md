@@ -182,6 +182,22 @@ Last updated: 2026-06-14.
 ---
 
 ### Recently completed (this session)
+- **Image vetting: drop incongruent images, not just reorder (2026-06-15).**
+  Root cause of "cat thumbnail on a dog listing": CJ serves the search
+  thumbnail (`productImage`) and the detail gallery (`productImageSet`) from
+  different fields, populated independently — the card showed the cat, the
+  detail the dog. Upgraded the vision pass (`pickHeroImage`, llm.ts) to also
+  return a `drop` list of images incongruent with the title (wrong animal,
+  unrelated product, duplicate) under an explicit species rule; conservative
+  (keeps when unsure). `confirmAndImport` now filters dropped images out before
+  upload (rejects a listing if NONE is congruent); the nightly/console image
+  sweep (`reconcileHeroImages`) now DELETES incongruent media from Shopify and
+  promotes the hero, guarded by the `hero_sig` signature. Signature **versioned
+  (v2)** so the existing catalog is re-vetted once. Never empties a gallery;
+  the hero is never dropped. 257 tests. **To remediate the live 69 products:
+  deploy, then run the image sweep ("Fix default images").** STILL TODO: the
+  un-imported supplier-grid preview (lazy curate-on-open + cache) so pre-import
+  cards also show the congruent image.
 - **Fulfilment vid-resolution gap fixed (2026-06-15).** Surfaced while prepping
   the live fulfilment test: only 32 of 69 imported products had a
   `warehouse_products` row, and `resolveLine` read the CJ `vid` ONLY from there —

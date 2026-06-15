@@ -143,20 +143,28 @@ export async function confirmAndImport(
     await store.putLink({ cjPid: detail.pid, state: 'failed', category: category ?? null });
     return;
   }
-  // Hero-image QA (vision): CJ's first image is often a single component or a
-  // packaging shot. Promote the image that best matches the title to the front
-  // so it becomes the featured/default image. Best-effort; never blocks import.
+  // Image QA (vision): CJ's first image is often a single component or a
+  // packaging shot, and CJ galleries can include images of a DIFFERENT animal
+  // than the title (a cat photo on a "dog" listing). Promote the best on-title
+  // image to the front AND drop incongruent images so they never enter Shopify.
+  // Best-effort; never blocks the import on an LLM failure.
   if (pickHero && detail.images.length > 1) {
     try {
-      const hero = await pickHero(detail.nameEn, detail.images);
-      if (hero.ok && hero.index !== null && hero.index > 0 && hero.index < detail.images.length) {
-        const imgs = [...detail.images];
-        const [chosen] = imgs.splice(hero.index, 1);
-        imgs.unshift(chosen);
-        detail = { ...detail, images: imgs };
+      const vet = await pickHero(detail.nameEn, detail.images);
+      if (vet.ok) {
+        const orig = detail.images;
+        const drop = new Set((vet.drop ?? []).filter((i) => i >= 0 && i < orig.length));
+        let keep = orig.map((_, i) => i).filter((i) => !drop.has(i));
+        if (vet.index !== null && keep.includes(vet.index)) keep = [vet.index, ...keep.filter((i) => i !== vet.index)];
+        if (keep.length === 0) { // no congruent image — don't list a mislabelled product
+          console.warn(`import rejected (no congruent image) for ${detail.pid}: ${detail.nameEn}`);
+          await store.putLink({ cjPid: detail.pid, state: 'failed', category: category ?? null });
+          return;
+        }
+        if (drop.size || keep[0] !== 0) detail = { ...detail, images: keep.map((i) => orig[i]) };
       }
     } catch (e) {
-      console.warn(`hero-image pick failed for ${detail.pid}: ${(e as Error).message}`);
+      console.warn(`image vet failed for ${detail.pid}: ${(e as Error).message}`);
     }
   }
   // Freight-aware floor + origin badge: capture once at import time (ghost
@@ -423,17 +431,32 @@ const SET_HERO_SIG = `mutation pawscoutHeroSig($mf: [MetafieldsSetInput!]!) {
   metafieldsSet(metafields: $mf) { userErrors { field message } }
 }`;
 
+const DELETE_MEDIA = `mutation pawscoutDeleteMedia($productId: ID!, $mediaIds: [ID!]!) {
+  productDeleteMedia(productId: $productId, mediaIds: $mediaIds) {
+    deletedMediaIds
+    mediaUserErrors { field message }
+    userErrors { field message }
+  }
+}`;
+
+// Bump when the vision logic changes meaning (e.g. v1 only reordered the hero;
+// v2 also DROPS incongruent images) so every product is re-checked once under
+// the new rules instead of being skipped by a stale cached signature.
+const VET_VERSION = 'v2';
+
 /**
- * Order-independent fingerprint of a product's media set. Reordering (which the
- * sweep itself does) leaves it unchanged; adding/removing an image changes it.
+ * Order-independent fingerprint of a product's media set, prefixed with the
+ * vetting-logic version. Reordering (which the sweep itself does) leaves the
+ * hash unchanged; adding/removing an image, or bumping VET_VERSION, changes it.
  * Stored in the pawscout.hero_sig metafield so the sweep can skip a product it
- * has already vision-checked at this exact media state — the spend saver.
+ * has already vision-checked at this exact media state under this logic — the
+ * spend saver. A VET_VERSION bump invalidates all cached signatures once.
  */
 export function mediaSignature(mediaIds: string[]): string {
   const s = [...mediaIds].sort().join(',');
   let h = 0x811c9dc5;
   for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193); }
-  return (h >>> 0).toString(16);
+  return `${VET_VERSION}:${(h >>> 0).toString(16)}`;
 }
 
 /**
@@ -480,16 +503,31 @@ export async function reconcileHeroImages(
       if (p?.metafield?.value === sig) continue; // already vision-checked at this media state — no LLM call
       const hero = await pickHero(p?.title ?? '', nodes.map((n) => n.image.url));
       if (!hero.ok) continue; // couldn't decide (LLM down/failed) — don't cache, retry next run
-      if (hero.index !== null && hero.index > 0 && hero.index < nodes.length && p?.featuredMedia?.id !== nodes[hero.index].id) {
+
+      // 1) Delete incongruent media (wrong animal vs title, etc.) so it never
+      // shows in the store. Never empties the gallery; the hero is never dropped.
+      const dropIds = [...new Set((hero.drop ?? []).filter((i) => i >= 0 && i < nodes.length).map((i) => nodes[i].id))];
+      if (dropIds.length && dropIds.length < nodes.length) {
+        const d = await admin(DELETE_MEDIA, { productId: link.shopify_product_id, mediaIds: dropIds }) as {
+          productDeleteMedia?: { mediaUserErrors?: { message: string }[]; userErrors?: { message: string }[] };
+        };
+        const derrs = [...(d.productDeleteMedia?.mediaUserErrors ?? []), ...(d.productDeleteMedia?.userErrors ?? [])];
+        if (derrs.length) throw new Error(derrs.map((e) => e.message).join('; '));
+        fixed++;
+      }
+      // 2) Promote the hero (by media id — valid even after deletions).
+      if (hero.index !== null && hero.index < nodes.length && !dropIds.includes(nodes[hero.index].id) && p?.featuredMedia?.id !== nodes[hero.index].id) {
         const r = await admin(REORDER_MEDIA, { id: link.shopify_product_id, moves: [{ id: nodes[hero.index].id, newPosition: '0' }] }) as {
           productReorderMedia?: { mediaUserErrors?: { message: string }[]; userErrors?: { message: string }[] };
         };
         const errs = [...(r.productReorderMedia?.mediaUserErrors ?? []), ...(r.productReorderMedia?.userErrors ?? [])];
         if (errs.length) throw new Error(errs.map((e) => e.message).join('; '));
-        fixed++;
+        if (!dropIds.length) fixed++;
       }
-      // Record the check (reordered or not) so unchanged media is never re-visioned.
-      await admin(SET_HERO_SIG, { mf: [{ ownerId: link.shopify_product_id, namespace: 'pawscout', key: 'hero_sig', type: 'single_line_text_field', value: sig }] });
+      // Record the check against the KEPT media set so the next run (which sees
+      // the reduced gallery) skips it — no re-vision after a clean pass.
+      const keptSig = mediaSignature(nodes.map((n) => n.id).filter((id) => !dropIds.includes(id)));
+      await admin(SET_HERO_SIG, { mf: [{ ownerId: link.shopify_product_id, namespace: 'pawscout', key: 'hero_sig', type: 'single_line_text_field', value: keptSig }] });
     } catch (e) {
       console.warn(`hero-image reconcile failed for ${link.cj_pid}: ${(e as Error).message}`);
     }

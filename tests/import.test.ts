@@ -225,12 +225,22 @@ describe('hero-image QA (vision)', () => {
     expect(files.map((f) => f.originalSource)).toEqual(['https://i/1.jpg', 'https://i/2.jpg']);
   });
 
+  it('confirmAndImport drops an incongruent image so it never enters Shopify', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const calls: Call[] = [];
+    // DETAIL.images = [.../1.jpg, .../2.jpg]; vet keeps hero=1 and drops index 0 → only 2.jpg uploaded.
+    await confirmAndImport(store, cjStub(), fakeAdmin(calls), CFG, DETAIL, 'pet-toys', undefined, async () => ({ ok: true, index: 1, drop: [0] }));
+    const files = (calls.find((c) => c.query.includes('productSet'))!.variables!.input as { files: { originalSource: string }[] }).files;
+    expect(files.map((f) => f.originalSource)).toEqual(['https://i/2.jpg']);
+  });
+
   function heroAdmin(calls: Call[], featuredId: string, nodes: { id: string; url: string }[], sig?: string): AdminGraphql {
     return async (query, variables) => {
       calls.push({ query, variables });
       if (query.includes('pawscoutMedia')) {
         return { product: { title: 'Grooming Set', featuredMedia: { id: featuredId }, metafield: sig ? { value: sig } : null, media: { nodes: nodes.map((n) => ({ id: n.id, image: { url: n.url } })) } } };
       }
+      if (query.includes('productDeleteMedia')) return { productDeleteMedia: { deletedMediaIds: (variables!.mediaIds as string[]), mediaUserErrors: [], userErrors: [] } };
       if (query.includes('productReorderMedia')) return { productReorderMedia: { mediaUserErrors: [], userErrors: [] } };
       if (query.includes('metafieldsSet')) return { metafieldsSet: { userErrors: [] } };
       throw new Error(`unexpected query: ${query.slice(0, 40)}`);
@@ -246,6 +256,34 @@ describe('hero-image QA (vision)', () => {
     expect(r).toEqual({ scanned: 1, fixed: 1, total: 1, next: null });
     expect(calls.find((c) => c.query.includes('productReorderMedia'))!.variables!.moves).toEqual([{ id: 'gid://m/2', newPosition: '0' }]);
     expect(calls.some((c) => c.query.includes('metafieldsSet'))).toBe(true); // signature cached
+  });
+
+  it('reconcileHeroImages deletes incongruent media from Shopify and caches the kept signature', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    await store.putLink({ cjPid: 'P1', state: 'imported', shopifyProductId: 'gid://shopify/Product/1', handle: 'h1', category: 'pet-toys' });
+    const nodes = [{ id: 'gid://m/0', url: 'https://i/0.jpg' }, { id: 'gid://m/1', url: 'https://i/1.jpg' }, { id: 'gid://m/2', url: 'https://i/2.jpg' }];
+    const calls: Call[] = [];
+    const admin = heroAdmin(calls, 'gid://m/0', nodes);
+    // vet: hero is index 2 (dog), drop indices 0 and 1 (cats).
+    const r = await reconcileHeroImages(store, admin, CFG, async () => ({ ok: true, index: 2, drop: [0, 1] }));
+    expect(r).toEqual({ scanned: 1, fixed: 1, total: 1, next: null });
+    const del = calls.find((c) => c.query.includes('productDeleteMedia'));
+    expect(del!.variables!.mediaIds).toEqual(['gid://m/0', 'gid://m/1']);
+    // hero (m/2) promoted, and signature recorded over the KEPT set only (m/2)
+    expect(calls.find((c) => c.query.includes('productReorderMedia'))!.variables!.moves).toEqual([{ id: 'gid://m/2', newPosition: '0' }]);
+    const sigCall = calls.find((c) => c.query.includes('metafieldsSet'));
+    expect((sigCall!.variables!.mf as { value: string }[])[0].value).toBe(mediaSignature(['gid://m/2']));
+  });
+
+  it('reconcileHeroImages never deletes the whole gallery (keeps media even if all flagged)', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    await store.putLink({ cjPid: 'P1', state: 'imported', shopifyProductId: 'gid://shopify/Product/1', handle: 'h1', category: 'pet-toys' });
+    const nodes = [{ id: 'gid://m/0', url: 'https://i/0.jpg' }, { id: 'gid://m/1', url: 'https://i/1.jpg' }];
+    const calls: Call[] = [];
+    const admin = heroAdmin(calls, 'gid://m/0', nodes);
+    // drop targets both images (hero excluded by the picker contract; here drop = all nodes) → must NOT delete.
+    await reconcileHeroImages(store, admin, CFG, async () => ({ ok: true, index: 0, drop: [0, 1] }));
+    expect(calls.some((c) => c.query.includes('productDeleteMedia'))).toBe(false);
   });
 
   it('reconcileHeroImages skips (no LLM call) a product already checked at this media state', async () => {
