@@ -1,15 +1,99 @@
-# PawScout Worker
+# PawScout Worker — Active Paw
 
-PawScout is an embedded Shopify app that handles **supplier intelligence and demand-driven inventory population** for pet stores. It connects a store to the [CJdropshipping](https://cjdropshipping.com) supplier API, backfills storefront searches with quality-gated supplier products, imports them on demand, and continuously optimizes the catalog around what visitors actually view and buy.
+## What is Active Paw?
 
-This repository is the **backend half** of the Active Paw project:
+**Active Paw** ([activepaw.co.uk](https://activepaw.co.uk)) is a UK-based online pet store that sells pet accessories, toys, grooming tools, and health products. It is entirely demand-driven: the catalog is never hand-curated — it grows and shrinks automatically based on what real visitors search for and click on.
+
+**PawScout** is the engine behind it. It is an embedded Shopify app (Cloudflare Worker) that connects the storefront to the CJdropshipping supplier catalogue, populates the search grid with quality-vetted supplier products in real time, imports them on first genuine interest, prices them automatically in GBP, and automates fulfilment end-to-end once an order is placed.
+
+This repository is the **backend half** of the project:
 
 | Repo | Role |
 |---|---|
-| [`active-paw-theme`](https://github.com/jared0565/active-paw-theme) | Shopify storefront theme (Liquid). Renders the grid, ghost cards, preview modal, and beacons. |
-| `pawscout-worker` (**this repo**) | Cloudflare Worker: app install/auth, encrypted credential vault, merchant console, search backfill, import-on-click, pricing, lifecycle crons. |
+| [`active-paw-theme`](https://github.com/jared0565/active-paw-theme) | Shopify storefront theme (Liquid). Renders the grid, ghost cards, preview modal, and performance beacons. |
+| `pawscout-worker` (**this repo**) | Cloudflare Worker: app install/auth, encrypted credential vault, merchant console, search backfill, import-on-click, pricing, catalogue lifecycle, fulfilment pipeline. |
 
 Production URL: **https://pawscout.activepaw.co.uk** (Cloudflare custom domain route).
+
+---
+
+## Why it was built
+
+Running a dropshipping store traditionally requires constant manual effort: hunting for products on the supplier's site, deciding what to list, writing descriptions, setting prices, re-checking stock, and repeating whenever a product goes out of fashion. Done manually, this either stagnates the catalogue or keeps the owner buried in admin.
+
+Active Paw was built to eliminate that work entirely. The founding idea: **let customer demand decide what gets listed**. If visitors are searching for something, stock it automatically. If nothing sells for 30 days, archive it automatically. The owner's job is strategy and fulfilment funding — not product management.
+
+A secondary problem was quality. General-purpose dropshipping tools pull in whatever matches a keyword, resulting in kitchen tools appearing in pet stores (it happened) and low-quality products diluting search results. PawScout applies multi-layer quality gates — price, popularity, species-relevance, AI curation, and vision-based image validation — so the catalogue stays clean without manual review.
+
+---
+
+## What it does
+
+### Catalogue (zero manual listing)
+
+- **Search backfill**: when the Shopify store's own search returns fewer than 12 results, PawScout silently augments the grid with quality-gated supplier "ghost cards" priced in GBP. The visitor sees a complete grid; the products do not exist in Shopify yet.
+- **Import on first click**: clicking a ghost card opens an instant preview (served from cache — no network wait). The background import runs simultaneously: Shopify product created, priced, tagged, published. The next visitor sees a real buyable product.
+- **30-day cull**: imported products with zero qualifying views or add-to-carts in 30 days are automatically archived. URLs and order history are preserved; the listing disappears from search. Renewed demand revives it — no duplicate is created.
+- **Nightly replenishment**: a daily cron re-fills collections that fall below target (12 products) from the local warehouse buffer, prioritising keywords that real visitors searched for and couldn't fully satisfy.
+
+### Quality gates (no junk, no mismatches)
+
+- **Price and popularity floors**: supplier cost must fall in the configured band (default £4–62 landed); a minimum `listedNum` of 50 prevents listing products that the supplier barely stocks.
+- **Species gate**: a "dog toy" search never surfaces cat products, enforced at every relevance-matching step.
+- **AI curation** (OpenRouter): a configurable LLM model reviews each product description for pet-relevance, quality, and claim safety before import. Can be toggled off; mechanical gates take over.
+- **Vision-based image vetting**: before import, a vision model reviews the image set. Images that show the wrong animal, an unrelated product, or a duplicate are dropped. A listing with no congruent image is rejected outright. The search grid self-heals: once a product has been previewed, its vetted hero image replaces CJ's raw thumbnail on future search cards.
+- **Dedupe at admission**: a title fingerprint (significant tokens, order-independent) blocks duplicate products from flooding the catalogue, including minor-variation reorderings.
+
+### Pricing (automatic, per-tenant)
+
+Supplier cost (USD) is converted to GBP retail via a configurable multiplier (Active Paw: **2.7×**), FX rate, buffer, and minimum margin floor. The rule produces a .99-rounded price that targets ~20% net margin on cost-bound items and higher blended across the range. One console change re-prices the entire catalogue on next sync.
+
+### Fulfilment pipeline (W-FULFIL)
+
+When a Shopify order is paid, the worker:
+1. Receives the `orders/paid` webhook, validates the order (address complete, items mapped to supplier variant IDs, not high-risk, not over £100, fully paid), and queues it with a 60-minute grace window.
+2. Creates the corresponding CJ order via API, linking each line item to its exact supplier variant.
+3. Polls for the tracking number and writes it back to Shopify as a fulfilment with a direct tracking URL.
+4. If the CJ wallet is unfunded, the order enters `awaiting-payment`: the owner receives an email with the CJ order ID and a payment link, and tracking polling continues once the payment clears.
+
+### Merchant console (embedded in Shopify)
+
+A full-featured admin UI, embedded via App Bridge, shows the supplier connection status, live catalogue stats, top search keywords with fill rates, and controls for every config value. Fulfilment mode, pricing rule, AI settings, collection map, and alert email are all set here — no config files to edit manually.
+
+---
+
+## How it became helpful
+
+The project started as a basic search backfill — pad the grid when the store runs short. The improvements that made it genuinely useful came from real problems observed in production:
+
+1. **"Non-pet products slipping in"** — a kitchen knife sharpener appeared in search results during an LLM outage because mechanical gates had no pet-relevance check. Fixed with `isLikelyPetProduct`: explicit pet tokens always admit; clear non-pet markers (kitchen, pruning, hairdressing) always reject. The LLM tightens further when available.
+
+2. **"Cat on a dog listing"** — a supplier's search thumbnail (`productImage`) and detail gallery (`productImageSet`) are independent fields, set separately by the supplier. The search card showed a cat; the product detail showed a dog. Fixed with vision-based image vetting: the model identifies incongruent images; they are removed from Shopify and the grid self-heals on next search after the first preview is cached.
+
+3. **"Duplicate flooding"** — the same product listed under subtly different titles would pass the deduplication check and create near-identical listings. Fixed with `titleSignature`: a sorted, stopword-stripped token fingerprint that collapses reorderings ("Pet Teeth Cleaning Powder 100g" = "Teeth Cleaning Powder for Pets 100g") while keeping genuinely distinct items distinct.
+
+4. **"Category drift"** — dental products filed under toys, tug balls filed under health. Fixed with `signaledCategory`: a keyword-signal map re-files a product only when its title unambiguously points to a different collection, so it never overrides a reasonable LLM placement.
+
+5. **"54% of orders would have errored"** — during fulfilment testing, only 32 of 69 imported products had a local warehouse row, and the fulfilment resolver read the supplier variant ID from there. The rest would have silently failed. Fixed with a live `cj.detail()` fallback: when the warehouse row is missing, the resolver fetches the variant ID from the supplier API in real time.
+
+The running test suite (262 tests, all run inside a real Cloudflare `workerd` runtime against in-memory D1) catches regressions from all of the above.
+
+---
+
+## Sample use case
+
+**Scenario:** A visitor on activepaw.co.uk searches "dog rope toy".
+
+1. Shopify's native search finds 7 matching products — not enough to fill the 12-product grid cap.
+2. The theme calls `/apps/pawscout/search?q=dog+rope+toy&have=7&limit=5`.
+3. PawScout checks its local warehouse buffer first (zero CJ calls). It finds 3 matching gated products and adds them as ghost cards (priced in GBP, no Shopify product yet).
+4. Still 2 short — PawScout falls back to a cached CJ search (or fetches live and caches 30 days). It finds 15 results; quality gates reduce them to 4 valid items. The best 2 are added as ghost cards. Grid is full.
+5. The visitor sees 12 products. 5 of them are ghost cards with prices and images but no buy button.
+6. The visitor clicks a ghost card — "Braided Rope Chew Toy for Dogs, 3-pack". The preview modal opens instantly from cached supplier data.
+7. PawScout fires a background import: creates the Shopify product, uploads the vetted images, sets the GBP price (e.g. £12.99 on a £4.80 supplier cost), publishes it, and tags it `cj-pet-toys`. The modal CTA flips from "View details" to "Add to cart" within seconds.
+8. The next visitor searching "rope dog toy" sees the real product page.
+9. At 4:17 AM the next day, the daily cron logs that "dog rope toy" was searched 11 times yesterday with 5 ghost impressions. It replenishes the `pet-toys` collection to 12 products from the top-scoring warehouse candidates.
+10. When the visitor's order is paid, the worker receives the `orders/paid` webhook, waits 60 minutes (grace window), then creates a CJ order for £4.80. Once CJ ships, the tracking number is written back to Shopify and the buyer receives the standard Shopify shipping notification with a direct tracking link.
 
 ---
 
@@ -48,7 +132,7 @@ Products that never reach a preview are **never imported** — no catalog pollut
 - **Router:** [Hono](https://hono.dev)
 - **Shopify:** [`@shopify/shopify-api`](https://github.com/Shopify/shopify-api-js) v11 (cf-worker adapter), App Bridge v4, Admin GraphQL, App Proxy
 - **Database:** [D1](https://developers.cloudflare.com/d1/) (SQLite), migrations in `migrations/`
-- **Tests:** [Vitest](https://vitest.dev) with [`@cloudflare/vitest-pool-workers`](https://developers.cloudflare.com/workers/testing/vitest-integration/) — 146 tests run inside workerd against an in-memory D1 with real migrations
+- **Tests:** [Vitest](https://vitest.dev) with [`@cloudflare/vitest-pool-workers`](https://developers.cloudflare.com/workers/testing/vitest-integration/) — 262 tests run inside workerd against an in-memory D1 with real migrations
 
 ## Project layout
 
@@ -72,7 +156,7 @@ src/
     search.ts           Search backfill: cache → gates → pricing → dedupe → ghost cards
     import.ts           Preview builder + import-on-click (productSet, publish, revive)
 migrations/             D1 schema migrations
-tests/                  Vitest suites (146 tests) incl. an architectural guard test
+tests/                  Vitest suites (262 tests) incl. an architectural guard test
 wrangler.toml           Worker config, D1 binding, cron trigger, public vars
 ```
 
@@ -141,6 +225,7 @@ Sales arriving through the on-site search flywheel carry near-zero acquisition c
 | `product_events` | Qualifying events (`view`/`atc`/`order`) for the cull |
 | `cj_tokens` | Sealed cached CJ access token (CJ allows ~1 auth refresh per 300s) |
 | `llm_usage` | **W3**: per-call OpenRouter tokens + cost (curation/keyword tasks), 90-day retention |
+| `orders` | Fulfilment queue: Shopify order → CJ order mapping, status, shipping address |
 
 ## HTTP API
 
@@ -155,13 +240,21 @@ Sales arriving through the on-site search flywheel carry near-zero acquisition c
 | `POST` | `/api/pricing` | Save the pricing rule; invalid → `400` |
 | `POST` | `/api/llm` | Save the AI-curation config (OpenRouter model, threshold, on/off) |
 | `POST` | `/api/collections` | Replace the collection map; invalid → `400` |
+| `POST` | `/api/categories` | Re-file products to the collection their title signals (LLM-free) |
+| `POST` | `/api/descriptions` | Sweep: rewrite raw-CJ descriptions with the LLM (claim-safe) |
+| `POST` | `/api/images` | Sweep: delete incongruent images + promote hero (vision-vetted) |
+| `POST` | `/api/orders` | Current order queue state + fulfilment config |
+| `POST` | `/api/fulfil` | Set fulfilment mode / createOnly / alertEmail |
+| `POST` | `/api/order-action` | Manual hold / release / cancel for a queued order |
+| `POST` | `/api/fulfil-run` | On-demand fulfilment pipeline run (no cron wait) |
+| `POST` | `/api/test-email` | Send a test alert email to the configured address |
 
 ### Storefront (Shopify App Proxy, HMAC-signed)
 
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/proxy/search?q=&have=&limit=` | Gated, priced, deduped ghost cards for a keyword |
-| `GET` | `/proxy/product?pid=` | Instant preview + records the qualifying view + starts background import |
+| `GET` | `/proxy/product?pid=` | Instant preview + qualifying view + background import |
 | `GET` | `/proxy/import-status?pid=` | `{state, url}` — the theme polls this to flip the CTA |
 | `POST` | `/proxy/event` | `{pid, event: view\|atc}` performance beacons |
 
@@ -172,7 +265,9 @@ Sales arriving through the on-site search flywheel carry near-zero acquisition c
 | `GET` | `/auth`, `/auth/callback` | Legacy OAuth |
 | `GET` | `/app` | Embedded merchant console |
 | `POST` | `/webhooks/uninstall` | HMAC-validated; marks uninstalled + purges secrets |
+| `POST` | `/webhooks/orders-paid` | Order paid → validate → queue (60-min grace) |
 | cron | `17 4 * * *` daily | Retention purge → cull → refill (capped, CJ-rate-paced) |
+| cron | `*/15 * * * *` every 15 min | Fulfilment pipeline: submit queued orders → poll tracking |
 
 ## Development
 
@@ -188,7 +283,7 @@ npm run dev
 
 | Command | What it does |
 |---|---|
-| `npm test` | 146 tests inside workerd |
+| `npm test` | 262 tests inside workerd |
 | `npm run typecheck` | `tsc --noEmit` (strict) |
 | `npm run migrate:local` / `migrate:remote` | Apply D1 migrations |
 | `npm run deploy` | Deploy to Cloudflare |
@@ -198,6 +293,7 @@ npm run dev
 ```bash
 wrangler secret put SHOPIFY_API_SECRET
 wrangler secret put PAWSCOUT_MASTER_KEY
+wrangler secret put RESEND_API_KEY        # optional — owner alert emails for awaiting-payment orders
 ```
 
 > ⚠️ `PAWSCOUT_MASTER_KEY` is the KEK for every tenant secret. Losing it orphans all sealed credentials; leaking it compromises them.
@@ -211,11 +307,11 @@ The storefront integration requires the **App Proxy** to be configured on the ap
 
 The theme then calls `/apps/pawscout/*` on the store's own domain and Shopify signs + forwards to the worker. Without this, ghost backfill, previews, and beacons no-op (the theme degrades gracefully).
 
-### Deploying the flywheel
+### Deploying
 
-1. `npm run migrate:remote` (applies `0002_flywheel.sql`)
-2. `npm run deploy` (registers the cron trigger)
-3. Configure the App Proxy (above)
+1. `npm run migrate:remote` (runs all pending D1 migrations)
+2. `npm run deploy` (deploys the worker + registers cron triggers)
+3. Configure the App Proxy (above) if not already set
 4. Ship the theme half (`active-paw-theme`: `pawscout.js`, search/product/layout wiring)
 
 ### Testing notes
@@ -224,11 +320,25 @@ Tests run in real workerd via `@cloudflare/vitest-pool-workers` with migrations 
 
 ## Roadmap
 
-**The active plan is [`docs/WAREHOUSE_PLAN.md`](docs/WAREHOUSE_PLAN.md)** — the W1–W4
-warehouse evolution (PS-local product buffer, store floor + CJ→Shopify stock sync,
-LLM curation via OpenRouter, weekly intelligence digest), written to be resumable
-by any developer. Items below are post-W4:
+**The active task list is [`docs/TASKS.md`](docs/TASKS.md)** (what's next, in priority order) and the full technical plan is [`docs/WAREHOUSE_PLAN.md`](docs/WAREHOUSE_PLAN.md).
 
-- **Orders webhook** (`orders/create`) as a stronger qualifying signal than add-to-cart — needs Shopify protected-customer-data approval, so ATC beacons stand in for now.
-- **Per-category pricing multipliers** (commodity vs problem-solver products).
-- **Automated FX rate refresh** (currently a console-configured value).
+Current status (June 2026):
+
+- Catalogue pipeline fully live: search backfill, import-on-click, 30-day cull, nightly replenishment, LLM curation, vision image vetting, dedupe, category re-audit, description sweep.
+- Fulfilment pipeline live: `orders/paid` webhook → validate → queue → CJ order creation → tracking → Shopify fulfilment. `awaiting-payment` mode with owner email alerts active while CJ wallet is being funded.
+- Pricing locked at **2.7×** in tenant config.
+
+Remaining before full go-live:
+
+- Fund CJ wallet (PayPal via CJ support, or wire) to enable automated order payments.
+- Remove store password + activate payment provider.
+- Cookie-consent banner (PECR/GDPR).
+- Shopify protected-customer-data approval + `read_orders` scope re-mint.
+
+Post-launch pipeline:
+
+- **W6** — automated CJ damage/claims pipeline.
+- **W5** — Resend email marketing (GDPR opt-in).
+- **W4** — weekly intelligence digest (needs ≥2 weeks of live order data).
+- **Per-category pricing multipliers** (commodity vs problem-solver).
+- **Automated FX rate refresh**.
