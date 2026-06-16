@@ -178,6 +178,26 @@ Last updated: 2026-06-14.
 - [ ] **White-label decoupling** — retire the `4qkudm-ez.` shop-sniff / hardcoded
       "Active Paw"/"PawScout" strings; make brand a per-tenant setting. Keep the
       theme a reusable, Shopify-standards-compliant theme. → 7c.
+- [ ] **Mobile app (revisit AFTER launch + real traffic data).** AP is a Shopify
+      store, so a mobile app is an ADDITIVE client beside the web storefront — the
+      Liquid theme and the worker don't get rewritten. Sequencing (cheap→heavy,
+      discussed 2026-06-16):
+      1. **Shopify "Shop" app listing** — ~zero code, just enable; customers get
+         an app experience with Shopify's cart/checkout.
+      2. **PWA** — add manifest + service worker to the theme (NONE exists today;
+         theme is responsive only). Purely additive theme files → home-screen
+         install + push notifications. Near-zero risk. **Recommended first step.**
+      3. **WebView wrapper** (Median/GoNative) — native shell around the responsive
+         site; reuses 100% of the storefront. Watch App Store thin-wrapper rejection.
+      4. **Fully native / headless** (React Native / Flutter on Shopify Storefront
+         API) — months of work. **Only real codebase risk lives here:** PS `/proxy/*`
+         endpoints are authed by Shopify App Proxy HMAC (signed only for Liquid
+         storefront requests); a native app would need a NEW token-based auth route
+         on the worker ALONGSIDE the existing proxy verification (additive — web flow
+         untouched). Search backfill/ghost cards/import already exist as worker logic;
+         native just needs a second front door, not a rebuild.
+      DECISION: premature pre-launch. Launch web → add PWA → go native only if data
+      shows app-store presence moves revenue.
 
 ---
 
