@@ -146,6 +146,13 @@ describe('searchBackfill', () => {
     expect(Number(log[0].avg_ghost_hits)).toBe(1);
   });
 
+  it('swaps in the cached curated hero for a card when one exists', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    await store.putSearchCache('hero:ok', JSON.stringify({ sig: 'x', images: ['https://i/HERO.jpg', 'https://i/2.jpg'] }), 30);
+    const cards = await searchBackfill(store, fakeCj([item({ pid: 'ok' })]), CFG, 'dog toy', 0, 12);
+    expect(cards.find((c) => c.pid === 'ok')!.image).toBe('https://i/HERO.jpg');
+  });
+
   it('serves repeats from cache — CJ is hit once per keyword', async () => {
     const store = new TenantStore(env.DB, 'a.myshopify.com');
     const calls: string[] = [];

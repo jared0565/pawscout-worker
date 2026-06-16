@@ -300,6 +300,17 @@ export async function searchBackfill(
     }
   }
 
+  // Swap CJ's raw thumbnail for the vision-vetted hero when we have one cached
+  // (populated when a product is previewed or imported). This is what makes a
+  // "cat on a dog listing" card self-heal — the grid shows the congruent image.
+  const heroes = await store.getHeroImages(cards.map((c) => c.pid));
+  if (heroes.size) {
+    for (const card of cards) {
+      const hero = heroes.get(card.pid);
+      if (hero) card.image = hero;
+    }
+  }
+
   await store.logSearch(kw, storeHits, cards.length);
   return cards;
 }

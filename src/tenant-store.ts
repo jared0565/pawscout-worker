@@ -216,6 +216,27 @@ export class TenantStore {
     return row?.payload ?? null;
   }
 
+  /** Batched read of curated hero images (`hero:<pid>` entries) → pid → hero URL.
+   * Lets the search grid swap CJ's raw thumbnail for the vision-vetted hero. */
+  async getHeroImages(pids: string[]): Promise<Map<string, string>> {
+    const out = new Map<string, string>();
+    if (!pids.length) return out;
+    const keys = pids.map((p) => `hero:${p}`);
+    const ph = keys.map((_, i) => `?${i + 3}`).join(',');
+    const rs = await this.db
+      .prepare(`SELECT cache_key, payload FROM search_cache WHERE shop = ?1 AND expires_at > ?2 AND cache_key IN (${ph})`)
+      .bind(this.shop, new Date().toISOString(), ...keys)
+      .all<{ cache_key: string; payload: string }>();
+    for (const row of rs.results ?? []) {
+      try {
+        const c = JSON.parse(row.payload) as { images?: string[] };
+        const hero = c.images?.[0];
+        if (hero) out.set(row.cache_key.slice(5), hero); // strip "hero:"
+      } catch { /* skip corrupt cache row */ }
+    }
+    return out;
+  }
+
   async putSearchCache(cacheKey: string, payload: string, ttlDays: number): Promise<void> {
     const now = Date.now();
     await this.db

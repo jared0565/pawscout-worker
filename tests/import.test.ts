@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
-import { importProduct, buildPreview, stripHtml, resolveCategory, confirmAndImport, reconcileHeroImages, reconcileDescriptions, needsDescriptionRewrite, mediaSignature, reconcileCategories } from '../src/proxy/import';
+import { importProduct, buildPreview, stripHtml, resolveCategory, confirmAndImport, curateDetailImages, vetOrder, reconcileHeroImages, reconcileDescriptions, needsDescriptionRewrite, mediaSignature, reconcileCategories } from '../src/proxy/import';
 import { TenantStore } from '../src/tenant-store';
 import { DEFAULT_GATES, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, type TenantConfig } from '../src/types';
 import type { CjClient, CjDetail } from '../src/cj';
@@ -339,6 +339,44 @@ describe('hero-image QA (vision)', () => {
     };
     const r = await reconcileHeroImages(store, admin, CFG, async () => ({ ok: true, index: 1 }));
     expect(r).toEqual({ scanned: 2, fixed: 1, total: 2, next: null }); // bad product swallowed, ok product fixed
+  });
+});
+
+describe('curateDetailImages (preview + cache)', () => {
+  const D3: CjDetail = { ...DETAIL, pid: 'C1', images: ['https://i/a.jpg', 'https://i/b.jpg', 'https://i/c.jpg'] };
+
+  it('drops incongruent images, promotes the hero, caches, and reuses the cache (one vision call)', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    let calls = 0;
+    const vet = async () => { calls++; return { ok: true, index: 2, drop: [0] }; }; // hero=c, drop a
+    const r1 = await curateDetailImages(store, D3, vet);
+    expect(r1.congruent).toBe(true);
+    expect(r1.detail.images).toEqual(['https://i/c.jpg', 'https://i/b.jpg']);
+    // second call at the same media state: served from cache, no vision call
+    const r2 = await curateDetailImages(store, D3, vet);
+    expect(calls).toBe(1);
+    expect(r2.detail.images).toEqual(['https://i/c.jpg', 'https://i/b.jpg']);
+    // and the search grid can read that hero
+    expect((await store.getHeroImages(['C1'])).get('C1')).toBe('https://i/c.jpg');
+  });
+
+  it('reports congruent=false when no image matches the title', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const r = await curateDetailImages(store, D3, async () => ({ ok: true, index: null, drop: [0, 1, 2] }));
+    expect(r.congruent).toBe(false);
+  });
+
+  it('leaves images raw (no cache) when there is no LLM', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const r = await curateDetailImages(store, D3, undefined);
+    expect(r.detail.images).toEqual(D3.images);
+    expect((await store.getHeroImages(['C1'])).size).toBe(0);
+  });
+
+  it('vetOrder keeps hero-first and drops incongruent indices', () => {
+    expect(vetOrder(['a', 'b', 'c'], { ok: true, index: 2, drop: [0] })).toEqual([2, 1]);
+    expect(vetOrder(['a', 'b'], { ok: true, index: null })).toEqual([0, 1]);
+    expect(vetOrder(['a', 'b'], { ok: true, index: null, drop: [0, 1] })).toEqual([]);
   });
 });
 

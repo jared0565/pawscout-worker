@@ -12,6 +12,9 @@ export const IMPORT_TAG = 'cj-import';
 export const ADDON_TAG = 'cj-addon';
 const ADDON_CATEGORY = 'addons';
 const MAX_IMAGES = 8;
+// Curated-hero cache lifetime. Keyed by `hero:<pid>` in search_cache; lets the
+// search grid reuse the vision-vetted hero so cards self-heal after one preview.
+const HERO_CACHE_TTL_DAYS = 30;
 
 export interface PreviewVariant { name: string; price: number }
 export interface PreviewProduct {
@@ -93,6 +96,52 @@ export async function getDetailPreferWarehouse(store: TenantStore, cj: CjClient,
   return getCachedDetail(store, cj, pid);
 }
 
+/** Indices to KEEP from a gallery given a vision verdict, hero first, dropping
+ * incongruent images. Empty = no image is congruent with the title. */
+export function vetOrder(images: string[], vet: HeroPick): number[] {
+  const drop = new Set((vet.drop ?? []).filter((i) => i >= 0 && i < images.length));
+  let keep = images.map((_, i) => i).filter((i) => !drop.has(i));
+  if (vet.index !== null && vet.index >= 0 && vet.index < images.length && keep.includes(vet.index)) {
+    keep = [vet.index, ...keep.filter((i) => i !== vet.index)];
+  }
+  return keep;
+}
+
+/**
+ * Curate a detail's images via the vision pass, CACHED by image-set signature in
+ * `hero:<pid>` so it's at most one vision call per product per media state. Used
+ * by both the supplier preview (`/proxy/product`) and the background import, and
+ * the cached hero feeds the search-grid cards (so a "cat on a dog listing" self-
+ * heals after the first preview). Returns the (possibly reordered/filtered)
+ * detail and whether ANY image is congruent with the title (`false` = the import
+ * path should reject the listing). Best-effort: any failure leaves images as-is.
+ */
+export async function curateDetailImages(
+  store: TenantStore,
+  detail: CjDetail,
+  pickHero?: (title: string, imageUrls: string[]) => Promise<HeroPick>
+): Promise<{ detail: CjDetail; congruent: boolean }> {
+  if (detail.images.length < 2) return { detail, congruent: true };
+  const sig = mediaSignature(detail.images.slice(0, MAX_IMAGES));
+  const key = `hero:${detail.pid}`;
+  const cached = await store.getSearchCache(key);
+  if (cached) {
+    try {
+      const c = JSON.parse(cached) as { sig?: string; images?: string[] };
+      if (c.sig === sig && Array.isArray(c.images) && c.images.length) return { detail: { ...detail, images: c.images }, congruent: true };
+    } catch { /* corrupt cache — re-curate */ }
+  }
+  if (!pickHero) return { detail, congruent: true }; // no LLM — leave raw, don't cache
+  let vet: HeroPick;
+  try { vet = await pickHero(detail.nameEn, detail.images); } catch (e) { console.warn(`image vet failed for ${detail.pid}: ${(e as Error).message}`); return { detail, congruent: true }; }
+  if (!vet.ok) return { detail, congruent: true }; // undecided (LLM down) — retry later, don't cache
+  const keep = vetOrder(detail.images, vet);
+  if (keep.length === 0) return { detail, congruent: false }; // nothing matches the title
+  const images = keep.map((i) => detail.images[i]).slice(0, MAX_IMAGES);
+  await store.putSearchCache(key, JSON.stringify({ sig, images }), HERO_CACHE_TTL_DAYS);
+  return { detail: { ...detail, images }, congruent: true };
+}
+
 /**
  * The single CJ call left near the request path: a live stock confirmation
  * before the (background) import, so we never list something CJ can't fulfil.
@@ -147,25 +196,15 @@ export async function confirmAndImport(
   // packaging shot, and CJ galleries can include images of a DIFFERENT animal
   // than the title (a cat photo on a "dog" listing). Promote the best on-title
   // image to the front AND drop incongruent images so they never enter Shopify.
-  // Best-effort; never blocks the import on an LLM failure.
+  // Cached + shared with the supplier preview; never blocks on an LLM failure.
   if (pickHero && detail.images.length > 1) {
-    try {
-      const vet = await pickHero(detail.nameEn, detail.images);
-      if (vet.ok) {
-        const orig = detail.images;
-        const drop = new Set((vet.drop ?? []).filter((i) => i >= 0 && i < orig.length));
-        let keep = orig.map((_, i) => i).filter((i) => !drop.has(i));
-        if (vet.index !== null && keep.includes(vet.index)) keep = [vet.index, ...keep.filter((i) => i !== vet.index)];
-        if (keep.length === 0) { // no congruent image — don't list a mislabelled product
-          console.warn(`import rejected (no congruent image) for ${detail.pid}: ${detail.nameEn}`);
-          await store.putLink({ cjPid: detail.pid, state: 'failed', category: category ?? null });
-          return;
-        }
-        if (drop.size || keep[0] !== 0) detail = { ...detail, images: keep.map((i) => orig[i]) };
-      }
-    } catch (e) {
-      console.warn(`image vet failed for ${detail.pid}: ${(e as Error).message}`);
+    const { detail: curated, congruent } = await curateDetailImages(store, detail, pickHero);
+    if (!congruent) { // no image matches the title — don't list a mislabelled product
+      console.warn(`import rejected (no congruent image) for ${detail.pid}: ${detail.nameEn}`);
+      await store.putLink({ cjPid: detail.pid, state: 'failed', category: category ?? null });
+      return;
     }
+    detail = curated;
   }
   // Freight-aware floor + origin badge: capture once at import time (ghost
   // clicks arrive without it; warehouse promotions already carry it).

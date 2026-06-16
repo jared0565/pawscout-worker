@@ -194,10 +194,17 @@ Last updated: 2026-06-14.
   sweep (`reconcileHeroImages`) now DELETES incongruent media from Shopify and
   promotes the hero, guarded by the `hero_sig` signature. Signature **versioned
   (v2)** so the existing catalog is re-vetted once. Never empties a gallery;
-  the hero is never dropped. 257 tests. **To remediate the live 69 products:
-  deploy, then run the image sweep ("Fix default images").** STILL TODO: the
-  un-imported supplier-grid preview (lazy curate-on-open + cache) so pre-import
-  cards also show the congruent image.
+  the hero is never dropped. **To remediate the live 69 products: deploy, then
+  run the image sweep ("Fix default images").**
+- **Supplier-grid preview curation — lazy + cached (2026-06-15).** Closes the
+  pre-import gap: `curateDetailImages` (import.ts) runs the vision vet once per
+  product (cached in `search_cache` under `hero:<pid>` by image-set signature),
+  shared by `/proxy/product` (the preview modal now shows the curated, on-title
+  image) and the background import (no double vision call). The search grid
+  (`searchBackfill`) swaps CJ's raw thumbnail for the cached hero via a batched
+  `getHeroImages`, so a "cat on a dog listing" card self-heals after the first
+  preview/import. First-ever view of a never-seen product still shows CJ's raw
+  thumbnail (no pre-vision of all of CJ — the chosen cost bound). 262 tests.
 - **Fulfilment vid-resolution gap fixed (2026-06-15).** Surfaced while prepping
   the live fulfilment test: only 32 of 69 imported products had a
   `warehouse_products` row, and `resolveLine` read the CJ `vid` ONLY from there —

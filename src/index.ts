@@ -19,7 +19,7 @@ import { sendEmail } from './email';
 import { verifyAppProxy } from './proxy/verify';
 import { searchBackfill, normalizeKeyword } from './proxy/search';
 import { LlmClient, classifyKeyword, curateProduct, pickHeroImage, rewriteDescription } from './llm';
-import { buildPreview, getDetailPreferWarehouse, confirmAndImport, reconcileAddonVisibility, reconcileHeroImages, reconcileDescriptions, reconcileCategories } from './proxy/import';
+import { buildPreview, getDetailPreferWarehouse, curateDetailImages, confirmAndImport, reconcileAddonVisibility, reconcileHeroImages, reconcileDescriptions, reconcileCategories } from './proxy/import';
 import { makeAdminGraphql } from './shopify-admin';
 import { runDailyMaintenance, syncStoreInventory, refillCollections } from './jobs';
 import { runOrderPipeline, runOrderPipelineForShop } from './fulfil-run';
@@ -451,8 +451,16 @@ app.get('/proxy/product', async (c) => {
   if (!PID_RE.test(pid)) return c.json({ ok: false, error: 'Bad pid' });
   try {
     const cj = cjFor(c.env, p);
-    const detail = await getDetailPreferWarehouse(p.store, cj, pid);
+    let detail = await getDetailPreferWarehouse(p.store, cj, pid);
     if (!detail) return c.json({ ok: false, error: 'Product unavailable' });
+
+    // Curate images for the preview (drop incongruent, hero first) + cache the
+    // result so the search grid reuses it. Cached/best-effort; never blocks.
+    const previewLlm = new LlmClient(c.env.OPENROUTER_API_KEY);
+    const previewHero = previewLlm.available && p.cfg.llm.enabled
+      ? (title: string, urls: string[]) => pickHeroImage(previewLlm, p.store, p.cfg, title, urls)
+      : undefined;
+    detail = (await curateDetailImages(p.store, detail, previewHero)).detail;
 
     let link = await p.store.getLink(pid);
     if (!link || link.state === 'ghost' || link.state === 'failed' || link.state === 'archived') {
