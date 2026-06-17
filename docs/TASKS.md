@@ -4,7 +4,7 @@ Single source of *what's left*. Detail and rationale live in `WAREHOUSE_PLAN.md`
 (section refs below); this file is the prioritized checklist. Owner: **PS** = the
 worker/agent can do it; **You** = needs a human action or decision.
 
-Last updated: 2026-06-14.
+Last updated: 2026-06-17.
 
 ---
 
@@ -202,16 +202,22 @@ Last updated: 2026-06-14.
 ---
 
 ### Recently completed (this session)
-- **CJ freight-quote tool (built 2026-06-17).** Console **Shipping quote (CJ)**
-  card → `POST /api/freight-quote` {pid, country}: resolves a representative
-  variant + dispatch origin the way the fulfilment pipeline would, calls CJ
-  `freightCalculate`, and returns every logistic line cheapest-first in USD +
-  GBP (FX mirrors the pricing rule). Read-only — creates/pays nothing. Generalised
-  `cj.freightEstimate` into `cj.freightQuote(vid, from, to)` (destination now a
-  param, defaults GB so admission/import callers are unchanged); `freightEstimate`
-  = cheapest of the quote. Answers "what does CJ actually charge to ship this to
-  Spain?" and is the groundwork for destination-aware pricing / live
-  carrier-calculated rates (Shopify Grow + $20/mo CCS add-on — see §6). 263 tests.
+- **HANDOVER.md added (2026-06-17).** Cold-start brief: what AP/PawScout is, what's
+  deployed, launch blockers, immediate PS steps, watch items, secrets. Companion to
+  this tracker.
+- **CJ freight-quote tool (built 2026-06-17, extended same day).** Console
+  **Shipping quote (CJ)** card → `POST /api/freight-quote` {pid, country, qty}:
+  resolves a representative variant + dispatch origin the way the fulfilment pipeline
+  would, calls CJ `freightCalculate`, and returns every logistic line cheapest-first
+  in USD + GBP (FX mirrors the pricing rule). Read-only — creates/pays nothing.
+  Generalised `cj.freightEstimate` into `cj.freightQuote(vid, from, to, quantity)`
+  (destination + quantity now params, both default so admission/import callers are
+  unchanged); `freightEstimate` = cheapest of the quote. Country picker is a
+  **searchable combobox** (type name or ISO code, grouped, keyboard nav) and a
+  **Qty** field threads through to CJ so the quote reflects a real multi-unit
+  consignment, not just one unit. Answers "what does CJ actually charge to ship this
+  to Spain?" and is the groundwork for destination-aware pricing / live
+  carrier-calculated rates (Shopify Grow + $20/mo CCS add-on — see §6). 264 tests.
 - **Image vetting: drop incongruent images, not just reorder (2026-06-15).**
   Root cause of "cat thumbnail on a dog listing": CJ serves the search
   thumbnail (`productImage`) and the detail gallery (`productImageSet`) from
