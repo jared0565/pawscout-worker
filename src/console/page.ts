@@ -302,7 +302,63 @@ export function consolePage(apiKey: string): Response {
     <p class="sub" style="margin:0 0 12px">What CJ actually charges to ship <strong>one unit</strong> to a destination, cheapest line first — the real freight behind a flat checkout rate. Read-only; creates nothing.</p>
     <div class="row">
       <div class="grow"><label for="fqpid">CJ product id</label><input id="fqpid" type="text" placeholder="from the product's cj-pid-… tag" spellcheck="false"></div>
-      <div><label for="fqcountry">Country</label><input id="fqcountry" type="text" value="ES" maxlength="2" style="width:70px;text-transform:uppercase" spellcheck="false"></div>
+      <div><label for="fqcountry">Country</label>
+        <select id="fqcountry" style="min-width:190px">
+          <optgroup label="UK &amp; Ireland">
+            <option value="GB">United Kingdom</option>
+            <option value="IE">Ireland</option>
+          </optgroup>
+          <optgroup label="Western Europe">
+            <option value="ES" selected>Spain</option>
+            <option value="FR">France</option>
+            <option value="DE">Germany</option>
+            <option value="IT">Italy</option>
+            <option value="NL">Netherlands</option>
+            <option value="BE">Belgium</option>
+            <option value="PT">Portugal</option>
+            <option value="AT">Austria</option>
+            <option value="LU">Luxembourg</option>
+            <option value="CH">Switzerland</option>
+          </optgroup>
+          <optgroup label="Nordics">
+            <option value="SE">Sweden</option>
+            <option value="DK">Denmark</option>
+            <option value="FI">Finland</option>
+            <option value="NO">Norway</option>
+          </optgroup>
+          <optgroup label="Central &amp; Eastern Europe">
+            <option value="PL">Poland</option>
+            <option value="CZ">Czechia</option>
+            <option value="SK">Slovakia</option>
+            <option value="HU">Hungary</option>
+            <option value="RO">Romania</option>
+            <option value="BG">Bulgaria</option>
+            <option value="GR">Greece</option>
+            <option value="HR">Croatia</option>
+            <option value="SI">Slovenia</option>
+            <option value="EE">Estonia</option>
+            <option value="LV">Latvia</option>
+            <option value="LT">Lithuania</option>
+          </optgroup>
+          <optgroup label="North America">
+            <option value="US">United States</option>
+            <option value="CA">Canada</option>
+          </optgroup>
+          <optgroup label="Oceania">
+            <option value="AU">Australia</option>
+            <option value="NZ">New Zealand</option>
+          </optgroup>
+          <optgroup label="Asia &amp; Middle East">
+            <option value="SG">Singapore</option>
+            <option value="HK">Hong Kong</option>
+            <option value="JP">Japan</option>
+            <option value="KR">South Korea</option>
+            <option value="MY">Malaysia</option>
+            <option value="AE">United Arab Emirates</option>
+            <option value="SA">Saudi Arabia</option>
+          </optgroup>
+        </select>
+      </div>
       <button id="fqbtn" onclick="freightQuote()">Quote</button>
     </div>
     <div id="fqout" class="msg muted"></div>
