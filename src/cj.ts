@@ -369,26 +369,36 @@ export class CjClient {
   }
 
   /**
-   * Cheapest freight quote for one unit of a variant from `fromCountry` to GB.
-   * Used at admission/import to keep the margin floor freight-aware; freight
-   * varies per variant (weight) so the caller passes a representative vid.
+   * All freight options for one unit of a variant, `fromCountry` → `toCountry`,
+   * sorted cheapest-first. Freight varies per variant (weight) so the caller
+   * passes a representative vid. `toCountry` defaults to GB (the home market) so
+   * existing admission/import callers are unchanged; the console quote passes a
+   * real destination (e.g. ES) to see what an international order actually costs.
    */
-  async freightEstimate(vid: string, fromCountry = 'CN'): Promise<{ priceUsd: number; days: string; name: string } | null> {
+  async freightQuote(vid: string, fromCountry = 'CN', toCountry = 'GB'): Promise<{ priceUsd: number; days: string; name: string }[]> {
     const data = await this.post('/logistic/freightCalculate', {
       startCountryCode: fromCountry,
-      endCountryCode: 'GB',
+      endCountryCode: toCountry,
       products: [{ quantity: 1, vid }]
     });
     const rows = (Array.isArray(data) ? data : []) as Record<string, unknown>[];
-    const options = rows
+    return rows
       .map((r) => ({
         priceUsd: parseCjPrice(r.logisticPrice),
         days: String(r.logisticAging ?? ''),
         name: String(r.logisticName ?? '')
       }))
-      .filter((o) => o.priceUsd > 0);
-    if (!options.length) return null;
-    return options.reduce((a, b) => (b.priceUsd < a.priceUsd ? b : a));
+      .filter((o) => o.priceUsd > 0)
+      .sort((a, b) => a.priceUsd - b.priceUsd);
+  }
+
+  /**
+   * Cheapest freight quote for one unit of a variant, `fromCountry` → `toCountry`.
+   * Used at admission/import to keep the margin floor freight-aware.
+   */
+  async freightEstimate(vid: string, fromCountry = 'CN', toCountry = 'GB'): Promise<{ priceUsd: number; days: string; name: string } | null> {
+    const options = await this.freightQuote(vid, fromCountry, toCountry);
+    return options.length ? options[0] : null;
   }
 
   /**

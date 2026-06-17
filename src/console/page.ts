@@ -298,6 +298,17 @@ export function consolePage(apiKey: string): Response {
   </section>
 
   <section class="card">
+    <h2>Shipping quote (CJ)</h2>
+    <p class="sub" style="margin:0 0 12px">What CJ actually charges to ship <strong>one unit</strong> to a destination, cheapest line first — the real freight behind a flat checkout rate. Read-only; creates nothing.</p>
+    <div class="row">
+      <div class="grow"><label for="fqpid">CJ product id</label><input id="fqpid" type="text" placeholder="from the product's cj-pid-… tag" spellcheck="false"></div>
+      <div><label for="fqcountry">Country</label><input id="fqcountry" type="text" value="ES" maxlength="2" style="width:70px;text-transform:uppercase" spellcheck="false"></div>
+      <button id="fqbtn" onclick="freightQuote()">Quote</button>
+    </div>
+    <div id="fqout" class="msg muted"></div>
+  </section>
+
+  <section class="card">
     <h2>Search demand — last 30 days</h2>
     <div id="insights"><p class="muted">Loading…</p></div>
   </section>
@@ -675,6 +686,23 @@ async function runDiag(){
     out.innerHTML='<strong>Our listV2 ('+r.oursCount+')</strong><br>'+fmt(r.ours)+'<hr><strong>CJ website / Firecrawl ('+r.webCount+')</strong><br>'+fmt(r.web);
   }catch(e){ out.className='msg no'; out.textContent='Failed: '+errText(e); }
   finally{ btn.disabled=false; }
+}
+async function freightQuote(){
+  var b=el('fqbtn'); b.disabled=true;
+  var out=el('fqout');
+  var pid=(el('fqpid').value||'').trim();
+  var country=((el('fqcountry').value||'GB').trim().toUpperCase());
+  out.className='msg muted'; out.textContent='Asking CJ for live freight to '+esc(country)+'…';
+  try{
+    var r=await api('/freight-quote',{pid:pid,country:country});
+    if(!r.ok){ out.className='msg no'; out.textContent='Failed: '+(r.error||'unknown'); return; }
+    if(!r.options.length){ out.className='msg no'; out.textContent='CJ returned no shipping lines to '+esc(r.country)+' for this product.'; return; }
+    var rows=r.options.map(function(o){ return '<tr><td>'+esc(o.name)+'</td><td>$'+esc(o.usd.toFixed(2))+'</td><td>£'+esc(o.gbp.toFixed(2))+'</td><td class="muted">'+esc(o.days||'')+' days</td></tr>'; }).join('');
+    out.className='msg';
+    out.innerHTML='<strong>'+esc(r.product)+'</strong><br><span class="muted">ships from '+esc(r.origin)+' → '+esc(r.country)+'</span>'
+      +'<table style="width:100%;border-collapse:collapse;font-size:13px;margin-top:8px"><thead><tr><th style="text-align:left">Line</th><th style="text-align:left">USD</th><th style="text-align:left">GBP</th><th style="text-align:left">Aging</th></tr></thead><tbody>'+rows+'</tbody></table>';
+  }catch(e){ out.className='msg no'; out.textContent='Failed: '+errText(e); }
+  finally{ b.disabled=false; }
 }
 async function syncNow(){
   var btn=el('syncbtn'); btn.disabled=true;

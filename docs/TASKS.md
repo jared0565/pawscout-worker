@@ -202,6 +202,16 @@ Last updated: 2026-06-14.
 ---
 
 ### Recently completed (this session)
+- **CJ freight-quote tool (built 2026-06-17).** Console **Shipping quote (CJ)**
+  card → `POST /api/freight-quote` {pid, country}: resolves a representative
+  variant + dispatch origin the way the fulfilment pipeline would, calls CJ
+  `freightCalculate`, and returns every logistic line cheapest-first in USD +
+  GBP (FX mirrors the pricing rule). Read-only — creates/pays nothing. Generalised
+  `cj.freightEstimate` into `cj.freightQuote(vid, from, to)` (destination now a
+  param, defaults GB so admission/import callers are unchanged); `freightEstimate`
+  = cheapest of the quote. Answers "what does CJ actually charge to ship this to
+  Spain?" and is the groundwork for destination-aware pricing / live
+  carrier-calculated rates (Shopify Grow + $20/mo CCS add-on — see §6). 263 tests.
 - **Image vetting: drop incongruent images, not just reorder (2026-06-15).**
   Root cause of "cat thumbnail on a dog listing": CJ serves the search
   thumbnail (`productImage`) and the detail gallery (`productImageSet`) from

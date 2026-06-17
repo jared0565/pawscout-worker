@@ -12,7 +12,7 @@ import { handleUninstall } from './auth/uninstall';
 import { resolveShopFromToken } from './console/session';
 import { connectCj, saveGates, savePricing, saveLlm, saveAddons, saveCollectionMap, getStatus, getInsights } from './console/routes';
 import { consolePage } from './console/page';
-import { validateCjKey, CjClient, CjTokenManager, cjFetchFromEnv } from './cj';
+import { validateCjKey, CjClient, CjTokenManager, cjFetchFromEnv, chooseOrigin } from './cj';
 import { registerWebhooks, type RegisterWebhook } from './webhooks';
 import { validateGatesPayload, validatePricingPayload, validateLlmPayload, validateAddonsPayload, validateCollectionMap } from './validate';
 import { sendEmail } from './email';
@@ -363,6 +363,39 @@ app.post('/api/cj-order-diag', async (c) => {
     return c.json({ ok: true, sample: data });
   } catch (e) {
     return c.json({ ok: false, error: `CJ order API: ${(e as Error).message}` }, 200);
+  }
+});
+// Read-only freight quote: what CJ actually charges to ship ONE unit of a
+// product to a destination country, cheapest line first. Resolves a
+// representative variant + dispatch origin the same way the fulfilment pipeline
+// would, so the number reflects a real order. Creates/pays nothing.
+app.post('/api/freight-quote', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: { pid?: unknown; country?: unknown } = {};
+  try { body = await c.req.json(); } catch { return c.json({ ok: false, error: 'Invalid JSON body' }, 200); }
+  const pid = typeof body.pid === 'string' ? body.pid.trim() : '';
+  const country = (typeof body.country === 'string' ? body.country.trim().toUpperCase() : 'GB') || 'GB';
+  if (!PID_RE.test(pid)) return c.json({ ok: false, error: 'Enter a CJ product id (the cj-pid-… tag on the product)' }, 200);
+  if (!/^[A-Z]{2}$/.test(country)) return c.json({ ok: false, error: 'Country must be a 2-letter code, e.g. ES, US, GB' }, 200);
+  const store = new TenantStore(c.env.DB, s);
+  const cfg = await store.getConfig();
+  if (!cfg) return c.json({ ok: false, error: 'Not configured' }, 200);
+  if (!(await store.getSupplierCredential('cj'))) return c.json({ ok: false, error: 'CJ not connected' }, 200);
+  const vault = await Vault.fromMasterKey(c.env.PAWSCOUT_MASTER_KEY);
+  const f = cjFetchFromEnv(c.env);
+  const cj = new CjClient(() => new CjTokenManager(store, vault, f).getToken(), f);
+  try {
+    const detail = await getDetailPreferWarehouse(store, cj, pid);
+    if (!detail || !detail.variants.length) return c.json({ ok: false, error: 'Product not found at CJ' }, 200);
+    const vid = detail.variants[0].vid;
+    const origin = detail.origin ?? chooseOrigin(detail, cfg.floors.stockFloor);
+    const options = await cj.freightQuote(vid, origin, country);
+    // GBP conversion mirrors the pricing rule's landed-cost FX (rate + buffer).
+    const fx = cfg.pricing.fxUsdToGbp * (1 + cfg.pricing.fxBufferPct / 100);
+    const out = options.slice(0, 8).map((o) => ({ name: o.name, days: o.days, usd: o.priceUsd, gbp: Math.round(o.priceUsd * fx * 100) / 100 }));
+    return c.json({ ok: true, product: detail.nameEn, origin, country, options: out });
+  } catch (e) {
+    return c.json({ ok: false, error: `CJ freight: ${(e as Error).message}` }, 200);
   }
 });
 // Operator override on a held/queued order (release to auto-fulfil, hold, cancel).

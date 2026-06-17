@@ -118,7 +118,26 @@ describe('origins + freight', () => {
     const f = await client.freightEstimate('v1', 'CN');
     expect(f).toEqual({ priceUsd: 4.2, days: '12-20', name: 'Economy' });
     expect(bodies[0]).toContain('"startCountryCode":"CN"');
-    expect(bodies[0]).toContain('"endCountryCode":"GB"');
+    expect(bodies[0]).toContain('"endCountryCode":"GB"'); // defaults to the home market
+  });
+
+  it('freightQuote returns every line cheapest-first for an arbitrary destination', async () => {
+    const bodies: string[] = [];
+    const fakeFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      bodies.push(String(init?.body ?? ''));
+      expect(String(input)).toContain('/logistic/freightCalculate');
+      return new Response(JSON.stringify({ result: true, data: [
+        { logisticName: 'CJPacket', logisticPrice: 6.5, logisticAging: '8-12' },
+        { logisticName: 'Economy', logisticPrice: '4.20', logisticAging: '12-20' },
+        { logisticName: 'Broken', logisticPrice: 0, logisticAging: '' }
+      ] }), { status: 200 });
+    }) as typeof fetch;
+    const client = new CjClient(async () => 'tok', fakeFetch);
+    const opts = await client.freightQuote('v1', 'CN', 'ES');
+    expect(opts.map((o) => o.name)).toEqual(['Economy', 'CJPacket']); // cheapest first, zero-priced dropped
+    expect(opts[0]).toEqual({ priceUsd: 4.2, days: '12-20', name: 'Economy' });
+    expect(bodies[0]).toContain('"startCountryCode":"CN"');
+    expect(bodies[0]).toContain('"endCountryCode":"ES"'); // the real destination, not GB
   });
 });
 
