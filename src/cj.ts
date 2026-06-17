@@ -375,11 +375,11 @@ export class CjClient {
    * existing admission/import callers are unchanged; the console quote passes a
    * real destination (e.g. ES) to see what an international order actually costs.
    */
-  async freightQuote(vid: string, fromCountry = 'CN', toCountry = 'GB'): Promise<{ priceUsd: number; days: string; name: string }[]> {
+  async freightQuote(vid: string, fromCountry = 'CN', toCountry = 'GB', quantity = 1): Promise<{ priceUsd: number; days: string; name: string }[]> {
     const data = await this.post('/logistic/freightCalculate', {
       startCountryCode: fromCountry,
       endCountryCode: toCountry,
-      products: [{ quantity: 1, vid }]
+      products: [{ quantity, vid }]
     });
     const rows = (Array.isArray(data) ? data : []) as Record<string, unknown>[];
     return rows
@@ -396,8 +396,8 @@ export class CjClient {
    * Cheapest freight quote for one unit of a variant, `fromCountry` → `toCountry`.
    * Used at admission/import to keep the margin floor freight-aware.
    */
-  async freightEstimate(vid: string, fromCountry = 'CN', toCountry = 'GB'): Promise<{ priceUsd: number; days: string; name: string } | null> {
-    const options = await this.freightQuote(vid, fromCountry, toCountry);
+  async freightEstimate(vid: string, fromCountry = 'CN', toCountry = 'GB', quantity = 1): Promise<{ priceUsd: number; days: string; name: string } | null> {
+    const options = await this.freightQuote(vid, fromCountry, toCountry, quantity);
     return options.length ? options[0] : null;
   }
 

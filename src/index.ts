@@ -371,10 +371,12 @@ app.post('/api/cj-order-diag', async (c) => {
 // would, so the number reflects a real order. Creates/pays nothing.
 app.post('/api/freight-quote', async (c) => {
   const s = await shopOf(c); if (typeof s !== 'string') return s;
-  let body: { pid?: unknown; country?: unknown } = {};
+  let body: { pid?: unknown; country?: unknown; qty?: unknown } = {};
   try { body = await c.req.json(); } catch { return c.json({ ok: false, error: 'Invalid JSON body' }, 200); }
   const pid = typeof body.pid === 'string' ? body.pid.trim() : '';
   const country = (typeof body.country === 'string' ? body.country.trim().toUpperCase() : 'GB') || 'GB';
+  const qtyRaw = typeof body.qty === 'number' ? body.qty : Number(body.qty);
+  const qty = Number.isFinite(qtyRaw) ? Math.min(100, Math.max(1, Math.trunc(qtyRaw))) : 1;
   if (!PID_RE.test(pid)) return c.json({ ok: false, error: 'Enter a CJ product id (the cj-pid-… tag on the product)' }, 200);
   if (!/^[A-Z]{2}$/.test(country)) return c.json({ ok: false, error: 'Country must be a 2-letter code, e.g. ES, US, GB' }, 200);
   const store = new TenantStore(c.env.DB, s);
@@ -389,11 +391,11 @@ app.post('/api/freight-quote', async (c) => {
     if (!detail || !detail.variants.length) return c.json({ ok: false, error: 'Product not found at CJ' }, 200);
     const vid = detail.variants[0].vid;
     const origin = detail.origin ?? chooseOrigin(detail, cfg.floors.stockFloor);
-    const options = await cj.freightQuote(vid, origin, country);
+    const options = await cj.freightQuote(vid, origin, country, qty);
     // GBP conversion mirrors the pricing rule's landed-cost FX (rate + buffer).
     const fx = cfg.pricing.fxUsdToGbp * (1 + cfg.pricing.fxBufferPct / 100);
     const out = options.slice(0, 8).map((o) => ({ name: o.name, days: o.days, usd: o.priceUsd, gbp: Math.round(o.priceUsd * fx * 100) / 100 }));
-    return c.json({ ok: true, product: detail.nameEn, origin, country, options: out });
+    return c.json({ ok: true, product: detail.nameEn, origin, country, qty, options: out });
   } catch (e) {
     return c.json({ ok: false, error: `CJ freight: ${(e as Error).message}` }, 200);
   }
