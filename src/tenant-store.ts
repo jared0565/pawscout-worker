@@ -186,6 +186,28 @@ export class TenantStore {
     return removed;
   }
 
+  /** GDPR customers/redact: erase all inbox PII we hold for one contact email. */
+  async redactContact(email: string): Promise<number> {
+    const e = email.trim().toLowerCase();
+    if (!e) return 0;
+    const sub = `(SELECT id FROM inbox_threads WHERE shop = ?1 AND contact_email = ?2)`;
+    const res = await this.db.batch([
+      this.db.prepare(`DELETE FROM inbox_thread_labels WHERE shop = ?1 AND thread_id IN ${sub}`).bind(this.shop, e),
+      this.db.prepare(`DELETE FROM inbox_messages WHERE shop = ?1 AND thread_id IN ${sub}`).bind(this.shop, e),
+      this.db.prepare(`DELETE FROM inbox_threads WHERE shop = ?1 AND contact_email = ?2`).bind(this.shop, e),
+      this.db.prepare(`DELETE FROM inbox_contacts WHERE shop = ?1 AND email = ?2`).bind(this.shop, e)
+    ]);
+    return res.reduce((n, r) => n + (r.meta.changes ?? 0), 0);
+  }
+
+  /** GDPR customers/data-request: count inbox records we hold for one contact email. */
+  async inboxDataSummary(email: string): Promise<{ threads: number; messages: number }> {
+    const e = email.trim().toLowerCase();
+    const t = await this.db.prepare(`SELECT COUNT(*) AS n FROM inbox_threads WHERE shop = ?1 AND contact_email = ?2`).bind(this.shop, e).first<{ n: number }>();
+    const m = await this.db.prepare(`SELECT COUNT(*) AS n FROM inbox_messages WHERE shop = ?1 AND thread_id IN (SELECT id FROM inbox_threads WHERE shop = ?1 AND contact_email = ?2)`).bind(this.shop, e).first<{ n: number }>();
+    return { threads: t?.n ?? 0, messages: m?.n ?? 0 };
+  }
+
   /** shop/redact: purge ALL data for this shop (sent ~48h after uninstall). */
   async redactShop(): Promise<void> {
     await this.db.batch([

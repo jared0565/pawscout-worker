@@ -89,4 +89,74 @@ describe('inbox store', () => {
     expect(list.map((t) => t.id)).toContain(tid);
     expect(await new TenantStore(env.DB, 'b.myshopify.com').listThreads(null, 50)).toEqual([]);
   });
+
+  it('redactContact erases all inbox PII for one email (case-insensitive) and leaves other contacts/shops intact', async () => {
+    const store = s();
+    const otherStore = new TenantStore(env.DB, 'other.myshopify.com');
+
+    // seed jane on the primary shop
+    await store.upsertContact({ email: 'jane@x.com', name: 'Jane', phone: null });
+    const janeTid = await store.createThread({
+      contactEmail: 'jane@x.com', subject: 'Returns?', subjectNorm: 'returns?',
+      receivedAt: '2026-06-18T11:00:00Z', initialStatus: 'new'
+    });
+    await store.insertInboundMessageIfNew({
+      threadId: janeTid, messageId: '<jane-m1@x>', inReplyTo: null, references: [], from: 'jane@x.com',
+      to: 'support@activepaw.co.uk', subject: 'Returns?', bodyText: 'I want to return', bodyHtml: null,
+      headersJson: '{}', receivedAt: '2026-06-18T11:00:00Z'
+    });
+    await store.setThreadLabels(janeTid, ['returns', 'priority']);
+
+    // seed bob on the same primary shop
+    await store.upsertContact({ email: 'bob@x.com', name: 'Bob', phone: null });
+    const bobTid = await store.createThread({
+      contactEmail: 'bob@x.com', subject: 'Shipping?', subjectNorm: 'shipping?',
+      receivedAt: '2026-06-18T12:00:00Z', initialStatus: 'new'
+    });
+    await store.insertInboundMessageIfNew({
+      threadId: bobTid, messageId: '<bob-m1@x>', inReplyTo: null, references: [], from: 'bob@x.com',
+      to: 'support@activepaw.co.uk', subject: 'Shipping?', bodyText: 'Do you ship?', bodyHtml: null,
+      headersJson: '{}', receivedAt: '2026-06-18T12:00:00Z'
+    });
+
+    // seed jane on a different shop — must remain untouched
+    await otherStore.upsertContact({ email: 'jane@x.com', name: 'Jane', phone: null });
+    const otherJaneTid = await otherStore.createThread({
+      contactEmail: 'jane@x.com', subject: 'Other shop', subjectNorm: 'other shop',
+      receivedAt: '2026-06-18T13:00:00Z', initialStatus: 'new'
+    });
+
+    // verify inboxDataSummary before redaction
+    const summary = await store.inboxDataSummary('jane@x.com');
+    expect(summary.threads).toBe(1);
+    expect(summary.messages).toBe(1);
+
+    // redact with mixed-case email (proves lowercasing)
+    const removed = await store.redactContact('JANE@x.com');
+    expect(removed).toBeGreaterThan(0); // labels + messages + thread + contact
+
+    // jane's contact, thread, messages, labels are gone from primary shop
+    const janeContact = await env.DB.prepare('SELECT * FROM inbox_contacts WHERE shop=?1 AND email=?2').bind(SHOP, 'jane@x.com').first();
+    expect(janeContact).toBeNull();
+
+    const janeThread = await env.DB.prepare('SELECT * FROM inbox_threads WHERE shop=?1 AND id=?2').bind(SHOP, janeTid).first();
+    expect(janeThread).toBeNull();
+
+    const janeMessages = await env.DB.prepare('SELECT * FROM inbox_messages WHERE shop=?1 AND thread_id=?2').bind(SHOP, janeTid).all();
+    expect(janeMessages.results).toHaveLength(0);
+
+    const janeLabels = await env.DB.prepare('SELECT * FROM inbox_thread_labels WHERE shop=?1 AND thread_id=?2').bind(SHOP, janeTid).all();
+    expect(janeLabels.results).toHaveLength(0);
+
+    // bob on primary shop is intact
+    const bobContact = await env.DB.prepare('SELECT * FROM inbox_contacts WHERE shop=?1 AND email=?2').bind(SHOP, 'bob@x.com').first();
+    expect(bobContact).not.toBeNull();
+
+    const bobThread = await env.DB.prepare('SELECT * FROM inbox_threads WHERE shop=?1 AND id=?2').bind(SHOP, bobTid).first();
+    expect(bobThread).not.toBeNull();
+
+    // jane on other shop is untouched
+    const otherJaneThread = await env.DB.prepare('SELECT * FROM inbox_threads WHERE shop=?1 AND id=?2').bind('other.myshopify.com', otherJaneTid).first();
+    expect(otherJaneThread).not.toBeNull();
+  });
 });

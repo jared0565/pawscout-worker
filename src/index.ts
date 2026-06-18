@@ -654,16 +654,23 @@ async function gdprWebhook(c: Context<{ Bindings: Env }>, handle: (store: Tenant
 }
 // What personal data we hold for a customer = the shipping address on their orders.
 app.post('/webhooks/customers-data-request', (c) =>
-  gdprWebhook(c, async (_store, p) => {
+  gdprWebhook(c, async (store, p) => {
     const ids = Array.isArray(p.orders_requested) ? p.orders_requested.map(String) : [];
     console.log(`customers/data_request: shop holds order shipping data for orders [${ids.join(',')}] — operator to provide to the data subject`);
+    const email = ((p.customer as { email?: string } | undefined)?.email ?? '').toString();
+    if (email) {
+      const s = await store.inboxDataSummary(email);
+      console.log(`customers/data_request: shop also holds ${s.threads} inbox thread(s) / ${s.messages} message(s) for ${email} — operator to provide to the data subject`);
+    }
   }));
 // Erase the PII we hold for the named orders.
 app.post('/webhooks/customers-redact', (c) =>
   gdprWebhook(c, async (store, p) => {
     const ids = Array.isArray(p.orders_to_redact) ? p.orders_to_redact.map(String) : [];
     const n = await store.redactOrders(ids);
-    console.log(`customers/redact: erased ${n} order row(s)`);
+    const email = ((p.customer as { email?: string } | undefined)?.email ?? '').toString();
+    const inboxRemoved = email ? await store.redactContact(email) : 0;
+    console.log(`customers/redact: erased ${n} order row(s) + ${inboxRemoved} inbox row(s)`);
   }));
 // Purge ALL data for the shop (~48h after uninstall).
 app.post('/webhooks/shop-redact', (c) =>
