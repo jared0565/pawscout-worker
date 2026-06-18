@@ -20,4 +20,11 @@ describe('consolePage', () => {
     expect(html).toContain('data-tab="inbox"');
     expect(html).toContain('id="inbox-threads"');
   });
+
+  it('includes the draft editor + settings controls', async () => {
+    const html = await consolePage('test-api-key').text();
+    expect(html).toContain('id="inbox-draft"');
+    expect(html).toContain('data-inbox-autosend');
+    expect(html).toContain('data-inbox-guidance');
+  });
 });

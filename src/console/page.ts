@@ -121,6 +121,16 @@ export function consolePage(apiKey: string): Response {
   .inbox-msg__body{font-size:13px;white-space:pre-wrap;word-break:break-word}
   .inbox-controls{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-top:12px}
   .inbox-controls .grow{flex:1 1 160px}
+  .inbox-msg.outbound{background:var(--code-bg);border-radius:8px;padding:10px;border-top:0;margin-top:8px}
+  .inbox-msg.outbound .inbox-msg__hdr{color:var(--ok-ink)}
+  .inbox-draft-section{margin-top:14px;border-top:1px solid var(--border);padding-top:14px}
+  .inbox-draft-section textarea{width:100%;min-height:120px;padding:9px 11px;border:1px solid var(--field-border);border-radius:8px;background:var(--field);color:var(--ink);font-size:13px;font-family:inherit;resize:vertical}
+  .inbox-draft-section textarea:focus{outline:2px solid var(--accent);outline-offset:1px;border-color:var(--accent)}
+  .inbox-hold{font-size:12px;color:var(--no-ink);margin:4px 0 8px}
+  .inbox-settings textarea{width:100%;min-height:80px;padding:9px 11px;border:1px solid var(--field-border);border-radius:8px;background:var(--field);color:var(--ink);font-size:13px;font-family:inherit;resize:vertical}
+  .inbox-settings textarea:focus{outline:2px solid var(--accent);outline-offset:1px;border-color:var(--accent)}
+  .toggle-wrap{display:flex;align-items:center;gap:8px;padding:8px 0}
+  .toggle-wrap input[type=checkbox]{width:auto;cursor:pointer}
 </style>
 </head><body>
 <div class="wrap">
@@ -371,6 +381,47 @@ export function consolePage(apiKey: string): Response {
     <div id="inbox-threads"><p class="muted">Loading…</p></div>
     <div id="inbox-thread"></div>
     <p id="inboxmsg" class="msg muted"></p>
+  </section>
+
+  <section class="card inbox-settings">
+    <h2>Inbox settings</h2>
+    <p class="sub" style="margin:0 0 12px">Controls how PawScout handles incoming emails and drafts replies.</p>
+    <div class="toggle-wrap">
+      <input type="checkbox" id="inbox-autosend-chk" data-inbox-autosend>
+      <label for="inbox-autosend-chk" style="display:inline;font-weight:550">Auto-send (HITL off) — send drafts automatically when confidence &ge; threshold</label>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <div class="grow">
+        <label for="inbox-auto-thresh">Auto-confidence threshold (0–100)</label>
+        <input id="inbox-auto-thresh" type="number" min="0" max="100" step="1" value="80">
+      </div>
+      <div class="grow">
+        <label for="inbox-intent-thresh">Intent threshold (0–100)</label>
+        <input id="inbox-intent-thresh" type="number" min="0" max="100" step="1" value="70">
+      </div>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <div class="grow">
+        <label for="inbox-reply-model">Reply model (OpenRouter slug)</label>
+        <input id="inbox-reply-model" type="text" spellcheck="false" autocomplete="off" value="anthropic/claude-haiku-4.5">
+      </div>
+      <div class="grow">
+        <label for="inbox-classify-model">Classify model (OpenRouter slug)</label>
+        <input id="inbox-classify-model" type="text" spellcheck="false" autocomplete="off" value="google/gemini-2.5-flash-lite">
+      </div>
+    </div>
+    <div style="margin-top:10px">
+      <label for="inbox-alert-email">Alert email</label>
+      <input id="inbox-alert-email" type="text" spellcheck="false" autocomplete="off" placeholder="alerts@example.com">
+    </div>
+    <div style="margin-top:10px">
+      <label for="inbox-guidance-ta">Reply guidance (voice &amp; standing instructions for every draft)</label>
+      <textarea id="inbox-guidance-ta" data-inbox-guidance placeholder="e.g. Always be warm and concise. Sign off as the PawScout team."></textarea>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <button id="inbox-settings-save">Save inbox settings</button>
+    </div>
+    <p id="inboxcfgmsg" class="msg muted"></p>
   </section>
 </div>
 
@@ -924,20 +975,40 @@ async function openInboxThread(id){
   try{
     var r=await api('/inbox/thread',{id:id});
     if(!r.ok){ if(detail) detail.innerHTML='<p class="msg no">'+esc(r.error||'Failed to load thread')+'</p>'; return; }
-    renderInboxThread(r.thread,r.messages||[],r.labels||[]);
+    renderInboxThread(r.thread,r.messages||[],r.labels||[],r.draft||null);
   }catch(e){ if(detail) detail.innerHTML='<p class="msg no">'+esc(errText(e))+'</p>'; }
 }
-function renderInboxThread(thread,messages,labels){
+function renderInboxThread(thread,messages,labels,draft){
   var detail=el('inbox-thread');
   if(!detail) return;
   var msgHtml='<hr>';
   for(var i=0;i<messages.length;i++){
     var m=messages[i];
-    var dir=m.direction==='outbound'?'You → '+esc(m.to_addr||''):'From: '+esc(m.from_addr||'');
+    var isOut=m.direction==='outbound';
+    var dir=isOut?'You → '+esc(m.to_addr||''):'From: '+esc(m.from_addr||'');
     var ts=m.received_at?esc(m.received_at.slice(0,16).replace('T',' ')):'';
-    msgHtml+='<div class="inbox-msg">'
+    msgHtml+='<div class="inbox-msg'+(isOut?' outbound':'')+'">'
       +'<div class="inbox-msg__hdr">'+dir+(ts?' · '+ts:'')+'</div>'
       +'<div class="inbox-msg__body">'+esc(m.body_text||'(no body)')+'</div>'
+      +'</div>';
+  }
+  var draftHtml='';
+  if(draft&&draft.id){
+    var holdNote='';
+    if(draft.hold_reasons){
+      try{
+        var reasons=JSON.parse(draft.hold_reasons);
+        if(reasons&&reasons.length) holdNote='<p class="inbox-hold">Hold: '+esc(reasons.join(', '))+'</p>';
+      }catch(e2){}
+    }
+    draftHtml='<div class="inbox-draft-section">'
+      +'<label style="font-weight:600;margin-bottom:6px">Draft reply</label>'
+      +holdNote
+      +'<textarea id="inbox-draft">'+esc(draft.body_text||'')+'</textarea>'
+      +'<div class="row" style="margin-top:8px">'
+      +'<button id="inbox-approve-btn">Approve &amp; Send</button>'
+      +'<button id="inbox-discard-btn" class="ghost">Discard</button>'
+      +'</div>'
       +'</div>';
   }
   var labOpts=['lead','product-question','order-status','shipping-returns','wholesale-b2b','complaint','spam','automated','other'];
@@ -958,6 +1029,7 @@ function renderInboxThread(thread,messages,labels){
     +' — <span class="muted">'+esc(thread.subject||'(no subject)')+'</span>'
     +(thread.summary?'<p class="muted" style="margin:6px 0 0;font-size:12px">'+esc(thread.summary)+'</p>':'')
     +msgHtml
+    +draftHtml
     +'<div class="inbox-controls">'
     +'<div class="grow"><label>Status</label>'+statSel+'</div>'
     +'<div class="grow"><label>Labels (multi-select)</label>'+labSel+'</div>'
@@ -967,6 +1039,35 @@ function renderInboxThread(thread,messages,labels){
   var tid=thread.id;
   var ssb=el('inbox-save-status'); if(ssb) ssb.onclick=function(){ saveInboxStatus(tid); };
   var slb=el('inbox-save-labels'); if(slb) slb.onclick=function(){ saveInboxLabels(tid); };
+  if(draft&&draft.id){
+    var draftId=draft.id;
+    var appBtn=el('inbox-approve-btn');
+    if(appBtn) appBtn.onclick=function(){
+      var ta=el('inbox-draft');
+      var body=ta?ta.value:'';
+      approveDraftAction(draftId,body,tid);
+    };
+    var discBtn=el('inbox-discard-btn');
+    if(discBtn) discBtn.onclick=function(){ discardDraftAction(draftId,tid); };
+  }
+}
+async function approveDraftAction(draftId,body,threadId){
+  setMsg('inboxmsg','Sending…','muted');
+  var appBtn=el('inbox-approve-btn'); if(appBtn) appBtn.disabled=true;
+  try{
+    var r=await api('/inbox/approve',{id:draftId,body:body});
+    if(r.ok){ setMsg('inboxmsg','Sent ✓','ok'); openInboxThread(threadId); loadInboxThreads(); }
+    else { setMsg('inboxmsg','Failed: '+esc(r.error||'unknown error'),'no'); if(appBtn) appBtn.disabled=false; }
+  }catch(e){ setMsg('inboxmsg','Failed: '+errText(e),'no'); if(appBtn&&el('inbox-approve-btn')) el('inbox-approve-btn').disabled=false; }
+}
+async function discardDraftAction(draftId,threadId){
+  setMsg('inboxmsg','Discarding…','muted');
+  var discBtn=el('inbox-discard-btn'); if(discBtn) discBtn.disabled=true;
+  try{
+    var r=await api('/inbox/discard',{id:draftId});
+    if(r.ok){ setMsg('inboxmsg','Draft discarded.','muted'); openInboxThread(threadId); loadInboxThreads(); }
+    else { setMsg('inboxmsg','Failed: '+esc(r.error||'unknown error'),'no'); if(discBtn) discBtn.disabled=false; }
+  }catch(e){ setMsg('inboxmsg','Failed: '+errText(e),'no'); if(discBtn&&el('inbox-discard-btn')) el('inbox-discard-btn').disabled=false; }
 }
 async function saveInboxStatus(id){
   var sel=el('inbox-status-sel');
@@ -991,9 +1092,53 @@ async function saveInboxLabels(id){
     else { setMsg('inboxmsg','Failed: '+esc(r.error||'unknown error'),'no'); }
   }catch(e){ setMsg('inboxmsg','Failed: '+errText(e),'no'); }
 }
+var currentInboxCfg={enabled:true,labels:[]};
+async function loadInboxSettings(){
+  try{
+    var r=await api('/inbox/config',{});
+    if(!r.ok||!r.inbox) return;
+    var cfg=r.inbox;
+    currentInboxCfg={enabled:cfg.enabled!==false,labels:Array.isArray(cfg.labels)?cfg.labels:[]};
+    var chk=el('inbox-autosend-chk'); if(chk) chk.checked=!!cfg.autosend;
+    var at=el('inbox-auto-thresh'); if(at&&cfg.autoConfidenceThreshold!=null) at.value=cfg.autoConfidenceThreshold;
+    var it=el('inbox-intent-thresh'); if(it&&cfg.intentThreshold!=null) it.value=cfg.intentThreshold;
+    var rm=el('inbox-reply-model'); if(rm&&cfg.replyModel) rm.value=cfg.replyModel;
+    var cm=el('inbox-classify-model'); if(cm&&cfg.classifyModel) cm.value=cfg.classifyModel;
+    var ae=el('inbox-alert-email'); if(ae&&cfg.alertEmail) ae.value=cfg.alertEmail;
+    var gt=el('inbox-guidance-ta'); if(gt) gt.value=cfg.replyGuidance||'';
+    var ssb=el('inbox-settings-save'); if(ssb) ssb.onclick=saveInboxSettings;
+  }catch(e){ setMsg('inboxcfgmsg','Could not load inbox settings.','no'); }
+}
+async function saveInboxSettings(){
+  setMsg('inboxcfgmsg','Saving…','muted');
+  var chk=el('inbox-autosend-chk');
+  var at=el('inbox-auto-thresh');
+  var it=el('inbox-intent-thresh');
+  var rm=el('inbox-reply-model');
+  var cm=el('inbox-classify-model');
+  var ae=el('inbox-alert-email');
+  var gt=el('inbox-guidance-ta');
+  try{
+    var payload={
+      enabled:currentInboxCfg.enabled,
+      labels:currentInboxCfg.labels,
+      autosend:!!(chk&&chk.checked),
+      autoConfidenceThreshold:Number(at&&at.value||80),
+      intentThreshold:Number(it&&it.value||70),
+      replyModel:(rm&&rm.value.trim())||'anthropic/claude-haiku-4.5',
+      classifyModel:(cm&&cm.value.trim())||'google/gemini-2.5-flash-lite',
+      alertEmail:(ae&&ae.value.trim())||'',
+      replyGuidance:(gt&&gt.value)||''
+    };
+    var r=await api('/inbox/config',payload);
+    if(r.ok){ setMsg('inboxcfgmsg','Saved ✓','ok'); }
+    else { setMsg('inboxcfgmsg','Failed: '+esc(r.error||'unknown error'),'no'); }
+  }catch(e){ setMsg('inboxcfgmsg','Failed: '+errText(e),'no'); }
+}
 refresh();
 loadInsights();
 loadInboxThreads();
+loadInboxSettings();
 </script>
 </body></html>`;
   return new Response(html, { headers: { 'Content-Type': 'text/html' } });
