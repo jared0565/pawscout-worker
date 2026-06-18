@@ -5,6 +5,9 @@ import { sendEmail } from '../email';
 import { defaultFetch } from '../safe-fetch';
 import { parseAuthResults } from './gates';
 import { classifyEmail, decideDisposition } from './classify';
+import { draftReply, renderReplyHtml } from './draft';
+import { autoSendDecision, mentionsMoney } from './autosend';
+import { sendReply } from './send';
 import type { ThreadRow } from './types';
 
 const SWEEP_BATCH = 15;          // threads classified per shop per run
@@ -36,6 +39,9 @@ export async function runInboxClassifySweep(env: Env, fetchImpl: typeof fetch = 
       for (const thread of await store.unclassifiedThreads(SWEEP_BATCH)) {
         await classifyOne(env, store, cfg, shop, thread, fetchImpl);
       }
+      for (const thread of await store.threadsNeedingDraft(SWEEP_BATCH)) {
+        await draftOne(env, store, cfg, thread, fetchImpl);
+      }
     } catch (e) {
       console.warn(`inbox sweep failed for ${shop}: ${(e as Error).message}`);
     }
@@ -61,6 +67,31 @@ async function classifyOne(env: Env, store: TenantStore, cfg: TenantConfig, shop
   });
   await store.setThreadLabels(thread.id, d.labels);
   if (d.alert) await maybeAlertOwner(env, cfg, shop, thread, c.summary, fetchImpl);
+}
+
+async function draftOne(env: Env, store: TenantStore, cfg: TenantConfig, thread: ThreadRow, fetchImpl: typeof fetch): Promise<void> {
+  const got = await store.getThreadWithMessages(thread.id);
+  if (!got) return;
+  const conversation = got.messages.filter((m) => m.direction === 'inbound').map((m) => m.body_text ?? '').join('\n\n---\n\n');
+  const llm = new LlmClient(env.OPENROUTER_API_KEY, fetchImpl);
+  const draft = await draftReply(llm, store, cfg, { subject: thread.subject ?? '', conversation, category: thread.primary_category ?? 'other' });
+  if (!draft) return; // degrade: retry next sweep
+
+  const sinceIso = new Date(Date.now() - 86400_000).toISOString();
+  const recentAutoCount = await store.recentAutoSendCount(thread.contact_email, sinceIso);
+  const decision = autoSendDecision({
+    autosend: cfg.inbox.autosend, confidence: draft.confidence, threshold: cfg.inbox.autoConfidenceThreshold,
+    quotesPriceOrOrder: draft.quotesPriceOrOrder, bodyText: draft.bodyText, category: thread.primary_category ?? 'other', recentAutoCount
+  });
+  const draftId = await store.insertDraft({
+    threadId: thread.id, bodyText: draft.bodyText, bodyHtml: renderReplyHtml(draft.bodyText),
+    confidence: draft.confidence, quotesPriceOrder: draft.quotesPriceOrOrder || mentionsMoney(draft.bodyText),
+    holdReasons: decision.holdReasons, model: cfg.inbox.replyModel || cfg.llm.model, status: 'pending'
+  });
+  if (decision.send) {
+    const draftRow = await store.getDraft(draftId);
+    if (draftRow) await sendReply(env, store, cfg, thread, draftRow, undefined, fetchImpl);
+  }
 }
 
 /** One short high-signal nudge to the owner's Gmail (never per-enquiry noise). */

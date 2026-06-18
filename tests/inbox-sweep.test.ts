@@ -87,4 +87,30 @@ describe('runInboxClassifySweep', () => {
     expect(got?.thread.classified_at).toBeNull();
     expect(got?.thread.status).toBe('new');
   });
+
+  it('drafts a reply for a needs_reply thread and HOLDS it when autosend is off', async () => {
+    const tid = await seedShopWithThread();
+    const store = new TenantStore(env.DB, SHOP);
+    await store.setThreadClassification(tid, { status: 'needs_reply', primaryCategory: 'product-question', intentScore: 40, summary: 's', classifiedAt: '2026-06-18T10:05:00Z' });
+    const fetchImpl = (async (url: string) => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ bodyText: 'Yes, we ship there.', confidence: 95, quotesPriceOrOrder: false }) } }], usage: { cost: 0.0001 } }), { status: 200 })) as unknown as typeof fetch;
+    await runInboxClassifySweep({ ...env, OPENROUTER_API_KEY: 'k' } as any, fetchImpl);
+    const d = await store.getPendingDraft(tid);
+    expect(d?.body_text).toContain('ship');           // drafted
+    expect(d?.status).toBe('pending');                // held (autosend off by default)
+  });
+
+  it('auto-sends a confident safe draft when autosend is on', async () => {
+    const tid = await seedShopWithThread();
+    const store = new TenantStore(env.DB, SHOP);
+    await store.saveInbox({ ...DEFAULT_INBOX, autosend: true, alertEmail: 'owner@gmail.com' });
+    await store.setThreadClassification(tid, { status: 'needs_reply', primaryCategory: 'product-question', intentScore: 40, summary: 's', classifiedAt: '2026-06-18T10:05:00Z' });
+    let sent = false;
+    const fetchImpl = (async (url: string, init: RequestInit) => {
+      if (String(url).includes('openrouter')) return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ bodyText: 'Yes, we ship there in a few days.', confidence: 95, quotesPriceOrOrder: false }) } }], usage: { cost: 0.0001 } }), { status: 200 });
+      sent = true; return new Response(JSON.stringify({ id: 'em_1' }), { status: 200 }); // Resend
+    }) as unknown as typeof fetch;
+    await runInboxClassifySweep({ ...env, OPENROUTER_API_KEY: 'k', RESEND_API_KEY: 'rk' } as any, fetchImpl);
+    expect(sent).toBe(true);
+    expect((await store.getThreadWithMessages(tid))?.thread.status).toBe('awaiting_customer');
+  });
 });
