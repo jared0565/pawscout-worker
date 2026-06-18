@@ -2,6 +2,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
 import { TenantStore } from '../src/tenant-store';
+import type { ThreadStatus } from '../src/inbox/types';
 
 beforeEach(async () => { await applyD1Migrations(env.DB, env.TEST_MIGRATIONS); });
 
@@ -88,6 +89,32 @@ describe('inbox store', () => {
     const list = await store.listThreads(null, 50);
     expect(list.map((t) => t.id)).toContain(tid);
     expect(await new TenantStore(env.DB, 'b.myshopify.com').listThreads(null, 50)).toEqual([]);
+  });
+
+  it("'open' filter hides processed threads (converted/closed/spam) but keeps active ones", async () => {
+    const store = s();
+    await store.upsertContact({ email: 'jane@x.com', name: 'Jane', phone: null });
+    const mk = (subject: string, status: ThreadStatus) => store.createThread({
+      contactEmail: 'jane@x.com', subject, subjectNorm: subject,
+      receivedAt: '2026-06-18T10:00:00Z', initialStatus: status,
+    });
+    const newId = await mk('a', 'new');
+    const replyId = await mk('b', 'needs_reply');
+    const awaitId = await mk('c', 'awaiting_customer');
+    const convId = await mk('d', 'converted');
+    const closedId = await mk('e', 'closed');
+    const spamId = await mk('f', 'spam');
+
+    const openIds = (await store.listThreads('open', 50)).map((t) => t.id);
+    expect(openIds).toEqual(expect.arrayContaining([newId, replyId, awaitId]));
+    expect(openIds).not.toContain(convId);
+    expect(openIds).not.toContain(closedId);
+    expect(openIds).not.toContain(spamId);
+
+    // 'All' (null) still returns every thread, including processed ones.
+    expect((await store.listThreads(null, 50)).length).toBe(6);
+    // An exact status still matches only that status.
+    expect((await store.listThreads('converted', 50)).map((t) => t.id)).toEqual([convId]);
   });
 
   it('redactContact erases all inbox PII for one email (case-insensitive) and leaves other contacts/shops intact', async () => {

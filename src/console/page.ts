@@ -131,6 +131,13 @@ export function consolePage(apiKey: string): Response {
   .inbox-settings textarea:focus{outline:2px solid var(--accent);outline-offset:1px;border-color:var(--accent)}
   .toggle-wrap{display:flex;align-items:center;gap:8px;padding:8px 0}
   .toggle-wrap input[type=checkbox]{width:auto;cursor:pointer}
+  .reply-mode{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;padding:12px 14px;margin:0 0 14px;border:1px solid var(--border);border-radius:10px;background:var(--code-bg)}
+  .reply-mode.is-auto{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}
+  .reply-mode__text{flex:1 1 240px;min-width:0}
+  .reply-mode__state{font-weight:650}
+  .reply-mode.is-auto .reply-mode__state{color:var(--accent)}
+  .reply-mode__sw{display:flex;align-items:center;gap:8px;margin:0;cursor:pointer;white-space:nowrap}
+  .reply-mode__sw input[type=checkbox]{width:auto;cursor:pointer}
 </style>
 </head><body>
 <div class="wrap">
@@ -362,11 +369,22 @@ export function consolePage(apiKey: string): Response {
 
   <section class="card" data-panel="inbox">
     <h2 data-tab="inbox">Inbox</h2>
-    <p class="sub" style="margin:0 0 12px">Customer emails routed through PawScout. Read-only view — change status or labels below each thread.</p>
+    <p class="sub" style="margin:0 0 12px">Customer emails routed through PawScout. Change status or labels below each thread.</p>
+    <div id="reply-mode" class="reply-mode">
+      <div class="reply-mode__text">
+        <div>Reply mode: <span class="reply-mode__state" id="reply-mode-state">Manual review</span></div>
+        <p class="sub" id="reply-mode-desc" style="margin:4px 0 0">Drafts wait here for you to approve and send — nothing is emailed to customers automatically.</p>
+      </div>
+      <label class="reply-mode__sw">
+        <input type="checkbox" id="inbox-autosend-chk" data-inbox-autosend onchange="onReplyModeToggle()">
+        <span style="font-weight:600">Reply automatically</span>
+      </label>
+    </div>
     <div class="row" style="margin-bottom:12px">
       <div class="grow">
         <label for="inbox-status-filter">Filter by status</label>
         <select id="inbox-status-filter" onchange="loadInboxThreads()">
+          <option value="open" selected>Open (unprocessed)</option>
           <option value="">All</option>
           <option value="new">New</option>
           <option value="needs_reply">Needs reply</option>
@@ -385,11 +403,7 @@ export function consolePage(apiKey: string): Response {
 
   <section class="card inbox-settings">
     <h2>Inbox settings</h2>
-    <p class="sub" style="margin:0 0 12px">Controls how PawScout handles incoming emails and drafts replies.</p>
-    <div class="toggle-wrap">
-      <input type="checkbox" id="inbox-autosend-chk" data-inbox-autosend>
-      <label for="inbox-autosend-chk" style="display:inline;font-weight:550">Auto-send (HITL off) — send drafts automatically when confidence &ge; threshold</label>
-    </div>
+    <p class="sub" style="margin:0 0 12px">Controls how PawScout handles incoming emails and drafts replies. The <strong>Reply mode</strong> switch (manual vs. automatic) is at the top of the Inbox panel above.</p>
     <div class="row" style="margin-top:8px">
       <div class="grow">
         <label for="inbox-auto-thresh">Auto-confidence threshold (0–100)</label>
@@ -1261,6 +1275,23 @@ async function saveInboxLabels(id){
   }catch(e){ setMsg('inboxmsg','Failed: '+errText(e),'no'); }
 }
 var currentInboxCfg={enabled:true,labels:[]};
+function setReplyModeUI(on){
+  var wrap=el('reply-mode'), st=el('reply-mode-state'), ds=el('reply-mode-desc');
+  if(wrap) wrap.className='reply-mode'+(on?' is-auto':'');
+  if(st) st.textContent=on?'Automatic — human review OFF':'Manual review';
+  if(ds) ds.textContent=on
+    ?'PawScout emails customers automatically when its confidence is at or above the threshold. No human review.'
+    :'Drafts wait here for you to approve and send — nothing is emailed to customers automatically.';
+}
+async function onReplyModeToggle(){
+  var chk=el('inbox-autosend-chk'); if(!chk) return;
+  if(chk.checked && !confirm('Turn ON automatic replies?\n\nThis switches OFF human review: PawScout will email customers on its own when its confidence is high. You can turn it back off here anytime.')){
+    chk.checked=false; setReplyModeUI(false); return;
+  }
+  setReplyModeUI(chk.checked);
+  var ok=await saveInboxSettings();
+  setMsg('inboxmsg', ok?('Reply mode set to '+(chk.checked?'Automatic.':'Manual.')):'Could not save reply mode — try the Save button in Inbox settings.', ok?'ok':'no');
+}
 async function loadInboxSettings(){
   try{
     var r=await api('/inbox/config',{});
@@ -1268,6 +1299,7 @@ async function loadInboxSettings(){
     var cfg=r.inbox;
     currentInboxCfg={enabled:cfg.enabled!==false,labels:Array.isArray(cfg.labels)?cfg.labels:[]};
     var chk=el('inbox-autosend-chk'); if(chk) chk.checked=!!cfg.autosend;
+    setReplyModeUI(!!cfg.autosend);
     var at=el('inbox-auto-thresh'); if(at&&cfg.autoConfidenceThreshold!=null) at.value=cfg.autoConfidenceThreshold;
     var it=el('inbox-intent-thresh'); if(it&&cfg.intentThreshold!=null) it.value=cfg.intentThreshold;
     var rm=el('inbox-reply-model'); if(rm&&cfg.replyModel) rm.value=cfg.replyModel;
@@ -1312,9 +1344,9 @@ async function saveInboxSettings(){
       invoiceRateLimit:Math.max(1,parseInt((irl&&irl.value)||'2',10)||2)
     };
     var r=await api('/inbox/config',payload);
-    if(r.ok){ setMsg('inboxcfgmsg','Saved ✓','ok'); }
-    else { setMsg('inboxcfgmsg','Failed: '+esc(r.error||'unknown error'),'no'); }
-  }catch(e){ setMsg('inboxcfgmsg','Failed: '+errText(e),'no'); }
+    if(r.ok){ setMsg('inboxcfgmsg','Saved ✓','ok'); return true; }
+    setMsg('inboxcfgmsg','Failed: '+esc(r.error||'unknown error'),'no'); return false;
+  }catch(e){ setMsg('inboxcfgmsg','Failed: '+errText(e),'no'); return false; }
 }
 refresh();
 loadInsights();

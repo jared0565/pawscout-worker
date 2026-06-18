@@ -712,9 +712,16 @@ export class TenantStore {
 
   async listThreads(status: string | null, limit = 50): Promise<ThreadRow[]> {
     const lim = Math.min(Math.max(limit, 1), 200);
-    const rs = status
-      ? await this.db.prepare(`SELECT * FROM inbox_threads WHERE shop = ?1 AND status = ?2 ORDER BY last_message_at DESC LIMIT ${lim}`).bind(this.shop, status).all<ThreadRow>()
-      : await this.db.prepare(`SELECT * FROM inbox_threads WHERE shop = ?1 ORDER BY last_message_at DESC LIMIT ${lim}`).bind(this.shop).all<ThreadRow>();
+    let rs;
+    if (status === 'open') {
+      // Default console view: hide processed threads (converted/closed/spam) so the
+      // list stays focused on conversations still needing attention as volume grows.
+      rs = await this.db.prepare(`SELECT * FROM inbox_threads WHERE shop = ?1 AND status NOT IN ('converted', 'closed', 'spam') ORDER BY last_message_at DESC LIMIT ${lim}`).bind(this.shop).all<ThreadRow>();
+    } else if (status) {
+      rs = await this.db.prepare(`SELECT * FROM inbox_threads WHERE shop = ?1 AND status = ?2 ORDER BY last_message_at DESC LIMIT ${lim}`).bind(this.shop, status).all<ThreadRow>();
+    } else {
+      rs = await this.db.prepare(`SELECT * FROM inbox_threads WHERE shop = ?1 ORDER BY last_message_at DESC LIMIT ${lim}`).bind(this.shop).all<ThreadRow>();
+    }
     return rs.results ?? [];
   }
 
