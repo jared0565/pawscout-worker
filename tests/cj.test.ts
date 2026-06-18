@@ -139,6 +139,22 @@ describe('origins + freight', () => {
     expect(bodies[0]).toContain('"startCountryCode":"CN"');
     expect(bodies[0]).toContain('"endCountryCode":"ES"'); // the real destination, not GB
   });
+
+  it('freightQuote sends the requested quantity (defaults to 1)', async () => {
+    const bodies: string[] = [];
+    const fakeFetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      bodies.push(String(init?.body ?? ''));
+      return new Response(JSON.stringify({ result: true, data: [
+        { logisticName: 'Economy', logisticPrice: '4.20', logisticAging: '12-20' }
+      ] }), { status: 200 });
+    }) as typeof fetch;
+    const client = new CjClient(async () => 'tok', fakeFetch);
+    await client.freightQuote('v9', 'CN', 'ES', 3);
+    await client.freightQuote('v9', 'CN', 'ES');
+    expect(bodies[0]).toContain('"quantity":3');
+    expect(bodies[0]).toContain('"vid":"v9"');
+    expect(bodies[1]).toContain('"quantity":1'); // default
+  });
 });
 
 describe('CjClient.search — listV2 first (real shape: id, nameEn, content[].productList)', () => {

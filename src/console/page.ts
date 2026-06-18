@@ -66,6 +66,19 @@ export function consolePage(apiKey: string): Response {
   }
   input::placeholder{color:#8a8d91}
   input:focus,select:focus{outline:2px solid var(--accent);outline-offset:1px;border-color:var(--accent)}
+  .combo{position:relative}
+  .combo-menu{
+    position:absolute; left:0; right:0; top:calc(100% + 4px); z-index:30;
+    max-height:240px; overflow-y:auto; display:none;
+    background:var(--field); border:1px solid var(--field-border); border-radius:8px;
+    box-shadow:0 8px 24px rgba(0,0,0,.18);
+  }
+  .combo-menu.on{display:block}
+  .combo-grp{padding:7px 11px 2px;font-size:11px;font-weight:600;color:var(--subdued);text-transform:uppercase;letter-spacing:.04em}
+  .combo-opt{display:flex;justify-content:space-between;gap:10px;padding:7px 11px;font-size:14px;color:var(--ink);cursor:pointer}
+  .combo-opt:hover,.combo-opt.active{background:var(--code-bg)}
+  .combo-opt .cc{color:var(--subdued);font-size:12px}
+  .combo-empty{padding:9px 11px;font-size:13px;color:var(--subdued)}
   .row{display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap}
   .row .grow{flex:1 1 160px}
   .row+.row{margin-top:10px}
@@ -312,10 +325,16 @@ export function consolePage(apiKey: string): Response {
 
   <section class="card">
     <h2>Shipping quote (CJ)</h2>
-    <p class="sub" style="margin:0 0 12px">What CJ actually charges to ship <strong>one unit</strong> to a destination, cheapest line first — the real freight behind a flat checkout rate. Read-only; creates nothing.</p>
+    <p class="sub" style="margin:0 0 12px">What CJ actually charges to ship a given <strong>quantity</strong> to a destination, cheapest line first — the real freight behind a flat checkout rate. Read-only; creates nothing.</p>
     <div class="row">
       <div class="grow"><label for="fqpid">CJ product id</label><input id="fqpid" type="text" placeholder="from the product's cj-pid-… tag" spellcheck="false"></div>
-      <div><label for="fqcountry">Country</label><input id="fqcountry" type="text" value="ES" maxlength="2" style="width:70px;text-transform:uppercase" spellcheck="false"></div>
+      <div class="grow" style="flex:0 1 220px"><label for="fqcountry">Country</label>
+        <div class="combo">
+          <input id="fqcountry" type="text" autocomplete="off" spellcheck="false" placeholder="Type to search…" data-code="ES" value="Spain" oninput="fqCountryFilter()" onfocus="fqCountryOpen()" onblur="fqCountryBlur()" onkeydown="fqCountryKey(event)">
+          <div id="fqcountrymenu" class="combo-menu" onmousedown="fqCountryMenuClick(event)"></div>
+        </div>
+      </div>
+      <div><label for="fqqty">Qty</label><input id="fqqty" type="number" min="1" max="100" value="1" style="width:78px"></div>
       <button id="fqbtn" onclick="freightQuote()">Quote</button>
     </div>
     <div id="fqout" class="msg muted"></div>
@@ -723,19 +742,78 @@ async function runDiag(){
   }catch(e){ out.className='msg no'; out.textContent='Failed: '+errText(e); }
   finally{ btn.disabled=false; }
 }
+// --- Country combobox (searchable; single source of truth for the quote card) ---
+var FQ_COUNTRIES=[
+  {g:'UK & Ireland',c:'GB',n:'United Kingdom'},{g:'UK & Ireland',c:'IE',n:'Ireland'},
+  {g:'Western Europe',c:'ES',n:'Spain'},{g:'Western Europe',c:'FR',n:'France'},{g:'Western Europe',c:'DE',n:'Germany'},
+  {g:'Western Europe',c:'IT',n:'Italy'},{g:'Western Europe',c:'NL',n:'Netherlands'},{g:'Western Europe',c:'BE',n:'Belgium'},
+  {g:'Western Europe',c:'PT',n:'Portugal'},{g:'Western Europe',c:'AT',n:'Austria'},{g:'Western Europe',c:'LU',n:'Luxembourg'},
+  {g:'Western Europe',c:'CH',n:'Switzerland'},
+  {g:'Nordics',c:'SE',n:'Sweden'},{g:'Nordics',c:'DK',n:'Denmark'},{g:'Nordics',c:'FI',n:'Finland'},{g:'Nordics',c:'NO',n:'Norway'},
+  {g:'Central & Eastern Europe',c:'PL',n:'Poland'},{g:'Central & Eastern Europe',c:'CZ',n:'Czechia'},
+  {g:'Central & Eastern Europe',c:'SK',n:'Slovakia'},{g:'Central & Eastern Europe',c:'HU',n:'Hungary'},
+  {g:'Central & Eastern Europe',c:'RO',n:'Romania'},{g:'Central & Eastern Europe',c:'BG',n:'Bulgaria'},
+  {g:'Central & Eastern Europe',c:'GR',n:'Greece'},{g:'Central & Eastern Europe',c:'HR',n:'Croatia'},
+  {g:'Central & Eastern Europe',c:'SI',n:'Slovenia'},{g:'Central & Eastern Europe',c:'EE',n:'Estonia'},
+  {g:'Central & Eastern Europe',c:'LV',n:'Latvia'},{g:'Central & Eastern Europe',c:'LT',n:'Lithuania'},
+  {g:'North America',c:'US',n:'United States'},{g:'North America',c:'CA',n:'Canada'},
+  {g:'Oceania',c:'AU',n:'Australia'},{g:'Oceania',c:'NZ',n:'New Zealand'},
+  {g:'Asia & Middle East',c:'SG',n:'Singapore'},{g:'Asia & Middle East',c:'HK',n:'Hong Kong'},
+  {g:'Asia & Middle East',c:'JP',n:'Japan'},{g:'Asia & Middle East',c:'KR',n:'South Korea'},
+  {g:'Asia & Middle East',c:'MY',n:'Malaysia'},{g:'Asia & Middle East',c:'AE',n:'United Arab Emirates'},
+  {g:'Asia & Middle East',c:'SA',n:'Saudi Arabia'}
+];
+var fqShown=[], fqActive=-1;
+function fqFind(code){ for(var i=0;i<FQ_COUNTRIES.length;i++){ if(FQ_COUNTRIES[i].c===code) return FQ_COUNTRIES[i]; } return null; }
+function fqCountryRender(filter){
+  var f=(filter||'').trim().toLowerCase(), html='', lastG='';
+  fqShown=[];
+  for(var i=0;i<FQ_COUNTRIES.length;i++){
+    var x=FQ_COUNTRIES[i];
+    if(f && x.n.toLowerCase().indexOf(f)<0 && x.c.toLowerCase().indexOf(f)<0) continue;
+    if(x.g!==lastG){ html+='<div class="combo-grp">'+esc(x.g)+'</div>'; lastG=x.g; }
+    html+='<div class="combo-opt" data-code="'+x.c+'"><span>'+esc(x.n)+'</span><span class="cc">'+x.c+'</span></div>';
+    fqShown.push(x.c);
+  }
+  el('fqcountrymenu').innerHTML=html||'<div class="combo-empty">No match</div>';
+  fqActive=-1;
+}
+function fqCountryMenuClick(e){
+  var opt=e.target.closest?e.target.closest('.combo-opt'):null;
+  if(!opt) return;
+  e.preventDefault(); // keep focus on the input so onblur doesn't pre-empt the pick
+  fqCountryPick(opt.getAttribute('data-code'));
+}
+function fqHighlight(){
+  var opts=el('fqcountrymenu').querySelectorAll('.combo-opt');
+  for(var i=0;i<opts.length;i++){ if(i===fqActive){ opts[i].classList.add('active'); opts[i].scrollIntoView({block:'nearest'}); } else opts[i].classList.remove('active'); }
+}
+function fqCountryOpen(){ el('fqcountry').select(); fqCountryRender(''); el('fqcountrymenu').classList.add('on'); }
+function fqCountryFilter(){ fqCountryRender(el('fqcountry').value); el('fqcountrymenu').classList.add('on'); }
+function fqCountryClose(){ el('fqcountrymenu').classList.remove('on'); }
+function fqCountryPick(code){ var x=fqFind(code); if(!x) return; var inp=el('fqcountry'); inp.value=x.n; inp.dataset.code=x.c; fqCountryClose(); }
+function fqCountryBlur(){ setTimeout(function(){ fqCountryClose(); var inp=el('fqcountry'), x=fqFind(inp.dataset.code); if(x) inp.value=x.n; },150); }
+function fqCountryKey(e){
+  var open=el('fqcountrymenu').classList.contains('on');
+  if(e.key==='ArrowDown'){ if(!open){ fqCountryFilter(); } fqActive=Math.min(fqActive+1,fqShown.length-1); fqHighlight(); e.preventDefault(); }
+  else if(e.key==='ArrowUp'){ fqActive=Math.max(fqActive-1,0); fqHighlight(); e.preventDefault(); }
+  else if(e.key==='Enter'){ if(open&&fqShown.length){ fqCountryPick(fqShown[fqActive<0?0:fqActive]); e.preventDefault(); } }
+  else if(e.key==='Escape'){ fqCountryClose(); }
+}
 async function freightQuote(){
   var b=el('fqbtn'); b.disabled=true;
   var out=el('fqout');
   var pid=(el('fqpid').value||'').trim();
-  var country=((el('fqcountry').value||'GB').trim().toUpperCase());
-  out.className='msg muted'; out.textContent='Asking CJ for live freight to '+esc(country)+'…';
+  var country=((el('fqcountry').dataset.code||'GB').trim().toUpperCase());
+  var qty=Math.max(1,Math.min(100,parseInt(el('fqqty').value,10)||1));
+  out.className='msg muted'; out.textContent='Asking CJ for live freight on '+qty+'× to '+esc(country)+'…';
   try{
-    var r=await api('/freight-quote',{pid:pid,country:country});
+    var r=await api('/freight-quote',{pid:pid,country:country,qty:qty});
     if(!r.ok){ out.className='msg no'; out.textContent='Failed: '+(r.error||'unknown'); return; }
     if(!r.options.length){ out.className='msg no'; out.textContent='CJ returned no shipping lines to '+esc(r.country)+' for this product.'; return; }
     var rows=r.options.map(function(o){ return '<tr><td>'+esc(o.name)+'</td><td>$'+esc(o.usd.toFixed(2))+'</td><td>£'+esc(o.gbp.toFixed(2))+'</td><td class="muted">'+esc(o.days||'')+' days</td></tr>'; }).join('');
     out.className='msg';
-    out.innerHTML='<strong>'+esc(r.product)+'</strong><br><span class="muted">ships from '+esc(r.origin)+' → '+esc(r.country)+'</span>'
+    out.innerHTML='<strong>'+esc(r.product)+'</strong><br><span class="muted">'+esc(String(r.qty||qty))+'× · ships from '+esc(r.origin)+' → '+esc(r.country)+'</span>'
       +'<table style="width:100%;border-collapse:collapse;font-size:13px;margin-top:8px"><thead><tr><th style="text-align:left">Line</th><th style="text-align:left">USD</th><th style="text-align:left">GBP</th><th style="text-align:left">Aging</th></tr></thead><tbody>'+rows+'</tbody></table>';
   }catch(e){ out.className='msg no'; out.textContent='Failed: '+errText(e); }
   finally{ b.disabled=false; }
