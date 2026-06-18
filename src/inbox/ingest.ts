@@ -44,6 +44,15 @@ export async function ingestParsed(store: TenantStore, p: ParsedEmail): Promise<
       });
       await store.setThreadLabels(threadId, [automated ? 'automated' : 'spam']);
     }
+  } else if (!automated && !spam) {
+    // Multi-turn: an inbound on an active thread re-opens it for a fresh reply.
+    // Only reopen conversations we'd engage with; never resurrect spam/closed/converted.
+    const existing = await store.getThreadWithMessages(threadId);
+    const st = existing?.thread.status;
+    if (st === 'awaiting_customer' || st === 'needs_reply') {
+      await store.supersedePendingDrafts(threadId);
+      await store.reopenThread(threadId); // → needs_reply (classified_at kept; category persists)
+    }
   }
 
   const inserted = await store.insertInboundMessageIfNew({

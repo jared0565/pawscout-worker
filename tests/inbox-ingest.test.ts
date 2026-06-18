@@ -70,4 +70,25 @@ describe('ingestParsed', () => {
     expect(got?.thread.status).toBe('new');        // a real form submission must reach the sweep
     expect(got?.thread.classified_at).toBeNull();  // NOT pre-classified as automated
   });
+
+  it('re-opens an awaiting_customer thread on a customer reply and supersedes the pending draft', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const a = await ingestParsed(store, pe({}));                       // creates thread (status new)
+    // simulate: thread answered → awaiting_customer + a pending draft exists
+    await store.setThreadStatus(a.threadId, 'awaiting_customer');
+    await store.insertDraft({ threadId: a.threadId, bodyText: 'x', bodyHtml: '<p>x</p>', confidence: 90, quotesPriceOrder: false, holdReasons: [], model: 'm', status: 'pending' });
+    // customer replies (same thread via refs)
+    await ingestParsed(store, pe({ messageId: '<m2@x>', inReplyTo: '<m1@x>', references: ['<m1@x>'], subject: 'Re: Do you ship to IE?' }));
+    const got = await store.getThreadWithMessages(a.threadId);
+    expect(got?.thread.status).toBe('needs_reply');                    // re-opened
+    expect(await store.getPendingDraft(a.threadId)).toBeNull();        // superseded
+  });
+
+  it('does NOT re-open a spam or closed thread on a new inbound', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const a = await ingestParsed(store, pe({ messageId: '<s1@x>' }));
+    await store.setThreadStatus(a.threadId, 'closed');
+    await ingestParsed(store, pe({ messageId: '<s2@x>', inReplyTo: '<s1@x>', references: ['<s1@x>'] }));
+    expect((await store.getThreadWithMessages(a.threadId))?.thread.status).toBe('closed');
+  });
 });
