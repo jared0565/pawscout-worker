@@ -4,7 +4,7 @@ import { TenantStore, purgeUnusedWarehouse } from '../src/tenant-store';
 import { replenishWarehouse, refreshWarehouseStock } from '../src/jobs';
 import { searchBackfill } from '../src/proxy/search';
 import { confirmAndImport, getDetailPreferWarehouse } from '../src/proxy/import';
-import { DEFAULT_GATES, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, type TenantConfig } from '../src/types';
+import { DEFAULT_GATES, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, DEFAULT_INBOX, type TenantConfig } from '../src/types';
 import type { CjClient, CjSearchItem, CjDetail } from '../src/cj';
 import type { AdminGraphql } from '../src/shopify-admin';
 
@@ -17,7 +17,7 @@ const CFG: TenantConfig = {
   pricing: DEFAULT_PRICING,
   floors: { ...DEFAULT_FLOORS, warehouseDepth: 3 },
   llm: DEFAULT_LLM,
-  addons: DEFAULT_ADDONS, fulfil: DEFAULT_FULFIL, // small depth keeps tests fast
+  addons: DEFAULT_ADDONS, fulfil: DEFAULT_FULFIL, inbox: DEFAULT_INBOX, // small depth keeps tests fast
   target: 12
 };
 

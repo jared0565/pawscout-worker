@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
 import { cullStaleProducts, refillCollections, syncStoreInventory } from '../src/jobs';
 import { TenantStore } from '../src/tenant-store';
-import { DEFAULT_GATES, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, type TenantConfig } from '../src/types';
+import { DEFAULT_GATES, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, DEFAULT_INBOX, type TenantConfig } from '../src/types';
 import type { CjClient, CjDetail } from '../src/cj';
 import type { AdminGraphql } from '../src/shopify-admin';
 
@@ -115,7 +115,7 @@ describe('refillCollections (promote-from-warehouse)', () => {
     pricing: DEFAULT_PRICING,
     floors: { ...DEFAULT_FLOORS, storeFloor: 1 },
     llm: DEFAULT_LLM,
-  addons: DEFAULT_ADDONS, fulfil: DEFAULT_FULFIL,
+  addons: DEFAULT_ADDONS, fulfil: DEFAULT_FULFIL, inbox: DEFAULT_INBOX,
     target: 2
   };
 
@@ -164,7 +164,7 @@ describe('syncStoreInventory', () => {
     pricing: DEFAULT_PRICING,
     floors: DEFAULT_FLOORS,
   llm: DEFAULT_LLM,
-  addons: DEFAULT_ADDONS, fulfil: DEFAULT_FULFIL,
+  addons: DEFAULT_ADDONS, fulfil: DEFAULT_FULFIL, inbox: DEFAULT_INBOX,
     target: 12
   };
 

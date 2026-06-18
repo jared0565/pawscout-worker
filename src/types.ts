@@ -91,6 +91,8 @@ export interface Fulfil {
   alertEmail?: string;
 }
 
+import type { InboxConfig } from './inbox/types';
+
 export interface TenantConfig {
   collectionMap: Record<string, { handle: string; tag: string }>;
   gates: Gates;
@@ -99,8 +101,11 @@ export interface TenantConfig {
   llm: LlmConfig;
   addons: Addons;
   fulfil: Fulfil;
+  inbox: InboxConfig;
   target: number;
 }
+
+export { DEFAULT_INBOX } from './inbox/types';
 
 // popularityFloor: CJ listedNum is SMALL-VALUED in practice (max ~5 across a
 // typical 40-item search) — it counts listing merchants. 1 = "someone else

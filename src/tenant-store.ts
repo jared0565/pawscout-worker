@@ -1,4 +1,5 @@
 import { DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, type TenantRow, type TenantConfig, type Fulfil } from './types';
+import { DEFAULT_INBOX, type InboxConfig } from './inbox/types';
 
 interface SupplierCredRow {
   shop: string; supplier: string; api_key_enc: string; label: string | null; validated_at: string | null; created_at: string;
@@ -102,9 +103,9 @@ export class TenantStore {
 
   async getConfig(): Promise<TenantConfig | null> {
     const row = await this.db
-      .prepare(`SELECT collection_map, gates, pricing, floors, llm, addons, fulfil, target FROM tenant_config WHERE shop = ?1`)
+      .prepare(`SELECT collection_map, gates, pricing, floors, llm, addons, fulfil, inbox, target FROM tenant_config WHERE shop = ?1`)
       .bind(this.shop)
-      .first<{ collection_map: string; gates: string; pricing: string; floors: string; llm: string; addons: string; fulfil: string; target: number }>();
+      .first<{ collection_map: string; gates: string; pricing: string; floors: string; llm: string; addons: string; fulfil: string; inbox: string; target: number }>();
     if (!row) return null;
     return {
       collectionMap: JSON.parse(row.collection_map),
@@ -115,6 +116,7 @@ export class TenantStore {
       llm: { ...DEFAULT_LLM, ...JSON.parse(row.llm || '{}') },
       addons: { ...DEFAULT_ADDONS, ...JSON.parse(row.addons || '{}') },
       fulfil: { ...DEFAULT_FULFIL, ...JSON.parse(row.fulfil || '{}') },
+      inbox: { ...DEFAULT_INBOX, ...JSON.parse(row.inbox || '{}') },
       target: row.target
     };
   }
@@ -124,6 +126,14 @@ export class TenantStore {
     await this.db
       .prepare(`UPDATE tenant_config SET fulfil = ?2, updated_at = ?3 WHERE shop = ?1`)
       .bind(this.shop, JSON.stringify(fulfil), new Date().toISOString())
+      .run();
+  }
+
+  /** Persist the inbox (email-CRM) config block. */
+  async saveInbox(inbox: InboxConfig): Promise<void> {
+    await this.db
+      .prepare(`UPDATE tenant_config SET inbox = ?2, updated_at = ?3 WHERE shop = ?1`)
+      .bind(this.shop, JSON.stringify(inbox), new Date().toISOString())
       .run();
   }
 
