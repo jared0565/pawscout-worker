@@ -418,6 +418,26 @@ export function consolePage(apiKey: string): Response {
       <label for="inbox-guidance-ta">Reply guidance (voice &amp; standing instructions for every draft)</label>
       <textarea id="inbox-guidance-ta" data-inbox-guidance placeholder="e.g. Always be warm and concise. Sign off as the PawScout team."></textarea>
     </div>
+    <hr style="margin:14px 0">
+    <p class="sub" style="margin:0 0 10px;font-weight:600;color:var(--ink)">Invoice settings</p>
+    <div class="toggle-wrap">
+      <input type="checkbox" id="inbox-autoinvoice-chk" data-inbox-autoinvoice>
+      <label for="inbox-autoinvoice-chk" style="display:inline;font-weight:550">Auto-invoice — create and send invoices automatically when confidence &ge; threshold (HITL off)</label>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <div class="grow">
+        <label for="inbox-invoice-conf-thresh">Invoice confidence threshold (0–100)</label>
+        <input id="inbox-invoice-conf-thresh" type="number" min="0" max="100" step="1" value="95">
+      </div>
+      <div class="grow">
+        <label for="inbox-invoice-value-ceiling">Value ceiling (GBP)</label>
+        <input id="inbox-invoice-value-ceiling" type="number" min="0" step="1" value="250">
+      </div>
+      <div class="grow">
+        <label for="inbox-invoice-rate-limit">Rate limit (invoices / 24h per contact)</label>
+        <input id="inbox-invoice-rate-limit" type="number" min="1" step="1" value="2">
+      </div>
+    </div>
     <div class="row" style="margin-top:10px">
       <button id="inbox-settings-save">Save inbox settings</button>
     </div>
@@ -975,10 +995,10 @@ async function openInboxThread(id){
   try{
     var r=await api('/inbox/thread',{id:id});
     if(!r.ok){ if(detail) detail.innerHTML='<p class="msg no">'+esc(r.error||'Failed to load thread')+'</p>'; return; }
-    renderInboxThread(r.thread,r.messages||[],r.labels||[],r.draft||null);
+    renderInboxThread(r.thread,r.messages||[],r.labels||[],r.draft||null,r.invoice||null);
   }catch(e){ if(detail) detail.innerHTML='<p class="msg no">'+esc(errText(e))+'</p>'; }
 }
-function renderInboxThread(thread,messages,labels,draft){
+function renderInboxThread(thread,messages,labels,draft,invoice){
   var detail=el('inbox-thread');
   if(!detail) return;
   var msgHtml='<hr>';
@@ -1011,6 +1031,47 @@ function renderInboxThread(thread,messages,labels,draft){
       +'</div>'
       +'</div>';
   }
+  // Invoice card — only when thread has an open invoice
+  var invoiceHtml='';
+  if(invoice&&invoice.id){
+    var invItems=[];
+    try{ invItems=JSON.parse(invoice.line_items_json||'[]'); }catch(e2){}
+    var invRows=invItems.map(function(li){
+      return '<tr><td>'+esc(li.title||'')+'</td><td style="text-align:right">'+esc(String(li.qty||1))+'</td><td style="text-align:right">£'+esc(Number(li.priceGbp||0).toFixed(2))+'</td></tr>';
+    }).join('');
+    var invUrlHtml='';
+    if(invoice.status==='sent'&&invoice.invoice_url){
+      invUrlHtml='<p style="margin:8px 0 0"><a href="'+esc(invoice.invoice_url)+'" target="_blank" rel="noopener noreferrer" style="color:var(--ok-ink)">Open invoice link ↗</a></p>';
+    }
+    invoiceHtml='<div class="inbox-draft-section">'
+      +'<label style="font-weight:600;margin-bottom:6px">Invoice <span class="badge '+(invoice.status==='sent'?'ok':'no')+'">'+esc(invoice.status)+'</span></label>'
+      +'<table style="width:100%;border-collapse:collapse;font-size:13px;margin-top:6px"><thead><tr><th style="text-align:left">Item</th><th style="text-align:right">Qty</th><th style="text-align:right">Price</th></tr></thead><tbody>'+invRows+'</tbody></table>'
+      +'<p style="margin:8px 0 0;font-weight:600">Total: £'+esc(Number(invoice.total||0).toFixed(2))+'</p>'
+      +invUrlHtml
+      +'<div class="row" style="margin-top:8px">'
+      +'<button id="inbox-invoice-discard-btn" class="ghost">Discard invoice</button>'
+      +'</div>'
+      +'</div>';
+  }
+  // Catalog search + new invoice builder (shown when no open invoice)
+  var catalogHtml='';
+  if(!invoice||!invoice.id){
+    catalogHtml='<div class="inbox-draft-section">'
+      +'<label style="font-weight:600;margin-bottom:6px">Build invoice</label>'
+      +'<div id="inbox-reconnect-banner" style="display:none;margin-bottom:8px;padding:8px 12px;background:var(--no-bg);color:var(--no-ink);border-radius:8px;font-size:13px"></div>'
+      +'<div class="row" style="margin-bottom:6px">'
+      +'<div class="grow"><label for="inbox-catalog-q">Search catalog</label><input id="inbox-catalog-q" type="text" placeholder="e.g. harness" autocomplete="off" spellcheck="false"></div>'
+      +'<button id="inbox-catalog-search-btn" class="ghost">Search</button>'
+      +'</div>'
+      +'<div id="inbox-catalog-results" style="margin-bottom:8px;font-size:13px;color:var(--subdued)"></div>'
+      +'<div id="inbox-invoice-items" style="font-size:13px;margin-bottom:8px"></div>'
+      +'<div style="margin-bottom:6px"><label for="inbox-invoice-cover">Cover note (optional)</label><textarea id="inbox-invoice-cover" style="width:100%;min-height:60px;padding:9px 11px;border:1px solid var(--field-border);border-radius:8px;background:var(--field);color:var(--ink);font-size:13px;font-family:inherit;resize:vertical" placeholder="e.g. Here is the invoice for the items we discussed."></textarea></div>'
+      +'<div class="row" style="margin-top:8px">'
+      +'<button id="inbox-invoice-build-btn">Approve &amp; Send invoice</button>'
+      +'</div>'
+      +'<p id="inbox-invoice-msg" class="msg muted"></p>'
+      +'</div>';
+  }
   var labOpts=['lead','product-question','order-status','shipping-returns','wholesale-b2b','complaint','spam','automated','other'];
   var labSel='<select id="inbox-label-sel" multiple size="4" style="width:100%;font-size:13px">';
   for(var j=0;j<labOpts.length;j++){
@@ -1030,6 +1091,8 @@ function renderInboxThread(thread,messages,labels,draft){
     +(thread.summary?'<p class="muted" style="margin:6px 0 0;font-size:12px">'+esc(thread.summary)+'</p>':'')
     +msgHtml
     +draftHtml
+    +invoiceHtml
+    +catalogHtml
     +'<div class="inbox-controls">'
     +'<div class="grow"><label>Status</label>'+statSel+'</div>'
     +'<div class="grow"><label>Labels (multi-select)</label>'+labSel+'</div>'
@@ -1050,6 +1113,19 @@ function renderInboxThread(thread,messages,labels,draft){
     var discBtn=el('inbox-discard-btn');
     if(discBtn) discBtn.onclick=function(){ discardDraftAction(draftId,tid); };
   }
+  // Invoice card: wire discard button
+  if(invoice&&invoice.id){
+    var invDiscBtn=el('inbox-invoice-discard-btn');
+    if(invDiscBtn){ (function(invId,tId){ invDiscBtn.onclick=function(){ discardInvoiceAction(invId,tId); }; })(invoice.id,tid); }
+  }
+  // Catalog search + invoice builder: wire search and build buttons
+  if(!invoice||!invoice.id){
+    var invItems2=[];
+    var catalogSearchBtn=el('inbox-catalog-search-btn');
+    if(catalogSearchBtn){ (function(tId){ catalogSearchBtn.onclick=function(){ runCatalogSearch(tId); }; })(tid); }
+    var invBuildBtn=el('inbox-invoice-build-btn');
+    if(invBuildBtn){ (function(tId){ invBuildBtn.onclick=function(){ buildInvoiceAction(tId); }; })(tid); }
+  }
 }
 async function approveDraftAction(draftId,body,threadId){
   setMsg('inboxmsg','Sending…','muted');
@@ -1068,6 +1144,97 @@ async function discardDraftAction(draftId,threadId){
     if(r.ok){ openInboxThread(threadId); loadInboxThreads(); setMsg('inboxmsg','Draft discarded.','muted'); }
     else { setMsg('inboxmsg','Failed: '+esc(r.error||'unknown error'),'no'); if(discBtn) discBtn.disabled=false; }
   }catch(e){ setMsg('inboxmsg','Failed: '+errText(e),'no'); if(discBtn&&el('inbox-discard-btn')) el('inbox-discard-btn').disabled=false; }
+}
+// --- Invoice catalog search ---
+// Uses POST (consistent with api()) — the route is /api/inbox/catalog, POST {q}.
+var inboxInvoiceItems=[]; // [{variantId, title, qty, priceGbp}]
+function renderInvoiceItems(){
+  var box=el('inbox-invoice-items');
+  if(!box) return;
+  if(!inboxInvoiceItems.length){ box.innerHTML='<span class="muted">No items added yet.</span>'; return; }
+  var rows=inboxInvoiceItems.map(function(item,idx){
+    return '<div class="row" style="margin-bottom:4px">'
+      +'<span class="grow">'+esc(item.title)+'</span>'
+      +'<input type="number" min="1" max="99" value="'+esc(String(item.qty))+'" style="width:64px" data-inv-qty="'+idx+'">'
+      +'<span style="width:70px;text-align:right">£'+esc(Number(item.priceGbp||0).toFixed(2))+'</span>'
+      +'<button class="ghost" style="padding:4px 8px" data-inv-rm="'+idx+'">✕</button>'
+      +'</div>';
+  }).join('');
+  box.innerHTML=rows;
+  var qtyInputs=box.querySelectorAll('input[data-inv-qty]');
+  for(var qi=0;qi<qtyInputs.length;qi++){
+    (function(inp,i){ inp.onchange=function(){ var v=Math.max(1,parseInt(inp.value,10)||1); inboxInvoiceItems[i].qty=v; inp.value=v; }; })(qtyInputs[qi],Number(qtyInputs[qi].getAttribute('data-inv-qty')));
+  }
+  var rmBtns=box.querySelectorAll('button[data-inv-rm]');
+  for(var ri=0;ri<rmBtns.length;ri++){
+    (function(btn){ btn.onclick=function(){ inboxInvoiceItems.splice(Number(btn.getAttribute('data-inv-rm')),1); renderInvoiceItems(); }; })(rmBtns[ri]);
+  }
+}
+async function runCatalogSearch(threadId){
+  var qEl=el('inbox-catalog-q'); var q=(qEl&&qEl.value.trim())||'';
+  if(!q) return;
+  var resEl=el('inbox-catalog-results');
+  if(resEl) resEl.textContent='Searching…';
+  try{
+    var r=await api('/inbox/catalog',{q:q});
+    if(r.ok===false&&r.error==='reconnect_required'){
+      showReconnectBanner(); if(resEl) resEl.textContent=''; return;
+    }
+    if(!r.ok){ if(resEl) resEl.textContent='Search failed: '+(r.error||'unknown'); return; }
+    var variants=r.variants||[];
+    if(!variants.length){ if(resEl) resEl.textContent='No products found.'; return; }
+    if(resEl){
+      resEl.innerHTML='';
+      variants.slice(0,12).forEach(function(v){
+        var btn=document.createElement('button');
+        btn.className='ghost'; btn.style.cssText='display:block;width:100%;text-align:left;margin-bottom:4px;font-size:13px';
+        btn.textContent='+ '+v.title+(v.variantTitle&&v.variantTitle!==v.title?' / '+v.variantTitle:'')+(v.priceGbp?' · £'+Number(v.priceGbp).toFixed(2):'');
+        btn.onclick=function(){
+          inboxInvoiceItems.push({variantId:v.variantId,title:(v.title+(v.variantTitle&&v.variantTitle!==v.title?' / '+v.variantTitle:'')),qty:1,priceGbp:v.priceGbp||0});
+          renderInvoiceItems();
+        };
+        resEl.appendChild(btn);
+      });
+    }
+  }catch(e){ if(resEl) resEl.textContent='Search failed: '+errText(e); }
+}
+async function buildInvoiceAction(threadId){
+  var msgEl=el('inbox-invoice-msg');
+  if(!inboxInvoiceItems.length){ if(msgEl) setMsg('inbox-invoice-msg','Add at least one item.','no'); return; }
+  var coverEl=el('inbox-invoice-cover');
+  var coverText=(coverEl&&coverEl.value.trim())||'';
+  var btn=el('inbox-invoice-build-btn'); if(btn) btn.disabled=true;
+  if(msgEl) setMsg('inbox-invoice-msg','Building invoice…','muted');
+  try{
+    var items=inboxInvoiceItems.map(function(it){ return {variantId:it.variantId,qty:it.qty}; });
+    var r=await api('/inbox/invoice/build',{threadId:threadId,items:items,coverText:coverText});
+    if(r.ok===false&&r.error==='reconnect_required'){
+      showReconnectBanner(); if(msgEl) setMsg('inbox-invoice-msg','Re-authorise required — see banner above.','no');
+      if(btn) btn.disabled=false; return;
+    }
+    if(!r.ok){ if(msgEl) setMsg('inbox-invoice-msg','Failed: '+esc(r.error||'unknown error'),'no'); if(btn) btn.disabled=false; return; }
+    inboxInvoiceItems=[];
+    openInboxThread(threadId);
+    setMsg('inboxmsg','Invoice sent ✓','ok');
+  }catch(e){ if(msgEl) setMsg('inbox-invoice-msg','Failed: '+errText(e),'no'); if(btn) btn.disabled=false; }
+}
+async function discardInvoiceAction(invoiceId,threadId){
+  setMsg('inboxmsg','Discarding invoice…','muted');
+  var btn=el('inbox-invoice-discard-btn'); if(btn) btn.disabled=true;
+  try{
+    var r=await api('/inbox/invoice/discard',{invoiceId:invoiceId});
+    if(!r.ok){ setMsg('inboxmsg','Failed: '+esc(r.error||'unknown error'),'no'); if(btn) btn.disabled=false; return; }
+    openInboxThread(threadId);
+    setMsg('inboxmsg','Invoice discarded.','muted');
+  }catch(e){ setMsg('inboxmsg','Failed: '+errText(e),'no'); if(btn) btn.disabled=false; }
+}
+function showReconnectBanner(){
+  var banner=el('inbox-reconnect-banner');
+  if(!banner) return;
+  var shop=(new URL(location.href)).searchParams.get('shop')||'';
+  var href='/auth'+(shop?'?shop='+encodeURIComponent(shop):'');
+  banner.style.display='';
+  banner.innerHTML='Re-authorisation required. <a href="'+esc(href)+'" style="color:var(--no-ink);font-weight:600">Click here to reconnect ↗</a>';
 }
 async function saveInboxStatus(id){
   var sel=el('inbox-status-sel');
@@ -1106,6 +1273,11 @@ async function loadInboxSettings(){
     var cm=el('inbox-classify-model'); if(cm&&cfg.classifyModel) cm.value=cfg.classifyModel;
     var ae=el('inbox-alert-email'); if(ae&&cfg.alertEmail) ae.value=cfg.alertEmail;
     var gt=el('inbox-guidance-ta'); if(gt) gt.value=cfg.replyGuidance||'';
+    // Invoice settings
+    var aichk=el('inbox-autoinvoice-chk'); if(aichk) aichk.checked=!!cfg.autoInvoice;
+    var ict=el('inbox-invoice-conf-thresh'); if(ict&&cfg.invoiceConfidenceThreshold!=null) ict.value=cfg.invoiceConfidenceThreshold;
+    var ivc=el('inbox-invoice-value-ceiling'); if(ivc&&cfg.invoiceValueCeiling!=null) ivc.value=cfg.invoiceValueCeiling;
+    var irl=el('inbox-invoice-rate-limit'); if(irl&&cfg.invoiceRateLimit!=null) irl.value=cfg.invoiceRateLimit;
     var ssb=el('inbox-settings-save'); if(ssb) ssb.onclick=saveInboxSettings;
   }catch(e){ setMsg('inboxcfgmsg','Could not load inbox settings.','no'); }
 }
@@ -1118,6 +1290,10 @@ async function saveInboxSettings(){
   var cm=el('inbox-classify-model');
   var ae=el('inbox-alert-email');
   var gt=el('inbox-guidance-ta');
+  var aichk=el('inbox-autoinvoice-chk');
+  var ict=el('inbox-invoice-conf-thresh');
+  var ivc=el('inbox-invoice-value-ceiling');
+  var irl=el('inbox-invoice-rate-limit');
   try{
     var payload={
       enabled:currentInboxCfg.enabled,
@@ -1128,7 +1304,11 @@ async function saveInboxSettings(){
       replyModel:(rm&&rm.value.trim())||'anthropic/claude-haiku-4.5',
       classifyModel:(cm&&cm.value.trim())||'google/gemini-2.5-flash-lite',
       alertEmail:(ae&&ae.value.trim())||'',
-      replyGuidance:(gt&&gt.value)||''
+      replyGuidance:(gt&&gt.value)||'',
+      autoInvoice:!!(aichk&&aichk.checked),
+      invoiceConfidenceThreshold:Number(ict&&ict.value||95),
+      invoiceValueCeiling:Number(ivc&&ivc.value||250),
+      invoiceRateLimit:Math.max(1,parseInt((irl&&irl.value)||'2',10)||2)
     };
     var r=await api('/inbox/config',payload);
     if(r.ok){ setMsg('inboxcfgmsg','Saved ✓','ok'); }

@@ -14,6 +14,7 @@ import { handleUninstall } from './auth/uninstall';
 import { resolveShopFromToken } from './console/session';
 import { connectCj, saveGates, savePricing, saveLlm, saveAddons, saveCollectionMap, getStatus, getInsights } from './console/routes';
 import { listInboxThreads, getInboxThread, setInboxStatus, setInboxLabels, getInboxConfig, saveInboxConfig, approveDraft, discardDraft } from './inbox/routes';
+import { buildInvoiceForThread, discardInvoice, searchCatalog } from './inbox/invoice-routes';
 import { consolePage } from './console/page';
 import { validateCjKey, CjClient, CjTokenManager, cjFetchFromEnv, chooseOrigin } from './cj';
 import { registerWebhooks, type RegisterWebhook } from './webhooks';
@@ -473,6 +474,41 @@ app.post('/api/inbox/discard', async (c) => {
   try { body = await c.req.json(); } catch { return c.json({ ok: false, error: 'Invalid JSON body' }, 400); }
   if (!body.id) return c.json({ ok: false, error: 'id required' }, 400);
   return c.json(await discardDraft(c.env.DB, s, body.id));
+});
+// W-INBOX-3: invoice build — creates draft order + sends invoice email
+app.post('/api/inbox/invoice/build', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: { threadId?: unknown; items?: unknown; coverText?: unknown } = {};
+  try { body = await c.req.json(); } catch { return c.json({ ok: false, error: 'Invalid JSON body' }, 400); }
+  if (typeof body.threadId !== 'string' || !body.threadId) return c.json({ ok: false, error: 'threadId required' }, 400);
+  if (!Array.isArray(body.items) || !body.items.length) return c.json({ ok: false, error: 'items must be a non-empty array' }, 400);
+  for (const item of body.items as unknown[]) {
+    if (typeof (item as { variantId?: unknown }).variantId !== 'string' || typeof (item as { qty?: unknown }).qty !== 'number') {
+      return c.json({ ok: false, error: 'Each item must have variantId (string) and qty (number)' }, 400);
+    }
+  }
+  const store = new TenantStore(c.env.DB, s);
+  const coverText = typeof body.coverText === 'string' ? body.coverText : '';
+  return c.json(await buildInvoiceForThread(c.env, store, body.threadId, body.items as { variantId: string; qty: number }[], coverText));
+});
+// W-INBOX-3: invoice discard — marks invoice discarded
+app.post('/api/inbox/invoice/discard', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: { invoiceId?: unknown } = {};
+  try { body = await c.req.json(); } catch { return c.json({ ok: false, error: 'Invalid JSON body' }, 400); }
+  if (typeof body.invoiceId !== 'string' || !body.invoiceId) return c.json({ ok: false, error: 'invoiceId required' }, 400);
+  const store = new TenantStore(c.env.DB, s);
+  return c.json(await discardInvoice(c.env, store, body.invoiceId));
+});
+// W-INBOX-3: catalog search — searches Shopify products for the invoice builder
+app.post('/api/inbox/catalog', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: { q?: unknown } = {};
+  try { body = await c.req.json(); } catch { return c.json({ ok: false, error: 'Invalid JSON body' }, 400); }
+  const q = typeof body.q === 'string' ? body.q.trim().slice(0, 120) : '';
+  if (!q) return c.json({ ok: false, error: 'q required' }, 400);
+  const store = new TenantStore(c.env.DB, s);
+  return c.json(await searchCatalog(c.env, store, q));
 });
 
 // --- /proxy/* : storefront-facing via Shopify App Proxy (HMAC-signed) ---
