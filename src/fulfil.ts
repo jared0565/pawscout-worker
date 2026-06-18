@@ -39,6 +39,8 @@ export interface OrderRecord {
   riskLevel: string | null; // LOW | MEDIUM | HIGH | null (unknown — fetched in Stage B)
   address: OrderAddress | null;
   lineItems: OrderLineItem[];
+  noteAttributes: Record<string, string>;
+  customerEmail: string | null;
 }
 
 function num(v: unknown): number {
@@ -80,7 +82,16 @@ export function parseOrderWebhook(raw: unknown): OrderRecord {
       quantity: num(li.quantity) || 1,
       price: num(li.price),
       cjPid: null
-    }))
+    })),
+    noteAttributes: (() => {
+      const na: Record<string, string> = {};
+      if (Array.isArray(o.note_attributes)) for (const x of o.note_attributes as { name?: unknown; value?: unknown }[]) { if (x && typeof x.name === 'string') na[x.name] = str(x.value); }
+      return na;
+    })(),
+    customerEmail: (() => {
+      const cust = (o.customer ?? null) as Record<string, unknown> | null;
+      return str(o.email || o.contact_email || (cust ? cust.email : '')) || null;
+    })()
   };
 }
 

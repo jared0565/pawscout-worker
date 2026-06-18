@@ -33,6 +33,11 @@ describe('parseOrderWebhook', () => {
     const o = parseOrderWebhook({ ...RAW, shipping_address: undefined });
     expect(o.address).toBeNull();
   });
+  it('captures note_attributes as a record and customerEmail from the payload', () => {
+    const o = parseOrderWebhook({ ...RAW, note_attributes: [{ name: 'pawscout_invoice_id', value: 'inv-1' }], email: 'c@x.com' });
+    expect(o.noteAttributes.pawscout_invoice_id).toBe('inv-1');
+    expect(o.customerEmail).toBe('c@x.com');
+  });
 });
 
 describe('validateOrder guardrails', () => {

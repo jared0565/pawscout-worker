@@ -853,6 +853,9 @@ export class TenantStore {
     const row = await this.db.prepare(`SELECT COUNT(*) AS n FROM inbox_invoices WHERE shop = ?1 AND thread_id = ?2 AND created_at >= ?3 AND status IN ('sent','paid')`).bind(this.shop, threadId, sinceIso).first<{ n: number }>();
     return row?.n ?? 0;
   }
+  getOpenInvoiceForContact(email: string): Promise<InvoiceRow | null> {
+    return this.db.prepare(`SELECT inv.* FROM inbox_invoices inv JOIN inbox_threads t ON t.shop = inv.shop AND t.id = inv.thread_id WHERE inv.shop = ?1 AND t.contact_email = ?2 AND inv.status = 'sent' ORDER BY inv.created_at DESC LIMIT 1`).bind(this.shop, email).first<InvoiceRow>();
+  }
 }
 
 // --- cross-tenant maintenance (cron jobs) — keep all raw D1 in this file ---

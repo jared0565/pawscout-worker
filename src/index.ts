@@ -27,6 +27,7 @@ import { makeAdminGraphql } from './shopify-admin';
 import { runDailyMaintenance, syncStoreInventory, refillCollections } from './jobs';
 import { runOrderPipeline, runOrderPipelineForShop } from './fulfil-run';
 import { parseOrderWebhook, validateOrder, FULFIL_GRACE_MINUTES } from './fulfil';
+import { attributePaidOrder } from './inbox/attribution';
 import { firecrawlCjSearch } from './firecrawl';
 
 const app = new Hono<{ Bindings: Env }>();
@@ -648,6 +649,7 @@ app.post('/webhooks/orders-paid', async (c) => {
       fulfilAfter: holds.length ? null : fulfilAfter
     });
     if (isNew) console.log(`order ${order.orderName} ${holds.length ? 'HELD (' + holds.join(',') + ')' : 'queued'}`);
+    c.executionCtx.waitUntil(attributePaidOrder(store, order).then(() => undefined));
   } catch (e) {
     console.warn(`orders-paid handler failed for ${shop}: ${(e as Error).message}`);
   }
