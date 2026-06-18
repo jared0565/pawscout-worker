@@ -1,5 +1,6 @@
 import { DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, type TenantRow, type TenantConfig, type Fulfil } from './types';
 import { DEFAULT_INBOX, type InboxConfig } from './inbox/types';
+import type { ContactRow, ThreadRow, MessageRow, ThreadStatus } from './inbox/types';
 
 interface SupplierCredRow {
   shop: string; supplier: string; api_key_enc: string; label: string | null; validated_at: string | null; created_at: string;
@@ -197,6 +198,10 @@ export class TenantStore {
       this.db.prepare(`DELETE FROM llm_usage WHERE shop = ?1`).bind(this.shop),
       this.db.prepare(`DELETE FROM supplier_credentials WHERE shop = ?1`).bind(this.shop),
       this.db.prepare(`DELETE FROM cj_tokens WHERE shop = ?1`).bind(this.shop),
+      this.db.prepare(`DELETE FROM inbox_thread_labels WHERE shop = ?1`).bind(this.shop),
+      this.db.prepare(`DELETE FROM inbox_messages WHERE shop = ?1`).bind(this.shop),
+      this.db.prepare(`DELETE FROM inbox_threads WHERE shop = ?1`).bind(this.shop),
+      this.db.prepare(`DELETE FROM inbox_contacts WHERE shop = ?1`).bind(this.shop),
       this.db.prepare(`DELETE FROM tenant_config WHERE shop = ?1`).bind(this.shop),
       this.db.prepare(`DELETE FROM tenants WHERE shop = ?1`).bind(this.shop)
     ]);
@@ -590,6 +595,135 @@ export class TenantStore {
       .bind(this.shop, cutoffIso)
       .all<WarehouseRow>();
     return rs.results ?? [];
+  }
+
+  // --- W-INBOX: email CRM ---
+
+  async upsertContact(c: { email: string; name?: string | null; phone?: string | null }): Promise<void> {
+    const now = new Date().toISOString();
+    await this.db
+      .prepare(
+        `INSERT INTO inbox_contacts (shop, email, name, phone, message_count, first_seen_at, last_seen_at)
+         VALUES (?1, ?2, ?3, ?4, 1, ?5, ?5)
+         ON CONFLICT(shop, email) DO UPDATE SET
+           name = COALESCE(?3, name), phone = COALESCE(?4, phone),
+           message_count = message_count + 1, last_seen_at = ?5`
+      )
+      .bind(this.shop, c.email, c.name ?? null, c.phone ?? null, now)
+      .run();
+  }
+
+  /** Find an existing thread for a reply: first by any referenced Message-ID,
+   * then by (contact + normalized subject). Returns the thread id or null. */
+  async matchThread(args: { contactEmail: string; inReplyTo: string | null; references: string[]; subjectNorm: string }): Promise<string | null> {
+    const refs = [args.inReplyTo, ...args.references].filter((r): r is string => !!r);
+    if (refs.length) {
+      const ph = refs.map((_, i) => `?${i + 2}`).join(',');
+      const row = await this.db
+        .prepare(`SELECT thread_id FROM inbox_messages WHERE shop = ?1 AND message_id IN (${ph}) LIMIT 1`)
+        .bind(this.shop, ...refs)
+        .first<{ thread_id: string }>();
+      if (row?.thread_id) return row.thread_id;
+    }
+    if (args.subjectNorm) {
+      const row = await this.db
+        .prepare(`SELECT id FROM inbox_threads WHERE shop = ?1 AND contact_email = ?2 AND subject_norm = ?3 ORDER BY last_message_at DESC LIMIT 1`)
+        .bind(this.shop, args.contactEmail, args.subjectNorm)
+        .first<{ id: string }>();
+      if (row?.id) return row.id;
+    }
+    return null;
+  }
+
+  async createThread(t: { contactEmail: string; subject: string; subjectNorm: string; receivedAt: string; initialStatus: ThreadStatus }): Promise<string> {
+    const id = crypto.randomUUID();
+    const now = new Date().toISOString();
+    await this.db
+      .prepare(
+        `INSERT INTO inbox_threads (shop, id, contact_email, subject, subject_norm, status, last_message_at, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)`
+      )
+      .bind(this.shop, id, t.contactEmail, t.subject, t.subjectNorm, t.initialStatus, t.receivedAt, now)
+      .run();
+    return id;
+  }
+
+  /** Insert an inbound message; false if its Message-ID was already stored (dedup). */
+  async insertInboundMessageIfNew(m: {
+    threadId: string; messageId: string | null; inReplyTo: string | null; references: string[];
+    from: string; to: string | null; subject: string | null; bodyText: string | null;
+    bodyHtml: string | null; headersJson: string | null; receivedAt: string;
+  }): Promise<boolean> {
+    const now = new Date().toISOString();
+    const r = await this.db
+      .prepare(
+        `INSERT INTO inbox_messages
+           (shop, id, thread_id, direction, message_id, in_reply_to, ref_ids, from_addr, to_addr, subject, body_text, body_html, headers_json, received_at, created_at)
+         VALUES (?1, ?2, ?3, 'inbound', ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+         ON CONFLICT(shop, message_id) DO NOTHING`
+      )
+      .bind(this.shop, crypto.randomUUID(), m.threadId, m.messageId, m.inReplyTo,
+        m.references.join(' ') || null, m.from, m.to, m.subject, m.bodyText, m.bodyHtml, m.headersJson, m.receivedAt, now)
+      .run();
+    return (r.meta.changes ?? 0) > 0;
+  }
+
+  async touchThread(threadId: string, lastMessageAt: string): Promise<void> {
+    await this.db
+      .prepare(`UPDATE inbox_threads SET last_message_at = ?3, updated_at = ?4 WHERE shop = ?1 AND id = ?2`)
+      .bind(this.shop, threadId, lastMessageAt, new Date().toISOString())
+      .run();
+  }
+
+  async listThreads(status: string | null, limit = 50): Promise<ThreadRow[]> {
+    const lim = Math.min(Math.max(limit, 1), 200);
+    const rs = status
+      ? await this.db.prepare(`SELECT * FROM inbox_threads WHERE shop = ?1 AND status = ?2 ORDER BY last_message_at DESC LIMIT ${lim}`).bind(this.shop, status).all<ThreadRow>()
+      : await this.db.prepare(`SELECT * FROM inbox_threads WHERE shop = ?1 ORDER BY last_message_at DESC LIMIT ${lim}`).bind(this.shop).all<ThreadRow>();
+    return rs.results ?? [];
+  }
+
+  async getThreadWithMessages(threadId: string): Promise<{ thread: ThreadRow; messages: MessageRow[]; labels: string[] } | null> {
+    const thread = await this.db.prepare(`SELECT * FROM inbox_threads WHERE shop = ?1 AND id = ?2`).bind(this.shop, threadId).first<ThreadRow>();
+    if (!thread) return null;
+    const msgs = await this.db.prepare(`SELECT * FROM inbox_messages WHERE shop = ?1 AND thread_id = ?2 ORDER BY received_at ASC`).bind(this.shop, threadId).all<MessageRow>();
+    const labs = await this.db.prepare(`SELECT label FROM inbox_thread_labels WHERE shop = ?1 AND thread_id = ?2`).bind(this.shop, threadId).all<{ label: string }>();
+    return { thread, messages: msgs.results ?? [], labels: (labs.results ?? []).map((l) => l.label) };
+  }
+
+  async setThreadStatus(threadId: string, status: ThreadStatus): Promise<void> {
+    await this.db
+      .prepare(`UPDATE inbox_threads SET status = ?3, updated_at = ?4 WHERE shop = ?1 AND id = ?2`)
+      .bind(this.shop, threadId, status, new Date().toISOString())
+      .run();
+  }
+
+  /** Replace a thread's label set. */
+  async setThreadLabels(threadId: string, labels: string[]): Promise<void> {
+    const uniq = [...new Set(labels)].slice(0, 20);
+    const stmts = [this.db.prepare(`DELETE FROM inbox_thread_labels WHERE shop = ?1 AND thread_id = ?2`).bind(this.shop, threadId)];
+    for (const label of uniq) {
+      stmts.push(this.db.prepare(`INSERT INTO inbox_thread_labels (shop, thread_id, label) VALUES (?1, ?2, ?3)`).bind(this.shop, threadId, label));
+    }
+    await this.db.batch(stmts);
+  }
+
+  async unclassifiedThreads(limit = 20): Promise<ThreadRow[]> {
+    const rs = await this.db
+      .prepare(`SELECT * FROM inbox_threads WHERE shop = ?1 AND classified_at IS NULL AND status = 'new' ORDER BY last_message_at ASC LIMIT ${Math.min(Math.max(limit, 1), 50)}`)
+      .bind(this.shop)
+      .all<ThreadRow>();
+    return rs.results ?? [];
+  }
+
+  async setThreadClassification(threadId: string, c: { status: ThreadStatus; primaryCategory: string | null; intentScore: number | null; summary: string | null; classifiedAt: string }): Promise<void> {
+    await this.db
+      .prepare(
+        `UPDATE inbox_threads SET status = ?3, primary_category = ?4, intent_score = ?5, summary = ?6, classified_at = ?7, updated_at = ?7
+         WHERE shop = ?1 AND id = ?2`
+      )
+      .bind(this.shop, threadId, c.status, c.primaryCategory, c.intentScore, c.summary, c.classifiedAt)
+      .run();
   }
 }
 
