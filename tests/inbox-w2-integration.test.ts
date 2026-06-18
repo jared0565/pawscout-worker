@@ -164,7 +164,7 @@ describe('W-INBOX-2 end-to-end integration', () => {
         messageId: '<m2@x>',
         inReplyTo: outboundMsgId,
         references: [outboundMsgId],
-        subject: 'Re: Do you have the large pet bed in stock?',
+        subject: 'A completely unrelated subject line',
         text: 'Great, I will order it now. Thanks!',
       }),
     );

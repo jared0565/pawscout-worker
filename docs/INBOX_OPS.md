@@ -45,7 +45,7 @@ npm run migrate:remote    # applies 0010_inbox_drafts.sql to the production D1
 npm run deploy
 ```
 
-`0010_inbox_drafts.sql` adds the `inbox_drafts` table and the new `inbox_contacts.message_count` column. The migration is idempotent — safe to run against an already-migrated database.
+`0010_inbox_drafts.sql` adds the `inbox_drafts` table and its indexes only. (The `inbox_contacts.message_count` column was added by `0009_inbox.sql` in W-INBOX-1.) The migration uses bare `CREATE TABLE`/`CREATE INDEX` — re-running it against an already-migrated database will error; run it once on production.
 
 ### 2. Console settings panel
 
