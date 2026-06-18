@@ -10,6 +10,10 @@ import type { ThreadRow } from './types';
 const SWEEP_BATCH = 15;          // threads classified per shop per run
 const FROM = 'Active Paw <support@activepaw.co.uk>';
 
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
 /** Defensive JSON parse for stored headers_json. Ingest slices to 8000 chars, so a
  * very-long header set can produce truncated invalid JSON. Degrade to {} (→ auth all
  * 'none') rather than throwing and aborting the whole shop's sweep batch. */
@@ -69,6 +73,6 @@ export async function maybeAlertOwner(env: Env, cfg: TenantConfig, shop: string,
     to,
     subject: `🔥 Hot lead: ${thread.contact_email}`,
     text: `${summary}\n\nFrom: ${thread.contact_email}\nSubject: ${thread.subject ?? '(none)'}\n\nReview & reply in PawScout: ${consoleUrl}`,
-    html: `<p><strong>${summary}</strong></p><p>From: ${thread.contact_email}<br>Subject: ${thread.subject ?? '(none)'}</p><p><a href="${consoleUrl}">Review &amp; reply in PawScout →</a></p>`
+    html: `<p><strong>${escapeHtml(summary)}</strong></p><p>From: ${escapeHtml(thread.contact_email)}<br>Subject: ${escapeHtml(thread.subject ?? '(none)')}</p><p><a href="${escapeHtml(consoleUrl)}">Review &amp; reply in PawScout →</a></p>`
   }, fetchImpl);
 }
