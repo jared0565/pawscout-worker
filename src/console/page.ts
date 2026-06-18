@@ -1285,7 +1285,7 @@ function setReplyModeUI(on){
 }
 async function onReplyModeToggle(){
   var chk=el('inbox-autosend-chk'); if(!chk) return;
-  if(chk.checked && !confirm('Turn ON automatic replies?\n\nThis switches OFF human review: PawScout will email customers on its own when its confidence is high. You can turn it back off here anytime.')){
+  if(chk.checked && !confirm('Turn ON automatic replies?\\n\\nThis switches OFF human review: PawScout will email customers on its own when its confidence is high. You can turn it back off here anytime.')){
     chk.checked=false; setReplyModeUI(false); return;
   }
   setReplyModeUI(chk.checked);
