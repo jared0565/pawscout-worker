@@ -10,6 +10,12 @@ describe('mentionsMoney', () => {
   it('does not match plain prose', () => {
     for (const t of ['Yes we ship to Ireland.', 'The large bed fits a 20kg dog.']) expect(mentionsMoney(t)).toBe(false);
   });
+  it('catches word-form prices, free offers, and BOGO', () => {
+    for (const t of ['that is twenty pounds', 'free delivery on all orders', 'free shipping', 'half price this week', 'half off', 'buy one get one free', 'BOGO deal']) expect(mentionsMoney(t)).toBe(true);
+  });
+  it('does not match innocent uses of those words', () => {
+    for (const t of ['feel free to ask us anything', 'I have two cats and one dog', 'we are happy to help']) expect(mentionsMoney(t)).toBe(false);
+  });
 });
 
 describe('autoSendDecision', () => {
