@@ -12,7 +12,8 @@
   },
   "dependencies": {
     "@shopify/shopify-api": "^11.6.0",
-    "hono": "^4.6.0"
+    "hono": "^4.6.0",
+    "postal-mime": "^2.7.4"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.5.0",
