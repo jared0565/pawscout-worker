@@ -36,6 +36,15 @@ describe('shopify-catalog', () => {
     const admin = fakeAdmin({ products: { edges: [] } });
     expect((await resolveLineRequest(admin, 'spaceship')).status).toBe('none');
   });
+  it('resolves to the available variant when one available + one unavailable match', async () => {
+    const admin = fakeAdmin(PRODUCTS([
+      { id: 'gid://shopify/ProductVariant/10', title: 'Available', sku: 'C1', price: '9.99', available: true },
+      { id: 'gid://shopify/ProductVariant/11', title: 'Unavailable', sku: 'C2', price: '9.99', available: false }
+    ]));
+    const r = await resolveLineRequest(admin, 'collar');
+    expect(r.status).toBe('resolved');
+    expect(r.variant?.variantId).toBe('gid://shopify/ProductVariant/10');
+  });
   it('finds a customer by email', async () => {
     const admin = fakeAdmin({ customers: { edges: [{ node: { id: 'gid://shopify/Customer/7' } }] } });
     expect(await findCustomerByEmail(admin, 'x@y.com')).toEqual({ customerId: 'gid://shopify/Customer/7' });

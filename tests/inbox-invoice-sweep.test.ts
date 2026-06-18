@@ -69,6 +69,8 @@ async function seedBuyingThread(store: TenantStore, subject = 'I want to order',
 function makeMockFetch(opts: {
   proposeResponse: object;
   spy?: { draftOrderHit: boolean; resendHit: boolean };
+  /** When true, the catalog returns zero products (all lineRequests resolve to 'none') */
+  emptyCatalog?: boolean;
 }): typeof fetch {
   const productPayload = {
     products: {
@@ -80,6 +82,8 @@ function makeMockFetch(opts: {
       }]
     }
   };
+
+  const emptyProductPayload = { products: { edges: [] } };
 
   return (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(typeof input === 'string' ? input : (input instanceof URL ? input.href : (input as Request).url));
@@ -104,7 +108,7 @@ function makeMockFetch(opts: {
         return new Response(JSON.stringify({ data: { draftOrderCreate: { draftOrder: { id: DRAFT_ORDER_ID, invoiceUrl: INVOICE_URL }, userErrors: [] } } }), { status: 200, headers: { 'content-type': 'application/json' } });
       }
       // product search (pawscoutCatalog)
-      return new Response(JSON.stringify({ data: productPayload }), { status: 200, headers: { 'content-type': 'application/json' } });
+      return new Response(JSON.stringify({ data: opts.emptyCatalog ? emptyProductPayload : productPayload }), { status: 200, headers: { 'content-type': 'application/json' } });
     }
 
     throw new Error(`Unexpected fetch: ${url}`);
@@ -200,6 +204,57 @@ describe('proposeInvoiceOne — Auto-send (autoInvoice:true, all pass)', () => {
     // Thread moved to awaiting_customer
     const got = await store.getThreadWithMessages(tid);
     expect(got?.thread.status).toBe('awaiting_customer');
+  });
+});
+
+// ─── Case 2b: autoInvoice:true but catalog resolves nothing → proposed (held), no Shopify/Resend ──
+describe('proposeInvoiceOne — empty catalog (all lineRequests resolve to none)', () => {
+  it('stores proposed invoice with no_resolved_items hold, createDraftOrder and Resend NOT called', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const { accessTokenEnc, dekWrapped } = await sealToken();
+    await store.upsertTenant({ accessTokenEnc, dekWrapped, scopes: 'write_draft_orders,read_products' });
+
+    const inboxCfg = {
+      ...DEFAULT_INBOX,
+      autoInvoice: true,
+      invoiceConfidenceThreshold: 80,
+      invoiceValueCeiling: 250,
+      invoiceRateLimit: 2
+    };
+    await store.seedConfig(cfg(inboxCfg));
+    await store.saveInbox(inboxCfg);
+
+    const tid = await seedBuyingThread(store, 'I want to order something rare', 'lead');
+
+    // LLM says isInvoiceMoment:true with a lineRequest, but catalog returns no products
+    const proposePayload = {
+      isInvoiceMoment: true,
+      lineRequests: [{ query: 'rare unobtainium widget', qty: 1 }],
+      coverText: 'Found it for you.',
+      confidence: 97
+    };
+
+    const spy = { draftOrderHit: false, resendHit: false };
+    const testEnv = { ...E, OPENROUTER_API_KEY: 'k', RESEND_API_KEY: 'test-resend-key' } as unknown as Env;
+    const threadRow = (await store.getThreadWithMessages(tid))!.thread;
+
+    const handled = await proposeInvoiceOne(
+      testEnv, store, cfg(inboxCfg), threadRow,
+      makeMockFetch({ proposeResponse: proposePayload, spy, emptyCatalog: true })
+    );
+
+    expect(handled).toBe(true);
+
+    // Must NOT have called createDraftOrder or Resend
+    expect(spy.draftOrderHit).toBe(false);
+    expect(spy.resendHit).toBe(false);
+
+    // Invoice must be proposed (held), not sent
+    const invoiceRows = await getInvoicesForThread(tid);
+    expect(invoiceRows).toHaveLength(1);
+    expect(invoiceRows[0].status).toBe('proposed');
+    const holdReasons: string[] = JSON.parse(invoiceRows[0].hold_reasons ?? '[]');
+    expect(holdReasons).toContain('no_resolved_items');
   });
 });
 

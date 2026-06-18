@@ -59,6 +59,7 @@ export async function proposeInvoice(
       if (typeof o !== 'object' || o === null) return null;
       if (typeof o.isInvoiceMoment !== 'boolean') return null;
       if (!Array.isArray(o.lineRequests)) return null;
+      if (o.isInvoiceMoment === true && o.lineRequests.length === 0) return null;
       for (const item of o.lineRequests) {
         if (typeof item !== 'object' || item === null) return null;
         const li = item as Record<string, unknown>;

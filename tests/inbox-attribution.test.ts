@@ -36,3 +36,16 @@ it('no-ops when there is no match', async () => {
   await s.upsertTenant({ accessTokenEnc: 't', dekWrapped: 'd', scopes: 's' });
   expect((await attributePaidOrder(s, order({}))).converted).toBe(false);
 });
+
+it('normalises customerEmail to lowercase before email-fallback lookup', async () => {
+  const s = new TenantStore(env.DB, 'a.myshopify.com');
+  await s.upsertTenant({ accessTokenEnc: 't', dekWrapped: 'd', scopes: 's' });
+  // Contact + invoice stored as lowercase
+  await s.upsertContact({ email: 'buyer@x.com' });
+  const tid = await s.createThread({ contactEmail: 'buyer@x.com', subject: 'x', subjectNorm: 'x', receivedAt: new Date().toISOString(), initialStatus: 'awaiting_customer' });
+  const invId = await s.insertInvoice({ threadId: tid, lineItems: [], total: 10, currency: 'GBP', coverText: '', confidence: null, holdReasons: [], status: 'sent' });
+  // Webhook delivers mixed-case email — attribution must normalise before lookup
+  const r = await attributePaidOrder(s, { ...order({}), customerEmail: 'Buyer@X.com' } as never);
+  expect(r.converted).toBe(true);
+  expect((await s.getInvoice(invId))?.status).toBe('paid');
+});

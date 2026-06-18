@@ -43,6 +43,18 @@ describe('invoiceSendDecision', () => {
     expect(invoiceSendDecision({ ...base, category: 'complaint' }).holdReasons).toContain('always_hold_category');
   });
 
+  it('holds order-status category (no longer auto-eligible)', () => {
+    const r = invoiceSendDecision({ ...base, category: 'order-status' });
+    expect(r.create).toBe(false);
+    expect(r.holdReasons).toContain('always_hold_category');
+  });
+
+  it('holds shipping-returns category (no longer auto-eligible)', () => {
+    const r = invoiceSendDecision({ ...base, category: 'shipping-returns' });
+    expect(r.create).toBe(false);
+    expect(r.holdReasons).toContain('always_hold_category');
+  });
+
   it('holds when rate limited', () => {
     expect(invoiceSendDecision({ ...base, recentInvoiceCount: 2 }).holdReasons).toContain('rate_limited');
   });

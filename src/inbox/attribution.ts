@@ -8,10 +8,11 @@ export async function attributePaidOrder(store: TenantStore, order: OrderRecord)
     const pid = order.noteAttributes?.pawscout_invoice_id;
     if (pid) invoice = await store.getInvoiceByPawscoutId(pid);
     if (!invoice && order.customerEmail) {
-      const contact = await store.getContactByEmail(order.customerEmail);
+      const normalizedEmail = order.customerEmail.trim().toLowerCase();
+      const contact = await store.getContactByEmail(normalizedEmail);
       if (contact) {
         // most-recent open ('sent') invoice on any of this contact's threads
-        invoice = await store.getOpenInvoiceForContact(order.customerEmail);
+        invoice = await store.getOpenInvoiceForContact(normalizedEmail);
       }
     }
     if (!invoice) return { converted: false };

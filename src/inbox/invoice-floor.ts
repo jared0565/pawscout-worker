@@ -1,5 +1,5 @@
 const ALWAYS_HOLD = new Set(['complaint', 'wholesale-b2b', 'spam', 'automated', 'other']);
-const ALLOWED_CATEGORIES = new Set(['lead', 'product-question', 'order-status', 'shipping-returns']);
+const ALLOWED_CATEGORIES = new Set(['lead', 'product-question']);
 
 /** Deterministic Auto-invoice floor. The LLM never decides; this does. */
 export function invoiceSendDecision(opts: {

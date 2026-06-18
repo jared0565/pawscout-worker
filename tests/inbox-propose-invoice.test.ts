@@ -57,6 +57,32 @@ describe('proposeInvoice', () => {
     expect(result?.lineRequests).toHaveLength(0);
   });
 
+  it('returns null when isInvoiceMoment:true but lineRequests is empty', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const llm = fakeLlm({
+      isInvoiceMoment: true,
+      lineRequests: [],
+      coverText: 'Happy to help.',
+      confidence: 90
+    });
+    expect(await proposeInvoice(llm, store, CFG, {
+      subject: 's', conversation: 'b', category: 'lead'
+    })).toBeNull();
+  });
+
+  it('returns null when qty is 51 (boundary: max is 50)', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const llm = fakeLlm({
+      isInvoiceMoment: true,
+      lineRequests: [{ query: 'dog collar', qty: 51 }],
+      coverText: 'Sure!',
+      confidence: 80
+    });
+    expect(await proposeInvoice(llm, store, CFG, {
+      subject: 's', conversation: 'b', category: 'lead'
+    })).toBeNull();
+  });
+
   it('returns null when qty is 0 (validate rejects malformed payload)', async () => {
     const store = new TenantStore(env.DB, 'a.myshopify.com');
     const llm = fakeLlm({

@@ -159,6 +159,9 @@ export async function proposeInvoiceOne(
     const total = Math.round(rawTotal * 100) / 100;
     const quantitiesWithinCaps = resolvedItems.every((li) => li.qty <= 20);
 
+    // 4b. Guard: if catalog resolved nothing, force hold — never call createDraftOrder with empty items.
+    const noResolvedItems = resolvedItems.length === 0 || total <= 0;
+
     // 5. Floor decision.
     const sinceIso = new Date(Date.now() - 86400_000).toISOString();
     const recent = await store.recentInvoiceCount(thread.id, sinceIso);
@@ -175,7 +178,10 @@ export async function proposeInvoiceOne(
       rateLimit: cfg.inbox.invoiceRateLimit
     });
 
-    // 6. Insert invoice row (proposed).
+    // 6. Insert invoice row (proposed). Merge no_resolved_items into holdReasons when blocked.
+    const finalHoldReasons = noResolvedItems
+      ? [...decision.holdReasons, ...(!decision.holdReasons.includes('no_resolved_items') ? ['no_resolved_items'] : [])]
+      : decision.holdReasons;
     const invoiceId = await store.insertInvoice({
       threadId: thread.id,
       lineItems: resolvedItems,
@@ -183,15 +189,16 @@ export async function proposeInvoiceOne(
       currency: 'GBP',
       coverText: proposal.coverText,
       confidence: proposal.confidence,
-      holdReasons: decision.holdReasons,
+      holdReasons: finalHoldReasons,
       status: 'proposed'
     });
 
-    // 7. If floor passes: create draft order + send invoice. Else leave proposed for HITL.
+    // 7. If floor passes AND we have items: create draft order + send invoice. Else leave proposed for HITL.
     //    sendInvoice internally flips the invoice to 'sent' and the thread to
     //    'awaiting_customer', so the local path intentionally does not call
     //    setInvoiceStatus('sent') after a successful send.
-    if (decision.create) {
+    const create = decision.create && !noResolvedItems;
+    if (create) {
       try {
         const draft = await createDraftOrder(admin, {
           email: thread.contact_email,
