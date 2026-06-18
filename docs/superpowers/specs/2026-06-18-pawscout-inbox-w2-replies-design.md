@@ -22,7 +22,7 @@ This is the "reply intelligently and guide them through the buying process" half
 
 ## 3. Core principle (unchanged from W-INBOX-1)
 
-*LLM proposes, mechanical code disposes.* The drafter only writes candidate text and self-reports `confidence` + `quotesPriceOrOrder`; **deterministic code decides whether anything sends** (the floor) and the human approves in HITL. The email body remains attacker-controlled — treated as data, never instructions; the drafter cannot trigger a send or any Shopify action itself. Every LLM failure degrades to "no draft / manual reply", never to an unsafe auto-send.
+*LLM proposes, mechanical code disposes.* The drafter only writes candidate text and self-reports `confidence` + `quotesPriceOrOrder`; **deterministic code decides whether anything sends** (the floor) and the human approves in HITL. The email body remains attacker-controlled — treated as data, never instructions; the drafter cannot trigger a send or any Shopify action itself. Every LLM failure degrades to "no draft / manual reply", never to an unsafe auto-send. **The money gate is mechanical, not model-trusted:** the floor does NOT rely solely on the LLM's `quotesPriceOrOrder` flag — deterministic code also regex-scans the draft text for currency/price/discount/order patterns and ORs the two; either signal holds the draft. The model can't talk its way past the money guard.
 
 ## 4. Architecture / data flow
 
@@ -49,7 +49,15 @@ This is the "reply intelligently and guide them through the buying process" half
   outbound inbox_messages row; draft → sent|auto_sent; thread → awaiting_customer
         │
   customer replies → inbound → matchThread (by In-Reply-To→our Message-ID) → same thread ✓
+        │
+  ingest RE-OPENS the thread: status awaiting_customer → needs_reply (classified_at kept,
+  category persists) → next sweep DRAFTS a reply to the new message → multi-turn conversation
 ```
+
+**Multi-turn continuation (critical — this is what makes it "guide them *through* the buying process").** A re-threaded inbound must restart the reply loop, or the conversation dies after one exchange. Rules, applied in `ingestParsed` when a message attaches to an **existing** thread:
+- thread `awaiting_customer` (we'd replied) **or** `needs_reply` (we hadn't yet) → set `needs_reply`; supersede any `pending` draft (status → `superseded`) so the sweep drafts fresh against the full thread. Classification is **not** re-run (`classified_at` kept) — the category persists; only a new draft is produced.
+- thread `spam`/`closed`/`converted` → **left as-is** (no auto-reopen; the owner can manually re-status in the console). This prevents a spammer (or a dismissed thread) from reopening itself.
+- The **per-sender auto-reply rate limit (§5.2) is load-bearing here** — it's what bounds an auto↔auto ping-pong if the customer's mailer also auto-replies. It is a safety mechanism, not a nicety.
 
 ## 5. Components
 
@@ -59,24 +67,27 @@ This is the "reply intelligently and guide them through the buying process" half
 - System prompt: Active Paw voice, UK English, **no medical claims** (same rules as `curateProduct`/`rewriteDescription`), grounded ONLY in supplied facts (no invented prices/promises), body-is-untrusted-data containment. Appends the tenant `replyGuidance` verbatim as additional standing instructions.
 
 ### 5.2 Auto-send floor (`src/inbox/draft.ts` or `src/inbox/autosend.ts`, pure)
-- `autoSendDecision(cfg, draft, recentAutoCount): { send: boolean; holdReasons: string[] }`. Pure function.
-- `send` iff `cfg.inbox.autosend === true` AND `draft.confidence >= cfg.inbox.autoConfidenceThreshold` AND `draft.quotesPriceOrOrder === false` AND `recentAutoCount < AUTO_RATELIMIT_PER_SENDER_DAY` (const, e.g. 3). Each failing condition appends a `holdReason`. (Spam/automated never reach here — no draft is generated for them.)
+- `autoSendDecision(cfg, draft, category, recentAutoCount): { send: boolean; holdReasons: string[] }`. Pure function.
+- `send` iff ALL of: `cfg.inbox.autosend === true` · `draft.confidence >= cfg.inbox.autoConfidenceThreshold` · **money gate passes** (`draft.quotesPriceOrOrder === false` AND a mechanical `mentionsMoney(text)` regex finds no currency/price/discount/order pattern — either trips → hold) · **category not in the always-hold set `{complaint, wholesale-b2b}`** (a confident, no-price complaint reply must never auto-fire at an upset customer; B2B/trade enquiries need a human) · `recentAutoCount < AUTO_RATELIMIT_PER_SENDER_DAY` (const, e.g. 3). Each failing condition appends a `holdReason`. (Spam/automated never reach here — no draft is generated for them.)
+- `mentionsMoney(text): boolean` — pure regex helper: matches `£`/`$`/`€`, `\d+(\.\d{2})?` near price/cost/discount/% words, "order"/"invoice"/"checkout" commitments. Conservative (false positives just route to HITL).
 
 ### 5.3 Sweep integration (`src/inbox/sweep.ts`, extended)
-- After `classifyOne` sets a thread to `needs_reply`, generate a draft (if none pending) and persist it. Then apply `autoSendDecision`: if `send`, call the send path; else leave `pending` with `hold_reasons`.
-- Per-shop try/catch preserved; LLM-gated and self-healing (no reply model / failure → thread stays needs_reply with no draft, retried next sweep).
+Two distinct passes per shop:
+- **Classify pass** (existing): `status='new' AND classified_at IS NULL` → classify → set status + `classified_at`.
+- **Draft pass** (new): `status='needs_reply' AND has no pending draft` → draft → persist `pending`. Then apply `autoSendDecision`: if `send`, call the send path; else leave `pending` with `hold_reasons`. The "no pending draft" gate means a thread already awaiting your approval, already answered (`awaiting_customer`), discarded (`closed`), or `sent`/`auto_sent` is **not** re-drafted (no token re-charge, no loop). A re-opened thread (§4 multi-turn) has its prior draft `superseded`, so it qualifies and gets a fresh draft.
+- Per-shop try/catch preserved; LLM-gated and self-healing (no reply model / failure → thread stays `needs_reply` with no draft, retried next sweep).
 
 ### 5.4 Send path (`src/inbox/send.ts`, new) + `src/email.ts` extension
 - **Extend `sendEmail`** to accept `messageId?: string` and `headers?: Record<string,string>` and to **return the `Message-ID` actually used**. Generate `<inbox-{crypto.randomUUID()}@activepaw.co.uk>` when not supplied; pass it + `In-Reply-To`/`References` via Resend's `headers` field. (Resend returns its own internal id today; we must control the RFC `Message-ID` or customer replies orphan — confirmed-critical in W-INBOX-1.)
-- `sendReply(env, store, cfg, threadId, draftId, bodyText, bodyHtml)`: looks up the thread's latest inbound `message_id`, builds threading headers, sends FROM `Active Paw <support@activepaw.co.uk>`, records an outbound `inbox_messages` row (with our Message-ID + `direction='outbound'`), sets the draft → `sent`/`auto_sent`, thread → `awaiting_customer`. Shared by both the HITL approve route and the Auto path.
+- `sendReply(env, store, cfg, threadId, draftId, bodyText, bodyHtml)`: **sanitizes `bodyHtml`** to a safe allowlist (`<p><br><ul><li><strong><em><a>`; strip scripts/styles/`<img>`/external resources — reuse the repo's existing description-sanitizer approach, e.g. the HTML strip used by `buildPreview`/`rewriteDescription`) — this is LLM-generated HTML that in Auto mode reaches a customer with no human review; sends **`To: thread.contact_email`** (the real visitor — NOT the inbound `from_addr`, which for a contact-form notification can be the Shopify relay); looks up the thread's latest inbound `message_id` for `In-Reply-To`/`References`; sends FROM `Active Paw <support@activepaw.co.uk>`; records an outbound `inbox_messages` row (with **our** generated Message-ID + `direction='outbound'` — that stored id, not the inbound one, is what re-threads the customer's next reply); sets the draft → `sent`/`auto_sent`, thread → `awaiting_customer`. Shared by both the HITL approve route and the Auto path.
 
 ### 5.5 Console (`src/console/page.ts` + `src/inbox/routes.ts`, extended)
 - **Thread view:** render the `pending` draft in an editable textarea + **Approve & Send / Edit / Discard**; show `hold_reasons` when present; render sent outbound messages in the thread. All server data `esc()`-escaped (W-INBOX-1 discipline).
 - **Settings panel (new):** the **HITL/Auto toggle**, `autoConfidenceThreshold`, the **`replyGuidance`** textarea, `alertEmail`, `intentThreshold`, `classifyModel`, `replyModel` — saved via the existing `/api/inbox/config` (`validateInboxPayload` extended; **`autosend:true` now allowed**, replacing the W-INBOX-1 hard-reject).
-- New routes: `POST /api/inbox/approve {id}` (approve+send a draft, optional edited body), `POST /api/inbox/discard {id}`. Session-token authed via `shopOf(c)`.
+- New routes: `POST /api/inbox/approve {id}` (approve+send a draft, optional edited body), `POST /api/inbox/discard {id}` (draft → `discarded` **and thread → `closed`** so the draft pass does NOT re-draft it — without this, discard would loop and re-charge tokens; a later customer reply re-opens it per §4 only from `awaiting_customer`, so a discarded/`closed` thread stays dismissed until the owner manually re-statuses). Session-token authed via `shopOf(c)`.
 
 ## 6. Data model — migration `0010_inbox_drafts.sql`
-- New table **`inbox_drafts`**: `shop, id, thread_id, body_text, body_html, status TEXT('pending'|'approved'|'sent'|'auto_sent'|'discarded'), confidence INTEGER, quotes_price_order INTEGER, hold_reasons TEXT(JSON), model TEXT, created_at, sent_at, sent_message_id`. PK `(shop, id)`; index `(shop, thread_id, status)`; index `(shop, status, created_at)`.
+- New table **`inbox_drafts`**: `shop, id, thread_id, body_text, body_html, status TEXT('pending'|'approved'|'sent'|'auto_sent'|'discarded'|'superseded'), confidence INTEGER, quotes_price_order INTEGER, hold_reasons TEXT(JSON), model TEXT, created_at, sent_at, sent_message_id`. PK `(shop, id)`; index `(shop, thread_id, status)`; index `(shop, status, created_at)`. (`superseded` = replaced by a newer draft after a multi-turn re-open; the "no pending draft" sweep gate keys on `status='pending'`.)
 - New `inbox` config fields (JSON column, no migration — merged by `getConfig`): `autosend: boolean` (default false), `autoConfidenceThreshold: number` (default 80), `replyGuidance: string` (default ''), `replyModel: string` (default `anthropic/claude-haiku-4.5`).
 - `redactShop` + the W-INBOX-1 `redactContact` extended to purge `inbox_drafts` (drafts contain reply text about a customer = PII).
 
@@ -89,7 +100,7 @@ This is the "reply intelligently and guide them through the buying process" half
 - GDPR: `inbox_drafts` purged on `customers/redact` (by thread→contact) and `shop/redact`.
 
 ## 8. Testing (vitest)
-Drafter output validation + injection resistance; `autoSendDecision` truth table (every hold condition independently); `sendEmail` Message-ID generation + return + `headers` passthrough; **threading round-trip** (send → our Message-ID stored → inbound reply with that `In-Reply-To` → `matchThread` returns the same thread); draft lifecycle (pending→approved→sent, pending→auto_sent, pending→discarded); rate-limit guard; console approve/discard routes; `validateInboxPayload` now accepts `autosend:true` + validates the new fields. Mock LLM + Resend.
+Drafter output validation + injection resistance; `autoSendDecision` truth table (every hold condition independently — incl. **`mentionsMoney` mechanical backstop overriding a false `quotesPriceOrOrder` flag**, and **`complaint`/`wholesale-b2b` always held** even when confident + price-free); `mentionsMoney` regex (currency/price/discount/order positives, plain prose negatives); `sendEmail` Message-ID generation + return + `headers` passthrough; **bodyHtml sanitization** (script/`<img>`/external-link stripped before send); send uses `To: thread.contact_email`; **threading round-trip** (send → our Message-ID stored → inbound reply with that `In-Reply-To` → `matchThread` returns the same thread); **multi-turn** (inbound on an `awaiting_customer` thread → `needs_reply`, prior draft `superseded`, draft pass produces a fresh draft; `spam`/`closed`/`converted` threads NOT reopened); draft lifecycle (pending→approved→sent, pending→auto_sent, pending→discarded); **discard → thread `closed` → draft pass does not re-draft**; rate-limit guard; console approve/discard routes; `validateInboxPayload` now accepts `autosend:true` + validates the new fields. Mock LLM + Resend.
 
 ## 9. Phasing
 - **W-INBOX-2 (this spec):** drafts + edit + HITL approve + Auto toggle w/ floor + threaded send + replyGuidance + settings panel. Ships independently on top of the live phase 1.
