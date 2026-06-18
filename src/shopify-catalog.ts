@@ -2,6 +2,36 @@ import type { AdminGraphql } from './shopify-admin';
 
 export type CatalogVariant = { variantId: string; productId: string; title: string; variantTitle: string; sku: string | null; priceGbp: number; available: boolean };
 
+const NODES_BY_IDS = `query pawscoutVariantsByIds($ids: [ID!]!) {
+  nodes(ids: $ids) {
+    ... on ProductVariant {
+      id sku title price
+      product { id title }
+    }
+  }
+}`;
+
+export async function variantsByIds(admin: AdminGraphql, ids: string[]): Promise<CatalogVariant[]> {
+  if (!ids.length) return [];
+  const data = await admin(NODES_BY_IDS, { ids });
+  const nodes = ((data.nodes as unknown[]) ?? []).filter(Boolean) as Record<string, unknown>[];
+  const out: CatalogVariant[] = [];
+  for (const node of nodes) {
+    if (!node.id) continue;
+    const product = (node.product ?? {}) as Record<string, unknown>;
+    out.push({
+      variantId: String(node.id),
+      productId: String(product.id ?? ''),
+      title: String(product.title ?? ''),
+      variantTitle: String(node.title ?? ''),
+      sku: node.sku ? String(node.sku) : null,
+      priceGbp: Number(node.price ?? 0) || 0,
+      available: true // owner already selected; availableForSale not needed here
+    });
+  }
+  return out;
+}
+
 const SEARCH = `query pawscoutCatalog($q: String!, $first: Int!) {
   products(first: $first, query: $q) {
     edges { node { id title variants(first: 20) { edges { node { id title sku price availableForSale } } } } }

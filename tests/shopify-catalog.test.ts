@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { searchShopifyProducts, resolveLineRequest, findCustomerByEmail } from '../src/shopify-catalog';
+import { searchShopifyProducts, resolveLineRequest, findCustomerByEmail, variantsByIds } from '../src/shopify-catalog';
 import { makeAdminGraphql } from '../src/shopify-admin';
 
 function fakeAdmin(payload: unknown) {
@@ -43,5 +43,45 @@ describe('shopify-catalog', () => {
   it('returns null for an unknown customer', async () => {
     const admin = fakeAdmin({ customers: { edges: [] } });
     expect(await findCustomerByEmail(admin, 'no@one.com')).toBeNull();
+  });
+});
+
+describe('variantsByIds', () => {
+  it('resolves variant ids to CatalogVariant objects', async () => {
+    const admin = fakeAdmin({
+      nodes: [
+        {
+          id: 'gid://shopify/ProductVariant/10',
+          title: 'Red / M',
+          sku: 'C-RED-M',
+          price: '12.50',
+          product: { id: 'gid://shopify/Product/1', title: 'Dog Collar' }
+        }
+      ]
+    });
+    const out = await variantsByIds(admin, ['gid://shopify/ProductVariant/10']);
+    expect(out).toHaveLength(1);
+    expect(out[0]).toMatchObject({
+      variantId: 'gid://shopify/ProductVariant/10',
+      productId: 'gid://shopify/Product/1',
+      title: 'Dog Collar',
+      variantTitle: 'Red / M',
+      sku: 'C-RED-M',
+      priceGbp: 12.5,
+      available: true
+    });
+  });
+
+  it('returns empty array for empty id list', async () => {
+    const admin = fakeAdmin({ nodes: [] });
+    const out = await variantsByIds(admin, []);
+    expect(out).toHaveLength(0);
+  });
+
+  it('filters out null nodes (unknown ids)', async () => {
+    const admin = fakeAdmin({ nodes: [null, { id: 'gid://shopify/ProductVariant/5', title: 'Blue', sku: null, price: '8.00', product: { id: 'gid://shopify/Product/2', title: 'Lead' } }] });
+    const out = await variantsByIds(admin, ['gid://shopify/ProductVariant/99', 'gid://shopify/ProductVariant/5']);
+    expect(out).toHaveLength(1);
+    expect(out[0].variantId).toBe('gid://shopify/ProductVariant/5');
   });
 });
