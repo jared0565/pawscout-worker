@@ -48,4 +48,17 @@ describe('handleInboundEmail', () => {
     const ctx = { waitUntil: () => {} } as unknown as ExecutionContext;
     await expect(handleInboundEmail(msg as any, env as any, ctx)).resolves.toBeUndefined();
   });
+
+  it('forwards to INBOX_FORWARD_TO when set', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    await store.upsertTenant({ accessTokenEnc: 'tok', dekWrapped: 'd', scopes: 's' });
+    await store.seedConfig({ collectionMap: ACTIVE_PAW_COLLECTION_MAP, gates: { popularityFloor: 1, priceMin: 1, priceMax: 9, relevance: 'title' }, pricing: DEFAULT_PRICING, floors: DEFAULT_FLOORS, llm: DEFAULT_LLM, addons: DEFAULT_ADDONS, fulfil: DEFAULT_FULFIL, inbox: DEFAULT_INBOX, target: 12 });
+
+    const { msg, forwardedTo } = fakeMessage(RAW);
+    const ctx = { waitUntil: (_p: Promise<unknown>) => {} } as unknown as ExecutionContext;
+    const envWithFwd = { ...env, INBOX_FORWARD_TO: 'owner@gmail.com' } as any;
+    await handleInboundEmail(msg as any, envWithFwd, ctx);
+
+    expect(forwardedTo()).toBe('owner@gmail.com');
+  });
 });

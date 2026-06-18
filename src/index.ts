@@ -684,6 +684,11 @@ export async function handleInboundEmail(message: ForwardableEmailMessage, env: 
     const raw = await new Response(message.raw).arrayBuffer();
     const r = await processInbound(store, raw);
     console.log(`inbound email stored: thread ${r.threadId}${r.deduped ? ' (dup)' : ''}`);
+    // W-INBOX-1 rollback net: also forward a copy to the owner until capture is trusted.
+    if (env.INBOX_FORWARD_TO) {
+      try { await message.forward(env.INBOX_FORWARD_TO); }
+      catch (e) { console.warn(`inbound forward failed: ${(e as Error).message}`); }
+    }
   } catch (e) {
     console.warn(`inbound email handler failed: ${(e as Error).message}`);
   }

@@ -7,10 +7,9 @@ import { defaultFetch } from './safe-fetch';
 
 const RESEND_ENDPOINT = 'https://api.resend.com/emails';
 
-// Resend's shared sender works without a verified domain, but only delivers to
-// the Resend account owner's own address — fine for a connectivity test. Real
-// sends should pass an `@activepaw.co.uk` from-address once the domain is verified.
-const DEFAULT_FROM = 'Active Paw <onboarding@resend.dev>';
+// Verified sending domain — all outbound mail uses @activepaw.co.uk.
+// Set up DKIM + SPF in Resend before deploying (see docs/INBOX_OPS.md).
+const DEFAULT_FROM = 'Active Paw <support@activepaw.co.uk>';
 
 export interface EmailMessage {
   to: string | string[];

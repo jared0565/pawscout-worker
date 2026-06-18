@@ -38,4 +38,14 @@ describe('sendEmail', () => {
     expect(seen.subject).toBe('Subj');
     expect(typeof seen.from).toBe('string');
   });
+
+  it('defaults From to the verified activepaw address', async () => {
+    let seen: Record<string, unknown> = {};
+    const capture: typeof fetch = (async (_u: unknown, init: RequestInit) => {
+      seen = JSON.parse(init.body as string);
+      return new Response(JSON.stringify({ id: 'em_1' }), { status: 200 });
+    }) as unknown as typeof fetch;
+    await sendEmail('key', { to: 'a@b.com', subject: 'S', text: 'x' }, capture);
+    expect(seen.from).toBe('Active Paw <support@activepaw.co.uk>');
+  });
 });

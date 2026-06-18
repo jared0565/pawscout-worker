@@ -18,6 +18,9 @@ export interface Env {
   FIRECRAWL_API_KEY?: string;
   // Resend (W5 email + owner alerts) — optional: absent = email features off.
   RESEND_API_KEY?: string;
+  // W-INBOX-1 safety-net forward: owner's verified Email Routing destination.
+  // Unset = no forward (stop forwarding once capture is trusted).
+  INBOX_FORWARD_TO?: string;
 }
 
 export interface TenantRow {
