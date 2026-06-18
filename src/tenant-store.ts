@@ -637,6 +637,14 @@ export class TenantStore {
       .run();
   }
 
+  async linkContactToShopifyCustomer(email: string, customerId: string): Promise<void> {
+    await this.db.prepare(`UPDATE inbox_contacts SET shopify_customer_id = ?3 WHERE shop = ?1 AND email = ?2`).bind(this.shop, email, customerId).run();
+  }
+
+  getContactByEmail(email: string): Promise<ContactRow | null> {
+    return this.db.prepare(`SELECT * FROM inbox_contacts WHERE shop = ?1 AND email = ?2`).bind(this.shop, email).first<ContactRow>();
+  }
+
   /** Find an existing thread for a reply: first by any referenced Message-ID,
    * then by (contact + normalized subject). Returns the thread id or null. */
   async matchThread(args: { contactEmail: string; inReplyTo: string | null; references: string[]; subjectNorm: string }): Promise<string | null> {
