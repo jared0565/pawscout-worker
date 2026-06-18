@@ -44,4 +44,13 @@ describe('inbox validators', () => {
   it('rejects a non-slug replyModel', () => {
     expect(validateInboxPayload({ enabled: true, autosend: false, intentThreshold: 70, autoConfidenceThreshold: 80, replyModel: 'nope', labels: [] }).ok).toBe(false);
   });
+  it('accepts invoice config fields and defaults them', () => {
+    const r = validateInboxPayload({ enabled: true, autosend: false, intentThreshold: 70, autoConfidenceThreshold: 80, labels: ['lead'], autoInvoice: true, invoiceConfidenceThreshold: 90, invoiceValueCeiling: 500, invoiceRateLimit: 1 });
+    expect(r.ok).toBe(true);
+    if (r.ok) { expect(r.value.autoInvoice).toBe(true); expect(r.value.invoiceConfidenceThreshold).toBe(90); expect(r.value.invoiceValueCeiling).toBe(500); expect(r.value.invoiceRateLimit).toBe(1); }
+  });
+  it('rejects a bad invoiceValueCeiling and a bad invoiceRateLimit', () => {
+    expect(validateInboxPayload({ enabled: true, autosend: false, intentThreshold: 70, autoConfidenceThreshold: 80, labels: [], invoiceValueCeiling: 0 }).ok).toBe(false);
+    expect(validateInboxPayload({ enabled: true, autosend: false, intentThreshold: 70, autoConfidenceThreshold: 80, labels: [], invoiceRateLimit: 0 }).ok).toBe(false);
+  });
 });

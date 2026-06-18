@@ -19,6 +19,10 @@ export interface InboxConfig {
   autoConfidenceThreshold: number; // 0-100; Auto floor
   replyGuidance: string;           // owner's standing voice/instructions, steers every draft
   replyModel: string;              // OpenRouter slug for drafting
+  autoInvoice: boolean;               // false = HITL invoicing; true = Auto behind the floor
+  invoiceConfidenceThreshold: number; // 0-100; Auto-invoice floor (separate from replies)
+  invoiceValueCeiling: number;        // GBP; total above this → HITL
+  invoiceRateLimit: number;           // max invoices per contact per 24h
 }
 
 export const DEFAULT_INBOX: InboxConfig = {
@@ -29,7 +33,11 @@ export const DEFAULT_INBOX: InboxConfig = {
   classifyModel: 'google/gemini-2.5-flash-lite',
   autoConfidenceThreshold: 80,
   replyGuidance: '',
-  replyModel: 'anthropic/claude-haiku-4.5'
+  replyModel: 'anthropic/claude-haiku-4.5',
+  autoInvoice: false,
+  invoiceConfidenceThreshold: 95,
+  invoiceValueCeiling: 250,
+  invoiceRateLimit: 2
 };
 
 export interface ParsedEmail {

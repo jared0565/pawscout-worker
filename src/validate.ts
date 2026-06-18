@@ -204,6 +204,10 @@ export function validateInboxPayload(body: unknown): Validation<InboxConfig> {
     }
     replyModel = b.replyModel;
   }
+  if (b.autoInvoice !== undefined && typeof b.autoInvoice !== 'boolean') return { ok: false, error: 'autoInvoice must be true or false' };
+  if (b.invoiceConfidenceThreshold !== undefined && (typeof b.invoiceConfidenceThreshold !== 'number' || !Number.isFinite(b.invoiceConfidenceThreshold) || b.invoiceConfidenceThreshold < 0 || b.invoiceConfidenceThreshold > 100)) return { ok: false, error: 'invoiceConfidenceThreshold must be 0-100' };
+  if (b.invoiceValueCeiling !== undefined && (typeof b.invoiceValueCeiling !== 'number' || !Number.isFinite(b.invoiceValueCeiling) || b.invoiceValueCeiling <= 0)) return { ok: false, error: 'invoiceValueCeiling must be a positive number' };
+  if (b.invoiceRateLimit !== undefined && (typeof b.invoiceRateLimit !== 'number' || !Number.isInteger(b.invoiceRateLimit) || b.invoiceRateLimit < 1)) return { ok: false, error: 'invoiceRateLimit must be a positive integer' };
   const labelsRes = validateLabels(b.labels ?? []);
   if (!labelsRes.ok) return labelsRes;
   return {
@@ -213,6 +217,10 @@ export function validateInboxPayload(body: unknown): Validation<InboxConfig> {
       labels: labelsRes.value, autoConfidenceThreshold: b.autoConfidenceThreshold,
       replyGuidance: typeof b.replyGuidance === 'string' ? b.replyGuidance : '',
       replyModel: replyModel ?? DEFAULT_INBOX.replyModel,
+      autoInvoice: typeof b.autoInvoice === 'boolean' ? b.autoInvoice : DEFAULT_INBOX.autoInvoice,
+      invoiceConfidenceThreshold: typeof b.invoiceConfidenceThreshold === 'number' ? b.invoiceConfidenceThreshold : DEFAULT_INBOX.invoiceConfidenceThreshold,
+      invoiceValueCeiling: typeof b.invoiceValueCeiling === 'number' ? b.invoiceValueCeiling : DEFAULT_INBOX.invoiceValueCeiling,
+      invoiceRateLimit: typeof b.invoiceRateLimit === 'number' ? b.invoiceRateLimit : DEFAULT_INBOX.invoiceRateLimit,
       ...(alertEmail ? { alertEmail } : {}),
       ...(classifyModel ? { classifyModel } : {})
     }

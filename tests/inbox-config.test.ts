@@ -33,6 +33,10 @@ describe('inbox config', () => {
     expect(cfg?.inbox.autoConfidenceThreshold).toBe(80);
     expect(cfg?.inbox.replyGuidance).toBe('');
     expect(cfg?.inbox.replyModel).toBe('anthropic/claude-haiku-4.5');
+    expect(cfg?.inbox.autoInvoice).toBe(false);
+    expect(cfg?.inbox.invoiceConfidenceThreshold).toBe(95);
+    expect(cfg?.inbox.invoiceValueCeiling).toBe(250);
+    expect(cfg?.inbox.invoiceRateLimit).toBe(2);
   });
 
   it('saveInbox round-trips and is scoped to shop', async () => {
