@@ -18,6 +18,10 @@ describe('parseAuthResults', () => {
   it('defaults to none when the header is absent', () => {
     expect(parseAuthResults({})).toEqual({ spf: 'none', dkim: 'none', dmarc: 'none' });
   });
+  it('does not match a different key whose name ends in the wanted key', () => {
+    const a = parseAuthResults({ 'authentication-results': 'mx; my-dkim=pass dkim=fail' });
+    expect(a.dkim).toBe('fail');
+  });
 });
 
 describe('isAutomated', () => {
@@ -33,6 +37,10 @@ describe('isAutomated', () => {
   });
   it('passes a normal human email', () => {
     expect(isAutomated(email({ from: { email: 'jane@example.com', name: 'Jane' } }))).toBe(false);
+  });
+  it('flags bare Auto-Submitted: auto-submitted but not "no"', () => {
+    expect(isAutomated(email({ headers: { 'auto-submitted': 'auto-submitted' } }))).toBe(true);
+    expect(isAutomated(email({ headers: { 'auto-submitted': 'no' } }))).toBe(false);
   });
 });
 

@@ -7,7 +7,7 @@ export interface AuthResults {
 }
 
 function verdict(blob: string, key: string): 'pass' | 'fail' | 'none' {
-  const m = blob.match(new RegExp(`${key}=(\\w+)`, 'i'));
+  const m = blob.match(new RegExp(`(?<![\\w-])${key}(?![\\w-])=(\\w+)`, 'i'));
   if (!m) return 'none';
   const v = m[1].toLowerCase();
   return v === 'pass' ? 'pass' : v === 'fail' || v === 'softfail' ? 'fail' : 'none';
@@ -22,7 +22,7 @@ export function parseAuthResults(headers: Record<string, string>): AuthResults {
 /** Auto-responders, bulk/list mail, and no-reply senders: store + label, never reply/alert. */
 export function isAutomated(p: ParsedEmail): boolean {
   const h = p.headers;
-  if (/auto-(replied|generated|notified)/i.test(h['auto-submitted'] ?? '')) return true;
+  if (/^auto-/i.test((h['auto-submitted'] ?? '').trim())) return true;
   if (/\b(bulk|list|junk)\b/i.test(h['precedence'] ?? '')) return true;
   if (h['list-unsubscribe'] || h['list-id']) return true;
   if (/no[-_.]?reply|do[-_.]?not[-_.]?reply|mailer-daemon|postmaster|bounce/i.test(p.from.email)) return true;
