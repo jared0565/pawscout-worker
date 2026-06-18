@@ -14,4 +14,10 @@ describe('consolePage', () => {
       expect(() => new Function('return (async function(){' + body + '\n})')).not.toThrow();
     }
   });
+
+  it('includes the Inbox tab and its mount point', async () => {
+    const html = await consolePage('test-api-key').text();
+    expect(html).toContain('data-tab="inbox"');
+    expect(html).toContain('id="inbox-threads"');
+  });
 });

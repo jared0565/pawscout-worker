@@ -95,6 +95,19 @@ export function consolePage(apiKey: string): Response {
   .muted{color:var(--subdued)}
   code{background:var(--code-bg);padding:1px 6px;border-radius:5px;font-size:12px;color:var(--ink)}
   hr{border:0;border-top:1px solid var(--border);margin:16px 0}
+  .inbox-row{display:flex;flex-direction:column;gap:2px;width:100%;text-align:left;background:transparent;border:0;border-bottom:1px solid var(--border);border-radius:0;padding:10px 0;color:var(--ink);font-weight:400;cursor:pointer}
+  .inbox-row:last-child{border-bottom:0}
+  .inbox-row:hover{background:var(--code-bg);filter:none}
+  .inbox-row__who{font-weight:600;font-size:13px}
+  .inbox-row__subj{font-size:13px}
+  .inbox-row__meta{font-size:12px;color:var(--subdued)}
+  #inbox-thread{margin-top:14px}
+  .inbox-msg{padding:10px 0;border-top:1px solid var(--border)}
+  .inbox-msg:first-child{border-top:0}
+  .inbox-msg__hdr{font-size:12px;color:var(--subdued);margin-bottom:4px}
+  .inbox-msg__body{font-size:13px;white-space:pre-wrap;word-break:break-word}
+  .inbox-controls{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-top:12px}
+  .inbox-controls .grow{flex:1 1 160px}
 </style>
 </head><body>
 <div class="wrap">
@@ -316,6 +329,29 @@ export function consolePage(apiKey: string): Response {
   <section class="card">
     <h2>Current configuration</h2>
     <div id="status"><p class="muted">Loading…</p></div>
+  </section>
+
+  <section class="card" data-panel="inbox">
+    <h2 data-tab="inbox">Inbox</h2>
+    <p class="sub" style="margin:0 0 12px">Customer emails routed through PawScout. Read-only view — change status or labels below each thread.</p>
+    <div class="row" style="margin-bottom:12px">
+      <div class="grow">
+        <label for="inbox-status-filter">Filter by status</label>
+        <select id="inbox-status-filter" onchange="loadInboxThreads()">
+          <option value="">All</option>
+          <option value="new">New</option>
+          <option value="needs_reply">Needs reply</option>
+          <option value="awaiting_customer">Awaiting customer</option>
+          <option value="converted">Converted</option>
+          <option value="closed">Closed</option>
+          <option value="spam">Spam</option>
+        </select>
+      </div>
+      <button class="ghost" onclick="loadInboxThreads()">Refresh</button>
+    </div>
+    <div id="inbox-threads"><p class="muted">Loading…</p></div>
+    <div id="inbox-thread"></div>
+    <p id="inboxmsg" class="msg muted"></p>
   </section>
 </div>
 
@@ -772,8 +808,114 @@ async function saveCollections(){
     else setMsg('mapmsg','Failed: '+(r.error||'unknown error'),'no');
   }catch(e){ setMsg('mapmsg','Failed: '+errText(e),'no'); }
 }
+async function loadInboxThreads(){
+  var status=(el('inbox-status-filter')&&el('inbox-status-filter').value)||'';
+  var list=el('inbox-threads');
+  if(list) list.innerHTML='<p class="muted">Loading…</p>';
+  el('inbox-thread').innerHTML='';
+  setMsg('inboxmsg','','muted');
+  try{
+    var body=status?{status:status}:{};
+    var r=await api('/inbox/threads',body);
+    if(!r.ok){ if(list) list.innerHTML='<p class="msg no">'+esc(r.error||'Failed to load threads')+'</p>'; return; }
+    renderInboxThreads(r.threads||[]);
+  }catch(e){ if(list) list.innerHTML='<p class="msg no">'+esc(errText(e))+'</p>'; }
+}
+function renderInboxThreads(threads){
+  var list=el('inbox-threads');
+  if(!list) return;
+  if(!threads.length){ list.innerHTML='<p class="muted">No messages yet.</p>'; return; }
+  list.innerHTML='';
+  for(var i=0;i<threads.length;i++){
+    var t=threads[i];
+    var row=document.createElement('button');
+    row.className='inbox-row';
+    row.setAttribute('data-id',t.id);
+    var meta=esc(t.status||'')+(t.intentScore!=null?' · intent '+esc(t.intentScore):'')+(t.category?' · '+esc(t.category):'')+(t.lastMessageAt?' · '+esc(t.lastMessageAt.slice(0,16).replace('T',' ')):'');
+    row.innerHTML='<span class="inbox-row__who">'+esc(t.contactEmail||'(unknown)')+'</span>'
+      +'<span class="inbox-row__subj">'+esc(t.subject||'(no subject)')+'</span>'
+      +'<span class="inbox-row__meta">'+meta+'</span>';
+    (function(id){ row.onclick=function(){ openInboxThread(id); }; })(t.id);
+    list.appendChild(row);
+  }
+}
+async function openInboxThread(id){
+  var detail=el('inbox-thread');
+  if(detail) detail.innerHTML='<p class="muted">Loading thread…</p>';
+  setMsg('inboxmsg','','muted');
+  try{
+    var r=await api('/inbox/thread',{id:id});
+    if(!r.ok){ if(detail) detail.innerHTML='<p class="msg no">'+esc(r.error||'Failed to load thread')+'</p>'; return; }
+    renderInboxThread(r.thread,r.messages||[],r.labels||[]);
+  }catch(e){ if(detail) detail.innerHTML='<p class="msg no">'+esc(errText(e))+'</p>'; }
+}
+function renderInboxThread(thread,messages,labels){
+  var detail=el('inbox-thread');
+  if(!detail) return;
+  var msgHtml='<hr>';
+  for(var i=0;i<messages.length;i++){
+    var m=messages[i];
+    var dir=m.direction==='outbound'?'You → '+esc(m.to_addr||''):'From: '+esc(m.from_addr||'');
+    var ts=m.received_at?esc(m.received_at.slice(0,16).replace('T',' ')):'';
+    msgHtml+='<div class="inbox-msg">'
+      +'<div class="inbox-msg__hdr">'+dir+(ts?' · '+ts:'')+'</div>'
+      +'<div class="inbox-msg__body">'+esc(m.body_text||'(no body)')+'</div>'
+      +'</div>';
+  }
+  var labOpts=['lead','product-question','order-status','shipping-returns','wholesale-b2b','complaint','spam','automated','other'];
+  var labSel='<select id="inbox-label-sel" multiple size="4" style="width:100%;font-size:13px">';
+  for(var j=0;j<labOpts.length;j++){
+    var isSel=labels.indexOf(labOpts[j])>=0?' selected':'';
+    labSel+='<option value="'+esc(labOpts[j])+'"'+isSel+'>'+esc(labOpts[j])+'</option>';
+  }
+  labSel+='</select>';
+  var statOpts=['new','needs_reply','awaiting_customer','converted','closed','spam'];
+  var statSel='<select id="inbox-status-sel" style="width:100%;font-size:13px">';
+  for(var k=0;k<statOpts.length;k++){
+    var isCur=thread.status===statOpts[k]?' selected':'';
+    statSel+='<option value="'+esc(statOpts[k])+'"'+isCur+'>'+esc(statOpts[k])+'</option>';
+  }
+  statSel+='</select>';
+  detail.innerHTML='<hr><strong>'+esc(thread.contact_email||'')+'</strong>'
+    +' — <span class="muted">'+esc(thread.subject||'(no subject)')+'</span>'
+    +(thread.summary?'<p class="muted" style="margin:6px 0 0;font-size:12px">'+esc(thread.summary)+'</p>':'')
+    +msgHtml
+    +'<div class="inbox-controls">'
+    +'<div class="grow"><label>Status</label>'+statSel+'</div>'
+    +'<div class="grow"><label>Labels (multi-select)</label>'+labSel+'</div>'
+    +'<button id="inbox-save-status" class="ghost">Save status</button>'
+    +'<button id="inbox-save-labels" class="ghost">Save labels</button>'
+    +'</div>';
+  var tid=thread.id;
+  var ssb=el('inbox-save-status'); if(ssb) ssb.onclick=function(){ saveInboxStatus(tid); };
+  var slb=el('inbox-save-labels'); if(slb) slb.onclick=function(){ saveInboxLabels(tid); };
+}
+async function saveInboxStatus(id){
+  var sel=el('inbox-status-sel');
+  if(!sel){ setMsg('inboxmsg','Status selector not found.','no'); return; }
+  var status=sel.value;
+  setMsg('inboxmsg','Saving status…','muted');
+  try{
+    var r=await api('/inbox/status',{id:id,status:status});
+    if(r.ok){ setMsg('inboxmsg','Status updated to '+esc(status)+'.','ok'); }
+    else { setMsg('inboxmsg','Failed: '+esc(r.error||'unknown error'),'no'); }
+  }catch(e){ setMsg('inboxmsg','Failed: '+errText(e),'no'); }
+}
+async function saveInboxLabels(id){
+  var sel=el('inbox-label-sel');
+  if(!sel){ setMsg('inboxmsg','Label selector not found.','no'); return; }
+  var chosen=[];
+  for(var i=0;i<sel.options.length;i++){ if(sel.options[i].selected) chosen.push(sel.options[i].value); }
+  setMsg('inboxmsg','Saving labels…','muted');
+  try{
+    var r=await api('/inbox/labels',{id:id,labels:chosen});
+    if(r.ok){ setMsg('inboxmsg','Labels saved.','ok'); }
+    else { setMsg('inboxmsg','Failed: '+esc(r.error||'unknown error'),'no'); }
+  }catch(e){ setMsg('inboxmsg','Failed: '+errText(e),'no'); }
+}
 refresh();
 loadInsights();
+loadInboxThreads();
 </script>
 </body></html>`;
   return new Response(html, { headers: { 'Content-Type': 'text/html' } });
