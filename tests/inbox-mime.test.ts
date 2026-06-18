@@ -27,6 +27,15 @@ describe('parseInbound', () => {
     expect(p.text).toContain('ship the slow feeder to Ireland');
     expect(p.headers['subject']).toBeDefined(); // headers keyed lowercase
   });
+
+  it('never throws on malformed/empty input', async () => {
+    const empty = await parseInbound(new ArrayBuffer(0));
+    expect(empty.text).toBe('');
+    expect(empty.from.email).toBe('');
+    const garbage = await parseInbound('}{ not an email at all \x00\x01');
+    expect(garbage).toBeDefined();
+    expect(Array.isArray(garbage.references)).toBe(true);
+  });
 });
 
 describe('extractContactForm', () => {
