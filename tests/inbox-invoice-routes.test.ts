@@ -3,6 +3,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
 import { TenantStore } from '../src/tenant-store';
 import { buildInvoiceForThread, discardInvoice, searchCatalog } from '../src/inbox/invoice-routes';
+import { Vault } from '../src/vault';
 import type { Env } from '../src/types';
 
 beforeEach(async () => { await applyD1Migrations(env.DB, env.TEST_MIGRATIONS); });
@@ -98,6 +99,98 @@ describe('searchCatalog', () => {
     const r = await searchCatalog(E, store, 'collar');
     expect(r.ok).toBe(false);
     expect((r as { ok: false; error: string }).error).toBe('reconnect_required');
+  });
+});
+
+// ─── (c2) searchCatalog happy path: fetchImpl flows through to Shopify ────────
+describe('searchCatalog fetchImpl seam', () => {
+  it('passes fetchImpl through to makeAdminGraphql and returns catalog variants', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    // Seal a real access token so adminForShop can decrypt it
+    const vault = await Vault.fromMasterKey(env.PAWSCOUT_MASTER_KEY);
+    const dekWrapped = await vault.newTenantDek();
+    const accessTokenEnc = await vault.seal(dekWrapped, 'shpat_test');
+    await store.upsertTenant({ accessTokenEnc, dekWrapped, scopes: 'read_products,write_draft_orders' });
+
+    const SEARCH_PAYLOAD = {
+      products: {
+        edges: [{
+          node: {
+            id: 'gid://shopify/Product/1', title: 'Dog Collar',
+            variants: { edges: [{ node: { id: 'gid://shopify/ProductVariant/10', title: 'Red / M', sku: 'C-RED-M', price: '12.50', availableForSale: true } }] }
+          }
+        }]
+      }
+    };
+
+    let fetchedUrl = '';
+    const mockFetch = (async (url: string | Request | URL) => {
+      fetchedUrl = String(url);
+      return new Response(JSON.stringify({ data: SEARCH_PAYLOAD }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }) as unknown as typeof fetch;
+
+    const r = await searchCatalog(E, store, 'collar', mockFetch);
+    expect(r.ok).toBe(true);
+    expect((r as { ok: true; variants: unknown[] }).variants).toHaveLength(1);
+    // fetchImpl was actually invoked with the Shopify Admin GraphQL URL
+    expect(fetchedUrl).toContain('myshopify.com/admin/api');
+  });
+});
+
+// ─── (e) buildInvoiceForThread happy path ─────────────────────────────────────
+describe('buildInvoiceForThread happy path', () => {
+  it('sends invoice, ends sent, thread awaiting_customer, total rounded', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+
+    // Seal a real access token (vault uses WebCrypto — available in workers test env)
+    const vault = await Vault.fromMasterKey(env.PAWSCOUT_MASTER_KEY);
+    const dekWrapped = await vault.newTenantDek();
+    const accessTokenEnc = await vault.seal(dekWrapped, 'shpat_test');
+    // Intentionally omit read_customers so the customer-lookup branch is skipped
+    await store.upsertTenant({ accessTokenEnc, dekWrapped, scopes: 'write_draft_orders,read_products' });
+    const tid = await seedThread(store);
+
+    // priceGbp 0.1 × qty 3 → rawTotal 0.30000000000000004 before rounding
+    const VARIANT_ID = 'gid://shopify/ProductVariant/10';
+    const DRAFT_ORDER_ID = 'gid://shopify/DraftOrder/99';
+    const INVOICE_URL = 'https://a.myshopify.com/draft_orders/99/invoice';
+
+    const mockFetch = (async (input: string | Request | URL, _init?: RequestInit) => {
+      const url = String(typeof input === 'string' ? input : (input instanceof URL ? input.href : (input as Request).url));
+      if (url.includes('resend.com')) {
+        return new Response(JSON.stringify({ id: 'resend-msg-1' }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      // Shopify Admin GraphQL — discriminate by query in body
+      const body = typeof input !== 'string' && !(input instanceof URL) && (input as Request).body
+        ? await (input as Request).clone().text()
+        : (_init?.body ? String(_init.body) : '');
+      if (body.includes('draftOrderCreate')) {
+        return new Response(JSON.stringify({ data: { draftOrderCreate: { draftOrder: { id: DRAFT_ORDER_ID, invoiceUrl: INVOICE_URL }, userErrors: [] } } }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      // nodes query (variantsByIds)
+      return new Response(JSON.stringify({ data: { nodes: [{ id: VARIANT_ID, title: 'Red / M', sku: 'C-RED-M', price: '0.10', product: { id: 'gid://shopify/Product/1', title: 'Dog Collar' } }] } }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }) as unknown as typeof fetch;
+
+    // RESEND_API_KEY is not bound in the test miniflare env — add it to the cast
+    const testEnv = { ...E, RESEND_API_KEY: 'test-resend-key' } as unknown as Env;
+
+    const r = await buildInvoiceForThread(
+      testEnv, store, tid,
+      [{ variantId: VARIANT_ID, qty: 3 }],
+      'Here are your items',
+      mockFetch
+    );
+
+    expect(r.ok).toBe(true);
+    const invoiceId = (r as { ok: true; invoiceId: string }).invoiceId;
+
+    const invoice = await store.getInvoice(invoiceId);
+    expect(invoice?.status).toBe('sent');
+    // Float drift: 0.1 * 3 = 0.30000000000000004 — rounding must yield 0.3
+    expect(invoice?.total).toBe(0.3);
+
+    const got = await store.getThreadWithMessages(tid);
+    expect(got?.thread.status).toBe('awaiting_customer');
   });
 });
 

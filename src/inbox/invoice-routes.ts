@@ -5,6 +5,7 @@ import { hasScope } from './scopes';
 import { searchShopifyProducts, variantsByIds, findCustomerByEmail } from '../shopify-catalog';
 import { createDraftOrder } from '../shopify-drafts';
 import { sendInvoice } from './send-invoice';
+import { defaultFetch } from '../safe-fetch';
 import type { Env } from '../types';
 import type { InvoiceLineItem } from './types';
 
@@ -14,12 +15,12 @@ export type { AdminGraphql };
  * Build and return an authenticated Admin GraphQL client for the shop stored in
  * `store`. Returns null when the tenant row is missing or has no token.
  */
-export async function adminForShop(env: Env, store: TenantStore): Promise<AdminGraphql | null> {
+export async function adminForShop(env: Env, store: TenantStore, fetchImpl: typeof fetch = defaultFetch): Promise<AdminGraphql | null> {
   const tenant = await store.getTenant();
   if (!tenant?.access_token_enc || !tenant.dek_wrapped) return null;
   const vault = await Vault.fromMasterKey(env.PAWSCOUT_MASTER_KEY);
   const accessToken = await vault.open(tenant.dek_wrapped, tenant.access_token_enc);
-  return makeAdminGraphql(store.shop, accessToken);
+  return makeAdminGraphql(store.shop, accessToken, fetchImpl);
 }
 
 /**
@@ -30,11 +31,12 @@ export async function adminForShop(env: Env, store: TenantStore): Promise<AdminG
 export async function searchCatalog(
   env: Env,
   store: TenantStore,
-  query: string
+  query: string,
+  fetchImpl: typeof fetch = defaultFetch
 ): Promise<{ ok: true; variants: Awaited<ReturnType<typeof searchShopifyProducts>> } | { ok: false; error: string }> {
   const tenant = await store.getTenant();
   if (!hasScope(tenant?.scopes, 'read_products')) return { ok: false, error: 'reconnect_required' };
-  const admin = await adminForShop(env, store);
+  const admin = await adminForShop(env, store, fetchImpl);
   if (!admin) return { ok: false, error: 'not_installed' };
   try {
     const variants = await searchShopifyProducts(admin, query);
@@ -59,7 +61,8 @@ export async function buildInvoiceForThread(
   store: TenantStore,
   threadId: string,
   items: { variantId: string; qty: number }[],
-  coverText: string
+  coverText: string,
+  fetchImpl: typeof fetch = defaultFetch
 ): Promise<{ ok: true; invoiceId: string } | { ok: false; error: string }> {
   // Scope gate — must check before any vault call
   const tenant = await store.getTenant();
@@ -67,7 +70,7 @@ export async function buildInvoiceForThread(
     return { ok: false, error: 'reconnect_required' };
   }
 
-  const admin = await adminForShop(env, store);
+  const admin = await adminForShop(env, store, fetchImpl);
   if (!admin) return { ok: false, error: 'not_installed' };
 
   // Resolve variant ids to full catalog data
@@ -90,7 +93,8 @@ export async function buildInvoiceForThread(
     const v = byId.get(item.variantId)!;
     return { variantId: item.variantId, sku: v.sku, title: v.title || v.variantTitle, qty: item.qty, priceGbp: v.priceGbp };
   });
-  const total = lineItems.reduce((sum, li) => sum + li.priceGbp * li.qty, 0);
+  const rawTotal = lineItems.reduce((sum, li) => sum + li.priceGbp * li.qty, 0);
+  const total = Math.round(rawTotal * 100) / 100;
 
   // Insert invoice row in proposed state
   const invoiceId = await store.insertInvoice({
@@ -152,7 +156,7 @@ export async function buildInvoiceForThread(
   }
 
   try {
-    const sendResult = await sendInvoice(env, store, got.thread, invoice);
+    const sendResult = await sendInvoice(env, store, got.thread, invoice, fetchImpl);
     if (!sendResult.ok) {
       await store.setInvoiceStatus(invoiceId, 'failed');
       return { ok: false, error: sendResult.error ?? 'send_failed' };
