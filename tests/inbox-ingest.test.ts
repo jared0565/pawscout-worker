@@ -67,5 +67,7 @@ describe('ingestParsed', () => {
     }));
     const got = await store.getThreadWithMessages(r.threadId);
     expect(got?.thread.contact_email).toBe('john@buyer.com');
+    expect(got?.thread.status).toBe('new');        // a real form submission must reach the sweep
+    expect(got?.thread.classified_at).toBeNull();  // NOT pre-classified as automated
   });
 });

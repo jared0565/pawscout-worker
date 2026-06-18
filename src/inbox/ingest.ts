@@ -24,7 +24,10 @@ export async function ingestParsed(store: TenantStore, p: ParsedEmail): Promise<
 
   // Decide the initial status from the gates (LLM never decides spam).
   const auth = parseAuthResults(p.headers);
-  const automated = isAutomated(p);
+  // A Shopify contact-form notification arrives from a no-reply relay wrapping a
+  // real human — so a form submission must NOT be gated as "automated" on the
+  // envelope sender. The DMARC spam gate below still applies to everyone.
+  const automated = form ? false : isAutomated(p);
   const spam = isHardSpam(auth);
   const initialStatus: ThreadStatus = spam ? 'spam' : automated ? 'closed' : 'new';
 
