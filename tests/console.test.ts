@@ -46,6 +46,23 @@ describe('consolePage', () => {
     expect(html).toContain('/inbox/catalog');
   });
 
+  it('esc() renders a crafted <script> payload as HTML-escaped text (not raw tags)', async () => {
+    // consolePage is a static template — all esc() calls run client-side inside the
+    // <script> block, not at SSR time. We extract the esc() helper from the emitted
+    // source and execute it directly on the crafted payload so the assertion is over
+    // real output, not source patterns.
+    const html = await consolePage('test-api-key').text();
+    // esc is a single-line function — match the whole line so the nested {} in the
+    // replacement map are captured correctly (non-greedy would truncate at the first }).
+    const escMatch = html.match(/function esc\(s\)\{[^\n]+\}/);
+    expect(escMatch).not.toBeNull();
+    const esc: (s: string) => string = new Function(escMatch![0] + '; return esc;')() as (s: string) => string;
+    const crafted = '<script>alert(1)</script>';
+    const out = esc(crafted);
+    expect(out).toContain('&lt;script&gt;');
+    expect(out).not.toContain('<script>alert(1)</script>');
+  });
+
   it('wraps every invoice field in esc() in the client render code', async () => {
     const html = await consolePage('test-api-key').text();
     // Verify that the renderInboxThread / invoice-card code wraps dynamic values in esc()

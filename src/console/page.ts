@@ -1001,6 +1001,7 @@ async function openInboxThread(id){
 function renderInboxThread(thread,messages,labels,draft,invoice){
   var detail=el('inbox-thread');
   if(!detail) return;
+  inboxInvoiceItems=[];
   var msgHtml='<hr>';
   for(var i=0;i<messages.length;i++){
     var m=messages[i];
@@ -1058,7 +1059,6 @@ function renderInboxThread(thread,messages,labels,draft,invoice){
   if(!invoice||!invoice.id){
     catalogHtml='<div class="inbox-draft-section">'
       +'<label style="font-weight:600;margin-bottom:6px">Build invoice</label>'
-      +'<div id="inbox-reconnect-banner" style="display:none;margin-bottom:8px;padding:8px 12px;background:var(--no-bg);color:var(--no-ink);border-radius:8px;font-size:13px"></div>'
       +'<div class="row" style="margin-bottom:6px">'
       +'<div class="grow"><label for="inbox-catalog-q">Search catalog</label><input id="inbox-catalog-q" type="text" placeholder="e.g. harness" autocomplete="off" spellcheck="false"></div>'
       +'<button id="inbox-catalog-search-btn" class="ghost">Search</button>'
@@ -1086,7 +1086,8 @@ function renderInboxThread(thread,messages,labels,draft,invoice){
     statSel+='<option value="'+esc(statOpts[k])+'"'+isCur+'>'+esc(statOpts[k])+'</option>';
   }
   statSel+='</select>';
-  detail.innerHTML='<hr><strong>'+esc(thread.contact_email||'')+'</strong>'
+  detail.innerHTML='<hr><div id="inbox-reconnect-banner" style="display:none;margin-bottom:8px;padding:8px 12px;background:var(--no-bg);color:var(--no-ink);border-radius:8px;font-size:13px"></div>'
+    +'<strong>'+esc(thread.contact_email||'')+'</strong>'
     +' — <span class="muted">'+esc(thread.subject||'(no subject)')+'</span>'
     +(thread.summary?'<p class="muted" style="margin:6px 0 0;font-size:12px">'+esc(thread.summary)+'</p>':'')
     +msgHtml
