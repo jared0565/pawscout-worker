@@ -4,7 +4,9 @@ import { RequestedTokenType } from '@shopify/shopify-api';
 import type { Env, TenantConfig, TenantRow } from './types';
 import { makeShopify } from './shopify';
 import { Vault } from './vault';
-import { TenantStore } from './tenant-store';
+import { TenantStore, listActiveShops } from './tenant-store';
+import { processInbound } from './inbox/ingest';
+import { runInboxClassifySweep } from './inbox/sweep';
 import { beginAuth } from './auth/install';
 import { handleCallback } from './auth/callback';
 import { ensureInstalled } from './auth/ensure-installed';
@@ -635,13 +637,35 @@ app.post('/webhooks/shop-redact', (c) =>
     console.log('shop/redact: shop data purged');
   }));
 
+// --- W-INBOX: inbound email handler (Cloudflare Email Routing → Worker) ---
+// Reads the raw message, parses + stores it against the (first-party) active
+// shop. Classification runs later on the cron sweep, not here.
+export async function handleInboundEmail(message: ForwardableEmailMessage, env: Env, _ctx: ExecutionContext): Promise<void> {
+  try {
+    const shops = await listActiveShops(env.DB);
+    const shop = shops[0];
+    if (!shop) { console.warn('inbound email: no active shop configured'); return; }
+    const store = new TenantStore(env.DB, shop);
+    const raw = await new Response(message.raw).arrayBuffer();
+    const r = await processInbound(store, raw);
+    console.log(`inbound email stored: thread ${r.threadId}${r.deduped ? ' (dup)' : ''}`);
+  } catch (e) {
+    console.warn(`inbound email handler failed: ${(e as Error).message}`);
+  }
+}
+
 const DAILY_CRON = '17 4 * * *';
 const worker: ExportedHandler<Env> = {
   fetch: (req, env, ctx) => app.fetch(req, env, ctx),
   scheduled: (controller, env, ctx) => {
-    // Daily cron → full maintenance; the frequent cron → order pipeline (submit + track).
-    ctx.waitUntil(controller.cron === DAILY_CRON ? runDailyMaintenance(env) : runOrderPipeline(env));
-  }
+    // Daily cron → full maintenance; the 15-min cron → order pipeline + inbox classify sweep.
+    ctx.waitUntil(
+      controller.cron === DAILY_CRON
+        ? runDailyMaintenance(env)
+        : Promise.all([runOrderPipeline(env), runInboxClassifySweep(env)]).then(() => undefined)
+    );
+  },
+  email: (message, env, ctx) => handleInboundEmail(message, env, ctx)
 };
 
 export default worker;
