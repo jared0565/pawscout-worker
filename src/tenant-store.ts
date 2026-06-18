@@ -1,6 +1,6 @@
 import { DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, type TenantRow, type TenantConfig, type Fulfil } from './types';
 import { DEFAULT_INBOX, type InboxConfig } from './inbox/types';
-import type { ContactRow, ThreadRow, MessageRow, ThreadStatus } from './inbox/types';
+import type { ContactRow, ThreadRow, MessageRow, ThreadStatus, DraftRow, DraftStatus } from './inbox/types';
 
 interface SupplierCredRow {
   shop: string; supplier: string; api_key_enc: string; label: string | null; validated_at: string | null; created_at: string;
@@ -194,6 +194,7 @@ export class TenantStore {
     const res = await this.db.batch([
       this.db.prepare(`DELETE FROM inbox_thread_labels WHERE shop = ?1 AND thread_id IN ${sub}`).bind(this.shop, e),
       this.db.prepare(`DELETE FROM inbox_messages WHERE shop = ?1 AND thread_id IN ${sub}`).bind(this.shop, e),
+      this.db.prepare(`DELETE FROM inbox_drafts WHERE shop = ?1 AND thread_id IN ${sub}`).bind(this.shop, e),
       this.db.prepare(`DELETE FROM inbox_threads WHERE shop = ?1 AND contact_email = ?2`).bind(this.shop, e),
       this.db.prepare(`DELETE FROM inbox_contacts WHERE shop = ?1 AND email = ?2`).bind(this.shop, e)
     ]);
@@ -222,6 +223,7 @@ export class TenantStore {
       this.db.prepare(`DELETE FROM cj_tokens WHERE shop = ?1`).bind(this.shop),
       this.db.prepare(`DELETE FROM inbox_thread_labels WHERE shop = ?1`).bind(this.shop),
       this.db.prepare(`DELETE FROM inbox_messages WHERE shop = ?1`).bind(this.shop),
+      this.db.prepare(`DELETE FROM inbox_drafts WHERE shop = ?1`).bind(this.shop),
       this.db.prepare(`DELETE FROM inbox_threads WHERE shop = ?1`).bind(this.shop),
       this.db.prepare(`DELETE FROM inbox_contacts WHERE shop = ?1`).bind(this.shop),
       this.db.prepare(`DELETE FROM tenant_config WHERE shop = ?1`).bind(this.shop),
@@ -746,6 +748,66 @@ export class TenantStore {
       )
       .bind(this.shop, threadId, c.status, c.primaryCategory, c.intentScore, c.summary, c.classifiedAt)
       .run();
+  }
+
+  // --- W-INBOX-2: draft + outbound-message store methods ---
+
+  async insertDraft(d: { threadId: string; bodyText: string; bodyHtml: string; confidence: number | null; quotesPriceOrder: boolean; holdReasons: string[]; model: string; status: DraftStatus }): Promise<string> {
+    const id = crypto.randomUUID();
+    await this.db
+      .prepare(`INSERT INTO inbox_drafts (shop, id, thread_id, body_text, body_html, status, confidence, quotes_price_order, hold_reasons, model, created_at)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)`)
+      .bind(this.shop, id, d.threadId, d.bodyText, d.bodyHtml, d.status, d.confidence, d.quotesPriceOrder ? 1 : 0, JSON.stringify(d.holdReasons), d.model, new Date().toISOString())
+      .run();
+    return id;
+  }
+
+  getPendingDraft(threadId: string): Promise<DraftRow | null> {
+    return this.db.prepare(`SELECT * FROM inbox_drafts WHERE shop = ?1 AND thread_id = ?2 AND status = 'pending' ORDER BY created_at DESC LIMIT 1`).bind(this.shop, threadId).first<DraftRow>();
+  }
+
+  getDraft(draftId: string): Promise<DraftRow | null> {
+    return this.db.prepare(`SELECT * FROM inbox_drafts WHERE shop = ?1 AND id = ?2`).bind(this.shop, draftId).first<DraftRow>();
+  }
+
+  async setDraftStatus(draftId: string, status: DraftStatus, fields?: { sentMessageId?: string; sentAt?: string }): Promise<void> {
+    await this.db
+      .prepare(`UPDATE inbox_drafts SET status = ?3, sent_message_id = COALESCE(?4, sent_message_id), sent_at = COALESCE(?5, sent_at) WHERE shop = ?1 AND id = ?2`)
+      .bind(this.shop, draftId, status, fields?.sentMessageId ?? null, fields?.sentAt ?? null)
+      .run();
+  }
+
+  async supersedePendingDrafts(threadId: string): Promise<void> {
+    await this.db.prepare(`UPDATE inbox_drafts SET status = 'superseded' WHERE shop = ?1 AND thread_id = ?2 AND status = 'pending'`).bind(this.shop, threadId).run();
+  }
+
+  async recentAutoSendCount(contactEmail: string, sinceIso: string): Promise<number> {
+    const row = await this.db
+      .prepare(`SELECT COUNT(*) AS n FROM inbox_messages WHERE shop = ?1 AND direction = 'outbound' AND to_addr = ?2 AND received_at >= ?3`)
+      .bind(this.shop, contactEmail, sinceIso).first<{ n: number }>();
+    return row?.n ?? 0;
+  }
+
+  async insertOutboundMessage(m: { threadId: string; messageId: string; from: string; to: string; subject: string | null; bodyText: string; bodyHtml: string; sentAt: string }): Promise<void> {
+    await this.db
+      .prepare(`INSERT INTO inbox_messages (shop, id, thread_id, direction, message_id, in_reply_to, ref_ids, from_addr, to_addr, subject, body_text, body_html, headers_json, received_at, created_at)
+                VALUES (?1, ?2, ?3, 'outbound', ?4, NULL, NULL, ?5, ?6, ?7, ?8, ?9, NULL, ?10, ?11)`)
+      .bind(this.shop, crypto.randomUUID(), m.threadId, m.messageId, m.from, m.to, m.subject, m.bodyText, m.bodyHtml, m.sentAt, new Date().toISOString())
+      .run();
+    await this.touchThread(m.threadId, m.sentAt);
+  }
+
+  async reopenThread(threadId: string): Promise<void> {
+    await this.db.prepare(`UPDATE inbox_threads SET status = 'needs_reply', updated_at = ?3 WHERE shop = ?1 AND id = ?2`).bind(this.shop, threadId, new Date().toISOString()).run();
+  }
+
+  async threadsNeedingDraft(limit = 15): Promise<ThreadRow[]> {
+    const rs = await this.db
+      .prepare(`SELECT t.* FROM inbox_threads t WHERE t.shop = ?1 AND t.status = 'needs_reply'
+                AND NOT EXISTS (SELECT 1 FROM inbox_drafts d WHERE d.shop = t.shop AND d.thread_id = t.id AND d.status = 'pending')
+                ORDER BY t.last_message_at ASC LIMIT ${Math.min(Math.max(limit, 1), 50)}`)
+      .bind(this.shop).all<ThreadRow>();
+    return rs.results ?? [];
   }
 }
 
