@@ -82,6 +82,9 @@ export class TenantStore {
   }
 
   async seedConfig(cfg: TenantConfig): Promise<void> {
+    // addons/fulfil/inbox are intentionally NOT written here — they ride the '{}' column default +
+    // getConfig's DEFAULT_* merge, and each has a dedicated saver (saveAddons/saveFulfil/saveInbox).
+    // Keep them out of this INSERT to avoid clobbering a console-saved value on a core-config re-seed.
     await this.db
       .prepare(
         `INSERT INTO tenant_config (shop, collection_map, gates, pricing, floors, llm, target, updated_at)

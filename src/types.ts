@@ -1,3 +1,5 @@
+import type { InboxConfig } from './inbox/types';
+
 export interface Env {
   DB: D1Database;
   SHOPIFY_API_KEY: string;
@@ -90,8 +92,6 @@ export interface Fulfil {
   // CJ and is awaiting payment (so the owner can pay it ASAP). Empty = no email.
   alertEmail?: string;
 }
-
-import type { InboxConfig } from './inbox/types';
 
 export interface TenantConfig {
   collectionMap: Record<string, { handle: string; tag: string }>;
