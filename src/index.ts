@@ -13,7 +13,7 @@ import { ensureInstalled } from './auth/ensure-installed';
 import { handleUninstall } from './auth/uninstall';
 import { resolveShopFromToken } from './console/session';
 import { connectCj, saveGates, savePricing, saveLlm, saveAddons, saveCollectionMap, getStatus, getInsights } from './console/routes';
-import { listInboxThreads, getInboxThread, setInboxStatus, setInboxLabels, getInboxConfig, saveInboxConfig } from './inbox/routes';
+import { listInboxThreads, getInboxThread, setInboxStatus, setInboxLabels, getInboxConfig, saveInboxConfig, approveDraft, discardDraft } from './inbox/routes';
 import { consolePage } from './console/page';
 import { validateCjKey, CjClient, CjTokenManager, cjFetchFromEnv, chooseOrigin } from './cj';
 import { registerWebhooks, type RegisterWebhook } from './webhooks';
@@ -458,6 +458,20 @@ app.post('/api/inbox/config', async (c) => {
   try { body = await c.req.json(); } catch { return c.json({ ok: false, error: 'Invalid JSON body' }, 400); }
   if (body && Object.keys(body as object).length) return c.json(await saveInboxConfig(c.env.DB, s, body));
   return c.json({ ok: true, inbox: await getInboxConfig(c.env.DB, s) });
+});
+app.post('/api/inbox/approve', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: { id?: string; body?: string } = {};
+  try { body = await c.req.json(); } catch { return c.json({ ok: false, error: 'Invalid JSON body' }, 400); }
+  if (!body.id) return c.json({ ok: false, error: 'id required' }, 400);
+  return c.json(await approveDraft(c.env.DB, s, c.env, body.id, body.body));
+});
+app.post('/api/inbox/discard', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: { id?: string } = {};
+  try { body = await c.req.json(); } catch { return c.json({ ok: false, error: 'Invalid JSON body' }, 400); }
+  if (!body.id) return c.json({ ok: false, error: 'id required' }, 400);
+  return c.json(await discardDraft(c.env.DB, s, body.id));
 });
 
 // --- /proxy/* : storefront-facing via Shopify App Proxy (HMAC-signed) ---

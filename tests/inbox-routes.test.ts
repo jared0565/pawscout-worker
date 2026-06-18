@@ -2,7 +2,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
 import { TenantStore } from '../src/tenant-store';
-import { listInboxThreads, getInboxThread, setInboxStatus, setInboxLabels } from '../src/inbox/routes';
+import { listInboxThreads, getInboxThread, setInboxStatus, setInboxLabels, discardDraft } from '../src/inbox/routes';
 
 beforeEach(async () => { await applyD1Migrations(env.DB, env.TEST_MIGRATIONS); });
 const SHOP = 'a.myshopify.com';
@@ -42,5 +42,19 @@ describe('inbox routes', () => {
   it('404s an unknown thread', async () => {
     const r = await getInboxThread(env.DB, SHOP, 'no-such-id');
     expect(r.ok).toBe(false);
+  });
+  it('returns the pending draft with the thread', async () => {
+    const s = new TenantStore(env.DB, SHOP); const tid = await seed();
+    await s.insertDraft({ threadId: tid, bodyText: 'Hi', bodyHtml: '<p>Hi</p>', confidence: 90, quotesPriceOrder: false, holdReasons: [], model: 'm', status: 'pending' });
+    const r = await getInboxThread(env.DB, SHOP, tid);
+    expect(r.ok).toBe(true); expect(r.draft?.body_text).toBe('Hi');
+  });
+  it('discard closes the thread and marks the draft discarded', async () => {
+    const s = new TenantStore(env.DB, SHOP); const tid = await seed();
+    const did = await s.insertDraft({ threadId: tid, bodyText: 'x', bodyHtml: '<p>x</p>', confidence: 90, quotesPriceOrder: false, holdReasons: [], model: 'm', status: 'pending' });
+    const r = await discardDraft(env.DB, SHOP, did);
+    expect(r.ok).toBe(true);
+    expect((await s.getDraft(did))?.status).toBe('discarded');
+    expect((await s.getThreadWithMessages(tid))?.thread.status).toBe('closed');
   });
 });
