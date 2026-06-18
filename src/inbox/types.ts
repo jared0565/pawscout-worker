@@ -76,6 +76,16 @@ export interface DraftRow {
   created_at: string; sent_at: string | null; sent_message_id: string | null;
 }
 
+export type InvoiceStatus = 'proposed' | 'sent' | 'paid' | 'discarded' | 'expired' | 'failed' | 'superseded';
+export interface InvoiceLineItem { variantId: string; sku: string | null; title: string; qty: number; priceGbp: number }
+export interface InvoiceRow {
+  shop: string; id: string; thread_id: string; status: InvoiceStatus;
+  line_items_json: string; currency: string; total: number; cover_text: string | null;
+  confidence: number | null; hold_reasons: string | null;
+  shopify_draft_order_id: string | null; invoice_url: string | null; shopify_order_id: string | null;
+  created_at: string; sent_at: string | null; paid_at: string | null;
+}
+
 export interface ContactRow {
   shop: string; email: string; name: string | null; phone: string | null;
   shopify_customer_id: string | null; message_count: number;

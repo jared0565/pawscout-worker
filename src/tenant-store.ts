@@ -1,6 +1,6 @@
 import { DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, type TenantRow, type TenantConfig, type Fulfil } from './types';
 import { DEFAULT_INBOX, type InboxConfig } from './inbox/types';
-import type { ContactRow, ThreadRow, MessageRow, ThreadStatus, DraftRow, DraftStatus } from './inbox/types';
+import type { ContactRow, ThreadRow, MessageRow, ThreadStatus, DraftRow, DraftStatus, InvoiceRow, InvoiceLineItem, InvoiceStatus } from './inbox/types';
 
 interface SupplierCredRow {
   shop: string; supplier: string; api_key_enc: string; label: string | null; validated_at: string | null; created_at: string;
@@ -808,6 +808,42 @@ export class TenantStore {
                 ORDER BY t.last_message_at ASC LIMIT ${Math.min(Math.max(limit, 1), 50)}`)
       .bind(this.shop).all<ThreadRow>();
     return rs.results ?? [];
+  }
+
+  // --- W-INBOX-3: invoices ---
+  async insertInvoice(i: { threadId: string; lineItems: InvoiceLineItem[]; total: number; currency: string; coverText: string; confidence: number | null; holdReasons: string[]; status: InvoiceStatus }): Promise<string> {
+    const id = crypto.randomUUID();
+    await this.db
+      .prepare(`INSERT INTO inbox_invoices (shop, id, thread_id, status, line_items_json, currency, total, cover_text, confidence, hold_reasons, created_at)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)`)
+      .bind(this.shop, id, i.threadId, i.status, JSON.stringify(i.lineItems), i.currency, i.total, i.coverText, i.confidence, JSON.stringify(i.holdReasons), new Date().toISOString())
+      .run();
+    return id;
+  }
+  getInvoice(id: string): Promise<InvoiceRow | null> {
+    return this.db.prepare(`SELECT * FROM inbox_invoices WHERE shop = ?1 AND id = ?2`).bind(this.shop, id).first<InvoiceRow>();
+  }
+  getInvoiceByPawscoutId(id: string): Promise<InvoiceRow | null> { return this.getInvoice(id); }
+  getOpenInvoiceForThread(threadId: string): Promise<InvoiceRow | null> {
+    return this.db.prepare(`SELECT * FROM inbox_invoices WHERE shop = ?1 AND thread_id = ?2 AND status = 'sent' ORDER BY created_at DESC LIMIT 1`).bind(this.shop, threadId).first<InvoiceRow>();
+  }
+  getInvoiceByOrderId(shopifyOrderId: string): Promise<InvoiceRow | null> {
+    return this.db.prepare(`SELECT * FROM inbox_invoices WHERE shop = ?1 AND shopify_order_id = ?2 LIMIT 1`).bind(this.shop, shopifyOrderId).first<InvoiceRow>();
+  }
+  async setInvoiceStatus(id: string, status: InvoiceStatus, fields?: { sentAt?: string; paidAt?: string; shopifyOrderId?: string; draftOrderId?: string; invoiceUrl?: string }): Promise<void> {
+    await this.db
+      .prepare(`UPDATE inbox_invoices SET status = ?3,
+                  sent_at = COALESCE(?4, sent_at), paid_at = COALESCE(?5, paid_at),
+                  shopify_order_id = COALESCE(?6, shopify_order_id),
+                  shopify_draft_order_id = COALESCE(?7, shopify_draft_order_id),
+                  invoice_url = COALESCE(?8, invoice_url)
+                WHERE shop = ?1 AND id = ?2`)
+      .bind(this.shop, id, status, fields?.sentAt ?? null, fields?.paidAt ?? null, fields?.shopifyOrderId ?? null, fields?.draftOrderId ?? null, fields?.invoiceUrl ?? null)
+      .run();
+  }
+  async recentInvoiceCount(threadId: string, sinceIso: string): Promise<number> {
+    const row = await this.db.prepare(`SELECT COUNT(*) AS n FROM inbox_invoices WHERE shop = ?1 AND thread_id = ?2 AND created_at >= ?3 AND status IN ('sent','paid')`).bind(this.shop, threadId, sinceIso).first<{ n: number }>();
+    return row?.n ?? 0;
   }
 }
 
