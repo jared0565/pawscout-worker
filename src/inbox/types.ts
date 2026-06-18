@@ -12,10 +12,13 @@ export interface InboxConfig {
   alertEmail?: string;      // owner address for high-signal alerts; falls back to fulfil.alertEmail
   intentThreshold: number;  // 0-100; intentScore >= this → hot-lead alert
   labels: string[];         // allowed taxonomy (defaults to INBOX_LABELS)
-  autosend: boolean;        // ALWAYS false in W-INBOX-1
+  autosend: boolean;        // HITL (false) | Auto (true)
   classifyModel?: string;   // OpenRouter slug for inbox classification (cheap by design);
                             // falls back to llm.model when unset. Kept separate from product
                             // curation so high-volume email triage stays low-cost.
+  autoConfidenceThreshold: number; // 0-100; Auto floor
+  replyGuidance: string;           // owner's standing voice/instructions, steers every draft
+  replyModel: string;              // OpenRouter slug for drafting
 }
 
 export const DEFAULT_INBOX: InboxConfig = {
@@ -23,7 +26,10 @@ export const DEFAULT_INBOX: InboxConfig = {
   intentThreshold: 70,
   labels: [...INBOX_LABELS],
   autosend: false,
-  classifyModel: 'google/gemini-2.5-flash-lite'
+  classifyModel: 'google/gemini-2.5-flash-lite',
+  autoConfidenceThreshold: 80,
+  replyGuidance: '',
+  replyModel: 'anthropic/claude-haiku-4.5'
 };
 
 export interface ParsedEmail {
@@ -45,6 +51,21 @@ export interface Classification {
   intentScore: number;      // 0-100
   summary: string;          // <= 200 chars
   labels: InboxLabel[];
+}
+
+export interface DraftResult {
+  bodyText: string;            // plain-text reply; HTML is built from this
+  confidence: number;          // 0-100 self-reported
+  quotesPriceOrOrder: boolean; // LLM's own flag (OR'd with mechanical mentionsMoney downstream)
+}
+
+export type DraftStatus = 'pending' | 'approved' | 'sent' | 'auto_sent' | 'discarded' | 'superseded';
+
+export interface DraftRow {
+  shop: string; id: string; thread_id: string; body_text: string; body_html: string;
+  status: DraftStatus; confidence: number | null; quotes_price_order: number;
+  hold_reasons: string | null; model: string | null;
+  created_at: string; sent_at: string | null; sent_message_id: string | null;
 }
 
 export interface ContactRow {

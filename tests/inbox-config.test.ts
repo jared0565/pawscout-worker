@@ -30,6 +30,9 @@ describe('inbox config', () => {
     expect(cfg?.inbox.autosend).toBe(false);
     expect(cfg?.inbox.labels).toContain('lead');
     expect(cfg?.inbox.classifyModel).toBe('google/gemini-2.5-flash-lite');
+    expect(cfg?.inbox.autoConfidenceThreshold).toBe(80);
+    expect(cfg?.inbox.replyGuidance).toBe('');
+    expect(cfg?.inbox.replyModel).toBe('anthropic/claude-haiku-4.5');
   });
 
   it('saveInbox round-trips and is scoped to shop', async () => {

@@ -1,5 +1,5 @@
 import type { Addons, Gates, LlmConfig, Pricing, TenantConfig } from './types';
-import { INBOX_LABELS, type InboxConfig, type ThreadStatus } from './inbox/types';
+import { DEFAULT_INBOX, INBOX_LABELS, type InboxConfig, type ThreadStatus } from './inbox/types';
 
 export type Validation<T> = { ok: true; value: T } | { ok: false; error: string };
 
@@ -168,7 +168,7 @@ export function validateLabels(body: unknown): Validation<string[]> {
   return { ok: true, value: clean };
 }
 
-/** Validate the /api/inbox config body. autosend MUST be false in W-INBOX-1. */
+/** Validate the /api/inbox config body. */
 export function validateInboxPayload(body: unknown): Validation<InboxConfig> {
   if (typeof body !== 'object' || body === null || Array.isArray(body)) {
     return { ok: false, error: 'Body must be a JSON object' };
@@ -176,7 +176,6 @@ export function validateInboxPayload(body: unknown): Validation<InboxConfig> {
   const b = body as Record<string, unknown>;
   if (typeof b.enabled !== 'boolean') return { ok: false, error: 'enabled must be true or false' };
   if (typeof b.autosend !== 'boolean') return { ok: false, error: 'autosend must be true or false' };
-  if (b.autosend === true) return { ok: false, error: 'autosend is not available yet (human approval required)' };
   if (typeof b.intentThreshold !== 'number' || !Number.isFinite(b.intentThreshold) || b.intentThreshold < 0 || b.intentThreshold > 100) {
     return { ok: false, error: 'intentThreshold must be a number between 0 and 100' };
   }
@@ -192,11 +191,31 @@ export function validateInboxPayload(body: unknown): Validation<InboxConfig> {
     }
     classifyModel = b.classifyModel;
   }
+  if (typeof b.autoConfidenceThreshold !== 'number' || !Number.isFinite(b.autoConfidenceThreshold) || b.autoConfidenceThreshold < 0 || b.autoConfidenceThreshold > 100) {
+    return { ok: false, error: 'autoConfidenceThreshold must be a number between 0 and 100' };
+  }
+  if (b.replyGuidance !== undefined && (typeof b.replyGuidance !== 'string' || b.replyGuidance.length > 4000)) {
+    return { ok: false, error: 'replyGuidance must be a string up to 4000 chars' };
+  }
+  let replyModel: string | undefined;
+  if (b.replyModel !== undefined && b.replyModel !== '') {
+    if (typeof b.replyModel !== 'string' || b.replyModel.length > 100 || !MODEL_SLUG.test(b.replyModel)) {
+      return { ok: false, error: 'replyModel must be an OpenRouter model slug' };
+    }
+    replyModel = b.replyModel;
+  }
   const labelsRes = validateLabels(b.labels ?? []);
   if (!labelsRes.ok) return labelsRes;
   return {
     ok: true,
-    value: { enabled: b.enabled, autosend: false, intentThreshold: b.intentThreshold, labels: labelsRes.value, ...(alertEmail ? { alertEmail } : {}), ...(classifyModel ? { classifyModel } : {}) }
+    value: {
+      enabled: b.enabled, autosend: b.autosend, intentThreshold: b.intentThreshold,
+      labels: labelsRes.value, autoConfidenceThreshold: b.autoConfidenceThreshold,
+      replyGuidance: typeof b.replyGuidance === 'string' ? b.replyGuidance : '',
+      replyModel: replyModel ?? DEFAULT_INBOX.replyModel,
+      ...(alertEmail ? { alertEmail } : {}),
+      ...(classifyModel ? { classifyModel } : {})
+    }
   };
 }
 
