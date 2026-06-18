@@ -44,4 +44,32 @@ describe('inbox drafts store', () => {
     expect((await s.getDraft(did))?.status).toBe('sent');
     expect((await s.getDraft(did))?.sent_message_id).toBe('<inbox-2@activepaw.co.uk>');
   });
+
+  // ── GDPR tests ───────────────────────────────────────────────────────────────
+
+  it('redactContact purges the draft row for that contact', async () => {
+    const s = new TenantStore(env.DB, SHOP);
+    await s.upsertTenant({ accessTokenEnc: 'tok', dekWrapped: 'd', scopes: 's' });
+    const tid = await thread(s, 'erase@example.com', 'needs_reply');
+    const did = await s.insertDraft({ threadId: tid, bodyText: 'Hello', bodyHtml: '<p>Hello</p>', confidence: 88, quotesPriceOrder: false, holdReasons: [], model: 'm', status: 'pending' });
+    // Draft exists before redact
+    expect(await s.getDraft(did)).not.toBeNull();
+
+    await s.redactContact('erase@example.com');
+
+    // Draft row must be gone (cascade deleted with the thread)
+    expect(await s.getDraft(did)).toBeNull();
+  });
+
+  it('redactShop clears inbox_drafts for the shop', async () => {
+    const s = new TenantStore(env.DB, SHOP);
+    await s.upsertTenant({ accessTokenEnc: 'tok', dekWrapped: 'd', scopes: 's' });
+    const tid = await thread(s, 'jane@x.com', 'needs_reply');
+    const did = await s.insertDraft({ threadId: tid, bodyText: 'Bye', bodyHtml: '<p>Bye</p>', confidence: 80, quotesPriceOrder: false, holdReasons: [], model: 'm', status: 'pending' });
+    expect(await s.getDraft(did)).not.toBeNull();
+
+    await s.redactShop();
+
+    expect(await s.getDraft(did)).toBeNull();
+  });
 });

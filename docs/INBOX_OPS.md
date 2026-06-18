@@ -33,3 +33,43 @@
 - The Worker forwards a copy of every inbound email to this address as a rollback net.
 - Once capture is trusted (threads appearing correctly, classification running), unset it:
   `wrangler secret delete INBOX_FORWARD_TO` (or set to empty) to stop the duplicate forward.
+
+---
+
+## W-INBOX-2 cutover
+
+### 1. Database migration + deploy
+
+```sh
+npm run migrate:remote    # applies 0010_inbox_drafts.sql to the production D1
+npm run deploy
+```
+
+`0010_inbox_drafts.sql` adds the `inbox_drafts` table and the new `inbox_contacts.message_count` column. The migration is idempotent — safe to run against an already-migrated database.
+
+### 2. Console settings panel
+
+The HITL / Auto toggle and all W-INBOX-2 config live in the PawScout console **Inbox** tab (settings panel). Key fields:
+
+| Field | Description |
+|---|---|
+| **HITL / Auto toggle** (`autosend`) | `false` = Human-In-The-Loop (owner reviews every draft before sending); `true` = Auto-send if the draft passes all gates. **Start here on HITL.** |
+| **Reply guidance** (`replyGuidance`) | Owner's standing voice / instructions for every draft (e.g. "Always sign off with 'Warm regards, Sarah'"). |
+| **Auto-send confidence threshold** (`autoConfidenceThreshold`) | 0–100. The drafter must self-report ≥ this to auto-send (default 80). |
+| **Classify model** / **Reply model** | OpenRouter model slugs for the triage and draft passes respectively. |
+
+### 3. Verify Resend honors the custom `Message-ID`
+
+After deploying, send a real test reply from `support@activepaw.co.uk` via the console "Approve" button. Then inspect the delivered email headers in the recipient's inbox:
+
+- Look for the `Message-ID` header. PawScout sets it to `<inbox-{uuid}@activepaw.co.uk>`.
+- If Resend **overrides** the value with its own ID (e.g. `<...@resend.dev>`), the re-threading logic that matches a customer reply back to the original thread will fail.
+  - Mitigation: switch the re-threading lookup to use `X-PawScout-Id` (a custom header PawScout also sends and stores) rather than `Message-ID`. This is the fallback documented in the Task 5 notes and should be implemented before enabling Auto mode.
+- If the `Message-ID` header is preserved as-is, no action is needed.
+
+### 4. Rollout order
+
+1. **Deploy with `autosend: false` (HITL).** Drafts sit in the console for manual review.
+2. Review several drafts — check tone, accuracy, and that no draft quotes a price or order commitment.
+3. Once you trust the draft quality, flip `autosend: true` in the console settings panel.
+4. Monitor for a day; watch the `intent_score` and `confidence` columns in the thread list. Raise `autoConfidenceThreshold` if any marginal drafts slip through.
