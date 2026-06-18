@@ -27,7 +27,7 @@ Build an **automated, real-time CRM inside PawScout** that:
 | **Domain** | `activepaw.co.uk` for all inbound **and** outbound. Replies sent **from** `support@activepaw.co.uk`. No `resend.dev` sandbox, no `*.myshopify.com`. |
 | **Scope** | First-party (Active Paw), but all new tables keyed off `shop` like the rest of the Worker — generalizes to a platform feature later with no schema rewrite. |
 | **Autonomy** | **Human-in-the-loop.** LLM classifies + drafts; nothing sends and no order is created until the owner approves in the console. |
-| **Inbound transport** | **Cloudflare Email Routing → Email Worker** (domain is already a CF zone; the Worker runs on `pawscout.activepaw.co.uk`). Replaces the Gmail forward. |
+| **Inbound transport** | **Cloudflare Email Routing → Email Worker.** *Confirmed 2026-06-18:* the zone is on Cloudflare (NS `*.ns.cloudflare.com`) and **Email Routing is already live** (MX `route1/2/3.mx.cloudflare.net`); the current Gmail forward is an existing Email Routing rule. So inbound = **change the `support@`/`contact@` route from forward→Worker**, not new infra. Keep a forward-copy rule as a W-INBOX-1 rollback safety net. |
 | **Gmail** | High-signal alerts only (hot lead awaiting approval). Reuse the existing `alertEmail` config field. Per-enquiry forward switched off. |
 | **Labels** | Locked taxonomy: `lead`, `product-question`, `order-status`, `shipping-returns`, `wholesale-b2b`, `complaint`, `spam`, `automated`, `other`. Multi-label per thread; one primary category drives the pipeline. |
 | **Rollout** | Phased (W-INBOX-1..3 + future), each phase ships independently. |
@@ -97,8 +97,12 @@ mailto: ──────┘            │
 - Parse raw MIME with `postal-mime` (Workers-compatible). A dedicated parser
   extracts the *visitor's* real email + fields from Shopify's contact-form
   notification (sender is Shopify's system; the customer is in `Reply-To`/body).
-- The synchronous handler does the minimum: parse + upsert contact/thread/message
-  + dedup. Classification and drafting run in `ctx.waitUntil`.
+- The synchronous handler does the **minimum**: parse + upsert
+  contact/thread/message + dedup, store with `status=new`. **Classification and
+  drafting run on a cron sweep, NOT `ctx.waitUntil`** — LLM latency is tight
+  against the email-handler budget and a killed `waitUntil` loses the work. The
+  existing cron (or a Cloudflare Queue) sweeps unclassified rows; retryable and
+  self-healing, matching the repo's existing pattern.
 
 ### 4.2 D1 schema — new migration `0009_inbox.sql` (all `shop`-keyed)
 - **`contacts`**: `id, shop, email, name, phone, shopify_customer_id?, first_seen_at, last_seen_at, message_count`. Unique `(shop, email)`.
@@ -144,9 +148,18 @@ LLM classifier (`LlmClient.json`, strict JSON, validated):
   1. If `wantsDraftOrder`: `draftOrderCreate` (Admin GraphQL) → `invoiceUrl`;
      insert the checkout link into the reply.
   2. `sendEmail` via Resend **from `support@activepaw.co.uk`**, with
-     `In-Reply-To` + `References` headers (Resend `headers` field) so it threads
-     and the customer's reply returns into the CRM.
+     `In-Reply-To` + `References` headers (Resend `headers` field) so it threads.
   3. Record the outbound `messages` row; thread → `awaiting_customer`.
+- **CRITICAL — control the outbound `Message-ID`.** A customer's reply references
+  the **RFC `Message-ID` header of the email they received**, *not* Resend's
+  internal `id` (a UUID). `src/email.ts` today returns only that UUID and lets
+  Resend mint its own `Message-ID`, which we never capture → every reply would
+  orphan into a *new* thread and the loop would silently never close. Therefore:
+  **generate our own `Message-ID`, set it via Resend's `headers` field, and store
+  it on the outbound `messages` row.** This requires extending `sendEmail` to
+  accept/return a `Message-ID` and a `headers` map.
+- **Inbound matching order:** `In-Reply-To` → `References` → fallback (sender
+  email + normalized `Re:`-stripped subject). Attach to the existing thread.
 - **Loop closure:** extend the existing `/webhooks/orders-paid` handler to match
   a paid order back to a thread/contact (by email or draft-order id) and flip the
   thread to `converted` — conversion attribution, full circle.
@@ -163,10 +176,17 @@ LLM classifier (`LlmClient.json`, strict JSON, validated):
   exchange grants the dashboard scopes).
 - **Resend:** verify `activepaw.co.uk` for sending (SPF/DKIM/DMARC). Change
   `DEFAULT_FROM` in `src/email.ts` off `onboarding@resend.dev` to
-  `Active Paw <support@activepaw.co.uk>`.
-- **Cloudflare Email Routing:** enable on the zone; add `support@`/`contact@`/
-  catch-all routes to the Worker; configure MX. (Validate exact Email Worker +
-  reply mechanics against Cloudflare's email-service docs during implementation.)
+  `Active Paw <support@activepaw.co.uk>`. **DNS coexistence:** the root SPF is
+  currently `v=spf1 include:_spf.mx.cloudflare.net ~all` (inbound/Email-Routing
+  only). Outbound via Resend must be authorized too — either a Resend **sending
+  subdomain** (e.g. `send.activepaw.co.uk`, its own SPF/DKIM, leaving root SPF
+  untouched) or add Resend's include to the **single** root SPF TXT record. Add
+  Resend's DKIM CNAME/TXT + a DMARC record. Make this an explicit DNS task.
+- **Cloudflare Email Routing:** already enabled (MX live). Change the existing
+  `support@`/`contact@` rule from forward→Worker; add a catch-all → Worker;
+  optionally keep a forward-copy to Gmail during W-INBOX-1. (Validate exact Email
+  Worker handler + reply mechanics against Cloudflare's email-service docs during
+  implementation.)
 - **New dep:** `postal-mime`.
 - **Config:** new `inbox` block in `TenantConfig` (`enabled`, `alertEmail?`,
   `intentThreshold`, `labels`, `autosend: false`).
@@ -198,8 +218,8 @@ draft-order link insertion; threading headers; webhook→thread matching;
    push (Durable Objects/WebSocket).
 
 ## 9. Open items to confirm during implementation
+- ~~Zone on Cloudflare / Email Routing available~~ — **confirmed** (NS + MX, 2026-06-18).
 - Exact Cloudflare Email Worker handler signature + reply/forward mechanics
   (validate against Cloudflare email-service docs).
-- Whether to also keep a forward-a-copy rule to Gmail during W-INBOX-1 as a
-  safety net before trusting capture (cheap rollback).
 - `intentThreshold` default value (start conservative, e.g. 70).
+- Resend sending-subdomain vs. root-SPF-include decision (DNS task).
