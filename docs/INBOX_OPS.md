@@ -73,3 +73,62 @@ After deploying, send a real test reply from `support@activepaw.co.uk` via the c
 2. Review several drafts — check tone, accuracy, and that no draft quotes a price or order commitment.
 3. Once you trust the draft quality, flip `autosend: true` in the console settings panel.
 4. Monitor for a day; watch the `intent_score` and `confidence` columns in the thread list. Raise `autoConfidenceThreshold` if any marginal drafts slip through.
+
+---
+
+## W-INBOX-3 cutover
+
+### 1. Database migration
+
+```sh
+wrangler d1 migrations apply pawscout --remote
+```
+
+`0011_inbox_invoices.sql` adds the `inbox_invoices` and `inbox_invoice_lines` tables with their indexes. Run this once on production; re-running against an already-migrated database will error.
+
+### 2. Re-authenticate for new scopes
+
+W-INBOX-3 adds `write_draft_orders` and `read_customers` to `SHOPIFY_SCOPES`. Existing merchants must re-authenticate to grant these permissions:
+
+- Visit `/auth?shop=<shop>.myshopify.com` to trigger the OAuth flow.
+- Approve the new scopes in the Shopify Admin consent screen.
+- Until granted, the console displays a "Reconnect to enable invoicing" banner and invoice actions return `reconnect_required`. **The rest of the inbox continues to work normally.**
+
+### 3. Validate invoice proposals (HITL)
+
+The `autoInvoice` toggle ships **OFF**. Invoices are proposed into the console for owner review:
+
+- Check the **Drafts** panel (new in W-INBOX-3) to see proposed invoices before sending.
+- Validate the AI's product matching: variantId, SKU, title, and quantity should match the customer's order.
+- Review the invoice total (`priceGbp × qty` per line item) and ensure no spam/complaint/wholesale orders are included.
+- Only flip `autoInvoice` to `true` **after** validating several proposals and confirming accuracy.
+
+**Confidence floor:** even when Auto is enabled, the `invoiceConfidenceThreshold` (default 95), `invoiceValueCeiling` (default 250), `invoiceRateLimit` (default 2), exact-variant-match-only filter, and exclusion list (spam/complaint/wholesale) hold risky proposals in HITL.
+
+### 4. Attribution verification (ops task)
+
+The primary `paid order → invoice thread` attribution relies on Shopify propagating the draft order's `customAttributes.pawscout_invoice_id` to the paid Order's `note_attributes`:
+
+- Create one real test draft order via the console and send an invoice.
+- Once the customer places an order, open the Admin API (Shopify Settings → Develop → API Admin → GraphQL) and query the paid Order:
+  ```graphql
+  {
+    order(id: "gid://shopify/Order/<ID>") {
+      noteAttributes {
+        key
+        value
+      }
+    }
+  }
+  ```
+- **Expected:** `note_attributes` includes a key `pawscout_invoice_id` with the invoice UUID.
+- **If present:** attribution works end-to-end; no further action.
+- **If absent:** the email-fallback attribution (match paid order's customer email → open 'sent' invoice) is the safety net. Conversions still attribute by email. Log this finding for Task 15 handoff.
+
+### 5. Deploy
+
+```sh
+wrangler deploy
+```
+
+Monitor the deployment logs and verify no errors. The console should immediately show the new **Drafts** tab once the service is live.
