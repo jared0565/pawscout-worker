@@ -195,6 +195,7 @@ export class TenantStore {
       this.db.prepare(`DELETE FROM inbox_thread_labels WHERE shop = ?1 AND thread_id IN ${sub}`).bind(this.shop, e),
       this.db.prepare(`DELETE FROM inbox_messages WHERE shop = ?1 AND thread_id IN ${sub}`).bind(this.shop, e),
       this.db.prepare(`DELETE FROM inbox_drafts WHERE shop = ?1 AND thread_id IN ${sub}`).bind(this.shop, e),
+      this.db.prepare(`DELETE FROM inbox_invoices WHERE shop = ?1 AND thread_id IN ${sub}`).bind(this.shop, e),
       this.db.prepare(`DELETE FROM inbox_threads WHERE shop = ?1 AND contact_email = ?2`).bind(this.shop, e),
       this.db.prepare(`DELETE FROM inbox_contacts WHERE shop = ?1 AND email = ?2`).bind(this.shop, e)
     ]);
@@ -202,11 +203,12 @@ export class TenantStore {
   }
 
   /** GDPR customers/data-request: count inbox records we hold for one contact email. */
-  async inboxDataSummary(email: string): Promise<{ threads: number; messages: number }> {
+  async inboxDataSummary(email: string): Promise<{ threads: number; messages: number; invoices: number }> {
     const e = email.trim().toLowerCase();
     const t = await this.db.prepare(`SELECT COUNT(*) AS n FROM inbox_threads WHERE shop = ?1 AND contact_email = ?2`).bind(this.shop, e).first<{ n: number }>();
     const m = await this.db.prepare(`SELECT COUNT(*) AS n FROM inbox_messages WHERE shop = ?1 AND thread_id IN (SELECT id FROM inbox_threads WHERE shop = ?1 AND contact_email = ?2)`).bind(this.shop, e).first<{ n: number }>();
-    return { threads: t?.n ?? 0, messages: m?.n ?? 0 };
+    const inv = await this.db.prepare(`SELECT COUNT(*) AS n FROM inbox_invoices WHERE shop = ?1 AND thread_id IN (SELECT id FROM inbox_threads WHERE shop = ?1 AND contact_email = ?2)`).bind(this.shop, e).first<{ n: number }>();
+    return { threads: t?.n ?? 0, messages: m?.n ?? 0, invoices: inv?.n ?? 0 };
   }
 
   /** shop/redact: purge ALL data for this shop (sent ~48h after uninstall). */
@@ -224,6 +226,7 @@ export class TenantStore {
       this.db.prepare(`DELETE FROM inbox_thread_labels WHERE shop = ?1`).bind(this.shop),
       this.db.prepare(`DELETE FROM inbox_messages WHERE shop = ?1`).bind(this.shop),
       this.db.prepare(`DELETE FROM inbox_drafts WHERE shop = ?1`).bind(this.shop),
+      this.db.prepare(`DELETE FROM inbox_invoices WHERE shop = ?1`).bind(this.shop),
       this.db.prepare(`DELETE FROM inbox_threads WHERE shop = ?1`).bind(this.shop),
       this.db.prepare(`DELETE FROM inbox_contacts WHERE shop = ?1`).bind(this.shop),
       this.db.prepare(`DELETE FROM tenant_config WHERE shop = ?1`).bind(this.shop),

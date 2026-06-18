@@ -159,4 +159,14 @@ describe('inbox store', () => {
     const otherJaneThread = await env.DB.prepare('SELECT * FROM inbox_threads WHERE shop=?1 AND id=?2').bind('other.myshopify.com', otherJaneTid).first();
     expect(otherJaneThread).not.toBeNull();
   });
+
+  it('purges inbox_invoices on redactContact and inboxDataSummary reflects invoices count', async () => {
+    const s2 = new TenantStore(env.DB, 'a.myshopify.com');
+    await s2.upsertTenant({ accessTokenEnc: 't', dekWrapped: 'd', scopes: 's' });
+    const tid = await s2.createThread({ contactEmail: 'c@x.com', subject: 'x', subjectNorm: 'x', receivedAt: new Date().toISOString(), initialStatus: 'awaiting_customer' });
+    await s2.insertInvoice({ threadId: tid, lineItems: [], total: 1, currency: 'GBP', coverText: '', confidence: null, holdReasons: [], status: 'sent' });
+    expect((await s2.inboxDataSummary('c@x.com')).invoices).toBe(1);
+    await s2.redactContact('c@x.com');
+    expect((await s2.inboxDataSummary('c@x.com')).invoices).toBe(0);
+  });
 });
