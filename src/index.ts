@@ -13,6 +13,7 @@ import { ensureInstalled } from './auth/ensure-installed';
 import { handleUninstall } from './auth/uninstall';
 import { resolveShopFromToken } from './console/session';
 import { connectCj, saveGates, savePricing, saveLlm, saveAddons, saveCollectionMap, getStatus, getInsights } from './console/routes';
+import { listInboxThreads, getInboxThread, setInboxStatus, setInboxLabels, getInboxConfig, saveInboxConfig } from './inbox/routes';
 import { consolePage } from './console/page';
 import { validateCjKey, CjClient, CjTokenManager, cjFetchFromEnv, chooseOrigin } from './cj';
 import { registerWebhooks, type RegisterWebhook } from './webhooks';
@@ -421,6 +422,40 @@ app.post('/api/collections', async (c) => {
   if (!v.ok) return c.json({ ok: false, error: v.error }, 400);
   await saveCollectionMap(c.env.DB, s, v.value);
   return c.json({ ok: true });
+});
+app.post('/api/inbox/threads', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: { status?: string } = {};
+  try { body = await c.req.json(); } catch { /* defaults */ }
+  return c.json(await listInboxThreads(c.env.DB, s, body.status ?? null));
+});
+app.post('/api/inbox/thread', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: { id?: string } = {};
+  try { body = await c.req.json(); } catch { return c.json({ ok: false, error: 'Invalid JSON body' }, 400); }
+  if (!body.id) return c.json({ ok: false, error: 'id required' }, 400);
+  return c.json(await getInboxThread(c.env.DB, s, body.id));
+});
+app.post('/api/inbox/status', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: { id?: string; status?: string } = {};
+  try { body = await c.req.json(); } catch { return c.json({ ok: false, error: 'Invalid JSON body' }, 400); }
+  if (!body.id) return c.json({ ok: false, error: 'id required' }, 400);
+  return c.json(await setInboxStatus(c.env.DB, s, body.id, body.status));
+});
+app.post('/api/inbox/labels', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: { id?: string; labels?: unknown } = {};
+  try { body = await c.req.json(); } catch { return c.json({ ok: false, error: 'Invalid JSON body' }, 400); }
+  if (!body.id) return c.json({ ok: false, error: 'id required' }, 400);
+  return c.json(await setInboxLabels(c.env.DB, s, body.id, body.labels));
+});
+app.post('/api/inbox/config', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: unknown = {};
+  try { body = await c.req.json(); } catch { return c.json({ ok: false, error: 'Invalid JSON body' }, 400); }
+  if (body && Object.keys(body as object).length) return c.json(await saveInboxConfig(c.env.DB, s, body));
+  return c.json({ ok: true, inbox: await getInboxConfig(c.env.DB, s) });
 });
 
 // --- /proxy/* : storefront-facing via Shopify App Proxy (HMAC-signed) ---

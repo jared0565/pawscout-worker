@@ -1,4 +1,5 @@
 import type { Addons, Gates, LlmConfig, Pricing, TenantConfig } from './types';
+import { INBOX_LABELS, type InboxConfig, type ThreadStatus } from './inbox/types';
 
 export type Validation<T> = { ok: true; value: T } | { ok: false; error: string };
 
@@ -149,6 +150,46 @@ export function validateLlmPayload(body: unknown): Validation<LlmConfig> {
       ...(b.curationModel ? { curationModel: b.curationModel as string } : {}),
       ...(b.digestModel ? { digestModel: b.digestModel as string } : {})
     }
+  };
+}
+
+const THREAD_STATUSES = new Set<ThreadStatus>(['new', 'needs_reply', 'awaiting_customer', 'converted', 'closed', 'spam']);
+const LABEL_SET = new Set<string>(INBOX_LABELS);
+
+export function validateThreadStatus(s: unknown): s is ThreadStatus {
+  return typeof s === 'string' && THREAD_STATUSES.has(s as ThreadStatus);
+}
+
+export function validateLabels(body: unknown): Validation<string[]> {
+  if (!Array.isArray(body)) return { ok: false, error: 'labels must be an array' };
+  const clean = [...new Set(body)].filter((l): l is string => typeof l === 'string');
+  if (clean.length !== body.length) return { ok: false, error: 'labels must be unique strings' };
+  for (const l of clean) if (!LABEL_SET.has(l)) return { ok: false, error: `unknown label: ${l}` };
+  return { ok: true, value: clean };
+}
+
+/** Validate the /api/inbox config body. autosend MUST be false in W-INBOX-1. */
+export function validateInboxPayload(body: unknown): Validation<InboxConfig> {
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+    return { ok: false, error: 'Body must be a JSON object' };
+  }
+  const b = body as Record<string, unknown>;
+  if (typeof b.enabled !== 'boolean') return { ok: false, error: 'enabled must be true or false' };
+  if (typeof b.autosend !== 'boolean') return { ok: false, error: 'autosend must be true or false' };
+  if (b.autosend === true) return { ok: false, error: 'autosend is not available yet (human approval required)' };
+  if (typeof b.intentThreshold !== 'number' || !Number.isFinite(b.intentThreshold) || b.intentThreshold < 0 || b.intentThreshold > 100) {
+    return { ok: false, error: 'intentThreshold must be a number between 0 and 100' };
+  }
+  let alertEmail: string | undefined;
+  if (b.alertEmail !== undefined && b.alertEmail !== '') {
+    if (typeof b.alertEmail !== 'string' || !b.alertEmail.includes('@')) return { ok: false, error: 'alertEmail must be a valid email' };
+    alertEmail = b.alertEmail;
+  }
+  const labelsRes = validateLabels(b.labels ?? []);
+  if (!labelsRes.ok) return labelsRes;
+  return {
+    ok: true,
+    value: { enabled: b.enabled, autosend: false, intentThreshold: b.intentThreshold, labels: labelsRes.value, ...(alertEmail ? { alertEmail } : {}) }
   };
 }
 
