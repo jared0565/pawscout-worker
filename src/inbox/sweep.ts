@@ -100,9 +100,10 @@ export async function proposeInvoiceOne(
   fetchImpl: typeof fetch = defaultFetch
 ): Promise<boolean> {
   try {
-    // 1. Idempotency: skip if a sent invoice already exists for this thread.
-    const existing = await store.getOpenInvoiceForThread(thread.id);
-    if (existing) return true;
+    // 1. Idempotency: skip if any active (proposed or sent) invoice already exists.
+    //    proposed covers the HITL case where the floor held last sweep — avoids
+    //    a new LLM call + duplicate proposed row every 15 min until the owner acts.
+    if (await store.hasActiveInvoice(thread.id)) return true;
 
     // 2. Build conversation and call proposeInvoice.
     const got = await store.getThreadWithMessages(thread.id);
@@ -149,7 +150,8 @@ export async function proposeInvoiceOne(
         });
       } else {
         allResolved = false;
-        // Still push a placeholder so counts match for reporting (won't be auto-sent)
+        // Unresolved line requests are omitted from resolvedItems; allResolved=false
+        // causes invoiceSendDecision to hold the invoice for HITL review.
       }
     }
 
@@ -186,6 +188,9 @@ export async function proposeInvoiceOne(
     });
 
     // 7. If floor passes: create draft order + send invoice. Else leave proposed for HITL.
+    //    sendInvoice internally flips the invoice to 'sent' and the thread to
+    //    'awaiting_customer', so the local path intentionally does not call
+    //    setInvoiceStatus('sent') after a successful send.
     if (decision.create) {
       try {
         const draft = await createDraftOrder(admin, {

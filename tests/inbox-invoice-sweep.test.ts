@@ -203,7 +203,7 @@ describe('proposeInvoiceOne — Auto-send (autoInvoice:true, all pass)', () => {
   });
 });
 
-// ─── Case 3: existing sent invoice → idempotency (no second invoice) ─────────
+// ─── Case 3: existing active invoice → idempotency (no second invoice, no LLM/Shopify call) ──
 describe('proposeInvoiceOne — idempotency', () => {
   it('returns true and creates NO second invoice when a sent invoice already exists', async () => {
     const store = new TenantStore(env.DB, SHOP);
@@ -225,7 +225,7 @@ describe('proposeInvoiceOne — idempotency', () => {
     const testEnv = { ...E, OPENROUTER_API_KEY: 'k', RESEND_API_KEY: 'test-resend-key' } as unknown as Env;
     const threadRow = (await store.getThreadWithMessages(tid))!.thread;
 
-    // fetchImpl should never be called since we short-circuit on open invoice
+    // fetchImpl should never be called since we short-circuit on active invoice
     const fetchImpl = (async () => { throw new Error('fetchImpl should not be called during idempotency check'); }) as unknown as typeof fetch;
 
     const handled = await proposeInvoiceOne(testEnv, store, cfg(), threadRow, fetchImpl);
@@ -237,6 +237,40 @@ describe('proposeInvoiceOne — idempotency', () => {
     const invoiceRows = await getInvoicesForThread(tid);
     expect(invoiceRows).toHaveLength(1);
     expect(invoiceRows[0].status).toBe('sent'); // unchanged
+  });
+
+  it('returns true and creates NO second invoice when a proposed invoice already exists (HITL re-sweep)', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const { accessTokenEnc, dekWrapped } = await sealToken();
+    await store.upsertTenant({ accessTokenEnc, dekWrapped, scopes: 'write_draft_orders,read_products' });
+    await store.seedConfig(cfg());
+    await store.saveInbox({ ...DEFAULT_INBOX });
+
+    const tid = await seedBuyingThread(store);
+
+    // Pre-seed a proposed invoice (HITL: floor held last sweep)
+    await store.insertInvoice({
+      threadId: tid,
+      lineItems: [{ variantId: VARIANT_ID, sku: 'C-STD', title: 'Dog Collar', qty: 1, priceGbp: 12.50 }],
+      total: 12.50, currency: 'GBP', coverText: 'Pending invoice', confidence: 97,
+      holdReasons: ['auto_invoice_off'], status: 'proposed'
+    });
+
+    const testEnv = { ...E, OPENROUTER_API_KEY: 'k', RESEND_API_KEY: 'test-resend-key' } as unknown as Env;
+    const threadRow = (await store.getThreadWithMessages(tid))!.thread;
+
+    // fetchImpl must NOT be called — no LLM or Shopify call should happen
+    const fetchImpl = (async () => { throw new Error('fetchImpl should not be called: proposed invoice is active'); }) as unknown as typeof fetch;
+
+    const handled = await proposeInvoiceOne(testEnv, store, cfg(), threadRow, fetchImpl);
+
+    // Returns true (thread is handled — no fallthrough to draftOne)
+    expect(handled).toBe(true);
+
+    // Still exactly one invoice row, unchanged
+    const invoiceRows = await getInvoicesForThread(tid);
+    expect(invoiceRows).toHaveLength(1);
+    expect(invoiceRows[0].status).toBe('proposed'); // unchanged
   });
 });
 

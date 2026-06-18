@@ -838,6 +838,12 @@ export class TenantStore {
   getOpenInvoiceForThread(threadId: string): Promise<InvoiceRow | null> {
     return this.db.prepare(`SELECT * FROM inbox_invoices WHERE shop = ?1 AND thread_id = ?2 AND status = 'sent' ORDER BY created_at DESC LIMIT 1`).bind(this.shop, threadId).first<InvoiceRow>();
   }
+  /** Returns true if any invoice for this thread is active (proposed or sent).
+   * Used by proposeInvoiceOne to avoid re-proposing in HITL mode every sweep. */
+  async hasActiveInvoice(threadId: string): Promise<boolean> {
+    const row = await this.db.prepare(`SELECT 1 FROM inbox_invoices WHERE shop = ?1 AND thread_id = ?2 AND status IN ('proposed','sent') LIMIT 1`).bind(this.shop, threadId).first<{ 1: number }>();
+    return row !== null;
+  }
   getInvoiceByOrderId(shopifyOrderId: string): Promise<InvoiceRow | null> {
     return this.db.prepare(`SELECT * FROM inbox_invoices WHERE shop = ?1 AND shopify_order_id = ?2 LIMIT 1`).bind(this.shop, shopifyOrderId).first<InvoiceRow>();
   }
