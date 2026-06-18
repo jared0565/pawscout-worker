@@ -16,7 +16,9 @@ export async function classifyEmail(
   input: { subject: string; body: string; fromEmail: string; auth: AuthResults }
 ): Promise<Classification | null> {
   if (!llm.available || !cfg.inbox.enabled) return null;
-  const model = cfg.llm.model;
+  // Inbox triage uses its own (cheap) model; only falls back to the curation
+  // model if no classify model is configured.
+  const model = cfg.inbox.classifyModel || cfg.llm.model;
   const allowed = JSON.stringify([...INBOX_LABELS]);
 
   const result = await llm.json<Classification>({

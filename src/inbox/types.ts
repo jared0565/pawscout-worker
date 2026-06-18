@@ -13,13 +13,17 @@ export interface InboxConfig {
   intentThreshold: number;  // 0-100; intentScore >= this → hot-lead alert
   labels: string[];         // allowed taxonomy (defaults to INBOX_LABELS)
   autosend: boolean;        // ALWAYS false in W-INBOX-1
+  classifyModel?: string;   // OpenRouter slug for inbox classification (cheap by design);
+                            // falls back to llm.model when unset. Kept separate from product
+                            // curation so high-volume email triage stays low-cost.
 }
 
 export const DEFAULT_INBOX: InboxConfig = {
   enabled: true,
   intentThreshold: 70,
   labels: [...INBOX_LABELS],
-  autosend: false
+  autosend: false,
+  classifyModel: 'google/gemini-2.5-flash-lite'
 };
 
 export interface ParsedEmail {

@@ -29,6 +29,7 @@ describe('inbox config', () => {
     expect(cfg?.inbox.intentThreshold).toBe(70);
     expect(cfg?.inbox.autosend).toBe(false);
     expect(cfg?.inbox.labels).toContain('lead');
+    expect(cfg?.inbox.classifyModel).toBe('google/gemini-2.5-flash-lite');
   });
 
   it('saveInbox round-trips and is scoped to shop', async () => {

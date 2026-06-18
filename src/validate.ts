@@ -185,11 +185,18 @@ export function validateInboxPayload(body: unknown): Validation<InboxConfig> {
     if (typeof b.alertEmail !== 'string' || !b.alertEmail.includes('@')) return { ok: false, error: 'alertEmail must be a valid email' };
     alertEmail = b.alertEmail;
   }
+  let classifyModel: string | undefined;
+  if (b.classifyModel !== undefined && b.classifyModel !== '') {
+    if (typeof b.classifyModel !== 'string' || b.classifyModel.length > 100 || !MODEL_SLUG.test(b.classifyModel)) {
+      return { ok: false, error: 'classifyModel must be an OpenRouter model slug like google/gemini-2.5-flash-lite' };
+    }
+    classifyModel = b.classifyModel;
+  }
   const labelsRes = validateLabels(b.labels ?? []);
   if (!labelsRes.ok) return labelsRes;
   return {
     ok: true,
-    value: { enabled: b.enabled, autosend: false, intentThreshold: b.intentThreshold, labels: labelsRes.value, ...(alertEmail ? { alertEmail } : {}) }
+    value: { enabled: b.enabled, autosend: false, intentThreshold: b.intentThreshold, labels: labelsRes.value, ...(alertEmail ? { alertEmail } : {}), ...(classifyModel ? { classifyModel } : {}) }
   };
 }
 
