@@ -8,7 +8,14 @@ import { classifyEmail, decideDisposition } from './classify';
 import { draftReply, renderReplyHtml } from './draft';
 import { autoSendDecision, mentionsMoney } from './autosend';
 import { sendReply } from './send';
-import type { ThreadRow } from './types';
+import { proposeInvoice } from './propose-invoice';
+import { adminForShop } from './invoice-routes';
+import { resolveLineRequest } from '../shopify-catalog';
+import { invoiceSendDecision } from './invoice-floor';
+import { createDraftOrder } from '../shopify-drafts';
+import { sendInvoice } from './send-invoice';
+import { hasScope } from './scopes';
+import type { ThreadRow, InvoiceLineItem } from './types';
 
 const SWEEP_BATCH = 15;          // threads classified per shop per run
 const FROM = 'Active Paw <support@activepaw.co.uk>';
@@ -40,7 +47,8 @@ export async function runInboxClassifySweep(env: Env, fetchImpl: typeof fetch = 
         await classifyOne(env, store, cfg, shop, thread, fetchImpl);
       }
       for (const thread of await store.threadsNeedingDraft(SWEEP_BATCH)) {
-        await draftOne(env, store, cfg, thread, fetchImpl);
+        const handled = await proposeInvoiceOne(env, store, cfg, thread, fetchImpl);
+        if (!handled) await draftOne(env, store, cfg, thread, fetchImpl);
       }
     } catch (e) {
       console.warn(`inbox sweep failed for ${shop}: ${(e as Error).message}`);
@@ -67,6 +75,146 @@ async function classifyOne(env: Env, store: TenantStore, cfg: TenantConfig, shop
   });
   await store.setThreadLabels(thread.id, d.labels);
   if (d.alert) await maybeAlertOwner(env, cfg, shop, thread, c.summary, fetchImpl);
+}
+
+/**
+ * Attempt to create an invoice proposal for a thread. Returns true when the
+ * thread was handled by the invoice path (caller should NOT call draftOne).
+ * Returns false to fall through to the reply-draft path.
+ *
+ * Gate order (§5.7):
+ * 1. Idempotency: existing sent invoice → return true (skip).
+ * 2. LLM: proposeInvoice → null or !isInvoiceMoment → return false (degrade to reply).
+ * 3. Admin scope gate: no write_draft_orders → insert proposed w/ reconnect_required → return true.
+ * 4. Catalog: resolveLineRequest for each lineRequest; compute total + caps.
+ * 5. Floor: invoiceSendDecision.
+ * 6. Insert invoice (proposed).
+ * 7. If decision.create → createDraftOrder + sendInvoice. Else leave proposed for HITL.
+ *    Return true.
+ */
+export async function proposeInvoiceOne(
+  env: Env,
+  store: TenantStore,
+  cfg: TenantConfig,
+  thread: ThreadRow,
+  fetchImpl: typeof fetch = defaultFetch
+): Promise<boolean> {
+  try {
+    // 1. Idempotency: skip if a sent invoice already exists for this thread.
+    const existing = await store.getOpenInvoiceForThread(thread.id);
+    if (existing) return true;
+
+    // 2. Build conversation and call proposeInvoice.
+    const got = await store.getThreadWithMessages(thread.id);
+    if (!got) return false;
+    const conversation = got.messages.filter((m) => m.direction === 'inbound').map((m) => m.body_text ?? '').join('\n\n---\n\n');
+    const llm = new LlmClient(env.OPENROUTER_API_KEY, fetchImpl);
+    const proposal = await proposeInvoice(llm, store, cfg, {
+      subject: thread.subject ?? '',
+      conversation,
+      category: thread.primary_category ?? 'other'
+    });
+    if (!proposal) return false;        // LLM failure — degrade to reply path
+    if (!proposal.isInvoiceMoment) return false; // Not a buying moment — reply instead
+
+    // 3. Admin scope gate: need write_draft_orders.
+    const tenant = await store.getTenant();
+    const admin = await adminForShop(env, store, fetchImpl);
+    if (!admin || !hasScope(tenant?.scopes, 'write_draft_orders')) {
+      await store.insertInvoice({
+        threadId: thread.id,
+        lineItems: [],
+        total: 0,
+        currency: 'GBP',
+        coverText: proposal.coverText,
+        confidence: proposal.confidence,
+        holdReasons: ['reconnect_required'],
+        status: 'proposed'
+      });
+      return true; // handled — do not fall through to reply
+    }
+
+    // 4. Resolve each lineRequest via the catalog.
+    const resolvedItems: InvoiceLineItem[] = [];
+    let allResolved = true;
+    for (const req of proposal.lineRequests) {
+      const result = await resolveLineRequest(admin, req.query);
+      if (result.status === 'resolved' && result.variant) {
+        resolvedItems.push({
+          variantId: result.variant.variantId,
+          sku: result.variant.sku,
+          title: result.variant.title || result.variant.variantTitle,
+          qty: req.qty,
+          priceGbp: result.variant.priceGbp
+        });
+      } else {
+        allResolved = false;
+        // Still push a placeholder so counts match for reporting (won't be auto-sent)
+      }
+    }
+
+    const rawTotal = resolvedItems.reduce((sum, li) => sum + li.priceGbp * li.qty, 0);
+    const total = Math.round(rawTotal * 100) / 100;
+    const quantitiesWithinCaps = resolvedItems.every((li) => li.qty <= 20);
+
+    // 5. Floor decision.
+    const sinceIso = new Date(Date.now() - 86400_000).toISOString();
+    const recent = await store.recentInvoiceCount(thread.id, sinceIso);
+    const decision = invoiceSendDecision({
+      autoInvoice: cfg.inbox.autoInvoice,
+      confidence: proposal.confidence,
+      threshold: cfg.inbox.invoiceConfidenceThreshold,
+      total,
+      ceiling: cfg.inbox.invoiceValueCeiling,
+      category: thread.primary_category ?? 'other',
+      allResolved,
+      quantitiesWithinCaps,
+      recentInvoiceCount: recent,
+      rateLimit: cfg.inbox.invoiceRateLimit
+    });
+
+    // 6. Insert invoice row (proposed).
+    const invoiceId = await store.insertInvoice({
+      threadId: thread.id,
+      lineItems: resolvedItems,
+      total,
+      currency: 'GBP',
+      coverText: proposal.coverText,
+      confidence: proposal.confidence,
+      holdReasons: decision.holdReasons,
+      status: 'proposed'
+    });
+
+    // 7. If floor passes: create draft order + send invoice. Else leave proposed for HITL.
+    if (decision.create) {
+      try {
+        const draft = await createDraftOrder(admin, {
+          email: thread.contact_email,
+          lineItems: resolvedItems.map((li) => ({ variantId: li.variantId, quantity: li.qty })),
+          pawscoutInvoiceId: invoiceId
+        });
+        await store.setInvoiceStatus(invoiceId, 'proposed', {
+          draftOrderId: draft.draftOrderId,
+          invoiceUrl: draft.invoiceUrl
+        });
+        const inv = await store.getInvoice(invoiceId);
+        if (inv) {
+          const res = await sendInvoice(env, store, thread, inv, fetchImpl);
+          if (!res.ok) await store.setInvoiceStatus(invoiceId, 'failed');
+        }
+      } catch (e) {
+        console.warn(`inbox invoice send failed for thread ${thread.id}: ${(e as Error).message}`);
+        await store.setInvoiceStatus(invoiceId, 'failed');
+      }
+    }
+    // Else: floor held; invoice stays `proposed` for HITL review.
+
+    return true;
+  } catch (e) {
+    // Defensive: never let a proposal error abort the shop's sweep.
+    console.warn(`inbox proposeInvoiceOne failed for thread ${thread.id}: ${(e as Error).message}`);
+    return false;
+  }
 }
 
 async function draftOne(env: Env, store: TenantStore, cfg: TenantConfig, thread: ThreadRow, fetchImpl: typeof fetch): Promise<void> {
