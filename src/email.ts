@@ -18,13 +18,16 @@ export interface EmailMessage {
   text?: string;
   from?: string;
   replyTo?: string;
+  messageId?: string;
+  headers?: Record<string, string>;
 }
 
-export type EmailResult = { ok: true; id: string } | { ok: false; error: string };
+export type EmailResult = { ok: true; id: string; messageId: string } | { ok: false; error: string };
 
 export async function sendEmail(apiKey: string, msg: EmailMessage, fetchImpl: typeof fetch = defaultFetch): Promise<EmailResult> {
   if (!apiKey) return { ok: false, error: 'RESEND_API_KEY not configured' };
   if (!msg.html && !msg.text) return { ok: false, error: 'email needs html or text' };
+  const messageId = msg.messageId ?? `<inbox-${crypto.randomUUID()}@activepaw.co.uk>`;
   let resp: Response;
   try {
     resp = await fetchImpl(RESEND_ENDPOINT, {
@@ -36,7 +39,8 @@ export async function sendEmail(apiKey: string, msg: EmailMessage, fetchImpl: ty
         subject: msg.subject,
         ...(msg.html ? { html: msg.html } : {}),
         ...(msg.text ? { text: msg.text } : {}),
-        ...(msg.replyTo ? { reply_to: msg.replyTo } : {})
+        ...(msg.replyTo ? { reply_to: msg.replyTo } : {}),
+        headers: { 'Message-ID': messageId, ...(msg.headers ?? {}) }
       })
     });
   } catch (e) {
@@ -49,5 +53,5 @@ export async function sendEmail(apiKey: string, msg: EmailMessage, fetchImpl: ty
     return { ok: false, error: `Resend ${resp.status}: ${b.message ?? b.name ?? 'send failed'}` };
   }
   const id = String((body as { id?: string } | null)?.id ?? '');
-  return id ? { ok: true, id } : { ok: false, error: 'Resend returned no id' };
+  return id ? { ok: true, id, messageId } : { ok: false, error: 'Resend returned no id' };
 }

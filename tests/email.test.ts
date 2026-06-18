@@ -8,7 +8,7 @@ function fakeFetch(status: number, body: unknown): typeof fetch {
 describe('sendEmail', () => {
   it('returns the Resend id on success', async () => {
     const r = await sendEmail('key', { to: 'a@b.com', subject: 'Hi', text: 'hello' }, fakeFetch(200, { id: 'em_123' }));
-    expect(r).toEqual({ ok: true, id: 'em_123' });
+    expect(r).toMatchObject({ ok: true, id: 'em_123' });
   });
 
   it('reports the Resend error message on failure', async () => {
@@ -47,5 +47,15 @@ describe('sendEmail', () => {
     }) as unknown as typeof fetch;
     await sendEmail('key', { to: 'a@b.com', subject: 'S', text: 'x' }, capture);
     expect(seen.from).toBe('Active Paw <support@activepaw.co.uk>');
+  });
+
+  it('sets and returns a controlled Message-ID + passes custom headers', async () => {
+    let seen: any = {};
+    const capture: typeof fetch = (async (_u: unknown, init: RequestInit) => { seen = JSON.parse(init.body as string); return new Response(JSON.stringify({ id: 'em_1' }), { status: 200 }); }) as unknown as typeof fetch;
+    const r = await sendEmail('key', { to: 'a@b.com', subject: 'Re: x', text: 'hi', messageId: '<inbox-abc@activepaw.co.uk>', headers: { 'In-Reply-To': '<m1@x>' } }, capture);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.messageId).toBe('<inbox-abc@activepaw.co.uk>');
+    expect(seen.headers['Message-ID']).toBe('<inbox-abc@activepaw.co.uk>');
+    expect(seen.headers['In-Reply-To']).toBe('<m1@x>');
   });
 });
