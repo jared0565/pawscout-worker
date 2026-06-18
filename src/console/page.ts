@@ -1056,7 +1056,7 @@ async function approveDraftAction(draftId,body,threadId){
   var appBtn=el('inbox-approve-btn'); if(appBtn) appBtn.disabled=true;
   try{
     var r=await api('/inbox/approve',{id:draftId,body:body});
-    if(r.ok){ setMsg('inboxmsg','Sent ✓','ok'); openInboxThread(threadId); loadInboxThreads(); }
+    if(r.ok){ openInboxThread(threadId); loadInboxThreads(); setMsg('inboxmsg','Sent ✓','ok'); }
     else { setMsg('inboxmsg','Failed: '+esc(r.error||'unknown error'),'no'); if(appBtn) appBtn.disabled=false; }
   }catch(e){ setMsg('inboxmsg','Failed: '+errText(e),'no'); if(appBtn&&el('inbox-approve-btn')) el('inbox-approve-btn').disabled=false; }
 }
@@ -1065,7 +1065,7 @@ async function discardDraftAction(draftId,threadId){
   var discBtn=el('inbox-discard-btn'); if(discBtn) discBtn.disabled=true;
   try{
     var r=await api('/inbox/discard',{id:draftId});
-    if(r.ok){ setMsg('inboxmsg','Draft discarded.','muted'); openInboxThread(threadId); loadInboxThreads(); }
+    if(r.ok){ openInboxThread(threadId); loadInboxThreads(); setMsg('inboxmsg','Draft discarded.','muted'); }
     else { setMsg('inboxmsg','Failed: '+esc(r.error||'unknown error'),'no'); if(discBtn) discBtn.disabled=false; }
   }catch(e){ setMsg('inboxmsg','Failed: '+errText(e),'no'); if(discBtn&&el('inbox-discard-btn')) el('inbox-discard-btn').disabled=false; }
 }
