@@ -91,4 +91,21 @@ describe('ingestParsed', () => {
     await ingestParsed(store, pe({ messageId: '<s2@x>', inReplyTo: '<s1@x>', references: ['<s1@x>'] }));
     expect((await store.getThreadWithMessages(a.threadId))?.thread.status).toBe('closed');
   });
+
+  it('a DUPLICATE redelivery of a customer reply does NOT reopen the thread or supersede the draft', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const a = await ingestParsed(store, pe({}));                 // thread created (new)
+    await store.setThreadStatus(a.threadId, 'awaiting_customer');
+    await store.insertDraft({ threadId: a.threadId, bodyText: 'x', bodyHtml: '<p>x</p>', confidence: 90, quotesPriceOrder: false, holdReasons: [], model: 'm', status: 'pending' });
+    // first arrival of the reply → reopens (this is correct)
+    await ingestParsed(store, pe({ messageId: '<reply-1@x>', inReplyTo: '<m1@x>', references: ['<m1@x>'], subject: 'Re: Do you ship to IE?' }));
+    expect((await store.getThreadWithMessages(a.threadId))?.thread.status).toBe('needs_reply');
+    // re-open consumed: put it back to awaiting_customer + a fresh pending draft, then REDELIVER the SAME reply
+    await store.setThreadStatus(a.threadId, 'awaiting_customer');
+    await store.insertDraft({ threadId: a.threadId, bodyText: 'y', bodyHtml: '<p>y</p>', confidence: 90, quotesPriceOrder: false, holdReasons: [], model: 'm', status: 'pending' });
+    const dup = await ingestParsed(store, pe({ messageId: '<reply-1@x>', inReplyTo: '<m1@x>', references: ['<m1@x>'], subject: 'Re: Do you ship to IE?' }));
+    expect(dup.deduped).toBe(true);
+    expect((await store.getThreadWithMessages(a.threadId))?.thread.status).toBe('awaiting_customer'); // NOT reopened
+    expect(await store.getPendingDraft(a.threadId)).not.toBeNull();                                    // draft NOT superseded
+  });
 });

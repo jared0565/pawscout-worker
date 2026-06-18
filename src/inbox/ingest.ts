@@ -18,9 +18,10 @@ export async function ingestParsed(store: TenantStore, p: ParsedEmail): Promise<
 
   await store.upsertContact({ email, name, phone });
 
-  let threadId = await store.matchThread({
+  const matchedThreadId = await store.matchThread({
     contactEmail: email, inReplyTo: p.inReplyTo, references: p.references, subjectNorm
   });
+  const isExistingThread = !!matchedThreadId;
 
   // Decide the initial status from the gates (LLM never decides spam).
   const auth = parseAuthResults(p.headers);
@@ -31,7 +32,8 @@ export async function ingestParsed(store: TenantStore, p: ParsedEmail): Promise<
   const spam = isHardSpam(auth);
   const initialStatus: ThreadStatus = spam ? 'spam' : automated ? 'closed' : 'new';
 
-  if (!threadId) {
+  let threadId: string;
+  if (!matchedThreadId) {
     threadId = await store.createThread({
       contactEmail: email, subject: p.subject, subjectNorm, receivedAt: p.date, initialStatus
     });
@@ -44,15 +46,8 @@ export async function ingestParsed(store: TenantStore, p: ParsedEmail): Promise<
       });
       await store.setThreadLabels(threadId, [automated ? 'automated' : 'spam']);
     }
-  } else if (!automated && !spam) {
-    // Multi-turn: an inbound on an active thread re-opens it for a fresh reply.
-    // Only reopen conversations we'd engage with; never resurrect spam/closed/converted.
-    const existing = await store.getThreadWithMessages(threadId);
-    const st = existing?.thread.status;
-    if (st === 'awaiting_customer' || st === 'needs_reply') {
-      await store.supersedePendingDrafts(threadId);
-      await store.reopenThread(threadId); // → needs_reply (classified_at kept; category persists)
-    }
+  } else {
+    threadId = matchedThreadId;
   }
 
   const inserted = await store.insertInboundMessageIfNew({
@@ -60,7 +55,22 @@ export async function ingestParsed(store: TenantStore, p: ParsedEmail): Promise<
     from: email, to: p.to[0] ?? null, subject: p.subject, bodyText, bodyHtml: p.html,
     headersJson: JSON.stringify(p.headers).slice(0, 8000), receivedAt: p.date
   });
-  if (inserted) await store.touchThread(threadId, p.date);
+
+  if (inserted) {
+    await store.touchThread(threadId, p.date);
+    // Multi-turn: an inbound on an active existing thread re-opens it for a fresh reply.
+    // Guard: only if this message is genuinely new (inserted) — a duplicate redelivery
+    // (same Message-ID, already stored) must NOT re-open the thread or supersede drafts.
+    // Only reopen conversations we'd engage with; never resurrect spam/closed/converted.
+    if (isExistingThread && !automated && !spam) {
+      const existing = await store.getThreadWithMessages(threadId);
+      const st = existing?.thread.status;
+      if (st === 'awaiting_customer' || st === 'needs_reply') {
+        await store.supersedePendingDrafts(threadId);
+        await store.reopenThread(threadId); // → needs_reply (classified_at kept; category persists)
+      }
+    }
+  }
 
   return { threadId, deduped: !inserted };
 }
