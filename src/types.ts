@@ -106,6 +106,10 @@ export interface TenantConfig {
   addons: Addons;
   fulfil: Fulfil;
   inbox: InboxConfig;
+  // Always populated by getConfig (DB '{}' default + DEFAULT_SEMANTIC merge); optional
+  // so callers/tests building a partial TenantConfig need not all set it. Read it via
+  // the semantic library's own default-guard, never assume presence on a hand-built cfg.
+  semantic?: SemanticConfig;
   target: number;
 }
 
@@ -123,6 +127,9 @@ export const DEFAULT_FLOORS: Floors = { warehouseDepth: 20, storeFloor: 8, stock
 export const DEFAULT_LLM: LlmConfig = { enabled: true, model: 'anthropic/claude-haiku-4.5', scoreThreshold: 60 };
 // 12 = display cap of the storefront grid (4×3): show what we can sell, never pad.
 export const DEFAULT_ADDONS: Addons = { enabled: true, priceMinUsd: 0.5, priceMaxUsd: 5, poolSize: 12, suppressFromBrowse: true };
+/** Pet semantic term library: query/sourcing term expansion, per collection. */
+export interface SemanticConfig { enabled: boolean; maxExpansions: number; ttlDays: number; excludeCollections: string[] }
+export const DEFAULT_SEMANTIC: SemanticConfig = { enabled: true, maxExpansions: 8, ttlDays: 30, excludeCollections: ['more-to-love'] };
 // fulfilment mode 'manual' by default — Stage B never spends until set to 'pawscout'.
 export const DEFAULT_FULFIL: Fulfil = { mode: 'manual' };
 export const DEFAULT_TARGET = 12;

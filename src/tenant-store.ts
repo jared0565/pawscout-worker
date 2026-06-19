@@ -1,4 +1,4 @@
-import { DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, type TenantRow, type TenantConfig, type Fulfil } from './types';
+import { DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, DEFAULT_SEMANTIC, type TenantRow, type TenantConfig, type Fulfil } from './types';
 import { DEFAULT_INBOX, type InboxConfig } from './inbox/types';
 import type { ContactRow, ThreadRow, MessageRow, ThreadStatus, DraftRow, DraftStatus, InvoiceRow, InvoiceLineItem, InvoiceStatus } from './inbox/types';
 
@@ -107,9 +107,9 @@ export class TenantStore {
 
   async getConfig(): Promise<TenantConfig | null> {
     const row = await this.db
-      .prepare(`SELECT collection_map, gates, pricing, floors, llm, addons, fulfil, inbox, target FROM tenant_config WHERE shop = ?1`)
+      .prepare(`SELECT collection_map, gates, pricing, floors, llm, addons, fulfil, inbox, semantic, target FROM tenant_config WHERE shop = ?1`)
       .bind(this.shop)
-      .first<{ collection_map: string; gates: string; pricing: string; floors: string; llm: string; addons: string; fulfil: string; inbox: string; target: number }>();
+      .first<{ collection_map: string; gates: string; pricing: string; floors: string; llm: string; addons: string; fulfil: string; inbox: string; semantic: string; target: number }>();
     if (!row) return null;
     return {
       collectionMap: JSON.parse(row.collection_map),
@@ -121,6 +121,7 @@ export class TenantStore {
       addons: { ...DEFAULT_ADDONS, ...JSON.parse(row.addons || '{}') },
       fulfil: { ...DEFAULT_FULFIL, ...JSON.parse(row.fulfil || '{}') },
       inbox: { ...DEFAULT_INBOX, ...JSON.parse(row.inbox || '{}') },
+      semantic: { ...DEFAULT_SEMANTIC, ...JSON.parse(row.semantic || '{}') },
       target: row.target
     };
   }
@@ -291,6 +292,33 @@ export class TenantStore {
       )
       .bind(this.shop, cacheKey, payload, new Date(now).toISOString(), new Date(now + ttlDays * 86400_000).toISOString())
       .run();
+  }
+
+  // --- Pet semantic term library (per shop+collection+term) ---
+  async getSemanticExpansions(collection: string, term: string): Promise<{ expansions: string[]; updatedAt: string } | null> {
+    const row = await this.db
+      .prepare(`SELECT expansions_json, updated_at FROM semantic_terms WHERE shop = ?1 AND collection = ?2 AND term = ?3`)
+      .bind(this.shop, collection, term)
+      .first<{ expansions_json: string; updated_at: string }>();
+    if (!row) return null;
+    try { return { expansions: JSON.parse(row.expansions_json), updatedAt: row.updated_at }; }
+    catch { return { expansions: [], updatedAt: row.updated_at }; }
+  }
+  async upsertSemanticTerm(collection: string, term: string, expansions: string[], source: string): Promise<void> {
+    await this.db
+      .prepare(
+        `INSERT INTO semantic_terms (shop, collection, term, expansions_json, source, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+         ON CONFLICT(shop, collection, term) DO UPDATE SET expansions_json = ?4, source = ?5, updated_at = ?6`
+      )
+      .bind(this.shop, collection, term, JSON.stringify(expansions), source, new Date().toISOString())
+      .run();
+  }
+  async listSemanticTermsForCollection(collection: string): Promise<{ term: string; updatedAt: string }[]> {
+    const r = await this.db
+      .prepare(`SELECT term, updated_at FROM semantic_terms WHERE shop = ?1 AND collection = ?2`)
+      .bind(this.shop, collection)
+      .all<{ term: string; updated_at: string }>();
+    return (r.results ?? []).map((x) => ({ term: x.term, updatedAt: x.updated_at }));
   }
 
   async logSearch(keywordNorm: string, storeHits: number, ghostHits: number): Promise<void> {

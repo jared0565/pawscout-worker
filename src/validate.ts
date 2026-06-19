@@ -1,4 +1,5 @@
 import type { Addons, Gates, LlmConfig, Pricing, TenantConfig } from './types';
+import { DEFAULT_SEMANTIC, type SemanticConfig } from './types';
 import { DEFAULT_INBOX, INBOX_LABELS, type InboxConfig, type ThreadStatus } from './inbox/types';
 
 export type Validation<T> = { ok: true; value: T } | { ok: false; error: string };
@@ -152,6 +153,26 @@ export function validateLlmPayload(body: unknown): Validation<LlmConfig> {
       ...(b.digestModel ? { digestModel: b.digestModel as string } : {})
     }
   };
+}
+
+/** Validate the semantic-library config. Missing fields fall back to defaults. */
+export function validateSemanticPayload(body: unknown): Validation<SemanticConfig> {
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) return { ok: false, error: 'Body must be a JSON object' };
+  const b = body as Record<string, unknown>;
+  const enabled = b.enabled === undefined ? DEFAULT_SEMANTIC.enabled : b.enabled;
+  if (typeof enabled !== 'boolean') return { ok: false, error: 'enabled must be true or false' };
+  const maxExpansions = b.maxExpansions === undefined ? DEFAULT_SEMANTIC.maxExpansions : b.maxExpansions;
+  if (!finite(maxExpansions) || maxExpansions < 1 || maxExpansions > 50) return { ok: false, error: 'maxExpansions must be a number between 1 and 50' };
+  const ttlDays = b.ttlDays === undefined ? DEFAULT_SEMANTIC.ttlDays : b.ttlDays;
+  if (!finite(ttlDays) || ttlDays < 1 || ttlDays > 365) return { ok: false, error: 'ttlDays must be a number between 1 and 365' };
+  let excludeCollections = DEFAULT_SEMANTIC.excludeCollections;
+  if (b.excludeCollections !== undefined) {
+    if (!Array.isArray(b.excludeCollections) || !b.excludeCollections.every((x) => typeof x === 'string')) {
+      return { ok: false, error: 'excludeCollections must be an array of strings' };
+    }
+    excludeCollections = [...new Set(b.excludeCollections as string[])];
+  }
+  return { ok: true, value: { enabled, maxExpansions: maxExpansions as number, ttlDays: ttlDays as number, excludeCollections } };
 }
 
 const THREAD_STATUSES = new Set<ThreadStatus>(['new', 'needs_reply', 'awaiting_customer', 'converted', 'closed', 'spam']);
