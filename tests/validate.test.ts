@@ -51,21 +51,20 @@ describe('validatePricingPayload', () => {
 });
 
 describe('validateLlmPayload', () => {
-  const GOOD = { enabled: true, model: 'anthropic/claude-haiku-4.5', scoreThreshold: 60 };
+  const GOOD = { enabled: true, scoreThreshold: 60, models: {} };
 
-  it('accepts a valid payload, with optional per-task overrides', () => {
+  it('accepts a valid payload, with optional per-task model overrides', () => {
     expect(validateLlmPayload(GOOD)).toEqual({ ok: true, value: GOOD });
-    const withOverride = validateLlmPayload({ ...GOOD, curationModel: 'openai/gpt-5-mini' });
-    expect(withOverride.ok && withOverride.value.curationModel).toBe('openai/gpt-5-mini');
+    const withText = validateLlmPayload({ ...GOOD, models: { text: 'openai/gpt-5-mini' } });
+    expect(withText.ok && withText.ok && (withText.value as { models: { text?: string } }).models.text).toBe('openai/gpt-5-mini');
   });
 
   it.each([
     [null, 'not an object'],
     [{ ...GOOD, enabled: 'yes' }, 'non-boolean enabled'],
-    [{ ...GOOD, model: 'no-slash' }, 'not a vendor/model slug'],
-    [{ ...GOOD, model: 'a/'.padEnd(120, 'x') }, 'oversized model'],
     [{ ...GOOD, scoreThreshold: 150 }, 'threshold above 100'],
-    [{ ...GOOD, curationModel: '<script>' }, 'bad override slug']
+    [{ ...GOOD, models: { text: 'no-slash' } }, 'not a vendor/model slug'],
+    [{ ...GOOD, models: { image: '<script>' } }, 'bad override slug']
   ] as [unknown, string][])('rejects %j (%s)', (body: unknown) => {
     expect(validateLlmPayload(body).ok).toBe(false);
   });

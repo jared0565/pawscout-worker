@@ -115,12 +115,15 @@ app.post('/api/llm', async (c) => {
   try { body = await c.req.json(); } catch { return c.json({ ok: false, error: 'Invalid JSON body' }, 400); }
   const v = validateLlmPayload(body);
   if (!v.ok) return c.json({ ok: false, error: v.error }, 400);
-  if (v.value.visionModel) {
-    const store = new TenantStore(c.env.DB, s);
-    const catalog = await getModelCatalog(store);
-    if (visionModelRejected(v.value.visionModel, catalog)) {
-      return c.json({ ok: false, error: 'Selected image model is text-only and cannot process images' }, 400);
-    }
+  const store = new TenantStore(c.env.DB, s);
+  const catalog = await getModelCatalog(store);
+  const inCatalog = (slug?: string) => !slug || catalog.some((m) => m.slug === slug);
+  const { image, text, fallback } = v.value.models;
+  for (const [label, slug] of [['image', image], ['text', text], ['fallback', fallback]] as const) {
+    if (slug && !inCatalog(slug)) return c.json({ ok: false, error: `${label} model is not in the catalog` }, 400);
+  }
+  if (visionModelRejected(image, catalog) || visionModelRejected(fallback, catalog)) {
+    return c.json({ ok: false, error: 'Image and Fallback must be vision-capable models' }, 400);
   }
   await saveLlm(c.env.DB, s, v.value);
   return c.json({ ok: true });

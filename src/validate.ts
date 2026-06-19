@@ -124,35 +124,23 @@ export function validateAddonsPayload(body: unknown): Validation<Addons> {
 // OpenRouter model slugs: "vendor/model" with dots, dashes, colons (variants).
 const MODEL_SLUG = /^[\w.-]+\/[\w.:-]+$/;
 
-/** Validate the /api/llm body. Model is a free-text OpenRouter slug — the cost-vs-quality knob. */
+/** Validate the /api/llm body. Models are free-text OpenRouter slugs in the `models` block. */
 export function validateLlmPayload(body: unknown): Validation<LlmConfig> {
-  if (typeof body !== 'object' || body === null || Array.isArray(body)) {
-    return { ok: false, error: 'Body must be a JSON object' };
-  }
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) return { ok: false, error: 'Body must be a JSON object' };
   const b = body as Record<string, unknown>;
   if (typeof b.enabled !== 'boolean') return { ok: false, error: 'enabled must be true or false' };
-  if (typeof b.model !== 'string' || b.model.length > 100 || !MODEL_SLUG.test(b.model)) {
-    return { ok: false, error: 'model must be an OpenRouter slug like anthropic/claude-haiku-4.5' };
-  }
-  if (!finite(b.scoreThreshold) || b.scoreThreshold < 0 || b.scoreThreshold > 100) {
+  if (!finite(b.scoreThreshold) || (b.scoreThreshold as number) < 0 || (b.scoreThreshold as number) > 100) {
     return { ok: false, error: 'scoreThreshold must be a number between 0 and 100' };
   }
-  for (const k of ['curationModel', 'digestModel', 'visionModel'] as const) {
-    if (b[k] !== undefined && b[k] !== '' && (typeof b[k] !== 'string' || (b[k] as string).length > 100 || !MODEL_SLUG.test(b[k] as string))) {
-      return { ok: false, error: `${k} must be an OpenRouter model slug` };
-    }
+  const rawModels = (b.models && typeof b.models === 'object' && !Array.isArray(b.models)) ? b.models as Record<string, unknown> : {};
+  const models: { image?: string; text?: string; fallback?: string } = {};
+  for (const k of ['image', 'text', 'fallback'] as const) {
+    const v = rawModels[k];
+    if (v === undefined || v === '') continue;
+    if (typeof v !== 'string' || v.length > 100 || !MODEL_SLUG.test(v)) return { ok: false, error: `${k} model must be an OpenRouter slug` };
+    models[k] = v;
   }
-  return {
-    ok: true,
-    value: {
-      enabled: b.enabled,
-      model: b.model,
-      scoreThreshold: b.scoreThreshold as number,
-      ...(b.curationModel ? { curationModel: b.curationModel as string } : {}),
-      ...(b.visionModel ? { visionModel: b.visionModel as string } : {}),
-      ...(b.digestModel ? { digestModel: b.digestModel as string } : {})
-    }
-  };
+  return { ok: true, value: { enabled: b.enabled, scoreThreshold: b.scoreThreshold as number, models } };
 }
 
 /** Validate the semantic-library config. Missing fields fall back to defaults. */
