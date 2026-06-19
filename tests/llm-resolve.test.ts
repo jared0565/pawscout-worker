@@ -1,16 +1,17 @@
 import { describe, it, expect } from 'vitest';
 import { resolveChain } from '../src/llm-resolve';
 import { CURATED_MODELS } from '../src/models-catalog';
+import { DEFAULT_MODEL } from '../src/llm';
 import { DEFAULT_LLM } from '../src/types';
-import type { TenantConfig } from '../src/types';
+import type { TenantConfig, ModelsConfig } from '../src/types';
 
 const HEAD = CURATED_MODELS[0].slug;
-const base = (models: any): TenantConfig => ({ ...({} as TenantConfig), llm: { ...DEFAULT_LLM, models } });
+const base = (models: Partial<ModelsConfig>): TenantConfig => ({ ...({} as TenantConfig), llm: { ...DEFAULT_LLM, models } });
 
 describe('resolveChain', () => {
   it('text: primary+fallback → openrouter array then openai floor', () => {
     const c = resolveChain(base({ text: 'a/b', fallback: 'c/d' }), 'text');
-    expect(c).toEqual([{ provider: 'openrouter', models: ['a/b', 'c/d'] }, { provider: 'openai', model: 'gpt-5.4-mini' }]);
+    expect(c).toEqual([{ provider: 'openrouter', models: ['a/b', 'c/d'] }, { provider: 'openai', model: DEFAULT_MODEL }]);
   });
   it('blank primary → catalog head; never an empty array', () => {
     const c = resolveChain(base({}), 'text');

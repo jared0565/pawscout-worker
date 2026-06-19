@@ -6,6 +6,8 @@ const ok = (model: string, content: string, cost = 0.001) => ({
   json: async () => ({ model, choices: [{ message: { content }, finish_reason: 'stop' }], usage: { prompt_tokens: 10, completion_tokens: 5, cost } }),
 });
 
+const CHAIN = [{ provider: 'openrouter' as const, models: ['a/b'] }, { provider: 'openai' as const, model: 'gpt-5.4-mini' }];
+
 describe('LlmClient.jsonChain', () => {
   it('OpenRouter tier sends models[] + max_tokens + usage:{include}', async () => {
     const fetchImpl = vi.fn().mockResolvedValue(ok('a/b', '{"v":1}'));
@@ -40,5 +42,58 @@ describe('LlmClient.jsonChain', () => {
     const r = await llm.jsonChain({ chain: [{ provider: 'openrouter', models: ['a/b'] }, { provider: 'openai', model: 'gpt-5.4-mini' }], system: 's', user: 'u', validate: (v: any) => v });
     expect(r.ok).toBe(false);
     expect(fetchImpl).toHaveBeenCalledTimes(1); // stopped, no advance
+  });
+
+  it('429 insufficient_quota → advance immediately (no retry); OpenAI serves', async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce({ ok: false, status: 429, json: async () => ({ error: { code: 'insufficient_quota', message: 'quota' } }) })
+      .mockResolvedValueOnce(ok('gpt-5.4-mini', '{"v":3}'));
+    const llm = new LlmClient({ openrouter: 'k', openai: 'o' }, fetchImpl as any);
+    const r = await llm.jsonChain({ chain: CHAIN, system: 's', user: 'u', validate: (v: any) => v });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.usage.provider).toBe('openai');
+    expect(fetchImpl).toHaveBeenCalledTimes(2); // 1 OpenRouter (no retry) + 1 OpenAI
+    expect((fetchImpl.mock.calls[0][0] as string)).toContain('openrouter.ai');
+  });
+
+  it('429 rate_limit_exceeded → retry SAME tier once; succeeds on retry without touching OpenAI', async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce({ ok: false, status: 429, json: async () => ({ error: { code: 'rate_limit_exceeded', message: 'slow down' } }) })
+      .mockResolvedValueOnce(ok('a/b', '{"v":4}'));
+    const llm = new LlmClient({ openrouter: 'k', openai: 'o' }, fetchImpl as any);
+    const r = await llm.jsonChain({ chain: CHAIN, system: 's', user: 'u', validate: (v: any) => v });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.usage.provider).toBe('openrouter');
+    expect(fetchImpl).toHaveBeenCalledTimes(2); // both to OpenRouter
+    expect((fetchImpl.mock.calls[0][0] as string)).toContain('openrouter.ai');
+    expect((fetchImpl.mock.calls[1][0] as string)).toContain('openrouter.ai');
+  });
+
+  it('cross-tier 200-garbage → retries same tier once then advances to OpenAI', async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(ok('a/b', 'not json at all'))  // OpenRouter attempt 1
+      .mockResolvedValueOnce(ok('a/b', 'not json at all'))  // OpenRouter retry
+      .mockResolvedValueOnce(ok('gpt-5.4-mini', '{"v":9}')); // OpenAI serves
+    const llm = new LlmClient({ openrouter: 'k', openai: 'o' }, fetchImpl as any);
+    const r = await llm.jsonChain({ chain: CHAIN, system: 's', user: 'u', validate: (v: any) => v });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value).toEqual({ v: 9 });
+      expect(r.usage.provider).toBe('openai');
+    }
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    expect((fetchImpl.mock.calls[2][0] as string)).toBe('https://api.openai.com/v1/chat/completions');
+  });
+
+  it('tier3 activation log fires when OpenAI tier serves', async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce({ ok: false, status: 429, json: async () => ({ error: { code: 'insufficient_quota', message: 'quota' } }) })
+      .mockResolvedValueOnce(ok('gpt-5.4-mini', '{"v":5}'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const llm = new LlmClient({ openrouter: 'k', openai: 'o' }, fetchImpl as any);
+    const r = await llm.jsonChain({ chain: CHAIN, system: 's', user: 'u', validate: (v: any) => v });
+    expect(r.ok).toBe(true);
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/tier3\.activated/));
+    warn.mockRestore();
   });
 });

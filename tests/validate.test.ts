@@ -56,7 +56,7 @@ describe('validateLlmPayload', () => {
   it('accepts a valid payload, with optional per-task model overrides', () => {
     expect(validateLlmPayload(GOOD)).toEqual({ ok: true, value: GOOD });
     const withText = validateLlmPayload({ ...GOOD, models: { text: 'openai/gpt-5-mini' } });
-    expect(withText.ok && withText.ok && (withText.value as { models: { text?: string } }).models.text).toBe('openai/gpt-5-mini');
+    expect(withText.ok && withText.value.models.text).toBe('openai/gpt-5-mini');
   });
 
   it.each([
