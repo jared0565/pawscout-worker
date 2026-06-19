@@ -2,7 +2,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
 import { TenantStore } from '../src/tenant-store';
-import { runInboxClassifySweep } from '../src/inbox/sweep';
+import { runInboxClassifySweep, composeDeliveryDraft } from '../src/inbox/sweep';
 import { DEFAULT_INBOX } from '../src/inbox/types';
 import { ACTIVE_PAW_COLLECTION_MAP, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL } from '../src/types';
 
@@ -112,5 +112,32 @@ describe('runInboxClassifySweep', () => {
     await runInboxClassifySweep({ ...env, OPENROUTER_API_KEY: 'k', RESEND_API_KEY: 'rk' } as any, fetchImpl);
     expect(sent).toBe(true);
     expect((await store.getThreadWithMessages(tid))?.thread.status).toBe('awaiting_customer');
+  });
+});
+
+describe('composeDeliveryDraft', () => {
+  it('returns the LLM body unchanged when there is no freight line', () => {
+    const out = composeDeliveryDraft({ bodyText: 'Hi there, happy to help.', quotesPriceOrOrder: false }, null);
+    expect(out.bodyText).toBe('Hi there, happy to help.');
+    expect(out.quotesPriceOrder).toBe(false);
+  });
+
+  it('still flags money-hold from the LLM body when no freight line is present', () => {
+    const out = composeDeliveryDraft({ bodyText: 'That bed is £45.', quotesPriceOrOrder: false }, null);
+    expect(out.quotesPriceOrder).toBe(true); // mentionsMoney caught the £ figure
+  });
+
+  it('appends the trusted freight line AFTER the LLM body', () => {
+    const line = 'Delivery to France: shipping from approx £4.00, est. 8-12 working days.';
+    const out = composeDeliveryDraft({ bodyText: 'Yes, we ship to France.', quotesPriceOrOrder: false }, line);
+    expect(out.bodyText).toBe(`Yes, we ship to France.\n\n${line}`);
+  });
+
+  it('flags quotesPriceOrder when a freight line is present (forces HITL review)', () => {
+    // The £ figure is the WORKER\'s trusted line, not the LLM body — but the draft
+    // still carries the price flag so a proxy estimate is reviewed before sending.
+    const line = 'Delivery to France: shipping from approx £4.00, est. 8-12 working days.';
+    const out = composeDeliveryDraft({ bodyText: 'Yes, we ship internationally.', quotesPriceOrOrder: false }, line);
+    expect(out.quotesPriceOrder).toBe(true);
   });
 });

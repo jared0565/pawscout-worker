@@ -15,6 +15,16 @@ function fakeLlm(content: unknown): LlmClient {
   return new LlmClient('k', f);
 }
 
+/** Captures the OpenRouter request body so tests can inspect the system prompt. */
+function capturingLlm(content: unknown, sink: { system?: string }): LlmClient {
+  const f = (async (_url: RequestInfo | URL, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body ?? '{}')) as { messages?: { role: string; content: string }[] };
+    sink.system = body.messages?.find((m) => m.role === 'system')?.content ?? '';
+    return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(content) } }], usage: { cost: 0.0001 } }), { status: 200 });
+  }) as unknown as typeof fetch;
+  return new LlmClient('k', f);
+}
+
 describe('renderReplyHtml', () => {
   it('escapes and paragraph-wraps plain text (no raw HTML survives)', () => {
     const h = renderReplyHtml('Hi <script>x</script>\n\nThanks');
@@ -40,5 +50,22 @@ describe('draftReply', () => {
   it('returns null when the LLM has no key', async () => {
     const store = new TenantStore(env.DB, 'a.myshopify.com');
     expect(await draftReply(new LlmClient(undefined), store, CFG, { subject: 's', conversation: 'b', category: 'other' })).toBeNull();
+  });
+
+  it('instructs the LLM not to guess shipping when a freight line is appended separately', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const sink: { system?: string } = {};
+    const llm = capturingLlm({ bodyText: 'Yes, we ship internationally.', confidence: 85, quotesPriceOrOrder: false }, sink);
+    await draftReply(llm, store, CFG, { subject: 'Shipping', conversation: 'Do you ship to France?', category: 'shipping-returns', shippingHandledSeparately: true });
+    expect(sink.system).toMatch(/appended to your reply automatically/i);
+    expect(sink.system).toMatch(/do NOT state, guess, or hedge about any shipping cost/i);
+  });
+
+  it('omits the shipping instruction when no freight line is appended', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const sink: { system?: string } = {};
+    const llm = capturingLlm({ bodyText: 'Hi there.', confidence: 85, quotesPriceOrOrder: false }, sink);
+    await draftReply(llm, store, CFG, { subject: 's', conversation: 'b', category: 'other' });
+    expect(sink.system).not.toMatch(/appended to your reply automatically/i);
   });
 });

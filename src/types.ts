@@ -21,6 +21,11 @@ export interface Env {
   // W-INBOX-1 safety-net forward: owner's verified Email Routing destination.
   // Unset = no forward (stop forwarding once capture is trusted).
   INBOX_FORWARD_TO?: string;
+  // Freight-grounded delivery replies (Task [7]): a representative CJ variant id
+  // quoted as a proxy for "a typical small pet item" when a customer asks about
+  // international shipping. UNSET = feature dormant (drafter keeps the safe hedge).
+  // Orchestrator sets this to a real flagship vid to activate. See src/inbox/freight.ts.
+  INBOX_FREIGHT_REP_VID?: string;
 }
 
 export interface TenantRow {

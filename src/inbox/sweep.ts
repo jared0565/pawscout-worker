@@ -15,6 +15,9 @@ import { invoiceSendDecision } from './invoice-floor';
 import { createDraftOrder } from '../shopify-drafts';
 import { sendInvoice } from './send-invoice';
 import { hasScope } from './scopes';
+import { Vault } from '../vault';
+import { CjClient, CjTokenManager, cjFetchFromEnv } from '../cj';
+import { isShippingIntent, deriveDestinationCountry, countryLabel, buildShippingLine } from './freight';
 import type { ThreadRow, InvoiceLineItem } from './types';
 
 const SWEEP_BATCH = 15;          // threads classified per shop per run
@@ -252,24 +255,90 @@ async function draftOne(env: Env, store: TenantStore, cfg: TenantConfig, thread:
   const got = await store.getThreadWithMessages(thread.id);
   if (!got) return;
   const conversation = got.messages.filter((m) => m.direction === 'inbound').map((m) => m.body_text ?? '').join('\n\n---\n\n');
+
+  // Freight-grounded delivery line: when the customer asks about shipping to a
+  // confidently-derived NON-GB destination, compute a REAL CJ freight quote and
+  // append it deterministically (the LLM never emits the figure). Resilient —
+  // any failure leaves shippingLine null and the drafter keeps its safe hedge.
+  const shippingLine = await buildShippingLineForThread(env, store, cfg, thread, conversation, fetchImpl);
+
   const llm = new LlmClient(env.OPENROUTER_API_KEY, fetchImpl);
-  const draft = await draftReply(llm, store, cfg, { subject: thread.subject ?? '', conversation, category: thread.primary_category ?? 'other' });
+  const draft = await draftReply(llm, store, cfg, {
+    subject: thread.subject ?? '', conversation, category: thread.primary_category ?? 'other',
+    shippingHandledSeparately: !!shippingLine
+  });
   if (!draft) return; // degrade: retry next sweep
 
+  // Auto-send gating is computed on the LLM body ONLY (not the appended freight
+  // line) so the trusted worker figure doesn't itself trip mentionsMoney. The
+  // freight line is a PROXY estimate, so when present we force HITL review (see
+  // composeDeliveryDraft) until the figure is trusted in practice.
   const sinceIso = new Date(Date.now() - 86400_000).toISOString();
   const recentAutoCount = await store.recentAutoSendCount(thread.contact_email, sinceIso);
   const decision = autoSendDecision({
     autosend: cfg.inbox.autosend, confidence: draft.confidence, threshold: cfg.inbox.autoConfidenceThreshold,
     quotesPriceOrOrder: draft.quotesPriceOrOrder, bodyText: draft.bodyText, category: thread.primary_category ?? 'other', recentAutoCount
   });
+  const composed = composeDeliveryDraft(draft, shippingLine);
   const draftId = await store.insertDraft({
-    threadId: thread.id, bodyText: draft.bodyText, bodyHtml: renderReplyHtml(draft.bodyText),
-    confidence: draft.confidence, quotesPriceOrder: draft.quotesPriceOrOrder || mentionsMoney(draft.bodyText),
+    threadId: thread.id, bodyText: composed.bodyText, bodyHtml: renderReplyHtml(composed.bodyText),
+    confidence: draft.confidence, quotesPriceOrder: composed.quotesPriceOrder,
     holdReasons: decision.holdReasons, model: cfg.inbox.replyModel || cfg.llm.model, status: 'pending'
   });
-  if (decision.send) {
+  // A proxy freight figure always gets human review, even under Auto.
+  if (decision.send && !shippingLine) {
     const draftRow = await store.getDraft(draftId);
     if (draftRow) await sendReply(env, store, cfg, thread, draftRow, undefined, fetchImpl);
+  }
+}
+
+/**
+ * Combine the LLM draft with an optional worker-computed freight line into the
+ * final reply body + the money-hold flag. PURE (no I/O) so the deliberate
+ * decisions are unit-testable:
+ *  - the trusted, claim-safe freight figure is appended AFTER the LLM body and is
+ *    NOT fed into mentionsMoney — only the LLM body can trip the money-hold;
+ *  - quotesPriceOrder still becomes true when a freight line is present, so the
+ *    draft is flagged as quoting a figure (and held for review under Auto).
+ */
+export function composeDeliveryDraft(
+  draft: { bodyText: string; quotesPriceOrOrder: boolean },
+  shippingLine: string | null
+): { bodyText: string; quotesPriceOrder: boolean } {
+  const llmQuotes = draft.quotesPriceOrOrder || mentionsMoney(draft.bodyText);
+  if (!shippingLine) return { bodyText: draft.bodyText, quotesPriceOrder: llmQuotes };
+  return {
+    bodyText: `${draft.bodyText.trimEnd()}\n\n${shippingLine}`,
+    // The figure is ours (trusted), but it IS a price figure — mark it so the
+    // draft carries the price flag and is reviewed before sending.
+    quotesPriceOrder: true
+  };
+}
+
+/**
+ * Resolve a real CJ freight line for the thread's destination, or null. Fully
+ * guarded: never throws and never blocks the draft. Returns null fast when the
+ * enquiry isn't shipping-related, the destination is ambiguous/GB, CJ isn't
+ * connected, or the lookup fails.
+ */
+async function buildShippingLineForThread(
+  env: Env, store: TenantStore, cfg: TenantConfig, thread: ThreadRow, conversation: string, fetchImpl: typeof fetch
+): Promise<string | null> {
+  try {
+    const repVid = env.INBOX_FREIGHT_REP_VID?.trim();
+    if (!repVid) return null; // feature dormant until a representative variant is configured
+    const subject = thread.subject ?? '';
+    if (!isShippingIntent(thread.primary_category, subject, conversation)) return null;
+    const country = deriveDestinationCountry(conversation, subject, thread.contact_email);
+    if (!country || country === 'GB') return null; // unknown/ambiguous/home market → safe hedge
+    if (!(await store.getSupplierCredential('cj'))) return null;
+    const f = cjFetchFromEnv(env);
+    const vault = await Vault.fromMasterKey(env.PAWSCOUT_MASTER_KEY);
+    const cj = new CjClient(() => new CjTokenManager(store, vault, f).getToken(), f);
+    return await buildShippingLine(cj, cfg, country, countryLabel(country), repVid);
+  } catch (e) {
+    console.warn(`inbox shipping-line resolve failed for ${thread.id}: ${(e as Error).message}`);
+    return null;
   }
 }
 
