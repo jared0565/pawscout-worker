@@ -18,6 +18,13 @@ The third tier earns its place **only because it is system-guaranteed and on a d
 
 ---
 
+## Implementation refinements (during planning, 2026-06-19)
+
+These supersede the noted sections; the plan is authoritative.
+
+- **Storage (supersedes §7's "models column"):** there is no separate `models` DB column — `tenant_config` stores config in JSON columns merged via `{...DEFAULT, ...JSON.parse(row.x||'{}')}`. `models` therefore **nests inside the existing `llm` JSON column** and is exposed in memory as **`cfg.llm.models`** (not a top-level `cfg.models`); `LlmConfig = { enabled, scoreThreshold, models }`. It persists through the existing `seedConfig`/`saveLlm` path — **no schema migration**. The null-sentinel becomes: *the `models` key is absent in the parsed `llm` blob → derive read-side in `getConfig`.*
+- **Blank selection → catalog head, not skip-tier (supersedes §3's "blank → omitted / skip"):** a blank role **primary** resolves to `CURATED_MODELS[0].slug` (the vision-capable menu head) — this is the approved "top of the dashboard menu" default, so the OpenRouter `models[]` array is never empty and a fresh/unconfigured tenant still runs on a real OpenRouter top model. Only a blank **`fallback`** is omitted from the array. The OpenAI `gpt-5.4-mini` floor fires solely when the whole OpenRouter call fails. The only model-slug references in logic are `CURATED_MODELS[0]` (the menu) and `DEFAULT_MODEL` (the deliberate OpenAI constant).
+
 ## 1. Two roles, and the full call-site map
 
 Every model-bearing call funnels through `LlmClient.json()` (`src/llm.ts:53`). There are exactly **8** API call sites (verified exhaustive by a transport-bounded census). Each maps to one of two roles:
