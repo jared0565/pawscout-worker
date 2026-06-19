@@ -50,7 +50,7 @@ export const CURATED_MODELS = [
   { slug: 'google/gemini-2.5-flash',         label: 'Gemini 2.5 Flash',        vision: true  },
   { slug: 'google/gemini-3.1-pro-preview',   label: 'Gemini 3.1 Pro (preview)',vision: true  }, // REQUIRED
   { slug: 'openai/gpt-5-mini',               label: 'GPT-5 mini',              vision: true  },
-  { slug: 'mistralai/mistral-medium-3.5',    label: 'Mistral Medium 3.5',      vision: true  },
+  { slug: 'mistralai/mistral-medium-3-5',    label: 'Mistral Medium 3.5',      vision: true  },
   { slug: 'moonshotai/kimi-k2.6',            label: 'Kimi K2.6',               vision: true  },
   { slug: 'deepseek/deepseek-v4-flash',      label: 'DeepSeek V4 Flash',       vision: false }, // ultra-cheap, text
   { slug: 'qwen/qwen3.7-max',                label: 'Qwen3.7 Max',             vision: false },

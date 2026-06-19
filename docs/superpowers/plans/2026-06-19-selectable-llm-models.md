@@ -12,7 +12,7 @@
 
 - **Source spec (verbatim authority):** `docs/superpowers/specs/2026-06-19-selectable-llm-models-design.md`. Where this plan and the spec disagree, the spec governs — escalate.
 - **Curated list is exactly these 9 slugs**, vision flags as written, `google/gemini-3.1-pro-preview` MUST always appear, Opus/Sonnet excluded:
-  `anthropic/claude-haiku-4.5`(v), `google/gemini-2.5-flash-lite`(v), `google/gemini-2.5-flash`(v), `google/gemini-3.1-pro-preview`(v), `openai/gpt-5-mini`(v), `mistralai/mistral-medium-3.5`(v), `moonshotai/kimi-k2.6`(v), `deepseek/deepseek-v4-flash`(text), `qwen/qwen3.7-max`(text).
+  `anthropic/claude-haiku-4.5`(v), `google/gemini-2.5-flash-lite`(v), `google/gemini-2.5-flash`(v), `google/gemini-3.1-pro-preview`(v), `openai/gpt-5-mini`(v), `mistralai/mistral-medium-3.5`(v), `moonshotai/kimi-k2.6`(v), `deepseek/deepseek-v4-flash`(text), `qwen/qwen3.7-max`(text). (Mistral slug uses a hyphen: `mistralai/mistral-medium-3-5`.)
 - **`/api/models` must NEVER error** — on any fetch/parse failure return the curated list with `promptPriceM`/`completionPriceM = null` and the static `vision` flag.
 - **Never silently change a tenant's saved model:** a currently-saved slug not in the curated list is preserved as a selected `<option>`.
 - **Vision = `architecture.input_modalities` includes `"image"`** (live), else the static `vision` hint.
