@@ -4,7 +4,7 @@ import { TenantStore, purgeUnusedWarehouse } from '../src/tenant-store';
 import { replenishWarehouse, refreshWarehouseStock } from '../src/jobs';
 import { searchBackfill } from '../src/proxy/search';
 import { confirmAndImport, getDetailPreferWarehouse } from '../src/proxy/import';
-import { DEFAULT_GATES, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, DEFAULT_INBOX, type TenantConfig } from '../src/types';
+import { DEFAULT_GATES, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, DEFAULT_INBOX, DEFAULT_SEMANTIC, type TenantConfig } from '../src/types';
 import type { CjClient, CjSearchItem, CjDetail } from '../src/cj';
 import type { AdminGraphql } from '../src/shopify-admin';
 
@@ -187,6 +187,36 @@ describe('replenishWarehouse', () => {
     // p0 warehoused, p1 imported → only p2 admitted (3 total in category, incl. pre-seeded p0... count available)
     expect(await store.getWarehouseProduct('p2')).not.toBeNull();
     expect(await store.getWarehouseProduct('p1')).toBeNull();
+  });
+
+  it('sources a collection with its cached semantic expansions (Task 6)', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await store.upsertSemanticTerm('pet-toys', 'pet toys', ['dog rope'], 'test');
+    const searched: string[] = [];
+    const cj = {
+      search: async (kw: string) => { searched.push(kw); return items(2); },
+      detail: async (pid: string) => detailOf(pid, 50),
+      stockByPid: async (pid: string) => new Map([[`v-${pid}`, 50]]),
+      freightEstimate: async () => null
+    } as unknown as CjClient;
+    await replenishWarehouse(store, cj, CFG, { pause: async () => {} });
+    expect(searched).toContain('pet toys'); // base collection noun
+    expect(searched).toContain('dog rope'); // expansion widened the sourcing set
+  });
+
+  it('ignores semantic expansions when semantic.enabled is false (Task 6)', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await store.upsertSemanticTerm('pet-toys', 'pet toys', ['dog rope'], 'test');
+    const searched: string[] = [];
+    const cj = {
+      search: async (kw: string) => { searched.push(kw); return items(2); },
+      detail: async (pid: string) => detailOf(pid, 50),
+      stockByPid: async (pid: string) => new Map([[`v-${pid}`, 50]]),
+      freightEstimate: async () => null
+    } as unknown as CjClient;
+    await replenishWarehouse(store, cj, { ...CFG, semantic: { ...DEFAULT_SEMANTIC, enabled: false } }, { pause: async () => {} });
+    expect(searched).toContain('pet toys');
+    expect(searched).not.toContain('dog rope'); // disabled → no expansion sourcing
   });
 });
 

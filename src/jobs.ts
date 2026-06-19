@@ -3,6 +3,7 @@ import { chooseOrigin, CjClient, CjTokenManager, cjFetchFromEnv, type CjSearchIt
 import { makeAdminGraphql, type AdminGraphql } from './shopify-admin';
 import { TenantStore, listActiveShops, purgeExpiredSearchCache, purgeUnusedWarehouse, trimOldLogs } from './tenant-store';
 import { liveCjPasses, normalizeKeyword, CACHE_TTL_DAYS, isLikelyPetProduct, titleSignature } from './proxy/search';
+import { getExpansions } from './semantic/library';
 import { confirmAndImport, getCachedDetail, resolveCategory, reconcileAddonVisibility, reconcileHeroImages, reconcileDescriptions, reconcileCategories } from './proxy/import';
 import { enableTracking, getPrimaryLocationId, productInventoryItems, setInventoryQuantities, setSupplierMetafields, updateVariantPrices, MAX_TRACKED_QTY } from './proxy/inventory';
 import { retailPriceGbp } from './pricing';
@@ -398,14 +399,23 @@ export async function replenishWarehouse(
     }
   }
 
-  // 2) categories below warehouse depth
+  // 2) categories below warehouse depth. Each collection sources its base noun
+  // ("pet cleaning") PLUS any cached semantic expansions ("dog shampoo", "paw
+  // wash") so a thin category pulls a wider, still-pet-scoped candidate set.
+  // getExpansions is cache-only (semantic disabled/excluded → []); search()'s
+  // budget cap and seenTitleSigs dedupe keep CJ spend and admissions unchanged.
   for (const key of Object.keys(cfg.collectionMap)) {
     if (admitted >= maxAdmits || cjCalls >= maxCjCalls) break;
     let deficit = cfg.floors.warehouseDepth - (await store.countWarehouseAvailableByCategory(key));
     if (deficit <= 0) continue;
-    for (const item of await search(key.replace(/-/g, ' '))) {
+    const baseKw = key.replace(/-/g, ' ');
+    const sourcingKws = [baseKw, ...(await getExpansions(store, cfg, baseKw, key))];
+    for (const kw of sourcingKws) {
       if (deficit <= 0 || admitted >= maxAdmits || cjCalls >= maxCjCalls) break;
-      if (await tryAdmit(item, key, key.replace(/-/g, ' '))) deficit--;
+      for (const item of await search(kw)) {
+        if (deficit <= 0 || admitted >= maxAdmits || cjCalls >= maxCjCalls) break;
+        if (await tryAdmit(item, key, kw)) deficit--;
+      }
     }
   }
 
