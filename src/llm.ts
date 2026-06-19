@@ -9,6 +9,32 @@ const KEYWORD_META_TTL_DAYS = 30;
 export interface LlmUsage { model: string; promptTokens: number; completionTokens: number; costUsd: number }
 export type LlmJson<T> = { ok: true; value: T; usage: LlmUsage } | { ok: false; error: string };
 
+function tryJsonParse(s: string): unknown {
+  try { return JSON.parse(s); } catch { return undefined; }
+}
+
+/**
+ * Extract a JSON value from raw model output, tolerant of the ways models break
+ * `response_format: json_object` in practice: markdown fences, and (the failure
+ * we actually hit in prod) a prose preamble/postamble wrapping the JSON, which
+ * reasoning/preview models emit intermittently. Returns `undefined` when no JSON
+ * can be recovered. (JSON.parse never returns undefined, so it's a safe sentinel.)
+ */
+export function extractJson(raw: string): unknown {
+  const stripped = (raw || '').replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+  const direct = tryJsonParse(stripped);
+  if (direct !== undefined) return direct;
+  // Repair: pull the outermost {...} or [...] out of surrounding prose, earliest first.
+  const candidates = [stripped.match(/\{[\s\S]*\}/), stripped.match(/\[[\s\S]*\]/)]
+    .filter((m): m is RegExpMatchArray => m !== null)
+    .sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
+  for (const m of candidates) {
+    const p = tryJsonParse(m[0]);
+    if (p !== undefined) return p;
+  }
+  return undefined;
+}
+
 /**
  * Thin OpenRouter client (W3). Strict-JSON prompts, validated on parse.
  * NEVER throws into a job — every failure degrades to "no LLM", because the
@@ -41,57 +67,58 @@ export class LlmClient {
           ...opts.images.map((url) => ({ type: 'image_url', image_url: { url } }))
         ]
       : opts.user;
-    try {
-      const resp = await this.fetchImpl(OPENROUTER_URL, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${this.apiKey}`,
-          'Content-Type': 'application/json',
-          'HTTP-Referer': 'https://pawscout.activepaw.co.uk',
-          'X-Title': 'PawScout'
-        },
-        body: JSON.stringify({
-          model: opts.model,
-          max_tokens: opts.maxTokens ?? 1024,
-          response_format: { type: 'json_object' },
-          usage: { include: true }, // OpenRouter returns per-call cost
-          messages: [
-            { role: 'system', content: opts.system },
-            { role: 'user', content: userContent }
-          ]
-        })
-      });
-      if (!resp.ok) return { ok: false, error: `OpenRouter HTTP ${resp.status}` };
-      const data = (await resp.json()) as {
-        choices?: { message?: { content?: string } }[];
-        usage?: { prompt_tokens?: number; completion_tokens?: number; cost?: number };
-        error?: { message?: string };
-      };
-      if (data.error?.message) return { ok: false, error: data.error.message };
-      const raw = data.choices?.[0]?.message?.content ?? '';
-      // Models occasionally wrap JSON in fences despite json_object mode.
-      const text = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
-      let parsed: unknown;
+    const requestBody = JSON.stringify({
+      model: opts.model,
+      max_tokens: opts.maxTokens ?? 1024,
+      response_format: { type: 'json_object' },
+      usage: { include: true }, // OpenRouter returns per-call cost
+      messages: [
+        { role: 'system', content: opts.system },
+        { role: 'user', content: userContent }
+      ]
+    });
+    // Up to 2 attempts: the non-JSON / parse / validation failures are
+    // intermittent (reasoning/preview models), so one retry recovers most of
+    // them. HTTP/API errors return immediately (an instant retry won't help).
+    let lastError = 'unknown';
+    for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        parsed = JSON.parse(text);
-      } catch {
-        return { ok: false, error: 'LLM returned non-JSON' };
+        const resp = await this.fetchImpl(OPENROUTER_URL, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${this.apiKey}`,
+            'Content-Type': 'application/json',
+            'HTTP-Referer': 'https://pawscout.activepaw.co.uk',
+            'X-Title': 'PawScout'
+          },
+          body: requestBody
+        });
+        if (!resp.ok) return { ok: false, error: `OpenRouter HTTP ${resp.status}` };
+        const data = (await resp.json()) as {
+          choices?: { message?: { content?: string } }[];
+          usage?: { prompt_tokens?: number; completion_tokens?: number; cost?: number };
+          error?: { message?: string };
+        };
+        if (data.error?.message) return { ok: false, error: data.error.message };
+        const parsed = extractJson(data.choices?.[0]?.message?.content ?? '');
+        if (parsed === undefined) { lastError = 'LLM returned non-JSON'; continue; }
+        const value = opts.validate(parsed);
+        if (value === null) { lastError = 'LLM JSON failed validation'; continue; }
+        return {
+          ok: true,
+          value,
+          usage: {
+            model: opts.model,
+            promptTokens: data.usage?.prompt_tokens ?? 0,
+            completionTokens: data.usage?.completion_tokens ?? 0,
+            costUsd: data.usage?.cost ?? 0
+          }
+        };
+      } catch (e) {
+        lastError = (e as Error).message;
       }
-      const value = opts.validate(parsed);
-      if (value === null) return { ok: false, error: 'LLM JSON failed validation' };
-      return {
-        ok: true,
-        value,
-        usage: {
-          model: opts.model,
-          promptTokens: data.usage?.prompt_tokens ?? 0,
-          completionTokens: data.usage?.completion_tokens ?? 0,
-          costUsd: data.usage?.cost ?? 0
-        }
-      };
-    } catch (e) {
-      return { ok: false, error: (e as Error).message };
     }
+    return { ok: false, error: lastError };
   }
 }
 
@@ -219,8 +246,10 @@ export async function pickHeroImage(
       'You curate the image gallery for a pet-product listing. ' +
       'You are given the product TITLE and its images in order (image index 0 is shown first). Do two things:\n' +
       '1) HERO: pick the single image that best represents the WHOLE product as the title describes it. ' +
-      'For a "set"/"kit"/"bundle"/"with X & Y" title, prefer the image showing ALL the included items together, NOT one component alone; ' +
-      'prefer a clear, well-lit product shot over packaging-only, a size chart, a text/infographic graphic, a lifestyle-only scene, or an extreme close-up of one detail.\n' +
+      'For a "set"/"kit"/"bundle"/"with X & Y" title, prefer the image showing ALL the included items together, NOT one component alone. ' +
+      'STRONGLY prefer a clean, well-lit photo of the product ITSELF with NO overlaid marketing/banner text baked into the image, NO watermarks, and NO cartoon or illustrated mascots — ' +
+      'over packaging-only, a size chart, any text/infographic/promotional graphic, a lifestyle-only scene, or an extreme close-up of one detail. ' +
+      'A photo with large overlaid promo text or a cartoon mascot looks unprofessional; choose it as hero ONLY if no cleaner plain product photo exists in the set.\n' +
       '2) DROP: list the indices of images that DO NOT BELONG to this listing — an image showing a DIFFERENT animal than the title names (e.g. the title says "dog" but the image shows a cat), an unrelated product, or a near-duplicate. ' +
       'Be CONSERVATIVE: only drop an image you are confident is incongruent with the title; when unsure, KEEP it (do not drop). The hero must NOT be in drop. ' +
       'If the title names an animal, the hero MUST feature that animal when any image does.\n' +

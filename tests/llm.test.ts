@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
-import { LlmClient, curateProduct, classifyKeyword, getKeywordMeta, pickHeroImage, rewriteDescription } from '../src/llm';
+import { LlmClient, extractJson, curateProduct, classifyKeyword, getKeywordMeta, pickHeroImage, rewriteDescription } from '../src/llm';
 import { replenishWarehouse } from '../src/jobs';
 import { searchBackfill } from '../src/proxy/search';
 import { TenantStore } from '../src/tenant-store';
@@ -65,6 +65,33 @@ describe('LlmClient', () => {
     const llm = new LlmClient('k', llmFetch(null, { raw: '```json\n{"a":2}\n```' }));
     const r = await llm.json({ model: 'm/x', system: 's', user: 'u', validate: (v) => v as { a: number } });
     expect(r.ok && r.value.a === 2).toBe(true);
+  });
+
+  it('recovers JSON wrapped in prose preamble/postamble (the prod non-JSON failure)', async () => {
+    const llm = new LlmClient('k', llmFetch(null, { raw: 'Here is the result:\n{"a":7}\nHope that helps!' }));
+    const r = await llm.json({ model: 'm/x', system: 's', user: 'u', validate: (v) => v as { a: number } });
+    expect(r.ok && r.value.a === 7).toBe(true);
+  });
+
+  it('retries once and recovers when the first response is non-JSON', async () => {
+    let n = 0;
+    const fetchImpl = (async () => {
+      n++;
+      const content = n === 1 ? 'thinking… no json yet' : JSON.stringify({ a: 5 });
+      return new Response(JSON.stringify({ choices: [{ message: { content } }], usage: { cost: 0.0001 } }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const llm = new LlmClient('k', fetchImpl);
+    const r = await llm.json({ model: 'm/x', system: 's', user: 'u', validate: (v) => v as { a: number } });
+    expect(r.ok && r.value.a === 5).toBe(true);
+    expect(n).toBe(2); // retried exactly once
+  });
+
+  it('extractJson handles fences, prose-wrapped objects/arrays, and unrecoverable text', () => {
+    expect(extractJson('{"a":1}')).toEqual({ a: 1 });
+    expect(extractJson('```json\n{"a":2}\n```')).toEqual({ a: 2 });
+    expect(extractJson('Here you go: {"a":3} thanks')).toEqual({ a: 3 });
+    expect(extractJson('Sure! ["x","y"] done')).toEqual(['x', 'y']);
+    expect(extractJson('sorry, I cannot')).toBeUndefined();
   });
 
   it.each([
