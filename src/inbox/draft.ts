@@ -6,8 +6,10 @@ import type { DraftResult } from './types';
 // Minimal baked-in store facts. The owner extends/overrides voice + specifics via
 // cfg.inbox.replyGuidance (which is appended verbatim below).
 const STORE_FACTS =
-  'Active Paw is a UK online pet-care store (dogs and cats). Standard UK delivery is a few working days. ' +
-  '30-day returns on unused items. Do not invent prices, delivery dates, discounts or stock promises.';
+  'Active Paw is a UK pet-care store (dogs and cats) that also ships internationally to most countries via our supplier network. ' +
+  'UK delivery is a few working days; international delivery times and costs vary by country. ' +
+  'Never tell a customer we cannot ship to their country — if you do not have the exact rate, say we can ship there and offer to confirm the cost and timeframe. ' +
+  '30-day returns on unused items. Do not invent specific prices, delivery dates, discounts or stock promises.';
 
 function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
