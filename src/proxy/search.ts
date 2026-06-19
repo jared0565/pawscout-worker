@@ -138,6 +138,31 @@ export function signaledCategory(title: string): string | null {
   return matched.size === 1 ? [...matched][0] : null;
 }
 
+// --- Live-CJ category gate (LLM-free, raw-feed only) ---
+// CJ's own top-level category (oneCategoryName) is independent of the title.
+// CJ MIS-FILES some real pet items into catch-all tops (Home/Garden, Sports),
+// so a top category can be trusted to DROP but not to ADMIT. These markers are
+// tops that never legitimately hold a pet product → a match is a hard drop even
+// when the title carries a pet token (the jewelry / phone-case / human-shampoo
+// false positives the title floor alone misses). Matched as case-insensitive
+// substrings of oneCategoryName; extend when a new non-pet top bearing
+// pet-token items is observed in the live feed.
+const HARD_DROP_TOP_CATEGORIES = [
+  'jewelry', 'phone', 'beauty', 'apparel', 'clothing', 'electronics', 'automobile', 'motorcycle'
+];
+
+/**
+ * Live-CJ category gate: reject only when CJ's TOP category is unambiguously
+ * non-pet. Blank/absent or an ambiguous catch-all → admit (defer to the title
+ * pet floor). Composes WITH isPetProductStrict — it never replaces it, so the
+ * change is additive: an absent category behaves exactly as before.
+ */
+export function categoryAdmitsLiveCj(topCategory?: string): boolean {
+  const t = (topCategory || '').toLowerCase();
+  if (!t) return true; // no category signal → defer to the title floor
+  return !HARD_DROP_TOP_CATEGORIES.some((m) => t.includes(m));
+}
+
 // Species vocabulary — the single most important relevance signal in a
 // pet store (a "dog toy" search must never show cat products).
 const DOG_WORDS = new Set(['dog', 'dogs', 'puppy', 'puppies', 'pup', 'pups', 'canine', 'doggy', 'doggie']);
@@ -303,18 +328,21 @@ export async function searchBackfill(
   // --- 2) live CJ fallback (cached per keyword for 30 days) ---
   if (cards.length < limit && (opts.liveFallback ?? true)) {
     let items: CjSearchItem[];
-    const cached = await store.getSearchCache(`kw:${kw}`);
+    // kw2: cache namespace — bumped from kw: when topCategory was added so the
+    // category gate takes effect on already-cached hot keywords instead of
+    // waiting up to CACHE_TTL_DAYS for stale (category-less) entries to expire.
+    const cached = await store.getSearchCache(`kw2:${kw}`);
     if (cached) {
       items = JSON.parse(cached);
     } else {
       items = await cj.search(kw);
-      await store.putSearchCache(`kw:${kw}`, JSON.stringify(items), CACHE_TTL_DAYS);
+      await store.putSearchCache(`kw2:${kw}`, JSON.stringify(items), CACHE_TTL_DAYS);
     }
     // Live-CJ PET FLOOR: CJ keyword search returns human/baby/car products too (a bare
     // "shampoo" surfaces human shampoo). Require an explicit pet signal on the raw CJ
     // title. Species queries ("dog shampoo") are already gated by liveCjPasses; the floor
     // earns its keep on bare terms like "shampoo"/"brush"/"nail clipper".
-    const gated = items.filter((i) => !seen.has(i.pid) && liveCjPasses(i, cfg.gates, kw) && isPetProductStrict(i.nameEn));
+    const gated = items.filter((i) => !seen.has(i.pid) && liveCjPasses(i, cfg.gates, kw) && categoryAdmitsLiveCj(i.topCategory) && isPetProductStrict(i.nameEn));
     const links = await store.getLinks(gated.map((i) => i.pid));
     for (const item of gated) {
       if (cards.length >= limit) break;
