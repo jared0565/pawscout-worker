@@ -105,13 +105,13 @@ Each hop carries `{ provider: 'openrouter' | 'openai', model }`. Request buildin
 | Model field | `models: [primary, fallback]` (array) | `model: "gpt-5.4-mini"` (single) |
 | Token cap | `max_tokens` | **`max_completion_tokens`** |
 | `usage:{include:true}` | present (OpenRouter cost) | **removed** (OpenAI rejects it) |
-| `reasoning_effort` | n/a | **`'low'`** for small-cap roles, and cap floored (see below) |
+| `reasoning_effort` | n/a | **`'medium'`** (uniform), with cap floored (see below) |
 | `temperature` | omitted (unchanged) | omitted — GPT-5 reasoning models 400 on any non-default |
 | `response_format` | `{type:'json_object'}` | `{type:'json_object'}` (identical) |
 | Images | `image_url` content parts | **identical** — `image_url` parts, remote URL works |
 | Cost | `data.usage.cost` | **computed** from tokens × `DEFAULT_MODEL_PRICE` |
 
-**Reasoning-token guard (critical):** `gpt-5.4-mini` is a reasoning model; `max_completion_tokens` bounds reasoning **plus** visible output. The small caps (`pickHeroImage` 200, `classifyKeyword` 300) would be consumed by reasoning, yielding empty content. For the OpenAI hop: set `reasoning_effort: 'low'` and floor the cap (e.g. `max_completion_tokens = max(requested, 1500)`).
+**Reasoning-token guard (critical):** `gpt-5.4-mini` is a reasoning model; `max_completion_tokens` bounds reasoning **plus** visible output. The small caps (`pickHeroImage` 200, `classifyKeyword` 300) would be consumed by reasoning, yielding empty content. For the OpenAI hop: set `reasoning_effort: 'medium'` (the chosen quality/latency point for a rarely-fired floor) and floor the cap at **`max_completion_tokens = max(requested, 3000)`** — generous headroom so medium's deeper reasoning cannot starve the visible output. (Validated live at `'low'`+1500 with `finish_reason:"stop"`; the build-time A/B re-confirms `'stop'` holds at `'medium'`+3000 on real curation/hero prompts and can dial a role to `'high'` via config if output ever weakens during an outage.)
 
 **Availability (must be provider-aware):**
 - `llm.available` → `true` if **either** key is present.
@@ -170,9 +170,10 @@ The inbox carries its **own** persisted model selectors — this must be fully a
 ## Testing
 
 - **Resolver:** chain order; blanks dropped; dedupe primary==fallback; image/text role mapping.
-- **Provider routing (mocked fetch):** OpenRouter hop sends `models:[]` + `max_tokens` + `usage:{include:true}`; OpenAI hop sends single `model` + `max_completion_tokens` + `reasoning_effort:'low'` + no `usage` field + correct URL/key/headers.
+- **Provider routing (mocked fetch):** OpenRouter hop sends `models:[]` + `max_tokens` + `usage:{include:true}`; OpenAI hop sends single `model` + `max_completion_tokens` + `reasoning_effort:'medium'` + no `usage` field + correct URL/key/headers.
 - **Tier walk:** hops 1+2 forced to fail → OpenAI hop serves; 400 invalid_request → stop (no advance); 429 insufficient_quota → advance; 429 rate_limit → retry then advance; parse-fail on OpenRouter → advance once → validation-fail on OpenAI → degrade.
-- **Reasoning guard:** small-cap OpenAI call floors `max_completion_tokens` and sets `reasoning_effort:'low'`.
+- **Reasoning guard:** small-cap OpenAI call floors `max_completion_tokens` at 3000 and sets `reasoning_effort:'medium'`; assert `finish_reason !== 'length'` / non-empty content.
+- **Effort A/B (build-time):** low vs medium on real catalog products (titles + image sets) — measure format adherence, agreement with the primary model, tokens, latency; confirm medium does not truncate at the 3000 floor.
 - **Cost:** OpenAI hop logs non-zero `costUsd` from pinned price; tier-3 activation emits its signal.
 - **Migration:** NULL `models` + populated legacy `llm` → derived `{image,text,fallback}` with `image == previously-effective slug` and `fallback` non-empty; `'{}'` models treated as explicitly-empty; `enabled`/`scoreThreshold` preserved.
 - **Inbox absorption:** an inbox save persists **no** model slug; `classifyEmail`/`draftReply`/`proposeInvoice` resolve via the text chain.
