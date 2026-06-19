@@ -14,7 +14,7 @@ function suggestFetch(map: Record<string, string[]>, seen: string[] = []): typeo
   }) as unknown as typeof fetch;
 }
 function llmReturning(arr: unknown) {
-  return { available: true, json: async () => ({ ok: true, value: arr }) } as any;
+  return { available: true, jsonChain: async () => ({ ok: true, value: arr }) } as any;
 }
 
 describe('fetchSuggest', () => {
