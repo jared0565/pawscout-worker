@@ -189,8 +189,8 @@ The inbox carries its **own** persisted model selectors — this must be fully a
 
 `OPENAI_API_KEY` is added as a Cloudflare Worker secret (`wrangler secret put OPENAI_API_KEY`). The value is never handled in code review or logs.
 
-## Open decisions for review
+## Resolved decisions (approved 2026-06-19)
 
-1. **Shared fallback is vision-constrained.** One fallback serves both roles, so it must be vision-capable — this removes the only text-only catalog model (`deepseek/deepseek-v4-pro`) from the text fallback slot. Cost impact is marginal (vision models bill on text tokens when no image is sent). Accept + document the coupling (recommended), or split into `fallbackImage`/`fallbackText`?
-2. **Inbox model fields:** drop `classifyModel`/`replyModel` from `InboxConfig` outright after migration (recommended), or retain as permanently-ignored deprecated fields?
-3. **Config home for `enabled`/`scoreThreshold`:** keep a slim `cfg.llm` (recommended, minimal churn to degradation gates), or move them into `cfg.models`?
+1. **Shared fallback is vision-constrained — accepted.** One `models.fallback` serves both roles and must be vision-capable; the only text-only catalog model (`deepseek/deepseek-v4-pro`) is therefore unavailable in the fallback slot (and is a poor fallback regardless — its reasoning-mode JSON quirk can place output in the `reasoning` field). The coupling is documented; it remains user-selectable as a **text primary**.
+2. **Legacy inbox model fields dropped.** `classifyModel`/`replyModel` are removed from `InboxConfig`/`DEFAULT_INBOX` after the read-migration absorbs them into the text role; `validateInboxPayload` no longer accepts or re-persists them.
+3. **`enabled`/`scoreThreshold` stay in a slim `cfg.llm`.** Only the model-slug fields are removed from `LlmConfig`; the behavioral knobs remain first-class to avoid churn to the degradation gates and admission floor.
