@@ -68,6 +68,21 @@ export function isLikelyPetProduct(text: string): boolean {
   return !NONPET_MARKERS.some((m) => t.includes(m));     // no pet signal: reject only on a clear non-pet marker
 }
 
+/**
+ * STRICT live-feed pet gate: REQUIRE an explicit pet signal. Unlike isLikelyPetProduct,
+ * an ambiguous item (no pet token AND no non-pet marker) is REJECTED, not admitted.
+ * Used ONLY on the live-CJ supplier feed, where a non-pet false positive (human/baby/car
+ * shampoo for a bare "shampoo" search) is the worst outcome — precision beats recall on a
+ * supplemental feed. Safe because RAW CJ titles are keyword-stuffed (a real pet product
+ * says "pet/dog/cat"; a human one does not) — note imported store titles are DE-stuffed by
+ * curateProduct, so this gate is only sound on raw CJ results. PET_TOKENS is the recall
+ * lever: if a legitimate pet product is dropped, EXPAND that set — don't drop the gate.
+ */
+export function isPetProductStrict(text: string): boolean {
+  const words = (text || '').toLowerCase().split(/[^a-z0-9]+/);
+  return words.some((w) => PET_TOKENS.has(w));
+}
+
 // --- Title signature for dedupe-at-admission ---
 const TITLE_STOP = new Set(['a', 'an', 'the', 'and', 'or', 'for', 'with', 'of', 'to', 'your', 'in', 'on', 'by', 'pet', 'pets']);
 
@@ -282,7 +297,11 @@ export async function searchBackfill(
       items = await cj.search(kw);
       await store.putSearchCache(`kw:${kw}`, JSON.stringify(items), CACHE_TTL_DAYS);
     }
-    const gated = items.filter((i) => !seen.has(i.pid) && liveCjPasses(i, cfg.gates, kw));
+    // Live-CJ PET FLOOR: CJ keyword search returns human/baby/car products too (a bare
+    // "shampoo" surfaces human shampoo). Require an explicit pet signal on the raw CJ
+    // title. Species queries ("dog shampoo") are already gated by liveCjPasses; the floor
+    // earns its keep on bare terms like "shampoo"/"brush"/"nail clipper".
+    const gated = items.filter((i) => !seen.has(i.pid) && liveCjPasses(i, cfg.gates, kw) && isPetProductStrict(i.nameEn));
     const links = await store.getLinks(gated.map((i) => i.pid));
     for (const item of gated) {
       if (cards.length >= limit) break;

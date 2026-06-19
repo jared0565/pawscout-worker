@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
-import { searchBackfill, normalizeKeyword, relevanceMatch, keywordTokens, liveCjPasses, querySpecies, isLikelyPetProduct, titleSignature, signaledCategory } from '../src/proxy/search';
+import { searchBackfill, normalizeKeyword, relevanceMatch, keywordTokens, liveCjPasses, querySpecies, isLikelyPetProduct, isPetProductStrict, titleSignature, signaledCategory } from '../src/proxy/search';
 import { TenantStore } from '../src/tenant-store';
 import { DEFAULT_GATES, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, DEFAULT_INBOX, type TenantConfig } from '../src/types';
 import type { CjClient, CjSearchItem } from '../src/cj';
@@ -40,6 +40,18 @@ describe('isLikelyPetProduct (mechanical floor)', () => {
   });
   it('admits ambiguous items (no signal either way) — the LLM tightens when up', () => {
     expect(isLikelyPetProduct('Silicone Bath Brush')).toBe(true);
+  });
+});
+
+describe('isPetProductStrict (live-feed pet gate — precision over recall)', () => {
+  it('requires an explicit pet signal: pet products pass, human/ambiguous are rejected', () => {
+    expect(isPetProductStrict('Pet Dog Shampoo Oatmeal Soothing')).toBe(true);
+    expect(isPetProductStrict('Cat Litter Deodorizing Mat')).toBe(true);
+    // the exact bug: a bare "shampoo" search must not surface human shampoo (no pet token)
+    expect(isPetProductStrict('Argan Oil Hair Shampoo 500ml')).toBe(false);
+    // INTENTIONAL: ambiguous title with no pet token is dropped on the supplemental live
+    // feed (isLikelyPetProduct ADMITS this — a deliberately different, stricter gate).
+    expect(isPetProductStrict('Silicone Bath Brush')).toBe(false);
   });
 });
 
@@ -188,5 +200,17 @@ describe('searchBackfill', () => {
     const items = [item({ pid: 'shown' }), item({ pid: 'fresh' })];
     const cards = await searchBackfill(store, fakeCj(items), CFG, 'dog toy', 4, 12, { exclude: ['shown'] });
     expect(cards.map((c) => c.pid)).toEqual(['fresh']);
+  });
+
+  it('drops non-pet products (human shampoo) from the live feed on a bare query; keeps pet ones', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    // 'shampoo' is a non-species query, so liveCjPasses lets both through on title match —
+    // the pet floor is the only thing separating the human product from the pet one.
+    const items = [
+      item({ pid: 'human', nameEn: 'Argan Oil Hair Shampoo 500ml' }),
+      item({ pid: 'pet', nameEn: 'Pet Dog Shampoo Oatmeal Soothing' })
+    ];
+    const cards = await searchBackfill(store, fakeCj(items), CFG, 'shampoo', 1, 12);
+    expect(cards.map((c) => c.pid)).toEqual(['pet']);
   });
 });
