@@ -2,7 +2,8 @@ import type { CjClient, CjSearchItem } from '../cj';
 import type { TenantStore, WarehouseRow } from '../tenant-store';
 import type { Gates, TenantConfig } from '../types';
 import { retailPriceGbp } from '../pricing';
-import { getKeywordMeta } from '../llm';
+import { getKeywordMeta, type LlmClient } from '../llm';
+import { getExpansions } from '../semantic/library';
 
 export const CACHE_TTL_DAYS = 30; // PS retention promise: cached supplier data lives 30 days
 
@@ -250,18 +251,24 @@ export async function searchBackfill(
   query: string,
   storeHits: number,
   limit: number,
-  opts: { liveFallback?: boolean; exclude?: string[] } = {}
+  opts: { liveFallback?: boolean; exclude?: string[]; llm?: LlmClient; fetchImpl?: typeof fetch; ctx?: { waitUntil(p: Promise<unknown>): void } } = {}
 ): Promise<GhostCard[]> {
   const kw = normalizeKeyword(query);
   if (!kw) return [];
 
-  // W3: classified keywords carry cached synonyms (e.g. "puppy chew" → "dog
-  // toy"), widening warehouse matching. Strict mode ignores them — expansion
-  // must never loosen an explicitly strict gate.
+  // Query expansion (skipped entirely in strict mode — expansion must never
+  // loosen an explicitly strict gate). Two sources, unioned:
+  //  - W3 classified-keyword synonyms (e.g. "puppy chew" → "dog toy");
+  //  - the shared pet semantic term library (collection-agnostic), cache-only
+  //    with a background lazy-fill on a miss when llm+ctx are supplied.
+  // The pet floor (isPetProductStrict) still gates the live-CJ results below.
+  const loose = cfg.gates.relevance !== 'strict';
   const meta = await getKeywordMeta(store, kw);
-  const expanded = cfg.gates.relevance !== 'strict' && meta?.synonyms.length
-    ? `${kw} ${meta.synonyms.join(' ')}`
-    : kw;
+  const semExpansions = loose
+    ? await getExpansions(store, cfg, kw, '', { llm: opts.llm, fetchImpl: opts.fetchImpl, ctx: opts.ctx })
+    : [];
+  const extra = [...(loose && meta?.synonyms.length ? meta.synonyms : []), ...semExpansions];
+  const expanded = extra.length ? `${kw} ${extra.join(' ')}` : kw;
   const tokens = keywordTokens(expanded);
 
   const cards: GhostCard[] = [];

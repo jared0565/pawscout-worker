@@ -263,6 +263,25 @@ describe('warehouse-first search', () => {
     const cards = await searchBackfill(store, fakeCj([], counters), CFG, 'dog toy', 0, 3);
     expect(cards).toEqual([]);
   });
+
+  it('widens matching with a seeded semantic expansion (Task 7)', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await warehouse(store, 'A', { title: 'Dog Rope Toy' });
+    // bare "tug" is not in the title; the collection-agnostic expansion 'rope toy' is
+    await store.upsertSemanticTerm('', 'tug', ['rope toy'], 'test');
+    const counters = { search: 0, detail: 0, stock: 0 };
+    const cards = await searchBackfill(store, fakeCj([], counters), CFG, 'tug', 0, 3);
+    expect(cards.map((c) => c.pid)).toContain('A');
+  });
+
+  it('semantic.enabled=false → no expansion widening (Task 7)', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await warehouse(store, 'A', { title: 'Dog Rope Toy' });
+    await store.upsertSemanticTerm('', 'tug', ['rope toy'], 'test');
+    const counters = { search: 0, detail: 0, stock: 0 };
+    const cards = await searchBackfill(store, fakeCj([], counters), { ...CFG, semantic: { ...DEFAULT_SEMANTIC, enabled: false } }, 'tug', 0, 3);
+    expect(cards.map((c) => c.pid)).not.toContain('A');
+  });
 });
 
 describe('preview + confirmAndImport', () => {

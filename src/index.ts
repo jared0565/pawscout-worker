@@ -573,10 +573,12 @@ app.get('/proxy/search', async (c) => {
   // duplicates a card the visitor can already see.
   const exclude = (c.req.query('exclude') ?? '').split(',').map((x) => x.trim()).filter(Boolean).slice(0, 50);
   try {
-    const products = await searchBackfill(p.store, cjFor(c.env, p), p.cfg, q, have, limit, { exclude });
+    // LLM + execution ctx let searchBackfill lazy-fill a semantic-library miss
+    // in the background (never the hot path); the same client classifies the keyword.
+    const llm = new LlmClient(c.env.OPENROUTER_API_KEY);
+    const products = await searchBackfill(p.store, cjFor(c.env, p), p.cfg, q, have, limit, { exclude, llm, ctx: c.executionCtx });
     // W3: classify new keywords in the background (cached 30d) — the NEXT
     // search for this term benefits from category + synonyms. Never hot-path.
-    const llm = new LlmClient(c.env.OPENROUTER_API_KEY);
     if (llm.available && p.cfg.llm.enabled) {
       c.executionCtx.waitUntil(classifyKeyword(llm, p.store, p.cfg, normalizeKeyword(q)));
     }
