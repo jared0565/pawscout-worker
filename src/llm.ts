@@ -4,6 +4,13 @@ import type { CjDetail } from './cj';
 import type { LlmConfig, TenantConfig } from './types';
 
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
+export const OPENAI_URL = 'https://api.openai.com/v1/chat/completions';
+export const DEFAULT_MODEL = 'gpt-5.4-mini';
+export const DEFAULT_MODEL_PRICE = { promptPerM: 0.75, completionPerM: 4.50 };
+export type LlmRole = 'image' | 'text';
+export type ChainTier =
+  | { provider: 'openrouter'; models: string[] }
+  | { provider: 'openai'; model: string };
 const KEYWORD_META_TTL_DAYS = 30;
 
 export interface LlmUsage { model: string; promptTokens: number; completionTokens: number; costUsd: number }

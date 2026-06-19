@@ -13,6 +13,9 @@ export interface Env {
   CJ_RELAY_TOKEN?: string;
   // OpenRouter (W3 LLM curation) — optional: absent = mechanical gates only.
   OPENROUTER_API_KEY?: string;
+  // OpenAI direct (LLM-centralization last-resort floor, gpt-5.4-mini) — optional:
+  // absent = OpenAI tier skipped (OpenRouter tiers + mechanical degradation remain).
+  OPENAI_API_KEY?: string;
   // Firecrawl — optional: scrapes CJ's website search for diagnostics /
   // higher-quality supply (absent = feature off).
   FIRECRAWL_API_KEY?: string;
@@ -65,18 +68,21 @@ export interface Floors {
   stockFloor: number;     // CJ units required to admit/sell a product
 }
 
+export interface ModelsConfig {
+  image?: string;    // OpenRouter slug; blank → CURATED_MODELS[0] (menu head)
+  text?: string;     // OpenRouter slug; blank → CURATED_MODELS[0]
+  fallback?: string; // OpenRouter slug; blank → omitted from the models[] array
+}
+
 /**
- * LLM curation (W3, via OpenRouter). `model` is an OpenRouter slug; per-task
- * overrides are the cost-vs-quality testing knob. Disabled (or key missing) =
+ * LLM behavioral config. Model SELECTION lives in `models` (one dashboard block);
+ * `enabled`/`scoreThreshold` are the behavioral knobs. Disabled (or no key) =
  * mechanical gates only — the system never depends on the LLM to function.
  */
 export interface LlmConfig {
   enabled: boolean;
-  model: string;
-  curationModel?: string;
-  visionModel?: string; // image (vision) QA only; must be a vision-capable model
-  digestModel?: string;
   scoreThreshold: number; // 0-100: minimum relevance score to admit
+  models: ModelsConfig;
 }
 
 /**
@@ -129,7 +135,7 @@ export interface Addons { enabled: boolean; priceMinUsd: number; priceMaxUsd: nu
 export const DEFAULT_GATES: Gates = { popularityFloor: 1, priceMin: 5, priceMax: 80, relevance: 'title' };
 export const DEFAULT_PRICING: Pricing = { multiplier: 2.5, floor: 2.2, minMarginGbp: 6, fxUsdToGbp: 0.78, fxBufferPct: 2 };
 export const DEFAULT_FLOORS: Floors = { warehouseDepth: 20, storeFloor: 8, stockFloor: 10 };
-export const DEFAULT_LLM: LlmConfig = { enabled: true, model: 'anthropic/claude-haiku-4.5', scoreThreshold: 60 };
+export const DEFAULT_LLM: LlmConfig = { enabled: true, scoreThreshold: 60, models: {} };
 // 12 = display cap of the storefront grid (4×3): show what we can sell, never pad.
 export const DEFAULT_ADDONS: Addons = { enabled: true, priceMinUsd: 0.5, priceMaxUsd: 5, poolSize: 12, suppressFromBrowse: true };
 /** Pet semantic term library: query/sourcing term expansion, per collection. */
