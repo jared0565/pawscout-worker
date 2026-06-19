@@ -41,19 +41,20 @@ Five settings become `<select>` dropdowns (each option shows pricing + a vision 
 
 ### 4.1 Curated list (a worker constant — easily editable)
 
-`src/models-catalog.ts` exports `CURATED_MODELS: { slug: string; label: string; vision: boolean }[]`. The `vision` flag is a **static hint** (used as the fallback / when the live lookup misses); it is corrected from live data when available. Default list (cheap-leaning; Opus/Sonnet excluded as too expensive for PS's workload; `gemini-3.1-pro-preview` is the one premium option, explicitly required):
+`src/models-catalog.ts` exports `CURATED_MODELS: { slug: string; label: string; vision: boolean }[]`. The `vision` flag is a **static hint** (used as the fallback / when the live lookup misses); it is corrected from live data when available. Selection is **ACCURACY-first (price secondary)** per the merchant, validated against the live OpenRouter catalog + an adversarial ranking workflow (2026-06-19). Claude **Opus** is excluded (cost); Claude **Sonnet 4.6** is included as the claim-safety accuracy ceiling; `gemini-3.1-pro-preview` is merchant-mandated. Ordered premium → workhorse; 9 of 10 are vision-capable:
 
 ```ts
 export const CURATED_MODELS = [
-  { slug: 'anthropic/claude-haiku-4.5',      label: 'Claude Haiku 4.5',        vision: true  }, // PS reply default
-  { slug: 'google/gemini-2.5-flash-lite',    label: 'Gemini 2.5 Flash Lite',   vision: true  }, // PS classify default
-  { slug: 'google/gemini-2.5-flash',         label: 'Gemini 2.5 Flash',        vision: true  },
-  { slug: 'google/gemini-3.1-pro-preview',   label: 'Gemini 3.1 Pro (preview)',vision: true  }, // REQUIRED
-  { slug: 'openai/gpt-5-mini',               label: 'GPT-5 mini',              vision: true  },
-  { slug: 'mistralai/mistral-medium-3-5',    label: 'Mistral Medium 3.5',      vision: true  },
-  { slug: 'moonshotai/kimi-k2.6',            label: 'Kimi K2.6',               vision: true  },
-  { slug: 'deepseek/deepseek-v4-flash',      label: 'DeepSeek V4 Flash',       vision: false }, // ultra-cheap, text
-  { slug: 'qwen/qwen3.7-max',                label: 'Qwen3.7 Max',             vision: false },
+  { slug: 'google/gemini-3.1-pro-preview',  label: 'Gemini 3.1 Pro (preview)', vision: true  }, // REQUIRED; top multimodal
+  { slug: 'openai/gpt-5.2',                 label: 'GPT-5.2',                  vision: true  }, // frontier text, lowest hallucination
+  { slug: 'anthropic/claude-sonnet-4.6',    label: 'Claude Sonnet 4.6',        vision: true  }, // claim-safety ceiling (pet-health copy)
+  { slug: 'x-ai/grok-4.3',                  label: 'Grok 4.3',                 vision: true  }, // frontier mid-tier workhorse
+  { slug: 'google/gemini-3.5-flash',        label: 'Gemini 3.5 Flash',         vision: true  }, // fast, native structured output
+  { slug: 'openai/gpt-5-mini',              label: 'GPT-5 mini',               vision: true  }, // reliable JSON classify
+  { slug: 'google/gemini-2.5-flash',        label: 'Gemini 2.5 Flash',         vision: true  }, // cheap vision+text workhorse
+  { slug: 'google/gemini-3.1-flash-lite',   label: 'Gemini 3.1 Flash Lite',    vision: true  }, // low-hallucination cheap curation
+  { slug: 'anthropic/claude-haiku-4.5',     label: 'Claude Haiku 4.5',         vision: true  }, // cheap reply default
+  { slug: 'deepseek/deepseek-v4-pro',       label: 'DeepSeek V4 Pro',          vision: false }, // ultra-cheap text triage floor
 ] as const;
 ```
 

@@ -2,17 +2,19 @@ import { describe, it, expect } from 'vitest';
 import { CURATED_MODELS, buildLiveMap, getModelCatalog, MODELS_CACHE_KEY } from '../src/models-catalog';
 
 describe('CURATED_MODELS', () => {
-  it('has exactly 9 models incl. gemini-3.1-pro-preview, excludes opus/sonnet', () => {
+  it('has exactly 10 models incl. gemini-3.1-pro-preview + sonnet-4.6, excludes opus', () => {
     const slugs = CURATED_MODELS.map((m) => m.slug);
-    expect(slugs).toHaveLength(9);
-    expect(slugs).toContain('google/gemini-3.1-pro-preview');
-    expect(slugs.some((s) => s.includes('opus') || s.includes('sonnet'))).toBe(false);
+    expect(slugs).toHaveLength(10);
+    expect(slugs).toContain('google/gemini-3.1-pro-preview'); // merchant-mandated
+    expect(slugs).toContain('anthropic/claude-sonnet-4.6');   // accuracy-first inclusion
+    expect(slugs.some((s) => s.includes('opus'))).toBe(false); // opus stays excluded (cost)
   });
-  it('marks the two text-only models vision:false', () => {
+  it('has exactly one text-only model (the rest are vision-capable)', () => {
     const bySlug = Object.fromEntries(CURATED_MODELS.map((m) => [m.slug, m.vision]));
-    expect(bySlug['deepseek/deepseek-v4-flash']).toBe(false);
-    expect(bySlug['qwen/qwen3.7-max']).toBe(false);
+    expect(bySlug['deepseek/deepseek-v4-pro']).toBe(false);
     expect(bySlug['anthropic/claude-haiku-4.5']).toBe(true);
+    expect(bySlug['google/gemini-3.1-pro-preview']).toBe(true);
+    expect(CURATED_MODELS.filter((m) => !m.vision)).toHaveLength(1);
   });
 });
 
@@ -57,7 +59,7 @@ describe('getModelCatalog', () => {
     const store = fakeStore();
     const fetchImpl = (async () => new Response(JSON.stringify(OR_RESPONSE), { status: 200 })) as any;
     const out = await getModelCatalog(store, fetchImpl);
-    expect(out).toHaveLength(9);
+    expect(out).toHaveLength(10);
     const haiku = out.find((m) => m.slug === 'anthropic/claude-haiku-4.5')!;
     expect(haiku.promptPriceM).toBeCloseTo(1.0);
     expect(haiku.completionPriceM).toBeCloseTo(5.0);
@@ -71,9 +73,9 @@ describe('getModelCatalog', () => {
     const store = fakeStore();
     const fetchImpl = (async () => { throw new Error('network'); }) as any;
     const out = await getModelCatalog(store, fetchImpl);
-    expect(out).toHaveLength(9);
+    expect(out).toHaveLength(10);
     expect(out.every((m) => m.promptPriceM === null)).toBe(true);
-    expect(out.find((m) => m.slug === 'qwen/qwen3.7-max')!.vision).toBe(false);
+    expect(out.find((m) => m.slug === 'deepseek/deepseek-v4-pro')!.vision).toBe(false);
   });
 
   it('uses cache on the second call (no second fetch)', async () => {

@@ -10,20 +10,24 @@ export type CatalogModel = {
 
 // Curated shortlist shown in every console model dropdown. `vision` is a static
 // hint used as a fallback / when the live OpenRouter lookup misses; it is
-// corrected from live data when available. Opus/Sonnet are intentionally
-// excluded (too expensive for PS's workload); gemini-3.1-pro-preview is the one
-// premium option and must always appear even if OpenRouter has not listed the
-// preview yet (it then surfaces with the static hint + price n/a).
+// corrected from live data when available. Selection is ACCURACY-first (price
+// secondary), validated against the live OpenRouter catalog and an adversarial
+// ranking workflow (2026-06-19). Claude OPUS is excluded (cost); Claude Sonnet
+// 4.6 IS included as the claim-safety accuracy ceiling. gemini-3.1-pro-preview
+// is merchant-mandated and must always appear even if OpenRouter has not listed
+// the preview yet (it then surfaces with the static hint + price n/a). Ordered
+// premium → workhorse; 9 of 10 are vision-capable for the image (vision) field.
 export const CURATED_MODELS = [
-  { slug: 'anthropic/claude-haiku-4.5',     label: 'Claude Haiku 4.5',         vision: true  },
-  { slug: 'google/gemini-2.5-flash-lite',   label: 'Gemini 2.5 Flash Lite',    vision: true  },
-  { slug: 'google/gemini-2.5-flash',        label: 'Gemini 2.5 Flash',         vision: true  },
   { slug: 'google/gemini-3.1-pro-preview',  label: 'Gemini 3.1 Pro (preview)', vision: true  },
+  { slug: 'openai/gpt-5.2',                 label: 'GPT-5.2',                  vision: true  },
+  { slug: 'anthropic/claude-sonnet-4.6',    label: 'Claude Sonnet 4.6',        vision: true  },
+  { slug: 'x-ai/grok-4.3',                  label: 'Grok 4.3',                 vision: true  },
+  { slug: 'google/gemini-3.5-flash',        label: 'Gemini 3.5 Flash',         vision: true  },
   { slug: 'openai/gpt-5-mini',              label: 'GPT-5 mini',               vision: true  },
-  { slug: 'mistralai/mistral-medium-3-5',   label: 'Mistral Medium 3.5',       vision: true  },
-  { slug: 'moonshotai/kimi-k2.6',           label: 'Kimi K2.6',                vision: true  },
-  { slug: 'deepseek/deepseek-v4-flash',     label: 'DeepSeek V4 Flash',        vision: false },
-  { slug: 'qwen/qwen3.7-max',               label: 'Qwen3.7 Max',              vision: false },
+  { slug: 'google/gemini-2.5-flash',        label: 'Gemini 2.5 Flash',         vision: true  },
+  { slug: 'google/gemini-3.1-flash-lite',   label: 'Gemini 3.1 Flash Lite',    vision: true  },
+  { slug: 'anthropic/claude-haiku-4.5',     label: 'Claude Haiku 4.5',         vision: true  },
+  { slug: 'deepseek/deepseek-v4-pro',       label: 'DeepSeek V4 Pro',          vision: false },
 ] as const;
 
 export const MODELS_CACHE_KEY = 'openrouter:models';
