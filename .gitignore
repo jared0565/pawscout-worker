@@ -10,3 +10,7 @@ scripts/graphify_*.py
 pyproject.toml
 
 .env
+
+# Playwright MCP / verification artifacts
+.playwright-mcp/
+search-*-after-fix.png
