@@ -57,6 +57,8 @@ If `oneCategoryName` is ever absent — CJ omits it, an old cache entry predates
 
 **But** that same safety hides a failure mode: live CJ results are cached 30 days under `kw:${kw}`. Entries written **before** this deploy are arrays of old-shape `CjSearchItem` (no `topCategory`) → the gate would defer (no-op) on the hottest keywords for up to a month, indistinguishable from "working conservatively." Fix: bump the cache key `kw:` → `kw2:` so the next access on any keyword re-fetches with the feature on and the gate takes effect immediately.
 
+**This `kw:` namespace is SHARED** with the cron sourcing path (`jobs.ts` `replenishWarehouse`'s inner `search`), which by design reuses the same cached CJ results as the storefront feed (its comment: "the same gate the storefront uses"). So **both** consumers must bump to `kw2:` — otherwise the bump silently *splits* a shared cache, double-fetching a rate-limited supplier. `jobs.ts` ignores `topCategory` (its admission is LLM-curated via `tryAdmit`) and does **not** get the category gate; it only follows the key rename so the two paths stay on one category-bearing namespace.
+
 ## Components / changes
 
 ### `src/cj.ts`
@@ -70,7 +72,10 @@ If `oneCategoryName` is ever absent — CJ omits it, an old cache entry predates
 - In the `searchBackfill` live-CJ filter, insert `categoryAdmitsLiveCj(i.topCategory)` **before** `isPetProductStrict(i.nameEn)` (cheap check first; composes with `liveCjPasses`).
 - Bump the live-CJ cache key `kw:${kw}` → `kw2:${kw}` (both `getSearchCache` and `putSearchCache`).
 
-No change to the warehouse branch or imported-product path: those are already LLM-curated at import; the raw-category gate belongs only on the uncurated live feed, exactly like the pet floor.
+### `src/jobs.ts`
+- Bump the shared live-CJ cache key `kw:${kw}` → `kw2:${kw}` in `replenishWarehouse`'s inner `search` (both get + put). **Key rename only** — no category gate (the sourcing path's admission is LLM-curated).
+
+No change to the warehouse admission logic or imported-product path: those are already LLM-curated at import; the raw-category gate belongs only on the uncurated live feed, exactly like the pet floor.
 
 ## Testing
 
