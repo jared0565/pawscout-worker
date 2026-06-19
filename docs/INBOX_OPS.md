@@ -58,14 +58,22 @@ The HITL / Auto toggle and all W-INBOX-2 config live in the PawScout console **I
 | **Auto-send confidence threshold** (`autoConfidenceThreshold`) | 0–100. The drafter must self-report ≥ this to auto-send (default 80). |
 | **Classify model** / **Reply model** | OpenRouter model slugs for the triage and draft passes respectively. |
 
-### 3. Verify Resend honors the custom `Message-ID`
+### 3. Resend Message-ID / threading — verified, no action needed
 
-After deploying, send a real test reply from `support@activepaw.co.uk` via the console "Approve" button. Then inspect the delivered email headers in the recipient's inbox:
+**Finding (Task 14):** re-threading does **not** depend on Resend honoring our custom `Message-ID`. It is robust whether Resend preserves or overrides it.
 
-- Look for the `Message-ID` header. PawScout sets it to `<inbox-{uuid}@activepaw.co.uk>`.
-- If Resend **overrides** the value with its own ID (e.g. `<...@resend.dev>`), the re-threading logic that matches a customer reply back to the original thread will fail.
-  - Mitigation: switch the re-threading lookup to use `X-PawScout-Id` (a custom header PawScout also sends and stores) rather than `Message-ID`. This is the fallback documented in the Task 5 notes and should be implemented before enabling Auto mode.
-- If the `Message-ID` header is preserved as-is, no action is needed.
+Why it's safe (the actual correlation model):
+
+- Our outbound reply sets `In-Reply-To`/`References` to the customer's **last inbound** `Message-ID` (`src/inbox/send.ts`). Resend transmits these caller-supplied headers as-is — this is Resend's own documented threading mechanism ([Reply to receiving emails](https://resend.com/docs/dashboard/receiving/reply-to-emails)).
+- Per RFC 5322 §3.6.4, the customer's next reply carries `References` = our reply's `References` **+** our reply's `Message-ID` → i.e. `[<original-inbound-id>, <our-outbound-id>]`.
+- `TenantStore.matchThread` matches a reply via `message_id IN (in_reply_to, ...references)`. The `<original-inbound-id>` is always stored (it's the customer's own earlier message) and always round-trips in the reply's `References` chain — so the lookup hits **regardless of what `Message-ID` Resend stamped** on our outbound. Subject+contact is the final fallback.
+- The custom `Message-ID` we set (`<inbox-{uuid}@activepaw.co.uk>`) is therefore a redundant tertiary match path, not load-bearing. Even if Resend overrides it with `<...@resend.dev>`, threading still works.
+
+Regression test locking this in: `tests/inbox-send.test.ts` — "re-threads via the round-tripped inbound id even if our outbound Message-ID was never stored".
+
+**Do NOT implement an `X-PawScout-Id` re-threading fallback.** A custom `X-` header does not round-trip: the customer's reply is composed fresh by their client and never echoes our outbound headers, and inbound mail arrives via Cloudflare Email Routing (not a Resend webhook), so there is no return path for it. As a thread-correlation key it would be an inert no-op. (The earlier "Task 5 notes" mitigation rested on an incomplete threading model — superseded by this finding.)
+
+Optional ops sanity check: send a real test reply via "Approve", reply to it from the recipient inbox, and confirm the customer reply lands back on the same thread in the console. It will, via the inbound-id anchor above.
 
 ### 4. Rollout order
 
