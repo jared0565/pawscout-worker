@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
-import { searchBackfill, normalizeKeyword, relevanceMatch, keywordTokens, liveCjPasses, querySpecies, isLikelyPetProduct, isPetProductStrict, titleSignature, signaledCategory } from '../src/proxy/search';
+import { searchBackfill, normalizeKeyword, relevanceMatch, keywordTokens, liveCjPasses, querySpecies, isLikelyPetProduct, isPetProductStrict, titleSignature, signaledCategory, categoryAdmitsLiveCj } from '../src/proxy/search';
 import { TenantStore } from '../src/tenant-store';
 import { DEFAULT_GATES, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, DEFAULT_INBOX, type TenantConfig } from '../src/types';
 import type { CjClient, CjSearchItem } from '../src/cj';
@@ -63,6 +63,21 @@ describe('isPetProductStrict (live-feed pet gate — precision over recall)', ()
     // INTENTIONAL: ambiguous title with no pet token is dropped on the supplemental live
     // feed (isLikelyPetProduct ADMITS this — a deliberately different, stricter gate).
     expect(isPetProductStrict('Silicone Bath Brush')).toBe(false);
+  });
+});
+
+describe('categoryAdmitsLiveCj (CJ top-category hard-drop gate)', () => {
+  it('drops only the probe-confirmed-pet-free tops (incl. both jewelry spellings)', () => {
+    for (const c of ['Jewelry & Watches', 'Jewellery & Watches', 'Phones & Accessories', 'Health, Beauty & Hair']) {
+      expect(categoryAdmitsLiveCj(c)).toBe(false);
+    }
+  });
+  it('DEFERS apparel/electronics/automotive (CJ files real pet SKUs there) and pet/blank tops to the title floor', () => {
+    // These were intentionally NOT hard-dropped: dog raincoats/sweaters, pet feeders/GPS,
+    // dog car-seat covers live under them — the title floor handles non-pet ones.
+    for (const c of ['Pet Supplies', 'Home, Garden & Furniture', 'Sports & Outdoors', 'Apparel', 'Consumer Electronics', 'Automobiles & Motorcycles', '', undefined]) {
+      expect(categoryAdmitsLiveCj(c)).toBe(true);
+    }
   });
 });
 
@@ -223,5 +238,31 @@ describe('searchBackfill', () => {
     ];
     const cards = await searchBackfill(store, fakeCj(items), CFG, 'shampoo', 1, 12);
     expect(cards.map((c) => c.pid)).toEqual(['pet']);
+  });
+
+  it('hard-drops a pet-token item filed under a non-pet CJ top category; keeps the Pet Supplies one', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    // Both titles carry a pet token, so the title floor (isPetProductStrict) ADMITS both —
+    // only CJ's top category separates the fashion necklace from the genuine pet collar tag.
+    const items = [
+      item({ pid: 'NECK', nameEn: 'Dog Mom Necklace Pendant', topCategory: 'Jewelry & Watches' }),
+      item({ pid: 'REAL', nameEn: 'Dog Necklace Tag Pet Collar', topCategory: 'Pet Supplies' })
+    ];
+    const cards = await searchBackfill(store, fakeCj(items), CFG, 'dog necklace', 0, 12);
+    const pids = cards.map((c) => c.pid);
+    expect(pids).toContain('REAL');
+    expect(pids).not.toContain('NECK');
+  });
+
+  it('reads and writes the live-CJ cache under the kw2: namespace (locks the shared key)', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const calls: string[] = [];
+    const cj = fakeCj([item({ pid: 'fresh' })], calls);
+    await searchBackfill(store, cj, CFG, 'dog toy', 0, 12); // miss → fetch → write
+    expect(calls).toEqual(['dog toy']);
+    expect(await store.getSearchCache('kw2:dog toy')).not.toBeNull();
+    expect(await store.getSearchCache('kw:dog toy')).toBeNull(); // not on the old namespace
+    await searchBackfill(store, cj, CFG, 'dog toy', 0, 12); // hit → served from kw2:, no 2nd CJ call
+    expect(calls).toEqual(['dog toy']);
   });
 });

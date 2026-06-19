@@ -131,6 +131,10 @@ export interface CjSearchItem {
   sellPriceUsd: number; // lowest variant price when CJ returns a range
   listedNum: number;
   categoryName: string;
+  /** CJ top-level category (oneCategoryName), populated only when listV2 is
+   *  queried with features=enable_category; '' on the /product/list fallback.
+   *  Drives the live-CJ hard-drop category gate in proxy/search.ts. */
+  topCategory?: string;
 }
 
 export interface CjVariant { vid: string; name: string; sellPriceUsd: number; sku: string; stock?: number }
@@ -220,7 +224,8 @@ function mapCjSearchItems(list: unknown): CjSearchItem[] {
         image: String(p.productImage ?? p.bigImage ?? p.image ?? ''),
         sellPriceUsd: parseCjPrice(p.sellPrice ?? p.price),
         listedNum: Number(p.listedNum ?? p.listedCount ?? 0),
-        categoryName: String(p.categoryName ?? p.threeCategoryName ?? p.categoryNameEn ?? '')
+        categoryName: String(p.categoryName ?? p.threeCategoryName ?? p.categoryNameEn ?? ''),
+        topCategory: String(p.oneCategoryName ?? '')
       };
     })
     .filter((p) => p.pid && p.nameEn);
@@ -310,7 +315,8 @@ export class CjClient {
       keyWord: keyword,
       page: '1',
       size: String(Math.min(pageSize, 100)),
-      orderBy: '0' // 0 = best match (relevance) — explicit, matches the website
+      orderBy: '0', // 0 = best match (relevance) — explicit, matches the website
+      features: 'enable_category' // populates oneCategoryName for the pet-category gate (single string, not a JSON array)
     })) as Record<string, unknown> | null;
     return mapCjSearchItems(extractV2List(data));
   }

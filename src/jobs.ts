@@ -280,7 +280,12 @@ export async function replenishWarehouse(
 
   const search = async (keyword: string, gates = cfg.gates): Promise<CjSearchItem[]> => {
     const kw = normalizeKeyword(keyword);
-    const cached = await store.getSearchCache(`kw:${kw}`);
+    // Shares the kw2: live-CJ cache namespace with proxy/search.ts (bumped from
+    // kw: when topCategory was added) so sourcing and the storefront feed reuse
+    // the same category-bearing CJ results instead of double-fetching a
+    // rate-limited supplier. Sourcing ignores topCategory; the storefront gate
+    // reads it.
+    const cached = await store.getSearchCache(`kw2:${kw}`);
     let items: CjSearchItem[];
     if (cached) {
       items = JSON.parse(cached);
@@ -288,7 +293,7 @@ export async function replenishWarehouse(
       if (cjCalls >= maxCjCalls) return [];
       await spend();
       items = await cj.search(kw);
-      await store.putSearchCache(`kw:${kw}`, JSON.stringify(items), CACHE_TTL_DAYS);
+      await store.putSearchCache(`kw2:${kw}`, JSON.stringify(items), CACHE_TTL_DAYS);
     }
     // Trust listV2 relevance + enforce species/price (then the LLM curates):
     // the same gate the storefront uses, so the warehouse stocks what searches
