@@ -869,6 +869,13 @@ export class TenantStore {
     const row = await this.db.prepare(`SELECT COUNT(*) AS n FROM inbox_invoices WHERE shop = ?1 AND thread_id = ?2 AND created_at >= ?3 AND status IN ('sent','paid')`).bind(this.shop, threadId, sinceIso).first<{ n: number }>();
     return row?.n ?? 0;
   }
+  /** True if a 'failed' invoice for this thread was created at/after sinceIso. Backoff
+   * signal: a thread whose invoice keeps failing must NOT be re-proposed (a fresh LLM
+   * call + draft attempt) every sweep — hasActiveInvoice only covers proposed|sent. */
+  async hasRecentFailedInvoice(threadId: string, sinceIso: string): Promise<boolean> {
+    const row = await this.db.prepare(`SELECT 1 FROM inbox_invoices WHERE shop = ?1 AND thread_id = ?2 AND status = 'failed' AND created_at >= ?3 LIMIT 1`).bind(this.shop, threadId, sinceIso).first<{ 1: number }>();
+    return row !== null;
+  }
   getOpenInvoiceForContact(email: string): Promise<InvoiceRow | null> {
     return this.db.prepare(`SELECT inv.* FROM inbox_invoices inv JOIN inbox_threads t ON t.shop = inv.shop AND t.id = inv.thread_id WHERE inv.shop = ?1 AND t.contact_email = ?2 AND inv.status = 'sent' ORDER BY inv.created_at DESC LIMIT 1`).bind(this.shop, email).first<InvoiceRow>();
   }

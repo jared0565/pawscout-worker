@@ -362,3 +362,38 @@ describe('runInboxClassifySweep — invoice path skips draftOne', () => {
     expect(draft).toBeNull();
   });
 });
+
+// ─── Case 5: recent FAILED invoice → backoff (no re-proposal, no LLM/Shopify call) ──
+describe('proposeInvoiceOne — failed-invoice backoff', () => {
+  it('returns true and does NOT re-propose when a recent failed invoice exists', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const { accessTokenEnc, dekWrapped } = await sealToken();
+    await store.upsertTenant({ accessTokenEnc, dekWrapped, scopes: 'write_draft_orders,read_products' });
+    await store.seedConfig(cfg());
+    await store.saveInbox({ ...DEFAULT_INBOX });
+
+    const tid = await seedBuyingThread(store);
+
+    // A prior auto-invoice attempt failed moments ago (send error, scope loss, etc.).
+    await store.insertInvoice({
+      threadId: tid,
+      lineItems: [{ variantId: VARIANT_ID, sku: 'C-STD', title: 'Dog Collar', qty: 1, priceGbp: 12.50 }],
+      total: 12.50, currency: 'GBP', coverText: 'Failed attempt', confidence: 97,
+      holdReasons: [], status: 'failed'
+    });
+
+    const testEnv = { ...E, OPENROUTER_API_KEY: 'k', RESEND_API_KEY: 'test-resend-key' } as unknown as Env;
+    const threadRow = (await store.getThreadWithMessages(tid))!.thread;
+
+    // Backoff must short-circuit BEFORE any LLM/Shopify call (fetchImpl throws if hit).
+    const fetchImpl = (async () => { throw new Error('fetchImpl should not be called: recent failed invoice → backoff'); }) as unknown as typeof fetch;
+
+    const handled = await proposeInvoiceOne(testEnv, store, cfg(), threadRow, fetchImpl);
+
+    expect(handled).toBe(true);
+    // No new invoice — still just the failed one (not re-proposed).
+    const invoiceRows = await getInvoicesForThread(tid);
+    expect(invoiceRows).toHaveLength(1);
+    expect(invoiceRows[0].status).toBe('failed');
+  });
+});

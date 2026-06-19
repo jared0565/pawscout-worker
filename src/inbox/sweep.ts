@@ -92,6 +92,11 @@ async function classifyOne(env: Env, store: TenantStore, cfg: TenantConfig, shop
  * 7. If decision.create → createDraftOrder + sendInvoice. Else leave proposed for HITL.
  *    Return true.
  */
+// A failed auto-invoice backs off this long before the sweep re-proposes — stops a
+// thread that keeps failing (catalog miss, send error, scope loss) from triggering a
+// fresh LLM call + draft attempt every 15-min sweep.
+const FAILED_INVOICE_BACKOFF_MS = 6 * 60 * 60 * 1000; // 6h
+
 export async function proposeInvoiceOne(
   env: Env,
   store: TenantStore,
@@ -104,6 +109,11 @@ export async function proposeInvoiceOne(
     //    proposed covers the HITL case where the floor held last sweep — avoids
     //    a new LLM call + duplicate proposed row every 15 min until the owner acts.
     if (await store.hasActiveInvoice(thread.id)) return true;
+
+    // 1b. Backoff: a recent FAILED invoice suppresses re-proposal so a persistently-
+    //     failing thread isn't re-attempted (LLM + draft) every sweep until cooldown.
+    const failedSince = new Date(Date.now() - FAILED_INVOICE_BACKOFF_MS).toISOString();
+    if (await store.hasRecentFailedInvoice(thread.id, failedSince)) return true;
 
     // 2. Build conversation and call proposeInvoice.
     const got = await store.getThreadWithMessages(thread.id);

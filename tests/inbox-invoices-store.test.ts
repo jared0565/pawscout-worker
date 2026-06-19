@@ -30,4 +30,17 @@ describe('inbox_invoices store', () => {
     const b = new TenantStore(env.DB, 'b.myshopify.com');
     expect(await b.getOpenInvoiceForThread('th9')).toBeNull();
   });
+
+  it('hasRecentFailedInvoice: true within window, false outside, false for non-failed', async () => {
+    const s = new TenantStore(env.DB, 'a.myshopify.com');
+    await s.upsertTenant({ accessTokenEnc: 't', dekWrapped: 'd', scopes: 's' });
+    await s.insertInvoice({ threadId: 'thF', lineItems: [], total: 5, currency: 'GBP', coverText: '', confidence: null, holdReasons: [], status: 'failed' });
+    const past = new Date(Date.now() - 3600_000).toISOString();
+    const future = new Date(Date.now() + 3600_000).toISOString();
+    expect(await s.hasRecentFailedInvoice('thF', past)).toBe(true);     // failed row created after `past`
+    expect(await s.hasRecentFailedInvoice('thF', future)).toBe(false);  // created before `future` → outside backoff window
+    // a non-failed invoice is never a backoff signal
+    await s.insertInvoice({ threadId: 'thS', lineItems: [], total: 5, currency: 'GBP', coverText: '', confidence: null, holdReasons: [], status: 'sent' });
+    expect(await s.hasRecentFailedInvoice('thS', past)).toBe(false);
+  });
 });
