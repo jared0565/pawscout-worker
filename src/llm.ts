@@ -122,19 +122,21 @@ export class LlmClient {
       return { kind: 'retry', error: msg }; // 5xx/503/429 rate_limit
     }
 
-    const data = (await resp.json().catch(() => null)) as any;
-    if (data?.error?.message) return { kind: 'advance', error: data.error.message }; // OpenRouter 200-with-error
-    const parsed = extractJson(data?.choices?.[0]?.message?.content ?? '');
-    if (parsed === undefined) return { kind: 'retry', error: 'LLM returned non-JSON' };
-    const value = opts.validate(parsed);
-    if (value === null) return { kind: 'retry', error: 'LLM JSON failed validation' };
+    try {
+      const data = (await resp.json().catch(() => null)) as any;
+      if (data?.error?.message) return { kind: 'advance', error: data.error.message }; // OpenRouter 200-with-error
+      const parsed = extractJson(data?.choices?.[0]?.message?.content ?? '');
+      if (parsed === undefined) return { kind: 'retry', error: 'LLM returned non-JSON' };
+      const value = opts.validate(parsed);
+      if (value === null) return { kind: 'retry', error: 'LLM JSON failed validation' };
 
-    const promptTokens = data?.usage?.prompt_tokens ?? 0;
-    const completionTokens = data?.usage?.completion_tokens ?? 0;
-    const costUsd = isOpenai
-      ? promptTokens / 1e6 * DEFAULT_MODEL_PRICE.promptPerM + completionTokens / 1e6 * DEFAULT_MODEL_PRICE.completionPerM
-      : (data?.usage?.cost ?? 0);
-    return { kind: 'ok', value, usage: { provider: tier.provider, model: data?.model ?? (isOpenai ? tier.model : tier.models[0]), promptTokens, completionTokens, costUsd } };
+      const promptTokens = data?.usage?.prompt_tokens ?? 0;
+      const completionTokens = data?.usage?.completion_tokens ?? 0;
+      const costUsd = isOpenai
+        ? promptTokens / 1e6 * DEFAULT_MODEL_PRICE.promptPerM + completionTokens / 1e6 * DEFAULT_MODEL_PRICE.completionPerM
+        : (data?.usage?.cost ?? 0);
+      return { kind: 'ok', value, usage: { provider: tier.provider, model: data?.model ?? (isOpenai ? tier.model : tier.models[0]), promptTokens, completionTokens, costUsd } };
+    } catch (e) { return { kind: 'retry', error: (e as Error).message }; }
   }
 }
 
