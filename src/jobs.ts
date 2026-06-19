@@ -529,7 +529,7 @@ export async function runDailyMaintenance(env: Env): Promise<void> {
         const tokens = new CjTokenManager(store, vault, f);
         const cj = new CjClient(() => tokens.getToken(), f);
         await refreshWarehouseStock(store, cj, cfg);
-        const llm = new LlmClient(env.OPENROUTER_API_KEY);
+        const llm = new LlmClient({ openrouter: env.OPENROUTER_API_KEY, openai: env.OPENAI_API_KEY });
         const curate = llm.available && cfg.llm.enabled
           ? (detail: CjDetail, context: string) => curateProduct(llm, store, cfg, detail, context)
           : undefined;

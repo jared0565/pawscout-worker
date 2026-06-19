@@ -39,7 +39,7 @@ function safeHeaders(json: string | null): Record<string, string> {
  * status/labels, and alert the owner on a hot lead. LLM-gated and self-healing —
  * an unavailable LLM simply leaves threads pending for the next run. */
 export async function runInboxClassifySweep(env: Env, fetchImpl: typeof fetch = defaultFetch): Promise<void> {
-  const llm = new LlmClient(env.OPENROUTER_API_KEY, fetchImpl);
+  const llm = new LlmClient({ openrouter: env.OPENROUTER_API_KEY, openai: env.OPENAI_API_KEY }, fetchImpl);
   if (!llm.available) return; // nothing to do without a model; threads stay pending
   for (const shop of await listActiveShops(env.DB)) {
     const store = new TenantStore(env.DB, shop);
@@ -64,7 +64,7 @@ async function classifyOne(env: Env, store: TenantStore, cfg: TenantConfig, shop
   const firstInbound = got?.messages.find((m) => m.direction === 'inbound');
   if (!firstInbound) return;
   const auth = parseAuthResults(safeHeaders(firstInbound.headers_json));
-  const llm = new LlmClient(env.OPENROUTER_API_KEY, fetchImpl);
+  const llm = new LlmClient({ openrouter: env.OPENROUTER_API_KEY, openai: env.OPENAI_API_KEY }, fetchImpl);
 
   const c = await classifyEmail(llm, store, cfg, {
     subject: thread.subject ?? '', body: firstInbound.body_text ?? '', fromEmail: thread.contact_email, auth
@@ -125,7 +125,7 @@ export async function proposeInvoiceOne(
     const got = await store.getThreadWithMessages(thread.id);
     if (!got) return false;
     const conversation = got.messages.filter((m) => m.direction === 'inbound').map((m) => m.body_text ?? '').join('\n\n---\n\n');
-    const llm = new LlmClient(env.OPENROUTER_API_KEY, fetchImpl);
+    const llm = new LlmClient({ openrouter: env.OPENROUTER_API_KEY, openai: env.OPENAI_API_KEY }, fetchImpl);
     const proposal = await proposeInvoice(llm, store, cfg, {
       subject: thread.subject ?? '',
       conversation,
@@ -262,7 +262,7 @@ async function draftOne(env: Env, store: TenantStore, cfg: TenantConfig, thread:
   // any failure leaves shippingLine null and the drafter keeps its safe hedge.
   const shippingLine = await buildShippingLineForThread(env, store, cfg, thread, conversation, fetchImpl);
 
-  const llm = new LlmClient(env.OPENROUTER_API_KEY, fetchImpl);
+  const llm = new LlmClient({ openrouter: env.OPENROUTER_API_KEY, openai: env.OPENAI_API_KEY }, fetchImpl);
   const draft = await draftReply(llm, store, cfg, {
     subject: thread.subject ?? '', conversation, category: thread.primary_category ?? 'other',
     shippingHandledSeparately: !!shippingLine

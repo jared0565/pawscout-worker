@@ -209,7 +209,7 @@ app.post('/api/sync', async (c) => {
 
   try {
     if (body.phase === 'refill') {
-      const syncLlm = new LlmClient(c.env.OPENROUTER_API_KEY);
+      const syncLlm = new LlmClient({ openrouter: c.env.OPENROUTER_API_KEY, openai: c.env.OPENAI_API_KEY });
       const curate = syncLlm.available && cfg.llm.enabled
         ? (d: Parameters<typeof curateProduct>[3], ctx: string) => curateProduct(syncLlm, store, cfg, d, ctx)
         : undefined;
@@ -301,7 +301,7 @@ app.post('/api/hero-images', async (c) => {
   const tenant = await store.getTenant();
   const cfg = await store.getConfig();
   if (!tenant?.access_token_enc || !cfg) return c.json({ ok: false, error: 'Not configured' }, 400);
-  const llm = new LlmClient(c.env.OPENROUTER_API_KEY);
+  const llm = new LlmClient({ openrouter: c.env.OPENROUTER_API_KEY, openai: c.env.OPENAI_API_KEY });
   if (!llm.available || !cfg.llm.enabled) return c.json({ ok: false, error: 'LLM not configured' }, 400);
   const vault = await Vault.fromMasterKey(c.env.PAWSCOUT_MASTER_KEY);
   const accessToken = await vault.open(tenant.dek_wrapped, tenant.access_token_enc);
@@ -327,7 +327,7 @@ app.post('/api/descriptions', async (c) => {
   const tenant = await store.getTenant();
   const cfg = await store.getConfig();
   if (!tenant?.access_token_enc || !cfg) return c.json({ ok: false, error: 'Not configured' }, 400);
-  const llm = new LlmClient(c.env.OPENROUTER_API_KEY);
+  const llm = new LlmClient({ openrouter: c.env.OPENROUTER_API_KEY, openai: c.env.OPENAI_API_KEY });
   if (!llm.available || !cfg.llm.enabled) return c.json({ ok: false, error: 'LLM not configured' }, 400);
   const vault = await Vault.fromMasterKey(c.env.PAWSCOUT_MASTER_KEY);
   const accessToken = await vault.open(tenant.dek_wrapped, tenant.access_token_enc);
@@ -575,7 +575,7 @@ app.get('/proxy/search', async (c) => {
   try {
     // LLM + execution ctx let searchBackfill lazy-fill a semantic-library miss
     // in the background (never the hot path); the same client classifies the keyword.
-    const llm = new LlmClient(c.env.OPENROUTER_API_KEY);
+    const llm = new LlmClient({ openrouter: c.env.OPENROUTER_API_KEY, openai: c.env.OPENAI_API_KEY });
     const products = await searchBackfill(p.store, cjFor(c.env, p), p.cfg, q, have, limit, { exclude, llm, ctx: c.executionCtx });
     // W3: classify new keywords in the background (cached 30d) — the NEXT
     // search for this term benefits from category + synonyms. Never hot-path.
@@ -603,7 +603,7 @@ app.get('/proxy/product', async (c) => {
 
     // Curate images for the preview (drop incongruent, hero first) + cache the
     // result so the search grid reuses it. Cached/best-effort; never blocks.
-    const previewLlm = new LlmClient(c.env.OPENROUTER_API_KEY);
+    const previewLlm = new LlmClient({ openrouter: c.env.OPENROUTER_API_KEY, openai: c.env.OPENAI_API_KEY });
     const previewHero = previewLlm.available && p.cfg.llm.enabled
       ? (title: string, urls: string[]) => pickHeroImage(previewLlm, p.store, p.cfg, title, urls)
       : undefined;
@@ -615,7 +615,7 @@ app.get('/proxy/product', async (c) => {
       const accessToken = await p.vault.open(p.tenant.dek_wrapped, p.tenant.access_token_enc);
       const admin = makeAdminGraphql(p.store.shop, accessToken);
       // Background: curation gate + live stock confirm, then import.
-      const importLlm = new LlmClient(c.env.OPENROUTER_API_KEY);
+      const importLlm = new LlmClient({ openrouter: c.env.OPENROUTER_API_KEY, openai: c.env.OPENAI_API_KEY });
       const curate = importLlm.available && p.cfg.llm.enabled
         ? (d: typeof detail, ctx: string) => curateProduct(importLlm, p.store, p.cfg, d, ctx)
         : undefined;

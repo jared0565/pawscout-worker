@@ -52,7 +52,7 @@ const GOOD_CURATION = {
 
 describe('LlmClient', () => {
   it('parses validated JSON and returns usage with cost', async () => {
-    const llm = new LlmClient('sk-or-key', llmFetch({ a: 1 }));
+    const llm = new LlmClient({ openrouter: 'sk-or-key' }, llmFetch({ a: 1 }));
     const r = await llm.json({ model: 'm/x', system: 's', user: 'u', validate: (v) => v as { a: number } });
     expect(r.ok).toBe(true);
     if (r.ok) {
@@ -62,13 +62,13 @@ describe('LlmClient', () => {
   });
 
   it('strips markdown fences before parsing', async () => {
-    const llm = new LlmClient('k', llmFetch(null, { raw: '```json\n{"a":2}\n```' }));
+    const llm = new LlmClient({ openrouter: 'k' },llmFetch(null, { raw: '```json\n{"a":2}\n```' }));
     const r = await llm.json({ model: 'm/x', system: 's', user: 'u', validate: (v) => v as { a: number } });
     expect(r.ok && r.value.a === 2).toBe(true);
   });
 
   it('recovers JSON wrapped in prose preamble/postamble (the prod non-JSON failure)', async () => {
-    const llm = new LlmClient('k', llmFetch(null, { raw: 'Here is the result:\n{"a":7}\nHope that helps!' }));
+    const llm = new LlmClient({ openrouter: 'k' },llmFetch(null, { raw: 'Here is the result:\n{"a":7}\nHope that helps!' }));
     const r = await llm.json({ model: 'm/x', system: 's', user: 'u', validate: (v) => v as { a: number } });
     expect(r.ok && r.value.a === 7).toBe(true);
   });
@@ -80,7 +80,7 @@ describe('LlmClient', () => {
       const content = n === 1 ? 'thinking… no json yet' : JSON.stringify({ a: 5 });
       return new Response(JSON.stringify({ choices: [{ message: { content } }], usage: { cost: 0.0001 } }), { status: 200 });
     }) as unknown as typeof fetch;
-    const llm = new LlmClient('k', fetchImpl);
+    const llm = new LlmClient({ openrouter: 'k' },fetchImpl);
     const r = await llm.json({ model: 'm/x', system: 's', user: 'u', validate: (v) => v as { a: number } });
     expect(r.ok && r.value.a === 5).toBe(true);
     expect(n).toBe(2); // retried exactly once
@@ -99,13 +99,13 @@ describe('LlmClient', () => {
     ['non-JSON content', llmFetch(null, { raw: 'sorry, I cannot' })],
     ['network throw', (async () => { throw new Error('down'); }) as typeof fetch]
   ])('degrades to ok:false on %s — never throws', async (_name, fetchImpl) => {
-    const llm = new LlmClient('k', fetchImpl);
+    const llm = new LlmClient({ openrouter: 'k' },fetchImpl);
     const r = await llm.json({ model: 'm/x', system: 's', user: 'u', validate: (v) => v });
     expect(r.ok).toBe(false);
   });
 
   it('is unavailable without a key and says so', async () => {
-    const llm = new LlmClient(undefined);
+    const llm = new LlmClient({});
     expect(llm.available).toBe(false);
     const r = await llm.json({ model: 'm/x', system: 's', user: 'u', validate: (v) => v });
     expect(r.ok).toBe(false);
@@ -115,7 +115,7 @@ describe('LlmClient', () => {
 describe('curateProduct', () => {
   it('returns validated curation and logs usage cost', async () => {
     const store = new TenantStore(env.DB, SHOP);
-    const llm = new LlmClient('k', llmFetch(GOOD_CURATION));
+    const llm = new LlmClient({ openrouter: 'k' },llmFetch(GOOD_CURATION));
     const c = await curateProduct(llm, store, CFG, DETAIL, 'dog toy');
     expect(c).toMatchObject({ relevanceScore: 85, category: 'pet-toys', title: 'Bite-Resistant Cotton Rope Dog Toy' });
     const spend = await store.llmSpendSince(new Date(Date.now() - 60_000).toISOString());
@@ -125,14 +125,14 @@ describe('curateProduct', () => {
 
   it('rejects an unknown category but keeps the rest', async () => {
     const store = new TenantStore(env.DB, SHOP);
-    const llm = new LlmClient('k', llmFetch({ ...GOOD_CURATION, category: 'made-up' }));
+    const llm = new LlmClient({ openrouter: 'k' },llmFetch({ ...GOOD_CURATION, category: 'made-up' }));
     const c = await curateProduct(llm, store, CFG, DETAIL, 'dog toy');
     expect(c?.category).toBeNull();
   });
 
   it('returns null on LLM failure (caller falls back to mechanical gates)', async () => {
     const store = new TenantStore(env.DB, SHOP);
-    const llm = new LlmClient('k', llmFetch({}, { status: 429 }));
+    const llm = new LlmClient({ openrouter: 'k' },llmFetch({}, { status: 429 }));
     expect(await curateProduct(llm, store, CFG, DETAIL, 'dog toy')).toBeNull();
   });
 });
@@ -232,7 +232,7 @@ describe('pickHeroImage (vision)', () => {
         usage: { prompt_tokens: 80, completion_tokens: 10, cost: 0.0003 }
       }), { status: 200 });
     }) as unknown as typeof fetch;
-    const llm = new LlmClient('k', fetchImpl);
+    const llm = new LlmClient({ openrouter: 'k' },fetchImpl);
     const pick = await pickHeroImage(llm, store, CFG, 'Pet Grooming Scissors Set with Comb', URLS);
     expect(pick).toEqual({ ok: true, index: 2, drop: [] });
     const content = body.messages[1].content;
@@ -244,7 +244,7 @@ describe('pickHeroImage (vision)', () => {
 
   it('is ok with index null when the model picks image 0 (already correct — cacheable)', async () => {
     const store = new TenantStore(env.DB, SHOP);
-    const llm = new LlmClient('k', llmFetch({ index: 0, reason: 'fine' }));
+    const llm = new LlmClient({ openrouter: 'k' },llmFetch({ index: 0, reason: 'fine' }));
     expect(await pickHeroImage(llm, store, CFG, 'Dog Toy', URLS)).toEqual({ ok: true, index: null, drop: [] });
   });
 
@@ -252,33 +252,33 @@ describe('pickHeroImage (vision)', () => {
     const store = new TenantStore(env.DB, SHOP);
     let called = false;
     const fetchImpl = (async () => { called = true; return new Response('{}'); }) as unknown as typeof fetch;
-    const llm = new LlmClient('k', fetchImpl);
+    const llm = new LlmClient({ openrouter: 'k' },fetchImpl);
     expect(await pickHeroImage(llm, store, CFG, 'Dog Toy', ['https://i/0.jpg'])).toEqual({ ok: true, index: null, drop: [] });
     expect(called).toBe(false);
   });
 
   it('returns the indices of incongruent images to drop (e.g. a cat on a dog listing)', async () => {
     const store = new TenantStore(env.DB, SHOP);
-    const llm = new LlmClient('k', llmFetch({ index: 2, drop: [0, 1], reason: 'cats; dog at 2' }));
+    const llm = new LlmClient({ openrouter: 'k' },llmFetch({ index: 2, drop: [0, 1], reason: 'cats; dog at 2' }));
     expect(await pickHeroImage(llm, store, CFG, 'Dog Grooming Earmuffs', URLS)).toEqual({ ok: true, index: 2, drop: [0, 1] });
   });
 
   it('never drops the chosen hero, and ignores out-of-range drop indices', async () => {
     const store = new TenantStore(env.DB, SHOP);
-    const llm = new LlmClient('k', llmFetch({ index: 1, drop: [1, 9, 0], reason: 'x' }));
+    const llm = new LlmClient({ openrouter: 'k' },llmFetch({ index: 1, drop: [1, 9, 0], reason: 'x' }));
     // 1 == hero (excluded), 9 out of range (excluded) → only 0 survives
     expect(await pickHeroImage(llm, store, CFG, 'Dog Toy', URLS)).toEqual({ ok: true, index: 1, drop: [0] });
   });
 
   it('is NOT ok (retryable) on an out-of-range index from the model', async () => {
     const store = new TenantStore(env.DB, SHOP);
-    const llm = new LlmClient('k', llmFetch({ index: 9, reason: 'oops' }));
+    const llm = new LlmClient({ openrouter: 'k' },llmFetch({ index: 9, reason: 'oops' }));
     expect(await pickHeroImage(llm, store, CFG, 'Dog Toy', URLS)).toEqual({ ok: false, index: null, drop: [] });
   });
 
   it('is NOT ok (retryable) when the LLM is unavailable', async () => {
     const store = new TenantStore(env.DB, SHOP);
-    expect(await pickHeroImage(new LlmClient(undefined), store, CFG, 'Dog Toy', URLS)).toEqual({ ok: false, index: null, drop: [] });
+    expect(await pickHeroImage(new LlmClient({}), store, CFG, 'Dog Toy', URLS)).toEqual({ ok: false, index: null, drop: [] });
   });
 });
 
@@ -287,7 +287,7 @@ describe('rewriteDescription', () => {
 
   it('returns clean rewritten HTML and logs usage', async () => {
     const store = new TenantStore(env.DB, SHOP);
-    const llm = new LlmClient('k', llmFetch({ descriptionHtml: '<p>A reusable finger toothbrush that helps maintain fresh breath.</p>' }));
+    const llm = new LlmClient({ openrouter: 'k' },llmFetch({ descriptionHtml: '<p>A reusable finger toothbrush that helps maintain fresh breath.</p>' }));
     const out = await rewriteDescription(llm, store, CFG, 'Silicone Finger Toothbrush', RAW);
     expect(out).toBe('<p>A reusable finger toothbrush that helps maintain fresh breath.</p>');
     const spend = await store.llmSpendSince(new Date(Date.now() - 60_000).toISOString());
@@ -296,7 +296,7 @@ describe('rewriteDescription', () => {
 
   it('rejects output that still contains a hotlink or supplier marker (defensive)', async () => {
     const store = new TenantStore(env.DB, SHOP);
-    const llm = new LlmClient('k', llmFetch({ descriptionHtml: '<p>Nice toy</p><img src="https://cf.cjdropshipping.com/y.jpg">' }));
+    const llm = new LlmClient({ openrouter: 'k' },llmFetch({ descriptionHtml: '<p>Nice toy</p><img src="https://cf.cjdropshipping.com/y.jpg">' }));
     expect(await rewriteDescription(llm, store, CFG, 'Toy', RAW)).toBeNull();
   });
 
@@ -304,13 +304,13 @@ describe('rewriteDescription', () => {
     const store = new TenantStore(env.DB, SHOP);
     let called = false;
     const fetchImpl = (async () => { called = true; return new Response('{}'); }) as unknown as typeof fetch;
-    expect(await rewriteDescription(new LlmClient('k', fetchImpl), store, CFG, 'X', '   ')).toBeNull();
+    expect(await rewriteDescription(new LlmClient({ openrouter: 'k' },fetchImpl), store, CFG, 'X', '   ')).toBeNull();
     expect(called).toBe(false);
   });
 
   it('returns null when the LLM is unavailable', async () => {
     const store = new TenantStore(env.DB, SHOP);
-    expect(await rewriteDescription(new LlmClient(undefined), store, CFG, 'X', RAW)).toBeNull();
+    expect(await rewriteDescription(new LlmClient({}), store, CFG, 'X', RAW)).toBeNull();
   });
 });
 
@@ -322,7 +322,7 @@ describe('keyword classification + synonym search', () => {
       calls.push(1);
       return (llmFetch({ category: 'pet-toys', synonyms: ['dog toy', 'chew rope'] }) as () => Promise<Response>)();
     }) as unknown as typeof fetch;
-    const llm = new LlmClient('k', fetchImpl);
+    const llm = new LlmClient({ openrouter: 'k' },fetchImpl);
 
     await classifyKeyword(llm, store, CFG, 'puppy chew');
     await classifyKeyword(llm, store, CFG, 'puppy chew'); // cached → no second call

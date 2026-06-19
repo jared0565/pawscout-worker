@@ -13,7 +13,7 @@ export type ChainTier =
   | { provider: 'openai'; model: string };
 const KEYWORD_META_TTL_DAYS = 30;
 
-export interface LlmUsage { model: string; promptTokens: number; completionTokens: number; costUsd: number }
+export interface LlmUsage { provider: 'openrouter' | 'openai'; model: string; promptTokens: number; completionTokens: number; costUsd: number }
 export type LlmJson<T> = { ok: true; value: T; usage: LlmUsage } | { ok: false; error: string };
 
 function tryJsonParse(s: string): unknown {
@@ -42,90 +42,99 @@ export function extractJson(raw: string): unknown {
   return undefined;
 }
 
+type SendOutcome<T> =
+  | { kind: 'ok'; value: T; usage: LlmUsage }
+  | { kind: 'retry'; error: string }   // transient: retry SAME tier once
+  | { kind: 'advance'; error: string } // hard model/account failure: next tier
+  | { kind: 'stop'; error: string };   // request-shape bug: degrade, no advance
+
 /**
- * Thin OpenRouter client (W3). Strict-JSON prompts, validated on parse.
- * NEVER throws into a job — every failure degrades to "no LLM", because the
- * system must function on mechanical gates alone.
+ * Provider-aware LLM client (W3). Walks a tier chain (OpenRouter → OpenAI-direct).
+ * Strict-JSON prompts, validated on parse. NEVER throws into a job — every failure
+ * degrades to "no LLM", because the system must function on mechanical gates alone.
  */
 export class LlmClient {
   constructor(
-    private readonly apiKey: string | undefined,
+    private readonly keys: { openrouter?: string; openai?: string },
     private readonly fetchImpl: typeof fetch = defaultFetch
   ) {}
 
-  get available(): boolean {
-    return !!this.apiKey;
-  }
+  get available(): boolean { return !!(this.keys.openrouter || this.keys.openai); }
 
-  async json<T>(opts: {
-    model: string;
-    system: string;
-    user: string;
-    images?: string[]; // image URLs — sent as vision content blocks alongside `user`
-    maxTokens?: number;
-    validate: (v: unknown) => T | null;
+  /** Walk a resolved tier chain; degrade to {ok:false} when exhausted. Never throws. */
+  async jsonChain<T>(opts: {
+    chain: ChainTier[]; system: string; user: string;
+    images?: string[]; maxTokens?: number; validate: (v: unknown) => T | null;
   }): Promise<LlmJson<T>> {
-    if (!this.apiKey) return { ok: false, error: 'OPENROUTER_API_KEY not set' };
-    // Vision: when images are supplied, the user message becomes a content array
-    // (OpenAI/OpenRouter multimodal shape) instead of a plain string.
-    const userContent = opts.images && opts.images.length
-      ? [
-          { type: 'text', text: opts.user },
-          ...opts.images.map((url) => ({ type: 'image_url', image_url: { url } }))
-        ]
-      : opts.user;
-    const requestBody = JSON.stringify({
-      model: opts.model,
-      max_tokens: opts.maxTokens ?? 1024,
-      response_format: { type: 'json_object' },
-      usage: { include: true }, // OpenRouter returns per-call cost
-      messages: [
-        { role: 'system', content: opts.system },
-        { role: 'user', content: userContent }
-      ]
-    });
-    // Up to 2 attempts: the non-JSON / parse / validation failures are
-    // intermittent (reasoning/preview models), so one retry recovers most of
-    // them. HTTP/API errors return immediately (an instant retry won't help).
-    let lastError = 'unknown';
-    for (let attempt = 0; attempt < 2; attempt++) {
-      try {
-        const resp = await this.fetchImpl(OPENROUTER_URL, {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${this.apiKey}`,
-            'Content-Type': 'application/json',
-            'HTTP-Referer': 'https://pawscout.activepaw.co.uk',
-            'X-Title': 'PawScout'
-          },
-          body: requestBody
-        });
-        if (!resp.ok) return { ok: false, error: `OpenRouter HTTP ${resp.status}` };
-        const data = (await resp.json()) as {
-          choices?: { message?: { content?: string } }[];
-          usage?: { prompt_tokens?: number; completion_tokens?: number; cost?: number };
-          error?: { message?: string };
-        };
-        if (data.error?.message) return { ok: false, error: data.error.message };
-        const parsed = extractJson(data.choices?.[0]?.message?.content ?? '');
-        if (parsed === undefined) { lastError = 'LLM returned non-JSON'; continue; }
-        const value = opts.validate(parsed);
-        if (value === null) { lastError = 'LLM JSON failed validation'; continue; }
-        return {
-          ok: true,
-          value,
-          usage: {
-            model: opts.model,
-            promptTokens: data.usage?.prompt_tokens ?? 0,
-            completionTokens: data.usage?.completion_tokens ?? 0,
-            costUsd: data.usage?.cost ?? 0
+    let lastError = 'no usable LLM tier';
+    for (const tier of opts.chain) {
+      const key = tier.provider === 'openai' ? this.keys.openai : this.keys.openrouter;
+      if (!key) continue; // provider not configured → skip
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const out = await this.send<T>(tier, key, opts);
+        if (out.kind === 'ok') {
+          if (tier.provider === 'openai') {
+            console.warn(`llm.tier3.activated model=${out.usage.model} — both OpenRouter slots failed`);
           }
-        };
-      } catch (e) {
-        lastError = (e as Error).message;
+          return { ok: true, value: out.value, usage: out.usage };
+        }
+        lastError = out.error;
+        if (out.kind === 'stop') return { ok: false, error: out.error };
+        if (out.kind === 'retry' && attempt === 0) continue; // one same-tier retry
+        break; // advance to next tier
       }
     }
     return { ok: false, error: lastError };
+  }
+
+  /** @deprecated transitional — single-OpenRouter-tier wrapper, removed in Task 5. */
+  async json<T>(opts: { model: string; system: string; user: string; images?: string[]; maxTokens?: number; validate: (v: unknown) => T | null }): Promise<LlmJson<T>> {
+    return this.jsonChain({ chain: [{ provider: 'openrouter', models: [opts.model] }], system: opts.system, user: opts.user, images: opts.images, maxTokens: opts.maxTokens, validate: opts.validate });
+  }
+
+  private async send<T>(tier: ChainTier, key: string, opts: {
+    system: string; user: string; images?: string[]; maxTokens?: number; validate: (v: unknown) => T | null;
+  }): Promise<SendOutcome<T>> {
+    const userContent = opts.images?.length
+      ? [{ type: 'text', text: opts.user }, ...opts.images.map((url) => ({ type: 'image_url', image_url: { url } }))]
+      : opts.user;
+    const messages = [{ role: 'system', content: opts.system }, { role: 'user', content: userContent }];
+    const isOpenai = tier.provider === 'openai';
+    const url = isOpenai ? OPENAI_URL : OPENROUTER_URL;
+    const body = isOpenai
+      ? { model: tier.model, max_completion_tokens: Math.max(opts.maxTokens ?? 1024, 3000), reasoning_effort: 'medium', response_format: { type: 'json_object' }, messages }
+      : { models: tier.models, max_tokens: opts.maxTokens ?? 1024, response_format: { type: 'json_object' }, usage: { include: true }, messages };
+    const headers: Record<string, string> = { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' };
+    if (!isOpenai) { headers['HTTP-Referer'] = 'https://pawscout.activepaw.co.uk'; headers['X-Title'] = 'PawScout'; }
+
+    let resp: Response;
+    try {
+      resp = await this.fetchImpl(url, { method: 'POST', headers, body: JSON.stringify(body) });
+    } catch (e) { return { kind: 'retry', error: (e as Error).message }; } // network throw → retry then advance
+
+    if (!resp.ok) {
+      const errBody = (await resp.json().catch(() => null)) as { error?: { type?: string; code?: string; message?: string } } | null;
+      const code = errBody?.error?.code; const type = errBody?.error?.type;
+      const msg = errBody?.error?.message ?? `HTTP ${resp.status}`;
+      if (resp.status === 400 && type === 'invalid_request_error') return { kind: 'stop', error: msg };
+      if (resp.status === 429 && code === 'insufficient_quota') return { kind: 'advance', error: msg };
+      if (resp.status === 401 || resp.status === 403 || resp.status === 404) return { kind: 'advance', error: msg };
+      return { kind: 'retry', error: msg }; // 5xx/503/429 rate_limit
+    }
+
+    const data = (await resp.json().catch(() => null)) as any;
+    if (data?.error?.message) return { kind: 'advance', error: data.error.message }; // OpenRouter 200-with-error
+    const parsed = extractJson(data?.choices?.[0]?.message?.content ?? '');
+    if (parsed === undefined) return { kind: 'retry', error: 'LLM returned non-JSON' };
+    const value = opts.validate(parsed);
+    if (value === null) return { kind: 'retry', error: 'LLM JSON failed validation' };
+
+    const promptTokens = data?.usage?.prompt_tokens ?? 0;
+    const completionTokens = data?.usage?.completion_tokens ?? 0;
+    const costUsd = isOpenai
+      ? promptTokens / 1e6 * DEFAULT_MODEL_PRICE.promptPerM + completionTokens / 1e6 * DEFAULT_MODEL_PRICE.completionPerM
+      : (data?.usage?.cost ?? 0);
+    return { kind: 'ok', value, usage: { provider: tier.provider, model: data?.model ?? (isOpenai ? tier.model : tier.models[0]), promptTokens, completionTokens, costUsd } };
   }
 }
 
