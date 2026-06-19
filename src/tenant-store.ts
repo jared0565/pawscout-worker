@@ -1,4 +1,5 @@
 import { DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, DEFAULT_SEMANTIC, type TenantRow, type TenantConfig, type Fulfil } from './types';
+import { deriveModels } from './llm-migrate';
 import { DEFAULT_INBOX, type InboxConfig } from './inbox/types';
 import type { ContactRow, ThreadRow, MessageRow, ThreadStatus, DraftRow, DraftStatus, InvoiceRow, InvoiceLineItem, InvoiceStatus } from './inbox/types';
 
@@ -117,7 +118,17 @@ export class TenantStore {
       // Tolerate pre-flywheel rows ('{}' default): fill missing fields from defaults.
       pricing: { ...DEFAULT_PRICING, ...JSON.parse(row.pricing || '{}') },
       floors: { ...DEFAULT_FLOORS, ...JSON.parse(row.floors || '{}') },
-      llm: { ...DEFAULT_LLM, ...JSON.parse(row.llm || '{}') },
+      llm: (() => {
+        const raw = JSON.parse(row.llm || '{}') as Record<string, unknown>;
+        const models = (raw.models && typeof raw.models === 'object' && !Array.isArray(raw.models))
+          ? (raw.models as TenantConfig['llm']['models'])
+          : deriveModels(raw);
+        return {
+          enabled: typeof raw.enabled === 'boolean' ? raw.enabled : DEFAULT_LLM.enabled,
+          scoreThreshold: typeof raw.scoreThreshold === 'number' ? raw.scoreThreshold : DEFAULT_LLM.scoreThreshold,
+          models,
+        };
+      })(),
       addons: { ...DEFAULT_ADDONS, ...JSON.parse(row.addons || '{}') },
       fulfil: { ...DEFAULT_FULFIL, ...JSON.parse(row.fulfil || '{}') },
       inbox: { ...DEFAULT_INBOX, ...JSON.parse(row.inbox || '{}') },
