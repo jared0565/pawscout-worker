@@ -54,10 +54,16 @@ const PET_TOKENS = new Set([
   'cat', 'cats', 'kitten', 'kittens', 'kitty', 'feline', 'paw', 'paws', 'kennel', 'leash', 'collar',
   'harness', 'litter', 'aquarium', 'fish', 'bird', 'rabbit', 'hamster', 'pup', 'kitties'
 ]);
-// Distinctive non-pet markers (human grooming, kitchen, garden, power tools).
+// Distinctive non-pet markers (human grooming, kitchen, garden, power tools,
+// and human jewelry/accessories). Each is matched as a substring of the lowercased
+// text, so every entry MUST be a phrase that never legitimately appears in a pet
+// product title — that's why jewelry words like 'necklace'/'pendant' are safe but
+// 'ring' (chew ring), 'sweater'/'shirt' (pet apparel is a real category) are NOT
+// listed here (the LLM curation gate handles those ambiguous apparel cases).
 const NONPET_MARKERS = [
   'kitchen', 'knife sharpen', 'pruning', 'tree branch', 'branch cutter', 'garden', 'lawn',
-  'hairdress', 'barber', 'tailor', 'sewing', 'chainsaw', 'human hair', 'nail art', 'manicure'
+  'hairdress', 'barber', 'tailor', 'sewing', 'chainsaw', 'human hair', 'nail art', 'manicure',
+  'necklace', 'pendant', 'bracelet', 'earring', 'brooch', 'lingerie', 'phone case', 'pearl chain'
 ];
 
 /** LLM-free floor: would a human reasonably see this as a pet product? */

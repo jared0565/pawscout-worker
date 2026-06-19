@@ -38,6 +38,17 @@ describe('isLikelyPetProduct (mechanical floor)', () => {
     expect(isLikelyPetProduct('Barber scissors')).toBe(false);
     expect(isLikelyPetProduct('Tailor scissors handmade scissors')).toBe(false);
   });
+  it('rejects human jewelry / accessories that have no pet signal', () => {
+    expect(isLikelyPetProduct('Set Diamond Love More Pendant')).toBe(false);
+    expect(isLikelyPetProduct('Wear More Magnet Love Four-leaf Clover Necklace')).toBe(false);
+    expect(isLikelyPetProduct('Love You More Couple Pendant Sweater Pearl Chain')).toBe(false);
+    expect(isLikelyPetProduct('Love Yourself More Phone Case Drop-resistant')).toBe(false);
+  });
+  it('does NOT over-reject pet items: a pet token admits before the marker check', () => {
+    // pet apparel/jewelry-charm products are real — the explicit pet signal wins first
+    expect(isLikelyPetProduct('Dog Sweater Knitted Pet Hat')).toBe(true);
+    expect(isLikelyPetProduct('Pet Collar with Pearl Chain Charm')).toBe(true);
+  });
   it('admits ambiguous items (no signal either way) — the LLM tightens when up', () => {
     expect(isLikelyPetProduct('Silicone Bath Brush')).toBe(true);
   });
