@@ -3,13 +3,13 @@ import { chooseOrigin, CjClient, CjTokenManager, cjFetchFromEnv, type CjSearchIt
 import { makeAdminGraphql, type AdminGraphql } from './shopify-admin';
 import { TenantStore, listActiveShops, purgeExpiredSearchCache, purgeUnusedWarehouse, trimOldLogs } from './tenant-store';
 import { liveCjPasses, normalizeKeyword, CACHE_TTL_DAYS, isLikelyPetProduct, titleSignature } from './proxy/search';
-import { getExpansions } from './semantic/library';
+import { getExpansions, seedTerm } from './semantic/library';
 import { confirmAndImport, getCachedDetail, resolveCategory, reconcileAddonVisibility, reconcileHeroImages, reconcileDescriptions, reconcileCategories } from './proxy/import';
 import { enableTracking, getPrimaryLocationId, productInventoryItems, setInventoryQuantities, setSupplierMetafields, updateVariantPrices, MAX_TRACKED_QTY } from './proxy/inventory';
 import { retailPriceGbp } from './pricing';
 import type { CjDetail } from './cj';
 import { LlmClient, curateProduct, pickHeroImage, rewriteDescription, type Curation, type HeroPick } from './llm';
-import type { Env, TenantConfig } from './types';
+import { DEFAULT_SEMANTIC, type Env, type TenantConfig } from './types';
 
 export const CULL_WINDOW_DAYS = 30; // grace period AND inactivity window
 const LOG_RETENTION_DAYS = 90;
@@ -465,6 +465,49 @@ export async function refreshWarehouseStock(
   return checked;
 }
 
+/**
+ * Cron half of the semantic term library's hybrid population. Precomputes the
+ * per-collection sourcing cores (each collection noun under its own collection)
+ * AND the collection-agnostic ('') search vocabulary (same nouns), so on-site
+ * search [[Task 7]] and CJ sourcing [[Task 6]] read warm cache; the long tail
+ * lazy-fills on demand. Bounded by `maxTerms`/run; refreshes only rows older
+ * than `semantic.ttlDays`; excluded collections (and the disabled flag) are
+ * honoured. Never throws — `seedTerm` swallows its own network/LLM failures.
+ */
+export async function seedSemanticLibrary(
+  store: TenantStore,
+  llm: LlmClient,
+  cfg: TenantConfig,
+  opts: { maxTerms?: number; now?: () => number; fetchImpl?: typeof fetch } = {}
+): Promise<{ seeded: number; skipped: number }> {
+  const sem = cfg.semantic ?? DEFAULT_SEMANTIC;
+  if (!sem.enabled) return { seeded: 0, skipped: 0 };
+  const maxTerms = opts.maxTerms ?? 12;
+  const now = opts.now ?? Date.now;
+  const ttlMs = sem.ttlDays * 86400_000;
+
+  // Each non-excluded collection noun seeds BOTH its own collection (sourcing
+  // core) and '' (agnostic search vocabulary). '' is never excluded.
+  const jobs: { term: string; collection: string }[] = [];
+  for (const key of Object.keys(cfg.collectionMap)) {
+    if (sem.excludeCollections.includes(key)) continue;
+    const noun = key.replace(/-/g, ' ');
+    jobs.push({ term: noun, collection: key }, { term: noun, collection: '' });
+  }
+
+  let seeded = 0;
+  let skipped = 0;
+  for (const job of jobs) {
+    if (seeded >= maxTerms) { skipped++; continue; }
+    const existing = await store.getSemanticExpansions(job.collection, job.term);
+    if (existing && now() - new Date(existing.updatedAt).getTime() < ttlMs) { skipped++; continue; } // still fresh
+    await seedTerm(store, llm, cfg, job.term, job.collection, 'cron', opts.fetchImpl);
+    seeded++;
+  }
+  if (skipped) console.log(`semantic seeding: ${seeded} seeded, ${skipped} skipped (cap ${maxTerms})`);
+  return { seeded, skipped };
+}
+
 /** Daily cron entry point: retention purges, then per-tenant cull + refill. */
 export async function runDailyMaintenance(env: Env): Promise<void> {
   await purgeExpiredSearchCache(env.DB);
@@ -494,6 +537,7 @@ export async function runDailyMaintenance(env: Env): Promise<void> {
           ? (title: string, urls: string[]) => pickHeroImage(llm, store, cfg, title, urls)
           : undefined;
         await replenishWarehouse(store, cj, cfg, { curate });
+        await seedSemanticLibrary(store, llm, cfg); // warm the term-library cores (hybrid cron half)
         await syncStoreInventory(store, cj, admin, cfg);
         await refillCollections(store, cj, admin, cfg, { curate, pickHero }); // promote-from-warehouse (floor 8, target 12)
         await reconcileAddonVisibility(store, admin, cfg); // align hidden/visible add-ons to the toggle

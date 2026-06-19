@@ -1,9 +1,10 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
-import { cullStaleProducts, refillCollections, syncStoreInventory } from '../src/jobs';
+import { cullStaleProducts, refillCollections, syncStoreInventory, seedSemanticLibrary } from '../src/jobs';
 import { TenantStore } from '../src/tenant-store';
-import { DEFAULT_GATES, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, DEFAULT_INBOX, type TenantConfig } from '../src/types';
+import { DEFAULT_GATES, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, DEFAULT_INBOX, DEFAULT_SEMANTIC, type TenantConfig } from '../src/types';
 import type { CjClient, CjDetail } from '../src/cj';
+import type { LlmClient } from '../src/llm';
 import type { AdminGraphql } from '../src/shopify-admin';
 
 beforeEach(async () => { await applyD1Migrations(env.DB, env.TEST_MIGRATIONS); });
@@ -323,5 +324,45 @@ describe('syncStoreInventory', () => {
     expect(n).toBe(1); // 'A' synced; 'bad' logged and skipped
     expect(errors).toHaveLength(1);
     expect(errors[0]).toContain('bad: untracked legacy product'); // surfaced to the console caller
+  });
+});
+
+describe('seedSemanticLibrary (Task 8 — cron seeding)', () => {
+  const baseCfg = (collectionMap: TenantConfig['collectionMap'], semantic = DEFAULT_SEMANTIC): TenantConfig => ({
+    collectionMap, gates: DEFAULT_GATES, pricing: DEFAULT_PRICING, floors: DEFAULT_FLOORS,
+    llm: DEFAULT_LLM, addons: DEFAULT_ADDONS, fulfil: DEFAULT_FULFIL, inbox: DEFAULT_INBOX, semantic, target: 12
+  });
+  // autocomplete returns pet phrases (Google shape); no LLM → cleanToPetTerms degrades to the pet-floor filter
+  const fetchOk = (async () => ({ ok: true, json: async () => ['q', ['dog toy', 'puppy bath']] })) as unknown as typeof fetch;
+  const noLlm = { available: false } as unknown as LlmClient;
+
+  it('seeds each non-excluded collection noun under its collection AND the agnostic set; skips excluded', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const cfg = baseCfg({ 'pet-toys': { handle: 'pet-toys', tag: 't' }, 'more-to-love': { handle: 'more-to-love', tag: 'm' } });
+    const res = await seedSemanticLibrary(store, noLlm, cfg, { fetchImpl: fetchOk, maxTerms: 50 });
+    expect(res.seeded).toBe(2); // pet-toys × (collection + agnostic); more-to-love excluded
+    expect(await store.getSemanticExpansions('pet-toys', 'pet toys')).not.toBeNull();
+    expect(await store.getSemanticExpansions('', 'pet toys')).not.toBeNull();
+    expect(await store.getSemanticExpansions('more-to-love', 'more to love')).toBeNull();
+  });
+
+  it('respects the per-run cap and skips already-fresh rows on re-run', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const cfg = baseCfg({ 'pet-toys': { handle: 'pet-toys', tag: 't' }, 'pet-cleaning': { handle: 'pet-cleaning', tag: 'c' } });
+    const r1 = await seedSemanticLibrary(store, noLlm, cfg, { fetchImpl: fetchOk, maxTerms: 1 });
+    expect(r1.seeded).toBe(1);
+    expect(r1.skipped).toBeGreaterThan(0); // 3 jobs deferred by the cap
+    // re-run with the cap lifted: the freshly-seeded row is skipped, the rest seed
+    const r2 = await seedSemanticLibrary(store, noLlm, cfg, { fetchImpl: fetchOk, maxTerms: 50 });
+    expect(r2.skipped).toBeGreaterThanOrEqual(1); // the fresh row
+    expect(r2.seeded).toBeGreaterThanOrEqual(3); // the remaining jobs
+  });
+
+  it('no-op when semantic.enabled is false', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const cfg = baseCfg({ 'pet-toys': { handle: 'pet-toys', tag: 't' } }, { ...DEFAULT_SEMANTIC, enabled: false });
+    const res = await seedSemanticLibrary(store, noLlm, cfg, { fetchImpl: fetchOk });
+    expect(res).toEqual({ seeded: 0, skipped: 0 });
+    expect(await store.getSemanticExpansions('pet-toys', 'pet toys')).toBeNull();
   });
 });
