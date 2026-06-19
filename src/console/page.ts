@@ -238,30 +238,16 @@ export function consolePage(apiKey: string): Response {
     <h2><span class="step">5</span> AI curation</h2>
     <p class="sub" style="margin:0 0 12px">Scores supplier candidates and rewrites titles/descriptions at warehouse admission (via OpenRouter). Off = mechanical gates only.</p>
     <div class="row">
-      <div class="grow">
-        <label for="llmmodel">Model</label>
-        <select id="llmmodel"></select>
-      </div>
-      <div class="grow" style="flex:0 1 140px">
-        <label for="llmthresh">Min score</label>
-        <input id="llmthresh" type="number" value="60" min="0" max="100" step="5">
-      </div>
-      <div class="grow" style="flex:0 1 120px">
-        <label for="llmon">Enabled</label>
-        <select id="llmon"><option value="true" selected>On</option><option value="false">Off</option></select>
-      </div>
-      <button onclick="saveLlm()">Save AI</button>
+      <div class="grow"><label for="mdl-image">Image (vision) model</label><select id="mdl-image"></select></div>
+      <div class="grow"><label for="mdl-text">Text model</label><select id="mdl-text"></select></div>
+      <div class="grow"><label for="mdl-fallback">Fallback model</label><select id="mdl-fallback"></select></div>
     </div>
     <div class="row" style="margin-top:10px">
-      <div class="grow">
-        <label for="llmcuration">Curation model</label>
-        <select id="llmcuration"></select>
-      </div>
-      <div class="grow">
-        <label for="llmvision">Image (vision) model</label>
-        <select id="llmvision"></select>
-      </div>
+      <div class="grow" style="flex:0 1 140px"><label for="llmthresh">Min score</label><input id="llmthresh" type="number" value="60" min="0" max="100" step="5"></div>
+      <div class="grow" style="flex:0 1 120px"><label for="llmon">Enabled</label><select id="llmon"><option value="true" selected>On</option><option value="false">Off</option></select></div>
+      <button onclick="saveLlm()">Save AI</button>
     </div>
+    <p class="sub muted" style="margin:8px 0 0">Last resort: GPT-5.4 mini · OpenAI direct (system-managed, used only if OpenRouter fails).</p>
     <p id="llmmsg" class="msg muted"></p>
   </section>
 
@@ -424,16 +410,6 @@ export function consolePage(apiKey: string): Response {
         <input id="inbox-intent-thresh" type="number" min="0" max="100" step="1" value="70">
       </div>
     </div>
-    <div class="row" style="margin-top:10px">
-      <div class="grow">
-        <label for="inbox-reply-model">Reply model</label>
-        <select id="inbox-reply-model"></select>
-      </div>
-      <div class="grow">
-        <label for="inbox-classify-model">Classify model</label>
-        <select id="inbox-classify-model"></select>
-      </div>
-    </div>
     <div style="margin-top:10px">
       <label for="inbox-alert-email">Alert email</label>
       <input id="inbox-alert-email" type="text" spellcheck="false" autocomplete="off" placeholder="alerts@example.com">
@@ -553,9 +529,10 @@ function populateForms(s){
   if(p.fxUsdToGbp!=null) el('pfx').value=p.fxUsdToGbp;
   if(p.fxBufferPct!=null) el('pfxb').value=p.fxBufferPct;
   var l=s.llm||{};
-  setModelSelect('llmmodel', l.model, {});
-  setModelSelect('llmcuration', l.curationModel, {blank:'— use base model'});
-  setModelSelect('llmvision', l.visionModel, {vision:true, blank:'— use curation / base'});
+  var mm=(l.models||{});
+  setModelSelect('mdl-image', mm.image, {vision:true, blank:'— top model'});
+  setModelSelect('mdl-text', mm.text, {blank:'— top model'});
+  setModelSelect('mdl-fallback', mm.fallback, {vision:true, blank:'— none'});
   if(l.scoreThreshold!=null) el('llmthresh').value=l.scoreThreshold;
   if(l.enabled!=null) el('llmon').value=String(l.enabled);
   var a=s.addons||{};
@@ -666,10 +643,8 @@ async function saveLlm(){
   try{
     var r=await api('/llm',{
       enabled:el('llmon').value==='true',
-      model:el('llmmodel').value.trim(),
-      curationModel:(el('llmcuration')&&el('llmcuration').value)||'',
-      visionModel:(el('llmvision')&&el('llmvision').value)||'',
-      scoreThreshold:Number(el('llmthresh').value)
+      scoreThreshold:Number(el('llmthresh').value),
+      models:{ image:(el('mdl-image')&&el('mdl-image').value)||'', text:(el('mdl-text')&&el('mdl-text').value)||'', fallback:(el('mdl-fallback')&&el('mdl-fallback').value)||'' }
     });
     if(r.ok){ setMsg('llmmsg','Saved ✓','ok'); refresh(); }
     else setMsg('llmmsg','Failed: '+(r.error||'unknown error'),'no');
@@ -1355,8 +1330,6 @@ async function loadInboxSettings(){
     setReplyModeUI(!!cfg.autosend);
     var at=el('inbox-auto-thresh'); if(at&&cfg.autoConfidenceThreshold!=null) at.value=cfg.autoConfidenceThreshold;
     var it=el('inbox-intent-thresh'); if(it&&cfg.intentThreshold!=null) it.value=cfg.intentThreshold;
-    setModelSelect('inbox-reply-model', cfg.replyModel, {});
-    setModelSelect('inbox-classify-model', cfg.classifyModel, {});
     var ae=el('inbox-alert-email'); if(ae&&cfg.alertEmail) ae.value=cfg.alertEmail;
     var gt=el('inbox-guidance-ta'); if(gt) gt.value=cfg.replyGuidance||'';
     // Invoice settings
@@ -1372,8 +1345,6 @@ async function saveInboxSettings(){
   var chk=el('inbox-autosend-chk');
   var at=el('inbox-auto-thresh');
   var it=el('inbox-intent-thresh');
-  var rm=el('inbox-reply-model');
-  var cm=el('inbox-classify-model');
   var ae=el('inbox-alert-email');
   var gt=el('inbox-guidance-ta');
   var aichk=el('inbox-autoinvoice-chk');
@@ -1387,8 +1358,6 @@ async function saveInboxSettings(){
       autosend:!!(chk&&chk.checked),
       autoConfidenceThreshold:Number(at&&at.value||80),
       intentThreshold:Number(it&&it.value||70),
-      replyModel:(rm&&rm.value.trim())||'anthropic/claude-haiku-4.5',
-      classifyModel:(cm&&cm.value.trim())||'google/gemini-2.5-flash-lite',
       alertEmail:(ae&&ae.value.trim())||'',
       replyGuidance:(gt&&gt.value)||'',
       autoInvoice:!!(aichk&&aichk.checked),

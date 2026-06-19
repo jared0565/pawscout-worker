@@ -63,6 +63,18 @@ describe('consolePage', () => {
     expect(out).not.toContain('<script>alert(1)</script>');
   });
 
+  it('renders one AI-models block and no legacy/inbox model selectors', async () => {
+    const html = await consolePage('test-key').text();
+    expect(html).toContain('id="mdl-image"');
+    expect(html).toContain('id="mdl-text"');
+    expect(html).toContain('id="mdl-fallback"');
+    expect(html).toContain('Last resort: GPT-5.4 mini');
+    expect(html).not.toContain('id="llmcuration"');
+    expect(html).not.toContain('id="llmvision"');
+    expect(html).not.toContain('id="inbox-reply-model"');
+    expect(html).not.toContain('id="inbox-classify-model"');
+  });
+
   it('wraps every invoice field in esc() in the client render code', async () => {
     const html = await consolePage('test-api-key').text();
     // Verify that the renderInboxThread / invoice-card code wraps dynamic values in esc()
