@@ -12,7 +12,7 @@ const CFG: TenantConfig = { collectionMap: {}, gates: { popularityFloor: 1, pric
 
 function fakeLlm(content: unknown): LlmClient {
   const f = (async () => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(content) } }], usage: { cost: 0.0001 } }), { status: 200 })) as unknown as typeof fetch;
-  return new LlmClient('k', f);
+  return new LlmClient({ openrouter: 'k' }, f);
 }
 
 describe('proposeInvoice', () => {
@@ -124,7 +124,7 @@ describe('proposeInvoice', () => {
 
   it('returns null when LLM has no key', async () => {
     const store = new TenantStore(env.DB, 'a.myshopify.com');
-    expect(await proposeInvoice(new LlmClient(undefined), store, CFG, {
+    expect(await proposeInvoice(new LlmClient({}), store, CFG, {
       subject: 's', conversation: 'b', category: 'other'
     })).toBeNull();
   });

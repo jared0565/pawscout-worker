@@ -1,6 +1,7 @@
 import type { LlmClient } from '../llm';
 import type { TenantStore } from '../tenant-store';
 import { DEFAULT_SEMANTIC, type SemanticConfig, type TenantConfig } from '../types';
+import { resolveChain } from '../llm-resolve';
 import { isPetProductStrict } from '../proxy/search';
 
 // cfg.semantic is optional on the type (getConfig always populates it); read it
@@ -78,8 +79,9 @@ export async function cleanToPetTerms(llm: LlmClient, cfg: TenantConfig, raw: st
   if (!llm.available) return petFloor(raw);
 
   const nounCtx = collectionNoun(collection) || 'pet products';
-  const result = await llm.json<string[]>({
-    model: cfg.llm.curationModel ?? cfg.llm.model,
+  const chain = resolveChain(cfg, 'text');
+  const result = await llm.jsonChain<string[]>({
+    chain,
     maxTokens: 200,
     system:
       `You normalize search autocomplete phrases into related SEARCH TERMS for ${nounCtx}. ` +

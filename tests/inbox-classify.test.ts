@@ -21,7 +21,7 @@ function fakeLlm(content: unknown): LlmClient {
     choices: [{ message: { content: JSON.stringify(content) } }],
     usage: { prompt_tokens: 10, completion_tokens: 5, cost: 0.0001 }
   }), { status: 200 })) as unknown as typeof fetch;
-  return new LlmClient('test-key', fetchImpl);
+  return new LlmClient({ openrouter: 'test-key' }, fetchImpl);
 }
 
 describe('classifyEmail', () => {
@@ -44,7 +44,7 @@ describe('classifyEmail', () => {
 
   it('returns null when the LLM has no key (degrades, never throws)', async () => {
     const store = new TenantStore(env.DB, 'a.myshopify.com');
-    const c = await classifyEmail(new LlmClient(undefined), store, CFG, { subject: 's', body: 'b', fromEmail: 'a@b.com', auth: { spf: 'none', dkim: 'none', dmarc: 'none' } });
+    const c = await classifyEmail(new LlmClient({}), store, CFG, { subject: 's', body: 'b', fromEmail: 'a@b.com', auth: { spf: 'none', dkim: 'none', dmarc: 'none' } });
     expect(c).toBeNull();
   });
 });

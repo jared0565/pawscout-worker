@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
 import { LlmClient, extractJson, curateProduct, classifyKeyword, getKeywordMeta, pickHeroImage, rewriteDescription } from '../src/llm';
 import { replenishWarehouse } from '../src/jobs';
@@ -50,10 +50,12 @@ const GOOD_CURATION = {
   petClass: 'dog' as const
 };
 
+const CHAIN_OR = [{ provider: 'openrouter' as const, models: ['m/x'] }];
+
 describe('LlmClient', () => {
   it('parses validated JSON and returns usage with cost', async () => {
     const llm = new LlmClient({ openrouter: 'sk-or-key' }, llmFetch({ a: 1 }));
-    const r = await llm.json({ model: 'm/x', system: 's', user: 'u', validate: (v) => v as { a: number } });
+    const r = await llm.jsonChain({ chain: CHAIN_OR, system: 's', user: 'u', validate: (v) => v as { a: number } });
     expect(r.ok).toBe(true);
     if (r.ok) {
       expect(r.value).toEqual({ a: 1 });
@@ -63,13 +65,13 @@ describe('LlmClient', () => {
 
   it('strips markdown fences before parsing', async () => {
     const llm = new LlmClient({ openrouter: 'k' },llmFetch(null, { raw: '```json\n{"a":2}\n```' }));
-    const r = await llm.json({ model: 'm/x', system: 's', user: 'u', validate: (v) => v as { a: number } });
+    const r = await llm.jsonChain({ chain: CHAIN_OR, system: 's', user: 'u', validate: (v) => v as { a: number } });
     expect(r.ok && r.value.a === 2).toBe(true);
   });
 
   it('recovers JSON wrapped in prose preamble/postamble (the prod non-JSON failure)', async () => {
     const llm = new LlmClient({ openrouter: 'k' },llmFetch(null, { raw: 'Here is the result:\n{"a":7}\nHope that helps!' }));
-    const r = await llm.json({ model: 'm/x', system: 's', user: 'u', validate: (v) => v as { a: number } });
+    const r = await llm.jsonChain({ chain: CHAIN_OR, system: 's', user: 'u', validate: (v) => v as { a: number } });
     expect(r.ok && r.value.a === 7).toBe(true);
   });
 
@@ -81,7 +83,7 @@ describe('LlmClient', () => {
       return new Response(JSON.stringify({ choices: [{ message: { content } }], usage: { cost: 0.0001 } }), { status: 200 });
     }) as unknown as typeof fetch;
     const llm = new LlmClient({ openrouter: 'k' },fetchImpl);
-    const r = await llm.json({ model: 'm/x', system: 's', user: 'u', validate: (v) => v as { a: number } });
+    const r = await llm.jsonChain({ chain: CHAIN_OR, system: 's', user: 'u', validate: (v) => v as { a: number } });
     expect(r.ok && r.value.a === 5).toBe(true);
     expect(n).toBe(2); // retried exactly once
   });
@@ -100,15 +102,30 @@ describe('LlmClient', () => {
     ['network throw', (async () => { throw new Error('down'); }) as typeof fetch]
   ])('degrades to ok:false on %s — never throws', async (_name, fetchImpl) => {
     const llm = new LlmClient({ openrouter: 'k' },fetchImpl);
-    const r = await llm.json({ model: 'm/x', system: 's', user: 'u', validate: (v) => v });
+    const r = await llm.jsonChain({ chain: CHAIN_OR, system: 's', user: 'u', validate: (v) => v });
     expect(r.ok).toBe(false);
   });
 
   it('is unavailable without a key and says so', async () => {
     const llm = new LlmClient({});
     expect(llm.available).toBe(false);
-    const r = await llm.json({ model: 'm/x', system: 's', user: 'u', validate: (v) => v });
+    const r = await llm.jsonChain({ chain: CHAIN_OR, system: 's', user: 'u', validate: (v) => v });
     expect(r.ok).toBe(false);
+  });
+});
+
+describe('curateProduct via resolveChain', () => {
+  it('routes through the text chain (no cfg.llm.model)', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: true, status: 200,
+      json: async () => ({ model: 'cur/y', choices: [{ message: { content: JSON.stringify({ relevanceScore: 80, category: null, title: 'T', descriptionHtml: '<p>d</p>', petClass: 'dog' }) }, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1, cost: 0 } })
+    });
+    const llm = new LlmClient({ openrouter: 'k' }, fetchImpl as any);
+    const cfg: any = { collectionMap: {}, llm: { enabled: true, scoreThreshold: 60, models: { text: 'cur/y' } } };
+    const r = await curateProduct(llm, store, cfg, DETAIL, 'dog chew');
+    expect(r?.relevanceScore).toBe(80);
+    expect(JSON.parse((fetchImpl.mock.calls[0][1] as any).body).models).toEqual(['cur/y']);
   });
 });
 

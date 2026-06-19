@@ -1,6 +1,7 @@
 import type { LlmClient } from '../llm';
 import type { TenantStore } from '../tenant-store';
 import type { TenantConfig } from '../types';
+import { resolveChain } from '../llm-resolve';
 import { INBOX_LABELS, type Classification, type InboxLabel, type ThreadStatus } from './types';
 import type { AuthResults } from './gates';
 
@@ -16,13 +17,11 @@ export async function classifyEmail(
   input: { subject: string; body: string; fromEmail: string; auth: AuthResults }
 ): Promise<Classification | null> {
   if (!llm.available || !cfg.inbox.enabled) return null;
-  // Inbox triage uses its own (cheap) model; only falls back to the curation
-  // model if no classify model is configured.
-  const model = cfg.inbox.classifyModel || cfg.llm.model;
+  const chain = resolveChain(cfg, 'text');
   const allowed = JSON.stringify([...INBOX_LABELS]);
 
-  const result = await llm.json<Classification>({
-    model,
+  const result = await llm.jsonChain<Classification>({
+    chain,
     maxTokens: 400,
     system:
       'You triage inbound customer emails for Active Paw, a UK online pet-care store. ' +

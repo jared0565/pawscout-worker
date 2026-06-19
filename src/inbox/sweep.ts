@@ -1,6 +1,7 @@
 import type { Env, TenantConfig } from '../types';
 import { TenantStore, listActiveShops } from '../tenant-store';
 import { LlmClient } from '../llm';
+import { resolveChain } from '../llm-resolve';
 import { sendEmail } from '../email';
 import { defaultFetch } from '../safe-fetch';
 import { parseAuthResults } from './gates';
@@ -283,7 +284,7 @@ async function draftOne(env: Env, store: TenantStore, cfg: TenantConfig, thread:
   const draftId = await store.insertDraft({
     threadId: thread.id, bodyText: composed.bodyText, bodyHtml: renderReplyHtml(composed.bodyText),
     confidence: draft.confidence, quotesPriceOrder: composed.quotesPriceOrder,
-    holdReasons: decision.holdReasons, model: cfg.inbox.replyModel || cfg.llm.model, status: 'pending'
+    holdReasons: decision.holdReasons, model: (resolveChain(cfg, 'text')[0] as { models: string[] }).models[0], status: 'pending'
   });
   // A proxy freight figure always gets human review, even under Auto.
   if (decision.send && !shippingLine) {

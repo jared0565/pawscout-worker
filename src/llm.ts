@@ -2,6 +2,7 @@ import { defaultFetch } from './safe-fetch';
 import type { TenantStore } from './tenant-store';
 import type { CjDetail } from './cj';
 import type { LlmConfig, TenantConfig } from './types';
+import { resolveChain } from './llm-resolve';
 
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 export const OPENAI_URL = 'https://api.openai.com/v1/chat/completions';
@@ -87,11 +88,6 @@ export class LlmClient {
     return { ok: false, error: lastError };
   }
 
-  /** @deprecated transitional — single-OpenRouter-tier wrapper, removed in Task 5. */
-  async json<T>(opts: { model: string; system: string; user: string; images?: string[]; maxTokens?: number; validate: (v: unknown) => T | null }): Promise<LlmJson<T>> {
-    return this.jsonChain({ chain: [{ provider: 'openrouter', models: [opts.model] }], system: opts.system, user: opts.user, images: opts.images, maxTokens: opts.maxTokens, validate: opts.validate });
-  }
-
   private async send<T>(tier: ChainTier, key: string, opts: {
     system: string; user: string; images?: string[]; maxTokens?: number; validate: (v: unknown) => T | null;
   }): Promise<SendOutcome<T>> {
@@ -169,10 +165,10 @@ export async function curateProduct(
 ): Promise<Curation | null> {
   if (!llm.available || !cfg.llm.enabled) return null;
   const categories = Object.keys(cfg.collectionMap);
-  const model = cfg.llm.curationModel ?? cfg.llm.model;
+  const chain = resolveChain(cfg, 'text');
 
-  const result = await llm.json<Curation>({
-    model,
+  const result = await llm.jsonChain<Curation>({
+    chain,
     maxTokens: 1200,
     system:
       'You curate products for Active Paw, a UK online pet-care store (dogs and cats: grooming, toys, feeding, walking, health, daily care). ' +
@@ -254,10 +250,10 @@ export async function pickHeroImage(
   if (!llm.available || !cfg.llm.enabled) return { ok: false, index: null, drop: [] };
   const urls = imageUrls.slice(0, MAX_HERO_IMAGES);
   if (urls.length < 2) return { ok: true, index: null, drop: [] }; // nothing to choose/vet — definitively fine
-  const model = cfg.llm.visionModel ?? cfg.llm.curationModel ?? cfg.llm.model;
+  const chain = resolveChain(cfg, 'image');
 
-  const result = await llm.json<{ index: number; drop: number[]; reason: string }>({
-    model,
+  const result = await llm.jsonChain<{ index: number; drop: number[]; reason: string }>({
+    chain,
     maxTokens: 200,
     images: urls,
     system:
@@ -309,12 +305,12 @@ export async function rewriteDescription(
   rawHtml: string
 ): Promise<string | null> {
   if (!llm.available || !cfg.llm.enabled) return null;
-  const model = cfg.llm.curationModel ?? cfg.llm.model;
+  const chain = resolveChain(cfg, 'text');
   const currentText = rawHtml.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 2000);
   if (!currentText) return null;
 
-  const result = await llm.json<{ descriptionHtml: string }>({
-    model,
+  const result = await llm.jsonChain<{ descriptionHtml: string }>({
+    chain,
     maxTokens: 700,
     system:
       'You rewrite a pet-product description for a UK online pet store. Respond with ONLY JSON: ' +
@@ -367,9 +363,10 @@ export async function classifyKeyword(
   if (!llm.available || !cfg.llm.enabled) return;
   if (await store.getSearchCache(keywordMetaKey(kw))) return; // already classified
   const categories = Object.keys(cfg.collectionMap);
+  const chain = resolveChain(cfg, 'text');
 
-  const result = await llm.json<KeywordMeta>({
-    model: cfg.llm.model,
+  const result = await llm.jsonChain<KeywordMeta>({
+    chain,
     maxTokens: 300,
     system:
       'You classify pet-store search queries. Respond with ONLY a JSON object: ' +
