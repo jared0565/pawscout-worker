@@ -136,7 +136,7 @@ export function validateLlmPayload(body: unknown): Validation<LlmConfig> {
   if (!finite(b.scoreThreshold) || b.scoreThreshold < 0 || b.scoreThreshold > 100) {
     return { ok: false, error: 'scoreThreshold must be a number between 0 and 100' };
   }
-  for (const k of ['curationModel', 'digestModel'] as const) {
+  for (const k of ['curationModel', 'digestModel', 'visionModel'] as const) {
     if (b[k] !== undefined && b[k] !== '' && (typeof b[k] !== 'string' || (b[k] as string).length > 100 || !MODEL_SLUG.test(b[k] as string))) {
       return { ok: false, error: `${k} must be an OpenRouter model slug` };
     }
@@ -148,6 +148,7 @@ export function validateLlmPayload(body: unknown): Validation<LlmConfig> {
       model: b.model,
       scoreThreshold: b.scoreThreshold as number,
       ...(b.curationModel ? { curationModel: b.curationModel as string } : {}),
+      ...(b.visionModel ? { visionModel: b.visionModel as string } : {}),
       ...(b.digestModel ? { digestModel: b.digestModel as string } : {})
     }
   };

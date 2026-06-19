@@ -5,6 +5,7 @@ import type { Env, TenantConfig, TenantRow } from './types';
 import { makeShopify } from './shopify';
 import { Vault } from './vault';
 import { TenantStore, listActiveShops } from './tenant-store';
+import { getModelCatalog, type CatalogModel } from './models-catalog';
 import { processInbound } from './inbox/ingest';
 import { runInboxClassifySweep } from './inbox/sweep';
 import { beginAuth } from './auth/install';
@@ -49,6 +50,15 @@ app.get('/app', (c) => consolePage(c.env.SHOPIFY_API_KEY));
 // --- /api/* : session-token authed (embedded console) ---
 // Resolves the shop from the App Bridge session token and, on a managed install,
 // lazily mints + persists an offline access token via token exchange (first call only).
+// Defense-in-depth for the image (vision) model setting: reject only a slug the
+// catalog positively marks text-only. Unknown/unset → allow (the UI already
+// constrains the picker to vision models; the catalog may have gaps).
+export function visionModelRejected(slug: string | undefined, catalog: CatalogModel[]): boolean {
+  if (!slug) return false;
+  const m = catalog.find((cm) => cm.slug === slug);
+  return m ? m.vision === false : false;
+}
+
 async function shopOf(c: Context<{ Bindings: Env }>): Promise<string | Response> {
   const shopify = makeShopify(c.env);
   const authHeader = c.req.header('Authorization') ?? null;
@@ -105,8 +115,20 @@ app.post('/api/llm', async (c) => {
   try { body = await c.req.json(); } catch { return c.json({ ok: false, error: 'Invalid JSON body' }, 400); }
   const v = validateLlmPayload(body);
   if (!v.ok) return c.json({ ok: false, error: v.error }, 400);
+  if (v.value.visionModel) {
+    const store = new TenantStore(c.env.DB, s);
+    const catalog = await getModelCatalog(store);
+    if (visionModelRejected(v.value.visionModel, catalog)) {
+      return c.json({ ok: false, error: 'Selected image model is text-only and cannot process images' }, 400);
+    }
+  }
   await saveLlm(c.env.DB, s, v.value);
   return c.json({ ok: true });
+});
+app.get('/api/models', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  const store = new TenantStore(c.env.DB, s);
+  return c.json({ ok: true, models: await getModelCatalog(store) });
 });
 // W-FULFIL Stage B: set the fulfilment mode (manual | pawscout | cj).
 // 'pawscout' is the money leg — only choose it once the CJ wallet is funded

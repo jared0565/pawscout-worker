@@ -239,8 +239,8 @@ export function consolePage(apiKey: string): Response {
     <p class="sub" style="margin:0 0 12px">Scores supplier candidates and rewrites titles/descriptions at warehouse admission (via OpenRouter). Off = mechanical gates only.</p>
     <div class="row">
       <div class="grow">
-        <label for="llmmodel">Model (OpenRouter slug)</label>
-        <input id="llmmodel" type="text" value="anthropic/claude-haiku-4.5" spellcheck="false" autocomplete="off">
+        <label for="llmmodel">Model</label>
+        <select id="llmmodel"></select>
       </div>
       <div class="grow" style="flex:0 1 140px">
         <label for="llmthresh">Min score</label>
@@ -251,6 +251,16 @@ export function consolePage(apiKey: string): Response {
         <select id="llmon"><option value="true" selected>On</option><option value="false">Off</option></select>
       </div>
       <button onclick="saveLlm()">Save AI</button>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <div class="grow">
+        <label for="llmcuration">Curation model</label>
+        <select id="llmcuration"></select>
+      </div>
+      <div class="grow">
+        <label for="llmvision">Image (vision) model</label>
+        <select id="llmvision"></select>
+      </div>
     </div>
     <p id="llmmsg" class="msg muted"></p>
   </section>
@@ -416,12 +426,12 @@ export function consolePage(apiKey: string): Response {
     </div>
     <div class="row" style="margin-top:10px">
       <div class="grow">
-        <label for="inbox-reply-model">Reply model (OpenRouter slug)</label>
-        <input id="inbox-reply-model" type="text" spellcheck="false" autocomplete="off" value="anthropic/claude-haiku-4.5">
+        <label for="inbox-reply-model">Reply model</label>
+        <select id="inbox-reply-model"></select>
       </div>
       <div class="grow">
-        <label for="inbox-classify-model">Classify model (OpenRouter slug)</label>
-        <input id="inbox-classify-model" type="text" spellcheck="false" autocomplete="off" value="google/gemini-2.5-flash-lite">
+        <label for="inbox-classify-model">Classify model</label>
+        <select id="inbox-classify-model"></select>
       </div>
     </div>
     <div style="margin-top:10px">
@@ -465,10 +475,49 @@ function setMsg(id,t,kind){ var n=el(id); if(!n) return; n.textContent=t; n.clas
 function errText(e){ return e&&e.message?e.message:String(e); }
 function esc(s){ return String(s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];}); }
 async function token(){ return await shopify.idToken(); }
-async function api(path,body){
+async function api(path,body,method){
   var t=await token();
-  var r=await fetch('/api'+path,{method:'POST',headers:{'Authorization':'Bearer '+t,'Content-Type':'application/json'},body:JSON.stringify(body||{})});
+  var m=method||'POST';
+  var opts={method:m,headers:{'Authorization':'Bearer '+t}};
+  if(m!=='GET'){ opts.headers['Content-Type']='application/json'; opts.body=JSON.stringify(body||{}); }
+  var r=await fetch('/api'+path,opts);
   return r.json();
+}
+// Model dropdowns: fetch the curated catalog (with live pricing + vision flags)
+// once, cache the option HTML, and populate selects. The vision (image) select
+// is built only from vision-capable models — a text-only model can never be
+// chosen for image QA.
+var modelOptionsPromise=null;
+function ensureModelOptions(){
+  if(!modelOptionsPromise){
+    modelOptionsPromise=api('/models',null,'GET').then(function(r){
+      var models=(r&&r.models)||[];
+      function opt(m){
+        var price=(m.promptPriceM==null)?'price n/a':('$'+m.promptPriceM+'/M in · $'+m.completionPriceM+'/M out');
+        return '<option value="'+esc(m.slug)+'">'+esc(m.name)+' — '+price+(m.vision?' · 👁':'')+'</option>';
+      }
+      return { all:models.map(opt).join(''), vision:models.filter(function(m){return m.vision;}).map(opt).join('') };
+    }).catch(function(){ return {all:'',vision:''}; });
+  }
+  return modelOptionsPromise;
+}
+// Preserve a saved slug not in the curated list as a selected option, so
+// converting free-text → dropdown never silently changes a tenant's config.
+function setSelectValue(id,slug){
+  if(!slug) return;
+  var s=el(id); if(!s) return;
+  var has=false; for(var i=0;i<s.options.length;i++){ if(s.options[i].value===slug){ has=true; break; } }
+  if(!has){ var o=document.createElement('option'); o.value=slug; o.textContent=slug+' (current)'; s.insertBefore(o,s.options[0]||null); }
+  s.value=slug;
+}
+async function setModelSelect(id,slug,opts){
+  opts=opts||{};
+  var o=await ensureModelOptions();
+  var e=el(id); if(!e) return;
+  var html=opts.vision?o.vision:o.all;
+  if(opts.blank) html='<option value="">'+opts.blank+'</option>'+html;
+  e.innerHTML=html;
+  setSelectValue(id,slug);
 }
 function renderStatus(s){
   var g=s.gates||{}; var p=s.pricing||{};
@@ -504,7 +553,9 @@ function populateForms(s){
   if(p.fxUsdToGbp!=null) el('pfx').value=p.fxUsdToGbp;
   if(p.fxBufferPct!=null) el('pfxb').value=p.fxBufferPct;
   var l=s.llm||{};
-  if(l.model) el('llmmodel').value=l.model;
+  setModelSelect('llmmodel', l.model, {});
+  setModelSelect('llmcuration', l.curationModel, {blank:'— use base model'});
+  setModelSelect('llmvision', l.visionModel, {vision:true, blank:'— use curation / base'});
   if(l.scoreThreshold!=null) el('llmthresh').value=l.scoreThreshold;
   if(l.enabled!=null) el('llmon').value=String(l.enabled);
   var a=s.addons||{};
@@ -616,6 +667,8 @@ async function saveLlm(){
     var r=await api('/llm',{
       enabled:el('llmon').value==='true',
       model:el('llmmodel').value.trim(),
+      curationModel:(el('llmcuration')&&el('llmcuration').value)||'',
+      visionModel:(el('llmvision')&&el('llmvision').value)||'',
       scoreThreshold:Number(el('llmthresh').value)
     });
     if(r.ok){ setMsg('llmmsg','Saved ✓','ok'); refresh(); }
@@ -1302,8 +1355,8 @@ async function loadInboxSettings(){
     setReplyModeUI(!!cfg.autosend);
     var at=el('inbox-auto-thresh'); if(at&&cfg.autoConfidenceThreshold!=null) at.value=cfg.autoConfidenceThreshold;
     var it=el('inbox-intent-thresh'); if(it&&cfg.intentThreshold!=null) it.value=cfg.intentThreshold;
-    var rm=el('inbox-reply-model'); if(rm&&cfg.replyModel) rm.value=cfg.replyModel;
-    var cm=el('inbox-classify-model'); if(cm&&cfg.classifyModel) cm.value=cfg.classifyModel;
+    setModelSelect('inbox-reply-model', cfg.replyModel, {});
+    setModelSelect('inbox-classify-model', cfg.classifyModel, {});
     var ae=el('inbox-alert-email'); if(ae&&cfg.alertEmail) ae.value=cfg.alertEmail;
     var gt=el('inbox-guidance-ta'); if(gt) gt.value=cfg.replyGuidance||'';
     // Invoice settings

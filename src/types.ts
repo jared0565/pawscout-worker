@@ -69,6 +69,7 @@ export interface LlmConfig {
   enabled: boolean;
   model: string;
   curationModel?: string;
+  visionModel?: string; // image (vision) QA only; must be a vision-capable model
   digestModel?: string;
   scoreThreshold: number; // 0-100: minimum relevance score to admit
 }

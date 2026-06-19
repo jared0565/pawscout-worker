@@ -209,7 +209,7 @@ export async function pickHeroImage(
   if (!llm.available || !cfg.llm.enabled) return { ok: false, index: null, drop: [] };
   const urls = imageUrls.slice(0, MAX_HERO_IMAGES);
   if (urls.length < 2) return { ok: true, index: null, drop: [] }; // nothing to choose/vet — definitively fine
-  const model = cfg.llm.curationModel ?? cfg.llm.model;
+  const model = cfg.llm.visionModel ?? cfg.llm.curationModel ?? cfg.llm.model;
 
   const result = await llm.json<{ index: number; drop: number[]; reason: string }>({
     model,
