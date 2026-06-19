@@ -1,0 +1,23 @@
+# Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
+
+client_id = "6bc07cd8a343a4aa2ab4b14a09859310"
+application_url = "https://pawscout.activepaw.co.uk/app"
+embedded = true
+name = "PawScout"
+
+[access_scopes]
+# Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
+scopes = "write_inventory,read_inventory,read_locations,write_merchant_managed_fulfillment_orders,read_orders,read_products,write_products,read_publications,write_publications,write_draft_orders,read_customers"
+optional_scopes = [ ]
+use_legacy_install_flow = false
+
+[auth]
+redirect_urls = [ "https://pawscout.activepaw.co.uk/auth/callback" ]
+
+[app_proxy]
+url = "https://pawscout.activepaw.co.uk/proxy"
+subpath = "pawscout"
+prefix = "apps"
+
+[webhooks]
+api_version = "2026-04"
