@@ -167,7 +167,7 @@ describe('CjClient.search — listV2 first (real shape: id, nameEn, content[].pr
         return new Response(JSON.stringify({
           result: true,
           data: { content: [{ productList: [
-            { id: '111', nameEn: 'Herding Ball for Dogs', bigImage: 'https://i/d.jpg', sellPrice: '9.00', listedNum: 3, threeCategoryName: 'Dog Toys' }
+            { id: '111', nameEn: 'Herding Ball for Dogs', bigImage: 'https://i/d.jpg', sellPrice: '9.00', listedNum: 3, threeCategoryName: 'Dog Toys', oneCategoryName: 'Pet Supplies' }
           ] }] }
         }), { status: 200 });
       }
@@ -179,8 +179,9 @@ describe('CjClient.search — listV2 first (real shape: id, nameEn, content[].pr
     expect(urls[0]).toContain('/product/listV2');
     expect(urls[0]).toContain('orderBy=0');
     expect(urls[0]).toContain('page=1');
+    expect(urls[0]).toContain('features=enable_category'); // populates oneCategoryName for the pet-category gate
     expect(items).toHaveLength(1);
-    expect(items[0]).toMatchObject({ pid: '111', nameEn: 'Herding Ball for Dogs', sellPriceUsd: 9, listedNum: 3 });
+    expect(items[0]).toMatchObject({ pid: '111', nameEn: 'Herding Ball for Dogs', sellPriceUsd: 9, listedNum: 3, topCategory: 'Pet Supplies' });
     expect(urls.some((u) => u.includes('/product/list?'))).toBe(false); // never fell back
   });
 
