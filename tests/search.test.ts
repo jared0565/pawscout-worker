@@ -67,13 +67,15 @@ describe('isPetProductStrict (live-feed pet gate — precision over recall)', ()
 });
 
 describe('categoryAdmitsLiveCj (CJ top-category hard-drop gate)', () => {
-  it('drops unambiguously non-pet top categories (even with a pet-token title)', () => {
-    for (const c of ['Jewelry & Watches', 'Phones & Accessories', 'Health, Beauty & Hair', 'Apparel', 'CONSUMER ELECTRONICS', 'Automobiles & Motorcycles']) {
+  it('drops only the probe-confirmed-pet-free tops (incl. both jewelry spellings)', () => {
+    for (const c of ['Jewelry & Watches', 'Jewellery & Watches', 'Phones & Accessories', 'Health, Beauty & Hair']) {
       expect(categoryAdmitsLiveCj(c)).toBe(false);
     }
   });
-  it('defers pet / ambiguous catch-all / blank top categories to the title floor', () => {
-    for (const c of ['Pet Supplies', 'Home, Garden & Furniture', 'Sports & Outdoors', '', undefined]) {
+  it('DEFERS apparel/electronics/automotive (CJ files real pet SKUs there) and pet/blank tops to the title floor', () => {
+    // These were intentionally NOT hard-dropped: dog raincoats/sweaters, pet feeders/GPS,
+    // dog car-seat covers live under them — the title floor handles non-pet ones.
+    for (const c of ['Pet Supplies', 'Home, Garden & Furniture', 'Sports & Outdoors', 'Apparel', 'Consumer Electronics', 'Automobiles & Motorcycles', '', undefined]) {
       expect(categoryAdmitsLiveCj(c)).toBe(true);
     }
   });
@@ -250,5 +252,17 @@ describe('searchBackfill', () => {
     const pids = cards.map((c) => c.pid);
     expect(pids).toContain('REAL');
     expect(pids).not.toContain('NECK');
+  });
+
+  it('reads and writes the live-CJ cache under the kw2: namespace (locks the shared key)', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const calls: string[] = [];
+    const cj = fakeCj([item({ pid: 'fresh' })], calls);
+    await searchBackfill(store, cj, CFG, 'dog toy', 0, 12); // miss → fetch → write
+    expect(calls).toEqual(['dog toy']);
+    expect(await store.getSearchCache('kw2:dog toy')).not.toBeNull();
+    expect(await store.getSearchCache('kw:dog toy')).toBeNull(); // not on the old namespace
+    await searchBackfill(store, cj, CFG, 'dog toy', 0, 12); // hit → served from kw2:, no 2nd CJ call
+    expect(calls).toEqual(['dog toy']);
   });
 });

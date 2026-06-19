@@ -14,7 +14,7 @@
 - `topCategory` is **optional** on `CjSearchItem` — do NOT make it required (it would churn ~6 unrelated test fixtures); the gate treats `undefined` identically to `''` (defer).
 - The category gate lives ONLY on the raw live-CJ feed (alongside `isPetProductStrict`), never on the warehouse/imported path (already LLM-curated).
 - The `kw:` live-CJ cache namespace is SHARED with `jobs.ts` sourcing — bump BOTH to `kw2:` (key rename only in jobs.ts; no gate there) or the bump splits a shared cache and double-fetches CJ.
-- Hard-drop markers are case-insensitive substrings of `oneCategoryName`; the set is small and extensible. Verified non-colliding with the observed pet/ambiguous tops (`Pet Supplies`, `Home, Garden & Furniture`, `Sports & Outdoors`).
+- Hard-drop markers are case-insensitive substrings of `oneCategoryName`; **only probe-confirmed-pet-free tops** belong — `['jewel', 'phone', 'beauty']`. Do NOT add apparel/electronics/automotive (CJ files real pet SKUs there; the same module treats apparel as pet-legit). Verified non-colliding with the observed pet/ambiguous tops (`Pet Supplies`, `Home, Garden & Furniture`, `Sports & Outdoors`). A `search.categoryGate.dropped` log surfaces pet-token items the gate removes, for tuning.
 - `features=enable_category` is a **single string** GET query value (proven: the JSON-array form returns no categories).
 - Windows: run **focused** vitest files only (full `npm test` crashes on pool contention). `tsc --noEmit` must be clean.
 - Never expose worker secrets; never touch `relay/fly.toml`.

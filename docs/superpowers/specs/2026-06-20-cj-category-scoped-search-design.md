@@ -32,22 +32,21 @@ A two-way verdict composed **with** (not replacing) the existing floor:
 
 Rejected alternatives: **B** strict category-AND-title (drops CJ-misfiled real pet items in the catch-all → false negatives); **C** category admit-only-OR (the admit path rescues nothing per the probe → no precision gain, added complexity).
 
+**Coverage is partial, by design.** This gate is a *second signal*, not a complete non-pet filter. The probe showed CJ's filing is inconsistent — it misfiles items into blank/catch-all tops — so a non-pet item CJ tops as `''` or `Home, Garden & Furniture` still defers to the title floor and slips through if it carries a pet token. The category gate closes only the subset of title-pet-token false positives that CJ tops under a *clean, probed* non-pet category (jewelry/phones/human-beauty). The title floor and the LLM curation gate remain the primary niche filters; this is additive precision on top of them, not a replacement.
+
 ### Hard-drop top categories
 
-Matched as **case-insensitive substrings** of `oneCategoryName`. Each is a CJ top-level category that never legitimately holds a pet product:
+Matched as **case-insensitive substrings** of `oneCategoryName`. Only tops the live probe **proved** hold zero pet items qualify:
 
-| Marker | Catches (observed / anticipated) |
-|---|---|
-| `jewelry` | `Jewelry & Watches` — observed (the pendant/necklace cull) |
-| `phone` | `Phones & Accessories` — observed (dog-themed phone cases) |
-| `beauty` | `Health, Beauty & Hair` — observed (human shampoo, nail art) |
-| `apparel` | human apparel — anticipated (the "Love You More" bra / t-shirt cull) |
-| `clothing` | human clothing — anticipated |
-| `electronics` | `Consumer Electronics` — anticipated |
-| `automobile` | `Automobiles & Motorcycles` — anticipated |
-| `motorcycle` | `Automobiles & Motorcycles` — anticipated |
+| Marker | Catches | Evidence |
+|---|---|---|
+| `jewel` | `Jewelry & Watches` (and the `Jewellery` spelling) | probed — the pendant/necklace cull, 12/12 non-pet |
+| `phone` | `Phones & Accessories` | probed — 12/12 non-pet (dog-themed phone cases) |
+| `beauty` | `Health, Beauty & Hair` | probed — human shampoo, nail art, biotin |
 
-The first three are confirmed against real CJ strings from the probe; the rest are anticipated from the known cull and are safe (an unmatched marker is simply inert). The set is deliberately small and extensible — **expand it when a non-pet top category bearing pet-token items is observed in production.** It is verified non-colliding with the observed pet/ambiguous tops (`Pet Supplies`, `Home, Garden & Furniture`, `Sports & Outdoors`).
+**Deliberately NOT hard-dropped** (despite the temptation): `apparel`/`clothing`, `electronics`, `automobile`/`motorcycle`. The probe never sampled these, and CJ files **genuine pet SKUs** under them — dog raincoats/sweaters/costumes (Apparel), automatic feeders/water fountains/GPS trackers/cameras/anti-bark collars (Consumer Electronics), dog car-seat covers/booster seats/ramps (Automobiles & Motorcycles). Hard-dropping them would nuke real pet items even with a clean pet-token title — exactly the false negative we rejected option B to avoid. An **in-repo contradiction** seals it: this same module lists `raincoat`/`apparel` as *pet-accessory* signals (`CATEGORY_SIGNALS`) and deliberately omits pet apparel from `NONPET_MARKERS`. So those tops **defer** to the title floor (the floor drops the non-pet ones; the LLM curation gate is the final niche filter).
+
+The set is deliberately small and extensible — **add a marker only after probing the live feed confirms that top holds no pet-token SKUs.** The new `search.categoryGate.dropped` log (emitted whenever the gate removes a pet-token item) is the observability hook for that tuning. Verified non-colliding with the observed pet/ambiguous tops (`Pet Supplies`, `Home, Garden & Furniture`, `Sports & Outdoors`).
 
 The catch-all `Home, Garden & Furniture` and `Sports & Outdoors` are **intentionally not** in the drop set — they hold CJ-misfiled real pet items, so they defer to the title floor (which admits the pet-token ones, drops the rest).
 
