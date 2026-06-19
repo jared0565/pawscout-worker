@@ -13,12 +13,8 @@ export interface InboxConfig {
   intentThreshold: number;  // 0-100; intentScore >= this → hot-lead alert
   labels: string[];         // allowed taxonomy (defaults to INBOX_LABELS)
   autosend: boolean;        // HITL (false) | Auto (true)
-  classifyModel?: string;   // OpenRouter slug for inbox classification (cheap by design);
-                            // falls back to llm.model when unset. Kept separate from product
-                            // curation so high-volume email triage stays low-cost.
   autoConfidenceThreshold: number; // 0-100; Auto floor
   replyGuidance: string;           // owner's standing voice/instructions, steers every draft
-  replyModel: string;              // OpenRouter slug for drafting
   autoInvoice: boolean;               // false = HITL invoicing; true = Auto behind the floor
   invoiceConfidenceThreshold: number; // 0-100; Auto-invoice floor (separate from replies)
   invoiceValueCeiling: number;        // GBP; total above this → HITL
@@ -30,10 +26,8 @@ export const DEFAULT_INBOX: InboxConfig = {
   intentThreshold: 70,
   labels: [...INBOX_LABELS],
   autosend: false,
-  classifyModel: 'google/gemini-2.5-flash-lite',
   autoConfidenceThreshold: 80,
   replyGuidance: '',
-  replyModel: 'anthropic/claude-haiku-4.5',
   autoInvoice: false,
   invoiceConfidenceThreshold: 95,
   invoiceValueCeiling: 250,

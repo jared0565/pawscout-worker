@@ -29,10 +29,8 @@ describe('inbox config', () => {
     expect(cfg?.inbox.intentThreshold).toBe(70);
     expect(cfg?.inbox.autosend).toBe(false);
     expect(cfg?.inbox.labels).toContain('lead');
-    expect(cfg?.inbox.classifyModel).toBe('google/gemini-2.5-flash-lite');
     expect(cfg?.inbox.autoConfidenceThreshold).toBe(80);
     expect(cfg?.inbox.replyGuidance).toBe('');
-    expect(cfg?.inbox.replyModel).toBe('anthropic/claude-haiku-4.5');
     expect(cfg?.inbox.autoInvoice).toBe(false);
     expect(cfg?.inbox.invoiceConfidenceThreshold).toBe(95);
     expect(cfg?.inbox.invoiceValueCeiling).toBe(250);
