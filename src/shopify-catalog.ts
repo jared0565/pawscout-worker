@@ -1,11 +1,11 @@
 import type { AdminGraphql } from './shopify-admin';
 
-export type CatalogVariant = { variantId: string; productId: string; title: string; variantTitle: string; sku: string | null; priceGbp: number; available: boolean };
+export type CatalogVariant = { variantId: string; productId: string; title: string; variantTitle: string; sku: string | null; priceGbp: number; availableQty: number; available: boolean };
 
 const NODES_BY_IDS = `query pawscoutVariantsByIds($ids: [ID!]!) {
   nodes(ids: $ids) {
     ... on ProductVariant {
-      id sku title price
+      id sku title price inventoryQuantity
       product { id title }
     }
   }
@@ -26,6 +26,7 @@ export async function variantsByIds(admin: AdminGraphql, ids: string[]): Promise
       variantTitle: String(node.title ?? ''),
       sku: node.sku ? String(node.sku) : null,
       priceGbp: Number(node.price ?? 0) || 0,
+      availableQty: Number(node.inventoryQuantity ?? 0) || 0,
       available: true // owner already selected; availableForSale not needed here
     });
   }
@@ -34,7 +35,7 @@ export async function variantsByIds(admin: AdminGraphql, ids: string[]): Promise
 
 const SEARCH = `query pawscoutCatalog($q: String!, $first: Int!) {
   products(first: $first, query: $q) {
-    edges { node { id title variants(first: 20) { edges { node { id title sku price availableForSale } } } } }
+    edges { node { id title variants(first: 20) { edges { node { id title sku price availableForSale inventoryQuantity } } } } }
   }
 }`;
 
@@ -54,7 +55,8 @@ export async function searchShopifyProducts(admin: AdminGraphql, query: string, 
       out.push({
         variantId: String(v.id), productId: String(p.id), title: String(p.title ?? ''),
         variantTitle: String(v.title ?? ''), sku: v.sku ? String(v.sku) : null,
-        priceGbp: Number(v.price ?? 0) || 0, available: v.availableForSale === true
+        priceGbp: Number(v.price ?? 0) || 0, availableQty: Number(v.inventoryQuantity ?? 0) || 0,
+        available: v.availableForSale === true
       });
     }
   }

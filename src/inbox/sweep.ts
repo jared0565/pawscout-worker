@@ -96,6 +96,9 @@ async function classifyOne(env: Env, store: TenantStore, cfg: TenantConfig, shop
 // thread that keeps failing (catalog miss, send error, scope loss) from triggering a
 // fresh LLM call + draft attempt every 15-min sweep.
 const FAILED_INVOICE_BACKOFF_MS = 6 * 60 * 60 * 1000; // 6h
+// Hard backstop on an auto-invoice line quantity, used when a variant's inventory is
+// untracked/unknown; tracked stock caps below this.
+const HARD_INVOICE_QTY_CAP = 20;
 
 export async function proposeInvoiceOne(
   env: Env,
@@ -148,6 +151,7 @@ export async function proposeInvoiceOne(
     // 4. Resolve each lineRequest via the catalog.
     const resolvedItems: InvoiceLineItem[] = [];
     let allResolved = true;
+    let quantitiesWithinCaps = true;
     for (const req of proposal.lineRequests) {
       const result = await resolveLineRequest(admin, req.query);
       if (result.status === 'resolved' && result.variant) {
@@ -158,6 +162,12 @@ export async function proposeInvoiceOne(
           qty: req.qty,
           priceGbp: result.variant.priceGbp
         });
+        // Inventory-aware qty cap: never auto-invoice more than is in stock, bounded by a
+        // hard backstop. availableQty<=0 = untracked/unknown (the variant already passed
+        // the availableForSale filter) → fall back to the hard cap rather than block.
+        const tracked = result.variant.availableQty;
+        const cap = tracked > 0 ? Math.min(tracked, HARD_INVOICE_QTY_CAP) : HARD_INVOICE_QTY_CAP;
+        if (req.qty < 1 || req.qty > cap) quantitiesWithinCaps = false;
       } else {
         allResolved = false;
         // Unresolved line requests are omitted from resolvedItems; allResolved=false
@@ -167,7 +177,6 @@ export async function proposeInvoiceOne(
 
     const rawTotal = resolvedItems.reduce((sum, li) => sum + li.priceGbp * li.qty, 0);
     const total = Math.round(rawTotal * 100) / 100;
-    const quantitiesWithinCaps = resolvedItems.every((li) => li.qty <= 20);
 
     // 4b. Guard: if catalog resolved nothing, force hold — never call createDraftOrder with empty items.
     const noResolvedItems = resolvedItems.length === 0 || total <= 0;

@@ -71,13 +71,15 @@ function makeMockFetch(opts: {
   spy?: { draftOrderHit: boolean; resendHit: boolean };
   /** When true, the catalog returns zero products (all lineRequests resolve to 'none') */
   emptyCatalog?: boolean;
+  /** Inventory on hand for the catalog variant (drives the inventory-aware qty cap). */
+  inventoryQuantity?: number;
 }): typeof fetch {
   const productPayload = {
     products: {
       edges: [{
         node: {
           id: 'gid://shopify/Product/1', title: 'Dog Collar',
-          variants: { edges: [{ node: { id: VARIANT_ID, title: 'Standard', sku: 'C-STD', price: '12.50', availableForSale: true } }] }
+          variants: { edges: [{ node: { id: VARIANT_ID, title: 'Standard', sku: 'C-STD', price: '12.50', availableForSale: true, inventoryQuantity: opts.inventoryQuantity ?? 100 } }] }
         }
       }]
     }
@@ -395,5 +397,36 @@ describe('proposeInvoiceOne — failed-invoice backoff', () => {
     const invoiceRows = await getInvoicesForThread(tid);
     expect(invoiceRows).toHaveLength(1);
     expect(invoiceRows[0].status).toBe('failed');
+  });
+});
+
+// ─── Case 6: inventory-aware qty cap — requested qty exceeds stock → held ──
+describe('proposeInvoiceOne — inventory-aware qty cap', () => {
+  it('holds (qty_over_cap) when requested qty exceeds the variant inventory, even with autoInvoice on', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const { accessTokenEnc, dekWrapped } = await sealToken();
+    await store.upsertTenant({ accessTokenEnc, dekWrapped, scopes: 'write_draft_orders,read_products' });
+    const inboxCfg = { ...DEFAULT_INBOX, autoInvoice: true, invoiceConfidenceThreshold: 80, invoiceValueCeiling: 250, invoiceRateLimit: 2 };
+    await store.seedConfig(cfg(inboxCfg));
+    await store.saveInbox(inboxCfg);
+
+    const tid = await seedBuyingThread(store, 'I want to order dog collars', 'lead');
+
+    // Customer wants 2 (proposal qty), but only 1 is in stock → over the inventory cap.
+    const proposePayload = { isInvoiceMoment: true, lineRequests: [{ query: 'dog collar', qty: 2 }], coverText: 'Items', confidence: 97 };
+    const spy = { draftOrderHit: false, resendHit: false };
+    const testEnv = { ...E, OPENROUTER_API_KEY: 'k', RESEND_API_KEY: 'test-resend-key' } as unknown as Env;
+    const threadRow = (await store.getThreadWithMessages(tid))!.thread;
+
+    const handled = await proposeInvoiceOne(testEnv, store, cfg(inboxCfg), threadRow, makeMockFetch({ proposeResponse: proposePayload, spy, inventoryQuantity: 1 }));
+
+    expect(handled).toBe(true);
+    expect(spy.draftOrderHit).toBe(false); // held — no draft order created
+    expect(spy.resendHit).toBe(false);
+    const invoiceRows = await getInvoicesForThread(tid);
+    expect(invoiceRows).toHaveLength(1);
+    expect(invoiceRows[0].status).toBe('proposed');
+    const holdReasons: string[] = JSON.parse(invoiceRows[0].hold_reasons ?? '[]');
+    expect(holdReasons).toContain('qty_over_cap');
   });
 });
