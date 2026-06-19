@@ -73,6 +73,7 @@ describe('consolePage', () => {
     expect(html).not.toContain('id="llmvision"');
     expect(html).not.toContain('id="inbox-reply-model"');
     expect(html).not.toContain('id="inbox-classify-model"');
+    expect(html).not.toContain('id="llmmodel"');
   });
 
   it('wraps every invoice field in esc() in the client render code', async () => {
