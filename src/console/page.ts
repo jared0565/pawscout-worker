@@ -1114,7 +1114,7 @@ function renderInboxThread(thread,messages,labels,draft,invoice){
       +'<p id="inbox-invoice-msg" class="msg muted"></p>'
       +'</div>';
   }
-  var labOpts=['lead','product-question','order-status','shipping-returns','wholesale-b2b','complaint','spam','automated','other'];
+  var labOpts=['lead','product-question','order-status','shipping-returns','wholesale-b2b','affiliate','complaint','spam','automated','other'];
   var labSel='<select id="inbox-label-sel" multiple size="4" style="width:100%;font-size:13px">';
   for(var j=0;j<labOpts.length;j++){
     var isSel=labels.indexOf(labOpts[j])>=0?' selected':'';

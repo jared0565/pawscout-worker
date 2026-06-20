@@ -32,7 +32,9 @@ export async function classifyEmail(
       '"intentScore": <0-100 integer: how strong the buying intent is — 0 for spam/no intent, 90+ for "I want to buy X now">, ' +
       '"summary": <one sentence, max 160 chars, no quotes from the body>, ' +
       `"labels": <array of 1-3 distinct values from ${allowed}>}. ` +
-      'Use "lead" for clear buying intent, "wholesale-b2b" for bulk/trade enquiries, "complaint" for dissatisfaction, "spam" for junk.',
+      'Use "lead" for clear buying intent, "wholesale-b2b" for bulk/trade buyers wanting to purchase stock, ' +
+      '"affiliate" for affiliate/commission/partnership outreach — someone offering to promote or sell our products for a commission or cut (distinct from a wholesale buyer; the sender wants to earn from us, not buy from us), ' +
+      '"complaint" for dissatisfaction, "spam" for junk.',
     user: JSON.stringify({
       fromEmail: input.fromEmail,
       authSummary: `spf=${input.auth.spf} dkim=${input.auth.dkim} dmarc=${input.auth.dmarc}`,
@@ -82,6 +84,8 @@ export function decideDisposition(
     status: 'needs_reply',
     primaryCategory: c.category,
     labels: c.labels.length ? c.labels : [c.category],
-    alert: c.intentScore >= intentThreshold
+    // Affiliate/partnership enquiries are a commercial opportunity, not a purchase,
+    // so they score low on buying-intent — surface them regardless of the threshold.
+    alert: c.intentScore >= intentThreshold || c.category === 'affiliate'
   };
 }

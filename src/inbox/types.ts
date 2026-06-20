@@ -1,6 +1,6 @@
 export const INBOX_LABELS = [
   'lead', 'product-question', 'order-status', 'shipping-returns',
-  'wholesale-b2b', 'complaint', 'spam', 'automated', 'other'
+  'wholesale-b2b', 'affiliate', 'complaint', 'spam', 'automated', 'other'
 ] as const;
 export type InboxLabel = (typeof INBOX_LABELS)[number];
 
