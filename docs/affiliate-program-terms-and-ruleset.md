@@ -1,7 +1,10 @@
 # Active Paw Affiliate Program — Gates, Eligibility Ruleset & Launch Prerequisites
 
 **Date:** 2026-06-20 · **Companion to:** `docs/affiliate-program-analysis.md`
-**Principle:** the whole program is a machine for separating **incremental** sales (net-positive) from **non-incremental** ones (margin give-away). Each rule below is a *gate* that does that, at one of three stages, plus the compliance terms that cap our legal/fraud exposure. **Nothing here is enforceable until Part D (prerequisites) is done.**
+**Hardened** after a 3-lens adversarial review (compliance / enforceability / gaming): 6 Critical + 7 Important loopholes closed — see the change-notes inline (🛡️).
+**Principle:** the whole program is a machine for separating **incremental** sales (net-positive) from **non-incremental** ones (margin give-away). Each rule is a *gate* that does that, at one of three stages, plus the terms that cap legal/fraud exposure. **Nothing here is enforceable until Part D (prerequisites) is done — and several "rules" are deliberately marked as manual/contractual because no Shopify affiliate app can enforce them automatically.**
+
+> ⚠️ **Two honesty notes from the review:** (1) The named apps (UpPromote / Refersion) **cannot read product COGS and cannot see cross-channel attribution** — so the £6-margin gate and owned-channel de-dup are NOT automatic app rules; they are a manual SKU allowlist and the Gate-3 holdout test respectively. (2) **Get a UK solicitor to review the agreement** before use — clawback/penalty clauses against individuals engage the *Cavendish v Makdessi* penalty doctrine and Consumer Rights Act 2015 unfair-terms rules.
 
 ---
 
@@ -9,36 +12,38 @@
 
 | | Partner type | Action |
 |---|---|---|
-| ✅ | Pet content/review creators, "best X for dogs" sites, breed/care bloggers, pet TikTok/IG/YouTube/UGC creators with a real, UK-relevant, pet audience | **Accept (manual)** — these introduce net-new audiences (substitute for paid ads) |
-| ⛔ | Coupon/voucher/deal sites, cashback portals, loyalty programs, browser extensions/toolbars (Honey-type), "we'll generate sales for commission" cold pitches with no named audience | **Auto-decline** — 66–71% non-incremental; they harvest demand you already created |
+| ✅ | Pet content/review creators, "best X for dogs" sites, breed/care bloggers, pet TikTok/IG/YouTube/UGC creators with a real, **verified**, pet- and UK-relevant audience | **Accept (manual)** — they introduce net-new audiences (substitute for paid ads) |
+| ⛔ | Coupon/voucher/deal sites, cashback portals, loyalty programs, browser extensions/toolbars (Honey-type), discount-code SEO pages, "we'll generate sales for commission" cold pitches with no named audience | **Auto-decline** — 66–71% non-incremental; they harvest demand you already created |
 
 **Vetting checklist (reject on any red flag), at approval AND monthly:**
-- [ ] Original content that actually mentions/reviews products (not a coupon/redirect page)
-- [ ] Audience is pet-relevant and UK-relevant (or your shipping markets)
-- [ ] No brand/URL bidding on "Active Paw" or misspellings
+- [ ] **Identity + reach verified** before any commission/gift (handle ownership, audience size, engagement screenshots) — 🛡️ *closes the "fake low-reach identities under the per-creator cap" exploit*
+- [ ] Original content that mentions/reviews products (not a coupon/redirect/look-alike page)
+- [ ] Audience pet-relevant and UK-relevant (or your shipping markets)
+- [ ] **No brand bidding AND no brand-term organic optimisation** on "Active Paw" / misspellings / "Active Paw review|discount" — 🛡️ *the review found organic brand interception is invisible to a paid-search monitor*
 - [ ] Traffic not single-source / not implausible (≈100% conversion = fraud flag)
-- [ ] Named platform/handle with verifiable reach
 
-**No auto-approval.** Every affiliate is manually accepted.
+**No auto-approval.** Type-based filtering at the door is necessary but **not sufficient** — a "clean" creator can still behave like a cashback portal (see anti-rebate, E.9). Gate 3 is what proves they didn't.
 
 ---
 
 ## Part B — Gate 2: Commission eligibility (what's actually paid)
 
-| Rule | Setting | Enforced by | Depends on (Part D) |
+| Rule | Setting | How it's actually enforced | Prereq |
 |---|---|---|---|
 | **Rate** | 8% of **net** product revenue | App commission rule | — |
 | **Base** | **Ex-VAT (20%), ex-shipping, ex-refunds** | App base config | #4 |
-| **New-customer-only** | Full rate on 1st-order customers; **0% on returning** | Shopify new-vs-returning flag → app | #2 |
+| **Attribution method** | **Private referral LINK is primary** (requires a click → respects the cookie window). Per-creator codes are **secondary and controlled** | App link + locked code | #5 |
+| **New-customer-only** | Full rate on 1st-order customers; **0% on returning** | Shopify full-history customer match (NOT affiliate-only DB) + fingerprint | **#2** |
 | **Per-order cap** | lesser of 8% or **£3.50/order** | App cap | — |
-| **£6/unit margin floor** | No commission on any line where (unit gross − commission) < £6; exclude floor-priced SKUs from eligibility | App per-SKU margin gate | **#1** (COGS) |
-| **Cookie window** | **7–15 days** (short, on purpose) | App attribution setting | — |
-| **Hold / validation** | **≥ 45 days** before payout | App hold period | #3 |
-| **Clawback** | Auto-reverse on refund / cancellation / chargeback | App clawback toggle | #3 |
-| **Coupon-on-order exclusion** | No commission on any order that used a discount code (unless it's that affiliate's own locked code) | App rule + locked codes | #5 |
-| **Owned-channel de-dup** | No commission on orders also attributable to email / branded search | App de-dup / attribution | #6 |
+| **Per-customer / rolling cap** | aggregate cap per customer & per rolling 7 days | 🛡️ App rolling cap / fraud flag — *closes order-splitting (split a £200 basket into 5 orders to beat the per-order cap)* | #6 |
+| **£6/unit margin floor** | **Manually-maintained eligible-SKU allowlist** — only enroll SKUs whose gross − commission ≥ £6; exclude floor-priced SKUs | 🛡️ **Manual list, NOT an app gate** — no affiliate app reads COGS | **#1** |
+| **Cookie window** | **7–15 days** | App attribution setting | — |
+| **Hold / validation** | **≥ 45 days**; **new affiliates: probationary rolling reserve spanning the ~120-day chargeback window** | 🛡️ App hold + manual reserve — *churn-and-burn affiliates get paid at day 45 then vanish before chargebacks land* | #3, #10 |
+| **Clawback** | Auto-reverse on refund / cancellation / chargeback — **against held/unvested commission only** | App clawback toggle | #3 |
+| **Coupon stacking** | An affiliate's locked code **must not stack** with any other discount; orders using a **non-affiliate** code earn **0%** | 🛡️ App rule — *reconciles the earlier contradiction (you can't exclude all coupon orders when the code IS the attribution)* | #5 |
+| **Owned-channel de-dup** | Branded-search / email-attributable orders → not commissionable | 🛡️ **Largely NOT app-enforceable** (apps can't see cross-channel) → the **Gate-3 holdout** is the real control | #6 |
 
-> **Why "net new-customer ex-VAT," not "% of order total":** UK prices are VAT-inclusive, so ~1/6 of a naive base is tax we remit to HMRC; returning buyers are the least incremental cohort; and 10% of revenue ≈ 57% of our net profit. Each clause above exists to keep the paid mix incremental.
+> **Why net new-customer ex-VAT:** UK prices are VAT-inclusive (~1/6 is tax we remit); returning buyers are least incremental; 10% of revenue ≈ 57% of our net. Every clause pushes the paid mix toward incremental.
 
 ---
 
@@ -46,47 +51,47 @@
 
 | Rule | Trigger | Decision |
 |---|---|---|
-| **Pause / holdout test** | Before scaling any partner or cohort; **quarterly** on top partners by spend | Pause commissions in matched UK regions ~4–6 weeks; measure lift in **total** orders (not attributed orders) |
-| **Keep/cut** | Test result | **Keep** only if measured incremental lift clears **I\* = C/51** for the tier (at 8%, ≈16%). **Cut** if total revenue doesn't drop when paused — that partner was cannibalising. |
-| **Reporting** | Always | Report **net-profit-after-commission per partner *category*** (content / creator / coupon / cashback) — **never** a single blended ROAS, which hides the dilutive tail. |
+| **Pause / holdout test** | Before scaling any partner/cohort; **quarterly** on top partners | 🛡️ **Deactivate the CODE *and* commission** in matched UK regions ~4–6 weeks (a live code keeps discounting → confounds the read), confirm the creator can geo-gate, and prefer **whole-cohort** holdouts (national creator content can't be geo-split). Measure lift in **total** orders. |
+| **Keep/cut** | Test result | **Keep** only if measured incremental lift clears **I\* = C/51** (at 8%, ≈16%). **Cut** if total revenue doesn't drop when paused. 🛡️ **A confounded/leaky result = do-NOT-scale, not keep.** |
+| **Reporting** | Always | **Net-profit-after-commission per partner *category*** — never a blended ROAS, which hides the dilutive tail. |
 
 ---
 
 ## Part D — Launch prerequisites (MUST be true before any payout rule can run)
 
-These are the plumbing the gates above *assume*. Until each is checked, the corresponding rule is aspirational, not enforced.
-
-- [ ] **#1 — Per-variant COGS in Shopify.** Populate Cost-per-item from CJ landed cost (product + freight + FX); refresh when those move. *(Gates the £6 floor + margin-based commission. CJ does not fill this automatically.)*
-- [ ] **#2 — New-vs-returning flag wired** into the affiliate app **and verified with a live test order** *(off by default — the highest-leverage control silently fails if unconfigured)*.
-- [ ] **#3 — Hold ≥45 days + clawback-on-refund enabled and verified** *(default 30-day hold is shorter than China transit + UK 14-day cooling-off, which starts on delivery)*.
-- [ ] **#4 — Commission base = net-of-VAT, ex-shipping, ex-refunds** confirmed in app settings.
-- [ ] **#5 — Per-creator unique discount codes** (never generic), each locked to one affiliate *(doubles as the offer and a clean incrementality read; survives Safari/iOS attribution loss)*.
-- [ ] **#6 — Fraud/IVT screening + owned-channel (email/branded-search) de-dup** active.
-- [ ] **#7 — Brand-bidding / trademark monitoring** (e.g. BrandVerity / The Search Monitor) live, with clawback+removal penalty defined.
-- [ ] **#8 — Affiliate tracking cookies gated behind the PECR consent banner** *(consent rejection breaks attribution — budget accordingly)*.
-- [ ] **#9 — Influencer seeding ledger:** gifted units booked as CAC (full COGS), capped per creator, with a post-commitment before gifting.
-- [ ] **#10 — Affiliate-cohort dispute-rate monitor** (separate from blended 3% refunds), to protect Shopify's ~1% chargeback threshold (20% reserve / 120 days).
+- [ ] **#1 — Per-variant COGS maintained offline** (CJ landed cost + freight + FX) → used to build the **manual eligible-SKU allowlist** for the £6 floor. *(No app reads COGS; this gate is a list you maintain, refreshed when costs move.)*
+- [ ] **#2 — Full-history new-vs-returning matching, verified to fail the bypass.** On Refersion, upload the **full Shopify customer CSV** (its returning-DB is built only from prior *affiliate* sales, so a 10-time organic buyer counts as "new"); UpPromote checks the full list but is still email-keyed. Add **device/shipping-address/payment fingerprinting**, **disable the 1-hour double-credit window**, and make the test order **attempt a fresh-email guest-checkout bypass**. 🛡️ *the #1 gaming exploit*
+- [ ] **#3 — Hold ≥45 days + clawback-on-refund enabled and verified;** new-affiliate probationary reserve configured (Part B).
+- [ ] **#4 — Commission base = net-of-VAT, ex-shipping, ex-refunds.**
+- [ ] **#5 — Per-creator PRIVATE referral links primary; codes secondary, single-affiliate-locked, NOT listed on aggregators** (see E.5/E.6). Rate-limit/rotate codes; monitor leakage (code string + "Active Paw discount" SERPs). 🛡️ *a public code can be posted to RetailMeNot/Honey and recreates the banned coupon dynamic*
+- [ ] **#6 — Fraud/IVT screening; rolling per-customer caps; order-split + same-code burst flags.**
+- [ ] **#7 — Brand monitoring covers PAID *and* ORGANIC** SERPs (brand-term ranking, look-alike "Active Paw review/code" pages), not just ad auctions. 🛡️
+- [ ] **#8 — Affiliate tracking cookies gated behind the PECR consent banner** (rejection breaks attribution — budget for it).
+- [ ] **#9 — Seeding gated on VERIFIED, PERMANENT delivery:** require a non-expiring, linkable post with upfront `#ad gifted` disclosure by a deadline; **identity/reach verified before the first gift**; further seeding/commission **blocked until prior delivery confirmed**; offset future commission for non-delivery. 🛡️ *gifted COGS is irreversible — "never post / 24h story / post-then-delete" must be designed out*
+- [ ] **#10 — Affiliate-cohort dispute-rate monitor** (separate from blended 3% refunds) to protect Shopify's ~1% chargeback threshold (20% reserve / 120 days).
 
 ---
 
-## Part E — Binding compliance clauses (go verbatim into the affiliate agreement)
+## Part E — Binding compliance clauses (into the agreement — **subject to UK solicitor review**)
 
-1. **Disclosure (ASA):** every affiliate communication must carry clear **`#ad`** (or **`#ad gifted`** for seeded product) **upfront**, before any "see more" truncation. *(We are jointly liable for an affiliate's undisclosed ad.)*
-2. **No paid-search / brand bidding:** "Active Paw", its misspellings and variants must be **negative keywords**; no direct-linking on branded terms. Automated monitoring is active; breach → commission clawback + removal.
-3. **No cookie-stuffing / forced clicks / auto-redirect** attribution grabs.
-4. **No self-referral** (commission on your own purchases); order-pattern monitoring + clawback.
-5. **No generic discount-code distribution**; only the affiliate's own locked code.
-6. **No unauthorised use of the brand name, logo, or look-alike domains.**
-7. **VAT:** commission is a VATable B2B service; handled via network self-billing; **reverse-charge** for non-UK affiliates (confirm with accountant).
-8. **Validation period + clawback** apply to all commissions; refunded/cancelled/disputed orders earn nothing.
+1. **Disclosure (ASA):** clear **`#ad`** / **`#ad gifted`** **upfront**, before any "see more". *(We are jointly liable for an affiliate's undisclosed ad.)*
+2. **No brand bidding *or* brand-term organic interception:** "Active Paw", misspellings, variants and "review/discount/code" combinations as negative keywords **and** no SEO optimisation or look-alike pages targeting them. Paid + organic SERP monitoring active; breach → clawback of **held** commission + removal. 🛡️
+3. **No cookie-stuffing / forced clicks / auto-redirect.**
+4. **No self-referral** (incl. fresh-email/guest-checkout variants); fingerprint + pattern monitoring + clawback.
+5. **No generic code distribution; codes are single-affiliate-locked and must not stack** with other discounts.
+6. **No listing of codes/links on coupon/cashback aggregators or browser extensions;** breach → clawback + removal. 🛡️
+7. **VAT (split by status):** VAT-**registered** affiliates → network self-billing (20%); **unregistered** (most micro-influencers under the £90k threshold) → **plain commission statement, no VAT**; **non-UK** B2B → reverse charge. Confirm with accountant. 🛡️
+8. **Validation period + clawback** apply to all commissions; refunded/cancelled/disputed orders earn nothing. Clawback reaches **held/unvested commission only** (not already-paid sums) to stay within UK penalty/unfair-terms law. 🛡️
+9. **No customer rebating/kickback:** the affiliate must not pass back any commission, cash, or incentive to purchasers (a private rebate recreates a cashback portal inside the program). Breach → clawback + termination. 🛡️ *closes the "use my code, I'll PayPal you £5 back" loophole*
+10. **No unauthorised use of brand name, logo, or look-alike domains.**
 
 ---
 
 ## Part F — Pre-flight (the methodology's "Step 0")
 
-Before recruiting at all: **validate a repeat-buying base / retention engine exists.** We currently lack subscription LTV, so each affiliate sale must pay back on *order one*. Build email/reorder/bundle (or a consumables subscription) first, or keep the affiliate program **small and incrementality-gated** until it does. Affiliates *amplify* what already works — they can't create demand for an undifferentiated catalog.
+Before recruiting: **validate a repeat-buying base / retention engine exists.** We lack subscription LTV, so each affiliate sale must pay back on *order one* — build email/reorder/bundle (or a consumables subscription) first, or keep the program **small and incrementality-gated** until it does.
 
 ---
 
 ### One-line summary
-**Gate 1 picks who (decline coupon/cashback, accept creators) · Gate 2 fences what's paid (8% net, new-customer-only, £6 floor, clawback) · Gate 3 proves it (pause-test, keep only if lift > C/51) — and none of it runs until Part D plumbing exists.**
+**Gate 1 picks who (decline coupon/cashback, verify creators) · Gate 2 fences what's paid (8% net, new-customer-only, manual £6-floor allowlist, rolling caps, probationary reserve, clawback) · Gate 3 proves it (deactivate-code holdout, keep only if lift > C/51) — codes are controlled not public, rebating/organic-interception are banned, and none of it runs until Part D plumbing exists or beyond what the apps can actually enforce.**
