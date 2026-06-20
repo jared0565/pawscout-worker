@@ -999,7 +999,14 @@ async function saveCollections(){
     else setMsg('mapmsg','Failed: '+(r.error||'unknown error'),'no');
   }catch(e){ setMsg('mapmsg','Failed: '+errText(e),'no'); }
 }
+// The thread detail (#inbox-thread) is moved to sit directly below the clicked
+// row so it opens in place instead of at the bottom of a long list. homeInboxDetail
+// returns it to its resting slot (just before #inboxmsg) so a list re-render never
+// destroys it via innerHTML=''.
+function homeInboxDetail(){ var d=el('inbox-thread'),a=el('inboxmsg'); if(d&&a&&a.parentNode) a.parentNode.insertBefore(d,a); }
+function inboxRowById(id){ var l=el('inbox-threads'); if(!l) return null; var rows=l.getElementsByClassName('inbox-row'); for(var i=0;i<rows.length;i++){ if(rows[i].getAttribute('data-id')===String(id)) return rows[i]; } return null; }
 async function loadInboxThreads(){
+  homeInboxDetail();
   var status=(el('inbox-status-filter')&&el('inbox-status-filter').value)||'';
   var list=el('inbox-threads');
   if(list) list.innerHTML='<p class="muted">Loading…</p>';
@@ -1015,6 +1022,7 @@ async function loadInboxThreads(){
 function renderInboxThreads(threads){
   var list=el('inbox-threads');
   if(!list) return;
+  homeInboxDetail(); // pull the detail out of the list before we clear it
   if(!threads.length){ list.innerHTML='<p class="muted">No messages yet.</p>'; return; }
   list.innerHTML='';
   for(var i=0;i<threads.length;i++){
@@ -1032,6 +1040,9 @@ function renderInboxThreads(threads){
 }
 async function openInboxThread(id){
   var detail=el('inbox-thread');
+  var row=inboxRowById(id);
+  if(detail&&row) row.insertAdjacentElement('afterend',detail); // open right below the clicked row
+  else homeInboxDetail();
   if(detail) detail.innerHTML='<p class="muted">Loading thread…</p>';
   setMsg('inboxmsg','','muted');
   try{

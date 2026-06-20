@@ -21,6 +21,16 @@ describe('consolePage', () => {
     expect(html).toContain('id="inbox-threads"');
   });
 
+  it('opens the inbox thread detail inline (below the clicked row), not at the list bottom', async () => {
+    const html = await consolePage('test-api-key').text();
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+    // openInboxThread repositions the single detail element directly after the clicked row…
+    expect(scripts).toContain("row.insertAdjacentElement('afterend',detail)");
+    // …and homeInboxDetail/inboxRowById exist so a list re-render (innerHTML='') never destroys it.
+    expect(scripts).toContain('function homeInboxDetail(');
+    expect(scripts).toContain('function inboxRowById(');
+  });
+
   it('includes the draft editor + settings controls', async () => {
     const html = await consolePage('test-api-key').text();
     expect(html).toContain('id="inbox-draft"');
