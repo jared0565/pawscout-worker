@@ -31,6 +31,17 @@ describe('consolePage', () => {
     expect(scripts).toContain('function inboxRowById(');
   });
 
+  it('uses Regenerate (LLM re-draft) and the old draft-Discard is fully removed', async () => {
+    const html = await consolePage('test-api-key').text();
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+    expect(html).toContain('id="inbox-regen-btn"');        // renamed button
+    expect(html).toContain('Regenerate');
+    expect(scripts).toContain('/inbox/regenerate');        // calls the new endpoint
+    expect(html).not.toContain('id="inbox-discard-btn"');  // old draft-discard button gone
+    expect(scripts).not.toContain('discardDraftAction');   // dead handler removed
+    expect(scripts).not.toContain("'/inbox/discard'");     // old endpoint gone (invoice discard path is different)
+  });
+
   it('includes the draft editor + settings controls', async () => {
     const html = await consolePage('test-api-key').text();
     expect(html).toContain('id="inbox-draft"');

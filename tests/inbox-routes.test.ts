@@ -2,10 +2,38 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
 import { TenantStore } from '../src/tenant-store';
-import { listInboxThreads, getInboxThread, setInboxStatus, setInboxLabels, discardDraft } from '../src/inbox/routes';
+import { listInboxThreads, getInboxThread, setInboxStatus, setInboxLabels, regenerateDraft } from '../src/inbox/routes';
+import { DEFAULT_INBOX } from '../src/inbox/types';
+import { ACTIVE_PAW_COLLECTION_MAP, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, type Env } from '../src/types';
 
 beforeEach(async () => { await applyD1Migrations(env.DB, env.TEST_MIGRATIONS); });
 const SHOP = 'a.myshopify.com';
+
+// Seed a tenant WITH config (regenerate calls getConfig + the drafting chain).
+async function seedWithConfig(inboxOver: Record<string, unknown> = {}) {
+  const s = new TenantStore(env.DB, SHOP);
+  await s.upsertTenant({ accessTokenEnc: 'tok', dekWrapped: 'd', scopes: 's' });
+  const inbox = { ...DEFAULT_INBOX, ...inboxOver };
+  await s.seedConfig({
+    collectionMap: ACTIVE_PAW_COLLECTION_MAP, gates: { popularityFloor: 1, priceMin: 1, priceMax: 9, relevance: 'title' },
+    pricing: DEFAULT_PRICING, floors: DEFAULT_FLOORS, llm: DEFAULT_LLM, addons: DEFAULT_ADDONS, fulfil: DEFAULT_FULFIL, inbox, target: 12
+  });
+  await s.saveInbox(inbox); // seedConfig does not persist the inbox column
+  const tid = await seed();
+  await s.setThreadStatus(tid, 'needs_reply');
+  return { s, tid };
+}
+// LLM (and any other) fetch mock; records URLs so a test can assert no email was sent.
+function llmFetch(body: unknown, urls?: string[]): typeof fetch {
+  return (async (url: RequestInfo | URL, _init?: RequestInit) => {
+    if (urls) urls.push(String(url));
+    if (String(url).includes('openrouter') || String(url).includes('openai')) {
+      return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(body) } }], usage: { cost: 0.0001 } }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ id: 'em_1' }), { status: 200 });
+  }) as unknown as typeof fetch;
+}
+const REGEN_ENV = () => ({ ...env, OPENROUTER_API_KEY: 'k', RESEND_API_KEY: 'rk' } as unknown as Env);
 
 async function seed() {
   const s = new TenantStore(env.DB, SHOP);
@@ -49,12 +77,43 @@ describe('inbox routes', () => {
     const r = await getInboxThread(env.DB, SHOP, tid);
     expect(r.ok).toBe(true); expect(r.draft?.body_text).toBe('Hi');
   });
-  it('discard closes the thread and marks the draft discarded', async () => {
-    const s = new TenantStore(env.DB, SHOP); const tid = await seed();
-    const did = await s.insertDraft({ threadId: tid, bodyText: 'x', bodyHtml: '<p>x</p>', confidence: 90, quotesPriceOrder: false, holdReasons: [], model: 'm', status: 'pending' });
-    const r = await discardDraft(env.DB, SHOP, did);
+});
+
+describe('regenerateDraft', () => {
+  it('discards the old draft, inserts a fresh one, and keeps the thread OPEN', async () => {
+    const { s, tid } = await seedWithConfig();
+    const did = await s.insertDraft({ threadId: tid, bodyText: 'OLD draft', bodyHtml: '<p>OLD draft</p>', confidence: 80, quotesPriceOrder: false, holdReasons: [], model: 'm', status: 'pending' });
+    const r = await regenerateDraft(env.DB, REGEN_ENV(), SHOP, did, llmFetch({ bodyText: 'FRESH draft body', confidence: 88, quotesPriceOrOrder: false }));
     expect(r.ok).toBe(true);
-    expect((await s.getDraft(did))?.status).toBe('discarded');
-    expect((await s.getThreadWithMessages(tid))?.thread.status).toBe('closed');
+    expect((r as { draft?: { body_text?: string } }).draft?.body_text).toContain('FRESH draft body');
+    expect((await s.getDraft(did))?.status).toBe('discarded');                          // old one retired
+    expect((await s.getThreadWithMessages(tid))?.thread.status).not.toBe('closed');     // NEVER closes (the discard trap)
+  });
+
+  it('NEVER auto-sends, even with autosend on + high confidence', async () => {
+    const { s, tid } = await seedWithConfig({ autosend: true, autoConfidenceThreshold: 0 });
+    const did = await s.insertDraft({ threadId: tid, bodyText: 'OLD', bodyHtml: '<p>OLD</p>', confidence: 80, quotesPriceOrder: false, holdReasons: [], model: 'm', status: 'pending' });
+    const urls: string[] = [];
+    const r = await regenerateDraft(env.DB, REGEN_ENV(), SHOP, did, llmFetch({ bodyText: 'auto would send this', confidence: 99, quotesPriceOrOrder: false }, urls));
+    expect(r.ok).toBe(true);
+    expect(urls.some((u) => u.includes('resend'))).toBe(false);                          // no email left the building
+    expect((await s.getThreadWithMessages(tid))?.thread.status).not.toBe('awaiting_customer'); // sendReply would set this
+  });
+
+  it('leaves the current draft intact when the LLM fails (no data loss)', async () => {
+    const { s, tid } = await seedWithConfig();
+    const did = await s.insertDraft({ threadId: tid, bodyText: 'KEEP ME', bodyHtml: '<p>KEEP ME</p>', confidence: 80, quotesPriceOrder: false, holdReasons: [], model: 'm', status: 'pending' });
+    const r = await regenerateDraft(env.DB, REGEN_ENV(), SHOP, did, llmFetch({ bodyText: '', confidence: 0, quotesPriceOrOrder: false })); // empty body → draftReply null
+    expect(r.ok).toBe(false);
+    expect((await s.getDraft(did))?.status).toBe('pending');                             // original untouched
+    expect((await s.getPendingDraft(tid))?.body_text).toBe('KEEP ME');
+  });
+
+  it('rejects a non-pending draft', async () => {
+    const { s, tid } = await seedWithConfig();
+    const did = await s.insertDraft({ threadId: tid, bodyText: 'x', bodyHtml: '<p>x</p>', confidence: 80, quotesPriceOrder: false, holdReasons: [], model: 'm', status: 'pending' });
+    await s.setDraftStatus(did, 'discarded');
+    const r = await regenerateDraft(env.DB, REGEN_ENV(), SHOP, did, llmFetch({ bodyText: 'x', confidence: 80, quotesPriceOrOrder: false }));
+    expect(r.ok).toBe(false);
   });
 });

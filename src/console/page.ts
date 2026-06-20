@@ -1081,7 +1081,7 @@ function renderInboxThread(thread,messages,labels,draft,invoice){
       +'<textarea id="inbox-draft">'+esc(draft.body_text||'')+'</textarea>'
       +'<div class="row" style="margin-top:8px">'
       +'<button id="inbox-approve-btn">Approve &amp; Send</button>'
-      +'<button id="inbox-discard-btn" class="ghost">Discard</button>'
+      +'<button id="inbox-regen-btn" class="ghost">Regenerate</button>'
       +'</div>'
       +'</div>';
   }
@@ -1164,8 +1164,8 @@ function renderInboxThread(thread,messages,labels,draft,invoice){
       var body=ta?ta.value:'';
       approveDraftAction(draftId,body,tid);
     };
-    var discBtn=el('inbox-discard-btn');
-    if(discBtn) discBtn.onclick=function(){ discardDraftAction(draftId,tid); };
+    var regenBtn=el('inbox-regen-btn');
+    if(regenBtn) regenBtn.onclick=function(){ regenerateDraftAction(draftId,tid); };
   }
   // Invoice card: wire discard button
   if(invoice&&invoice.id){
@@ -1190,14 +1190,14 @@ async function approveDraftAction(draftId,body,threadId){
     else { setMsg('inboxmsg','Failed: '+esc(r.error||'unknown error'),'no'); if(appBtn) appBtn.disabled=false; }
   }catch(e){ setMsg('inboxmsg','Failed: '+errText(e),'no'); if(appBtn&&el('inbox-approve-btn')) el('inbox-approve-btn').disabled=false; }
 }
-async function discardDraftAction(draftId,threadId){
-  setMsg('inboxmsg','Discarding…','muted');
-  var discBtn=el('inbox-discard-btn'); if(discBtn) discBtn.disabled=true;
+async function regenerateDraftAction(draftId,threadId){
+  setMsg('inboxmsg','Regenerating…','muted');
+  var regenBtn=el('inbox-regen-btn'); if(regenBtn) regenBtn.disabled=true; // disabled BEFORE the await — guards double-click
   try{
-    var r=await api('/inbox/discard',{id:draftId});
-    if(r.ok){ openInboxThread(threadId); loadInboxThreads(); setMsg('inboxmsg','Draft discarded.','muted'); }
-    else { setMsg('inboxmsg','Failed: '+esc(r.error||'unknown error'),'no'); if(discBtn) discBtn.disabled=false; }
-  }catch(e){ setMsg('inboxmsg','Failed: '+errText(e),'no'); if(discBtn&&el('inbox-discard-btn')) el('inbox-discard-btn').disabled=false; }
+    var r=await api('/inbox/regenerate',{id:draftId});
+    if(r.ok){ openInboxThread(threadId); loadInboxThreads(); setMsg('inboxmsg','Regenerated ✓','ok'); }
+    else { setMsg('inboxmsg','Failed: '+esc(r.error||'unknown error'),'no'); if(regenBtn) regenBtn.disabled=false; }
+  }catch(e){ setMsg('inboxmsg','Failed: '+errText(e),'no'); if(regenBtn&&el('inbox-regen-btn')) el('inbox-regen-btn').disabled=false; }
 }
 // --- Invoice catalog search ---
 // Uses POST (consistent with api()) — the route is /api/inbox/catalog, POST {q}.

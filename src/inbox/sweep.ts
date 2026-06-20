@@ -252,9 +252,19 @@ export async function proposeInvoiceOne(
   }
 }
 
-async function draftOne(env: Env, store: TenantStore, cfg: TenantConfig, thread: ThreadRow, fetchImpl: typeof fetch): Promise<void> {
+/**
+ * Build and persist a fresh PENDING draft for a thread — conversation → optional
+ * freight line → LLM draft → compose → insert. Returns the new draftId and
+ * whether the sweep should auto-send it, or null if there is nothing to draft /
+ * the LLM is unavailable. NEVER sends (the caller decides). Shared by the nightly
+ * sweep (which may then auto-send) and the manual Regenerate action (which never
+ * does), so both paths produce drafts identically.
+ */
+export async function composeDraftForThread(
+  env: Env, store: TenantStore, cfg: TenantConfig, thread: ThreadRow, fetchImpl: typeof fetch = defaultFetch
+): Promise<{ draftId: string; send: boolean } | null> {
   const got = await store.getThreadWithMessages(thread.id);
-  if (!got) return;
+  if (!got) return null;
   const conversation = got.messages.filter((m) => m.direction === 'inbound').map((m) => m.body_text ?? '').join('\n\n---\n\n');
 
   // Freight-grounded delivery line: when the customer asks about shipping to a
@@ -268,7 +278,7 @@ async function draftOne(env: Env, store: TenantStore, cfg: TenantConfig, thread:
     subject: thread.subject ?? '', conversation, category: thread.primary_category ?? 'other',
     shippingHandledSeparately: !!shippingLine
   });
-  if (!draft) return; // degrade: retry next sweep
+  if (!draft) return null; // degrade: retry next sweep
 
   // Auto-send gating is computed on the LLM body ONLY (not the appended freight
   // line) so the trusted worker figure doesn't itself trip mentionsMoney. The
@@ -287,8 +297,14 @@ async function draftOne(env: Env, store: TenantStore, cfg: TenantConfig, thread:
     holdReasons: decision.holdReasons, model: (resolveChain(cfg, 'text')[0] as { models: string[] }).models[0], status: 'pending'
   });
   // A proxy freight figure always gets human review, even under Auto.
-  if (decision.send && !shippingLine) {
-    const draftRow = await store.getDraft(draftId);
+  return { draftId, send: decision.send && !shippingLine };
+}
+
+async function draftOne(env: Env, store: TenantStore, cfg: TenantConfig, thread: ThreadRow, fetchImpl: typeof fetch): Promise<void> {
+  const r = await composeDraftForThread(env, store, cfg, thread, fetchImpl);
+  if (!r) return;
+  if (r.send) {
+    const draftRow = await store.getDraft(r.draftId);
     if (draftRow) await sendReply(env, store, cfg, thread, draftRow, undefined, fetchImpl);
   }
 }

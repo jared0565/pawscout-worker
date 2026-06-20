@@ -14,7 +14,7 @@ import { ensureInstalled } from './auth/ensure-installed';
 import { handleUninstall } from './auth/uninstall';
 import { resolveShopFromToken } from './console/session';
 import { connectCj, saveGates, savePricing, saveLlm, saveAddons, saveCollectionMap, getStatus, getInsights } from './console/routes';
-import { listInboxThreads, getInboxThread, setInboxStatus, setInboxLabels, getInboxConfig, saveInboxConfig, approveDraft, discardDraft } from './inbox/routes';
+import { listInboxThreads, getInboxThread, setInboxStatus, setInboxLabels, getInboxConfig, saveInboxConfig, approveDraft, regenerateDraft } from './inbox/routes';
 import { buildInvoiceForThread, discardInvoice, searchCatalog } from './inbox/invoice-routes';
 import { consolePage } from './console/page';
 import { validateCjKey, CjClient, CjTokenManager, cjFetchFromEnv, chooseOrigin } from './cj';
@@ -511,12 +511,12 @@ app.post('/api/inbox/approve', async (c) => {
   if (!body.id) return c.json({ ok: false, error: 'id required' }, 400);
   return c.json(await approveDraft(c.env.DB, s, c.env, body.id, body.body));
 });
-app.post('/api/inbox/discard', async (c) => {
+app.post('/api/inbox/regenerate', async (c) => {
   const s = await shopOf(c); if (typeof s !== 'string') return s;
   let body: { id?: string } = {};
   try { body = await c.req.json(); } catch { return c.json({ ok: false, error: 'Invalid JSON body' }, 400); }
   if (!body.id) return c.json({ ok: false, error: 'id required' }, 400);
-  return c.json(await discardDraft(c.env.DB, s, body.id));
+  return c.json(await regenerateDraft(c.env.DB, c.env, s, body.id));
 });
 // W-INBOX-3: invoice build — creates draft order + sends invoice email
 app.post('/api/inbox/invoice/build', async (c) => {

@@ -3,6 +3,8 @@ import { validateThreadStatus, validateLabels, validateInboxPayload } from '../v
 import { DEFAULT_INBOX, type InboxConfig, type ThreadStatus } from './types';
 import type { Env } from '../types';
 import { sendReply } from './send';
+import { composeDraftForThread } from './sweep';
+import { defaultFetch } from '../safe-fetch';
 
 export async function listInboxThreads(db: D1Database, shop: string, status: string | null) {
   const store = new TenantStore(db, shop);
@@ -55,13 +57,29 @@ export async function saveInboxConfig(db: D1Database, shop: string, body: unknow
   return { ok: true as const };
 }
 
-export async function discardDraft(db: D1Database, shop: string, draftId: string) {
+/**
+ * Regenerate: discard the current draft and immediately produce a fresh one with
+ * the LLM. Unlike the old "discard" (which closed the thread), this NEVER closes
+ * the thread and NEVER auto-sends. The replacement is generated FIRST, so if the
+ * LLM is unavailable the current draft is left untouched (no data loss). To
+ * dismiss a thread without replying, set its status to closed via the status
+ * control instead.
+ */
+export async function regenerateDraft(db: D1Database, env: Env, shop: string, draftId: string, fetchImpl: typeof fetch = defaultFetch) {
   const store = new TenantStore(db, shop);
-  const draft = await store.getDraft(draftId);
-  if (!draft || draft.status !== 'pending') return { ok: false as const, error: 'No pending draft' };
+  const cfg = await store.getConfig();
+  const old = await store.getDraft(draftId);
+  if (!cfg || !old || old.status !== 'pending') return { ok: false as const, error: 'No pending draft' };
+  const got = await store.getThreadWithMessages(old.thread_id);
+  if (!got) return { ok: false as const, error: 'Thread not found' };
+  // Generate the replacement FIRST so an LLM failure never loses the current draft.
+  const r = await composeDraftForThread(env, store, cfg, got.thread, fetchImpl);
+  if (!r) return { ok: false as const, error: 'Could not generate a new draft — model unavailable, try again.' };
+  // Replacement is in (pending). Retire the old draft and keep the thread OPEN
+  // for review — never close it (that was the discard trap). Regenerate never sends.
   await store.setDraftStatus(draftId, 'discarded');
-  await store.setThreadStatus(draft.thread_id, 'closed'); // owner dismissed → sweep won't re-draft
-  return { ok: true as const };
+  if (got.thread.status === 'closed') await store.setThreadStatus(old.thread_id, 'needs_reply');
+  return { ok: true as const, draft: await store.getPendingDraft(old.thread_id) };
 }
 
 export async function approveDraft(db: D1Database, shop: string, env: Env, draftId: string, editedBody?: string) {
