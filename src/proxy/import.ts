@@ -640,12 +640,14 @@ export async function reconcileDescriptions(
 const PRODUCT_TITLE = `query pawscoutTitle($id: ID!) { product(id: $id) { title } }`;
 
 /**
- * Category re-audit (LLM-free): re-files an imported product only when its title
- * points unambiguously at a SINGLE collection different from where it sits
- * (`signaledCategory`). Conservative by design — a product with mixed or no
- * signal is left exactly where curation/import put it, so this never fights a
- * reasonable LLM placement. Swaps the collection tag and updates the link.
- * Batched; one product's failure never aborts the run.
+ * Category re-audit (LLM-free): files an imported product under the SINGLE
+ * collection its title unambiguously signals (`signaledCategory`) when that
+ * differs from where it sits — and ALSO assigns an ORPHAN (a product in no
+ * mapped collection) the same way, so an import that arrived without a
+ * collection tag doesn't stay invisible in nav. Conservative: a product with
+ * mixed or no signal is left exactly where it is (an orphan with no signal
+ * stays orphaned), so this never fights a reasonable LLM placement. Add-ons are
+ * never filed. Batched; one product's failure never aborts the run.
  */
 export async function reconcileCategories(
   store: TenantStore,
@@ -664,11 +666,15 @@ export async function reconcileCategories(
     scanned++;
     try {
       const current = link.category;
-      if (!current || current === ADDON_CATEGORY || !cfg.collectionMap[current]) continue; // unmapped / hidden lane
+      if (current === ADDON_CATEGORY) continue; // hidden add-on lane — never auto-file into a browse collection
+      // The collection it currently sits in, IF that's a real mapped collection.
+      // Orphans (no category) and products in an unmapped/removed lane have none.
+      const mappedCurrent = current && cfg.collectionMap[current] ? current : null;
       const data = await admin(PRODUCT_TITLE, { id: link.shopify_product_id }) as { product?: { title?: string } };
       const signaled = signaledCategory(data.product?.title ?? '');
-      if (!signaled || signaled === current || !cfg.collectionMap[signaled]) continue;
-      await setProductTags(admin, link.shopify_product_id!, [cfg.collectionMap[current].tag], false);
+      if (!signaled || !cfg.collectionMap[signaled] || signaled === mappedCurrent) continue; // no clear target, or already correct
+      // Move: drop the old collection tag first. Assign (orphan): nothing to drop.
+      if (mappedCurrent) await setProductTags(admin, link.shopify_product_id!, [cfg.collectionMap[mappedCurrent].tag], false);
       await setProductTags(admin, link.shopify_product_id!, [cfg.collectionMap[signaled].tag], true);
       await store.putLink({ cjPid: link.cj_pid, state: 'imported', category: signaled });
       moved++;

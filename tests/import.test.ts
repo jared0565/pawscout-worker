@@ -482,6 +482,27 @@ describe('reconcileCategories (re-audit)', () => {
     expect((await store.getLink('P2'))?.category).toBe('pet-toys');
   });
 
+  it('assigns an orphan (no collection) when its title gives a clear signal', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    await store.putLink({ cjPid: 'P3', state: 'imported', shopifyProductId: 'gid://shopify/Product/3', handle: 'h3', category: null });
+    const calls: Call[] = [];
+    const r = await reconcileCategories(store, catAdmin(calls, 'Pet Tooth Cleaning Pen'), CATCFG);
+    expect(r).toMatchObject({ scanned: 1, moved: 1 });
+    expect(calls.some((c) => c.query.includes('tagsRemove'))).toBe(false); // orphan has no old tag to drop
+    expect(calls.find((c) => c.query.includes('tagsAdd'))!.variables!.tags).toEqual(['cj-pet-health']);
+    expect((await store.getLink('P3'))?.category).toBe('pet-health');
+  });
+
+  it('leaves an orphan with no clear signal uncategorised', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    await store.putLink({ cjPid: 'P4', state: 'imported', shopifyProductId: 'gid://shopify/Product/4', handle: 'h4', category: null });
+    const calls: Call[] = [];
+    const r = await reconcileCategories(store, catAdmin(calls, 'Mystery Gadget'), CATCFG);
+    expect(r.moved).toBe(0);
+    expect(calls.some((c) => c.query.includes('tagsAdd'))).toBe(false);
+    expect((await store.getLink('P4'))?.category ?? null).toBeNull();
+  });
+
   it('does not move a product already in its signaled category', async () => {
     const store = new TenantStore(env.DB, 'a.myshopify.com');
     await store.putLink({ cjPid: 'P3', state: 'imported', shopifyProductId: 'gid://shopify/Product/3', handle: 'h3', category: 'pet-health' });
