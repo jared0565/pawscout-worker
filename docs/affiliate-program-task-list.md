@@ -29,7 +29,7 @@
 | 1.1 🟦 | **COGS → Shopify Cost-per-item:** populate per-variant cost from CJ landed cost (product + freight + FX); refresh job when costs move | SCRIPT→CODE | — | Every active variant has a non-stale Cost-per-item; refresh runs on the cron | ruleset D#1 |
 | 1.2 🟦 | **Eligible-SKU allowlist generator:** compute which SKUs clear `gross − commission ≥ £6` and emit the allowlist (the £6 floor is a manual list — no app reads COGS) | CODE | 1.1 | Allowlist generated + reviewable; floor-priced SKUs excluded | ruleset B (£6 floor), D#1 |
 | 1.3 🟦 | **Retention engine (min viable) — runs in PARALLEL, not a phase blocker:** post-purchase + reorder/replenish email flow so LTV isn't one-and-done (gives affiliate CAC room to pay back) | CODE | — (parallel) | At least one automated reorder flow live; repeat-rate measurable | analysis §3, ruleset F |
-| 1.4 | **Pick affiliate app** (UpPromote vs Refersion) — verify it supports: full-history new-vs-returning, ≥45-day hold, clawback, net-of-VAT base, per-creator links, rolling caps | CONFIG | — | App chosen + capability checklist confirmed (not assumed) | ruleset §standards, B |
+| 1.4 ✅ | **Pick affiliate app** — ✅ **LOCKED 2026-06-20: UpPromote Grow** (user decision). Capability checklist + the 3 unenforceable gaps documented below; config spec in `affiliate-uppromote-setup.md`. | CONFIG | — | DONE — UpPromote Grow chosen | ruleset §standards, B |
 
 **Gate:** 1.1+1.2 done (floor enforceable), 1.4 chosen, 1.3 live or scheduled.
 
@@ -86,7 +86,7 @@
 ### Decisions (your review, 2026-06-20)
 1. **Code scope:** gate logic stays **in the app** → worker code surface = **3 tasks** (1.1 COGS, 1.2 allowlist, 1.3 retention). 2.6 monitoring moved to app + external tools.
 2. **Sequencing:** retention engine (1.3) runs **in parallel** — not a phase blocker.
-3. **App choice (1.4):** ✅ doing the UpPromote-vs-Refersion capability comparison now (result appended to this doc).
+3. **App choice (1.4):** ✅ **LOCKED — UpPromote Grow** (user, 2026-06-20). Comparison result below; configuration spec in `docs/affiliate-uppromote-setup.md`.
 4. **Tracking:** ✅ mirroring this list into the harness Task list + backlog memory.
 
 ---
