@@ -29,6 +29,11 @@ export interface Env {
   // international shipping. UNSET = feature dormant (drafter keeps the safe hedge).
   // Orchestrator sets this to a real flagship vid to activate. See src/inbox/freight.ts.
   INBOX_FREIGHT_REP_VID?: string;
+  // Retention reorder reminders (affiliate 1.3). UNSET/'' = DORMANT (built but
+  // never emails customers). Set to '1' or 'true' to activate live sending —
+  // a separate explicit go, and only after checkout marketing-consent capture
+  // is confirmed (we send only to emailMarketingConsent SUBSCRIBED regardless).
+  RETENTION_REORDER_ENABLED?: string;
 }
 
 export interface TenantRow {

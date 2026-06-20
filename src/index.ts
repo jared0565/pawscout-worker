@@ -22,6 +22,7 @@ import { registerWebhooks, type RegisterWebhook } from './webhooks';
 import { validateGatesPayload, validatePricingPayload, validateLlmPayload, validateAddonsPayload, validateCollectionMap } from './validate';
 import { sendEmail } from './email';
 import { verifyAppProxy } from './proxy/verify';
+import { verifyUnsubToken } from './retention';
 import { searchBackfill, normalizeKeyword } from './proxy/search';
 import { LlmClient, classifyKeyword, curateProduct, pickHeroImage, rewriteDescription } from './llm';
 import { buildPreview, getDetailPreferWarehouse, curateDetailImages, confirmAndImport, reconcileAddonVisibility, reconcileHeroImages, reconcileDescriptions, reconcileCategories } from './proxy/import';
@@ -46,6 +47,23 @@ app.get('/auth/callback', async (c) => {
 });
 
 app.get('/app', (c) => consolePage(c.env.SHOPIFY_API_KEY));
+
+// Public one-click unsubscribe for retention reminders (affiliate 1.3). The
+// token is an HMAC over (shop, email) — unforgeable without SHOPIFY_API_SECRET.
+// Handles GET (link click) and POST (RFC 8058 List-Unsubscribe-Post one-click).
+const handleUnsubscribe = async (c: Context<{ Bindings: Env }>) => {
+  const url = new URL(c.req.url);
+  const shop = url.searchParams.get('shop') ?? '';
+  const email = (url.searchParams.get('email') ?? '').toLowerCase();
+  const token = url.searchParams.get('token') ?? '';
+  if (!(await verifyUnsubToken(shop, email, token, c.env.SHOPIFY_API_SECRET))) {
+    return c.html('<p>This unsubscribe link is invalid.</p>', 400);
+  }
+  await new TenantStore(c.env.DB, shop).recordUnsubscribe(email, new Date().toISOString());
+  return c.html('<p>You have been unsubscribed from Active Paw reminder emails. Sorry to see you go!</p>');
+};
+app.get('/unsubscribe', handleUnsubscribe);
+app.post('/unsubscribe', handleUnsubscribe);
 
 // --- /api/* : session-token authed (embedded console) ---
 // Resolves the shop from the App Bridge session token and, on a managed install,

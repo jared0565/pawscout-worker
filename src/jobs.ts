@@ -6,6 +6,7 @@ import { liveCjPasses, normalizeKeyword, CACHE_TTL_DAYS, isLikelyPetProduct, tit
 import { getExpansions, seedTerm } from './semantic/library';
 import { confirmAndImport, getCachedDetail, resolveCategory, reconcileAddonVisibility, reconcileHeroImages, reconcileDescriptions, reconcileCategories, setProductTags, ADDON_CATEGORY } from './proxy/import';
 import { AFFILIATE_ELIGIBLE_TAG, productAffiliateEligible, ensureAffiliateCollection } from './affiliate';
+import { sendReorderReminders } from './retention';
 import { enableTracking, getPrimaryLocationId, productInventoryItems, setInventoryQuantities, setSupplierMetafields, updateVariantPrices, updateVariantCosts, MAX_TRACKED_QTY } from './proxy/inventory';
 import { retailPriceGbp, landedCostGbp } from './pricing';
 import type { CjDetail } from './cj';
@@ -575,6 +576,12 @@ export async function runDailyMaintenance(env: Env): Promise<void> {
         await syncStoreInventory(store, cj, admin, cfg);
         await refillCollections(store, cj, admin, cfg, { curate, pickHero }); // promote-from-warehouse (floor 8, target 12)
         await reconcileAddonVisibility(store, admin, cfg); // align hidden/visible add-ons to the toggle
+        // Retention reorder reminders (1.3) — DORMANT unless explicitly enabled;
+        // even then only emails marketing-SUBSCRIBED customers. Best-effort.
+        if (env.RETENTION_REORDER_ENABLED === '1' || env.RETENTION_REORDER_ENABLED === 'true') {
+          try { await sendReorderReminders(store, admin, cfg, env); }
+          catch (e) { console.warn(`reorder reminders failed: ${(e as Error).message}`); }
+        }
         for (let off: number | null = 0, i = 0; off !== null && i < 30; i++) {
           const r = await reconcileCategories(store, admin, cfg, { offset: off, limit: 25 }); // re-file unambiguous mis-categorised products
           off = r.next;

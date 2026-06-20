@@ -918,6 +918,26 @@ export class TenantStore {
   getOpenInvoiceForContact(email: string): Promise<InvoiceRow | null> {
     return this.db.prepare(`SELECT inv.* FROM inbox_invoices inv JOIN inbox_threads t ON t.shop = inv.shop AND t.id = inv.thread_id WHERE inv.shop = ?1 AND t.contact_email = ?2 AND inv.status = 'sent' ORDER BY inv.created_at DESC LIMIT 1`).bind(this.shop, email).first<InvoiceRow>();
   }
+
+  // --- Retention reorder reminders (affiliate 1.3) ---
+  /** True if we've already reminded against this order (dedup). */
+  async hasReorderReminder(orderId: string): Promise<boolean> {
+    const row = await this.db.prepare(`SELECT 1 FROM reorder_reminders WHERE shop = ?1 AND order_id = ?2 LIMIT 1`).bind(this.shop, orderId).first();
+    return row !== null;
+  }
+  async recordReorderReminder(orderId: string, email: string, sentAt: string): Promise<void> {
+    await this.db.prepare(`INSERT OR IGNORE INTO reorder_reminders (shop, order_id, email, sent_at) VALUES (?1, ?2, ?3, ?4)`)
+      .bind(this.shop, orderId, email.toLowerCase(), sentAt).run();
+  }
+  /** True if this email has opted out of reminder mail (PECR/GDPR suppression). */
+  async isEmailUnsubscribed(email: string): Promise<boolean> {
+    const row = await this.db.prepare(`SELECT 1 FROM email_unsubscribes WHERE shop = ?1 AND email = ?2 LIMIT 1`).bind(this.shop, email.toLowerCase()).first();
+    return row !== null;
+  }
+  async recordUnsubscribe(email: string, at: string): Promise<void> {
+    await this.db.prepare(`INSERT OR IGNORE INTO email_unsubscribes (shop, email, unsubscribed_at) VALUES (?1, ?2, ?3)`)
+      .bind(this.shop, email.toLowerCase(), at).run();
+  }
 }
 
 // --- cross-tenant maintenance (cron jobs) — keep all raw D1 in this file ---
