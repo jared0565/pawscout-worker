@@ -1,23 +1,29 @@
 # PawScout CJ relay — dedicated egress IP so CJ's "3 API users per IP" rule
-# sees only this app. Allocate the IP after first deploy:
+# sees only this app. Allocate the egress IP after first deploy:
 #   fly ips allocate-egress -r lhr
-app = "pawscout-relay"
-primary_region = "lhr"
+#
+# Canonicalized by the Fly CLI (generated for pawscout-relay 2026-06-12).
+# See https://fly.io/docs/reference/configuration/ for the field reference.
+
+app = 'pawscout-relay'
+primary_region = 'lhr'
+
+[build]
 
 [http_service]
   internal_port = 8080
   force_https = true
-  auto_stop_machines = "stop"
+  auto_stop_machines = 'stop'
   auto_start_machines = true
   min_machines_running = 0
 
   [[http_service.checks]]
-    interval = "30s"
-    timeout = "5s"
-    grace_period = "10s"
-    method = "GET"
-    path = "/healthz"
+    interval = '30s'
+    timeout = '5s'
+    grace_period = '10s'
+    method = 'GET'
+    path = '/healthz'
 
 [[vm]]
-  size = "shared-cpu-1x"
-  memory = "256mb"
+  size = 'shared-cpu-1x'
+  memory = '256mb'
