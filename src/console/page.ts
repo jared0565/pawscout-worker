@@ -23,22 +23,16 @@ export function consolePage(apiKey: string): Response {
 <meta name="color-scheme" content="dark light">
 <script src="https://cdn.shopify.com/shopifycloud/app-bridge.js"></script>
 <style>
-  /* DARK is the default — it matches Shopify admin dark mode (the usual environment). */
+  /* DARK always — forced regardless of OS preference. The merchant reported light
+     sensitivity ("having problem looking at bright screens"), so the old
+     prefers-color-scheme:light palette (white --surface was the glare source) was
+     removed; the console never renders the bright theme now. */
   :root{
-    color-scheme:dark light;
+    color-scheme:dark;
     --bg:#1a1a1a; --surface:#2a2a2b; --ink:#e3e3e3; --subdued:#a8abb0;
     --border:#444748; --accent:#e3e3e3; --accent-ink:#1a1a1a;
     --ok-bg:#11331f; --ok-ink:#8fe0a6; --no-bg:#3a1714; --no-ink:#f4a39c;
     --field:#1a1a1a; --field-border:#6a6e73; --code-bg:#1a1a1a; --shadow:rgba(0,0,0,.3);
-  }
-  /* LIGHT — only when the environment prefers it. Keep tokens in sync with the dark set. */
-  @media (prefers-color-scheme: light){
-    :root{
-      --bg:#f1f2f4; --surface:#ffffff; --ink:#1a1a1a; --subdued:#5c5f62;
-      --border:#d2d5d8; --accent:#008060; --accent-ink:#ffffff;
-      --ok-bg:#e3f1df; --ok-ink:#0c5132; --no-bg:#fff0f0; --no-ink:#8e1f0b;
-      --field:#ffffff; --field-border:#8a8d91; --code-bg:#f1f2f4; --shadow:rgba(0,0,0,.04);
-    }
   }
   *{box-sizing:border-box}
   body{

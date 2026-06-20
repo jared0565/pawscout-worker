@@ -274,9 +274,10 @@ export async function composeDraftForThread(
   const shippingLine = await buildShippingLineForThread(env, store, cfg, thread, conversation, fetchImpl);
 
   const llm = new LlmClient({ openrouter: env.OPENROUTER_API_KEY, openai: env.OPENAI_API_KEY }, fetchImpl);
+  const contact = await store.getContactByEmail(thread.contact_email);
   const draft = await draftReply(llm, store, cfg, {
     subject: thread.subject ?? '', conversation, category: thread.primary_category ?? 'other',
-    shippingHandledSeparately: !!shippingLine
+    shippingHandledSeparately: !!shippingLine, customerName: contact?.name ?? null
   });
   if (!draft) return null; // degrade: retry next sweep
 

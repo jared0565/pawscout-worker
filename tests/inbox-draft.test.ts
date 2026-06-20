@@ -89,3 +89,59 @@ describe('draftReply', () => {
     expect(sink.system).toMatch(/Do NOT add a sign-off in this reply/i);
   });
 });
+
+describe('draftReply salutation', () => {
+  it('opens with the customer first name from the contact record', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const llm = fakeLlm({ bodyText: 'Yes, we ship to Ireland in 5-7 days.', confidence: 92, quotesPriceOrOrder: false });
+    const d = await draftReply(llm, store, CFG, { subject: 'Shipping', conversation: 'Do you ship to Ireland?', category: 'product-question', customerName: 'Jane Smith' });
+    expect(d?.bodyText.startsWith('Hi Jane,\n\n')).toBe(true);
+    expect(d?.bodyText).toContain('Ireland');
+  });
+
+  it('falls back to "Hi there," when there is no usable name', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const llm = fakeLlm({ bodyText: 'Yes, we can help.', confidence: 80, quotesPriceOrOrder: false });
+    const d = await draftReply(llm, store, CFG, { subject: 's', conversation: 'b', category: 'other', customerName: null });
+    expect(d?.bodyText.startsWith('Hi there,\n\n')).toBe(true);
+  });
+
+  it('rejects role-inbox / non-name display names and uses the fallback', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const llm = fakeLlm({ bodyText: 'Thanks for getting in touch.', confidence: 80, quotesPriceOrOrder: false });
+    for (const junk of ['info', 'sales@shop.com', '   ', '123']) {
+      const d = await draftReply(llm, store, CFG, { subject: 's', conversation: 'b', category: 'other', customerName: junk });
+      expect(d?.bodyText.startsWith('Hi there,')).toBe(true);
+    }
+  });
+
+  it('title-cases a shouty display name (JANE -> Jane)', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const llm = fakeLlm({ bodyText: 'Happy to help.', confidence: 80, quotesPriceOrOrder: false });
+    const d = await draftReply(llm, store, CFG, { subject: 's', conversation: 'b', category: 'other', customerName: 'JANE' });
+    expect(d?.bodyText.startsWith('Hi Jane,')).toBe(true);
+  });
+
+  it('strips an inline greeting the model added anyway (no double salutation)', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const llm = fakeLlm({ bodyText: 'Hi Jane, thanks for your message — yes we can help.', confidence: 88, quotesPriceOrOrder: false });
+    const d = await draftReply(llm, store, CFG, { subject: 's', conversation: 'b', category: 'other', customerName: 'Jane' });
+    expect(d?.bodyText.startsWith('Hi Jane,\n\nthanks for your message')).toBe(true);
+    expect(d?.bodyText).not.toMatch(/Hi Jane,[\s\S]*Hi Jane,/); // exactly one salutation
+  });
+
+  it('strips an own-line greeting too', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const llm = fakeLlm({ bodyText: 'Hello there,\n\nYes, we are open and shipping.', confidence: 85, quotesPriceOrOrder: false });
+    const d = await draftReply(llm, store, CFG, { subject: 's', conversation: 'b', category: 'other', customerName: 'Bob' });
+    expect(d?.bodyText.startsWith('Hi Bob,\n\nYes, we are open')).toBe(true);
+  });
+
+  it('instructs the model not to add its own greeting', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const sink: { system?: string } = {};
+    const llm = capturingLlm({ bodyText: 'Yes.', confidence: 80, quotesPriceOrOrder: false }, sink);
+    await draftReply(llm, store, CFG, { subject: 's', conversation: 'b', category: 'other', customerName: 'Jane' });
+    expect(sink.system).toMatch(/Do NOT open with a greeting or salutation/i);
+  });
+});
