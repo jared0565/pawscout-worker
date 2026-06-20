@@ -68,4 +68,24 @@ describe('draftReply', () => {
     await draftReply(llm, store, CFG, { subject: 's', conversation: 'b', category: 'other' });
     expect(sink.system).not.toMatch(/appended to your reply automatically/i);
   });
+
+  it('defers the sign-off to the owner guidance instead of forcing "no signature"', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const sink: { system?: string } = {};
+    const cfgG: TenantConfig = { ...CFG, inbox: { ...CFG.inbox, replyGuidance: 'Always be warm and concise. Sign off as ActivePaw Team' } };
+    const llm = capturingLlm({ bodyText: 'Yes, we are open.\n\nActivePaw Team', confidence: 90, quotesPriceOrOrder: false }, sink);
+    await draftReply(llm, store, cfgG, { subject: 's', conversation: 'are you still active?', category: 'other' });
+    expect(sink.system).toContain('Sign off as ActivePaw Team');                // guidance injected verbatim
+    expect(sink.system).toMatch(/if the owner guidance specifies a sign-off/i);  // output spec defers to it
+    expect(sink.system).not.toMatch(/no signature/i);                           // the old conflicting instruction is gone
+  });
+
+  it('suppresses the sign-off on shipping replies (the delivery line is appended after the body)', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const sink: { system?: string } = {};
+    const cfgG: TenantConfig = { ...CFG, inbox: { ...CFG.inbox, replyGuidance: 'Sign off as ActivePaw Team' } };
+    const llm = capturingLlm({ bodyText: 'Yes, we ship there.', confidence: 85, quotesPriceOrOrder: false }, sink);
+    await draftReply(llm, store, cfgG, { subject: 'Shipping', conversation: 'ship to France?', category: 'shipping-returns', shippingHandledSeparately: true });
+    expect(sink.system).toMatch(/Do NOT add a sign-off in this reply/i);
+  });
 });

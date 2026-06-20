@@ -42,13 +42,13 @@ export async function draftReply(
       // When the worker has a real freight quote it appends one precise delivery line
       // AFTER your reply. Don't guess a cost/timeframe yourself or it will contradict it.
       (input.shippingHandledSeparately
-        ? 'A precise shipping cost and delivery estimate is appended to your reply automatically — do NOT state, guess, or hedge about any shipping cost or delivery time yourself; focus on the rest of their question. '
+        ? 'A precise shipping cost and delivery estimate is appended to your reply automatically — do NOT state, guess, or hedge about any shipping cost or delivery time yourself; focus on the rest of their question. Do NOT add a sign-off in this reply, since that delivery line is appended after it. '
         : '') +
       (input.category === 'affiliate'
         ? 'This is an affiliate/partnership enquiry — someone offering to promote or sell Active Paw products for a commission. Reply warmly and with genuine interest: thank them, say we are open to exploring partnerships, and ask them to share details about their audience/platform, reach, and how they would promote us so we can evaluate a fit. Do NOT commit to any commission rate, terms, or agreement — those are decided separately. '
         : '') +
-      (guidance ? `Owner guidance (follow this): ${guidance} ` : '') +
-      'Respond with ONLY JSON: {"bodyText": <plain-text reply, no signature, no HTML>, ' +
+      (guidance ? `Owner guidance — follow this exactly; it OVERRIDES the defaults above, including tone and how to sign off: ${guidance} ` : '') +
+      'Respond with ONLY JSON: {"bodyText": <plain-text reply, no HTML, no invented sender name; if the owner guidance specifies a sign-off use it exactly as the final line (unless told above to omit it), otherwise end with no sign-off>, ' +
       '"confidence": <0-100 integer: how sure you are this fully and safely answers them>, ' +
       '"quotesPriceOrOrder": <true if your reply states a price/discount or commits to an order/invoice, else false>}.',
     user: JSON.stringify({ subject: input.subject.slice(0, 200), category: input.category, conversation: input.conversation.slice(0, 4000) }),
