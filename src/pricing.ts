@@ -24,6 +24,20 @@ export function retailPriceGbp(landedUsd: number, p: Pricing, freightUsd = 0): n
   return round99(retail);
 }
 
+/**
+ * Honest landed COGS in GBP (product + freight) at the RAW configured FX rate —
+ * no buffer. This is what we actually pay, and it is what gets written to
+ * Shopify's store-wide "Cost per item" (which drives native margin/profit
+ * analytics) and fed to the affiliate £6 floor. It must NOT be padded: the FX
+ * buffer exists to make the RETAIL sticker conservative, not to overstate cost.
+ * Conservatism for affiliate eligibility lives in the floor, not here.
+ */
+export function landedCostGbp(landedUsd: number, p: Pricing, freightUsd = 0): number {
+  if (!Number.isFinite(landedUsd) || landedUsd <= 0) throw new Error('landed cost must be a positive number');
+  const freight = Number.isFinite(freightUsd) && freightUsd > 0 ? freightUsd : 0;
+  return Math.round((landedUsd + freight) * p.fxUsdToGbp * 100) / 100;
+}
+
 /** Round UP to the nearest .99 ending — never down past the computed price. */
 function round99(x: number): number {
   const candidate = Math.ceil(x) - 0.01;

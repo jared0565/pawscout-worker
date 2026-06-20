@@ -268,7 +268,11 @@ describe('syncStoreInventory', () => {
     } as unknown as CjClient;
     const calls: Call[] = [];
     await syncStoreInventory(store, cj, shopAdmin(calls, '19.99', true), CFG, { pause: async () => {} });
-    expect(calls.some((c) => c.query.includes('inventoryItemUpdate'))).toBe(false);
+    // no tracking re-activation when the variant is already tracked…
+    expect(calls.some((c) => c.query.includes('pawscoutTrack'))).toBe(false);
+    // …but Cost-per-item still syncs (1.1): honest landed COGS at raw FX, $10 → £7.80
+    const cost = calls.find((c) => c.query.includes('pawscoutCost'))!;
+    expect(cost.variables!.cost).toBe('7.80');
   });
 
   it('offset resumes the run partway through the listed catalog', async () => {
@@ -302,8 +306,10 @@ describe('syncStoreInventory', () => {
     expect(errors[0]).toContain('stock unknown');
     // quantities, tracking and stock metafields must all be left alone
     expect(calls.some((c) => c.query.includes('inventorySetQuantities'))).toBe(false);
-    expect(calls.some((c) => c.query.includes('inventoryItemUpdate'))).toBe(false);
+    expect(calls.some((c) => c.query.includes('pawscoutTrack'))).toBe(false);
     expect(calls.some((c) => c.query.includes('metafieldsSet'))).toBe(false);
+    // …but Cost-per-item is independent of stock, so it still syncs (1.1)
+    expect(calls.some((c) => c.query.includes('pawscoutCost'))).toBe(true);
     expect((await store.getLink('A'))?.stock_paused).toBe(0); // never paused on unknown
     // ...but the price realignment still went through
     const reprice = calls.find((c) => c.query.includes('productVariantsBulkUpdate'))!;

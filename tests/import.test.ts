@@ -143,10 +143,12 @@ describe('importProduct', () => {
     await importProduct(store, fakeAdmin(calls), CFG, detail);
 
     const input = calls.find((c) => c.query.includes('productSet'))!.variables!.input as {
-      variants: { inventoryPolicy?: string; inventoryItem?: { tracked: boolean }; inventoryQuantities?: { locationId: string; quantity: number }[] }[];
+      variants: { inventoryPolicy?: string; inventoryItem?: { tracked?: boolean; cost?: string }; inventoryQuantities?: { locationId: string; quantity: number }[] }[];
     };
     expect(input.variants[0].inventoryPolicy).toBe('DENY');
-    expect(input.variants[0].inventoryItem).toEqual({ tracked: true });
+    // 1.1: honest landed COGS written to Cost-per-item at import ($10 × 0.78 = £7.80)
+    expect(input.variants[0].inventoryItem).toEqual({ tracked: true, cost: '7.80' });
+    expect(input.variants[1].inventoryItem!.cost).toBe('9.36'); // $12 × 0.78
     expect(input.variants[0].inventoryQuantities![0]).toMatchObject({ locationId: 'gid://shopify/Location/1', quantity: 30 });
     expect(input.variants[1].inventoryQuantities![0].quantity).toBe(15);
     expect(calls.some((c) => c.query.includes('metafieldsSet'))).toBe(true);

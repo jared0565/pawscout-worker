@@ -5,8 +5,8 @@ import { TenantStore, listActiveShops, purgeExpiredSearchCache, purgeUnusedWareh
 import { liveCjPasses, normalizeKeyword, CACHE_TTL_DAYS, isLikelyPetProduct, titleSignature } from './proxy/search';
 import { getExpansions, seedTerm } from './semantic/library';
 import { confirmAndImport, getCachedDetail, resolveCategory, reconcileAddonVisibility, reconcileHeroImages, reconcileDescriptions, reconcileCategories } from './proxy/import';
-import { enableTracking, getPrimaryLocationId, productInventoryItems, setInventoryQuantities, setSupplierMetafields, updateVariantPrices, MAX_TRACKED_QTY } from './proxy/inventory';
-import { retailPriceGbp } from './pricing';
+import { enableTracking, getPrimaryLocationId, productInventoryItems, setInventoryQuantities, setSupplierMetafields, updateVariantPrices, updateVariantCosts, MAX_TRACKED_QTY } from './proxy/inventory';
+import { retailPriceGbp, landedCostGbp } from './pricing';
 import type { CjDetail } from './cj';
 import { LlmClient, curateProduct, pickHeroImage, rewriteDescription, type Curation, type HeroPick } from './llm';
 import { DEFAULT_SEMANTIC, type Env, type TenantConfig } from './types';
@@ -218,6 +218,18 @@ export async function syncStoreInventory(
         return expected === v.price ? [] : [{ id: v.variantId, price: expected }];
       });
       if (priceUpdates.length) await updateVariantPrices(admin, link.shopify_product_id, priceUpdates);
+
+      // Cost-per-item sync: write the honest landed GBP COGS (raw FX, product +
+      // freight) so Shopify margin analytics and the affiliate £6 floor read a
+      // current figure. Admin-only field; only changed costs are written.
+      const costUpdates = variants.flatMap((v) => {
+        const cost = skuToCost.get(v.sku);
+        if (cost === undefined || cost <= 0) return [];
+        const landed = landedCostGbp(cost, cfg.pricing, freightUsd).toFixed(2);
+        const current = v.cost === '' ? '' : Number(v.cost).toFixed(2);
+        return current === landed ? [] : [{ inventoryItemId: v.inventoryItemId, cost: landed }];
+      });
+      if (costUpdates.length) await updateVariantCosts(admin, costUpdates);
 
       if (stockKnown) {
         await setSupplierMetafields(admin, link.shopify_product_id, {

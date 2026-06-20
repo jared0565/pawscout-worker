@@ -3,7 +3,7 @@ import { chooseOrigin, type CjClient, type CjDetail } from '../cj';
 import type { Curation, HeroPick } from '../llm';
 import type { TenantStore } from '../tenant-store';
 import type { TenantConfig } from '../types';
-import { retailPriceGbp } from '../pricing';
+import { retailPriceGbp, landedCostGbp } from '../pricing';
 import { isLikelyPetProduct, signaledCategory } from './search';
 import { getPrimaryLocationId, setSupplierMetafields, MAX_TRACKED_QTY } from './inventory';
 
@@ -315,10 +315,11 @@ export async function importProduct(
         optionValues: [{ optionName, name: multi ? v.name : 'Default Title' }],
         price: retailPriceGbp(v.sellPriceUsd, cfg.pricing, detail.freightUsd).toFixed(2),
         sku: v.sku || undefined,
+        // Honest landed COGS → Shopify "Cost per item" at import (admin-only).
+        inventoryItem: { cost: landedCostGbp(v.sellPriceUsd, cfg.pricing, detail.freightUsd).toFixed(2), ...(locationId ? { tracked: true } : {}) },
         ...(locationId
           ? {
               inventoryPolicy: 'DENY',
-              inventoryItem: { tracked: true },
               inventoryQuantities: [{
                 locationId,
                 name: 'available',

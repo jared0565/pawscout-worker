@@ -12,20 +12,42 @@ export async function getPrimaryLocationId(admin: AdminGraphql): Promise<string 
   }
 }
 
-export interface VariantInventory { variantId: string; sku: string; price: string; inventoryItemId: string; tracked: boolean }
+export interface VariantInventory { variantId: string; sku: string; price: string; inventoryItemId: string; tracked: boolean; cost: string }
 
 export async function productInventoryItems(admin: AdminGraphql, productId: string): Promise<VariantInventory[]> {
   const data = await admin(
     `query pawscoutVariants($id: ID!) {
-      product(id: $id) { variants(first: 50) { nodes { id sku price inventoryItem { id tracked } } } }
+      product(id: $id) { variants(first: 50) { nodes { id sku price inventoryItem { id tracked unitCost { amount } } } } }
     }`,
     { id: productId }
   );
-  const nodes = ((data.product as { variants?: { nodes?: { id: string; sku: string | null; price?: string; inventoryItem?: { id: string; tracked?: boolean } }[] } } | null)
+  const nodes = ((data.product as { variants?: { nodes?: { id: string; sku: string | null; price?: string; inventoryItem?: { id: string; tracked?: boolean; unitCost?: { amount?: string } | null } }[] } } | null)
     ?.variants?.nodes) ?? [];
   return nodes
     .filter((n) => n.inventoryItem?.id)
-    .map((n) => ({ variantId: n.id, sku: n.sku ?? '', price: n.price ?? '', inventoryItemId: n.inventoryItem!.id, tracked: n.inventoryItem!.tracked === true }));
+    .map((n) => ({ variantId: n.id, sku: n.sku ?? '', price: n.price ?? '', inventoryItemId: n.inventoryItem!.id, tracked: n.inventoryItem!.tracked === true, cost: n.inventoryItem!.unitCost?.amount ?? '' }));
+}
+
+/**
+ * Set Shopify "Cost per item" (InventoryItem.unitCost) per variant. This is an
+ * admin-only analytics field (drives native margin/profit reports) — NEVER
+ * customer-facing. One mutation per item (inventoryItemUpdate isn't bulk).
+ * Throws on userErrors; callers pass only changed costs.
+ */
+export async function updateVariantCosts(
+  admin: AdminGraphql,
+  items: { inventoryItemId: string; cost: string }[]
+): Promise<void> {
+  for (const it of items) {
+    const data = await admin(
+      `mutation pawscoutCost($id: ID!, $cost: Decimal!) {
+        inventoryItemUpdate(id: $id, input: { cost: $cost }) { userErrors { field message } }
+      }`,
+      { id: it.inventoryItemId, cost: it.cost }
+    );
+    const errs = (data.inventoryItemUpdate as { userErrors?: { message: string }[] } | undefined)?.userErrors ?? [];
+    if (errs.length) throw new Error(errs.map((e) => e.message).join('; '));
+  }
 }
 
 /**

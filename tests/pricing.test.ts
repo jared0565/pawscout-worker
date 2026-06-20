@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { retailPriceGbp } from '../src/pricing';
+import { retailPriceGbp, landedCostGbp } from '../src/pricing';
 import { DEFAULT_PRICING } from '../src/types';
 
 describe('retailPriceGbp', () => {
@@ -38,5 +38,33 @@ describe('retailPriceGbp', () => {
   it('rejects non-positive landed costs', () => {
     expect(() => retailPriceGbp(0, DEFAULT_PRICING)).toThrow();
     expect(() => retailPriceGbp(NaN, DEFAULT_PRICING)).toThrow();
+  });
+});
+
+describe('landedCostGbp (honest COGS, raw FX)', () => {
+  it('converts product cost at the raw FX rate — no buffer', () => {
+    // 10 USD × 0.78 = 7.80 (the retail path would use 0.78×1.02 = 0.7956)
+    expect(landedCostGbp(10, DEFAULT_PRICING)).toBe(7.8);
+  });
+
+  it('adds freight to the landed cost', () => {
+    // (2 + 10) × 0.78 = 9.36
+    expect(landedCostGbp(2, DEFAULT_PRICING, 10)).toBe(9.36);
+  });
+
+  it('is strictly below the buffered cost basis used for retail', () => {
+    // honest cost must never exceed what the (padded) retail rule assumes as cost
+    const honest = landedCostGbp(10, DEFAULT_PRICING);
+    const buffered = 10 * DEFAULT_PRICING.fxUsdToGbp * (1 + DEFAULT_PRICING.fxBufferPct / 100);
+    expect(honest).toBeLessThan(buffered);
+  });
+
+  it('ignores unknown/zero freight', () => {
+    expect(landedCostGbp(10, DEFAULT_PRICING, 0)).toBe(landedCostGbp(10, DEFAULT_PRICING));
+  });
+
+  it('rejects non-positive landed costs', () => {
+    expect(() => landedCostGbp(0, DEFAULT_PRICING)).toThrow();
+    expect(() => landedCostGbp(NaN, DEFAULT_PRICING)).toThrow();
   });
 });
