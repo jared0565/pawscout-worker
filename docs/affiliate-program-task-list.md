@@ -88,3 +88,35 @@
 2. **Sequencing:** retention engine (1.3) runs **in parallel** — not a phase blocker.
 3. **App choice (1.4):** ✅ doing the UpPromote-vs-Refersion capability comparison now (result appended to this doc).
 4. **Tracking:** ✅ mirroring this list into the harness Task list + backlog memory.
+
+---
+
+## Task 1.4 result — App comparison & recommendation (web-verified, 2026)
+
+> **Headline:** **neither** UpPromote nor Refersion natively enforces the hardened ruleset's anti-abuse core. **3 gaps are shared by both** and must be handled with manual/external compensating controls at pilot scale:
+> - **R6 — no commission caps** (no per-order, no rolling per-customer). Both only do *tiered/escalating* commission (the opposite of a cap) → order-splitting unmitigated in-app.
+> - **R1/R7 — new-vs-returning is email-only** → a returning buyer using a fresh email at guest checkout reads as "new" in both. Not closable in-app.
+> - **R8 — no real fraud/IVT/coupon-leak screening** (manual monitoring only in both).
+
+**Where they differ (decides the pilot):**
+
+| Factor | **UpPromote Grow** | Refersion |
+|---|---|---|
+| **Cost at pilot scale** | $29.99/mo **+ 2% of referral sales** | Scale **~$479/mo annual (~$5.7k/yr)** to unlock new-vs-returning |
+| New-vs-returning | Matches **full Shopify list out-of-box** | Scale-gated **+ manual CSV/support workaround** |
+| UK payouts | **PayPal + store-credit auto-payout (works)** | Auto-rail is **US/USD-only → UK = manual** |
+| Net-of-VAT base | excludes tax/shipping (partial) | dedicated **EU VAT-subtract** option (slightly better) |
+| Refund clawback | semi-auto (manual approve); chargebacks undocumented | auto only on full cancel; refunds/chargebacks manual |
+| Cookie / locked codes / no-stack | ✓ / ✓ / ✓ (Shopify default) | ✓ / ✓ / ✓ (Shopify default) |
+| Volume cap | Grow ~300 referral orders/mo | — |
+
+**RECOMMENDATION: UpPromote Grow for the pilot.** At 5–10 creators / low volume, `$29.99 + 2% of a small sales base` (e.g. ~£63/mo on £2k sales) is far cheaper than Refersion's ~£380/mo fixed Scale fee; UpPromote also does new-vs-returning out-of-box and has working UK auto-payouts. Refersion's only edge — 0% txn fee under $1M GMV — only pays off at high volume, and its new-vs-returning is worse (Scale-gated + CSV) with US-only payouts. *(Caveat: UpPromote's 2%-of-**sales** fee ≈ ~12% of a 17% net margin — real, but small in absolute terms at pilot volume and avoidable later by moving to a flat tier.)*
+
+**Implication for the "gate logic in the app" decision:** it holds **for the pilot**, because the 3 unenforceable gates are covered by **manual compensating controls** that are feasible at 5–10 vetted creators:
+- **Caps (R6):** manual per-order/rolling review rule (flag same-customer/same-code order bursts).
+- **Fresh-email bypass (R1/R7):** UpPromote's full-list match catches email-reuse; the residual (fresh email + guest) needs manual address/payment review.
+- **Fraud (R8):** Gate-1 manual vetting + manual redemption-rate monitoring.
+
+🚩 **Re-evaluate-at-scale gate (add to Phase 4):** these manual controls don't scale. Before growing past the pilot, decide whether to (a) add worker/Shopify-Flow logic for caps + identity, or (b) move to a network (Awin) with native fraud/voucher-attribution. The "no custom code" stance is a pilot decision, not permanent.
+
+*(Sources: UpPromote & Refersion 2026 help-centre docs — full URLs in the task transcript.)*
