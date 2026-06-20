@@ -78,7 +78,7 @@ async function classifyOne(env: Env, store: TenantStore, cfg: TenantConfig, shop
     summary: c.summary, classifiedAt: new Date().toISOString()
   });
   await store.setThreadLabels(thread.id, d.labels);
-  if (d.alert) await maybeAlertOwner(env, cfg, shop, thread, c.summary, fetchImpl);
+  if (d.alert) await maybeAlertOwner(env, cfg, shop, thread, c.summary, d.primaryCategory, fetchImpl);
 }
 
 /**
@@ -344,14 +344,17 @@ async function buildShippingLineForThread(
 }
 
 /** One short high-signal nudge to the owner's Gmail (never per-enquiry noise). */
-export async function maybeAlertOwner(env: Env, cfg: TenantConfig, shop: string, thread: ThreadRow, summary: string, fetchImpl: typeof fetch = defaultFetch): Promise<void> {
+export async function maybeAlertOwner(env: Env, cfg: TenantConfig, shop: string, thread: ThreadRow, summary: string, category?: string, fetchImpl: typeof fetch = defaultFetch): Promise<void> {
   const to = cfg.inbox.alertEmail || cfg.fulfil.alertEmail;
   if (!to || !env.RESEND_API_KEY) return;
   const consoleUrl = `${env.SHOPIFY_APP_URL}/app`;
+  const subject = category === 'affiliate'
+    ? `🤝 Affiliate enquiry: ${thread.contact_email}`
+    : `🔥 Hot lead: ${thread.contact_email}`;
   await sendEmail(env.RESEND_API_KEY, {
     from: FROM,
     to,
-    subject: `🔥 Hot lead: ${thread.contact_email}`,
+    subject,
     text: `${summary}\n\nFrom: ${thread.contact_email}\nSubject: ${thread.subject ?? '(none)'}\n\nReview & reply in PawScout: ${consoleUrl}`,
     html: `<p><strong>${escapeHtml(summary)}</strong></p><p>From: ${escapeHtml(thread.contact_email)}<br>Subject: ${escapeHtml(thread.subject ?? '(none)')}</p><p><a href="${escapeHtml(consoleUrl)}">Review &amp; reply in PawScout →</a></p>`
   }, fetchImpl);

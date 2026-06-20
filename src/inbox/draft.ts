@@ -44,6 +44,9 @@ export async function draftReply(
       (input.shippingHandledSeparately
         ? 'A precise shipping cost and delivery estimate is appended to your reply automatically — do NOT state, guess, or hedge about any shipping cost or delivery time yourself; focus on the rest of their question. '
         : '') +
+      (input.category === 'affiliate'
+        ? 'This is an affiliate/partnership enquiry — someone offering to promote or sell Active Paw products for a commission. Reply warmly and with genuine interest: thank them, say we are open to exploring partnerships, and ask them to share details about their audience/platform, reach, and how they would promote us so we can evaluate a fit. Do NOT commit to any commission rate, terms, or agreement — those are decided separately. '
+        : '') +
       (guidance ? `Owner guidance (follow this): ${guidance} ` : '') +
       'Respond with ONLY JSON: {"bodyText": <plain-text reply, no signature, no HTML>, ' +
       '"confidence": <0-100 integer: how sure you are this fully and safely answers them>, ' +

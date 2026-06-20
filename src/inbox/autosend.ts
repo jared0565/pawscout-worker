@@ -1,5 +1,5 @@
 export const AUTO_RATELIMIT_PER_SENDER_DAY = 3;
-const ALWAYS_HOLD_CATEGORIES = new Set(['complaint', 'wholesale-b2b']);
+const ALWAYS_HOLD_CATEGORIES = new Set(['complaint', 'wholesale-b2b', 'affiliate']);
 
 // Mechanical money/commitment detector — the deterministic backstop to the LLM's
 // self-reported flag. Conservative: false positives just route to HITL.

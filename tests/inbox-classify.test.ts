@@ -66,4 +66,10 @@ describe('decideDisposition', () => {
     expect(d.status).toBe('needs_reply');
     expect(d.alert).toBe(false);
   });
+  it('ALWAYS alerts on an affiliate enquiry, even at low buying-intent', () => {
+    const d = decideDisposition({ isHuman: true, category: 'affiliate', intentScore: 15, summary: 'commission partnership pitch', labels: ['affiliate'] });
+    expect(d.status).toBe('needs_reply');
+    expect(d.primaryCategory).toBe('affiliate');
+    expect(d.alert).toBe(true); // surfaced regardless of intentScore (it's a partnership opportunity, not a purchase)
+  });
 });
