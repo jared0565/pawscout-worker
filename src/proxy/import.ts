@@ -4,13 +4,14 @@ import type { Curation, HeroPick } from '../llm';
 import type { TenantStore } from '../tenant-store';
 import type { TenantConfig } from '../types';
 import { retailPriceGbp, landedCostGbp } from '../pricing';
+import { AFFILIATE_ELIGIBLE_TAG, productAffiliateEligible } from '../affiliate';
 import { isLikelyPetProduct, signaledCategory } from './search';
 import { getPrimaryLocationId, setSupplierMetafields, MAX_TRACKED_QTY } from './inventory';
 
 export const IMPORT_TAG = 'cj-import';
 /** W-ADDON: hidden basket-fillers — buyable, but never browsable/searchable. */
 export const ADDON_TAG = 'cj-addon';
-const ADDON_CATEGORY = 'addons';
+export const ADDON_CATEGORY = 'addons';
 const MAX_IMAGES = 8;
 // Curated-hero cache lifetime. Keyed by `hero:<pid>` in search_cache; lets the
 // search grid reuse the vision-vetted hero so cards self-heal after one preview.
@@ -308,7 +309,7 @@ export async function importProduct(
       title: detail.nameEn,
       descriptionHtml: detail.descriptionHtml,
       status: 'ACTIVE',
-      tags: [IMPORT_TAG, `cj-pid-${detail.pid}`, ...(isAddon ? [ADDON_TAG] : []), ...(detail.petClass ? [`cj-species-${detail.petClass}`] : []), ...(browseCat && cfg.collectionMap[browseCat] ? [cfg.collectionMap[browseCat].tag] : [])],
+      tags: [IMPORT_TAG, `cj-pid-${detail.pid}`, ...(isAddon ? [ADDON_TAG] : []), ...(detail.petClass ? [`cj-species-${detail.petClass}`] : []), ...(browseCat && cfg.collectionMap[browseCat] ? [cfg.collectionMap[browseCat].tag] : []), ...(!isAddon && productAffiliateEligible(variants, cfg.pricing, detail.freightUsd) ? [AFFILIATE_ELIGIBLE_TAG] : [])],
       files: detail.images.slice(0, MAX_IMAGES).map((src) => ({ originalSource: src, contentType: 'IMAGE' })),
       productOptions: [{ name: optionName, values: multi ? variants.map((v) => ({ name: v.name })) : [{ name: 'Default Title' }] }],
       variants: variants.map((v) => ({
@@ -402,7 +403,7 @@ async function setSeoHidden(admin: AdminGraphql, productId: string, hidden: bool
 }
 
 /** Add or remove storefront tags on an existing product. */
-async function setProductTags(admin: AdminGraphql, productId: string, tags: string[], add: boolean): Promise<void> {
+export async function setProductTags(admin: AdminGraphql, productId: string, tags: string[], add: boolean): Promise<void> {
   if (!tags.length) return;
   const mut = add
     ? `mutation pawscoutTagsAdd($id: ID!, $tags: [String!]!) { tagsAdd(id: $id, tags: $tags) { userErrors { field message } } }`

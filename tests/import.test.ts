@@ -121,7 +121,7 @@ describe('importProduct', () => {
 
     const setCall = calls.find((c) => c.query.includes('productSet'))!;
     const input = setCall.variables!.input as Record<string, unknown>;
-    expect(input.tags).toEqual(['cj-import', 'cj-pid-P1', 'cj-pet-toys']);
+    expect(input.tags).toEqual(['cj-import', 'cj-pid-P1', 'cj-pet-toys', 'affiliate-eligible']);
     expect((input.variants as { price: string }[]).map((v) => v.price)).toEqual(['19.99', '23.99']);
     expect(calls.some((c) => c.query.includes('publishablePublish'))).toBe(true);
 

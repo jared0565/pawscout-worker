@@ -69,6 +69,8 @@ function shopAdmin(calls: Call[], currentPrice = '99.99', tracked = true): Admin
     if (query.includes('productVariantsBulkUpdate')) return { productVariantsBulkUpdate: { userErrors: [] } };
     if (query.includes('inventorySetQuantities')) return { inventorySetQuantities: { userErrors: [] } };
     if (query.includes('metafieldsSet')) return { metafieldsSet: { userErrors: [] } };
+    if (query.includes('tagsAdd')) return { tagsAdd: { userErrors: [] } };
+    if (query.includes('tagsRemove')) return { tagsRemove: { userErrors: [] } };
     throw new Error(`unexpected query: ${query.slice(0, 40)}`);
   };
 }
@@ -273,6 +275,36 @@ describe('syncStoreInventory', () => {
     // …but Cost-per-item still syncs (1.1): honest landed COGS at raw FX, $10 → £7.80
     const cost = calls.find((c) => c.query.includes('pawscoutCost'))!;
     expect(cost.variables!.cost).toBe('7.80');
+  });
+
+  it('tags an eligible product affiliate-eligible (1.2)', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await insertLink('A', 'imported', 5);
+    const cj = {
+      detail: async (pid: string) => detailOf(pid, 40, 10), // $10 → clears the £6 floor
+      stockByPid: async () => new Map<string, number>()
+    } as unknown as CjClient;
+    const calls: Call[] = [];
+    await syncStoreInventory(store, cj, shopAdmin(calls, '19.99'), CFG, { pause: async () => {} });
+    const add = calls.find((c) => c.query.includes('tagsAdd'))!;
+    expect(add).toBeDefined();
+    expect(add.variables!.tags).toEqual(['affiliate-eligible']);
+    expect(calls.some((c) => c.query.includes('tagsRemove'))).toBe(false);
+  });
+
+  it('un-tags a thin product that no longer clears the floor (1.2)', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await insertLink('A', 'imported', 5);
+    const cj = {
+      detail: async (pid: string) => detailOf(pid, 40, 3), // $3 → floor-priced, fails the affiliate floor
+      stockByPid: async () => new Map<string, number>()
+    } as unknown as CjClient;
+    const calls: Call[] = [];
+    await syncStoreInventory(store, cj, shopAdmin(calls, '8.99'), CFG, { pause: async () => {} });
+    const remove = calls.find((c) => c.query.includes('tagsRemove'))!;
+    expect(remove).toBeDefined();
+    expect(remove.variables!.tags).toEqual(['affiliate-eligible']);
+    expect(calls.some((c) => c.query.includes('tagsAdd'))).toBe(false);
   });
 
   it('offset resumes the run partway through the listed catalog', async () => {

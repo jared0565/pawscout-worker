@@ -4,7 +4,8 @@ import { makeAdminGraphql, type AdminGraphql } from './shopify-admin';
 import { TenantStore, listActiveShops, purgeExpiredSearchCache, purgeUnusedWarehouse, trimOldLogs } from './tenant-store';
 import { liveCjPasses, normalizeKeyword, CACHE_TTL_DAYS, isLikelyPetProduct, titleSignature } from './proxy/search';
 import { getExpansions, seedTerm } from './semantic/library';
-import { confirmAndImport, getCachedDetail, resolveCategory, reconcileAddonVisibility, reconcileHeroImages, reconcileDescriptions, reconcileCategories } from './proxy/import';
+import { confirmAndImport, getCachedDetail, resolveCategory, reconcileAddonVisibility, reconcileHeroImages, reconcileDescriptions, reconcileCategories, setProductTags, ADDON_CATEGORY } from './proxy/import';
+import { AFFILIATE_ELIGIBLE_TAG, productAffiliateEligible, ensureAffiliateCollection } from './affiliate';
 import { enableTracking, getPrimaryLocationId, productInventoryItems, setInventoryQuantities, setSupplierMetafields, updateVariantPrices, updateVariantCosts, MAX_TRACKED_QTY } from './proxy/inventory';
 import { retailPriceGbp, landedCostGbp } from './pricing';
 import type { CjDetail } from './cj';
@@ -169,11 +170,13 @@ export async function syncStoreInventory(
       const wh = await store.getWarehouseProduct(link.cj_pid);
       let freightUsd: number | undefined;
       let storedOrigin: string | undefined;
+      let storedVariants: CjDetail['variants'] = [];
       if (wh) {
         try {
           const stored = JSON.parse(wh.detail) as CjDetail;
           freightUsd = stored.freightUsd;
           storedOrigin = stored.origin;
+          storedVariants = stored.variants ?? [];
         } catch { /* legacy row */ }
       }
       const origin = detail?.origins ? chooseOrigin(detail, cfg.floors.stockFloor) : storedOrigin;
@@ -230,6 +233,17 @@ export async function syncStoreInventory(
         return current === landed ? [] : [{ inventoryItemId: v.inventoryItemId, cost: landed }];
       });
       if (costUpdates.length) await updateVariantCosts(admin, costUpdates);
+
+      // Affiliate eligibility (1.2): toggle the `affiliate-eligible` tag iff
+      // EVERY sellable variant clears the £6 ex-VAT, after-commission-and-fee
+      // floor. Computed from CJ variant costs + freight (the same numbers the
+      // price/cost sync just wrote). Skip when no cost source is available, so a
+      // transient no-data day never un-tags an eligible product.
+      const eligSource = detail?.variants ?? storedVariants;
+      if (eligSource.length && link.category !== ADDON_CATEGORY) {
+        const eligible = productAffiliateEligible(eligSource, cfg.pricing, freightUsd);
+        await setProductTags(admin, link.shopify_product_id, [AFFILIATE_ELIGIBLE_TAG], eligible);
+      }
 
       if (stockKnown) {
         await setSupplierMetafields(admin, link.shopify_product_id, {
@@ -555,6 +569,9 @@ export async function runDailyMaintenance(env: Env): Promise<void> {
           : undefined;
         await replenishWarehouse(store, cj, cfg, { curate });
         await seedSemanticLibrary(store, llm, cfg); // warm the term-library cores (hybrid cron half)
+        // Ensure the affiliate-eligible smart collection exists before the
+        // inventory sync toggles per-product tags into it (best-effort).
+        try { await ensureAffiliateCollection(admin); } catch (e) { console.warn(`affiliate collection ensure failed: ${(e as Error).message}`); }
         await syncStoreInventory(store, cj, admin, cfg);
         await refillCollections(store, cj, admin, cfg, { curate, pickHero }); // promote-from-warehouse (floor 8, target 12)
         await reconcileAddonVisibility(store, admin, cfg); // align hidden/visible add-ons to the toggle

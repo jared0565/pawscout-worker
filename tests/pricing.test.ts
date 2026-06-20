@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { retailPriceGbp, landedCostGbp } from '../src/pricing';
+import { retailPriceGbp, landedCostGbp, affiliateEligible, affiliateContributionGbp } from '../src/pricing';
 import { DEFAULT_PRICING } from '../src/types';
 
 describe('retailPriceGbp', () => {
@@ -66,5 +66,37 @@ describe('landedCostGbp (honest COGS, raw FX)', () => {
   it('rejects non-positive landed costs', () => {
     expect(() => landedCostGbp(0, DEFAULT_PRICING)).toThrow();
     expect(() => landedCostGbp(NaN, DEFAULT_PRICING)).toThrow();
+  });
+});
+
+describe('affiliateEligible (£6 floor)', () => {
+  it('passes a healthy SKU: ex-VAT contribution clears £6 after commission + fee', () => {
+    // $10 → retail 19.99, COGS 7.80. net rev 16.66, contribution 8.86,
+    // −8% comm (1.33) −2% fee (0.40) = 7.13 ≥ 6 → eligible
+    const retail = retailPriceGbp(10, DEFAULT_PRICING);
+    const cogs = landedCostGbp(10, DEFAULT_PRICING);
+    expect(affiliateContributionGbp(retail, cogs)).toBeGreaterThan(6);
+    expect(affiliateEligible(retail, cogs)).toBe(true);
+  });
+
+  it('fails a thin SKU: the floor pricing leaves < £6 after the affiliate cut', () => {
+    // $3 → retail 8.99 (min-margin floored), COGS 2.34. surviving ≈ 4.37 < 6
+    const retail = retailPriceGbp(3, DEFAULT_PRICING);
+    const cogs = landedCostGbp(3, DEFAULT_PRICING);
+    expect(affiliateContributionGbp(retail, cogs)).toBeLessThan(6);
+    expect(affiliateEligible(retail, cogs)).toBe(false);
+  });
+
+  it('honours an override floor', () => {
+    const retail = retailPriceGbp(10, DEFAULT_PRICING);
+    const cogs = landedCostGbp(10, DEFAULT_PRICING);
+    // raise the bar to £8 → the 7.13 survivor no longer clears it
+    expect(affiliateEligible(retail, cogs, { vatRate: 0.2, commissionRate: 0.08, platformFeeRate: 0.02, floorGbp: 8 })).toBe(false);
+  });
+
+  it('rejects non-finite / non-positive inputs', () => {
+    expect(affiliateEligible(0, 5)).toBe(false);
+    expect(affiliateEligible(20, 0)).toBe(false);
+    expect(affiliateEligible(NaN, 5)).toBe(false);
   });
 });
