@@ -117,23 +117,37 @@ export function titleSignature(title: string): string {
 // when its title points unambiguously at a single category that differs from
 // where it sits — so it never overrides a reasonable (possibly LLM-made) call.
 const CATEGORY_SIGNALS: Record<string, string[]> = {
-  'pet-health': ['dental', 'teeth', 'tooth', 'toothbrush', 'oral', 'tartar', 'gum', 'dewormer', 'supplement', 'vitamin', 'wound', 'first aid'],
+  'pet-health': ['dental', 'teeth', 'tooth', 'toothbrush', 'oral', 'tartar', 'gum', 'dewormer', 'supplement', 'vitamin', 'multivitamin', 'glucosamine', 'chondroitin', 'probiotic', 'prebiotic', 'omega', 'wound', 'first aid'],
   'pet-toys': ['toy', 'toys', 'ball', 'chew', 'squeaky', 'squeak', 'teaser', 'catnip', 'scratcher', 'fetch', 'plush', 'kicker', 'wand'],
   'pet-cleaning': ['bath', 'shampoo', 'towel', 'bathrobe', 'wash', 'shower', 'paw clean', 'paw cleaner'],
   'pet-grooming': ['comb', 'nail clipper', 'nail grinder', 'grinder', 'scissor', 'deshed', 'shedding', 'grooming', 'trimmer', 'clipper', 'slicker', 'detangle', 'detangling', 'razor'],
   'pet-accessories': ['leash', 'harness', 'collar', 'bowl', 'feeder', 'water bottle', 'carrier', 'diaper', 'airtag', 'raincoat', 'apparel']
 };
 
+// "Chew" is a toy signal, but supplements ship in chewable form too
+// ("Multivitamin Chews", "Glucosamine Joint Chewables", "Dental Chew Sticks").
+// Those are health/dental products, not chew toys — so when pet-toys' ONLY claim
+// is the chew family AND a health signal is also present, health wins. Without
+// this the mixed signal reads as ambiguous and the daily re-audit
+// (reconcileCategories) leaves the supplement mis-filed under pet-toys forever.
+const CHEW_SIGNAL = 'chew';
+
 /** The single collection a title clearly belongs to, or null if 0 or >1 match. */
 export function signaledCategory(title: string): string | null {
   const t = (title || '').toLowerCase();
   const tokens = t.split(/[^a-z0-9]+/).filter(Boolean);
-  const matched = new Set<string>();
+  const hits: Record<string, string[]> = {};
   for (const [cat, signals] of Object.entries(CATEGORY_SIGNALS)) {
     for (const sig of signals) {
       const hit = sig.includes(' ') ? t.includes(sig) : tokens.some((tok) => tok === sig || tok.startsWith(sig));
-      if (hit) { matched.add(cat); break; }
+      if (hit) (hits[cat] ??= []).push(sig);
     }
+  }
+  const matched = new Set(Object.keys(hits));
+  // Supplement-format chew: health beats toy when chew is the toy's sole claim.
+  if (matched.has('pet-toys') && matched.has('pet-health')
+      && (hits['pet-toys'] ?? []).every((s) => s === CHEW_SIGNAL)) {
+    matched.delete('pet-toys');
   }
   return matched.size === 1 ? [...matched][0] : null;
 }

@@ -104,6 +104,18 @@ describe('signaledCategory (category re-audit)', () => {
   it('returns null when no signal matches', () => {
     expect(signaledCategory('Mystery Gadget')).toBeNull();
   });
+  it('files supplement-format chews as health, not toys (chew is the toy\'s only claim)', () => {
+    // The live mis-gates: chew→toys vs vitamin→health read as ambiguous, so the
+    // daily re-audit left these stuck under pet-toys. Health wins for a chew that
+    // is only a supplement delivery form.
+    expect(signaledCategory('Dog Multivitamin Chews (Glucosamine & Probiotics)')).toBe('pet-health');
+    expect(signaledCategory('Dog Multivitamin Chewables (Glucosamine & Omega)')).toBe('pet-health');
+    expect(signaledCategory('Beef-Flavored Dental Chew Sticks')).toBe('pet-health'); // dental chew = dental care
+  });
+  it('leaves a real chew toy as a toy (no health signal present)', () => {
+    expect(signaledCategory('Durable Rubber Chew Toy for Aggressive Chewers')).toBe('pet-toys');
+    expect(signaledCategory('Squeaky Chew Ball for Dogs')).toBe('pet-toys');
+  });
 });
 
 describe('relevance + normalization', () => {
