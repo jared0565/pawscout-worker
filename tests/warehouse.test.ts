@@ -148,8 +148,7 @@ describe('replenishWarehouse', () => {
     expect(row).not.toBeNull();
     const stored = JSON.parse(row!.detail);
     expect(stored.origin).toBe('CN'); // no per-country data in fixture → CN default
-    expect(stored.freightUsd).toBe(3.4);
-    expect(stored.freightDays).toBe('8-12');
+    expect(stored.freightUsd).toBe(3.4); // delivery TIME now lives in cj_logistics, not detail.freightDays
   });
 
 

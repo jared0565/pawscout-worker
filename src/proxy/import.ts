@@ -215,7 +215,7 @@ export async function confirmAndImport(
     if (vid && vid !== 'default') {
       try {
         const f = await cj.freightEstimate(vid, detail.origin);
-        if (f) detail = { ...detail, freightUsd: f.priceUsd, freightDays: f.days };
+        if (f) detail = { ...detail, freightUsd: f.priceUsd };
       } catch (e) {
         // Unknown freight degrades to the product-cost-only floor — never block the sale path.
         console.warn(`freight estimate failed for ${detail.pid}: ${(e as Error).message}`);

@@ -156,9 +156,10 @@ export interface CjDetail {
   petClass?: string;
   /** Best stock per origin country (from enable_inventory), e.g. {CN: 1200, GB: 40}. */
   origins?: Record<string, number>;
-  /** Cheapest freight to GB from the chosen origin, captured at admission/import. */
+  /** Cheapest freight (USD) to GB from the chosen origin, captured at admission/import;
+   *  feeds the pricing floor. Delivery TIME now lives in the synced cj_logistics matrix,
+   *  not here (the old per-detail freightDays was dead — read by nothing). */
   freightUsd?: number;
-  freightDays?: string;
   origin?: string;
 }
 

@@ -135,15 +135,20 @@ export async function setInventoryQuantities(
 export async function setSupplierMetafields(
   admin: AdminGraphql,
   productId: string,
-  m: { status: 'available' | 'low_stock' | 'out_of_stock'; qty: number; checkedAt: string; origin?: string }
+  m: { status: 'available' | 'low_stock' | 'out_of_stock'; qty: number; checkedAt: string; origin?: string; deliveryDays?: string }
 ): Promise<void> {
   const fields = [
     { key: 'name', type: 'single_line_text_field', value: 'CJ' },
     { key: 'status', type: 'single_line_text_field', value: m.status },
     { key: 'available_qty', type: 'number_integer', value: String(Math.max(0, Math.floor(m.qty))) },
     { key: 'last_checked_at', type: 'date_time', value: m.checkedAt },
-    // Dispatch origin country code — the theme reads this to show a faster delivery estimate for GB-stocked items (no shipping-origin claim shown to the customer).
-    ...(m.origin ? [{ key: 'origin', type: 'single_line_text_field', value: m.origin }] : [])
+    // Dispatch origin country code — used to pick the per-product delivery estimate (no shipping-origin claim shown to the customer).
+    ...(m.origin ? [{ key: 'origin', type: 'single_line_text_field', value: m.origin }] : []),
+    // Per-product order->door estimate (bare calendar-day range, e.g. "6-21") from the
+    // synced CJ logistics matrix; the theme renders it, falling back to its static
+    // window when blank. Omitted entirely when undefined (e.g. at import, pre-sync);
+    // an empty string deliberately CLEARS it (stale/missing => static fallback).
+    ...(m.deliveryDays !== undefined ? [{ key: 'delivery_days', type: 'single_line_text_field', value: m.deliveryDays }] : [])
   ];
   const data = await admin(
     `mutation pawscoutMetafields($metafields: [MetafieldsSetInput!]!) {

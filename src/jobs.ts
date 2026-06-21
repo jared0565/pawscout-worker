@@ -9,7 +9,7 @@ import { AFFILIATE_ELIGIBLE_TAG, productAffiliateEligible, ensureAffiliateCollec
 import { sendReorderReminders } from './retention';
 import { enableTracking, getPrimaryLocationId, productInventoryItems, setInventoryQuantities, setSupplierMetafields, updateVariantPrices, updateVariantCosts, MAX_TRACKED_QTY } from './proxy/inventory';
 import { retailPriceGbp, landedCostGbp } from './pricing';
-import { parseDaysRange } from './logistics';
+import { parseDaysRange, resolveLogistics, doorToDoorBand, formatBand } from './logistics';
 import { LOGISTICS_DESTINATIONS } from './inbox/freight';
 import type { CjDetail } from './cj';
 import { LlmClient, curateProduct, pickHeroImage, rewriteDescription, type Curation, type HeroPick } from './llm';
@@ -249,11 +249,25 @@ export async function syncStoreInventory(
       }
 
       if (stockKnown) {
+        // Per-product delivery estimate from the synced matrix (this product's origin
+        // -> GB). Computed AFTER the load-bearing stock writes and fully guarded: a
+        // missing/stale row or any read failure yields '' => the metafield is CLEARED
+        // => the PDP falls back to its static window. A logistics gap never strands
+        // inventory, and only a real, fresh figure is ever surfaced.
+        const logiCfg = resolveLogistics(cfg.fulfil);
+        let deliveryDays = '';
+        try {
+          const route = await store.getLogisticsRoute(origin ?? 'CN', 'GB', logiCfg.stalenessHours);
+          deliveryDays = formatBand(doorToDoorBand(route, logiCfg));
+        } catch (e) {
+          console.warn(`delivery_days lookup failed for ${link.cj_pid}: ${(e as Error).message}`);
+        }
         await setSupplierMetafields(admin, link.shopify_product_id, {
           status: paused ? 'out_of_stock' : maxStock < cfg.floors.stockFloor * 2 ? 'low_stock' : 'available',
           qty: maxStock,
           checkedAt: new Date().toISOString(),
-          origin
+          origin,
+          deliveryDays
         });
         await store.setStockPaused(link.cj_pid, paused);
         await store.setWarehouseStock(link.cj_pid, maxStock, paused ? 'low_stock' : 'available');
@@ -404,7 +418,7 @@ export async function replenishWarehouse(
       await spend();
       try {
         const f = await cj.freightEstimate(freightVid, origin);
-        if (f) admittedDetail = { ...admittedDetail, freightUsd: f.priceUsd, freightDays: f.days };
+        if (f) admittedDetail = { ...admittedDetail, freightUsd: f.priceUsd };
       } catch (e) {
         console.warn(`freight estimate failed for ${item.pid}: ${(e as Error).message}`);
       }
