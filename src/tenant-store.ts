@@ -665,6 +665,16 @@ export class TenantStore {
     return rs.results ?? [];
   }
 
+  /** A few available warehouse detail JSONs (most-listed first) — used to pick a
+   *  representative in-stock vid for the logistics freight probe. */
+  async sampleWarehouseDetails(limit: number): Promise<string[]> {
+    const rs = await this.db
+      .prepare(`SELECT detail FROM warehouse_products WHERE shop = ?1 AND status = 'available' ORDER BY listed_num DESC LIMIT ${Math.min(Math.max(limit, 1), 50)}`)
+      .bind(this.shop)
+      .all<{ detail: string }>();
+    return (rs.results ?? []).map((r) => r.detail);
+  }
+
   // --- CJ logistics (synced delivery-time matrix) -------------------------------
 
   /** Upsert a refreshed route row (a SUCCESSFUL quote): resets the failure counter. */

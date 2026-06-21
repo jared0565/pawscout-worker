@@ -70,6 +70,15 @@ const COUNTRY_NAMES: Record<string, string> = {
   brazil: 'BR', argentina: 'AR', chile: 'CL'
 };
 
+/**
+ * In-scope destinations for the synced CJ logistics matrix (owner decision
+ * 2026-06-21: full markets). GB (home) + every unique ISO-2 the store recognises,
+ * minus the origin (CN). The nightly fetch-once-fan-out sync quotes each of these.
+ */
+export const LOGISTICS_DESTINATIONS: string[] = [
+  ...new Set<string>(['GB', ...Object.values(COUNTRY_NAMES)]),
+].filter((c) => c !== 'CN');
+
 /** ccTLD → ISO-2 for the few that are unambiguous and worth trusting. Generic
  * TLDs (.com/.org/.net) and gmail/outlook addresses tell us nothing → skipped. */
 const CCTLD: Record<string, string> = {

@@ -9,6 +9,8 @@ import { AFFILIATE_ELIGIBLE_TAG, productAffiliateEligible, ensureAffiliateCollec
 import { sendReorderReminders } from './retention';
 import { enableTracking, getPrimaryLocationId, productInventoryItems, setInventoryQuantities, setSupplierMetafields, updateVariantPrices, updateVariantCosts, MAX_TRACKED_QTY } from './proxy/inventory';
 import { retailPriceGbp, landedCostGbp } from './pricing';
+import { parseDaysRange } from './logistics';
+import { LOGISTICS_DESTINATIONS } from './inbox/freight';
 import type { CjDetail } from './cj';
 import { LlmClient, curateProduct, pickHeroImage, rewriteDescription, type Curation, type HeroPick } from './llm';
 import { DEFAULT_SEMANTIC, type Env, type TenantConfig } from './types';
@@ -498,6 +500,112 @@ export async function refreshWarehouseStock(
 }
 
 /**
+ * Refresh the CJ delivery-TIME matrix for one origin across a set of shops (the
+ * testable core). Transit is shop-invariant, so ONE reference CjClient quotes each
+ * destination once and the parsed row is FANNED OUT to every CJ shop's partition.
+ *
+ * Resilient: per-route failure (CJ error / no options / unparseable aging) keeps
+ * the last-good row and bumps its failure counter — never nulls a good row, never
+ * throws. Bounded by maxCjCalls; aborts after 3 consecutive 429s (the relay IP is
+ * shared). Refreshes oldest-synced destinations first so a truncated run never
+ * starves the same tail. Governing rule: only a real, parseable quote becomes a
+ * customer-facing number; everything else degrades to the hedge.
+ */
+export async function syncCjLogisticsRoutes(
+  cjStores: TenantStore[],
+  reference: TenantStore,
+  cj: Pick<CjClient, 'freightQuote'>,
+  repVid: string,
+  destinations: string[],
+  opts: { from?: string; maxCjCalls?: number; pause?: (ms: number) => Promise<void> } = {}
+): Promise<{ refreshed: number; failed: number }> {
+  const from = opts.from ?? 'CN';
+  const pause = opts.pause ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const maxCjCalls = opts.maxCjCalls ?? destinations.length + 5;
+  const synced = await reference.logisticsSyncedFor(from);
+  const ordered = [...destinations].sort((a, b) => (synced.get(a) ?? '').localeCompare(synced.get(b) ?? ''));
+  let refreshed = 0, failed = 0, cjCalls = 0, consecutive429 = 0;
+  for (const dest of ordered) {
+    if (dest === from || cjCalls >= maxCjCalls) continue;
+    await pause(CJ_CALL_GAP_MS);
+    cjCalls++;
+    try {
+      const options = await cj.freightQuote(repVid, from, dest, 1);
+      const cheapest = options[0];
+      const range = parseDaysRange(cheapest?.days);
+      if (cheapest && range) {
+        for (const s of cjStores) {
+          await s.upsertLogisticsRoute({ from, to: dest, channel: cheapest.name, transitMin: range.min, transitMax: range.max, agingRaw: cheapest.days, repVid });
+        }
+        refreshed++; consecutive429 = 0;
+      } else {
+        const why = cheapest ? `unparseable aging: ${cheapest.days}` : 'no freight options';
+        for (const s of cjStores) await s.bumpLogisticsFailure(from, dest, why);
+        failed++; consecutive429 = 0;
+      }
+    } catch (e) {
+      const msg = (e as Error).message;
+      for (const s of cjStores) await s.bumpLogisticsFailure(from, dest, msg);
+      failed++;
+      if (/\b429\b|1600200|rate limit/i.test(msg)) {
+        if (++consecutive429 >= 3) { console.warn('logistics sync: aborting after 3 consecutive 429s (last-good rows cover it)'); break; }
+      } else consecutive429 = 0;
+    }
+  }
+  for (const s of cjStores) await s.pruneLogisticsRoutes(from, destinations);
+  console.log(`logistics: ${refreshed} refreshed, ${failed} failed across ${cjStores.length} shop(s)`);
+  return { refreshed, failed };
+}
+
+/** Find a representative in-stock variant id for the freight probe (env override
+ *  wins; else the first real variant from an available warehouse row). */
+async function findRepVid(store: TenantStore, envOverride?: string): Promise<string> {
+  const ov = envOverride?.trim();
+  if (ov) return ov;
+  for (const detailJson of await store.sampleWarehouseDetails(10)) {
+    try {
+      const d = JSON.parse(detailJson) as CjDetail;
+      const v = (d.variants ?? []).find((x) => x.vid && x.vid !== 'default');
+      if (v) return v.vid;
+    } catch { /* skip a malformed row */ }
+  }
+  return '';
+}
+
+/**
+ * Env wrapper: build a reference CjClient + representative vid, then refresh the
+ * matrix and fan it out to every CJ shop. Called ONCE at the top of the daily cron
+ * (idle relay window), before any per-shop work — so the matrix is fresh before any
+ * shop's PDP metafield write. Best-effort: never throws.
+ */
+export async function syncCjLogistics(
+  env: Env,
+  opts: { maxCjCalls?: number; pause?: (ms: number) => Promise<void> } = {}
+): Promise<{ refreshed: number; failed: number }> {
+  const shops = await listActiveShops(env.DB);
+  if (!shops.length) return { refreshed: 0, failed: 0 };
+  const vault = await Vault.fromMasterKey(env.PAWSCOUT_MASTER_KEY);
+  const f = cjFetchFromEnv(env);
+  const cjStores: TenantStore[] = [];
+  let reference: TenantStore | null = null;
+  let cj: CjClient | null = null;
+  let repVid = '';
+  for (const shop of shops) {
+    const store = new TenantStore(env.DB, shop);
+    if (!(await store.getSupplierCredential('cj'))) continue;
+    cjStores.push(store);
+    if (!reference) {
+      reference = store;
+      cj = new CjClient(() => new CjTokenManager(store, vault, f).getToken(), f);
+      repVid = await findRepVid(store, env.INBOX_FREIGHT_REP_VID);
+    }
+  }
+  if (!reference || !cj) { console.warn('logistics sync: no shop with CJ credentials; skipping'); return { refreshed: 0, failed: 0 }; }
+  if (!repVid) { console.warn('logistics sync: no representative in-stock vid; skipping'); return { refreshed: 0, failed: 0 }; }
+  return syncCjLogisticsRoutes(cjStores, reference, cj, repVid, LOGISTICS_DESTINATIONS, opts);
+}
+
+/**
  * Cron half of the semantic term library's hybrid population. Precomputes the
  * per-collection sourcing cores (each collection noun under its own collection)
  * AND the collection-agnostic ('') search vocabulary (same nouns), so on-site
@@ -545,6 +653,11 @@ export async function runDailyMaintenance(env: Env): Promise<void> {
   await purgeExpiredSearchCache(env.DB);
   await purgeUnusedWarehouse(env.DB, new Date(Date.now() - 30 * 86400_000).toISOString());
   await trimOldLogs(env.DB, new Date(Date.now() - LOG_RETENTION_DAYS * 86400_000).toISOString());
+
+  // Refresh the CJ delivery-time matrix ONCE (fetch-once-fan-out), in the idle
+  // relay window before any per-shop work — so it's fresh before any PDP metafield
+  // write. Best-effort: a failure here must never block the rest of maintenance.
+  try { await syncCjLogistics(env); } catch (e) { console.warn(`cj logistics sync failed: ${(e as Error).message}`); }
 
   const vault = await Vault.fromMasterKey(env.PAWSCOUT_MASTER_KEY);
   for (const shop of await listActiveShops(env.DB)) {
