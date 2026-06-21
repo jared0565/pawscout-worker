@@ -1,18 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { deriveDestinationCountry, countryLabel, buildShippingLine, isShippingIntent } from '../src/inbox/freight';
-import { DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, type TenantConfig } from '../src/types';
-import { DEFAULT_INBOX } from '../src/inbox/types';
-
-const CFG: TenantConfig = {
-  collectionMap: {}, gates: { popularityFloor: 1, priceMin: 1, priceMax: 9, relevance: 'title' },
-  pricing: { ...DEFAULT_PRICING, fxUsdToGbp: 0.8, fxBufferPct: 0 }, // £ = $ × 0.8 (no buffer) for a clean assert
-  floors: DEFAULT_FLOORS, llm: DEFAULT_LLM, addons: DEFAULT_ADDONS, fulfil: DEFAULT_FULFIL, inbox: DEFAULT_INBOX, target: 12
-};
-
-/** Minimal mocked CjClient surface used by buildShippingLine. */
-function mockCj(impl: () => Promise<{ priceUsd: number; days: string; name: string } | null>) {
-  return { freightEstimate: impl } as unknown as Parameters<typeof buildShippingLine>[0];
-}
+import { deriveDestinationCountry, countryLabel, buildShippingLine, isShippingIntent, LOGISTICS_DESTINATIONS } from '../src/inbox/freight';
 
 describe('deriveDestinationCountry', () => {
   it('reads an explicitly named country (wins over email TLD)', () => {
@@ -42,7 +29,6 @@ describe('deriveDestinationCountry', () => {
   });
 
   it('does not match substrings inside longer words', () => {
-    // "indianapolis" must not match "india"; no other country named → ccTLD (none) → null
     expect(deriveDestinationCountry('shipping to indianapolis warehouse', '', 'a@b.com')).toBeNull();
   });
 });
@@ -67,44 +53,23 @@ describe('countryLabel', () => {
   });
 });
 
-describe('buildShippingLine', () => {
-  const REP = 'rep-vid-test';
-
-  it('builds a claim-safe £ line from a real quote (FX-converted, days sanitised)', async () => {
-    const cj = mockCj(async () => ({ priceUsd: 5, days: '8-12 days', name: 'Economy' }));
-    const line = await buildShippingLine(cj, CFG, 'FR', countryLabel('FR'), REP);
-    // 5 USD × 0.8 = £4.00; "8-12 days" → "8-12"
-    expect(line).toBe('Delivery to France: shipping from approx £4.00, est. 8-12 working days.');
+describe('LOGISTICS_DESTINATIONS', () => {
+  it('includes GB, excludes the CN origin, and is de-duplicated', () => {
+    expect(LOGISTICS_DESTINATIONS).toContain('GB');
+    expect(LOGISTICS_DESTINATIONS).toContain('FR');
+    expect(LOGISTICS_DESTINATIONS).not.toContain('CN');
+    expect(new Set(LOGISTICS_DESTINATIONS).size).toBe(LOGISTICS_DESTINATIONS.length);
   });
+});
 
-  it('omits the days clause when CJ aging is unparseable', async () => {
-    const cj = mockCj(async () => ({ priceUsd: 10, days: 'varies', name: 'Standard' }));
-    const line = await buildShippingLine(cj, CFG, 'ES', countryLabel('ES'), REP);
-    expect(line).toBe('Delivery to Spain: shipping from approx £8.00.');
+describe('buildShippingLine (pure time-only formatter)', () => {
+  it('formats a calendar-day band, no price', () => {
+    expect(buildShippingLine('France', { min: 11, max: 19 })).toBe('Delivery to France: estimated 11-19 days.');
   });
-
-  it('returns null when the representative variant is unset (degrade to safe hedge)', async () => {
-    const cj = mockCj(async () => ({ priceUsd: 5, days: '8-12', name: 'Economy' }));
-    expect(await buildShippingLine(cj, CFG, 'FR', 'France', '')).toBeNull();
+  it('collapses a point band to a single number', () => {
+    expect(buildShippingLine('the UK', { min: 7, max: 7 })).toBe('Delivery to the UK: estimated 7 days.');
   });
-
-  it('returns null for the GB home market (handled by store facts)', async () => {
-    const cj = mockCj(async () => ({ priceUsd: 5, days: '2-4', name: 'UK' }));
-    expect(await buildShippingLine(cj, CFG, 'GB', 'the UK', REP)).toBeNull();
-  });
-
-  it('returns null when CJ has no quote', async () => {
-    const cj = mockCj(async () => null);
-    expect(await buildShippingLine(cj, CFG, 'FR', 'France', REP)).toBeNull();
-  });
-
-  it('returns null (never throws) when the CJ call errors', async () => {
-    const cj = mockCj(async () => { throw new Error('CJ HTTP 500'); });
-    await expect(buildShippingLine(cj, CFG, 'FR', 'France', REP)).resolves.toBeNull();
-  });
-
-  it('returns null when the quoted price is zero or negative', async () => {
-    const cj = mockCj(async () => ({ priceUsd: 0, days: '8-12', name: 'Free?' }));
-    expect(await buildShippingLine(cj, CFG, 'FR', 'France', REP)).toBeNull();
+  it('returns null on a null band (caller keeps the safe hedge)', () => {
+    expect(buildShippingLine('France', null)).toBeNull();
   });
 });

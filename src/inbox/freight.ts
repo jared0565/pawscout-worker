@@ -1,40 +1,21 @@
-import type { CjClient } from '../cj';
-import type { TenantConfig } from '../types';
+import type { DayRange } from '../logistics';
 
 /**
- * Freight-grounded delivery replies (Task [7]).
+ * Freight-grounded delivery replies.
  *
- * When a customer asks about international shipping, the worker computes a REAL
- * CJ freight quote and appends a single claim-safe line to the drafted reply.
- * The figure is injected DETERMINISTICALLY in code — the LLM never sees or emits
- * it (standing rule: the model must never state prices/SKUs/variant ids/discounts).
+ * When a customer asks about shipping to a confidently-derived destination, the
+ * drafter reads the SYNCED CJ logistics matrix from D1 (NO live CJ call) and
+ * appends a single claim-safe, TIME-ONLY line. The figure is injected
+ * DETERMINISTICALLY in code — the LLM never emits it (standing rule: the model
+ * never states prices/SKUs/variant ids/discounts/dates).
  *
- * Governing principle: precision over recall. A wrong number is worse than the
- * existing vague hedge, so we inject ONLY when the destination is unambiguous and
- * CJ returns a real quote; on ANY doubt we return null and the drafter falls back
- * to "we can ship there — we'll confirm the exact cost and timeframe". Never throw.
+ * Governing rule [[customer-facing-only-real-defensible]]: only surface a real,
+ * defensible number. The matrix row must be present AND fresh (the accessor
+ * enforces staleness) and the destination unambiguous; on ANY doubt we return null
+ * and the drafter falls back to "we can ship there — we'll confirm the timeframe".
+ * Never throws. Price is omitted (customer shipping is the store's flat card, not
+ * CJ-derived); the line is delivery-time only.
  */
-
-// --- representative variant (FLAG FOR ORCHESTRATOR REVIEW) -----------------
-//
-// The freight quote needs a real CJ variant id (weight drives freight), but the
-// drafter has no specific product in hand for a generic "do you ship to X?"
-// enquiry. We therefore quote ONE representative in-stock variant as a proxy for
-// "a typical small pet item" — the same shape the storefront sells most of.
-//
-// The vid is supplied at runtime via env (INBOX_FREIGHT_REP_VID) so the
-// orchestrator can ACTIVATE the feature with a config change, not a code edit —
-// mirroring the CJ_RELAY_* env pattern. UNSET = feature dormant: buildShippingLine
-// returns null and the drafter keeps the existing safe hedge. This is intentional;
-// the feature is dormant-safe until grounded in a real variant.
-//
-// Using one fixed vid (vs. a live getDetailPreferWarehouse round-trip per draft)
-// is a deliberate trade: less latency, fewer failure modes, no origin guesswork in
-// the hot sweep loop. The figure is a PROXY — it is not the freight of the specific
-// product the customer asked about (flagged for review). Origin 'CN' is the
-// conservative default dispatch country (the long pole on time + cost — quoting it
-// never under-promises).
-export const REP_ORIGIN = 'CN';
 
 /** Shipping/delivery enquiry categories that warrant a freight lookup. */
 export function isShippingIntent(category: string | null | undefined, subject: string, conversation: string): boolean {
@@ -94,8 +75,8 @@ const CCTLD: Record<string, string> = {
  *
  * - An explicitly NAMED country in the text wins over the email ccTLD.
  * - If two DIFFERENT countries are named, it's ambiguous → null.
- * - GB/UK is treated as the home market and returns 'GB' (caller skips the quote
- *   for GB — UK delivery is already covered by STORE_FACTS).
+ * - GB/UK is recognised and returns 'GB'; the caller reads the CN->GB matrix row
+ *   like any other destination (the drafter grounds UK delivery in D1 too).
  */
 export function deriveDestinationCountry(conversation: string, subject: string, email: string): string | null {
   const text = `${subject}\n${conversation}`.toLowerCase();
@@ -139,56 +120,16 @@ export function countryLabel(iso2: string): string {
   return COUNTRY_LABELS[iso2] ?? iso2;
 }
 
-const FREIGHT_TIMEOUT_MS = 6000;
-
 /**
- * Build ONE claim-safe shipping-estimate line for a confidently-derived NON-GB
- * destination from a real CJ freight quote, FX-converted to GBP using the SAME
- * formula as POST /api/freight-quote. Resilient: timeout/CJ error/empty result/
- * unset representative variant all return null (→ caller keeps the safe hedge).
- * Never throws.
+ * Format ONE claim-safe, TIME-ONLY delivery line from the synced-matrix order->door
+ * band (CALENDAR days, produced by doorToDoorBand). Price is deliberately omitted
+ * (flat decoupled store rates). Null band → null so the caller keeps the safe hedge.
+ * Pure.
  *
- * @returns e.g. "Delivery to France: shipping from approx £4.10, est. 8-12 working days."
+ * @returns e.g. "Delivery to France: estimated 11-19 days."
  */
-export async function buildShippingLine(
-  cj: Pick<CjClient, 'freightEstimate'>,
-  cfg: TenantConfig,
-  country: string,
-  countryLabelText: string,
-  repVid: string
-): Promise<string | null> {
-  if (!repVid) return null;                // representative variant not configured → degrade
-  if (!country || country === 'GB') return null; // home market handled by STORE_FACTS
-  try {
-    const est = await withTimeout(
-      cj.freightEstimate(repVid, REP_ORIGIN, country, 1),
-      FREIGHT_TIMEOUT_MS
-    );
-    if (!est || !(est.priceUsd > 0)) return null;
-    const fx = cfg.pricing.fxUsdToGbp * (1 + cfg.pricing.fxBufferPct / 100);
-    const gbp = est.priceUsd * fx;
-    if (!(gbp > 0) || !Number.isFinite(gbp)) return null;
-    const days = sanitizeDays(est.days);
-    const label = countryLabelText || country;
-    const daysClause = days ? `, est. ${days} working days` : '';
-    return `Delivery to ${label}: shipping from approx £${gbp.toFixed(2)}${daysClause}.`;
-  } catch (e) {
-    console.warn(`inbox freight line failed for ${country}: ${(e as Error).message}`);
-    return null;
-  }
-}
-
-/** CJ's logisticAging is a free-text range like "8-12" or "8~12 days". Keep only
- * a clean N or N-N day range; anything unexpected is dropped (claim-safe). */
-function sanitizeDays(raw: string): string {
-  const m = String(raw ?? '').replace(/[~–—]/g, '-').match(/^\s*(\d{1,3})(?:\s*-\s*(\d{1,3}))?/);
-  if (!m) return '';
-  return m[2] ? `${m[1]}-${m[2]}` : m[1];
-}
-
-function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const t = setTimeout(() => reject(new Error('freight lookup timed out')), ms);
-    p.then((v) => { clearTimeout(t); resolve(v); }, (e) => { clearTimeout(t); reject(e); });
-  });
+export function buildShippingLine(label: string, band: DayRange | null): string | null {
+  if (!band) return null;
+  const range = band.min === band.max ? `${band.min}` : `${band.min}-${band.max}`;
+  return `Delivery to ${label}: estimated ${range} days.`;
 }

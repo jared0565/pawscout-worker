@@ -16,8 +16,7 @@ import { invoiceSendDecision } from './invoice-floor';
 import { createDraftOrder } from '../shopify-drafts';
 import { sendInvoice } from './send-invoice';
 import { hasScope } from './scopes';
-import { Vault } from '../vault';
-import { CjClient, CjTokenManager, cjFetchFromEnv } from '../cj';
+import { resolveLogistics, doorToDoorBand } from '../logistics';
 import { isShippingIntent, deriveDestinationCountry, countryLabel, buildShippingLine } from './freight';
 import type { ThreadRow, InvoiceLineItem } from './types';
 
@@ -268,10 +267,11 @@ export async function composeDraftForThread(
   const conversation = got.messages.filter((m) => m.direction === 'inbound').map((m) => m.body_text ?? '').join('\n\n---\n\n');
 
   // Freight-grounded delivery line: when the customer asks about shipping to a
-  // confidently-derived NON-GB destination, compute a REAL CJ freight quote and
-  // append it deterministically (the LLM never emits the figure). Resilient —
-  // any failure leaves shippingLine null and the drafter keeps its safe hedge.
-  const shippingLine = await buildShippingLineForThread(env, store, cfg, thread, conversation, fetchImpl);
+  // confidently-derived destination, read the SYNCED CJ logistics matrix from D1
+  // (no live CJ call) and append a time-only line deterministically (the LLM never
+  // emits the figure). Resilient — a missing/stale row or ambiguous destination
+  // leaves shippingLine null and the drafter keeps its safe hedge.
+  const shippingLine = await buildShippingLineForThread(store, cfg, thread, conversation);
 
   const llm = new LlmClient({ openrouter: env.OPENROUTER_API_KEY, openai: env.OPENAI_API_KEY }, fetchImpl);
   const contact = await store.getContactByEmail(thread.contact_email);
@@ -327,8 +327,9 @@ export function composeDeliveryDraft(
   if (!shippingLine) return { bodyText: draft.bodyText, quotesPriceOrder: llmQuotes };
   return {
     bodyText: `${draft.bodyText.trimEnd()}\n\n${shippingLine}`,
-    // The figure is ours (trusted), but it IS a price figure — mark it so the
-    // draft carries the price flag and is reviewed before sending.
+    // The line is ours (trusted) and time-only, but it IS a worker-computed figure —
+    // flag it so the draft is reviewed before sending (HITL is also forced upstream
+    // while the door-to-door model is unvalidated against real fulfilment data).
     quotesPriceOrder: true
   };
 }
@@ -340,20 +341,18 @@ export function composeDeliveryDraft(
  * connected, or the lookup fails.
  */
 async function buildShippingLineForThread(
-  env: Env, store: TenantStore, cfg: TenantConfig, thread: ThreadRow, conversation: string, fetchImpl: typeof fetch
+  store: TenantStore, cfg: TenantConfig, thread: ThreadRow, conversation: string
 ): Promise<string | null> {
   try {
-    const repVid = env.INBOX_FREIGHT_REP_VID?.trim();
-    if (!repVid) return null; // feature dormant until a representative variant is configured
     const subject = thread.subject ?? '';
     if (!isShippingIntent(thread.primary_category, subject, conversation)) return null;
     const country = deriveDestinationCountry(conversation, subject, thread.contact_email);
-    if (!country || country === 'GB') return null; // unknown/ambiguous/home market → safe hedge
-    if (!(await store.getSupplierCredential('cj'))) return null;
-    const f = cjFetchFromEnv(env);
-    const vault = await Vault.fromMasterKey(env.PAWSCOUT_MASTER_KEY);
-    const cj = new CjClient(() => new CjTokenManager(store, vault, f).getToken(), f);
-    return await buildShippingLine(cj, cfg, country, countryLabel(country), repVid);
+    if (!country) return null; // ambiguous/unknown destination → safe hedge
+    const l = resolveLogistics(cfg.fulfil);
+    // Origin is CN for this catalog; the freshness-gated accessor returns null when
+    // the matrix row is missing or stale, so doorToDoorBand → null → safe hedge.
+    const route = await store.getLogisticsRoute('CN', country, l.stalenessHours);
+    return buildShippingLine(countryLabel(country), doorToDoorBand(route, l));
   } catch (e) {
     console.warn(`inbox shipping-line resolve failed for ${thread.id}: ${(e as Error).message}`);
     return null;
