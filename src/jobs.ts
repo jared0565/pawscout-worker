@@ -7,7 +7,7 @@ import { getExpansions, seedTerm } from './semantic/library';
 import { confirmAndImport, getCachedDetail, resolveCategory, reconcileAddonVisibility, reconcileHeroImages, reconcileDescriptions, reconcileCategories, setProductTags, ADDON_CATEGORY } from './proxy/import';
 import { AFFILIATE_ELIGIBLE_TAG, productAffiliateEligible, ensureAffiliateCollection } from './affiliate';
 import { sendReorderReminders } from './retention';
-import { enableTracking, getPrimaryLocationId, productInventoryItems, setInventoryQuantities, setSupplierMetafields, setDeliveryDaysMetafield, updateVariantPrices, updateVariantCosts, MAX_TRACKED_QTY } from './proxy/inventory';
+import { enableTracking, getPrimaryLocationId, productInventoryItems, setInventoryQuantities, setSupplierMetafields, updateVariantPrices, updateVariantCosts, MAX_TRACKED_QTY } from './proxy/inventory';
 import { retailPriceGbp, landedCostGbp } from './pricing';
 import { parseDaysRange, resolveLogistics, doorToDoorBand, formatBand } from './logistics';
 import { LOGISTICS_DESTINATIONS } from './inbox/freight';
@@ -571,19 +571,37 @@ export async function syncCjLogisticsRoutes(
   return { refreshed, failed };
 }
 
-/** Find a representative in-stock variant id for the freight probe (env override
- *  wins; else the first real variant from an available warehouse row). */
-async function findRepVid(store: TenantStore, envOverride?: string): Promise<string> {
+/**
+ * Pick a REPRESENTATIVE in-stock variant id for the freight probe (env override
+ * wins). A single arbitrary vid is unsafe: a bulky product routes via CJ's
+ * oversized channels (e.g. "Sensitive Over Length", ~10-18d) which overstate the
+ * typical small pet item (~4-9d). So sample several candidates, quote each CN->GB,
+ * and pick the MEDIAN transit — robust to both bulky and unusually-fast outliers.
+ */
+async function findRepresentativeVid(store: TenantStore, cj: Pick<CjClient, 'freightQuote'>, envOverride?: string): Promise<string> {
   const ov = envOverride?.trim();
   if (ov) return ov;
-  for (const detailJson of await store.sampleWarehouseDetails(10)) {
+  const candidates: string[] = [];
+  for (const detailJson of await store.sampleWarehouseDetails(8)) {
     try {
       const d = JSON.parse(detailJson) as CjDetail;
       const v = (d.variants ?? []).find((x) => x.vid && x.vid !== 'default');
-      if (v) return v.vid;
+      if (v) candidates.push(v.vid);
     } catch { /* skip a malformed row */ }
   }
-  return '';
+  if (!candidates.length) return '';
+  const scored: { vid: string; tmax: number }[] = [];
+  for (const vid of candidates) {
+    try {
+      const opts = await cj.freightQuote(vid, 'CN', 'GB', 1);
+      const range = parseDaysRange(opts[0]?.days);
+      if (range) scored.push({ vid, tmax: range.max });
+    } catch { /* skip a vid that won't quote */ }
+    await new Promise((r) => setTimeout(r, CJ_CALL_GAP_MS));
+  }
+  if (!scored.length) return candidates[0];
+  scored.sort((a, b) => a.tmax - b.tmax);
+  return scored[Math.floor((scored.length - 1) / 2)].vid; // lower-median: representative, not the bulky tail
 }
 
 /**
@@ -611,45 +629,12 @@ export async function syncCjLogistics(
     if (!reference) {
       reference = store;
       cj = new CjClient(() => new CjTokenManager(store, vault, f).getToken(), f);
-      repVid = await findRepVid(store, env.INBOX_FREIGHT_REP_VID);
+      repVid = await findRepresentativeVid(store, cj, env.INBOX_FREIGHT_REP_VID);
     }
   }
   if (!reference || !cj) { console.warn('logistics sync: no shop with CJ credentials; skipping'); return { refreshed: 0, failed: 0 }; }
   if (!repVid) { console.warn('logistics sync: no representative in-stock vid; skipping'); return { refreshed: 0, failed: 0 }; }
   return syncCjLogisticsRoutes(cjStores, reference, cj, repVid, LOGISTICS_DESTINATIONS, opts);
-}
-
-/**
- * On-demand logistics refresh (TEMPORARY ops trigger, 2026-06-21): populate the
- * matrix NOW, then front-load the per-product delivery_days metafields, so the
- * storefront shows the real synced estimate without waiting for the 04:17 cron.
- * Lean: the metafield pass reads D1 only (no CJ stock calls) and writes just
- * delivery_days; the nightly syncStoreInventory still refreshes stock/price/origin.
- * Origin is 'CN' (this catalog is CN-only — verified). Best-effort; never throws.
- */
-export async function runLogisticsRefresh(env: Env): Promise<{ refreshed: number; failed: number; metafields: number }> {
-  const matrix = await syncCjLogistics(env);
-  const vault = await Vault.fromMasterKey(env.PAWSCOUT_MASTER_KEY);
-  let metafields = 0;
-  for (const shop of await listActiveShops(env.DB)) {
-    const store = new TenantStore(env.DB, shop);
-    const tenant = await store.getTenant();
-    const cfg = await store.getConfig();
-    if (!tenant?.access_token_enc || !cfg) continue;
-    if (!(await store.getSupplierCredential('cj'))) continue;
-    const accessToken = await vault.open(tenant.dek_wrapped, tenant.access_token_enc);
-    const admin = makeAdminGraphql(shop, accessToken);
-    const l = resolveLogistics(cfg.fulfil);
-    const route = await store.getLogisticsRoute('CN', 'GB', l.stalenessHours);
-    const deliveryDays = formatBand(doorToDoorBand(route, l));
-    for (const link of await store.listImportedLinks(500)) {
-      if (!link.shopify_product_id) continue;
-      try { await setDeliveryDaysMetafield(admin, link.shopify_product_id, deliveryDays); metafields++; }
-      catch (e) { console.warn(`delivery_days write failed for ${link.cj_pid}: ${(e as Error).message}`); }
-    }
-  }
-  console.log(`logistics refresh: matrix ${matrix.refreshed} refreshed / ${matrix.failed} failed, ${metafields} metafields written`);
-  return { ...matrix, metafields };
 }
 
 /**

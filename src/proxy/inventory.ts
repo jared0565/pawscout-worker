@@ -159,16 +159,3 @@ export async function setSupplierMetafields(
   const errs = (data.metafieldsSet as { userErrors?: { message: string }[] } | undefined)?.userErrors ?? [];
   if (errs.length) throw new Error(errs.map((e) => e.message).join('; '));
 }
-
-/** Write ONLY supplier.delivery_days (lean, no stock/price dependency) — '' clears it.
- *  Used by the on-demand logistics refresh to front-load the PDP estimate. */
-export async function setDeliveryDaysMetafield(admin: AdminGraphql, productId: string, value: string): Promise<void> {
-  const data = await admin(
-    `mutation pawscoutDeliveryDays($metafields: [MetafieldsSetInput!]!) {
-      metafieldsSet(metafields: $metafields) { userErrors { field message } }
-    }`,
-    { metafields: [{ ownerId: productId, namespace: 'supplier', key: 'delivery_days', type: 'single_line_text_field', value }] }
-  );
-  const errs = (data.metafieldsSet as { userErrors?: { message: string }[] } | undefined)?.userErrors ?? [];
-  if (errs.length) throw new Error(errs.map((e) => e.message).join('; '));
-}

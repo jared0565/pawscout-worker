@@ -34,10 +34,6 @@ export interface Env {
   // a separate explicit go, and only after checkout marketing-consent capture
   // is confirmed (we send only to emailMarketingConsent SUBSCRIBED regardless).
   RETENTION_REORDER_ENABLED?: string;
-  // TEMPORARY ops trigger (2026-06-21): secret gating POST /api/admin/refresh-logistics,
-  // which runs the CJ logistics matrix sync + per-product delivery_days metafields on
-  // demand (so the owner doesn't wait for the 04:17 cron). Remove after the one-off run.
-  MAINT_TOKEN?: string;
 }
 
 export interface TenantRow {
