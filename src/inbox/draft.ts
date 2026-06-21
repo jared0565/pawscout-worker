@@ -7,8 +7,9 @@ import type { DraftResult } from './types';
 // Minimal baked-in store facts. The owner extends/overrides voice + specifics via
 // cfg.inbox.replyGuidance (which is appended verbatim below).
 const STORE_FACTS =
-  'Active Paw is a UK pet-care store (dogs and cats) that also ships internationally to most countries via our supplier network. ' +
-  'UK delivery is a few working days; international delivery times and costs vary by country. ' +
+  'Active Paw is a UK-based pet-care store (dogs and cats) that ships to the UK and internationally to most countries. ' +
+  'Orders are fulfilled through our supplier network — never claim or imply that Active Paw ships or dispatches from its own UK warehouse. ' +
+  'Most UK orders arrive in about 8-12 working days; some items held in a UK-based supplier warehouse arrive faster (around 2-4 working days). International delivery times and costs vary by country. ' +
   'Never tell a customer we cannot ship to their country — if you do not have the exact rate, say we can ship there and offer to confirm the cost and timeframe. ' +
   '30-day returns on unused items. Do not invent specific prices, delivery dates, discounts or stock promises.';
 
