@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseDaysRange, resolveLogistics, doorToDoorBand, formatBand, type LogisticsRoute } from '../src/logistics';
+import { parseDaysRange, resolveLogistics, doorToDoorBand, formatBand, bandFromQuote, type LogisticsRoute } from '../src/logistics';
 import { DEFAULT_LOGISTICS } from '../src/types';
 
 const route = (over: Partial<LogisticsRoute> = {}): LogisticsRoute => ({
@@ -72,6 +72,21 @@ describe('doorToDoorBand', () => {
     expect(band.max).toBeGreaterThanOrEqual(legacyCalendarArrival);
     // lower bound stays honest (>= pure transit min, not fabricated faster)
     expect(band.min).toBeGreaterThanOrEqual(route().transit_min!);
+  });
+});
+
+describe('bandFromQuote (per-product actual)', () => {
+  const L = DEFAULT_LOGISTICS;
+  it('builds a band from a CJ aging string (cross-border adds customs)', () => {
+    // transit 4-9 -> 2+4 .. 5+9+5+2 = {6, 21}
+    expect(bandFromQuote('4-9', 'CN', 'GB', L)).toEqual({ min: 6, max: 21 });
+    // a bulkier item's slower channel 10-18 -> {12, 30}
+    expect(bandFromQuote('10-18', 'CN', 'GB', L)).toEqual({ min: 12, max: 30 });
+  });
+  it('returns null on unparseable/empty aging (=> caller omits the figure)', () => {
+    expect(bandFromQuote('soon', 'CN', 'GB', L)).toBeNull();
+    expect(bandFromQuote('', 'CN', 'GB', L)).toBeNull();
+    expect(bandFromQuote(null, 'CN', 'GB', L)).toBeNull();
   });
 });
 

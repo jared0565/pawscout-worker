@@ -9,7 +9,7 @@ import { AFFILIATE_ELIGIBLE_TAG, productAffiliateEligible, ensureAffiliateCollec
 import { sendReorderReminders } from './retention';
 import { enableTracking, getPrimaryLocationId, productInventoryItems, setInventoryQuantities, setSupplierMetafields, updateVariantPrices, updateVariantCosts, MAX_TRACKED_QTY } from './proxy/inventory';
 import { retailPriceGbp, landedCostGbp } from './pricing';
-import { parseDaysRange, resolveLogistics, doorToDoorBand, formatBand } from './logistics';
+import { parseDaysRange, resolveLogistics, doorToDoorBand, formatBand, bandFromQuote } from './logistics';
 import { LOGISTICS_DESTINATIONS } from './inbox/freight';
 import type { CjDetail } from './cj';
 import { LlmClient, curateProduct, pickHeroImage, rewriteDescription, type Curation, type HeroPick } from './llm';
@@ -262,12 +262,27 @@ export async function syncStoreInventory(
         } catch (e) {
           console.warn(`delivery_days lookup failed for ${link.cj_pid}: ${(e as Error).message}`);
         }
+        // PER-PRODUCT ACTUAL estimate: quote THIS product's own cheapest freight (its
+        // own variant weight) -> the band shown at checkout. One extra CJ call/product;
+        // any failure leaves it '' (omitted -> checkout falls back to the representative).
+        let deliveryDaysActual = '';
+        const productVid = (detail?.variants ?? storedVariants).find((v) => v.vid && v.vid !== 'default')?.vid;
+        if (productVid) {
+          try {
+            await pause(CJ_CALL_GAP_MS);
+            const fe = await cj.freightEstimate(productVid, origin ?? 'CN', 'GB');
+            deliveryDaysActual = formatBand(bandFromQuote(fe?.days, origin ?? 'CN', 'GB', logiCfg));
+          } catch (e) {
+            console.warn(`actual freight quote failed for ${link.cj_pid}: ${(e as Error).message}`);
+          }
+        }
         await setSupplierMetafields(admin, link.shopify_product_id, {
           status: paused ? 'out_of_stock' : maxStock < cfg.floors.stockFloor * 2 ? 'low_stock' : 'available',
           qty: maxStock,
           checkedAt: new Date().toISOString(),
           origin,
-          deliveryDays
+          deliveryDays,
+          deliveryDaysActual
         });
         await store.setStockPaused(link.cj_pid, paused);
         await store.setWarehouseStock(link.cj_pid, maxStock, paused ? 'low_stock' : 'available');

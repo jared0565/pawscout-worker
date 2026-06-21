@@ -26,18 +26,26 @@ describe('setSupplierMetafields — delivery_days', () => {
     expect(c.valueOf('delivery_days')).toBe('6-21');
   });
 
-  it('writes an EMPTY string to CLEAR it (stale/missing => PDP static fallback)', async () => {
+  it('OMITS delivery_days when empty (Shopify rejects an empty value — never write "")', async () => {
     const c = captureAdmin();
     await setSupplierMetafields(c.admin, 'gid://p/1', { ...base, deliveryDays: '' });
-    expect(c.keys()).toContain('delivery_days');
-    expect(c.valueOf('delivery_days')).toBe('');
+    expect(c.keys()).not.toContain('delivery_days');
   });
 
-  it('OMITS the field entirely when deliveryDays is undefined (e.g. at import, pre-sync)', async () => {
+  it('OMITS delivery_days when undefined (e.g. at import, pre-sync)', async () => {
     const c = captureAdmin();
     await setSupplierMetafields(c.admin, 'gid://p/1', { ...base });
     expect(c.keys()).not.toContain('delivery_days');
-    // the established metafields are still written
     expect(c.keys()).toEqual(expect.arrayContaining(['name', 'status', 'available_qty', 'last_checked_at', 'origin']));
+  });
+
+  it('writes delivery_days_actual (per-product, for checkout) when provided, omits when empty', async () => {
+    const withActual = captureAdmin();
+    await setSupplierMetafields(withActual.admin, 'gid://p/1', { ...base, deliveryDaysActual: '12-30' });
+    expect(withActual.valueOf('delivery_days_actual')).toBe('12-30');
+
+    const empty = captureAdmin();
+    await setSupplierMetafields(empty.admin, 'gid://p/1', { ...base, deliveryDaysActual: '' });
+    expect(empty.keys()).not.toContain('delivery_days_actual');
   });
 });

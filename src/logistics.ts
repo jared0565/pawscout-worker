@@ -88,3 +88,15 @@ export function formatBand(band: DayRange | null): string {
   if (!band) return '';
   return band.min === band.max ? `${band.min}` : `${band.min}-${band.max}`;
 }
+
+/**
+ * Door-to-door band straight from a CJ freight quote's aging string — for the
+ * PER-PRODUCT "actual" estimate (quote the product's own variant). Null on an
+ * unparseable aging => caller omits the figure. Same conservative model as the
+ * matrix path (parse -> doorToDoorBand).
+ */
+export function bandFromQuote(aging: string | null | undefined, from: string, to: string, l: LogisticsConfig): DayRange | null {
+  const r = parseDaysRange(aging);
+  if (!r) return null;
+  return doorToDoorBand({ from_country: from, to_country: to, transit_min: r.min, transit_max: r.max, channel: '', aging_raw: aging ?? '', synced_at: '' }, l);
+}

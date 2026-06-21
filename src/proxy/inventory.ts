@@ -135,7 +135,7 @@ export async function setInventoryQuantities(
 export async function setSupplierMetafields(
   admin: AdminGraphql,
   productId: string,
-  m: { status: 'available' | 'low_stock' | 'out_of_stock'; qty: number; checkedAt: string; origin?: string; deliveryDays?: string }
+  m: { status: 'available' | 'low_stock' | 'out_of_stock'; qty: number; checkedAt: string; origin?: string; deliveryDays?: string; deliveryDaysActual?: string }
 ): Promise<void> {
   const fields = [
     { key: 'name', type: 'single_line_text_field', value: 'CJ' },
@@ -144,11 +144,14 @@ export async function setSupplierMetafields(
     { key: 'last_checked_at', type: 'date_time', value: m.checkedAt },
     // Dispatch origin country code — used to pick the per-product delivery estimate (no shipping-origin claim shown to the customer).
     ...(m.origin ? [{ key: 'origin', type: 'single_line_text_field', value: m.origin }] : []),
-    // Per-product order->door estimate (bare calendar-day range, e.g. "6-21") from the
-    // synced CJ logistics matrix; the theme renders it, falling back to its static
-    // window when blank. Omitted entirely when undefined (e.g. at import, pre-sync);
-    // an empty string deliberately CLEARS it (stale/missing => static fallback).
-    ...(m.deliveryDays !== undefined ? [{ key: 'delivery_days', type: 'single_line_text_field', value: m.deliveryDays }] : [])
+    // REPRESENTATIVE order->door estimate (shop display: PDP) from the synced matrix,
+    // bare calendar-day range e.g. "6-21". Written ONLY when non-empty — Shopify rejects
+    // an empty single_line_text_field (would throw), so a stale/missing band just leaves
+    // the last-good value (the theme falls back to its static window only when truly unset).
+    ...(m.deliveryDays ? [{ key: 'delivery_days', type: 'single_line_text_field', value: m.deliveryDays }] : []),
+    // PER-PRODUCT ACTUAL order->door estimate (this product's own freight) — surfaced at
+    // checkout via a line-item property. Same non-empty rule.
+    ...(m.deliveryDaysActual ? [{ key: 'delivery_days_actual', type: 'single_line_text_field', value: m.deliveryDaysActual }] : [])
   ];
   const data = await admin(
     `mutation pawscoutMetafields($metafields: [MetafieldsSetInput!]!) {
