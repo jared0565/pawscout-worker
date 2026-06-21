@@ -837,9 +837,14 @@ export class TenantStore {
     const lim = Math.min(Math.max(limit, 1), 200);
     let rs;
     if (status === 'open') {
-      // Default console view: hide processed threads (converted/closed/spam) so the
-      // list stays focused on conversations still needing attention as volume grows.
-      rs = await this.db.prepare(`SELECT * FROM inbox_threads WHERE shop = ?1 AND status NOT IN ('converted', 'closed', 'spam') ORDER BY last_message_at DESC LIMIT ${lim}`).bind(this.shop).all<ThreadRow>();
+      // Default console view = threads still needing the merchant's attention, i.e.
+      // ONLY new + needs_reply. awaiting_customer is excluded too: once a reply is
+      // sent the thread flips to awaiting_customer (send.ts) and must drop OFF this
+      // list (it's processed — the ball is in the customer's court). Excluding only
+      // converted/closed/spam left replied threads lingering here, which read as
+      // "still unprocessed". The merchant can still see them via the dedicated
+      // "Awaiting customer" filter.
+      rs = await this.db.prepare(`SELECT * FROM inbox_threads WHERE shop = ?1 AND status NOT IN ('awaiting_customer', 'converted', 'closed', 'spam') ORDER BY last_message_at DESC LIMIT ${lim}`).bind(this.shop).all<ThreadRow>();
     } else if (status) {
       rs = await this.db.prepare(`SELECT * FROM inbox_threads WHERE shop = ?1 AND status = ?2 ORDER BY last_message_at DESC LIMIT ${lim}`).bind(this.shop, status).all<ThreadRow>();
     } else {
@@ -860,6 +865,19 @@ export class TenantStore {
     await this.db
       .prepare(`UPDATE inbox_threads SET status = ?3, updated_at = ?4 WHERE shop = ?1 AND id = ?2`)
       .bind(this.shop, threadId, status, new Date().toISOString())
+      .run();
+  }
+
+  /**
+   * Add ONE label to a thread, non-destructively (keeps any existing labels). Used
+   * on send to auto-tag the thread by its classifier category so the merchant never
+   * has to set labels by hand. PRIMARY KEY (shop, thread_id, label) makes the
+   * INSERT OR IGNORE a no-op when the label is already present.
+   */
+  async addThreadLabel(threadId: string, label: string): Promise<void> {
+    await this.db
+      .prepare(`INSERT OR IGNORE INTO inbox_thread_labels (shop, thread_id, label) VALUES (?1, ?2, ?3)`)
+      .bind(this.shop, threadId, label)
       .run();
   }
 

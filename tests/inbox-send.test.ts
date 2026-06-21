@@ -58,4 +58,38 @@ describe('sendReply', () => {
     });
     expect(matched).toBe(tid); // matched via the round-tripped inbound id, NOT our outbound Message-ID
   });
+
+  const okFetch: typeof fetch = (async () => new Response(JSON.stringify({ id: 'em_1' }), { status: 200 })) as unknown as typeof fetch;
+
+  it('on send, auto-tags the thread with its classifier category (non-destructive) and flips status to awaiting_customer', async () => {
+    const s = new TenantStore(env.DB, 'c.myshopify.com');
+    await s.upsertContact({ email: 'jane@x.com', name: null, phone: null });
+    const tid = await s.createThread({ contactEmail: 'jane@x.com', subject: 'Q', subjectNorm: 'q', receivedAt: '2026-06-18T10:00:00Z', initialStatus: 'needs_reply' });
+    await s.setThreadClassification(tid, { status: 'needs_reply', primaryCategory: 'product-question', intentScore: 50, summary: null, classifiedAt: '2026-06-18T10:00:01Z' });
+    await s.insertInboundMessageIfNew({ threadId: tid, messageId: '<c1@x>', inReplyTo: null, references: [], from: 'jane@x.com', to: 'support@activepaw.co.uk', subject: 'Q', bodyText: 'q?', bodyHtml: null, headersJson: '{}', receivedAt: '2026-06-18T10:00:00Z' });
+    const did = await s.insertDraft({ threadId: tid, bodyText: 'A.', bodyHtml: '<p>A.</p>', confidence: 95, quotesPriceOrder: false, holdReasons: [], model: 'm', status: 'pending' });
+
+    const thread = (await s.getThreadWithMessages(tid))!.thread;
+    const draft = (await s.getDraft(did))!;
+    const r = await sendReply({ ...env, RESEND_API_KEY: 'rk' } as any, s, CFG, thread, draft, undefined, okFetch);
+    expect(r.ok).toBe(true);
+
+    const got = (await s.getThreadWithMessages(tid))!;
+    expect(got.thread.status).toBe('awaiting_customer');
+    expect(got.labels).toContain('product-question'); // auto-tagged by classifier category, no manual step
+  });
+
+  it('does NOT clobber an explicit converted/closed status on send (preserves the merchant choice)', async () => {
+    const s = new TenantStore(env.DB, 'd.myshopify.com');
+    await s.upsertContact({ email: 'jane@x.com', name: null, phone: null });
+    const tid = await s.createThread({ contactEmail: 'jane@x.com', subject: 'Q', subjectNorm: 'q', receivedAt: '2026-06-18T10:00:00Z', initialStatus: 'converted' });
+    await s.insertInboundMessageIfNew({ threadId: tid, messageId: '<c1@x>', inReplyTo: null, references: [], from: 'jane@x.com', to: 'support@activepaw.co.uk', subject: 'Q', bodyText: 'q?', bodyHtml: null, headersJson: '{}', receivedAt: '2026-06-18T10:00:00Z' });
+    const did = await s.insertDraft({ threadId: tid, bodyText: 'A.', bodyHtml: '<p>A.</p>', confidence: 95, quotesPriceOrder: false, holdReasons: [], model: 'm', status: 'pending' });
+
+    const thread = (await s.getThreadWithMessages(tid))!.thread;
+    const draft = (await s.getDraft(did))!;
+    const r = await sendReply({ ...env, RESEND_API_KEY: 'rk' } as any, s, CFG, thread, draft, undefined, okFetch);
+    expect(r.ok).toBe(true);
+    expect((await s.getThreadWithMessages(tid))!.thread.status).toBe('converted'); // not downgraded to awaiting_customer
+  });
 });

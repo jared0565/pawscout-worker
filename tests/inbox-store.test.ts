@@ -91,7 +91,7 @@ describe('inbox store', () => {
     expect(await new TenantStore(env.DB, 'b.myshopify.com').listThreads(null, 50)).toEqual([]);
   });
 
-  it("'open' filter hides processed threads (converted/closed/spam) but keeps active ones", async () => {
+  it("'open' filter shows ONLY threads needing attention (new + needs_reply); awaiting_customer + processed drop off", async () => {
     const store = s();
     await store.upsertContact({ email: 'jane@x.com', name: 'Jane', phone: null });
     const mk = (subject: string, status: ThreadStatus) => store.createThread({
@@ -106,15 +106,19 @@ describe('inbox store', () => {
     const spamId = await mk('f', 'spam');
 
     const openIds = (await store.listThreads('open', 50)).map((t) => t.id);
-    expect(openIds).toEqual(expect.arrayContaining([newId, replyId, awaitId]));
+    expect(openIds).toEqual(expect.arrayContaining([newId, replyId]));
+    // awaiting_customer is now EXCLUDED: once we've replied the thread is processed
+    // and must drop off the "Open (unprocessed)" view (the lingering-after-send bug).
+    expect(openIds).not.toContain(awaitId);
     expect(openIds).not.toContain(convId);
     expect(openIds).not.toContain(closedId);
     expect(openIds).not.toContain(spamId);
 
     // 'All' (null) still returns every thread, including processed ones.
     expect((await store.listThreads(null, 50)).length).toBe(6);
-    // An exact status still matches only that status.
+    // An exact status still matches only that status (incl. awaiting_customer).
     expect((await store.listThreads('converted', 50)).map((t) => t.id)).toEqual([convId]);
+    expect((await store.listThreads('awaiting_customer', 50)).map((t) => t.id)).toEqual([awaitId]);
   });
 
   it('redactContact erases all inbox PII for one email (case-insensitive) and leaves other contacts/shops intact', async () => {

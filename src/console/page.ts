@@ -108,7 +108,14 @@ export function consolePage(apiKey: string): Response {
   .inbox-row__who{font-weight:600;font-size:13px}
   .inbox-row__subj{font-size:13px}
   .inbox-row__meta{font-size:12px;color:var(--subdued)}
-  #inbox-thread{margin-top:14px}
+  #inbox-thread{margin-top:0}
+  #inbox-thread>hr:first-child{display:none}
+  .inbox-modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.62);z-index:1000;display:flex;align-items:flex-start;justify-content:center;padding:28px 16px;overflow-y:auto}
+  .inbox-modal-overlay[hidden]{display:none}
+  .inbox-modal__panel{position:relative;width:100%;max-width:680px;margin:auto;background:var(--surface);border:1px solid var(--border);border-radius:12px;box-shadow:0 16px 48px rgba(0,0,0,.5);padding:24px 24px 18px}
+  .inbox-modal__close{position:absolute;top:10px;right:12px;width:32px;height:32px;display:flex;align-items:center;justify-content:center;background:transparent;border:0;border-radius:8px;color:var(--subdued);font-size:18px;line-height:1;cursor:pointer}
+  .inbox-modal__close:hover{background:var(--code-bg);color:var(--ink)}
+  @media(max-width:620px){.inbox-modal-overlay{padding:0}.inbox-modal__panel{max-width:none;min-height:100vh;border-radius:0;border:0}}
   .inbox-msg{padding:10px 0;border-top:1px solid var(--border)}
   .inbox-msg:first-child{border-top:0}
   .inbox-msg__hdr{font-size:12px;color:var(--subdued);margin-bottom:4px}
@@ -387,8 +394,14 @@ export function consolePage(apiKey: string): Response {
       <button class="ghost" onclick="loadInboxThreads()">Refresh</button>
     </div>
     <div id="inbox-threads"><p class="muted">Loading…</p></div>
-    <div id="inbox-thread"></div>
     <p id="inboxmsg" class="msg muted"></p>
+    <div id="inbox-modal" class="inbox-modal-overlay" hidden>
+      <div class="inbox-modal__panel" role="dialog" aria-modal="true" aria-label="Email thread">
+        <button type="button" id="inbox-modal-close" class="inbox-modal__close" aria-label="Close">✕</button>
+        <div id="inbox-thread"></div>
+        <p id="inbox-modal-msg" class="msg muted"></p>
+      </div>
+    </div>
   </section>
 
   <section class="card inbox-settings">
@@ -993,18 +1006,36 @@ async function saveCollections(){
     else setMsg('mapmsg','Failed: '+(r.error||'unknown error'),'no');
   }catch(e){ setMsg('mapmsg','Failed: '+errText(e),'no'); }
 }
-// The thread detail (#inbox-thread) is moved to sit directly below the clicked
-// row so it opens in place instead of at the bottom of a long list. homeInboxDetail
-// returns it to its resting slot (just before #inboxmsg) so a list re-render never
-// destroys it via innerHTML=''.
-function homeInboxDetail(){ var d=el('inbox-thread'),a=el('inboxmsg'); if(d&&a&&a.parentNode) a.parentNode.insertBefore(d,a); }
-function inboxRowById(id){ var l=el('inbox-threads'); if(!l) return null; var rows=l.getElementsByClassName('inbox-row'); for(var i=0;i<rows.length;i++){ if(rows[i].getAttribute('data-id')===String(id)) return rows[i]; } return null; }
+// Thread detail opens in a focused MODAL overlay (#inbox-modal) so the merchant
+// works one thread at a time instead of scrolling a long accordion list. The detail
+// node (#inbox-thread) lives permanently inside the modal panel, so a list re-render
+// (innerHTML='') can never destroy it. Closing the modal reloads the list — so a
+// thread just processed (flipped to awaiting_customer on send) drops off the default
+// "Open (unprocessed)" view automatically.
+var inboxDraftOriginal=''; // draft body as rendered — used to warn on unsent edits before close
+function openInboxModal(){
+  var ov=el('inbox-modal'); if(!ov) return;
+  ov.hidden=false;
+  document.body.style.overflow='hidden';
+  var c=el('inbox-modal-close'); if(c) c.focus();
+}
+function closeInboxModal(force){
+  var ov=el('inbox-modal'); if(!ov||ov.hidden) return;
+  if(!force){
+    var ta=el('inbox-draft');
+    if(ta&&ta.value!==inboxDraftOriginal&&!confirm('Discard your unsent edits to this reply?')) return;
+  }
+  ov.hidden=true;
+  document.body.style.overflow='';
+  var d=el('inbox-thread'); if(d) d.innerHTML='';
+  setMsg('inbox-modal-msg','','muted');
+  inboxDraftOriginal='';
+  loadInboxThreads(); // refresh so a just-processed thread drops off the list
+}
 async function loadInboxThreads(){
-  homeInboxDetail();
   var status=(el('inbox-status-filter')&&el('inbox-status-filter').value)||'';
   var list=el('inbox-threads');
   if(list) list.innerHTML='<p class="muted">Loading…</p>';
-  el('inbox-thread').innerHTML='';
   setMsg('inboxmsg','','muted');
   try{
     var body=status?{status:status}:{};
@@ -1016,7 +1047,6 @@ async function loadInboxThreads(){
 function renderInboxThreads(threads){
   var list=el('inbox-threads');
   if(!list) return;
-  homeInboxDetail(); // pull the detail out of the list before we clear it
   if(!threads.length){ list.innerHTML='<p class="muted">No messages yet.</p>'; return; }
   list.innerHTML='';
   for(var i=0;i<threads.length;i++){
@@ -1034,11 +1064,9 @@ function renderInboxThreads(threads){
 }
 async function openInboxThread(id){
   var detail=el('inbox-thread');
-  var row=inboxRowById(id);
-  if(detail&&row) row.insertAdjacentElement('afterend',detail); // open right below the clicked row
-  else homeInboxDetail();
+  openInboxModal();
   if(detail) detail.innerHTML='<p class="muted">Loading thread…</p>';
-  setMsg('inboxmsg','','muted');
+  setMsg('inbox-modal-msg','','muted');
   try{
     var r=await api('/inbox/thread',{id:id});
     if(!r.ok){ if(detail) detail.innerHTML='<p class="msg no">'+esc(r.error||'Failed to load thread')+'</p>'; return; }
@@ -1049,6 +1077,7 @@ function renderInboxThread(thread,messages,labels,draft,invoice){
   var detail=el('inbox-thread');
   if(!detail) return;
   inboxInvoiceItems=[];
+  inboxDraftOriginal=(draft&&draft.body_text)||''; // baseline for the unsent-edits guard on close
   var msgHtml='<hr>';
   for(var i=0;i<messages.length;i++){
     var m=messages[i];
@@ -1176,22 +1205,24 @@ function renderInboxThread(thread,messages,labels,draft,invoice){
   }
 }
 async function approveDraftAction(draftId,body,threadId){
-  setMsg('inboxmsg','Sending…','muted');
+  setMsg('inbox-modal-msg','Sending…','muted');
   var appBtn=el('inbox-approve-btn'); if(appBtn) appBtn.disabled=true;
   try{
     var r=await api('/inbox/approve',{id:draftId,body:body});
-    if(r.ok){ openInboxThread(threadId); loadInboxThreads(); setMsg('inboxmsg','Sent ✓','ok'); }
-    else { setMsg('inboxmsg','Failed: '+esc(r.error||'unknown error'),'no'); if(appBtn) appBtn.disabled=false; }
-  }catch(e){ setMsg('inboxmsg','Failed: '+errText(e),'no'); if(appBtn&&el('inbox-approve-btn')) el('inbox-approve-btn').disabled=false; }
+    // On success: close the modal (force — the edits we just sent aren't "unsent"),
+    // which reloads the list so this now-processed thread drops off the Open view.
+    if(r.ok){ closeInboxModal(true); setMsg('inboxmsg','Sent ✓ — moved to Awaiting customer.','ok'); }
+    else { setMsg('inbox-modal-msg','Failed: '+esc(r.error||'unknown error'),'no'); if(appBtn) appBtn.disabled=false; }
+  }catch(e){ setMsg('inbox-modal-msg','Failed: '+errText(e),'no'); if(appBtn&&el('inbox-approve-btn')) el('inbox-approve-btn').disabled=false; }
 }
 async function regenerateDraftAction(draftId,threadId){
-  setMsg('inboxmsg','Regenerating…','muted');
+  setMsg('inbox-modal-msg','Regenerating…','muted');
   var regenBtn=el('inbox-regen-btn'); if(regenBtn) regenBtn.disabled=true; // disabled BEFORE the await — guards double-click
   try{
     var r=await api('/inbox/regenerate',{id:draftId});
-    if(r.ok){ openInboxThread(threadId); loadInboxThreads(); setMsg('inboxmsg','Regenerated ✓','ok'); }
-    else { setMsg('inboxmsg','Failed: '+esc(r.error||'unknown error'),'no'); if(regenBtn) regenBtn.disabled=false; }
-  }catch(e){ setMsg('inboxmsg','Failed: '+errText(e),'no'); if(regenBtn&&el('inbox-regen-btn')) el('inbox-regen-btn').disabled=false; }
+    if(r.ok){ openInboxThread(threadId); setMsg('inbox-modal-msg','Regenerated ✓','ok'); } // re-render in place; modal stays open
+    else { setMsg('inbox-modal-msg','Failed: '+esc(r.error||'unknown error'),'no'); if(regenBtn) regenBtn.disabled=false; }
+  }catch(e){ setMsg('inbox-modal-msg','Failed: '+errText(e),'no'); if(regenBtn&&el('inbox-regen-btn')) el('inbox-regen-btn').disabled=false; }
 }
 // --- Invoice catalog search ---
 // Uses POST (consistent with api()) — the route is /api/inbox/catalog, POST {q}.
@@ -1263,18 +1294,18 @@ async function buildInvoiceAction(threadId){
     if(!r.ok){ if(msgEl) setMsg('inbox-invoice-msg','Failed: '+esc(r.error||'unknown error'),'no'); if(btn) btn.disabled=false; return; }
     inboxInvoiceItems=[];
     openInboxThread(threadId);
-    setMsg('inboxmsg','Invoice sent ✓','ok');
+    setMsg('inbox-modal-msg','Invoice sent ✓','ok');
   }catch(e){ if(msgEl) setMsg('inbox-invoice-msg','Failed: '+errText(e),'no'); if(btn) btn.disabled=false; }
 }
 async function discardInvoiceAction(invoiceId,threadId){
-  setMsg('inboxmsg','Discarding invoice…','muted');
+  setMsg('inbox-modal-msg','Discarding invoice…','muted');
   var btn=el('inbox-invoice-discard-btn'); if(btn) btn.disabled=true;
   try{
     var r=await api('/inbox/invoice/discard',{invoiceId:invoiceId});
-    if(!r.ok){ setMsg('inboxmsg','Failed: '+esc(r.error||'unknown error'),'no'); if(btn) btn.disabled=false; return; }
+    if(!r.ok){ setMsg('inbox-modal-msg','Failed: '+esc(r.error||'unknown error'),'no'); if(btn) btn.disabled=false; return; }
     openInboxThread(threadId);
-    setMsg('inboxmsg','Invoice discarded.','muted');
-  }catch(e){ setMsg('inboxmsg','Failed: '+errText(e),'no'); if(btn) btn.disabled=false; }
+    setMsg('inbox-modal-msg','Invoice discarded.','muted');
+  }catch(e){ setMsg('inbox-modal-msg','Failed: '+errText(e),'no'); if(btn) btn.disabled=false; }
 }
 function showReconnectBanner(){
   var banner=el('inbox-reconnect-banner');
@@ -1286,26 +1317,26 @@ function showReconnectBanner(){
 }
 async function saveInboxStatus(id){
   var sel=el('inbox-status-sel');
-  if(!sel){ setMsg('inboxmsg','Status selector not found.','no'); return; }
+  if(!sel){ setMsg('inbox-modal-msg','Status selector not found.','no'); return; }
   var status=sel.value;
-  setMsg('inboxmsg','Saving status…','muted');
+  setMsg('inbox-modal-msg','Saving status…','muted');
   try{
     var r=await api('/inbox/status',{id:id,status:status});
-    if(r.ok){ setMsg('inboxmsg','Status updated to '+esc(status)+'.','ok'); }
-    else { setMsg('inboxmsg','Failed: '+esc(r.error||'unknown error'),'no'); }
-  }catch(e){ setMsg('inboxmsg','Failed: '+errText(e),'no'); }
+    if(r.ok){ setMsg('inbox-modal-msg','Status updated to '+esc(status)+'.','ok'); }
+    else { setMsg('inbox-modal-msg','Failed: '+esc(r.error||'unknown error'),'no'); }
+  }catch(e){ setMsg('inbox-modal-msg','Failed: '+errText(e),'no'); }
 }
 async function saveInboxLabels(id){
   var sel=el('inbox-label-sel');
-  if(!sel){ setMsg('inboxmsg','Label selector not found.','no'); return; }
+  if(!sel){ setMsg('inbox-modal-msg','Label selector not found.','no'); return; }
   var chosen=[];
   for(var i=0;i<sel.options.length;i++){ if(sel.options[i].selected) chosen.push(sel.options[i].value); }
-  setMsg('inboxmsg','Saving labels…','muted');
+  setMsg('inbox-modal-msg','Saving labels…','muted');
   try{
     var r=await api('/inbox/labels',{id:id,labels:chosen});
-    if(r.ok){ setMsg('inboxmsg','Labels saved.','ok'); }
-    else { setMsg('inboxmsg','Failed: '+esc(r.error||'unknown error'),'no'); }
-  }catch(e){ setMsg('inboxmsg','Failed: '+errText(e),'no'); }
+    if(r.ok){ setMsg('inbox-modal-msg','Labels saved.','ok'); }
+    else { setMsg('inbox-modal-msg','Failed: '+esc(r.error||'unknown error'),'no'); }
+  }catch(e){ setMsg('inbox-modal-msg','Failed: '+errText(e),'no'); }
 }
 var currentInboxCfg={enabled:true,labels:[]};
 function setReplyModeUI(on){
@@ -1375,8 +1406,15 @@ async function saveInboxSettings(){
     setMsg('inboxcfgmsg','Failed: '+esc(r.error||'unknown error'),'no'); return false;
   }catch(e){ setMsg('inboxcfgmsg','Failed: '+errText(e),'no'); return false; }
 }
+function wireInboxModal(){
+  var ov=el('inbox-modal');
+  if(ov) ov.addEventListener('click',function(e){ if(e.target===ov) closeInboxModal(); }); // backdrop click closes
+  var c=el('inbox-modal-close'); if(c) c.onclick=function(){ closeInboxModal(); };
+  document.addEventListener('keydown',function(e){ if(e.key==='Escape'){ var o=el('inbox-modal'); if(o&&!o.hidden) closeInboxModal(); } });
+}
 refresh();
 loadInsights();
+wireInboxModal();
 loadInboxThreads();
 loadInboxSettings();
 </script>

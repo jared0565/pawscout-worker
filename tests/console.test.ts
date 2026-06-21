@@ -21,14 +21,21 @@ describe('consolePage', () => {
     expect(html).toContain('id="inbox-threads"');
   });
 
-  it('opens the inbox thread detail inline (below the clicked row), not at the list bottom', async () => {
+  it('opens the inbox thread detail in a focused modal overlay (not an inline accordion)', async () => {
     const html = await consolePage('test-api-key').text();
     const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
-    // openInboxThread repositions the single detail element directly after the clicked row…
-    expect(scripts).toContain("row.insertAdjacentElement('afterend',detail)");
-    // …and homeInboxDetail/inboxRowById exist so a list re-render (innerHTML='') never destroys it.
-    expect(scripts).toContain('function homeInboxDetail(');
-    expect(scripts).toContain('function inboxRowById(');
+    // The detail node lives inside a modal overlay (#inbox-modal) that opens on row
+    // click and closes (reloading the list) so a processed thread drops off the view.
+    expect(html).toContain('id="inbox-modal"');
+    expect(html).toContain('id="inbox-thread"');
+    expect(html).toContain('id="inbox-modal-close"');
+    expect(scripts).toContain('function openInboxModal(');
+    expect(scripts).toContain('function closeInboxModal(');
+    expect(scripts).toContain('closeInboxModal(true)');     // approve+send force-closes (reloads list)
+    expect(scripts).toContain('loadInboxThreads()');        // close reloads so processed thread drops off
+    // The old inline-accordion plumbing is gone.
+    expect(scripts).not.toContain('function homeInboxDetail(');
+    expect(scripts).not.toContain("row.insertAdjacentElement('afterend',detail)");
   });
 
   it('uses Regenerate (LLM re-draft) and the old draft-Discard is fully removed', async () => {

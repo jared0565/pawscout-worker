@@ -1,6 +1,7 @@
 import type { Env, TenantConfig } from '../types';
 import type { TenantStore } from '../tenant-store';
 import type { ThreadRow, DraftRow } from './types';
+import { INBOX_LABELS } from './types';
 import { sendEmail } from '../email';
 import { renderReplyHtml } from './draft';
 import { defaultFetch } from '../safe-fetch';
@@ -34,6 +35,20 @@ export async function sendReply(
   const sentAt = new Date().toISOString();
   await store.insertOutboundMessage({ threadId: thread.id, messageId: r.messageId, from: 'support@activepaw.co.uk', to: thread.contact_email, subject: `Re: ${subject}`, bodyText, bodyHtml, sentAt });
   await store.setDraftStatus(draft.id, _cfg.inbox.autosend && bodyTextOverride === undefined ? 'auto_sent' : 'sent', { sentMessageId: r.messageId, sentAt });
-  await store.setThreadStatus(thread.id, 'awaiting_customer');
+  // Intelligent thread bookkeeping on send (HITL approve OR Auto):
+  //  - Status: a sent reply puts the ball in the customer's court → awaiting_customer.
+  //    Flip ONLY from the pre-reply states (new/needs_reply) so an explicit merchant
+  //    choice of converted/closed is never silently stomped by a follow-up send.
+  //  - Label: ensure the thread carries its classifier category as a label, so a
+  //    processed thread is auto-tagged without the merchant touching the label
+  //    control. primary_category is constrained to INBOX_LABELS by the classifier;
+  //    re-validate before writing so a stale/garbage value can't dirty the taxonomy.
+  if (thread.status === 'new' || thread.status === 'needs_reply') {
+    await store.setThreadStatus(thread.id, 'awaiting_customer');
+  }
+  const cat = thread.primary_category;
+  if (cat && (INBOX_LABELS as readonly string[]).includes(cat)) {
+    await store.addThreadLabel(thread.id, cat);
+  }
   return { ok: true };
 }
