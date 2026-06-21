@@ -111,7 +111,29 @@ export interface Fulfil {
   // alertEmail: owner address that gets an email each time an order is created in
   // CJ and is awaiting payment (so the owner can pay it ASAP). Empty = no email.
   alertEmail?: string;
+  // logistics: policy knobs for the synced CJ delivery-time matrix (door-to-door
+  // model). OPTIONAL + read via resolveLogistics() with per-field defaults — never
+  // rely on the one-level DEFAULT_FULFIL merge to fill a nested object.
+  logistics?: Partial<LogisticsConfig>;
 }
+
+/**
+ * Door-to-door delivery model for the synced CJ logistics matrix. CJ logisticAging
+ * is transit-only (calendar days); processing is CJ policy (~2-5d incl. sourced/POD)
+ * and customs/slack are conservative pads so the customer-facing band never
+ * under-promises. ALL values are CALENDAR days. See docs/superpowers/specs/
+ * 2026-06-21-cj-logistics-store-design.md.
+ */
+export interface LogisticsConfig {
+  processingDaysMin: number;
+  processingDaysMax: number;
+  customsDaysMax: number;   // applied only on cross-border routes (from !== to)
+  transitSlackDays: number; // outward pad on the upper bound
+  stalenessHours: number;   // a matrix row older than this reads as missing (hedge)
+}
+export const DEFAULT_LOGISTICS: LogisticsConfig = {
+  processingDaysMin: 2, processingDaysMax: 5, customsDaysMax: 5, transitSlackDays: 2, stalenessHours: 72,
+};
 
 export interface TenantConfig {
   collectionMap: Record<string, { handle: string; tag: string }>;
