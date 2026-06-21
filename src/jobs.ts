@@ -7,7 +7,7 @@ import { getExpansions, seedTerm } from './semantic/library';
 import { confirmAndImport, getCachedDetail, resolveCategory, reconcileAddonVisibility, reconcileHeroImages, reconcileDescriptions, reconcileCategories, setProductTags, ADDON_CATEGORY } from './proxy/import';
 import { AFFILIATE_ELIGIBLE_TAG, productAffiliateEligible, ensureAffiliateCollection } from './affiliate';
 import { sendReorderReminders } from './retention';
-import { enableTracking, getPrimaryLocationId, productInventoryItems, setInventoryQuantities, setSupplierMetafields, updateVariantPrices, updateVariantCosts, MAX_TRACKED_QTY } from './proxy/inventory';
+import { enableTracking, getPrimaryLocationId, productInventoryItems, setInventoryQuantities, setSupplierMetafields, setDeliveryDaysMetafield, updateVariantPrices, updateVariantCosts, MAX_TRACKED_QTY } from './proxy/inventory';
 import { retailPriceGbp, landedCostGbp } from './pricing';
 import { parseDaysRange, resolveLogistics, doorToDoorBand, formatBand } from './logistics';
 import { LOGISTICS_DESTINATIONS } from './inbox/freight';
@@ -617,6 +617,39 @@ export async function syncCjLogistics(
   if (!reference || !cj) { console.warn('logistics sync: no shop with CJ credentials; skipping'); return { refreshed: 0, failed: 0 }; }
   if (!repVid) { console.warn('logistics sync: no representative in-stock vid; skipping'); return { refreshed: 0, failed: 0 }; }
   return syncCjLogisticsRoutes(cjStores, reference, cj, repVid, LOGISTICS_DESTINATIONS, opts);
+}
+
+/**
+ * On-demand logistics refresh (TEMPORARY ops trigger, 2026-06-21): populate the
+ * matrix NOW, then front-load the per-product delivery_days metafields, so the
+ * storefront shows the real synced estimate without waiting for the 04:17 cron.
+ * Lean: the metafield pass reads D1 only (no CJ stock calls) and writes just
+ * delivery_days; the nightly syncStoreInventory still refreshes stock/price/origin.
+ * Origin is 'CN' (this catalog is CN-only — verified). Best-effort; never throws.
+ */
+export async function runLogisticsRefresh(env: Env): Promise<{ refreshed: number; failed: number; metafields: number }> {
+  const matrix = await syncCjLogistics(env);
+  const vault = await Vault.fromMasterKey(env.PAWSCOUT_MASTER_KEY);
+  let metafields = 0;
+  for (const shop of await listActiveShops(env.DB)) {
+    const store = new TenantStore(env.DB, shop);
+    const tenant = await store.getTenant();
+    const cfg = await store.getConfig();
+    if (!tenant?.access_token_enc || !cfg) continue;
+    if (!(await store.getSupplierCredential('cj'))) continue;
+    const accessToken = await vault.open(tenant.dek_wrapped, tenant.access_token_enc);
+    const admin = makeAdminGraphql(shop, accessToken);
+    const l = resolveLogistics(cfg.fulfil);
+    const route = await store.getLogisticsRoute('CN', 'GB', l.stalenessHours);
+    const deliveryDays = formatBand(doorToDoorBand(route, l));
+    for (const link of await store.listImportedLinks(500)) {
+      if (!link.shopify_product_id) continue;
+      try { await setDeliveryDaysMetafield(admin, link.shopify_product_id, deliveryDays); metafields++; }
+      catch (e) { console.warn(`delivery_days write failed for ${link.cj_pid}: ${(e as Error).message}`); }
+    }
+  }
+  console.log(`logistics refresh: matrix ${matrix.refreshed} refreshed / ${matrix.failed} failed, ${metafields} metafields written`);
+  return { ...matrix, metafields };
 }
 
 /**

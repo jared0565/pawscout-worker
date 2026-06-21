@@ -27,7 +27,7 @@ import { searchBackfill, normalizeKeyword } from './proxy/search';
 import { LlmClient, classifyKeyword, curateProduct, pickHeroImage, rewriteDescription } from './llm';
 import { buildPreview, getDetailPreferWarehouse, curateDetailImages, confirmAndImport, reconcileAddonVisibility, reconcileHeroImages, reconcileDescriptions, reconcileCategories } from './proxy/import';
 import { makeAdminGraphql } from './shopify-admin';
-import { runDailyMaintenance, syncStoreInventory, refillCollections } from './jobs';
+import { runDailyMaintenance, syncStoreInventory, refillCollections, runLogisticsRefresh } from './jobs';
 import { runOrderPipeline, runOrderPipelineForShop } from './fulfil-run';
 import { parseOrderWebhook, validateOrder, FULFIL_GRACE_MINUTES } from './fulfil';
 import { attributePaidOrder } from './inbox/attribution';
@@ -250,6 +250,22 @@ app.post('/api/sync', async (c) => {
   } catch (e) {
     console.warn(`manual sync failed: ${(e as Error).message}`);
     return c.json({ ok: false, error: `Sync failed: ${(e as Error).message}` }, 500);
+  }
+});
+
+// TEMPORARY ops trigger (2026-06-21): run the CJ logistics matrix sync + per-product
+// delivery_days metafields on demand, so the storefront shows real synced estimates
+// without waiting for the 04:17 cron. Secret-gated (MAINT_TOKEN); awaited so the caller
+// gets the counts. REMOVE after the one-off run.
+app.post('/api/admin/refresh-logistics', async (c) => {
+  const expected = c.env.MAINT_TOKEN ?? '';
+  const token = c.req.header('X-Maint-Token') ?? '';
+  if (!expected || token !== expected) return c.json({ ok: false, error: 'unauthorized' }, 401);
+  try {
+    const r = await runLogisticsRefresh(c.env);
+    return c.json({ ok: true, ...r }, 200);
+  } catch (e) {
+    return c.json({ ok: false, error: (e as Error).message }, 500);
   }
 });
 
