@@ -9,7 +9,7 @@ import type { DraftResult } from './types';
 const STORE_FACTS =
   'Active Paw is a UK-based pet-care store (dogs and cats) that ships to the UK and internationally to most countries. ' +
   'Orders are fulfilled through our supplier network — never claim or imply that Active Paw ships or dispatches from its own UK warehouse. ' +
-  'Most UK orders arrive in about 8-12 working days, though some items ship faster (around 2-4 working days). International delivery times and costs vary by country. ' +
+  'Most UK orders arrive in about 8-12 working days from when the order is placed (covering preparation, dispatch and delivery). International delivery times and costs vary by country. ' +
   'Never tell a customer we cannot ship to their country — if you do not have the exact rate, say we can ship there and offer to confirm the cost and timeframe. ' +
   'Returns: 14 days to change your mind on unused items, and 30 days if an item arrives faulty, damaged, or incorrect. Do not invent specific prices, delivery dates, discounts or stock promises.';
 
