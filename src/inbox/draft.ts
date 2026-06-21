@@ -11,7 +11,7 @@ const STORE_FACTS =
   'Orders are fulfilled through our supplier network — never claim or imply that Active Paw ships or dispatches from its own UK warehouse. ' +
   'Most UK orders arrive in about 8-12 working days, though some items ship faster (around 2-4 working days). International delivery times and costs vary by country. ' +
   'Never tell a customer we cannot ship to their country — if you do not have the exact rate, say we can ship there and offer to confirm the cost and timeframe. ' +
-  '30-day returns on unused items. Do not invent specific prices, delivery dates, discounts or stock promises.';
+  'Returns: 14 days to change your mind on unused items, and 30 days if an item arrives faulty, damaged, or incorrect. Do not invent specific prices, delivery dates, discounts or stock promises.';
 
 function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
