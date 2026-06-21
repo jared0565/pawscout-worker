@@ -36,6 +36,14 @@ describe('consolePage', () => {
     // The old inline-accordion plumbing is gone.
     expect(scripts).not.toContain('function homeInboxDetail(');
     expect(scripts).not.toContain("row.insertAdjacentElement('afterend',detail)");
+    // Close TRIGGERS are wired at init — critical: awaiting_customer/no-draft threads
+    // have no Approve & Send button, so x/backdrop/Esc is their ONLY exit. Without
+    // this wiring the merchant would be trapped in the modal on exactly those threads.
+    expect(scripts).toContain('function wireInboxModal(');
+    expect(scripts).toContain('wireInboxModal()');          // invoked at init
+    expect(scripts).toContain("el('inbox-modal-close')");   // x button
+    expect(scripts).toContain('e.target===ov');             // backdrop click
+    expect(scripts).toContain("e.key==='Escape'");          // Esc key
   });
 
   it('uses Regenerate (LLM re-draft) and the old draft-Discard is fully removed', async () => {
