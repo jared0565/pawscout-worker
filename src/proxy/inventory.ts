@@ -142,7 +142,7 @@ export async function setSupplierMetafields(
     { key: 'status', type: 'single_line_text_field', value: m.status },
     { key: 'available_qty', type: 'number_integer', value: String(Math.max(0, Math.floor(m.qty))) },
     { key: 'last_checked_at', type: 'date_time', value: m.checkedAt },
-    // Dispatch origin country code — the theme's "Ships from UK" badge reads this.
+    // Dispatch origin country code — the theme reads this to show a faster delivery estimate for GB-stocked items (no shipping-origin claim shown to the customer).
     ...(m.origin ? [{ key: 'origin', type: 'single_line_text_field', value: m.origin }] : [])
   ];
   const data = await admin(
