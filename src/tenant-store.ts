@@ -1,4 +1,5 @@
 import { DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, DEFAULT_SEMANTIC, type TenantRow, type TenantConfig, type Fulfil } from './types';
+import type { LogisticsRoute } from './logistics';
 import { deriveModels } from './llm-migrate';
 import { DEFAULT_INBOX, type InboxConfig } from './inbox/types';
 import type { ContactRow, ThreadRow, MessageRow, ThreadStatus, DraftRow, DraftStatus, InvoiceRow, InvoiceLineItem, InvoiceStatus } from './inbox/types';
@@ -230,6 +231,7 @@ export class TenantStore {
       this.db.prepare(`DELETE FROM product_events WHERE shop = ?1`).bind(this.shop),
       this.db.prepare(`DELETE FROM product_links WHERE shop = ?1`).bind(this.shop),
       this.db.prepare(`DELETE FROM warehouse_products WHERE shop = ?1`).bind(this.shop),
+      this.db.prepare(`DELETE FROM cj_logistics WHERE shop = ?1`).bind(this.shop),
       this.db.prepare(`DELETE FROM search_cache WHERE shop = ?1`).bind(this.shop),
       this.db.prepare(`DELETE FROM search_log WHERE shop = ?1`).bind(this.shop),
       this.db.prepare(`DELETE FROM llm_usage WHERE shop = ?1`).bind(this.shop),
@@ -661,6 +663,78 @@ export class TenantStore {
       .bind(this.shop, cutoffIso)
       .all<WarehouseRow>();
     return rs.results ?? [];
+  }
+
+  // --- CJ logistics (synced delivery-time matrix) -------------------------------
+
+  /** Upsert a refreshed route row (a SUCCESSFUL quote): resets the failure counter. */
+  async upsertLogisticsRoute(r: {
+    from: string; to: string; channel: string;
+    transitMin: number | null; transitMax: number | null; agingRaw: string; repVid: string;
+  }): Promise<void> {
+    const now = new Date().toISOString();
+    await this.db
+      .prepare(
+        `INSERT INTO cj_logistics
+           (shop, from_country, to_country, channel, transit_min, transit_max, aging_raw, rep_vid, synced_at, consecutive_failures, last_error, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, NULL, ?9)
+         ON CONFLICT(shop, from_country, to_country) DO UPDATE SET
+           channel = ?4, transit_min = ?5, transit_max = ?6, aging_raw = ?7, rep_vid = ?8,
+           synced_at = ?9, consecutive_failures = 0, last_error = NULL`
+      )
+      .bind(this.shop, r.from, r.to, r.channel, r.transitMin, r.transitMax, r.agingRaw, r.repVid, now)
+      .run();
+  }
+
+  /** Record a failed refresh for an EXISTING route — keeps the last-good row, bumps the
+   *  failure counter. No-op when the route has never synced (nothing to preserve => hedge). */
+  async bumpLogisticsFailure(from: string, to: string, error: string): Promise<void> {
+    await this.db
+      .prepare(
+        `UPDATE cj_logistics SET consecutive_failures = consecutive_failures + 1, last_error = ?4
+         WHERE shop = ?1 AND from_country = ?2 AND to_country = ?3`
+      )
+      .bind(this.shop, from, to, error.slice(0, 300))
+      .run();
+  }
+
+  /**
+   * Freshness-gated route read — the SINGLE consumption chokepoint. Returns null
+   * (== "hedge") when the row is missing, older than stalenessHours, or has no
+   * parsed transit. 'stale == missing == null' holds identically for every caller.
+   */
+  async getLogisticsRoute(from: string, to: string, stalenessHours: number, now: number = Date.now()): Promise<LogisticsRoute | null> {
+    const row = await this.db
+      .prepare(
+        `SELECT from_country, to_country, channel, transit_min, transit_max, aging_raw, synced_at
+         FROM cj_logistics WHERE shop = ?1 AND from_country = ?2 AND to_country = ?3`
+      )
+      .bind(this.shop, from, to)
+      .first<LogisticsRoute>();
+    if (!row || row.transit_min == null) return null;
+    const synced = Date.parse(row.synced_at);
+    if (!Number.isFinite(synced) || synced < now - stalenessHours * 3600_000) return null;
+    return row;
+  }
+
+  /** (to_country, synced_at) for this origin — lets the sync refresh oldest-first
+   *  (so a budget-truncated run never starves the same tail). */
+  async logisticsSyncedFor(from: string): Promise<Map<string, string>> {
+    const rs = await this.db
+      .prepare(`SELECT to_country, synced_at FROM cj_logistics WHERE shop = ?1 AND from_country = ?2`)
+      .bind(this.shop, from)
+      .all<{ to_country: string; synced_at: string }>();
+    return new Map((rs.results ?? []).map((r) => [r.to_country, r.synced_at]));
+  }
+
+  /** Drop rows for destinations no longer in scope (keep set non-empty to avoid a full wipe). */
+  async pruneLogisticsRoutes(from: string, keepTo: string[]): Promise<void> {
+    if (!keepTo.length) return;
+    const ph = keepTo.map((_, i) => `?${i + 3}`).join(', ');
+    await this.db
+      .prepare(`DELETE FROM cj_logistics WHERE shop = ?1 AND from_country = ?2 AND to_country NOT IN (${ph})`)
+      .bind(this.shop, from, ...keepTo)
+      .run();
   }
 
   // --- W-INBOX: email CRM ---
