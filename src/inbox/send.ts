@@ -5,8 +5,7 @@ import { INBOX_LABELS } from './types';
 import { sendEmail } from '../email';
 import { renderReplyHtml } from './draft';
 import { defaultFetch } from '../safe-fetch';
-
-const FROM = 'Active Paw <support@activepaw.co.uk>';
+import { isPartnershipLane, resolveFromAddress } from './partnership';
 
 /** Send a drafted reply (HITL approve OR Auto). To = the contact; threads via a
  * controlled Message-ID we store; records outbound + flips draft/thread. */
@@ -26,8 +25,14 @@ export async function sendReply(
   const headers: Record<string, string> = {};
   if (lastInbound?.message_id) { headers['In-Reply-To'] = lastInbound.message_id; headers['References'] = lastInbound.message_id; }
 
+  // Sender identity: partnership-lane threads reply from sales@ ("Active Paw Partnerships");
+  // otherwise from the address the customer wrote to, else the support@ default.
+  const inboundToAddrs = (got?.messages ?? []).filter((m) => m.direction === 'inbound').map((m) => m.to_addr ?? '');
+  const partnershipLane = isPartnershipLane({ inboundToAddrs, declaredIntent: null, primaryCategory: thread.primary_category });
+  const from = resolveFromAddress({ partnershipLane, toAddr: lastInbound?.to_addr ?? null });
+
   const r = await sendEmail(env.RESEND_API_KEY, {
-    from: FROM, to: thread.contact_email, subject: `Re: ${subject}`.slice(0, 200),
+    from, to: thread.contact_email, subject: `Re: ${subject}`.slice(0, 200),
     text: bodyText, html: bodyHtml, headers
   }, fetchImpl);
   if (!r.ok) return { ok: false, error: r.error };

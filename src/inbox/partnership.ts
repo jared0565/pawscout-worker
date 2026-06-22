@@ -22,6 +22,15 @@ export function isPartnershipLane(opts: {
   return opts.inboundToAddrs.some((t) => (t ?? '').toLowerCase() === PARTNERSHIP_ADDRESS);
 }
 
+/** Sender identity: partnership lane → sales@; otherwise reply from the address the
+ * customer wrote to (if it's ours), else the support@ default. */
+export function resolveFromAddress(opts: { partnershipLane: boolean; toAddr: string | null }): string {
+  if (opts.partnershipLane) return PARTNERSHIP_FROM;
+  const to = (opts.toAddr ?? '').toLowerCase().trim();
+  if (to.endsWith('@activepaw.co.uk')) return `Active Paw <${to}>`;
+  return 'Active Paw <support@activepaw.co.uk>';
+}
+
 function gateDecline(gate: string, reason: string): ScreenVerdict {
   return { decision: 'decline', score: null, gate, signals: {}, reasons: [reason] };
 }
