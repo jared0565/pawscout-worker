@@ -2,7 +2,6 @@ import type { Env, TenantConfig } from '../types';
 import { TenantStore, listActiveShops } from '../tenant-store';
 import { LlmClient } from '../llm';
 import { resolveChain } from '../llm-resolve';
-import { sendEmail } from '../email';
 import { defaultFetch } from '../safe-fetch';
 import { parseAuthResults } from './gates';
 import { classifyEmail, decideDisposition } from './classify';
@@ -10,6 +9,7 @@ import { draftReply, renderReplyHtml } from './draft';
 import { autoSendDecision, mentionsMoney } from './autosend';
 import { sendReply } from './send';
 import { maybePartnershipDraft } from './partnership';
+import { maybeAlertOwner } from './alert';
 import { proposeInvoice } from './propose-invoice';
 import { adminForShop } from './invoice-routes';
 import { resolveLineRequest } from '../shopify-catalog';
@@ -22,11 +22,6 @@ import { isShippingIntent, deriveDestinationCountry, countryLabel, buildShipping
 import type { ThreadRow, InvoiceLineItem } from './types';
 
 const SWEEP_BATCH = 15;          // threads classified per shop per run
-const FROM = 'Active Paw <support@activepaw.co.uk>';
-
-function escapeHtml(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-}
 
 /** Defensive JSON parse for stored headers_json. Ingest slices to 8000 chars, so a
  * very-long header set can produce truncated invalid JSON. Degrade to {} (→ auth all
@@ -363,21 +358,4 @@ async function buildShippingLineForThread(
     console.warn(`inbox shipping-line resolve failed for ${thread.id}: ${(e as Error).message}`);
     return null;
   }
-}
-
-/** One short high-signal nudge to the owner's Gmail (never per-enquiry noise). */
-export async function maybeAlertOwner(env: Env, cfg: TenantConfig, shop: string, thread: ThreadRow, summary: string, category?: string, fetchImpl: typeof fetch = defaultFetch): Promise<void> {
-  const to = cfg.inbox.alertEmail || cfg.fulfil.alertEmail;
-  if (!to || !env.RESEND_API_KEY) return;
-  const consoleUrl = `${env.SHOPIFY_APP_URL}/app`;
-  const subject = category === 'affiliate'
-    ? `🤝 Affiliate enquiry: ${thread.contact_email}`
-    : `🔥 Hot lead: ${thread.contact_email}`;
-  await sendEmail(env.RESEND_API_KEY, {
-    from: FROM,
-    to,
-    subject,
-    text: `${summary}\n\nFrom: ${thread.contact_email}\nSubject: ${thread.subject ?? '(none)'}\n\nReview & reply in PawScout: ${consoleUrl}`,
-    html: `<p><strong>${escapeHtml(summary)}</strong></p><p>From: ${escapeHtml(thread.contact_email)}<br>Subject: ${escapeHtml(thread.subject ?? '(none)')}</p><p><a href="${escapeHtml(consoleUrl)}">Review &amp; reply in PawScout →</a></p>`
-  }, fetchImpl);
 }

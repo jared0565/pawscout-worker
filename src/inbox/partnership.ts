@@ -4,14 +4,19 @@ import type { TenantStore } from '../tenant-store';
 import type { Env, TenantConfig } from '../types';
 import { LlmClient } from '../llm';
 import { resolveChain } from '../llm-resolve';
-import { maybeAlertOwner } from './sweep';
+import { maybeAlertOwner } from './alert';
 
 export const PARTNERSHIP_ADDRESS = 'sales@activepaw.co.uk';
 export const PARTNERSHIP_FROM = 'Active Paw Partnerships <sales@activepaw.co.uk>';
 export const PASS_THRESHOLD = 8;       // score >= → send the application form (spec §6.4)
 export const AUTO_DECLINE_LOW = false; // dial: auto-decline score <= 3 (spec §6.4, default OFF)
 
-const PARTNERSHIP_CATEGORIES = new Set(['affiliate', 'wholesale-b2b']);
+// Lane = affiliate creators ONLY. wholesale-b2b is deliberately excluded: a bulk/trade
+// buyer ("wants to buy FROM us") is a different conversation from an affiliate ("wants to
+// earn FROM us") and must NOT receive the creator qualifying email (audience/engagement/
+// commission). Wholesale falls through to the generic drafter until a dedicated trade flow
+// exists. See spec §8.1 — narrowed from the spec's affiliate+wholesale on review.
+const PARTNERSHIP_CATEGORIES = new Set(['affiliate']);
 
 /** Three converging on-ramps (OR). Declared intent reinforces but never overrides
  * the classifier; this is purely a routing signal. */
