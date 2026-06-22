@@ -15,11 +15,12 @@ function fakeLlm(content: unknown): LlmClient {
   return new LlmClient({ openrouter: 'k' }, f);
 }
 
-/** Captures the OpenRouter request body so tests can inspect the system prompt. */
-function capturingLlm(content: unknown, sink: { system?: string }): LlmClient {
+/** Captures the OpenRouter request body so tests can inspect the system + user prompt. */
+function capturingLlm(content: unknown, sink: { system?: string; user?: string }): LlmClient {
   const f = (async (_url: RequestInfo | URL, init?: RequestInit) => {
     const body = JSON.parse(String(init?.body ?? '{}')) as { messages?: { role: string; content: string }[] };
     sink.system = body.messages?.find((m) => m.role === 'system')?.content ?? '';
+    sink.user = body.messages?.find((m) => m.role === 'user')?.content ?? '';
     return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(content) } }], usage: { cost: 0.0001 } }), { status: 200 });
   }) as unknown as typeof fetch;
   return new LlmClient({ openrouter: 'k' }, f);
@@ -67,6 +68,29 @@ describe('draftReply', () => {
     const llm = capturingLlm({ bodyText: 'Hi there.', confidence: 85, quotesPriceOrOrder: false }, sink);
     await draftReply(llm, store, CFG, { subject: 's', conversation: 'b', category: 'other' });
     expect(sink.system).not.toMatch(/appended to your reply automatically/i);
+  });
+
+  it('grounds the reply to the customer\'s latest message (multi-turn: answer the new topic, not a stale earlier turn)', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const sink: { system?: string; user?: string } = {};
+    const llm = capturingLlm({ bodyText: 'X', confidence: 80, quotesPriceOrOrder: false }, sink);
+    await draftReply(llm, store, CFG, {
+      subject: 'Quick question',
+      conversation: 'How long have you been running the store?\n\n---\n\nDo you ship to the United States, and how long to NYC?',
+      latestMessage: 'Do you ship to the United States, and how long to NYC?',
+      category: 'lead'
+    });
+    expect(sink.system).toMatch(/MOST RECENT message/i);                       // grounding instruction present
+    const u = JSON.parse(sink.user ?? '{}');
+    expect(u.latestMessage).toContain('how long to NYC');                       // latest message passed as its own field
+  });
+
+  it('omits the latest-message grounding instruction when no latestMessage is provided', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const sink: { system?: string; user?: string } = {};
+    const llm = capturingLlm({ bodyText: 'Y', confidence: 80, quotesPriceOrOrder: false }, sink);
+    await draftReply(llm, store, CFG, { subject: 's', conversation: 'b', category: 'other' });
+    expect(sink.system).not.toMatch(/MOST RECENT message/i);
   });
 
   it('defers the sign-off to the owner guidance instead of forcing "no signature"', async () => {

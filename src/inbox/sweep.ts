@@ -265,19 +265,24 @@ export async function composeDraftForThread(
   const partnership = await maybePartnershipDraft(env, store, cfg, thread, got, fetchImpl);
   if (partnership) return partnership;
 
-  const conversation = got.messages.filter((m) => m.direction === 'inbound').map((m) => m.body_text ?? '').join('\n\n---\n\n');
+  const inbound = got.messages.filter((m) => m.direction === 'inbound');
+  const conversation = inbound.map((m) => m.body_text ?? '').join('\n\n---\n\n');
+  // The customer's LATEST inbound (messages are ASC by received_at) — the drafter and the
+  // freight line both ground to this so a multi-turn thread answers what they JUST asked,
+  // not a stale earlier turn or a now-irrelevant first classification.
+  const latestInbound = inbound.length ? (inbound[inbound.length - 1].body_text ?? '') : '';
 
   // Freight-grounded delivery line: when the customer asks about shipping to a
   // confidently-derived destination, read the SYNCED CJ logistics matrix from D1
   // (no live CJ call) and append a time-only line deterministically (the LLM never
   // emits the figure). Resilient — a missing/stale row or ambiguous destination
   // leaves shippingLine null and the drafter keeps its safe hedge.
-  const shippingLine = await buildShippingLineForThread(store, cfg, thread, conversation);
+  const shippingLine = await buildShippingLineForThread(store, cfg, thread, conversation, latestInbound);
 
   const llm = new LlmClient({ openrouter: env.OPENROUTER_API_KEY, openai: env.OPENAI_API_KEY }, fetchImpl);
   const contact = await store.getContactByEmail(thread.contact_email);
   const draft = await draftReply(llm, store, cfg, {
-    subject: thread.subject ?? '', conversation, category: thread.primary_category ?? 'other',
+    subject: thread.subject ?? '', conversation, latestMessage: latestInbound, category: thread.primary_category ?? 'other',
     shippingHandledSeparately: !!shippingLine, customerName: contact?.name ?? null
   });
   if (!draft) return null; // degrade: retry next sweep
@@ -341,12 +346,18 @@ export function composeDeliveryDraft(
  * enquiry isn't shipping-related, the destination is ambiguous/GB, CJ isn't
  * connected, or the lookup fails.
  */
-async function buildShippingLineForThread(
-  store: TenantStore, cfg: TenantConfig, thread: ThreadRow, conversation: string
+export async function buildShippingLineForThread(
+  store: TenantStore, cfg: TenantConfig, thread: ThreadRow, conversation: string, latestMessage: string
 ): Promise<string | null> {
   try {
     const subject = thread.subject ?? '';
-    if (!isShippingIntent(thread.primary_category, subject, conversation)) return null;
+    // Gate on the customer's LATEST message ONLY: append a delivery line solely when they
+    // are asking about shipping right now. The thread's category/subject can be stale (a
+    // shipping-classified thread that has since pivoted to another topic), which previously
+    // stapled an irrelevant delivery line onto an off-topic reply. Pass null category + ''
+    // subject so the decision rests purely on the latest inbound body.
+    if (!isShippingIntent(null, '', latestMessage)) return null;
+    // Destination may have been named in an earlier turn, so derive it from the full thread.
     const country = deriveDestinationCountry(conversation, subject, thread.contact_email);
     if (!country) return null; // ambiguous/unknown destination → safe hedge
     const l = resolveLogistics(cfg.fulfil);
