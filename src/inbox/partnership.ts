@@ -216,6 +216,21 @@ export async function maybePartnershipDraft(
 
   // Their answers came back (thread re-opened on reply) → score and route.
   if (applicant.stage === 'screen_sent') {
+    // Premature-scoring guard: the stage is set when the qualifying email is DRAFTED,
+    // but that draft is HITL and may not have been sent. If a follow-up arrives before
+    // the owner approves it, ingest supersedes the pending draft and reopens the thread —
+    // without this guard we'd score the original pitch (no answers) and likely draft a
+    // decline, declining a real applicant who was never actually asked. Only score once
+    // the qualifying email genuinely went out (an outbound exists); otherwise re-issue it.
+    const askedAlready = got.messages.some((m) => m.direction === 'outbound');
+    if (!askedAlready) {
+      const body = buildQualifyingEmail(name);
+      const draftId = await store.insertDraft({
+        threadId: thread.id, bodyText: body, bodyHtml: renderReplyHtml(body),
+        confidence: null, quotesPriceOrder: false, holdReasons: [], model: 'partnership-screen', status: 'pending',
+      });
+      return { draftId, send: false };
+    }
     const conversation = got.messages.filter((m) => m.direction === 'inbound').map((m) => m.body_text ?? '').join('\n\n---\n\n');
     const llm = new LlmClient({ openrouter: env.OPENROUTER_API_KEY, openai: env.OPENAI_API_KEY }, _fetchImpl);
     const facts = await extractScreenFacts(llm, store, cfg, conversation);
