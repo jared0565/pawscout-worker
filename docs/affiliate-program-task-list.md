@@ -56,7 +56,7 @@
 |---|---|---|---|---|---|
 | 3.1 | Recruit **5–10 UK pet content/creator partners**; decline coupon/cashback + cold commission pitches (incl. the inbox ones) | OPS | Phase 2 | Roster onboarded + manually vetted | ruleset Part A |
 | 3.2 | **Seeding gated on verified permanent delivery** (no further gift/commission until prior post confirmed) | OPS | 3.1 | Seeding ledger live; no un-delivered gifts outstanding | ruleset D#9, E.1 |
-| 3.3 | Pilot promotes **UK-warehouse fast-delivery SKUs / bundles** (the differentiation reviewers need) | OPS | 1.2, 3.1 | Pilot SKUs are allowlisted + fast-ship | analysis §3 |
+| 3.3 | Pilot promotes **exclusive bundles / value sets** (the differentiation reviewers need — creator audience + bundle, **NOT** a delivery-speed / UK-dispatch claim) | OPS | 1.2, 3.1 | Pilot SKUs are allowlisted | analysis §3, ruleset E.11 |
 
 **Gate:** ≥4 weeks of pilot data on net-new customers.
 

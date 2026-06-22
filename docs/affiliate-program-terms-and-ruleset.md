@@ -84,6 +84,7 @@
 8. **Validation period + clawback** apply to all commissions; refunded/cancelled/disputed orders earn nothing. Clawback reaches **held/unvested commission only** (not already-paid sums) to stay within UK penalty/unfair-terms law. 🛡️
 9. **No customer rebating/kickback:** the affiliate must not pass back any commission, cash, or incentive to purchasers (a private rebate recreates a cashback portal inside the program). Breach → clawback + termination. 🛡️ *closes the "use my code, I'll PayPal you £5 back" loophole*
 10. **No unauthorised use of brand name, logo, or look-alike domains.**
+11. **No false UK-dispatch / origin claims:** affiliates must not state or imply that Active Paw ships, dispatches, holds stock, or manufactures **in the UK**, nor quote UK-style delivery speeds (e.g. "next-day", "2–4 day UK"). Products are fulfilled by our supplier from outside the UK (China; ≈8–15-day transit). Approved framing: "ships internationally" / "delivered to your door"; **prohibited:** "UK dispatch", "sent from our UK warehouse", "UK stock", "UK fast delivery". Breach → commission void + removal. 🛡️ *(Governing rule — customer-facing claims must be real & defensible. Only a specific SKU **verified CJ-UK-warehoused at source** may carry a narrow per-SKU fast-UK claim — never a blanket program framing.)*
 
 ---
 
