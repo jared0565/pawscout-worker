@@ -1,7 +1,7 @@
-import type { ScreenFacts, ScreenVerdict } from './types';
-import { applySalutation } from './draft';
+import type { ScreenFacts, ScreenVerdict, ThreadRow, MessageRow } from './types';
+import { applySalutation, renderReplyHtml } from './draft';
 import type { TenantStore } from '../tenant-store';
-import type { TenantConfig } from '../types';
+import type { Env, TenantConfig } from '../types';
 import type { LlmClient } from '../llm';
 import { resolveChain } from '../llm-resolve';
 
@@ -184,4 +184,35 @@ export async function extractScreenFacts(
   if (!result.ok) { console.warn(`partnership extract failed: ${result.error}`); return null; }
   await store.logLlmUsage('partnership-screen', result.usage.model, result.usage.promptTokens, result.usage.completionTokens, result.usage.costUsd);
   return result.value;
+}
+
+/** Partnership-funnel intercept. Returns a draft result when it handles the thread,
+ * or null when the thread is NOT a partnership lane (caller runs the generic drafter).
+ * Phase-1: first-touch → qualifying email. (Scoring branch added in Task 8.) */
+export async function maybePartnershipDraft(
+  env: Env, store: TenantStore, cfg: TenantConfig, thread: ThreadRow,
+  got: { thread: ThreadRow; messages: MessageRow[]; labels: string[] },
+  _fetchImpl: typeof fetch
+): Promise<{ draftId: string; send: boolean } | null> {
+  const inboundToAddrs = got.messages.filter((m) => m.direction === 'inbound').map((m) => m.to_addr ?? '');
+  const applicant = await store.getApplicantByThread(thread.id);
+  const declaredIntent = applicant?.declared_intent ?? null;
+  if (!isPartnershipLane({ inboundToAddrs, declaredIntent, primaryCategory: thread.primary_category })) return null;
+
+  const contact = await store.getContactByEmail(thread.contact_email);
+  const name = contact?.name ?? null;
+
+  // First touch: send the qualifying email, record the applicant.
+  if (!applicant) {
+    const body = buildQualifyingEmail(name);
+    const draftId = await store.insertDraft({
+      threadId: thread.id, bodyText: body, bodyHtml: renderReplyHtml(body),
+      confidence: null, quotesPriceOrder: false, holdReasons: [], model: 'partnership-screen', status: 'pending',
+    });
+    await store.upsertApplicant({ threadId: thread.id, contactEmail: thread.contact_email, stage: 'screen_sent' });
+    return { draftId, send: false };
+  }
+
+  // Later stages handled in Task 8; for now fall through to the generic drafter.
+  return null;
 }

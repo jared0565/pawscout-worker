@@ -9,6 +9,7 @@ import { classifyEmail, decideDisposition } from './classify';
 import { draftReply, renderReplyHtml } from './draft';
 import { autoSendDecision, mentionsMoney } from './autosend';
 import { sendReply } from './send';
+import { maybePartnershipDraft } from './partnership';
 import { proposeInvoice } from './propose-invoice';
 import { adminForShop } from './invoice-routes';
 import { resolveLineRequest } from '../shopify-catalog';
@@ -264,6 +265,11 @@ export async function composeDraftForThread(
 ): Promise<{ draftId: string; send: boolean } | null> {
   const got = await store.getThreadWithMessages(thread.id);
   if (!got) return null;
+
+  // Partnership/affiliate funnel intercept — supersedes the generic drafter for lane threads.
+  const partnership = await maybePartnershipDraft(env, store, cfg, thread, got, fetchImpl);
+  if (partnership) return partnership;
+
   const conversation = got.messages.filter((m) => m.direction === 'inbound').map((m) => m.body_text ?? '').join('\n\n---\n\n');
 
   // Freight-grounded delivery line: when the customer asks about shipping to a
