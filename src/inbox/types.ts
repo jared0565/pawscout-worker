@@ -98,3 +98,36 @@ export interface MessageRow {
   body_text: string | null; body_html: string | null; headers_json: string | null;
   received_at: string; created_at: string;
 }
+
+// --- Affiliate inbound gating (Phase 1) ---
+export type PartnershipStage =
+  | 'screen_sent' | 'screen_answered' | 'passed_to_form' | 'declined' | 'escalated';
+
+/** Controlled-vocabulary facts the LLM extracts from an applicant's screen answers.
+ * Every field is an enum or a string[] so the deterministic scorer can map it. */
+export interface ScreenFacts {
+  channelUrls: string[];
+  disqualifier: 'coupon_cashback' | 'brand_bidding' | 'prohibited_tactics' | 'none';
+  audienceRelevance: 'pet_uk' | 'partial' | 'off' | 'unknown';
+  acceptsTerms: 'yes' | 'no' | 'unclear';
+  engagement: 'plausible' | 'unclear' | 'implausible';
+  evidence: 'concrete' | 'vague' | 'none';
+  experience: 'strong' | 'some' | 'none';
+  method: 'content' | 'mixed' | 'discount' | 'unknown';
+  specificity: 'specific' | 'partial' | 'vague';
+}
+
+export interface ScreenVerdict {
+  decision: 'form' | 'escalate' | 'decline';
+  score: number | null;             // null when a hard gate tripped
+  gate: string | null;              // 'G1'..'G5' | 'LOW' | null
+  signals: Record<string, number>;  // per-signal 0-2 (empty when gated)
+  reasons: string[];
+}
+
+export interface ApplicantRow {
+  shop: string; id: string; thread_id: string; contact_email: string;
+  stage: PartnershipStage; declared_intent: string | null;
+  verdict_json: string | null; score: number | null;
+  created_at: string; updated_at: string;
+}

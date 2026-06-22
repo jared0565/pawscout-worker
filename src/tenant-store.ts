@@ -2,7 +2,7 @@ import { DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_F
 import type { LogisticsRoute } from './logistics';
 import { deriveModels } from './llm-migrate';
 import { DEFAULT_INBOX, type InboxConfig } from './inbox/types';
-import type { ContactRow, ThreadRow, MessageRow, ThreadStatus, DraftRow, DraftStatus, InvoiceRow, InvoiceLineItem, InvoiceStatus } from './inbox/types';
+import type { ContactRow, ThreadRow, MessageRow, ThreadStatus, DraftRow, DraftStatus, InvoiceRow, InvoiceLineItem, InvoiceStatus, ApplicantRow, PartnershipStage, ScreenVerdict } from './inbox/types';
 
 interface SupplierCredRow {
   shop: string; supplier: string; api_key_enc: string; label: string | null; validated_at: string | null; created_at: string;
@@ -967,6 +967,30 @@ export class TenantStore {
                 ORDER BY t.last_message_at ASC LIMIT ${Math.min(Math.max(limit, 1), 50)}`)
       .bind(this.shop).all<ThreadRow>();
     return rs.results ?? [];
+  }
+
+  // --- Affiliate inbound gating (Phase 1) ---
+  getApplicantByThread(threadId: string): Promise<ApplicantRow | null> {
+    return this.db.prepare(`SELECT * FROM affiliate_applicants WHERE shop = ?1 AND thread_id = ?2`)
+      .bind(this.shop, threadId).first<ApplicantRow>();
+  }
+
+  async upsertApplicant(a: { threadId: string; contactEmail: string; stage: PartnershipStage; declaredIntent?: string | null }): Promise<void> {
+    const now = new Date().toISOString();
+    await this.db
+      .prepare(`INSERT INTO affiliate_applicants (shop, id, thread_id, contact_email, stage, declared_intent, created_at, updated_at)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)
+                ON CONFLICT(shop, thread_id) DO UPDATE SET
+                  stage = ?5, declared_intent = COALESCE(?6, declared_intent), updated_at = ?7`)
+      .bind(this.shop, crypto.randomUUID(), a.threadId, a.contactEmail, a.stage, a.declaredIntent ?? null, now)
+      .run();
+  }
+
+  async setApplicantStage(threadId: string, stage: PartnershipStage, verdict: ScreenVerdict | null): Promise<void> {
+    await this.db
+      .prepare(`UPDATE affiliate_applicants SET stage = ?3, verdict_json = ?4, score = ?5, updated_at = ?6 WHERE shop = ?1 AND thread_id = ?2`)
+      .bind(this.shop, threadId, stage, verdict ? JSON.stringify(verdict) : null, verdict?.score ?? null, new Date().toISOString())
+      .run();
   }
 
   // --- W-INBOX-3: invoices ---
