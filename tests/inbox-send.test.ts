@@ -79,6 +79,24 @@ describe('sendReply', () => {
     expect(got.labels).toContain('product-question'); // auto-tagged by classifier category, no manual step
   });
 
+  it('sends from partnership identity when thread.declared_intent is partnerships, even if category is other and inbound arrived on support@', async () => {
+    const s = new TenantStore(env.DB, 'e.myshopify.com');
+    await s.upsertContact({ email: 'partner@brand.com', name: 'Sam', phone: null });
+    const tid = await s.createThread({ contactEmail: 'partner@brand.com', subject: 'Collab?', subjectNorm: 'collab?', receivedAt: '2026-06-20T10:00:00Z', initialStatus: 'needs_reply', declaredIntent: 'partnerships' });
+    await s.setThreadClassification(tid, { status: 'needs_reply', primaryCategory: 'other', intentScore: 30, summary: null, classifiedAt: '2026-06-20T10:00:01Z' });
+    await s.insertInboundMessageIfNew({ threadId: tid, messageId: '<partner-1@brand>', inReplyTo: null, references: [], from: 'partner@brand.com', to: 'support@activepaw.co.uk', subject: 'Collab?', bodyText: 'want to collab', bodyHtml: null, headersJson: '{}', receivedAt: '2026-06-20T10:00:00Z' });
+    const did = await s.insertDraft({ threadId: tid, bodyText: 'Thanks for reaching out.', bodyHtml: '<p>Thanks for reaching out.</p>', confidence: null, quotesPriceOrder: false, holdReasons: [], model: 'partnership-screen', status: 'pending' });
+
+    let sentFrom: any = null;
+    const fetchImpl: typeof fetch = (async (_u: unknown, init: RequestInit) => { const b = JSON.parse(init.body as string); sentFrom = b.from; return new Response(JSON.stringify({ id: 'em_1' }), { status: 200 }); }) as unknown as typeof fetch;
+
+    const thread = (await s.getThreadWithMessages(tid))!.thread;
+    const draft = (await s.getDraft(did))!;
+    const r = await sendReply({ ...env, RESEND_API_KEY: 'rk' } as any, s, CFG, thread, draft, undefined, fetchImpl);
+    expect(r.ok).toBe(true);
+    expect(sentFrom).toBe('Active Paw Partnerships <sales@activepaw.co.uk>');
+  });
+
   it('does NOT clobber an explicit converted/closed status on send (preserves the merchant choice)', async () => {
     const s = new TenantStore(env.DB, 'd.myshopify.com');
     await s.upsertContact({ email: 'jane@x.com', name: null, phone: null });
