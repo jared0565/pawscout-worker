@@ -84,6 +84,26 @@ describe('ingestParsed', () => {
     expect(await store.getPendingDraft(a.threadId)).toBeNull();        // superseded
   });
 
+  it('stores the contact-form declared intent on a new thread (Reason dropdown → declared_intent)', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const r = await ingestParsed(store, pe({
+      messageId: '<form-partner@shopify>', from: { email: 'no-reply@shopifyemail.com', name: 'Active Paw' },
+      subject: 'New customer message',
+      headers: { 'reply-to': 'Mia Creator <mia@creator.com>' },
+      text: 'Name: Mia Creator\nEmail: mia@creator.com\nReason: partnerships\n\nMessage:\nI run a dog TikTok and want to collaborate.'
+    }));
+    const got = await store.getThreadWithMessages(r.threadId);
+    expect(got?.thread.contact_email).toBe('mia@creator.com');
+    expect(got?.thread.declared_intent).toBe('partnerships');
+  });
+
+  it('leaves declared_intent NULL for a normal direct email (no form, no Reason)', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const r = await ingestParsed(store, pe({}));
+    const got = await store.getThreadWithMessages(r.threadId);
+    expect(got?.thread.declared_intent).toBeNull();
+  });
+
   it('does NOT re-open a spam or closed thread on a new inbound', async () => {
     const store = new TenantStore(env.DB, SHOP);
     const a = await ingestParsed(store, pe({ messageId: '<s1@x>' }));

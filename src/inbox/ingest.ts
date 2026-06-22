@@ -35,7 +35,8 @@ export async function ingestParsed(store: TenantStore, p: ParsedEmail): Promise<
   let threadId: string;
   if (!matchedThreadId) {
     threadId = await store.createThread({
-      contactEmail: email, subject: p.subject, subjectNorm, receivedAt: p.date, initialStatus
+      contactEmail: email, subject: p.subject, subjectNorm, receivedAt: p.date, initialStatus,
+      declaredIntent: form?.reason ?? null
     });
     // Automated/spam never enter the classify sweep — mark them classified now.
     if (automated || spam) {

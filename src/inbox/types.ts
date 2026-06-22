@@ -90,6 +90,7 @@ export interface ThreadRow {
   subject_norm: string | null; status: ThreadStatus; primary_category: string | null;
   intent_score: number | null; summary: string | null; classified_at: string | null;
   last_message_at: string; created_at: string; updated_at: string;
+  declared_intent: string | null;  // Phase 2: contact-form Reason dropdown (reinforces classifier)
 }
 export interface MessageRow {
   shop: string; id: string; thread_id: string; direction: 'inbound' | 'outbound';
