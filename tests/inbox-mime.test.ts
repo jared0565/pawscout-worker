@@ -59,4 +59,42 @@ describe('extractContactForm', () => {
     const p = await parseInbound(RAW);
     expect(extractContactForm(p)).toBeNull();
   });
+
+  it('parses a recognised Reason token from the notification body', async () => {
+    const p: Awaited<ReturnType<typeof parseInbound>> = {
+      messageId: '<n@shopify>', inReplyTo: null, references: [],
+      from: { email: 'no-reply@shopifyemail.com', name: 'Active Paw' },
+      to: ['contact@activepaw.co.uk'], subject: 'New customer message', date: '2026-06-22T10:00:00Z',
+      text: 'Name: Mia Creator\nEmail: mia@creator.com\nReason: partnerships\n\nMessage:\nI run a dog TikTok and want to collaborate.',
+      html: null, headers: { 'reply-to': 'Mia Creator <mia@creator.com>' }
+    };
+    const c = extractContactForm(p);
+    expect(c).not.toBeNull();
+    expect(c!.reason).toBe('partnerships');
+    expect(c!.email).toBe('mia@creator.com');
+  });
+
+  it('maps an unknown / general / empty / absent Reason to null (safe degradation)', async () => {
+    const base = {
+      messageId: '<n@shopify>', inReplyTo: null, references: [],
+      from: { email: 'no-reply@shopifyemail.com', name: 'Active Paw' },
+      to: ['contact@activepaw.co.uk'], subject: 'New customer message', date: '2026-06-22T10:00:00Z',
+      html: null as string | null, headers: { 'reply-to': 'Sam <sam@x.com>' }
+    };
+    expect(extractContactForm({ ...base, text: 'Email: sam@x.com\nReason: bananas\n\nMessage:\nhi' } as any)!.reason).toBeNull();
+    expect(extractContactForm({ ...base, text: 'Email: sam@x.com\nReason: general\n\nMessage:\nhi' } as any)!.reason).toBeNull();
+    expect(extractContactForm({ ...base, text: 'Email: sam@x.com\nReason: \n\nMessage:\nhi' } as any)!.reason).toBeNull();
+    expect(extractContactForm({ ...base, text: 'Email: sam@x.com\n\nMessage:\nhi' } as any)!.reason).toBeNull();
+  });
+
+  it('does not treat the word "reason" inside the message body as a declared intent', async () => {
+    const p = {
+      messageId: '<n@shopify>', inReplyTo: null, references: [],
+      from: { email: 'no-reply@shopifyemail.com', name: 'Active Paw' },
+      to: ['support@activepaw.co.uk'], subject: 'New customer message', date: '2026-06-22T10:00:00Z',
+      text: 'Email: bob@x.com\n\nMessage:\nThe reason I am writing is to ask about an order.',
+      html: null, headers: { 'reply-to': 'Bob <bob@x.com>' }
+    };
+    expect(extractContactForm(p as any)!.reason).toBeNull();
+  });
 });

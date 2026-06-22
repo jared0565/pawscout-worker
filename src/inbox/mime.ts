@@ -56,7 +56,7 @@ export async function parseInbound(raw: ArrayBuffer | Uint8Array | string): Prom
  * Returns null for ordinary mail so the caller uses `p.from` directly. */
 export function extractContactForm(
   p: ParsedEmail
-): { email: string; name: string | null; phone: string | null; body: string } | null {
+): { email: string; name: string | null; phone: string | null; body: string; reason: string | null } | null {
   const looksShopify = SHOPIFY_SENDER.test(p.from.email) ||
     /customer (message|enquiry|inquiry)|contact form/i.test(p.subject);
   if (!looksShopify) return null;
@@ -74,5 +74,16 @@ export function extractContactForm(
   const phone = p.text.match(/phone[:\s]+([+\d][\d\s()-]{5,})/i)?.[1]?.trim() ?? null;
   const body = p.text.match(/message[:\s]+([\s\S]+)$/i)?.[1]?.trim() ?? p.text;
 
-  return { email: replyEmail.toLowerCase(), name, phone, body };
+  // Phase 2: a self-declared intent from the contact-form "Reason" dropdown
+  // (contact[Reason]). Shopify lists custom fields in the notification body as
+  // "Reason: <token>". Anchor to a line start (deviates from spec §5's un-anchored
+  // /reason[:\s]*([a-z_]+)/i) so the word "reason" inside the message body cannot be
+  // mistaken for the field. Validate against the known token set; anything else
+  // (incl. "general", empty, absent, or any unknown string) → null, which degrades to
+  // exactly today's behaviour (no auto-routing) — never a regression.
+  const DECLARED_INTENTS = new Set(['order', 'partnerships', 'wholesale']);
+  const rawReason = (p.text.match(/^\s*reason\b[:\s]*([a-z_]+)/im)?.[1] ?? '').toLowerCase();
+  const reason = DECLARED_INTENTS.has(rawReason) ? rawReason : null;
+
+  return { email: replyEmail.toLowerCase(), name, phone, body, reason };
 }
