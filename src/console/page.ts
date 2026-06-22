@@ -1088,6 +1088,12 @@ function renderInboxThread(thread,messages,labels,draft,invoice,applicant){
       +(reasons?'<p class="muted" style="font-size:12px;margin:4px 0 0">'+reasons+'</p>':'')
       +'</div>';
   }
+  var declaredHtml='';
+  if(thread.declared_intent){
+    var DMAP={order:'Order help',partnerships:'Creator / affiliate partnership',wholesale:'Wholesale / bulk order'};
+    var dlabel=DMAP[thread.declared_intent]||thread.declared_intent;
+    declaredHtml='<p class="muted" style="margin:6px 0 0;font-size:12px">Declared: <strong>'+esc(dlabel)+'</strong></p>';
+  }
   var msgHtml='<hr>';
   for(var i=0;i<messages.length;i++){
     var m=messages[i];
@@ -1176,6 +1182,7 @@ function renderInboxThread(thread,messages,labels,draft,invoice,applicant){
     +'<strong>'+esc(thread.contact_email||'')+'</strong>'
     +' — <span class="muted">'+esc(thread.subject||'(no subject)')+'</span>'
     +(thread.summary?'<p class="muted" style="margin:6px 0 0;font-size:12px">'+esc(thread.summary)+'</p>':'')
+    +declaredHtml
     +msgHtml
     +partnerHtml
     +draftHtml

@@ -120,6 +120,17 @@ describe('consolePage', () => {
     expect(html).not.toContain('id="llmmodel"');
   });
 
+  it('surfaces the contact-form declared intent in the thread detail', async () => {
+    const html = await consolePage('test-api-key').text();
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+    // renderInboxThread maps the declared_intent token to a friendly label and shows a
+    // "Declared:" line when present — visible even on non-funnel order/wholesale threads
+    // where there is no Partnership screening panel. Reinforces the classifier.
+    expect(scripts).toContain('thread.declared_intent');
+    expect(scripts).toContain('Declared:');
+    expect(scripts).toContain('Creator / affiliate partnership');
+  });
+
   it('wraps every invoice field in esc() in the client render code', async () => {
     const html = await consolePage('test-api-key').text();
     // Verify that the renderInboxThread / invoice-card code wraps dynamic values in esc()
