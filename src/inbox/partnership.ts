@@ -2,8 +2,9 @@ import type { ScreenFacts, ScreenVerdict, ThreadRow, MessageRow } from './types'
 import { applySalutation, renderReplyHtml } from './draft';
 import type { TenantStore } from '../tenant-store';
 import type { Env, TenantConfig } from '../types';
-import type { LlmClient } from '../llm';
+import { LlmClient } from '../llm';
 import { resolveChain } from '../llm-resolve';
+import { maybeAlertOwner } from './sweep';
 
 export const PARTNERSHIP_ADDRESS = 'sales@activepaw.co.uk';
 export const PARTNERSHIP_FROM = 'Active Paw Partnerships <sales@activepaw.co.uk>';
@@ -213,6 +214,40 @@ export async function maybePartnershipDraft(
     return { draftId, send: false };
   }
 
-  // Later stages handled in Task 8; for now fall through to the generic drafter.
+  // Their answers came back (thread re-opened on reply) → score and route.
+  if (applicant.stage === 'screen_sent') {
+    const conversation = got.messages.filter((m) => m.direction === 'inbound').map((m) => m.body_text ?? '').join('\n\n---\n\n');
+    const llm = new LlmClient({ openrouter: env.OPENROUTER_API_KEY, openai: env.OPENAI_API_KEY }, _fetchImpl);
+    const facts = await extractScreenFacts(llm, store, cfg, conversation);
+
+    let body: string;
+    if (!facts) {
+      // Degrade: never guess. Escalate for owner review.
+      body = buildHoldingAck(name);
+      await store.setApplicantStage(thread.id, 'escalated', null);
+      await maybeAlertOwner(env, cfg, thread.shop, thread, 'Partnership applicant replied; auto-screen unavailable — please review.', 'affiliate', _fetchImpl);
+    } else {
+      const verdict = scoreScreen(facts, { passThreshold: PASS_THRESHOLD, autoDeclineLow: AUTO_DECLINE_LOW });
+      if (verdict.decision === 'decline') {
+        body = buildPartnershipDecline(name);
+        await store.setApplicantStage(thread.id, 'declined', verdict);
+      } else if (verdict.decision === 'form') {
+        body = buildFormInvite(name);
+        await store.setApplicantStage(thread.id, 'passed_to_form', verdict);
+        await maybeAlertOwner(env, cfg, thread.shop, thread, `Strong partnership candidate (score ${verdict.score}/12) — passed screening.`, 'affiliate', _fetchImpl);
+      } else {
+        body = buildHoldingAck(name);
+        await store.setApplicantStage(thread.id, 'escalated', verdict);
+        await maybeAlertOwner(env, cfg, thread.shop, thread, `Partnership applicant needs your review (score ${verdict.score}/12).`, 'affiliate', _fetchImpl);
+      }
+    }
+    const draftId = await store.insertDraft({
+      threadId: thread.id, bodyText: body, bodyHtml: renderReplyHtml(body),
+      confidence: null, quotesPriceOrder: false, holdReasons: [], model: 'partnership-screen', status: 'pending',
+    });
+    return { draftId, send: false };
+  }
+
+  // Any later stage → generic drafter (owner already steering).
   return null;
 }
