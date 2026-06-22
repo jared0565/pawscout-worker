@@ -201,8 +201,14 @@ export async function maybePartnershipDraft(
   _fetchImpl: typeof fetch
 ): Promise<{ draftId: string; send: boolean } | null> {
   const inboundToAddrs = got.messages.filter((m) => m.direction === 'inbound').map((m) => m.to_addr ?? '');
+  // Phase 2: declared intent lives at THREAD level (set from the contact-form Reason
+  // dropdown at ingest), so the funnel fires on FIRST touch — before any applicant row
+  // exists. Read got.thread (the fresh SELECT * row from getThreadWithMessages) rather
+  // than the param thread, so the column is always present even if a future caller passes
+  // a projected thread. Reinforces, never overrides, the classifier: primary_category is
+  // untouched, and isPartnershipLane only ORs the partnerships on-ramp in.
+  const declaredIntent = got.thread.declared_intent;
   const applicant = await store.getApplicantByThread(thread.id);
-  const declaredIntent = applicant?.declared_intent ?? null;
   if (!isPartnershipLane({ inboundToAddrs, declaredIntent, primaryCategory: thread.primary_category })) return null;
 
   const contact = await store.getContactByEmail(thread.contact_email);

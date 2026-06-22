@@ -41,3 +41,36 @@ describe('partnership first-touch (qualifying email)', () => {
     expect(await s.getApplicantByThread(tid)).toBeNull(); // intercept did NOT fire
   });
 });
+
+describe('partnership lane via declared intent (Phase 2 first-touch)', () => {
+  it('a declared partnerships form (non-affiliate category, no applicant) drafts the qualifying email on first touch', async () => {
+    const s = new TenantStore(env.DB, 'c.myshopify.com');
+    await s.upsertContact({ email: 'mia@creator.com', name: 'Mia', phone: null });
+    // Classified as something OTHER than affiliate, arrived on support@ (not sales@):
+    // the ONLY on-ramp is the declared intent.
+    const tid = await s.createThread({ contactEmail: 'mia@creator.com', subject: 'Hello', subjectNorm: 'hello', receivedAt: '2026-06-22T10:00:00Z', initialStatus: 'needs_reply', declaredIntent: 'partnerships' });
+    await s.setThreadClassification(tid, { status: 'needs_reply', primaryCategory: 'other', intentScore: 30, summary: null, classifiedAt: '2026-06-22T10:00:01Z' });
+    await s.insertInboundMessageIfNew({ threadId: tid, messageId: '<c1@x>', inReplyTo: null, references: [], from: 'mia@creator.com', to: 'support@activepaw.co.uk', subject: 'Hello', bodyText: 'I run a dog TikTok and want to collaborate.', bodyHtml: null, headersJson: '{}', receivedAt: '2026-06-22T10:00:00Z' });
+
+    const thread = (await s.getThreadWithMessages(tid))!.thread;
+    expect(await s.getApplicantByThread(tid)).toBeNull(); // no applicant row yet — genuinely first touch
+    const r = await composeDraftForThread({ ...env } as any, s, CFG, thread, noFetch);
+    expect(r).not.toBeNull();
+    const draft = await s.getPendingDraft(tid);
+    expect(draft!.body_text).toMatch(/where would you promote/i);
+    expect((await s.getApplicantByThread(tid))!.stage).toBe('screen_sent');
+  });
+
+  it('a declared wholesale form does NOT enter the funnel (generic drafter path)', async () => {
+    const s = new TenantStore(env.DB, 'd.myshopify.com');
+    await s.upsertContact({ email: 'buyer@trade.com', name: 'Buyer', phone: null });
+    const tid = await s.createThread({ contactEmail: 'buyer@trade.com', subject: 'Bulk order', subjectNorm: 'bulk order', receivedAt: '2026-06-22T10:00:00Z', initialStatus: 'needs_reply', declaredIntent: 'wholesale' });
+    await s.setThreadClassification(tid, { status: 'needs_reply', primaryCategory: 'other', intentScore: 30, summary: null, classifiedAt: '2026-06-22T10:00:01Z' });
+    await s.insertInboundMessageIfNew({ threadId: tid, messageId: '<d1@x>', inReplyTo: null, references: [], from: 'buyer@trade.com', to: 'support@activepaw.co.uk', subject: 'Bulk order', bodyText: 'Can I buy 500 units wholesale?', bodyHtml: null, headersJson: '{}', receivedAt: '2026-06-22T10:00:00Z' });
+    const thread = (await s.getThreadWithMessages(tid))!.thread;
+    const r = await composeDraftForThread({ ...env } as any, s, CFG, thread, noFetch);
+    // No LLM keys → generic drafter returns null; the partnership intercept must NOT fire.
+    expect(r).toBeNull();
+    expect(await s.getApplicantByThread(tid)).toBeNull();
+  });
+});
