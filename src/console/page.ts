@@ -1070,14 +1070,24 @@ async function openInboxThread(id){
   try{
     var r=await api('/inbox/thread',{id:id});
     if(!r.ok){ if(detail) detail.innerHTML='<p class="msg no">'+esc(r.error||'Failed to load thread')+'</p>'; return; }
-    renderInboxThread(r.thread,r.messages||[],r.labels||[],r.draft||null,r.invoice||null);
+    renderInboxThread(r.thread,r.messages||[],r.labels||[],r.draft||null,r.invoice||null,r.applicant||null);
   }catch(e){ if(detail) detail.innerHTML='<p class="msg no">'+esc(errText(e))+'</p>'; }
 }
-function renderInboxThread(thread,messages,labels,draft,invoice){
+function renderInboxThread(thread,messages,labels,draft,invoice,applicant){
   var detail=el('inbox-thread');
   if(!detail) return;
   inboxInvoiceItems=[];
   inboxDraftOriginal=(draft&&draft.body_text)||''; // baseline for the unsent-edits guard on close
+  var partnerHtml='';
+  if(applicant&&applicant.stage){
+    var v=null; try{ v=applicant.verdict_json?JSON.parse(applicant.verdict_json):null; }catch(e0){}
+    var reasons=(v&&v.reasons&&v.reasons.length)?esc(v.reasons.join(' · ')):'';
+    var sc=(applicant.score!=null)?(' · score '+esc(applicant.score)+'/12'):'';
+    partnerHtml='<div class="inbox-draft-section"><label style="font-weight:600;margin-bottom:6px">Partnership screening</label>'
+      +'<p style="font-size:13px;margin:0">Stage: <strong>'+esc(applicant.stage)+'</strong>'+sc+'</p>'
+      +(reasons?'<p class="muted" style="font-size:12px;margin:4px 0 0">'+reasons+'</p>':'')
+      +'</div>';
+  }
   var msgHtml='<hr>';
   for(var i=0;i<messages.length;i++){
     var m=messages[i];
@@ -1167,6 +1177,7 @@ function renderInboxThread(thread,messages,labels,draft,invoice){
     +' — <span class="muted">'+esc(thread.subject||'(no subject)')+'</span>'
     +(thread.summary?'<p class="muted" style="margin:6px 0 0;font-size:12px">'+esc(thread.summary)+'</p>':'')
     +msgHtml
+    +partnerHtml
     +draftHtml
     +invoiceHtml
     +catalogHtml

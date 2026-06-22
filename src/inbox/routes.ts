@@ -25,7 +25,8 @@ export async function getInboxThread(db: D1Database, shop: string, threadId: str
   if (!got) return { ok: false as const, error: 'Thread not found' };
   const draft = await store.getPendingDraft(threadId);
   const invoice = await store.getOpenInvoiceForThread(threadId);
-  return { ok: true as const, thread: got.thread, messages: got.messages, labels: got.labels, draft, invoice };
+  const applicant = await store.getApplicantByThread(threadId);
+  return { ok: true as const, thread: got.thread, messages: got.messages, labels: got.labels, draft, invoice, applicant };
 }
 
 export async function setInboxStatus(db: D1Database, shop: string, threadId: string, status: unknown) {

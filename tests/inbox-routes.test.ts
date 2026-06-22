@@ -117,3 +117,14 @@ describe('regenerateDraft', () => {
     expect(r.ok).toBe(false);
   });
 });
+
+describe('getInboxThread — affiliate applicant', () => {
+  it('includes the applicant record when present', async () => {
+    const s = new TenantStore(env.DB, 'applicant.myshopify.com');
+    const tid = await s.createThread({ contactEmail: 'kasim@x.com', subject: 'P', subjectNorm: 'p', receivedAt: '2026-06-22T10:00:00Z', initialStatus: 'needs_reply' });
+    await s.upsertApplicant({ threadId: tid, contactEmail: 'kasim@x.com', stage: 'screen_sent' });
+    const r = await getInboxThread(env.DB, 'applicant.myshopify.com', tid);
+    expect(r.ok).toBe(true);
+    expect((r as { applicant?: { stage: string } }).applicant?.stage).toBe('screen_sent');
+  });
+});

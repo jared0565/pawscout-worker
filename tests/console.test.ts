@@ -82,6 +82,14 @@ describe('consolePage', () => {
     expect(html).toContain('/inbox/catalog');
   });
 
+  it('renderInboxThread accepts + renders the partnership applicant panel', async () => {
+    const html = await consolePage('test-api-key').text();
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+    expect(scripts).toContain('function renderInboxThread(thread,messages,labels,draft,invoice,applicant)');
+    expect(scripts).toContain('Partnership screening');
+    expect(scripts).toContain('r.applicant||null');
+  });
+
   it('esc() renders a crafted <script> payload as HTML-escaped text (not raw tags)', async () => {
     // consolePage is a static template — all esc() calls run client-side inside the
     // <script> block, not at SSR time. We extract the esc() helper from the emitted
