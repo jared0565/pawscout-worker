@@ -32,7 +32,7 @@ function safeHeaders(json: string | null): Record<string, string> {
 }
 
 /** Cron entry (every 15 min): classify each shop's unclassified threads, set
- * status/labels, and alert the owner on a hot lead. LLM-gated and self-healing —
+ * status/labels, and alert the owner on a hot lead. LLM-gated and self-healing -
  * an unavailable LLM simply leaves threads pending for the next run. */
 export async function runInboxClassifySweep(env: Env, fetchImpl: typeof fetch = defaultFetch): Promise<void> {
   const llm = new LlmClient({ openrouter: env.OPENROUTER_API_KEY, openai: env.OPENAI_API_KEY }, fetchImpl);
@@ -91,7 +91,7 @@ async function classifyOne(env: Env, store: TenantStore, cfg: TenantConfig, shop
  * 7. If decision.create → createDraftOrder + sendInvoice. Else leave proposed for HITL.
  *    Return true.
  */
-// A failed auto-invoice backs off this long before the sweep re-proposes — stops a
+// A failed auto-invoice backs off this long before the sweep re-proposes - stops a
 // thread that keeps failing (catalog miss, send error, scope loss) from triggering a
 // fresh LLM call + draft attempt every 15-min sweep.
 const FAILED_INVOICE_BACKOFF_MS = 6 * 60 * 60 * 1000; // 6h
@@ -108,7 +108,7 @@ export async function proposeInvoiceOne(
 ): Promise<boolean> {
   try {
     // 1. Idempotency: skip if any active (proposed or sent) invoice already exists.
-    //    proposed covers the HITL case where the floor held last sweep — avoids
+    //    proposed covers the HITL case where the floor held last sweep - avoids
     //    a new LLM call + duplicate proposed row every 15 min until the owner acts.
     if (await store.hasActiveInvoice(thread.id)) return true;
 
@@ -127,8 +127,8 @@ export async function proposeInvoiceOne(
       conversation,
       category: thread.primary_category ?? 'other'
     });
-    if (!proposal) return false;        // LLM failure — degrade to reply path
-    if (!proposal.isInvoiceMoment) return false; // Not a buying moment — reply instead
+    if (!proposal) return false;        // LLM failure - degrade to reply path
+    if (!proposal.isInvoiceMoment) return false; // Not a buying moment - reply instead
 
     // 3. Admin scope gate: need write_draft_orders.
     const tenant = await store.getTenant();
@@ -144,7 +144,7 @@ export async function proposeInvoiceOne(
         holdReasons: ['reconnect_required'],
         status: 'proposed'
       });
-      return true; // handled — do not fall through to reply
+      return true; // handled - do not fall through to reply
     }
 
     // 4. Resolve each lineRequest via the catalog.
@@ -177,7 +177,7 @@ export async function proposeInvoiceOne(
     const rawTotal = resolvedItems.reduce((sum, li) => sum + li.priceGbp * li.qty, 0);
     const total = Math.round(rawTotal * 100) / 100;
 
-    // 4b. Guard: if catalog resolved nothing, force hold — never call createDraftOrder with empty items.
+    // 4b. Guard: if catalog resolved nothing, force hold - never call createDraftOrder with empty items.
     const noResolvedItems = resolvedItems.length === 0 || total <= 0;
 
     // 5. Floor decision.
@@ -248,7 +248,7 @@ export async function proposeInvoiceOne(
 }
 
 /**
- * Build and persist a fresh PENDING draft for a thread — conversation → optional
+ * Build and persist a fresh PENDING draft for a thread - conversation → optional
  * freight line → LLM draft → compose → insert. Returns the new draftId and
  * whether the sweep should auto-send it, or null if there is nothing to draft /
  * the LLM is unavailable. NEVER sends (the caller decides). Shared by the nightly
@@ -261,13 +261,13 @@ export async function composeDraftForThread(
   const got = await store.getThreadWithMessages(thread.id);
   if (!got) return null;
 
-  // Partnership/affiliate funnel intercept — supersedes the generic drafter for lane threads.
+  // Partnership/affiliate funnel intercept - supersedes the generic drafter for lane threads.
   const partnership = await maybePartnershipDraft(env, store, cfg, thread, got, fetchImpl);
   if (partnership) return partnership;
 
   const inbound = got.messages.filter((m) => m.direction === 'inbound');
   const conversation = inbound.map((m) => m.body_text ?? '').join('\n\n---\n\n');
-  // The customer's LATEST inbound (messages are ASC by received_at) — the drafter and the
+  // The customer's LATEST inbound (messages are ASC by received_at) - the drafter and the
   // freight line both ground to this so a multi-turn thread answers what they JUST asked,
   // not a stale earlier turn or a now-irrelevant first classification.
   const latestInbound = inbound.length ? (inbound[inbound.length - 1].body_text ?? '') : '';
@@ -275,7 +275,7 @@ export async function composeDraftForThread(
   // Freight-grounded delivery line: when the customer asks about shipping to a
   // confidently-derived destination, read the SYNCED CJ logistics matrix from D1
   // (no live CJ call) and append a time-only line deterministically (the LLM never
-  // emits the figure). Resilient — a missing/stale row or ambiguous destination
+  // emits the figure). Resilient - a missing/stale row or ambiguous destination
   // leaves shippingLine null and the drafter keeps its safe hedge.
   const shippingLine = await buildShippingLineForThread(store, cfg, thread, conversation, latestInbound);
 
@@ -321,7 +321,7 @@ async function draftOne(env: Env, store: TenantStore, cfg: TenantConfig, thread:
  * final reply body + the money-hold flag. PURE (no I/O) so the deliberate
  * decisions are unit-testable:
  *  - the trusted, claim-safe freight figure is appended AFTER the LLM body and is
- *    NOT fed into mentionsMoney — only the LLM body can trip the money-hold;
+ *    NOT fed into mentionsMoney - only the LLM body can trip the money-hold;
  *  - quotesPriceOrder still becomes true when a freight line is present, so the
  *    draft is flagged as quoting a figure (and held for review under Auto).
  */
@@ -333,7 +333,7 @@ export function composeDeliveryDraft(
   if (!shippingLine) return { bodyText: draft.bodyText, quotesPriceOrder: llmQuotes };
   return {
     bodyText: `${draft.bodyText.trimEnd()}\n\n${shippingLine}`,
-    // The line is ours (trusted) and time-only, but it IS a worker-computed figure —
+    // The line is ours (trusted) and time-only, but it IS a worker-computed figure -
     // flag it so the draft is reviewed before sending (HITL is also forced upstream
     // while the door-to-door model is unvalidated against real fulfilment data).
     quotesPriceOrder: true

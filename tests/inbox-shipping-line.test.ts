@@ -16,7 +16,7 @@ async function makeThread(s: TenantStore, over: { subject?: string; category?: s
   return (await s.getThreadWithMessages(tid))!.thread;
 }
 
-describe('buildShippingLineForThread — grounds the freight line on the LATEST message', () => {
+describe('buildShippingLineForThread - grounds the freight line on the LATEST message', () => {
   it('appends the grounded delivery line when the latest message is a shipping question', async () => {
     const s = new TenantStore(env.DB, SHOP);
     await s.upsertLogisticsRoute({ from: 'CN', to: 'US', channel: 'LuWei Ordinary US', transitMin: 5, transitMax: 11, agingRaw: '5-11', repVid: 'v1' });
@@ -25,11 +25,11 @@ describe('buildShippingLineForThread — grounds the freight line on the LATEST 
     expect(line).toMatch(/^Delivery to the United States: estimated \d+(-\d+)? days\.$/);
   });
 
-  it('returns null when the latest message has pivoted OFF shipping — even on a shipping-classified thread with a "Shipping Inquiry" subject', async () => {
+  it('returns null when the latest message has pivoted OFF shipping - even on a shipping-classified thread with a "Shipping Inquiry" subject', async () => {
     const s = new TenantStore(env.DB, SHOP);
     await s.upsertLogisticsRoute({ from: 'CN', to: 'GB', channel: 'CJPacket Ordinary', transitMin: 4, transitMax: 9, agingRaw: '4-9', repVid: 'v2' });
     // Stale shipping context (subject + category say shipping-returns, and the UK is named in
-    // an earlier turn so a destination IS derivable) — but the LATEST message is a marketing
+    // an earlier turn so a destination IS derivable) - but the LATEST message is a marketing
     // pitch with no shipping language, so no delivery line should be stapled to the reply.
     const t = await makeThread(s, { subject: 'Shipping Inquiry', category: 'shipping-returns', email: 'linda@x.com' });
     const conversation = "Do you ship to the UK?\n\n---\n\nLet's skip the small talk, you want sales, I know how to get them. I'm a Shopify Marketing Directory Partner.";

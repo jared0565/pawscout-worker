@@ -103,7 +103,7 @@ function makeMockFetch(opts: {
       return new Response(JSON.stringify({ id: 'resend-msg-1' }), { status: 200, headers: { 'content-type': 'application/json' } });
     }
 
-    // Shopify Admin GraphQL — discriminate by body
+    // Shopify Admin GraphQL - discriminate by body
     if (url.includes('myshopify.com')) {
       if (body.includes('draftOrderCreate')) {
         if (opts.spy) opts.spy.draftOrderHit = true;
@@ -118,7 +118,7 @@ function makeMockFetch(opts: {
 }
 
 // ─── Case 1: autoInvoice:false → holdReason auto_invoice_off, no reply draft ──
-describe('proposeInvoiceOne — HITL hold (autoInvoice:false)', () => {
+describe('proposeInvoiceOne - HITL hold (autoInvoice:false)', () => {
   it('creates proposed invoice with auto_invoice_off + no reply draft (mutual exclusion)', async () => {
     const store = new TenantStore(env.DB, SHOP);
     const { accessTokenEnc, dekWrapped } = await sealToken();
@@ -158,7 +158,7 @@ describe('proposeInvoiceOne — HITL hold (autoInvoice:false)', () => {
 });
 
 // ─── Case 2: autoInvoice:true + all floor conditions pass → sent ───────────
-describe('proposeInvoiceOne — Auto-send (autoInvoice:true, all pass)', () => {
+describe('proposeInvoiceOne - Auto-send (autoInvoice:true, all pass)', () => {
   it('creates draft order, sends invoice email, invoice ends sent', async () => {
     const store = new TenantStore(env.DB, SHOP);
     const { accessTokenEnc, dekWrapped } = await sealToken();
@@ -210,7 +210,7 @@ describe('proposeInvoiceOne — Auto-send (autoInvoice:true, all pass)', () => {
 });
 
 // ─── Case 2b: autoInvoice:true but catalog resolves nothing → proposed (held), no Shopify/Resend ──
-describe('proposeInvoiceOne — empty catalog (all lineRequests resolve to none)', () => {
+describe('proposeInvoiceOne - empty catalog (all lineRequests resolve to none)', () => {
   it('stores proposed invoice with no_resolved_items hold, createDraftOrder and Resend NOT called', async () => {
     const store = new TenantStore(env.DB, SHOP);
     const { accessTokenEnc, dekWrapped } = await sealToken();
@@ -261,7 +261,7 @@ describe('proposeInvoiceOne — empty catalog (all lineRequests resolve to none)
 });
 
 // ─── Case 3: existing active invoice → idempotency (no second invoice, no LLM/Shopify call) ──
-describe('proposeInvoiceOne — idempotency', () => {
+describe('proposeInvoiceOne - idempotency', () => {
   it('returns true and creates NO second invoice when a sent invoice already exists', async () => {
     const store = new TenantStore(env.DB, SHOP);
     const { accessTokenEnc, dekWrapped } = await sealToken();
@@ -287,7 +287,7 @@ describe('proposeInvoiceOne — idempotency', () => {
 
     const handled = await proposeInvoiceOne(testEnv, store, cfg(), threadRow, fetchImpl);
 
-    // Returns true (thread is "handled" — don't fall through to draftOne)
+    // Returns true (thread is "handled" - don't fall through to draftOne)
     expect(handled).toBe(true);
 
     // Still only one invoice row
@@ -316,12 +316,12 @@ describe('proposeInvoiceOne — idempotency', () => {
     const testEnv = { ...E, OPENROUTER_API_KEY: 'k', RESEND_API_KEY: 'test-resend-key' } as unknown as Env;
     const threadRow = (await store.getThreadWithMessages(tid))!.thread;
 
-    // fetchImpl must NOT be called — no LLM or Shopify call should happen
+    // fetchImpl must NOT be called - no LLM or Shopify call should happen
     const fetchImpl = (async () => { throw new Error('fetchImpl should not be called: proposed invoice is active'); }) as unknown as typeof fetch;
 
     const handled = await proposeInvoiceOne(testEnv, store, cfg(), threadRow, fetchImpl);
 
-    // Returns true (thread is handled — no fallthrough to draftOne)
+    // Returns true (thread is handled - no fallthrough to draftOne)
     expect(handled).toBe(true);
 
     // Still exactly one invoice row, unchanged
@@ -332,7 +332,7 @@ describe('proposeInvoiceOne — idempotency', () => {
 });
 
 // ─── Case 4: mutual-exclusion end-to-end via runInboxClassifySweep ───────────
-describe('runInboxClassifySweep — invoice path skips draftOne', () => {
+describe('runInboxClassifySweep - invoice path skips draftOne', () => {
   it('when proposeInvoiceOne handles the thread, no reply draft is created', async () => {
     const store = new TenantStore(env.DB, SHOP);
     const { accessTokenEnc, dekWrapped } = await sealToken();
@@ -366,7 +366,7 @@ describe('runInboxClassifySweep — invoice path skips draftOne', () => {
 });
 
 // ─── Case 5: recent FAILED invoice → backoff (no re-proposal, no LLM/Shopify call) ──
-describe('proposeInvoiceOne — failed-invoice backoff', () => {
+describe('proposeInvoiceOne - failed-invoice backoff', () => {
   it('returns true and does NOT re-propose when a recent failed invoice exists', async () => {
     const store = new TenantStore(env.DB, SHOP);
     const { accessTokenEnc, dekWrapped } = await sealToken();
@@ -393,15 +393,15 @@ describe('proposeInvoiceOne — failed-invoice backoff', () => {
     const handled = await proposeInvoiceOne(testEnv, store, cfg(), threadRow, fetchImpl);
 
     expect(handled).toBe(true);
-    // No new invoice — still just the failed one (not re-proposed).
+    // No new invoice - still just the failed one (not re-proposed).
     const invoiceRows = await getInvoicesForThread(tid);
     expect(invoiceRows).toHaveLength(1);
     expect(invoiceRows[0].status).toBe('failed');
   });
 });
 
-// ─── Case 6: inventory-aware qty cap — requested qty exceeds stock → held ──
-describe('proposeInvoiceOne — inventory-aware qty cap', () => {
+// ─── Case 6: inventory-aware qty cap - requested qty exceeds stock → held ──
+describe('proposeInvoiceOne - inventory-aware qty cap', () => {
   it('holds (qty_over_cap) when requested qty exceeds the variant inventory, even with autoInvoice on', async () => {
     const store = new TenantStore(env.DB, SHOP);
     const { accessTokenEnc, dekWrapped } = await sealToken();
@@ -421,7 +421,7 @@ describe('proposeInvoiceOne — inventory-aware qty cap', () => {
     const handled = await proposeInvoiceOne(testEnv, store, cfg(inboxCfg), threadRow, makeMockFetch({ proposeResponse: proposePayload, spy, inventoryQuantity: 1 }));
 
     expect(handled).toBe(true);
-    expect(spy.draftOrderHit).toBe(false); // held — no draft order created
+    expect(spy.draftOrderHit).toBe(false); // held - no draft order created
     expect(spy.resendHit).toBe(false);
     const invoiceRows = await getInvoicesForThread(tid);
     expect(invoiceRows).toHaveLength(1);

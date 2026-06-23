@@ -16,7 +16,7 @@ function finite(v: unknown): v is number {
 
 /**
  * Validate the /api/gates body. Returns a *clean* object (unknown fields
- * stripped) so nothing un-vetted reaches tenant_config. `target` is optional —
+ * stripped) so nothing un-vetted reaches tenant_config. `target` is optional -
  * absent means "leave the stored value alone".
  */
 export function validateGatesPayload(body: unknown): Validation<{ gates: Gates; target?: number }> {
@@ -57,7 +57,7 @@ export function validateGatesPayload(body: unknown): Validation<{ gates: Gates; 
   };
 }
 
-/** Validate the /api/pricing body. Bounds are wide but sane — the rule must never invert. */
+/** Validate the /api/pricing body. Bounds are wide but sane - the rule must never invert. */
 export function validatePricingPayload(body: unknown): Validation<Pricing> {
   if (typeof body !== 'object' || body === null || Array.isArray(body)) {
     return { ok: false, error: 'Body must be a JSON object' };

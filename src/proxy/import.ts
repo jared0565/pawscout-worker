@@ -9,7 +9,7 @@ import { isLikelyPetProduct, signaledCategory } from './search';
 import { getPrimaryLocationId, setSupplierMetafields, MAX_TRACKED_QTY } from './inventory';
 
 export const IMPORT_TAG = 'cj-import';
-/** W-ADDON: hidden basket-fillers — buyable, but never browsable/searchable. */
+/** W-ADDON: hidden basket-fillers - buyable, but never browsable/searchable. */
 export const ADDON_TAG = 'cj-addon';
 export const ADDON_CATEGORY = 'addons';
 const MAX_IMAGES = 8;
@@ -22,7 +22,7 @@ export interface PreviewProduct {
   pid: string;
   title: string;
   images: string[];
-  descriptionText: string; // plain text — CJ HTML is never sent to the storefront
+  descriptionText: string; // plain text - CJ HTML is never sent to the storefront
   priceFrom: number;
   variants: PreviewVariant[];
   state: string;
@@ -88,11 +88,11 @@ export async function getCachedDetail(store: TenantStore, cj: CjClient, pid: str
   return detail;
 }
 
-/** W1: the warehouse is the primary detail source — zero CJ calls when stocked. */
+/** W1: the warehouse is the primary detail source - zero CJ calls when stocked. */
 export async function getDetailPreferWarehouse(store: TenantStore, cj: CjClient, pid: string): Promise<CjDetail | null> {
   const row = await store.getWarehouseProduct(pid);
   if (row) {
-    try { return JSON.parse(row.detail) as CjDetail; } catch { /* corrupt row — fall through */ }
+    try { return JSON.parse(row.detail) as CjDetail; } catch { /* corrupt row - fall through */ }
   }
   return getCachedDetail(store, cj, pid);
 }
@@ -130,12 +130,12 @@ export async function curateDetailImages(
     try {
       const c = JSON.parse(cached) as { sig?: string; images?: string[] };
       if (c.sig === sig && Array.isArray(c.images) && c.images.length) return { detail: { ...detail, images: c.images }, congruent: true };
-    } catch { /* corrupt cache — re-curate */ }
+    } catch { /* corrupt cache - re-curate */ }
   }
-  if (!pickHero) return { detail, congruent: true }; // no LLM — leave raw, don't cache
+  if (!pickHero) return { detail, congruent: true }; // no LLM - leave raw, don't cache
   let vet: HeroPick;
   try { vet = await pickHero(detail.nameEn, detail.images); } catch (e) { console.warn(`image vet failed for ${detail.pid}: ${(e as Error).message}`); return { detail, congruent: true }; }
-  if (!vet.ok) return { detail, congruent: true }; // undecided (LLM down) — retry later, don't cache
+  if (!vet.ok) return { detail, congruent: true }; // undecided (LLM down) - retry later, don't cache
   const keep = vetOrder(detail.images, vet);
   if (keep.length === 0) return { detail, congruent: false }; // nothing matches the title
   const images = keep.map((i) => detail.images[i]).slice(0, MAX_IMAGES);
@@ -146,7 +146,7 @@ export async function curateDetailImages(
 /**
  * The single CJ call left near the request path: a live stock confirmation
  * before the (background) import, so we never list something CJ can't fulfil.
- * Stock-unknown (endpoint failure) proceeds — the W2 daily sync corrects it.
+ * Stock-unknown (endpoint failure) proceeds - the W2 daily sync corrects it.
  */
 export async function confirmAndImport(
   store: TenantStore,
@@ -185,7 +185,7 @@ export async function confirmAndImport(
       console.warn(`import curation failed for ${detail.pid}: ${(e as Error).message}`);
     }
   }
-  // Mechanical pet-relevance floor: if the LLM didn't admit this (no llmScore —
+  // Mechanical pet-relevance floor: if the LLM didn't admit this (no llmScore -
   // curation absent or failed), reject clearly non-pet items the mechanical
   // gates would otherwise pass (the kitchen/garden/human-tool class).
   if (detail.llmScore === undefined && !isLikelyPetProduct(`${detail.nameEn} ${detail.categoryName ?? ''}`)) {
@@ -200,7 +200,7 @@ export async function confirmAndImport(
   // Cached + shared with the supplier preview; never blocks on an LLM failure.
   if (pickHero && detail.images.length > 1) {
     const { detail: curated, congruent } = await curateDetailImages(store, detail, pickHero);
-    if (!congruent) { // no image matches the title — don't list a mislabelled product
+    if (!congruent) { // no image matches the title - don't list a mislabelled product
       console.warn(`import rejected (no congruent image) for ${detail.pid}: ${detail.nameEn}`);
       await store.putLink({ cjPid: detail.pid, state: 'failed', category: category ?? null });
       return;
@@ -217,7 +217,7 @@ export async function confirmAndImport(
         const f = await cj.freightEstimate(vid, detail.origin);
         if (f) detail = { ...detail, freightUsd: f.priceUsd };
       } catch (e) {
-        // Unknown freight degrades to the product-cost-only floor — never block the sale path.
+        // Unknown freight degrades to the product-cost-only floor - never block the sale path.
         console.warn(`freight estimate failed for ${detail.pid}: ${(e as Error).message}`);
       }
     }
@@ -227,7 +227,7 @@ export async function confirmAndImport(
     const m = await cj.stockByPid(detail.pid);
     live = m.size ? Math.max(...m.values()) : 0;
   } catch {
-    live = null; // unknown — don't block the sale path on a flaky stock endpoint
+    live = null; // unknown - don't block the sale path on a flaky stock endpoint
   }
   if (live !== null) {
     await store.setWarehouseStock(detail.pid, live, live >= cfg.floors.stockFloor ? 'available' : 'low_stock');
@@ -299,7 +299,7 @@ export async function importProduct(
     const addonVisible = isAddon && !cfg.addons.suppressFromBrowse;
     const browseCat = isAddon ? (addonVisible ? resolveCategory(cfg, detail) : null) : cat;
 
-    // W2: tracked inventory with policy DENY — Shopify itself blocks orders
+    // W2: tracked inventory with policy DENY - Shopify itself blocks orders
     // beyond last-known CJ stock. Unknown stock (or no location) imports
     // untracked rather than tracked-at-zero, which would be unbuyable.
     const productStock = detail.stock ?? 0;
@@ -370,7 +370,7 @@ export async function importProduct(
       }
     }
 
-    // Supplier metafields (the theme's PDP renders these) — best-effort.
+    // Supplier metafields (the theme's PDP renders these) - best-effort.
     try {
       // Import only happens at/above the stock floor (or stock-unknown), so
       // 'available' is correct here; the daily sync keeps it honest after.
@@ -490,7 +490,7 @@ const VET_VERSION = 'v2';
  * vetting-logic version. Reordering (which the sweep itself does) leaves the
  * hash unchanged; adding/removing an image, or bumping VET_VERSION, changes it.
  * Stored in the pawscout.hero_sig metafield so the sweep can skip a product it
- * has already vision-checked at this exact media state under this logic — the
+ * has already vision-checked at this exact media state under this logic - the
  * spend saver. A VET_VERSION bump invalidates all cached signatures once.
  */
 export function mediaSignature(mediaIds: string[]): string {
@@ -508,7 +508,7 @@ export function mediaSignature(mediaIds: string[]): string {
  * `pickHero` is injected (same closure the import path uses) for testability.
  *
  * Batched (offset/limit) so each call finishes well inside a request's time
- * budget — the console loops with `next` for progress; the cron drains it.
+ * budget - the console loops with `next` for progress; the cron drains it.
  */
 export async function reconcileHeroImages(
   store: TenantStore,
@@ -541,9 +541,9 @@ export async function reconcileHeroImages(
       );
       if (nodes.length < 2) continue;
       const sig = mediaSignature(nodes.map((n) => n.id));
-      if (p?.metafield?.value === sig) continue; // already vision-checked at this media state — no LLM call
+      if (p?.metafield?.value === sig) continue; // already vision-checked at this media state - no LLM call
       const hero = await pickHero(p?.title ?? '', nodes.map((n) => n.image.url));
-      if (!hero.ok) continue; // couldn't decide (LLM down/failed) — don't cache, retry next run
+      if (!hero.ok) continue; // couldn't decide (LLM down/failed) - don't cache, retry next run
 
       // 1) Delete incongruent media (wrong animal vs title, etc.) so it never
       // shows in the store. Never empties the gallery; the hero is never dropped.
@@ -556,7 +556,7 @@ export async function reconcileHeroImages(
         if (derrs.length) throw new Error(derrs.map((e) => e.message).join('; '));
         fixed++;
       }
-      // 2) Promote the hero (by media id — valid even after deletions).
+      // 2) Promote the hero (by media id - valid even after deletions).
       if (hero.index !== null && hero.index < nodes.length && !dropIds.includes(nodes[hero.index].id) && p?.featuredMedia?.id !== nodes[hero.index].id) {
         const r = await admin(REORDER_MEDIA, { id: link.shopify_product_id, moves: [{ id: nodes[hero.index].id, newPosition: '0' }] }) as {
           productReorderMedia?: { mediaUserErrors?: { message: string }[]; userErrors?: { message: string }[] };
@@ -566,7 +566,7 @@ export async function reconcileHeroImages(
         if (!dropIds.length) fixed++;
       }
       // Record the check against the KEPT media set so the next run (which sees
-      // the reduced gallery) skips it — no re-vision after a clean pass.
+      // the reduced gallery) skips it - no re-vision after a clean pass.
       const keptSig = mediaSignature(nodes.map((n) => n.id).filter((id) => !dropIds.includes(id)));
       await admin(SET_HERO_SIG, { mf: [{ ownerId: link.shopify_product_id, namespace: 'pawscout', key: 'hero_sig', type: 'single_line_text_field', value: keptSig }] });
     } catch (e) {
@@ -597,7 +597,7 @@ export function needsDescriptionRewrite(html: string): boolean {
  * CJ text are touched (so already-clean listings cost no LLM calls). `rewrite`
  * is injected for testability. One product's failure never aborts the run.
  *
- * Batched (offset/limit) so each call finishes inside a request's time budget —
+ * Batched (offset/limit) so each call finishes inside a request's time budget -
  * the console loops with `next` for progress; the cron drains it.
  */
 export async function reconcileDescriptions(
@@ -642,7 +642,7 @@ const PRODUCT_TITLE = `query pawscoutTitle($id: ID!) { product(id: $id) { title 
 /**
  * Category re-audit (LLM-free): files an imported product under the SINGLE
  * collection its title unambiguously signals (`signaledCategory`) when that
- * differs from where it sits — and ALSO assigns an ORPHAN (a product in no
+ * differs from where it sits - and ALSO assigns an ORPHAN (a product in no
  * mapped collection) the same way, so an import that arrived without a
  * collection tag doesn't stay invisible in nav. Conservative: a product with
  * mixed or no signal is left exactly where it is (an orphan with no signal
@@ -666,7 +666,7 @@ export async function reconcileCategories(
     scanned++;
     try {
       const current = link.category;
-      if (current === ADDON_CATEGORY) continue; // hidden add-on lane — never auto-file into a browse collection
+      if (current === ADDON_CATEGORY) continue; // hidden add-on lane - never auto-file into a browse collection
       // The collection it currently sits in, IF that's a real mapped collection.
       // Orphans (no category) and products in an unmapped/removed lane have none.
       const mappedCurrent = current && cfg.collectionMap[current] ? current : null;

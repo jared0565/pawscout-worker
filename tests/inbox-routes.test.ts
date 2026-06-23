@@ -118,7 +118,7 @@ describe('regenerateDraft', () => {
   });
 });
 
-describe('getInboxThread — affiliate applicant', () => {
+describe('getInboxThread - affiliate applicant', () => {
   it('includes the applicant record when present', async () => {
     const s = new TenantStore(env.DB, 'applicant.myshopify.com');
     const tid = await s.createThread({ contactEmail: 'kasim@x.com', subject: 'P', subjectNorm: 'p', receivedAt: '2026-06-22T10:00:00Z', initialStatus: 'needs_reply' });

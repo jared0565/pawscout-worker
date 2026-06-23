@@ -16,7 +16,7 @@ const base: ScreenFacts = {
 };
 const f = (o: Partial<ScreenFacts> = {}): ScreenFacts => ({ ...base, ...o });
 
-describe('scoreScreen — hard gates (any one → decline)', () => {
+describe('scoreScreen - hard gates (any one → decline)', () => {
   it('G1: no channel URL', () => {
     const v = scoreScreen(f({ channelUrls: [] }));
     expect(v.decision).toBe('decline'); expect(v.gate).toBe('G1'); expect(v.score).toBeNull();
@@ -36,7 +36,7 @@ describe('scoreScreen — hard gates (any one → decline)', () => {
   });
 });
 
-describe('scoreScreen — bands (no hard gate)', () => {
+describe('scoreScreen - bands (no hard gate)', () => {
   it('strong applicant scores high → form', () => {
     const v = scoreScreen(f());
     expect(v.gate).toBeNull();

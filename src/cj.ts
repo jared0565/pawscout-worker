@@ -36,14 +36,14 @@ export function cjFetchFromEnv(env: { CJ_RELAY_URL?: string; CJ_RELAY_TOKEN?: st
 // Workers' fetch sends no User-Agent; some gateways throttle UA-less requests.
 const CJ_HEADERS = { 'User-Agent': 'PawScout/1.0 (+https://pawscout.activepaw.co.uk)', Accept: 'application/json' };
 
-/** CJ error responses carry the real reason in the body — keep it. */
+/** CJ error responses carry the real reason in the body - keep it. */
 async function httpError(resp: Response): Promise<Error> {
   let body = '';
   try { body = (await resp.text()).slice(0, 300); } catch { /* body unavailable */ }
-  return new Error(`CJ HTTP ${resp.status}${body ? ` — ${body}` : ''}`);
+  return new Error(`CJ HTTP ${resp.status}${body ? ` - ${body}` : ''}`);
 }
 
-// CJ allows roughly one auth refresh per 300s and tokens live ~15 days —
+// CJ allows roughly one auth refresh per 300s and tokens live ~15 days -
 // never authenticate per request; cache the token and refresh early.
 const REFRESH_COOLDOWN_MS = 300_000;
 const EXPIRY_SAFETY_MS = 3_600_000;
@@ -158,7 +158,7 @@ export interface CjDetail {
   origins?: Record<string, number>;
   /** Cheapest freight (USD) to GB from the chosen origin, captured at admission/import;
    *  feeds the pricing floor. Delivery TIME now lives in the synced cj_logistics matrix,
-   *  not here (the old per-detail freightDays was dead — read by nothing). */
+   *  not here (the old per-detail freightDays was dead - read by nothing). */
   freightUsd?: number;
   origin?: string;
 }
@@ -172,7 +172,7 @@ function parseVariantStock(v: Record<string, unknown>): number | undefined {
     }
   }
   // features=enable_inventory shape: per-variant `inventories` rows, one per
-  // country/warehouse. A single origin must be able to fulfil — take the max.
+  // country/warehouse. A single origin must be able to fulfil - take the max.
   if (Array.isArray(v.inventories)) {
     const totals = (v.inventories as Record<string, unknown>[])
       .map((r) => Number(r.totalInventory ?? r.totalInventoryNum ?? 0))
@@ -198,8 +198,8 @@ function collectOrigins(variants: Record<string, unknown>[]): Record<string, num
 
 /**
  * Preferred dispatch origin: the UK warehouse when it can genuinely fulfil
- * (stock ≥ floor) — 2–4 day delivery beats CN's 8–15 every time the margin
- * allows — otherwise the best-stocked origin, defaulting to CN.
+ * (stock ≥ floor) - 2–4 day delivery beats CN's 8–15 every time the margin
+ * allows - otherwise the best-stocked origin, defaulting to CN.
  */
 export function chooseOrigin(detail: CjDetail, stockFloor: number): string {
   const o = detail.origins ?? {};
@@ -232,7 +232,7 @@ function mapCjSearchItems(list: unknown): CjSearchItem[] {
     .filter((p) => p.pid && p.nameEn);
 }
 
-/** listV2 nests products differently across CJ revisions — pull the product array from any known shape. */
+/** listV2 nests products differently across CJ revisions - pull the product array from any known shape. */
 function extractV2List(data: Record<string, unknown> | null): Record<string, unknown>[] {
   if (!data) return [];
   if (Array.isArray(data.list)) return data.list as Record<string, unknown>[];
@@ -248,7 +248,7 @@ function extractV2List(data: Record<string, unknown> | null): Record<string, unk
   return [];
 }
 
-/** CJ price fields can be numbers, strings, or ranges like "5.99 -- 12.99" — take the first number. */
+/** CJ price fields can be numbers, strings, or ranges like "5.99 -- 12.99" - take the first number. */
 export function parseCjPrice(v: unknown): number {
   if (typeof v === 'number' && Number.isFinite(v)) return v;
   const m = String(v ?? '').match(/\d+(?:\.\d+)?/);
@@ -277,7 +277,7 @@ export class CjClient {
       if (!resp.ok) throw await httpError(resp);
       const data = (await resp.json()) as { result?: boolean; message?: string; code?: number; data?: unknown };
       if (!data.result) {
-        // Keep CJ's numeric code — messages like "Interface not found" are
+        // Keep CJ's numeric code - messages like "Interface not found" are
         // useless without it when debugging endpoint deprecations.
         throw new Error(`${data.message || 'CJ request failed'}${data.code != null ? ` (CJ code ${data.code}, ${path})` : ''}`);
       }
@@ -286,7 +286,7 @@ export class CjClient {
   }
 
   async search(keyword: string, pageSize = 40): Promise<CjSearchItem[]> {
-    // Prefer listV2 — CJ's elasticsearch search, which powers their website
+    // Prefer listV2 - CJ's elasticsearch search, which powers their website
     // and returns far more relevant results than the legacy keyword endpoint
     // (which OR-matched single words and surfaced advent calendars for "cat
     // toys"). Fall back to /product/list if V2 errors or returns nothing.
@@ -305,9 +305,9 @@ export class CjClient {
   }
 
   /**
-   * CJ elasticsearch search (V2) — the relevance-ranked search behind CJ's
+   * CJ elasticsearch search (V2) - the relevance-ranked search behind CJ's
    * website. listV2 uses `page`/`size` (NOT pageNum/pageSize), defaults
-   * orderBy=0 (best match), and returns the product id in `id` (NOT `pid`) —
+   * orderBy=0 (best match), and returns the product id in `id` (NOT `pid`) -
    * getting any of these wrong makes it return nothing and silently fall back
    * to the junky keyword endpoint.
    */
@@ -316,14 +316,14 @@ export class CjClient {
       keyWord: keyword,
       page: '1',
       size: String(Math.min(pageSize, 100)),
-      orderBy: '0', // 0 = best match (relevance) — explicit, matches the website
+      orderBy: '0', // 0 = best match (relevance) - explicit, matches the website
       features: 'enable_category' // populates oneCategoryName for the pet-category gate (single string, not a JSON array)
     })) as Record<string, unknown> | null;
     return mapCjSearchItems(extractV2List(data));
   }
 
   async detail(pid: string): Promise<CjDetail | null> {
-    // enable_inventory embeds per-variant inventories in the SAME response —
+    // enable_inventory embeds per-variant inventories in the SAME response -
     // saving the separate stock call that CJ renamed out from under us once.
     const p = (await this.get('/product/query', { pid, features: 'enable_inventory' })) as Record<string, unknown> | null;
     if (!p?.pid) return null;
@@ -412,7 +412,7 @@ export class CjClient {
    * Per-variant stock totals from CJ's inventory endpoint.
    * NB: CJ RENAMED this endpoint (the old /product/stock/queryByPid now
    * answers "Interface not found"). The new shape returns per-warehouse rows
-   * (areaEn/countryCode/totalInventoryNum) which may or may not carry a vid —
+   * (areaEn/countryCode/totalInventoryNum) which may or may not carry a vid -
    * vid rows sum per variant; vid-less rows fold into a product-level '*'
    * entry (callers take max(values) for product stock; per-vid lookups
    * simply miss '*' and fall back).
@@ -438,7 +438,7 @@ export class CjClient {
   /**
    * Create a CJ order (unpaid). Returns the CJ order id; pay it separately via
    * payBalance. Field names per the CJ order API; createOrderV2 needs the variant
-   * id (vid), not the product pid. Throws (CJ userError) on bad fields/stock —
+   * id (vid), not the product pid. Throws (CJ userError) on bad fields/stock -
    * the caller marks the order errored and never pays.
    */
   async createOrder(input: {
@@ -473,7 +473,7 @@ export class CjClient {
     return { orderId, orderNum: String(d.orderNum ?? input.orderNumber) };
   }
 
-  /** Pay a created CJ order from the wallet balance — THE money leg. */
+  /** Pay a created CJ order from the wallet balance - THE money leg. */
   async payBalance(orderId: string): Promise<void> {
     await this.post('/shopping/pay/payBalance', { orderId });
   }

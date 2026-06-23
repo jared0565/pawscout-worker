@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Turn a qualified inbox enquiry into a paid Shopify order — resolve what the customer wants to real Shopify variants at real prices, create a draft order, email the invoice link, and attribute `orders/paid` back to the thread as `converted`.
+**Goal:** Turn a qualified inbox enquiry into a paid Shopify order - resolve what the customer wants to real Shopify variants at real prices, create a draft order, email the invoice link, and attribute `orders/paid` back to the thread as `converted`.
 
-**Architecture:** The LLM only emits *search intents* (product queries + quantities); deterministic code resolves each to an exact Shopify variant at the variant's own price and creates a Shopify **draft order** (a payment link — no charge). Phase **3a** ships the full HITL loop (owner confirms line items in the console). Phase **3b** adds the LLM proposer + a hard mechanical floor + an `autoInvoice` toggle, validated in HITL before flipping on. Built on the live W-INBOX-1/2 inbox in `pawscout-worker`.
+**Architecture:** The LLM only emits *search intents* (product queries + quantities); deterministic code resolves each to an exact Shopify variant at the variant's own price and creates a Shopify **draft order** (a payment link - no charge). Phase **3a** ships the full HITL loop (owner confirms line items in the console). Phase **3b** adds the LLM proposer + a hard mechanical floor + an `autoInvoice` toggle, validated in HITL before flipping on. Built on the live W-INBOX-1/2 inbox in `pawscout-worker`.
 
 **Tech Stack:** Cloudflare Workers (Hono), D1 (SQLite) via `TenantStore`, Shopify Admin GraphQL (`makeAdminGraphql`), OpenRouter LLM (`LlmClient`), Resend (`sendEmail`), Vitest + `@cloudflare/vitest-pool-workers`.
 
@@ -51,7 +51,7 @@ Tests live beside the existing inbox tests in `tests/` (e.g. `tests/inbox-invoic
 
 ---
 
-## PHASE 3a — HITL conversion loop (independently deployable)
+## PHASE 3a - HITL conversion loop (independently deployable)
 
 ### Task 1: Invoice config fields + validation
 
@@ -63,7 +63,7 @@ Tests live beside the existing inbox tests in `tests/` (e.g. `tests/inbox-invoic
 **Interfaces:**
 - Produces: `InboxConfig` gains `autoInvoice: boolean`, `invoiceConfidenceThreshold: number`, `invoiceValueCeiling: number`, `invoiceRateLimit: number`. `DEFAULT_INBOX` sets `autoInvoice:false, invoiceConfidenceThreshold:95, invoiceValueCeiling:250, invoiceRateLimit:2`.
 
-- [ ] **Step 1: Failing test** — append to `tests/inbox-validate.test.ts`:
+- [ ] **Step 1: Failing test** - append to `tests/inbox-validate.test.ts`:
 ```ts
 it('accepts invoice config fields and defaults them', () => {
   const r = validateInboxPayload({ enabled: true, autosend: false, intentThreshold: 70, autoConfidenceThreshold: 80, labels: ['lead'], autoInvoice: true, invoiceConfidenceThreshold: 90, invoiceValueCeiling: 500, invoiceRateLimit: 1 });
@@ -83,9 +83,9 @@ expect(cfg?.inbox.invoiceValueCeiling).toBe(250);
 expect(cfg?.inbox.invoiceRateLimit).toBe(2);
 ```
 
-- [ ] **Step 2: Run, verify fail** — `npm test -- inbox-validate inbox-config` → FAIL (fields undefined / not validated).
+- [ ] **Step 2: Run, verify fail** - `npm test -- inbox-validate inbox-config` → FAIL (fields undefined / not validated).
 
-- [ ] **Step 3: Implement** — in `src/inbox/types.ts`, add to `InboxConfig`:
+- [ ] **Step 3: Implement** - in `src/inbox/types.ts`, add to `InboxConfig`:
 ```ts
   autoInvoice: boolean;               // false = HITL invoicing; true = Auto behind the floor
   invoiceConfidenceThreshold: number; // 0-100; Auto-invoice floor (separate from replies)
@@ -115,9 +115,9 @@ and in the returned `value` object add (defaulting from `DEFAULT_INBOX`):
 ```
 Confirm `getConfig()`'s inbox-merge in `tenant-store.ts` spreads `DEFAULT_INBOX` first so old rows backfill the new fields (it already does `{ ...DEFAULT_INBOX, ...stored }`); if it lists fields explicitly, add the four.
 
-- [ ] **Step 4: Run, verify pass** — `npm test -- inbox-validate inbox-config` → PASS.
+- [ ] **Step 4: Run, verify pass** - `npm test -- inbox-validate inbox-config` → PASS.
 
-- [ ] **Step 5: Commit** — `git add src/inbox/types.ts src/validate.ts tests/inbox-validate.test.ts tests/inbox-config.test.ts && git commit -m "feat(inbox): W-INBOX-3 invoice config fields + validation"`
+- [ ] **Step 5: Commit** - `git add src/inbox/types.ts src/validate.ts tests/inbox-validate.test.ts tests/inbox-config.test.ts && git commit -m "feat(inbox): W-INBOX-3 invoice config fields + validation"`
 
 ---
 
@@ -142,7 +142,7 @@ Confirm `getConfig()`'s inbox-merge in `tenant-store.ts` spreads `DEFAULT_INBOX`
   - `store.setInvoiceStatus(id, status, fields?: { sentAt?; paidAt?; shopifyOrderId?; draftOrderId?; invoiceUrl? }): Promise<void>`
   - `store.recentInvoiceCount(threadId, sinceIso): Promise<number>`
 
-- [ ] **Step 1: Failing test** — create `tests/inbox-invoices-store.test.ts`:
+- [ ] **Step 1: Failing test** - create `tests/inbox-invoices-store.test.ts`:
 ```ts
 /// <reference types="@cloudflare/vitest-pool-workers" />
 import { describe, it, expect, beforeEach } from 'vitest';
@@ -179,9 +179,9 @@ describe('inbox_invoices store', () => {
 });
 ```
 
-- [ ] **Step 2: Run, verify fail** — `npm test -- inbox-invoices-store` → FAIL (no table / no methods).
+- [ ] **Step 2: Run, verify fail** - `npm test -- inbox-invoices-store` → FAIL (no table / no methods).
 
-- [ ] **Step 3a: Migration** — create `migrations/0011_inbox_invoices.sql`:
+- [ ] **Step 3a: Migration** - create `migrations/0011_inbox_invoices.sql`:
 ```sql
 CREATE TABLE inbox_invoices (
   shop                   TEXT NOT NULL,
@@ -206,7 +206,7 @@ CREATE INDEX idx_inbox_invoices_thread ON inbox_invoices (shop, thread_id, statu
 CREATE INDEX idx_inbox_invoices_order  ON inbox_invoices (shop, shopify_order_id);
 ```
 
-- [ ] **Step 3b: Types** — in `src/inbox/types.ts` add:
+- [ ] **Step 3b: Types** - in `src/inbox/types.ts` add:
 ```ts
 export type InvoiceStatus = 'proposed' | 'sent' | 'paid' | 'discarded' | 'expired' | 'failed' | 'superseded';
 export interface InvoiceLineItem { variantId: string; sku: string | null; title: string; qty: number; priceGbp: number }
@@ -219,7 +219,7 @@ export interface InvoiceRow {
 }
 ```
 
-- [ ] **Step 3c: Store methods** — in `src/tenant-store.ts`, after the W-INBOX-2 methods (import `InvoiceRow, InvoiceLineItem, InvoiceStatus` from `./inbox/types`):
+- [ ] **Step 3c: Store methods** - in `src/tenant-store.ts`, after the W-INBOX-2 methods (import `InvoiceRow, InvoiceLineItem, InvoiceStatus` from `./inbox/types`):
 ```ts
   // --- W-INBOX-3: invoices ---
   async insertInvoice(i: { threadId: string; lineItems: InvoiceLineItem[]; total: number; currency: string; coverText: string; confidence: number | null; holdReasons: string[]; status: InvoiceStatus }): Promise<string> {
@@ -258,9 +258,9 @@ export interface InvoiceRow {
   }
 ```
 
-- [ ] **Step 4: Run, verify pass** — `npm test -- inbox-invoices-store` → PASS. (The vitest pool applies `TEST_MIGRATIONS` which globs `migrations/*.sql`, so 0011 is picked up automatically.)
+- [ ] **Step 4: Run, verify pass** - `npm test -- inbox-invoices-store` → PASS. (The vitest pool applies `TEST_MIGRATIONS` which globs `migrations/*.sql`, so 0011 is picked up automatically.)
 
-- [ ] **Step 5: Commit** — `git add migrations/0011_inbox_invoices.sql src/inbox/types.ts src/tenant-store.ts tests/inbox-invoices-store.test.ts && git commit -m "feat(inbox): inbox_invoices table + store methods"`
+- [ ] **Step 5: Commit** - `git add migrations/0011_inbox_invoices.sql src/inbox/types.ts src/tenant-store.ts tests/inbox-invoices-store.test.ts && git commit -m "feat(inbox): inbox_invoices table + store methods"`
 
 ---
 
@@ -278,7 +278,7 @@ export interface InvoiceRow {
   - `resolveLineRequest(admin: AdminGraphql, query: string): Promise<{ status: 'resolved' | 'ambiguous' | 'none'; variant?: CatalogVariant; candidates?: CatalogVariant[] }>`
   - `findCustomerByEmail(admin: AdminGraphql, email: string): Promise<{ customerId: string } | null>`
 
-- [ ] **Step 1: Failing test** — create `tests/shopify-catalog.test.ts`:
+- [ ] **Step 1: Failing test** - create `tests/shopify-catalog.test.ts`:
 ```ts
 import { describe, it, expect } from 'vitest';
 import { searchShopifyProducts, resolveLineRequest, findCustomerByEmail } from '../src/shopify-catalog';
@@ -329,9 +329,9 @@ describe('shopify-catalog', () => {
 });
 ```
 
-- [ ] **Step 2: Run, verify fail** — `npm test -- shopify-catalog` → FAIL (module missing).
+- [ ] **Step 2: Run, verify fail** - `npm test -- shopify-catalog` → FAIL (module missing).
 
-- [ ] **Step 3: Implement** — create `src/shopify-catalog.ts`:
+- [ ] **Step 3: Implement** - create `src/shopify-catalog.ts`:
 ```ts
 import type { AdminGraphql } from './shopify-admin';
 
@@ -382,9 +382,9 @@ export async function findCustomerByEmail(admin: AdminGraphql, email: string): P
 }
 ```
 
-- [ ] **Step 4: Run, verify pass** — `npm test -- shopify-catalog` → PASS.
+- [ ] **Step 4: Run, verify pass** - `npm test -- shopify-catalog` → PASS.
 
-- [ ] **Step 5: Commit** — `git add src/shopify-catalog.ts tests/shopify-catalog.test.ts && git commit -m "feat(shopify): catalog variant search + customer lookup"`
+- [ ] **Step 5: Commit** - `git add src/shopify-catalog.ts tests/shopify-catalog.test.ts && git commit -m "feat(shopify): catalog variant search + customer lookup"`
 
 ---
 
@@ -398,7 +398,7 @@ export async function findCustomerByEmail(admin: AdminGraphql, email: string): P
 - Consumes: `AdminGraphql`.
 - Produces: `createDraftOrder(admin, input: { email: string; customerId?: string; lineItems: { variantId: string; quantity: number }[]; pawscoutInvoiceId: string }): Promise<{ draftOrderId: string; invoiceUrl: string }>`. Throws on Shopify userErrors.
 
-- [ ] **Step 1: Failing test** — create `tests/shopify-drafts.test.ts`:
+- [ ] **Step 1: Failing test** - create `tests/shopify-drafts.test.ts`:
 ```ts
 import { describe, it, expect } from 'vitest';
 import { createDraftOrder } from '../src/shopify-drafts';
@@ -430,9 +430,9 @@ describe('createDraftOrder', () => {
 });
 ```
 
-- [ ] **Step 2: Run, verify fail** — `npm test -- shopify-drafts` → FAIL.
+- [ ] **Step 2: Run, verify fail** - `npm test -- shopify-drafts` → FAIL.
 
-- [ ] **Step 3: Implement** — create `src/shopify-drafts.ts`:
+- [ ] **Step 3: Implement** - create `src/shopify-drafts.ts`:
 ```ts
 import type { AdminGraphql } from './shopify-admin';
 
@@ -461,11 +461,11 @@ export async function createDraftOrder(
 }
 ```
 
-- [ ] **Step 4: Run, verify pass** — `npm test -- shopify-drafts` → PASS.
+- [ ] **Step 4: Run, verify pass** - `npm test -- shopify-drafts` → PASS.
 
-- [ ] **Step 5: Commit** — `git add src/shopify-drafts.ts tests/shopify-drafts.test.ts && git commit -m "feat(shopify): draftOrderCreate with pawscout_invoice_id custom attribute"`
+- [ ] **Step 5: Commit** - `git add src/shopify-drafts.ts tests/shopify-drafts.test.ts && git commit -m "feat(shopify): draftOrderCreate with pawscout_invoice_id custom attribute"`
 
-> **Implementation note (verification task from spec §10):** before relying on `customAttributes` for attribution (Task 9), confirm on the pinned `LATEST_API_VERSION` that draft-order `customAttributes` propagate to the resulting Order's `note_attributes`. If not, Task 9's email fallback becomes primary — flag to the controller.
+> **Implementation note (verification task from spec §10):** before relying on `customAttributes` for attribution (Task 9), confirm on the pinned `LATEST_API_VERSION` that draft-order `customAttributes` propagate to the resulting Order's `note_attributes`. If not, Task 9's email fallback becomes primary - flag to the controller.
 
 ---
 
@@ -479,7 +479,7 @@ export async function createDraftOrder(
 **Interfaces:**
 - Produces: `hasScope(scopesCsv: string | null | undefined, scope: string): boolean`.
 
-- [ ] **Step 1: Failing test** — create `tests/inbox-scopes.test.ts`:
+- [ ] **Step 1: Failing test** - create `tests/inbox-scopes.test.ts`:
 ```ts
 import { describe, it, expect } from 'vitest';
 import { hasScope } from '../src/inbox/scopes';
@@ -493,9 +493,9 @@ describe('hasScope', () => {
 });
 ```
 
-- [ ] **Step 2: Run, verify fail** — `npm test -- inbox-scopes` → FAIL.
+- [ ] **Step 2: Run, verify fail** - `npm test -- inbox-scopes` → FAIL.
 
-- [ ] **Step 3: Implement** — create `src/inbox/scopes.ts`:
+- [ ] **Step 3: Implement** - create `src/inbox/scopes.ts`:
 ```ts
 /** True if the tenant's granted scope CSV (tenants.scopes) includes `scope`. */
 export function hasScope(scopesCsv: string | null | undefined, scope: string): boolean {
@@ -505,9 +505,9 @@ export function hasScope(scopesCsv: string | null | undefined, scope: string): b
 ```
 Then in `wrangler.toml`, append to the `SHOPIFY_SCOPES` value: `,write_draft_orders,read_customers` (keep it one comma-separated string, no spaces).
 
-- [ ] **Step 4: Run, verify pass** — `npm test -- inbox-scopes` → PASS.
+- [ ] **Step 4: Run, verify pass** - `npm test -- inbox-scopes` → PASS.
 
-- [ ] **Step 5: Commit** — `git add src/inbox/scopes.ts wrangler.toml tests/inbox-scopes.test.ts && git commit -m "feat(inbox): scope helper + add write_draft_orders/read_customers"`
+- [ ] **Step 5: Commit** - `git add src/inbox/scopes.ts wrangler.toml tests/inbox-scopes.test.ts && git commit -m "feat(inbox): scope helper + add write_draft_orders/read_customers"`
 
 ---
 
@@ -519,9 +519,9 @@ Then in `wrangler.toml`, append to the `SHOPIFY_SCOPES` value: `,write_draft_ord
 
 **Interfaces:**
 - Consumes: `sendEmail` (`src/email.ts`), `TenantStore`, `InvoiceRow`, `ThreadRow`.
-- Produces: `sendInvoice(env, store, thread: ThreadRow, invoice: InvoiceRow, fetchImpl?): Promise<{ ok: boolean; error?: string }>` — emails the invoice link (threaded, from `support@`), records the outbound message, sets the invoice `sent` + thread `awaiting_customer`.
+- Produces: `sendInvoice(env, store, thread: ThreadRow, invoice: InvoiceRow, fetchImpl?): Promise<{ ok: boolean; error?: string }>` - emails the invoice link (threaded, from `support@`), records the outbound message, sets the invoice `sent` + thread `awaiting_customer`.
 
-- [ ] **Step 1: Failing test** — create `tests/inbox-send-invoice.test.ts`:
+- [ ] **Step 1: Failing test** - create `tests/inbox-send-invoice.test.ts`:
 ```ts
 /// <reference types="@cloudflare/vitest-pool-workers" />
 import { describe, it, expect, beforeEach, vi } from 'vitest';
@@ -551,9 +551,9 @@ it('emails the invoice link, records outbound, flips invoice + thread', async ()
 });
 ```
 
-- [ ] **Step 2: Run, verify fail** — `npm test -- inbox-send-invoice` → FAIL.
+- [ ] **Step 2: Run, verify fail** - `npm test -- inbox-send-invoice` → FAIL.
 
-- [ ] **Step 3: Implement** — create `src/inbox/send-invoice.ts` (mirror `src/inbox/send.ts`):
+- [ ] **Step 3: Implement** - create `src/inbox/send-invoice.ts` (mirror `src/inbox/send.ts`):
 ```ts
 import type { Env } from '../types';
 import type { TenantStore } from '../tenant-store';
@@ -573,10 +573,10 @@ export async function sendInvoice(
   if (!env.RESEND_API_KEY) return { ok: false, error: 'RESEND_API_KEY not set' };
   if (!invoice.invoice_url) return { ok: false, error: 'invoice has no invoice_url' };
   const items: InvoiceLineItem[] = JSON.parse(invoice.line_items_json);
-  const lines = items.map((i) => `${i.qty} × ${i.title} — £${i.priceGbp.toFixed(2)}`).join('\n');
+  const lines = items.map((i) => `${i.qty} × ${i.title} - £${i.priceGbp.toFixed(2)}`).join('\n');
   const cover = (invoice.cover_text ?? '').trim();
   const text = `${cover ? cover + '\n\n' : ''}${lines}\n\nTotal: £${invoice.total.toFixed(2)}\n\nComplete your order securely here:\n${invoice.invoice_url}`;
-  const html = `${cover ? `<p>${esc(cover)}</p>` : ''}<ul>${items.map((i) => `<li>${esc(`${i.qty} × ${i.title}`)} — £${i.priceGbp.toFixed(2)}</li>`).join('')}</ul><p><strong>Total: £${invoice.total.toFixed(2)}</strong></p><p><a href="${esc(invoice.invoice_url)}">Complete your order →</a></p>`;
+  const html = `${cover ? `<p>${esc(cover)}</p>` : ''}<ul>${items.map((i) => `<li>${esc(`${i.qty} × ${i.title}`)} - £${i.priceGbp.toFixed(2)}</li>`).join('')}</ul><p><strong>Total: £${invoice.total.toFixed(2)}</strong></p><p><a href="${esc(invoice.invoice_url)}">Complete your order →</a></p>`;
 
   const got = await store.getThreadWithMessages(thread.id);
   const lastInbound = [...(got?.messages ?? [])].reverse().find((m) => m.direction === 'inbound');
@@ -596,9 +596,9 @@ export async function sendInvoice(
 ```
 (`sendEmail` returns `{ ok, id, messageId }`; mirror `send.ts`. If `r.messageId` typing differs, follow `send.ts` exactly.)
 
-- [ ] **Step 4: Run, verify pass** — `npm test -- inbox-send-invoice` → PASS.
+- [ ] **Step 4: Run, verify pass** - `npm test -- inbox-send-invoice` → PASS.
 
-- [ ] **Step 5: Commit** — `git add src/inbox/send-invoice.ts tests/inbox-send-invoice.test.ts && git commit -m "feat(inbox): sendInvoice — emails the draft-order payment link"`
+- [ ] **Step 5: Commit** - `git add src/inbox/send-invoice.ts tests/inbox-send-invoice.test.ts && git commit -m "feat(inbox): sendInvoice - emails the draft-order payment link"`
 
 ---
 
@@ -613,7 +613,7 @@ export async function sendInvoice(
   - `store.linkContactToShopifyCustomer(email: string, customerId: string): Promise<void>`
   - `store.getContactByEmail(email: string): Promise<ContactRow | null>`
 
-- [ ] **Step 1: Failing test** — create `tests/inbox-contact-link.test.ts`:
+- [ ] **Step 1: Failing test** - create `tests/inbox-contact-link.test.ts`:
 ```ts
 /// <reference types="@cloudflare/vitest-pool-workers" />
 import { describe, it, expect, beforeEach } from 'vitest';
@@ -629,9 +629,9 @@ it('links a contact to a shopify customer id', async () => {
 });
 ```
 
-- [ ] **Step 2: Run, verify fail** — `npm test -- inbox-contact-link` → FAIL.
+- [ ] **Step 2: Run, verify fail** - `npm test -- inbox-contact-link` → FAIL.
 
-- [ ] **Step 3: Implement** — in `src/tenant-store.ts` (import `ContactRow` from `./inbox/types` if not already):
+- [ ] **Step 3: Implement** - in `src/tenant-store.ts` (import `ContactRow` from `./inbox/types` if not already):
 ```ts
   async linkContactToShopifyCustomer(email: string, customerId: string): Promise<void> {
     await this.db.prepare(`UPDATE inbox_contacts SET shopify_customer_id = ?3 WHERE shop = ?1 AND email = ?2`).bind(this.shop, email, customerId).run();
@@ -641,9 +641,9 @@ it('links a contact to a shopify customer id', async () => {
   }
 ```
 
-- [ ] **Step 4: Run, verify pass** — `npm test -- inbox-contact-link` → PASS.
+- [ ] **Step 4: Run, verify pass** - `npm test -- inbox-contact-link` → PASS.
 
-- [ ] **Step 5: Commit** — `git add src/tenant-store.ts tests/inbox-contact-link.test.ts && git commit -m "feat(inbox): contact↔Shopify-customer linking store methods"`
+- [ ] **Step 5: Commit** - `git add src/tenant-store.ts tests/inbox-contact-link.test.ts && git commit -m "feat(inbox): contact↔Shopify-customer linking store methods"`
 
 ---
 
@@ -657,12 +657,12 @@ it('links a contact to a shopify customer id', async () => {
 **Interfaces:**
 - Consumes: `TenantStore`, `Env`, `makeAdminGraphql`, `Vault` (token decrypt), `resolveLineRequest`/`searchShopifyProducts`/`findCustomerByEmail`, `createDraftOrder`, `sendInvoice`, `hasScope`.
 - Produces:
-  - `adminForShop(env, store): Promise<AdminGraphql | null>` — decrypts the token (`Vault.fromMasterKey(env.PAWSCOUT_MASTER_KEY)` → `vault.open(dek_wrapped, access_token_enc)`) and returns a bound client, or `null` if uninstalled. (Mirror `src/fulfil-run.ts:256-259`.)
-  - `buildInvoiceForThread(env, store, threadId, items: { variantId: string; qty: number }[], coverText: string): Promise<{ ok: true; invoiceId: string } | { ok: false; error: string }>` — owner-confirmed items; verifies `write_draft_orders`; resolves variant titles/prices via catalog; inserts invoice `proposed`, creates draft order, sets `invoice_url`/`draftOrderId`, sends, returns.
-  - `discardInvoice(env, store, invoiceId): Promise<{ ok: boolean; error?: string }>` — sets invoice `discarded`.
-  - `searchCatalog(env, store, query): Promise<{ ok: true; variants: CatalogVariant[] } | { ok: false; error: string }>` — for the console product picker.
+  - `adminForShop(env, store): Promise<AdminGraphql | null>` - decrypts the token (`Vault.fromMasterKey(env.PAWSCOUT_MASTER_KEY)` → `vault.open(dek_wrapped, access_token_enc)`) and returns a bound client, or `null` if uninstalled. (Mirror `src/fulfil-run.ts:256-259`.)
+  - `buildInvoiceForThread(env, store, threadId, items: { variantId: string; qty: number }[], coverText: string): Promise<{ ok: true; invoiceId: string } | { ok: false; error: string }>` - owner-confirmed items; verifies `write_draft_orders`; resolves variant titles/prices via catalog; inserts invoice `proposed`, creates draft order, sets `invoice_url`/`draftOrderId`, sends, returns.
+  - `discardInvoice(env, store, invoiceId): Promise<{ ok: boolean; error?: string }>` - sets invoice `discarded`.
+  - `searchCatalog(env, store, query): Promise<{ ok: true; variants: CatalogVariant[] } | { ok: false; error: string }>` - for the console product picker.
 
-- [ ] **Step 1: Failing test** — create `tests/inbox-invoice-routes.test.ts` (inject a fake admin via a module spy on `adminForShop`, or pass a `fetchImpl` through; the simplest is to test `buildInvoiceForThread` with an `env` whose token decrypts and a `fetchImpl` mock for both Shopify + Resend). Minimal scope-degradation + happy-path:
+- [ ] **Step 1: Failing test** - create `tests/inbox-invoice-routes.test.ts` (inject a fake admin via a module spy on `adminForShop`, or pass a `fetchImpl` through; the simplest is to test `buildInvoiceForThread` with an `env` whose token decrypts and a `fetchImpl` mock for both Shopify + Resend). Minimal scope-degradation + happy-path:
 ```ts
 /// <reference types="@cloudflare/vitest-pool-workers" />
 import { describe, it, expect, beforeEach, vi } from 'vitest';
@@ -683,9 +683,9 @@ it('refuses to invoice without the write_draft_orders scope', async () => {
 ```
 (The happy-path with a real token decrypt requires a Vault-sealed token fixture; follow the pattern in `tests/fulfil-run.test.ts` for sealing a token, then assert the invoice ends `sent` and a draft order + invoice email were sent via the `fetchImpl` mock. If that fixture is heavy, keep the happy path in the sweep test (Task 14) and keep this task's test to the scope gate + `discardInvoice`.)
 
-- [ ] **Step 2: Run, verify fail** — `npm test -- inbox-invoice-routes` → FAIL.
+- [ ] **Step 2: Run, verify fail** - `npm test -- inbox-invoice-routes` → FAIL.
 
-- [ ] **Step 3: Implement** — create `src/inbox/invoice-routes.ts`:
+- [ ] **Step 3: Implement** - create `src/inbox/invoice-routes.ts`:
 ```ts
 import type { Env } from '../types';
 import { TenantStore } from '../tenant-store';
@@ -725,7 +725,7 @@ export async function buildInvoiceForThread(
   if (!admin) return { ok: false, error: 'not_installed' };
 
   // Resolve each variant id to its catalog title + price (prices come from Shopify, never recomputed).
-  const all = await searchShopifyProducts(admin, ''); // see note below — owner picks from searchCatalog; here re-fetch by id
+  const all = await searchShopifyProducts(admin, ''); // see note below - owner picks from searchCatalog; here re-fetch by id
   const byId = new Map(all.map((v) => [v.variantId, v]));
   const lineItems: InvoiceLineItem[] = [];
   for (const it of items) {
@@ -765,12 +765,12 @@ export async function discardInvoice(_env: Env, store: TenantStore, invoiceId: s
 }
 ```
 > **Resolution note:** re-fetching the whole catalog to map ids is wrong for large stores. Replace `searchShopifyProducts(admin, '')` with a dedicated `variantsByIds(admin, ids)` query (Admin `nodes(ids:[ID!]!)` → `... on ProductVariant { id sku title price product { title } }`). Add it to `src/shopify-catalog.ts` with its own test in this task. The implementer should add `variantsByIds` rather than the `''` placeholder.
-- Add `getTenant()` to `TenantStore` if not present (returns the `tenants` row incl. `scopes`, `access_token_enc`, `dek_wrapped`); check first — `fulfil-run.ts` already reads `tenant` from the store, reuse that exact accessor.
+- Add `getTenant()` to `TenantStore` if not present (returns the `tenants` row incl. `scopes`, `access_token_enc`, `dek_wrapped`); check first - `fulfil-run.ts` already reads `tenant` from the store, reuse that exact accessor.
 - In `src/inbox/routes.ts` `getInboxThread`, also return the invoice: `const invoice = await store.getOpenInvoiceForThread(threadId) ?? null;` and include `invoice` in the response object.
 
-- [ ] **Step 4: Run, verify pass** — `npm test -- inbox-invoice-routes` → PASS.
+- [ ] **Step 4: Run, verify pass** - `npm test -- inbox-invoice-routes` → PASS.
 
-- [ ] **Step 5: Commit** — `git add src/inbox/invoice-routes.ts src/inbox/routes.ts src/shopify-catalog.ts tests/inbox-invoice-routes.test.ts && git commit -m "feat(inbox): owner invoice actions (build/discard) + variantsByIds + scope gate"`
+- [ ] **Step 5: Commit** - `git add src/inbox/invoice-routes.ts src/inbox/routes.ts src/shopify-catalog.ts tests/inbox-invoice-routes.test.ts && git commit -m "feat(inbox): owner invoice actions (build/discard) + variantsByIds + scope gate"`
 
 ---
 
@@ -786,9 +786,9 @@ export async function discardInvoice(_env: Env, store: TenantStore, invoiceId: s
 - Consumes: `TenantStore`, `OrderRecord`.
 - Produces:
   - `OrderRecord.noteAttributes: Record<string, string>` (added field).
-  - `attributePaidOrder(store, order: OrderRecord): Promise<{ converted: boolean }>` — match by `note_attributes.pawscout_invoice_id` → `getInvoiceByPawscoutId`; else by customer email → most recent open invoice; on match mark invoice `paid` + thread `converted`. Idempotent (already `paid` → no-op). Never throws.
+  - `attributePaidOrder(store, order: OrderRecord): Promise<{ converted: boolean }>` - match by `note_attributes.pawscout_invoice_id` → `getInvoiceByPawscoutId`; else by customer email → most recent open invoice; on match mark invoice `paid` + thread `converted`. Idempotent (already `paid` → no-op). Never throws.
 
-- [ ] **Step 1: Failing test** — create `tests/inbox-attribution.test.ts`:
+- [ ] **Step 1: Failing test** - create `tests/inbox-attribution.test.ts`:
 ```ts
 /// <reference types="@cloudflare/vitest-pool-workers" />
 import { describe, it, expect, beforeEach } from 'vitest';
@@ -817,7 +817,7 @@ it('falls back to email match when no attribute', async () => {
   await s.upsertContact({ email: 'c@x.com' });
   const tid = await s.createThread({ contactEmail: 'c@x.com', subject: 'x', subjectNorm: 'x', receivedAt: new Date().toISOString(), initialStatus: 'awaiting_customer' });
   const invId = await s.insertInvoice({ threadId: tid, lineItems: [], total: 5, currency: 'GBP', coverText: '', confidence: null, holdReasons: [], status: 'sent' });
-  // email lives on the webhook payload, exposed via a customerEmail field — see impl note
+  // email lives on the webhook payload, exposed via a customerEmail field - see impl note
   const r = await attributePaidOrder(s, { ...order({}), customerEmail: 'c@x.com' } as never);
   expect(r.converted).toBe(true);
   expect((await s.getInvoice(invId))?.status).toBe('paid');
@@ -830,18 +830,18 @@ it('no-ops when there is no match', async () => {
 });
 ```
 
-- [ ] **Step 2: Run, verify fail** — `npm test -- inbox-attribution` → FAIL.
+- [ ] **Step 2: Run, verify fail** - `npm test -- inbox-attribution` → FAIL.
 
-- [ ] **Step 3a: Capture note_attributes + email** — in `src/fulfil.ts`, add to `OrderRecord`: `noteAttributes: Record<string, string>;` and `customerEmail: string | null;`. In `parseOrderWebhook`, before the `return`, build:
+- [ ] **Step 3a: Capture note_attributes + email** - in `src/fulfil.ts`, add to `OrderRecord`: `noteAttributes: Record<string, string>;` and `customerEmail: string | null;`. In `parseOrderWebhook`, before the `return`, build:
 ```ts
   const na: Record<string, string> = {};
   if (Array.isArray(o.note_attributes)) for (const x of o.note_attributes as { name?: unknown; value?: unknown }[]) { if (x && typeof x.name === 'string') na[x.name] = str(x.value); }
   const cust = (o.customer ?? null) as Record<string, unknown> | null;
   const customerEmail = str(o.email || o.contact_email || (cust ? cust.email : '')) || null;
 ```
-and add `noteAttributes: na, customerEmail` to the returned object. (Existing fields unchanged — fulfilment is unaffected.)
+and add `noteAttributes: na, customerEmail` to the returned object. (Existing fields unchanged - fulfilment is unaffected.)
 
-- [ ] **Step 3b: Attribution** — create `src/inbox/attribution.ts`:
+- [ ] **Step 3b: Attribution** - create `src/inbox/attribution.ts`:
 ```ts
 import type { TenantStore } from '../tenant-store';
 import type { OrderRecord } from '../fulfil';
@@ -877,17 +877,17 @@ Add `getOpenInvoiceForContact(email)` to `TenantStore`:
   }
 ```
 
-- [ ] **Step 3c: Wire the handler** — in `src/index.ts`, in the `orders/paid` handler, AFTER the existing fulfilment side-effects (do not change them), add:
+- [ ] **Step 3c: Wire the handler** - in `src/index.ts`, in the `orders/paid` handler, AFTER the existing fulfilment side-effects (do not change them), add:
 ```ts
   ctx.waitUntil(attributePaidOrder(store, order).then(() => undefined));
 ```
 (import `attributePaidOrder` from `./inbox/attribution`; `store` + `order` are already in scope from the existing handler.)
 
-- [ ] **Step 3d: parse test** — extend `tests/fulfil.test.ts` with a case asserting `parseOrderWebhook({ note_attributes: [{ name: 'pawscout_invoice_id', value: 'inv-1' }], email: 'c@x.com' }).noteAttributes.pawscout_invoice_id === 'inv-1'` and `customerEmail === 'c@x.com'`.
+- [ ] **Step 3d: parse test** - extend `tests/fulfil.test.ts` with a case asserting `parseOrderWebhook({ note_attributes: [{ name: 'pawscout_invoice_id', value: 'inv-1' }], email: 'c@x.com' }).noteAttributes.pawscout_invoice_id === 'inv-1'` and `customerEmail === 'c@x.com'`.
 
-- [ ] **Step 4: Run, verify pass** — `npm test -- inbox-attribution fulfil` → PASS.
+- [ ] **Step 4: Run, verify pass** - `npm test -- inbox-attribution fulfil` → PASS.
 
-- [ ] **Step 5: Commit** — `git add src/fulfil.ts src/inbox/attribution.ts src/tenant-store.ts src/index.ts tests/inbox-attribution.test.ts tests/fulfil.test.ts && git commit -m "feat(inbox): orders/paid → thread converted attribution (+ email fallback)"`
+- [ ] **Step 5: Commit** - `git add src/fulfil.ts src/inbox/attribution.ts src/tenant-store.ts src/index.ts tests/inbox-attribution.test.ts tests/fulfil.test.ts && git commit -m "feat(inbox): orders/paid → thread converted attribution (+ email fallback)"`
 
 ---
 
@@ -900,7 +900,7 @@ Add `getOpenInvoiceForContact(email)` to `TenantStore`:
 **Interfaces:**
 - `inboxDataSummary` return gains `invoices: number`.
 
-- [ ] **Step 1: Failing test** — add to the redaction test file:
+- [ ] **Step 1: Failing test** - add to the redaction test file:
 ```ts
 it('purges inbox_invoices on redactContact and redactShop', async () => {
   const s = new TenantStore(env.DB, 'a.myshopify.com');
@@ -913,20 +913,20 @@ it('purges inbox_invoices on redactContact and redactShop', async () => {
 });
 ```
 
-- [ ] **Step 2: Run, verify fail** — `npm test -- webhooks` → FAIL.
+- [ ] **Step 2: Run, verify fail** - `npm test -- webhooks` → FAIL.
 
-- [ ] **Step 3: Implement** — in `src/tenant-store.ts`:
+- [ ] **Step 3: Implement** - in `src/tenant-store.ts`:
   - In `redactContact(email)`, add to the batch (uses the existing `sub = (SELECT id FROM inbox_threads WHERE shop = ?1 AND contact_email = ?2)`): `this.db.prepare(\`DELETE FROM inbox_invoices WHERE shop = ?1 AND thread_id IN ${sub}\`).bind(this.shop, e),`
   - In `redactShop()`, add: `this.db.prepare(\`DELETE FROM inbox_invoices WHERE shop = ?1\`).bind(this.shop),`
   - In `inboxDataSummary(email)`, add an invoice count and include `invoices` in the return: `const inv = await this.db.prepare(\`SELECT COUNT(*) AS n FROM inbox_invoices WHERE shop = ?1 AND thread_id IN (SELECT id FROM inbox_threads WHERE shop = ?1 AND contact_email = ?2)\`).bind(this.shop, e).first<{ n: number }>();` then `return { threads: ..., messages: ..., invoices: inv?.n ?? 0 };`
 
-- [ ] **Step 4: Run, verify pass** — `npm test -- webhooks` → PASS.
+- [ ] **Step 4: Run, verify pass** - `npm test -- webhooks` → PASS.
 
-- [ ] **Step 5: Commit** — `git add src/tenant-store.ts tests/webhooks.test.ts && git commit -m "feat(inbox): GDPR — purge inbox_invoices on redact + data-request"`
+- [ ] **Step 5: Commit** - `git add src/tenant-store.ts tests/webhooks.test.ts && git commit -m "feat(inbox): GDPR - purge inbox_invoices on redact + data-request"`
 
 ---
 
-### Task 11: Console — invoice card, settings, Reconnect banner; route registration
+### Task 11: Console - invoice card, settings, Reconnect banner; route registration
 
 **Files:**
 - Modify: `src/console/page.ts` (invoice card + settings inputs + banner)
@@ -939,23 +939,23 @@ it('purges inbox_invoices on redactContact and redactShop', async () => {
   - `POST /api/inbox/invoice/discard` `{ invoiceId }` → `discardInvoice`
   - `GET  /api/inbox/catalog?q=` → `searchCatalog`
 
-- [ ] **Step 1: Failing test** — add to `tests/console.test.ts` a render assertion that the inbox settings panel includes an `data-inbox-autoinvoice` control and the script references `/api/inbox/invoice/build`, and that all interpolated invoice values are escaped (search the rendered HTML for the literal control + no unescaped `<` injected via a crafted thread subject). Mirror the existing W-INBOX-2 console test shape.
+- [ ] **Step 1: Failing test** - add to `tests/console.test.ts` a render assertion that the inbox settings panel includes an `data-inbox-autoinvoice` control and the script references `/api/inbox/invoice/build`, and that all interpolated invoice values are escaped (search the rendered HTML for the literal control + no unescaped `<` injected via a crafted thread subject). Mirror the existing W-INBOX-2 console test shape.
 
-- [ ] **Step 2: Run, verify fail** — `npm test -- console` → FAIL.
+- [ ] **Step 2: Run, verify fail** - `npm test -- console` → FAIL.
 
-- [ ] **Step 3: Implement** —
+- [ ] **Step 3: Implement** -
   - In `src/console/page.ts`: under the inbox settings panel, add an `autoInvoice` toggle (`data-inbox-autoinvoice`) + number inputs for `invoiceConfidenceThreshold` / `invoiceValueCeiling` / `invoiceRateLimit`, wired through the existing inbox-config save (they already flow via `saveInboxConfig`). In the thread view, when `thread.invoice` is present render an invoice card (line items via `esc()`, total, status, and the `invoice_url` link when `sent`); add a product-search box that calls `/api/inbox/catalog` and an "Approve & Send invoice" button calling `/api/inbox/invoice/build`, plus "Discard". If a `reconnect_required` error returns, show a banner linking to `/auth?shop=…`. Reuse `api()`, `esc()`, `setMsg()`.
   - In `src/index.ts`: register the three endpoints next to the existing `/api/inbox/*` routes, each resolving `shop = shopOf(c)`, building `new TenantStore(c.env.DB, shop)`, calling the `invoice-routes` functions, returning JSON.
 
-- [ ] **Step 4: Run, verify pass** — `npm test -- console` → PASS, plus `npm test` (full suite) green and `npx tsc --noEmit` clean.
+- [ ] **Step 4: Run, verify pass** - `npm test -- console` → PASS, plus `npm test` (full suite) green and `npx tsc --noEmit` clean.
 
-- [ ] **Step 5: Commit** — `git add src/console/page.ts src/index.ts tests/console.test.ts && git commit -m "feat(inbox): console invoice card + settings + catalog/invoice endpoints"`
+- [ ] **Step 5: Commit** - `git add src/console/page.ts src/index.ts tests/console.test.ts && git commit -m "feat(inbox): console invoice card + settings + catalog/invoice endpoints"`
 
 > **End of Phase 3a.** The full HITL conversion loop now works and is deployable: migrate (`wrangler d1 migrations apply pawscout --remote`), re-auth the merchant to grant `write_draft_orders`+`read_customers`, deploy. `autoInvoice` is off, so nothing auto-creates orders.
 
 ---
 
-## PHASE 3b — Auto-invoice (validated in HITL, then flipped on)
+## PHASE 3b - Auto-invoice (validated in HITL, then flipped on)
 
 ### Task 12: `invoiceSendDecision` floor (pure function)
 
@@ -973,7 +973,7 @@ invoiceSendDecision(opts: {
 }): { create: boolean; holdReasons: string[] }
 ```
 
-- [ ] **Step 1: Failing test** — create `tests/inbox-invoice-floor.test.ts`:
+- [ ] **Step 1: Failing test** - create `tests/inbox-invoice-floor.test.ts`:
 ```ts
 import { describe, it, expect } from 'vitest';
 import { invoiceSendDecision } from '../src/inbox/invoice-floor';
@@ -990,9 +990,9 @@ describe('invoiceSendDecision', () => {
 });
 ```
 
-- [ ] **Step 2: Run, verify fail** — `npm test -- inbox-invoice-floor` → FAIL.
+- [ ] **Step 2: Run, verify fail** - `npm test -- inbox-invoice-floor` → FAIL.
 
-- [ ] **Step 3: Implement** — create `src/inbox/invoice-floor.ts`:
+- [ ] **Step 3: Implement** - create `src/inbox/invoice-floor.ts`:
 ```ts
 const ALWAYS_HOLD = new Set(['complaint', 'wholesale-b2b', 'spam', 'automated', 'other']);
 const ALLOWED_CATEGORIES = new Set(['lead', 'product-question', 'order-status', 'shipping-returns']);
@@ -1015,9 +1015,9 @@ export function invoiceSendDecision(opts: {
 }
 ```
 
-- [ ] **Step 4: Run, verify pass** — `npm test -- inbox-invoice-floor` → PASS.
+- [ ] **Step 4: Run, verify pass** - `npm test -- inbox-invoice-floor` → PASS.
 
-- [ ] **Step 5: Commit** — `git add src/inbox/invoice-floor.ts tests/inbox-invoice-floor.test.ts && git commit -m "feat(inbox): Auto-invoice mechanical floor"`
+- [ ] **Step 5: Commit** - `git add src/inbox/invoice-floor.ts tests/inbox-invoice-floor.test.ts && git commit -m "feat(inbox): Auto-invoice mechanical floor"`
 
 ---
 
@@ -1028,35 +1028,35 @@ export function invoiceSendDecision(opts: {
 - Test: `tests/inbox-propose-invoice.test.ts`
 
 **Interfaces:**
-- Consumes: `LlmClient` (`src/llm.ts`, `.json()` strict-JSON helper — mirror `draftReply` in `src/inbox/draft.ts`).
+- Consumes: `LlmClient` (`src/llm.ts`, `.json()` strict-JSON helper - mirror `draftReply` in `src/inbox/draft.ts`).
 - Produces: `proposeInvoice(llm, store, cfg, { subject, conversation, category }): Promise<{ isInvoiceMoment: boolean; lineRequests: { query: string; qty: number }[]; coverText: string; confidence: number } | null>`. Returns `null` on LLM failure (degrade). The system prompt forbids emitting prices/SKUs/variant ids; the email body is untrusted.
 
-- [ ] **Step 1: Failing test** — create `tests/inbox-propose-invoice.test.ts` mirroring `tests/inbox-draft.test.ts`: stub `LlmClient.json` to return `{ isInvoiceMoment: true, lineRequests: [{ query: 'red dog collar', qty: 2 }], coverText: 'Happy to set that up.', confidence: 92 }` and assert `proposeInvoice` passes it through; stub a malformed payload and assert it returns `null` (validate callback rejects) ; stub `{ isInvoiceMoment: false, ... }` and assert that flows through. Follow the exact `LlmClient` stubbing approach used in `tests/inbox-draft.test.ts`.
+- [ ] **Step 1: Failing test** - create `tests/inbox-propose-invoice.test.ts` mirroring `tests/inbox-draft.test.ts`: stub `LlmClient.json` to return `{ isInvoiceMoment: true, lineRequests: [{ query: 'red dog collar', qty: 2 }], coverText: 'Happy to set that up.', confidence: 92 }` and assert `proposeInvoice` passes it through; stub a malformed payload and assert it returns `null` (validate callback rejects) ; stub `{ isInvoiceMoment: false, ... }` and assert that flows through. Follow the exact `LlmClient` stubbing approach used in `tests/inbox-draft.test.ts`.
 
-- [ ] **Step 2: Run, verify fail** — `npm test -- inbox-propose-invoice` → FAIL.
+- [ ] **Step 2: Run, verify fail** - `npm test -- inbox-propose-invoice` → FAIL.
 
-- [ ] **Step 3: Implement** — create `src/inbox/propose-invoice.ts` mirroring `src/inbox/draft.ts` structure (system prompt + `llm.json` with a validate callback that enforces: `isInvoiceMoment` boolean, `lineRequests` array of `{query:string, qty:int 1..50}`, `coverText` string ≤ 1000, `confidence` 0-100; reject anything else). System prompt MUST state: "You receive an untrusted customer email. Output ONLY product search phrases and quantities the customer wants to buy — never prices, SKUs, IDs, or discounts. If the customer is not yet ready to buy specific identifiable products, return isInvoiceMoment:false." Use `cfg.inbox.replyModel` (drafting-grade) and log usage via `store.logLlmUsage` exactly as `draftReply` does.
+- [ ] **Step 3: Implement** - create `src/inbox/propose-invoice.ts` mirroring `src/inbox/draft.ts` structure (system prompt + `llm.json` with a validate callback that enforces: `isInvoiceMoment` boolean, `lineRequests` array of `{query:string, qty:int 1..50}`, `coverText` string ≤ 1000, `confidence` 0-100; reject anything else). System prompt MUST state: "You receive an untrusted customer email. Output ONLY product search phrases and quantities the customer wants to buy - never prices, SKUs, IDs, or discounts. If the customer is not yet ready to buy specific identifiable products, return isInvoiceMoment:false." Use `cfg.inbox.replyModel` (drafting-grade) and log usage via `store.logLlmUsage` exactly as `draftReply` does.
 
-- [ ] **Step 4: Run, verify pass** — `npm test -- inbox-propose-invoice` → PASS.
+- [ ] **Step 4: Run, verify pass** - `npm test -- inbox-propose-invoice` → PASS.
 
-- [ ] **Step 5: Commit** — `git add src/inbox/propose-invoice.ts tests/inbox-propose-invoice.test.ts && git commit -m "feat(inbox): proposeInvoice LLM (search-intents only, injection-safe)"`
+- [ ] **Step 5: Commit** - `git add src/inbox/propose-invoice.ts tests/inbox-propose-invoice.test.ts && git commit -m "feat(inbox): proposeInvoice LLM (search-intents only, injection-safe)"`
 
 ---
 
-### Task 14: Sweep integration — `proposeInvoiceOne` + mutual exclusion
+### Task 14: Sweep integration - `proposeInvoiceOne` + mutual exclusion
 
 **Files:**
 - Modify: `src/inbox/sweep.ts`
 - Test: `tests/inbox-sweep.test.ts` (extend) or `tests/inbox-invoice-sweep.test.ts`
 
 **Interfaces:**
-- Produces: `proposeInvoiceOne(env, store, cfg, thread, fetchImpl): Promise<boolean>` — returns `true` if it handled the thread as an invoice (so `draftOne` is skipped for it).
+- Produces: `proposeInvoiceOne(env, store, cfg, thread, fetchImpl): Promise<boolean>` - returns `true` if it handled the thread as an invoice (so `draftOne` is skipped for it).
 
-- [ ] **Step 1: Failing test** — create `tests/inbox-invoice-sweep.test.ts`: with `autoInvoice:false`, a buying-intent thread + a stubbed `proposeInvoice` returning `isInvoiceMoment:true` + a stubbed catalog resolving one variant → assert an invoice row is created with status `proposed` and `hold_reasons` containing `auto_invoice_off`, and **no** reply draft is created for that thread (mutual exclusion). With `autoInvoice:true` + all-pass floor → assert the invoice ends `sent` and a draft order + invoice email were sent (via `fetchImpl` mock). With an existing open `sent` invoice on the thread → assert `proposeInvoiceOne` skips (idempotency).
+- [ ] **Step 1: Failing test** - create `tests/inbox-invoice-sweep.test.ts`: with `autoInvoice:false`, a buying-intent thread + a stubbed `proposeInvoice` returning `isInvoiceMoment:true` + a stubbed catalog resolving one variant → assert an invoice row is created with status `proposed` and `hold_reasons` containing `auto_invoice_off`, and **no** reply draft is created for that thread (mutual exclusion). With `autoInvoice:true` + all-pass floor → assert the invoice ends `sent` and a draft order + invoice email were sent (via `fetchImpl` mock). With an existing open `sent` invoice on the thread → assert `proposeInvoiceOne` skips (idempotency).
 
-- [ ] **Step 2: Run, verify fail** — `npm test -- inbox-invoice-sweep` → FAIL.
+- [ ] **Step 2: Run, verify fail** - `npm test -- inbox-invoice-sweep` → FAIL.
 
-- [ ] **Step 3: Implement** — in `src/inbox/sweep.ts`:
+- [ ] **Step 3: Implement** - in `src/inbox/sweep.ts`:
   - Add `proposeInvoiceOne(env, store, cfg, thread, fetchImpl)`:
     1. if `await store.getOpenInvoiceForThread(thread.id)` → return `true` (idempotent skip; already invoiced).
     2. build the conversation (as `draftOne` does), call `proposeInvoice`. If `null` → return `false` (degrade to reply path). If `!isInvoiceMoment` → return `false`.
@@ -1067,9 +1067,9 @@ export function invoiceSendDecision(opts: {
     7. if `decision.create` → `createDraftOrder` + `setInvoiceStatus(proposed,{draftOrderId,invoiceUrl})` + `sendInvoice`. Else leave `proposed` for HITL. Return `true`.
   - In `runInboxClassifySweep`, change the draft loop so each thread is offered to the invoice path FIRST: `for (const thread of await store.threadsNeedingDraft(SWEEP_BATCH)) { const handled = await proposeInvoiceOne(env, store, cfg, thread, fetchImpl); if (!handled) await draftOne(env, store, cfg, thread, fetchImpl); }`.
 
-- [ ] **Step 4: Run, verify pass** — `npm test -- inbox-invoice-sweep inbox-sweep` → PASS; then full `npm test` + `npx tsc --noEmit` clean.
+- [ ] **Step 4: Run, verify pass** - `npm test -- inbox-invoice-sweep inbox-sweep` → PASS; then full `npm test` + `npx tsc --noEmit` clean.
 
-- [ ] **Step 5: Commit** — `git add src/inbox/sweep.ts tests/inbox-invoice-sweep.test.ts && git commit -m "feat(inbox): sweep invoice-proposal pass (HITL + Auto floor, mutually exclusive with replies)"`
+- [ ] **Step 5: Commit** - `git add src/inbox/sweep.ts tests/inbox-invoice-sweep.test.ts && git commit -m "feat(inbox): sweep invoice-proposal pass (HITL + Auto floor, mutually exclusive with replies)"`
 
 ---
 
@@ -1078,9 +1078,9 @@ export function invoiceSendDecision(opts: {
 **Files:**
 - Modify: `docs/INBOX_OPS.md`
 
-- [ ] **Step 1:** Document the W-INBOX-3 cutover in `docs/INBOX_OPS.md`: (a) `wrangler d1 migrations apply pawscout --remote` for 0011; (b) re-auth flow to grant `write_draft_orders`+`read_customers` (visit `/auth?shop=…`), and that the console shows a Reconnect banner until granted; (c) `autoInvoice` ships OFF — validate proposals in HITL, then flip; (d) the note_attributes-propagation verification result from Task 4's note; (e) deploy.
+- [ ] **Step 1:** Document the W-INBOX-3 cutover in `docs/INBOX_OPS.md`: (a) `wrangler d1 migrations apply pawscout --remote` for 0011; (b) re-auth flow to grant `write_draft_orders`+`read_customers` (visit `/auth?shop=…`), and that the console shows a Reconnect banner until granted; (c) `autoInvoice` ships OFF - validate proposals in HITL, then flip; (d) the note_attributes-propagation verification result from Task 4's note; (e) deploy.
 - [ ] **Step 2:** Run the full suite once more: `npm test` (all green) and `npx tsc --noEmit` (clean).
-- [ ] **Step 3: Commit** — `git add docs/INBOX_OPS.md && git commit -m "docs(inbox): W-INBOX-3 cutover runbook (migrate, re-auth, Auto flip)"`
+- [ ] **Step 3: Commit** - `git add docs/INBOX_OPS.md && git commit -m "docs(inbox): W-INBOX-3 cutover runbook (migrate, re-auth, Auto flip)"`
 
 ---
 
@@ -1088,6 +1088,6 @@ export function invoiceSendDecision(opts: {
 
 **Spec coverage:** §4 phasing → Phases 3a/3b; §5.1 catalog → Task 3; §5.2 draftOrderCreate → Task 4; §5.3 sendInvoice → Task 6; §5.4 data model → Task 2; §5.5 config → Task 1; §5.6 floor → Task 12; §5.7 sweep → Task 14; §5.8 attribution → Task 9; §5.9 linking → Task 7 (+ used in Task 8); §5.10 scope/degradation → Task 5 + Task 8; §5.11 console → Task 11; §7 GDPR → Task 10; §8 testing → every task's test; §10 verification → Task 4 note + Task 15. No gaps.
 
-**Placeholder scan:** the only deferred specifics are the explicit verification task (note_attributes propagation) and the `variantsByIds` resolution helper (Task 8 note instructs adding it, not a placeholder). The console test (Task 11) and propose-invoice test (Task 13) reference "mirror the existing W-INBOX-2 shape" — acceptable because the exact mirror files (`tests/console.test.ts`, `tests/inbox-draft.test.ts`) exist and are named.
+**Placeholder scan:** the only deferred specifics are the explicit verification task (note_attributes propagation) and the `variantsByIds` resolution helper (Task 8 note instructs adding it, not a placeholder). The console test (Task 11) and propose-invoice test (Task 13) reference "mirror the existing W-INBOX-2 shape" - acceptable because the exact mirror files (`tests/console.test.ts`, `tests/inbox-draft.test.ts`) exist and are named.
 
 **Type consistency:** `InvoiceLineItem` shape (`variantId/sku/title/qty/priceGbp`) is consistent across Tasks 2/6/8/14; `InvoiceRow` columns match the migration; `invoiceSendDecision` opts match the sweep call in Task 14; `OrderRecord` gains `noteAttributes`+`customerEmail` (Task 9) used by `attributePaidOrder`; `createDraftOrder` input/return consistent between Tasks 4 and 8/14.

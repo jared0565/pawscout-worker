@@ -1,4 +1,4 @@
-# Selectable LLM Models (with pricing + vision filter) — Design
+# Selectable LLM Models (with pricing + vision filter) - Design
 
 **Date:** 2026-06-19
 **Repo:** `pawscout-worker` (console UI, config, validation, a new catalog endpoint). No theme changes.
@@ -19,13 +19,13 @@ Model settings live in `TenantConfig`:
 | `llm.curationModel` *(optional, falls back to `model`)* | product curation, descriptions | text **and** hero-image QA | none |
 | `inbox.classifyModel` | email triage | text | `#inbox-classify-model` (free-text) |
 | `inbox.replyModel` | reply + invoice drafts | text | `#inbox-reply-model` (free-text) |
-| `llm.digestModel` *(optional)* | — **validated/stored but UNUSED** by any LLM call | — | none |
+| `llm.digestModel` *(optional)* | - **validated/stored but UNUSED** by any LLM call | - | none |
 
-The **only** vision call is hero-image QA — `pickHeroImage` in `src/llm.ts` (~line 212), which sends image URLs and currently resolves `cfg.llm.curationModel ?? cfg.llm.model`. So a text-only model in `curationModel`/`model` would silently break image QA. PS calls OpenRouter via `LlmClient` (`src/llm.ts`), so every usable model is an OpenRouter slug.
+The **only** vision call is hero-image QA - `pickHeroImage` in `src/llm.ts` (~line 212), which sends image URLs and currently resolves `cfg.llm.curationModel ?? cfg.llm.model`. So a text-only model in `curationModel`/`model` would silently break image QA. PS calls OpenRouter via `LlmClient` (`src/llm.ts`), so every usable model is an OpenRouter slug.
 
 ## 3. The model fields → dropdowns
 
-Five settings become `<select>` dropdowns (each option shows pricing + a vision marker — see §6):
+Five settings become `<select>` dropdowns (each option shows pricing + a vision marker - see §6):
 
 | Setting | Config key | Dropdown contents |
 |---|---|---|
@@ -35,11 +35,11 @@ Five settings become `<select>` dropdowns (each option shows pricing + a vision 
 | Inbox classify model | `inbox.classifyModel` | all curated models |
 | Inbox reply model | `inbox.replyModel` | all curated models |
 
-`digestModel` gets **no UI** (dead config — out of scope, §11). The currently-saved slug for any field is **always preserved** as a selected option even if it is not in the curated list, so converting free-text → dropdown never silently changes a tenant's config.
+`digestModel` gets **no UI** (dead config - out of scope, §11). The currently-saved slug for any field is **always preserved** as a selected option even if it is not in the curated list, so converting free-text → dropdown never silently changes a tenant's config.
 
 ## 4. Model catalog
 
-### 4.1 Curated list (a worker constant — easily editable)
+### 4.1 Curated list (a worker constant - easily editable)
 
 `src/models-catalog.ts` exports `CURATED_MODELS: { slug: string; label: string; vision: boolean }[]`. The `vision` flag is a **static hint** (used as the fallback / when the live lookup misses); it is corrected from live data when available. Selection is **ACCURACY-first (price secondary)** per the merchant, validated against the live OpenRouter catalog + an adversarial ranking workflow (2026-06-19). Claude **Opus** is excluded (cost); Claude **Sonnet 4.6** is included as the claim-safety accuracy ceiling; `gemini-3.1-pro-preview` is merchant-mandated. Ordered premium → workhorse; 9 of 10 are vision-capable:
 
@@ -65,7 +65,7 @@ export const CURATED_MODELS = [
 1. Read cache key `openrouter:models` from D1 (`getSearchCache`). If present and fresh, use it.
 2. Else `fetch('https://openrouter.ai/api/v1/models')`, build a `Map<slug, { name, vision, promptPrice, completionPrice }>` where `vision = architecture.input_modalities?.includes('image')`, `promptPrice = Number(pricing.prompt)`, `completionPrice = Number(pricing.completion)` (per-token USD). Cache the *built map* for **24h** (`putSearchCache(..., 1 day)`).
 3. For each `CURATED_MODELS` entry, emit `{ slug, name: live?.name ?? label, vision: live?.vision ?? staticVision, promptPriceM: live ? promptPrice*1e6 : null, completionPriceM: live ? completionPrice*1e6 : null }` (prices converted to **$/million tokens**, `null` when unknown).
-4. Return `{ ok: true, models: [...] }`. On any fetch/parse failure, return the curated list with `promptPriceM/completionPriceM = null` and the static `vision` flag — **never error** (dropdowns must always populate).
+4. Return `{ ok: true, models: [...] }`. On any fetch/parse failure, return the curated list with `promptPriceM/completionPriceM = null` and the static `vision` flag - **never error** (dropdowns must always populate).
 
 ## 5. Config schema change
 
@@ -75,15 +75,15 @@ export const CURATED_MODELS = [
 const model = cfg.llm.visionModel ?? cfg.llm.curationModel ?? cfg.llm.model;
 ```
 
-in `pickHeroImage` (`src/llm.ts`) — the **only** edit to a vision call. `validateLlm` (`src/validate.ts`) accepts `visionModel` as an optional model string (shape/length check only, like `curationModel`). The vision-*capability* check (§6) is NOT in the pure `validateLlm` — it needs the cached catalog, so it runs in the config-save route which has `c.env.DB`.
+in `pickHeroImage` (`src/llm.ts`) - the **only** edit to a vision call. `validateLlm` (`src/validate.ts`) accepts `visionModel` as an optional model string (shape/length check only, like `curationModel`). The vision-*capability* check (§6) is NOT in the pure `validateLlm` - it needs the cached catalog, so it runs in the config-save route which has `c.env.DB`.
 
-## 6. Vision filter — enforced in two layers
+## 6. Vision filter - enforced in two layers
 
 **UI (primary).** The Image-model `<select>` is built only from curated models where `vision === true`. The other four selects use all curated models. Each option label:
 ```
-{name} — ${promptPriceM}/M in · ${completionPriceM}/M out{ · 👁}
+{name} - ${promptPriceM}/M in · ${completionPriceM}/M out{ · 👁}
 ```
-e.g. `Claude Haiku 4.5 — $1.00/M in · $5.00/M out · 👁`. When price is `null`: show `price n/a`. The `· 👁` suffix appears for vision models.
+e.g. `Claude Haiku 4.5 - $1.00/M in · $5.00/M out · 👁`. When price is `null`: show `price n/a`. The `· 👁` suffix appears for vision models.
 
 **Server (defense-in-depth).** In the config-save route (which has `c.env.DB` → the cached catalog map), if `visionModel` is set, look it up; if found AND `vision === false`, **reject**: `{ ok:false, error:'Selected image model is text-only and cannot process images' }`. If the model is absent from the catalog OR the catalog is unavailable, **allow** (the UI already constrained it) and `console.warn`. This blocks a text-only image model even if the UI is bypassed, without hard-failing on catalog gaps.
 
@@ -119,7 +119,7 @@ Native `<select>` (≤9 options; type-ahead works), no custom combobox. The five
 
 ## 11. Out of scope (YAGNI)
 
-- `digestModel` UI (dead config — not wired to any call).
+- `digestModel` UI (dead config - not wired to any call).
 - Full 300-model OpenRouter catalog / search box (curated 9 instead).
 - Custom combobox / free-text model entry (would bypass the vision filter).
 - Per-model cost estimation or usage-based ranking.

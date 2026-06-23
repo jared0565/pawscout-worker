@@ -47,7 +47,7 @@ CREATE TABLE product_events (
 );
 CREATE INDEX idx_product_events_lookup ON product_events (shop, cj_pid, created_at);
 
--- Cached CJ access token (sealed) — CJ allows one auth refresh per 300s.
+-- Cached CJ access token (sealed) - CJ allows one auth refresh per 300s.
 CREATE TABLE cj_tokens (
   shop         TEXT PRIMARY KEY,
   token_enc    TEXT NOT NULL,

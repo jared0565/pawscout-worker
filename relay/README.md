@@ -11,7 +11,7 @@ relay's static egress IP has exactly one CJ user: us.
 
 The Worker rewrites any `https://developers.cjdropshipping.com/...` request to
 `https://<this-app>.fly.dev/cj/...` with an `X-Relay-Token` header (see
-`relayedFetch` in `src/cj.ts`). The relay forwards only to CJ's origin —
+`relayedFetch` in `src/cj.ts`). The relay forwards only to CJ's origin -
 it is not a general-purpose proxy.
 
 ## Deploy (one-time, ~5 minutes)
@@ -25,7 +25,7 @@ fly auth login
 cd relay
 fly launch --no-deploy        # accepts this fly.toml; pick/confirm a unique app name
 
-# 3. Set the shared secret (SAVE THIS VALUE — the worker needs it too)
+# 3. Set the shared secret (SAVE THIS VALUE - the worker needs it too)
 fly secrets set RELAY_TOKEN=$(openssl rand -hex 32)
 
 # 4. Deploy, then allocate the dedicated egress IP ($3.60/mo)

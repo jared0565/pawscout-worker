@@ -1,12 +1,12 @@
-# Legal notice — paste into Shopify
+# Legal notice - paste into Shopify
 
 Where: **Settings → Policies → Legal notice**
 (https://admin.shopify.com/store/4qkudm-ez/settings/legal)
 
 Impressum-style operator disclosure (E-Commerce Regulations 2002 identity
-requirements). Sole-trader wording — update if/when Active Paw incorporates
+requirements). Sole-trader wording - update if/when Active Paw incorporates
 (then: company name, number, registered office) or registers for VAT (then:
-add the VAT number — legally required once registered).
+add the VAT number - legally required once registered).
 
 ---
 
@@ -32,7 +32,7 @@ Use of this website and all purchases made through it are governed by our Terms 
 
 INTELLECTUAL PROPERTY
 
-All content on this website — including text, product descriptions, images, graphics, logos and branding — is the property of Active Paw or its licensors and is protected by copyright. You may not reproduce or use it for commercial purposes without our prior written permission.
+All content on this website - including text, product descriptions, images, graphics, logos and branding - is the property of Active Paw or its licensors and is protected by copyright. You may not reproduce or use it for commercial purposes without our prior written permission.
 
 PRODUCT CLAIMS AND ACCURACY
 
@@ -40,6 +40,6 @@ We take care to keep the information on this website accurate and up to date, bu
 
 COMPLAINTS AND DISPUTES
 
-If something has gone wrong, please contact us first at contact@activepaw.co.uk — almost every issue can be resolved quickly and fairly by email. These terms and any disputes are governed by the law of England and Wales.
+If something has gone wrong, please contact us first at contact@activepaw.co.uk - almost every issue can be resolved quickly and fairly by email. These terms and any disputes are governed by the law of England and Wales.
 
 © Active Paw. All rights reserved.

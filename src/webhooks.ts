@@ -44,7 +44,7 @@ export async function registerWebhookTopic(
 
 /**
  * Register every webhook the app needs for a shop: uninstall, paid orders, and
- * the three mandatory GDPR/privacy topics. Best-effort per topic — a missing
+ * the three mandatory GDPR/privacy topics. Best-effort per topic - a missing
  * `orders/paid` scope must not stop the others (or the install). Reports the
  * first failure (after attempting all).
  */

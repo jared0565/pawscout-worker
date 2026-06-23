@@ -6,13 +6,13 @@ import type { DayRange } from '../logistics';
  * When a customer asks about shipping to a confidently-derived destination, the
  * drafter reads the SYNCED CJ logistics matrix from D1 (NO live CJ call) and
  * appends a single claim-safe, TIME-ONLY line. The figure is injected
- * DETERMINISTICALLY in code — the LLM never emits it (standing rule: the model
+ * DETERMINISTICALLY in code - the LLM never emits it (standing rule: the model
  * never states prices/SKUs/variant ids/discounts/dates).
  *
  * Governing rule [[customer-facing-only-real-defensible]]: only surface a real,
  * defensible number. The matrix row must be present AND fresh (the accessor
  * enforces staleness) and the destination unambiguous; on ANY doubt we return null
- * and the drafter falls back to "we can ship there — we'll confirm the timeframe".
+ * and the drafter falls back to "we can ship there - we'll confirm the timeframe".
  * Never throws. Price is omitted (customer shipping is the store's flat card, not
  * CJ-derived); the line is delivery-time only.
  */
@@ -29,7 +29,7 @@ export function isShippingIntent(category: string | null | undefined, subject: s
 /**
  * Curated destination name/code → ISO-3166-1 alpha-2. Deliberately small and
  * unambiguous: common Active Paw international markets + the obvious aliases.
- * We do NOT try to cover every country — an unknown destination falls back to
+ * We do NOT try to cover every country - an unknown destination falls back to
  * the safe hedge, which is fine.
  */
 const COUNTRY_NAMES: Record<string, string> = {
@@ -81,7 +81,7 @@ const CCTLD: Record<string, string> = {
 export function deriveDestinationCountry(conversation: string, subject: string, email: string): string | null {
   const text = `${subject}\n${conversation}`.toLowerCase();
 
-  // UK home market — recognised so the caller can explicitly skip a CJ quote.
+  // UK home market - recognised so the caller can explicitly skip a CJ quote.
   const ukNamed = /\b(uk|u\.k\.|united kingdom|britain|great britain|england|scotland|wales|northern ireland)\b/i.test(text);
 
   const found = new Set<string>();
@@ -95,7 +95,7 @@ export function deriveDestinationCountry(conversation: string, subject: string, 
   }
 
   if (found.size === 1) return [...found][0];
-  if (found.size > 1) return null; // ambiguous — multiple destinations named
+  if (found.size > 1) return null; // ambiguous - multiple destinations named
 
   // Fall back to the email ccTLD (only the unambiguous ones).
   const tld = (email.split('@')[1] ?? '').trim().toLowerCase().split('.').pop() ?? '';

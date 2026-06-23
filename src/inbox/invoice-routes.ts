@@ -48,7 +48,7 @@ export async function searchCatalog(
 
 /**
  * Build a draft invoice for the given thread from owner-picked variant+qty items:
- * 1. Scope-check `write_draft_orders` — return `reconnect_required` if absent.
+ * 1. Scope-check `write_draft_orders` - return `reconnect_required` if absent.
  * 2. Resolve variant ids → titles/prices via `variantsByIds`.
  * 3. Insert `inbox_invoices` row (status `proposed`).
  * 4. Create a Shopify draft order (gets `invoiceUrl`).
@@ -64,7 +64,7 @@ export async function buildInvoiceForThread(
   coverText: string,
   fetchImpl: typeof fetch = defaultFetch
 ): Promise<{ ok: true; invoiceId: string } | { ok: false; error: string }> {
-  // Scope gate — must check before any vault call
+  // Scope gate - must check before any vault call
   const tenant = await store.getTenant();
   if (!hasScope(tenant?.scopes, 'write_draft_orders')) {
     return { ok: false, error: 'reconnect_required' };
@@ -170,7 +170,7 @@ export async function buildInvoiceForThread(
 }
 
 /**
- * Discard a proposed or sent invoice — marks it `discarded`.
+ * Discard a proposed or sent invoice - marks it `discarded`.
  * Does NOT close the thread (the thread may still have ongoing conversation).
  */
 export async function discardInvoice(
@@ -178,7 +178,7 @@ export async function discardInvoice(
   store: TenantStore,
   invoiceId: string
 ): Promise<{ ok: boolean; error?: string }> {
-  void env; // not used — kept in signature for symmetry and future auth checks
+  void env; // not used - kept in signature for symmetry and future auth checks
   const invoice = await store.getInvoice(invoiceId);
   if (!invoice) return { ok: false, error: 'invoice_not_found' };
   if (invoice.status === 'discarded') return { ok: true }; // idempotent

@@ -1,13 +1,13 @@
-# PawScout Inbox — Email CRM & Conversion Agent (`W-INBOX`)
+# PawScout Inbox - Email CRM & Conversion Agent (`W-INBOX`)
 
 **Status:** Approved design (2026-06-18). Ready for implementation planning.
 **Repo:** `pawscout-worker` (Cloudflare Worker; Hono + D1 + Shopify Admin + OpenRouter + Resend).
 
 ## 1. Problem & goal
 
-Today, enquiries to Active Paw arrive two ways — the storefront contact form
+Today, enquiries to Active Paw arrive two ways - the storefront contact form
 (`snippets/contact-modal.liquid`, Shopify native `{% form 'contact' %}`) and the
-footer `mailto:support@activepaw.co.uk` link — and both forward to the owner's
+footer `mailto:support@activepaw.co.uk` link - and both forward to the owner's
 **personal Gmail**, which floods it.
 
 Build an **automated, real-time CRM inside PawScout** that:
@@ -18,21 +18,21 @@ Build an **automated, real-time CRM inside PawScout** that:
 4. Drafts an intelligent reply that guides a buyer toward a paid Shopify order.
 5. Surfaces everything in the PawScout console; the owner approves before any
    reply or order action goes out.
-6. Stops the per-enquiry Gmail flood — Gmail receives only high-signal alerts.
+6. Stops the per-enquiry Gmail flood - Gmail receives only high-signal alerts.
 
 ## 2. Locked decisions (from brainstorming)
 
 | Decision | Choice |
 |---|---|
 | **Domain** | `activepaw.co.uk` for all inbound **and** outbound. Replies sent **from** `support@activepaw.co.uk`. No `resend.dev` sandbox, no `*.myshopify.com`. |
-| **Scope** | First-party (Active Paw), but all new tables keyed off `shop` like the rest of the Worker — generalizes to a platform feature later with no schema rewrite. |
+| **Scope** | First-party (Active Paw), but all new tables keyed off `shop` like the rest of the Worker - generalizes to a platform feature later with no schema rewrite. |
 | **Autonomy** | **Human-in-the-loop.** LLM classifies + drafts; nothing sends and no order is created until the owner approves in the console. |
 | **Inbound transport** | **Cloudflare Email Routing → Email Worker.** *Confirmed 2026-06-18:* the zone is on Cloudflare (NS `*.ns.cloudflare.com`) and **Email Routing is already live** (MX `route1/2/3.mx.cloudflare.net`); the current Gmail forward is an existing Email Routing rule. So inbound = **change the `support@`/`contact@` route from forward→Worker**, not new infra. Keep a forward-copy rule as a W-INBOX-1 rollback safety net. |
 | **Gmail** | High-signal alerts only (hot lead awaiting approval). Reuse the existing `alertEmail` config field. Per-enquiry forward switched off. |
 | **Labels** | Locked taxonomy: `lead`, `product-question`, `order-status`, `shipping-returns`, `wholesale-b2b`, `complaint`, `spam`, `automated`, `other`. Multi-label per thread; one primary category drives the pipeline. |
 | **Rollout** | Phased (W-INBOX-1..3 + future), each phase ships independently. |
 
-## 3. Core principle — *LLM proposes, mechanical code disposes*
+## 3. Core principle - *LLM proposes, mechanical code disposes*
 
 Mirrors the repo's existing philosophy ("function on mechanical gates alone; the
 LLM degrades gracefully"; see `src/llm.ts`). The email body is **attacker-controlled
@@ -46,7 +46,7 @@ input** flowing into an LLM, so:
   (e.g. "propose a draft order for items X, Y"); it can **never** trigger a send
   or `draftOrderCreate` directly. The action layer lives outside model reach and
   is gated by an explicit human approval click.
-- Every LLM failure degrades to "no draft / needs manual reply" — never to an
+- Every LLM failure degrades to "no draft / needs manual reply" - never to an
   unsafe send.
 
 ## 4. Architecture
@@ -99,16 +99,16 @@ mailto: ──────┘            │
   notification (sender is Shopify's system; the customer is in `Reply-To`/body).
 - The synchronous handler does the **minimum**: parse + upsert
   contact/thread/message + dedup, store with `status=new`. **Classification and
-  drafting run on a cron sweep, NOT `ctx.waitUntil`** — LLM latency is tight
+  drafting run on a cron sweep, NOT `ctx.waitUntil`** - LLM latency is tight
   against the email-handler budget and a killed `waitUntil` loses the work. The
   existing cron (or a Cloudflare Queue) sweeps unclassified rows; retryable and
   self-healing, matching the repo's existing pattern.
 
-### 4.2 D1 schema — new migration `0009_inbox.sql` (all `shop`-keyed)
+### 4.2 D1 schema - new migration `0009_inbox.sql` (all `shop`-keyed)
 - **`contacts`**: `id, shop, email, name, phone, shopify_customer_id?, first_seen_at, last_seen_at, message_count`. Unique `(shop, email)`.
 - **`threads`**: `id, shop, contact_id, subject, status, primary_category, intent_score, last_message_at, created_at, updated_at`. `status ∈ {new, needs_reply, awaiting_customer, converted, closed, spam}`.
 - **`messages`**: `id, shop, thread_id, direction {inbound|outbound}, message_id, in_reply_to?, references?, from_addr, to_addr, subject, body_text, body_html?, headers_json?, received_at`. Dedup unique `(shop, message_id)`.
-- **`thread_labels`**: `(shop, thread_id, label)` — multi-label tagging.
+- **`thread_labels`**: `(shop, thread_id, label)` - multi-label tagging.
 - **`inbox_drafts`**: `id, shop, thread_id, body_html, body_text, status {pending|approved|sent|discarded}, confidence, suggested_actions_json, created_at, approved_at?, sent_message_id?`.
 - Reuse existing `llm_usage` logging for classify/draft cost.
 
@@ -133,7 +133,7 @@ LLM classifier (`LlmClient.json`, strict JSON, validated):
 - Output: `{ subject, bodyHtml, bodyText, wantsDraftOrder: bool, draftOrderItems?: [...], confidence }`.
 - Writes an `inbox_drafts` row (`status=pending`). **Nothing sends.**
 
-### 4.5 Approval surface — new **Inbox** tab in the console (`src/console/`)
+### 4.5 Approval surface - new **Inbox** tab in the console (`src/console/`)
 - Thread list: status, primary label, intent score, contact, last message.
 - Thread view: full conversation, the **editable** AI draft, any suggested
   draft-order, and actions: **Approve & Send / Edit / Discard / relabel /
@@ -150,7 +150,7 @@ LLM classifier (`LlmClient.json`, strict JSON, validated):
   2. `sendEmail` via Resend **from `support@activepaw.co.uk`**, with
      `In-Reply-To` + `References` headers (Resend `headers` field) so it threads.
   3. Record the outbound `messages` row; thread → `awaiting_customer`.
-- **CRITICAL — control the outbound `Message-ID`.** A customer's reply references
+- **CRITICAL - control the outbound `Message-ID`.** A customer's reply references
   the **RFC `Message-ID` header of the email they received**, *not* Resend's
   internal `id` (a UUID). `src/email.ts` today returns only that UUID and lets
   Resend mint its own `Message-ID`, which we never capture → every reply would
@@ -162,12 +162,12 @@ LLM classifier (`LlmClient.json`, strict JSON, validated):
   email + normalized `Re:`-stripped subject). Attach to the existing thread.
 - **Loop closure:** extend the existing `/webhooks/orders-paid` handler to match
   a paid order back to a thread/contact (by email or draft-order id) and flip the
-  thread to `converted` — conversion attribution, full circle.
+  thread to `converted` - conversion attribution, full circle.
 
 ### 4.7 Alerts (Gmail, high-signal only)
 - Reuse `cfg.fulfil.alertEmail` (or a new `cfg.inbox.alertEmail`). On a hot lead
   (`intentScore ≥ threshold`) with a pending draft, send **one** short Resend
-  email to Gmail: *"Hot lead from <name>: <summary> — review & approve: <console
+  email to Gmail: *"Hot lead from <name>: <summary> - review & approve: <console
   link>."* Spam / FAQ / automated never alert. Optional daily digest = future.
 
 ## 5. External changes / dependencies (flagged, no surprises)
@@ -178,7 +178,7 @@ LLM classifier (`LlmClient.json`, strict JSON, validated):
   `DEFAULT_FROM` in `src/email.ts` off `onboarding@resend.dev` to
   `Active Paw <support@activepaw.co.uk>`. **DNS coexistence:** the root SPF is
   currently `v=spf1 include:_spf.mx.cloudflare.net ~all` (inbound/Email-Routing
-  only). Outbound via Resend must be authorized too — either a Resend **sending
+  only). Outbound via Resend must be authorized too - either a Resend **sending
   subdomain** (e.g. `send.activepaw.co.uk`, its own SPF/DKIM, leaving root SPF
   untouched) or add Resend's include to the **single** root SPF TXT record. Add
   Resend's DKIM CNAME/TXT + a DMARC record. Make this an explicit DNS task.
@@ -203,22 +203,22 @@ draft-order link insertion; threading headers; webhook→thread matching;
 - Treat email body as untrusted data; injection-resistant prompts.
 - No secret leakage in logs (matches existing `console.warn` discipline).
 - Loop/backscatter protection; never auto-reply to `automated`/bulk/self.
-- GDPR: contacts/threads are PII — extend the existing `customers-redact` /
+- GDPR: contacts/threads are PII - extend the existing `customers-redact` /
   `shop-redact` GDPR handlers to purge inbox data too.
 
 ## 8. Phasing
-1. **W-INBOX-1** — Email Routing capture + `0009_inbox.sql` + parse/store/dedup +
+1. **W-INBOX-1** - Email Routing capture + `0009_inbox.sql` + parse/store/dedup +
    mechanical gates + LLM classify + label + read-only console Inbox + replace
    Gmail forward with high-signal alert. *Useful immediately, zero send risk.*
-2. **W-INBOX-2** — LLM draft replies + approval queue + Approve & Send via Resend
+2. **W-INBOX-2** - LLM draft replies + approval queue + Approve & Send via Resend
    (threading). Add `read_customers`/contact linking.
-3. **W-INBOX-3** — draft-order invoice conversion (`write_draft_orders`) +
+3. **W-INBOX-3** - draft-order invoice conversion (`write_draft_orders`) +
    `orders/paid` loop closure + conversion attribution + hot-lead alerts.
-4. **Future** — graduated autonomy for safe categories, daily digest, real-time
+4. **Future** - graduated autonomy for safe categories, daily digest, real-time
    push (Durable Objects/WebSocket).
 
 ## 9. Open items to confirm during implementation
-- ~~Zone on Cloudflare / Email Routing available~~ — **confirmed** (NS + MX, 2026-06-18).
+- ~~Zone on Cloudflare / Email Routing available~~ - **confirmed** (NS + MX, 2026-06-18).
 - Exact Cloudflare Email Worker handler signature + reply/forward mechanics
   (validate against Cloudflare email-service docs).
 - `intentThreshold` default value (start conservative, e.g. 70).

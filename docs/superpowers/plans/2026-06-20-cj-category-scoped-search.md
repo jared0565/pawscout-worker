@@ -10,11 +10,11 @@
 
 ## Global Constraints
 
-- Spec: `docs/superpowers/specs/2026-06-20-cj-category-scoped-search-design.md`. Approach **A** (drop/defer, no admit-bypass — the bypass rescues nothing per the live probe). Collection-mapping is **deferred**, out of scope.
-- `topCategory` is **optional** on `CjSearchItem` — do NOT make it required (it would churn ~6 unrelated test fixtures); the gate treats `undefined` identically to `''` (defer).
+- Spec: `docs/superpowers/specs/2026-06-20-cj-category-scoped-search-design.md`. Approach **A** (drop/defer, no admit-bypass - the bypass rescues nothing per the live probe). Collection-mapping is **deferred**, out of scope.
+- `topCategory` is **optional** on `CjSearchItem` - do NOT make it required (it would churn ~6 unrelated test fixtures); the gate treats `undefined` identically to `''` (defer).
 - The category gate lives ONLY on the raw live-CJ feed (alongside `isPetProductStrict`), never on the warehouse/imported path (already LLM-curated).
-- The `kw:` live-CJ cache namespace is SHARED with `jobs.ts` sourcing — bump BOTH to `kw2:` (key rename only in jobs.ts; no gate there) or the bump splits a shared cache and double-fetches CJ.
-- Hard-drop markers are case-insensitive substrings of `oneCategoryName`; **only probe-confirmed-pet-free tops** belong — `['jewel', 'phone', 'beauty']`. Do NOT add apparel/electronics/automotive (CJ files real pet SKUs there; the same module treats apparel as pet-legit). Verified non-colliding with the observed pet/ambiguous tops (`Pet Supplies`, `Home, Garden & Furniture`, `Sports & Outdoors`). A `search.categoryGate.dropped` log surfaces pet-token items the gate removes, for tuning.
+- The `kw:` live-CJ cache namespace is SHARED with `jobs.ts` sourcing - bump BOTH to `kw2:` (key rename only in jobs.ts; no gate there) or the bump splits a shared cache and double-fetches CJ.
+- Hard-drop markers are case-insensitive substrings of `oneCategoryName`; **only probe-confirmed-pet-free tops** belong - `['jewel', 'phone', 'beauty']`. Do NOT add apparel/electronics/automotive (CJ files real pet SKUs there; the same module treats apparel as pet-legit). Verified non-colliding with the observed pet/ambiguous tops (`Pet Supplies`, `Home, Garden & Furniture`, `Sports & Outdoors`). A `search.categoryGate.dropped` log surfaces pet-token items the gate removes, for tuning.
 - `features=enable_category` is a **single string** GET query value (proven: the JSON-array form returns no categories).
 - Windows: run **focused** vitest files only (full `npm test` crashes on pool contention). `tsc --noEmit` must be clean.
 - Never expose worker secrets; never touch `relay/fly.toml`.
@@ -28,9 +28,9 @@
 - Test: `tests/cj.test.ts` (listV2 parse test ~L160-184)
 
 **Interfaces:**
-- Produces: `CjSearchItem.topCategory?: string` — the CJ top-level category (`oneCategoryName`), `''` on the `/product/list` fallback. Consumed by Task 2.
+- Produces: `CjSearchItem.topCategory?: string` - the CJ top-level category (`oneCategoryName`), `''` on the `/product/list` fallback. Consumed by Task 2.
 
-- [ ] **Step 1: Write the failing tests** (in `tests/cj.test.ts`, the `describe('CjClient.search — listV2 first …')` block)
+- [ ] **Step 1: Write the failing tests** (in `tests/cj.test.ts`, the `describe('CjClient.search - listV2 first …')` block)
 
 Add `oneCategoryName` to the existing listV2 fixture row and assert it maps; assert the listV2 URL carries the feature. Mirror the existing `features=enable_inventory` URL assertion style (cj.test.ts:51).
 
@@ -44,7 +44,7 @@ expect(items[0].topCategory).toBe('Pet Supplies');
 - [ ] **Step 2: Run to verify they fail**
 
 Run: `npx vitest run tests/cj.test.ts -t "listV2"`
-Expected: FAIL — `features=enable_category` not in URL; `topCategory` undefined.
+Expected: FAIL - `features=enable_category` not in URL; `topCategory` undefined.
 
 - [ ] **Step 3: Add `topCategory` to `CjSearchItem`**
 
@@ -71,7 +71,7 @@ private async searchV2(keyword: string, pageSize: number): Promise<CjSearchItem[
     keyWord: keyword,
     page: '1',
     size: String(Math.min(pageSize, 100)),
-    orderBy: '0', // 0 = best match (relevance) — explicit, matches the website
+    orderBy: '0', // 0 = best match (relevance) - explicit, matches the website
     features: 'enable_category' // populates oneCategoryName for the pet-category gate
   })) as Record<string, unknown> | null;
   return mapCjSearchItems(extractV2List(data));
@@ -147,7 +147,7 @@ it('hard-drops a pet-token item filed under a non-pet top category', async () =>
 - [ ] **Step 3: Run to verify they fail**
 
 Run: `npx vitest run tests/search.test.ts -t "categoryAdmitsLiveCj|non-pet top category"`
-Expected: FAIL — `categoryAdmitsLiveCj` not exported; `NECK` still present.
+Expected: FAIL - `categoryAdmitsLiveCj` not exported; `NECK` still present.
 
 - [ ] **Step 4: Add the gate** (in `src/proxy/search.ts`, after `signaledCategory`)
 
@@ -168,7 +168,7 @@ const HARD_DROP_TOP_CATEGORIES = [
 /**
  * Live-CJ category gate: reject only when CJ's TOP category is unambiguously
  * non-pet. Blank/absent or an ambiguous catch-all → admit (defer to the title
- * pet floor). Composes WITH isPetProductStrict — it never replaces it.
+ * pet floor). Composes WITH isPetProductStrict - it never replaces it.
  */
 export function categoryAdmitsLiveCj(topCategory?: string): boolean {
   const t = (topCategory || '').toLowerCase();
@@ -217,7 +217,7 @@ git commit -m "feat(search): hard-drop non-pet CJ top categories on the live fee
 
 ## Self-Review
 
-- **Spec coverage:** Task 1 = `features` flag + `topCategory` mapping (spec §Components/`src/cj.ts`); Task 2 = gate + wiring + cache bump (spec §Components/`src/proxy/search.ts` + §cache). Admit-bypass omitted per spec decision. Collection-mapping deferred — no task, by design.
-- **Placeholder scan:** none — every code step shows complete code.
+- **Spec coverage:** Task 1 = `features` flag + `topCategory` mapping (spec §Components/`src/cj.ts`); Task 2 = gate + wiring + cache bump (spec §Components/`src/proxy/search.ts` + §cache). Admit-bypass omitted per spec decision. Collection-mapping deferred - no task, by design.
+- **Placeholder scan:** none - every code step shows complete code.
 - **Type consistency:** `topCategory?: string` defined in Task 1, consumed via `categoryAdmitsLiveCj(i.topCategory)` in Task 2; `categoryAdmitsLiveCj(topCategory?: string)` signature matches both the unit-test calls and the call site.
 - **Degradation:** absent `topCategory` → `categoryAdmitsLiveCj` returns true → identical to today; verified by the `''`/`undefined` unit case.

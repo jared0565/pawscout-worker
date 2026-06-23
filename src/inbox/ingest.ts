@@ -26,7 +26,7 @@ export async function ingestParsed(store: TenantStore, p: ParsedEmail): Promise<
   // Decide the initial status from the gates (LLM never decides spam).
   const auth = parseAuthResults(p.headers);
   // A Shopify contact-form notification arrives from a no-reply relay wrapping a
-  // real human — so a form submission must NOT be gated as "automated" on the
+  // real human - so a form submission must NOT be gated as "automated" on the
   // envelope sender. The DMARC spam gate below still applies to everyone.
   const automated = form ? false : isAutomated(p);
   const spam = isHardSpam(auth);
@@ -38,11 +38,11 @@ export async function ingestParsed(store: TenantStore, p: ParsedEmail): Promise<
       contactEmail: email, subject: p.subject, subjectNorm, receivedAt: p.date, initialStatus,
       declaredIntent: form?.reason ?? null
     });
-    // Automated/spam never enter the classify sweep — mark them classified now.
+    // Automated/spam never enter the classify sweep - mark them classified now.
     if (automated || spam) {
       await store.setThreadClassification(threadId, {
         status: initialStatus, primaryCategory: automated ? 'automated' : 'spam',
-        intentScore: 0, summary: automated ? 'Automated/bulk message' : 'Failed DMARC — likely spoofed',
+        intentScore: 0, summary: automated ? 'Automated/bulk message' : 'Failed DMARC - likely spoofed',
         classifiedAt: new Date().toISOString()
       });
       await store.setThreadLabels(threadId, [automated ? 'automated' : 'spam']);
@@ -60,7 +60,7 @@ export async function ingestParsed(store: TenantStore, p: ParsedEmail): Promise<
   if (inserted) {
     await store.touchThread(threadId, p.date);
     // Multi-turn: an inbound on an active existing thread re-opens it for a fresh reply.
-    // Guard: only if this message is genuinely new (inserted) — a duplicate redelivery
+    // Guard: only if this message is genuinely new (inserted) - a duplicate redelivery
     // (same Message-ID, already stored) must NOT re-open the thread or supersede drafts.
     // Only reopen conversations we'd engage with; never resurrect spam/closed/converted.
     if (isExistingThread && !automated && !spam) {

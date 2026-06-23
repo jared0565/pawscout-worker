@@ -9,7 +9,7 @@ import type { Pricing } from './types';
  * protect low-ticket items where percentages don't cover fixed fees.
  *
  * `freightUsd` (decided 2026-06-12): freight disciplines the FLOOR, never
- * the sticker — the multiplier still applies to product cost only, but the
+ * the sticker - the multiplier still applies to product cost only, but the
  * minimum-margin clause is enforced against (product + freight) so a heavy
  * cheap item can never ship underwater. Unknown freight (legacy rows)
  * degrades to the product-cost-only rule.
@@ -25,7 +25,7 @@ export function retailPriceGbp(landedUsd: number, p: Pricing, freightUsd = 0): n
 }
 
 /**
- * Honest landed COGS in GBP (product + freight) at the RAW configured FX rate —
+ * Honest landed COGS in GBP (product + freight) at the RAW configured FX rate -
  * no buffer. This is what we actually pay, and it is what gets written to
  * Shopify's store-wide "Cost per item" (which drives native margin/profit
  * analytics) and fed to the affiliate £6 floor. It must NOT be padded: the FX
@@ -71,7 +71,7 @@ export function affiliateEligible(retailGbp: number, cogsGbp: number, f: Affilia
   return affiliateContributionGbp(retailGbp, cogsGbp, f) >= f.floorGbp - 1e-9;
 }
 
-/** Round UP to the nearest .99 ending — never down past the computed price. */
+/** Round UP to the nearest .99 ending - never down past the computed price. */
 function round99(x: number): number {
   const candidate = Math.ceil(x) - 0.01;
   const r = candidate >= x ? candidate : Math.ceil(x) + 0.99;

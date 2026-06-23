@@ -1,8 +1,8 @@
-# LLM Selection Centralization — Implementation Plan
+# LLM Selection Centralization - Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make the dashboard the single source of truth for LLM selection — Image / Text / Fallback models in one block — with every call resolving through a role chain and a system-owned `gpt-5.4-mini` OpenAI-direct floor.
+**Goal:** Make the dashboard the single source of truth for LLM selection - Image / Text / Fallback models in one block - with every call resolving through a role chain and a system-owned `gpt-5.4-mini` OpenAI-direct floor.
 
 **Architecture:** A pure `resolveChain(cfg, role)` turns the tenant's `cfg.llm.models` into ordered tiers (OpenRouter `models:[primary, fallback]` → OpenAI-direct `gpt-5.4-mini`). A provider-aware `LlmClient.jsonChain()` walks those tiers, branching request shape and cost by provider, degrading to no-LLM when exhausted. All 8 business call sites (incl. the inbox's parallel model subsystem) route through it; legacy slug fields are dropped and derived once, read-side.
 
@@ -13,7 +13,7 @@
 - **No model-slug literal in business logic.** The only permitted slug references are `CURATED_MODELS[0].slug` (the menu head, `src/models-catalog.ts`) and `DEFAULT_MODEL` (the one deliberate constant).
 - `DEFAULT_MODEL = 'gpt-5.4-mini'` (bare slug, OpenAI-direct). `DEFAULT_MODEL_PRICE = { promptPerM: 0.75, completionPerM: 4.50 }` (USD per 1M tokens).
 - **OpenAI tier request shape:** `POST https://api.openai.com/v1/chat/completions`; `Authorization: Bearer <OPENAI_API_KEY>`; body `{ model: 'gpt-5.4-mini', max_completion_tokens: max(requested, 3000), reasoning_effort: 'medium', response_format: {type:'json_object'}, messages }`; **no** `max_tokens`, **no** `usage:{include:true}`, **no** `HTTP-Referer`/`X-Title`, **never** send `temperature`.
-- **OpenRouter tier request shape (unchanged):** `models: [primary, fallback]` (deduped, blanks dropped — never empty), `max_tokens`, `usage:{include:true}`, existing headers.
+- **OpenRouter tier request shape (unchanged):** `models: [primary, fallback]` (deduped, blanks dropped - never empty), `max_tokens`, `usage:{include:true}`, existing headers.
 - **Blank handling:** role primary blank → `CURATED_MODELS[0].slug`; fallback blank → omitted. OpenRouter `models[]` is never empty.
 - **Tier-advance taxonomy:** advance on HTTP 401/403/404 and 429-`insufficient_quota`; same-tier retry once then advance on 5xx/503/429-`rate_limit_exceeded`/network-throw; **stop (degrade, do not advance)** on HTTP 400 `invalid_request_error`; on a 200 parse/validation failure retry the same tier once, then advance once, and on the final (OpenAI) tier stop.
 - **Cost:** OpenRouter cost from `data.usage.cost`; OpenAI cost computed from token counts × `DEFAULT_MODEL_PRICE`.
@@ -21,7 +21,7 @@
 - **Never throw into a job.** Every exhausted chain returns `{ok:false}`; callers fall back to mechanical gates / keep current image.
 - **Retained behavioral knobs:** `cfg.llm.enabled` and `cfg.llm.scoreThreshold` stay first-class; only model-slug fields are removed from `LlmConfig`.
 - **Image + Fallback** selections must be vision-capable and in the curated catalog; Text in the catalog. Validation rejects non-catalog and non-vision picks.
-- **Tests:** run **focused** test files (`npx vitest run tests/<file>.ts`) — the full suite crashes on this Windows box (vitest-pool-workers parallel-storage contention). `npx tsc --noEmit` must be clean. After editing `src/console/page.ts`, ALWAYS run `tests/console.test.ts`, and double-escape backslashes (`\\n`) in browser-JS strings.
+- **Tests:** run **focused** test files (`npx vitest run tests/<file>.ts`) - the full suite crashes on this Windows box (vitest-pool-workers parallel-storage contention). `npx tsc --noEmit` must be clean. After editing `src/console/page.ts`, ALWAYS run `tests/console.test.ts`, and double-escape backslashes (`\\n`) in browser-JS strings.
 
 ---
 
@@ -57,7 +57,7 @@ describe('llm config shape', () => {
 
 - [ ] **Step 2: Run test to verify it fails**
 Run: `npx vitest run tests/llm-config.test.ts`
-Expected: FAIL — `DEFAULT_MODEL` not exported; `DEFAULT_LLM` still has `model`.
+Expected: FAIL - `DEFAULT_MODEL` not exported; `DEFAULT_LLM` still has `model`.
 
 - [ ] **Step 3: Implement**
 In `src/types.ts` replace the `LlmConfig` interface and `DEFAULT_LLM`:
@@ -71,7 +71,7 @@ export interface ModelsConfig {
 /**
  * LLM behavioral config. Model SELECTION lives in `models` (one dashboard block);
  * `enabled`/`scoreThreshold` are the behavioral knobs. Disabled (or no key) =
- * mechanical gates only — the system never depends on the LLM to function.
+ * mechanical gates only - the system never depends on the LLM to function.
  */
 export interface LlmConfig {
   enabled: boolean;
@@ -85,7 +85,7 @@ export const DEFAULT_LLM: LlmConfig = { enabled: true, scoreThreshold: 60, model
 ```
 Add `OPENAI_API_KEY?: string;` to `Env` (after `OPENROUTER_API_KEY?`):
 ```ts
-  // OpenAI direct (LLM-centralization last-resort floor, gpt-5.4-mini) — optional:
+  // OpenAI direct (LLM-centralization last-resort floor, gpt-5.4-mini) - optional:
   // absent = OpenAI tier skipped (OpenRouter tiers + mechanical degradation remain).
   OPENAI_API_KEY?: string;
 ```
@@ -102,7 +102,7 @@ export type ChainTier =
 
 - [ ] **Step 4: Run the tests**
 Run: `npx vitest run tests/llm-config.test.ts`
-Expected: PASS. (Type errors in other files from the `LlmConfig` reshape are expected and resolved by later tasks — do NOT run `tsc` yet.)
+Expected: PASS. (Type errors in other files from the `LlmConfig` reshape are expected and resolved by later tasks - do NOT run `tsc` yet.)
 
 - [ ] **Step 5: Commit**
 ```bash
@@ -152,7 +152,7 @@ describe('resolveChain', () => {
 
 - [ ] **Step 2: Run test to verify it fails**
 Run: `npx vitest run tests/llm-resolve.test.ts`
-Expected: FAIL — `src/llm-resolve.ts` does not exist.
+Expected: FAIL - `src/llm-resolve.ts` does not exist.
 
 - [ ] **Step 3: Implement**
 ```ts
@@ -164,10 +164,10 @@ import { CURATED_MODELS } from './models-catalog';
 /**
  * Turn a tenant's model selection into an ordered tier chain:
  *   1. OpenRouter, models:[primary, fallback] (native failover; blanks dropped,
- *      deduped, never empty — a blank primary falls back to the menu head).
+ *      deduped, never empty - a blank primary falls back to the menu head).
  *   2. OpenAI-direct gpt-5.4-mini (the system floor).
  * The chain is provider-aware; LlmClient.jsonChain walks it and skips a tier
- * whose provider key is absent. Pure — no env, no I/O.
+ * whose provider key is absent. Pure - no env, no I/O.
  */
 export function resolveChain(cfg: TenantConfig, role: LlmRole): ChainTier[] {
   const m = cfg.llm.models ?? {};
@@ -187,7 +187,7 @@ Expected: PASS (3 tests).
 - [ ] **Step 5: Commit**
 ```bash
 git add src/llm-resolve.ts tests/llm-resolve.test.ts
-git commit -m "feat(llm): resolveChain — role selection to provider tier chain"
+git commit -m "feat(llm): resolveChain - role selection to provider tier chain"
 ```
 
 ---
@@ -201,7 +201,7 @@ git commit -m "feat(llm): resolveChain — role selection to provider tier chain
 
 **Interfaces:**
 - Consumes: `ChainTier`, `DEFAULT_MODEL_PRICE`, `OPENAI_URL` (Tasks 1).
-- Produces: `new LlmClient(keys: { openrouter?: string; openai?: string }, fetchImpl?)`; `get available(): boolean` (true if either key); `jsonChain<T>(opts: { chain: ChainTier[]; system: string; user: string; images?: string[]; maxTokens?: number; validate: (v: unknown) => T | null }): Promise<LlmJson<T>>` where `LlmUsage` gains `provider: 'openrouter' | 'openai'`. Existing `json()` is removed (all callers migrate in Task 5; this task keeps the file compiling by having `jsonChain` be the only public call path and updating no business callers yet — see Step 3 note).
+- Produces: `new LlmClient(keys: { openrouter?: string; openai?: string }, fetchImpl?)`; `get available(): boolean` (true if either key); `jsonChain<T>(opts: { chain: ChainTier[]; system: string; user: string; images?: string[]; maxTokens?: number; validate: (v: unknown) => T | null }): Promise<LlmJson<T>>` where `LlmUsage` gains `provider: 'openrouter' | 'openai'`. Existing `json()` is removed (all callers migrate in Task 5; this task keeps the file compiling by having `jsonChain` be the only public call path and updating no business callers yet - see Step 3 note).
 
 - [ ] **Step 1: Write the failing test**
 ```ts
@@ -242,7 +242,7 @@ describe('LlmClient.jsonChain', () => {
     if (r.ok) { expect(r.usage.provider).toBe('openai'); expect(r.usage.costUsd).toBeCloseTo(10/1e6*0.75 + 5/1e6*4.50); }
   });
 
-  it('HTTP 400 invalid_request stops — does NOT advance', async () => {
+  it('HTTP 400 invalid_request stops - does NOT advance', async () => {
     const fetchImpl = vi.fn().mockResolvedValue({ ok: false, status: 400, json: async () => ({ error: { type: 'invalid_request_error', message: 'bad' } }) });
     const llm = new LlmClient({ openrouter: 'k', openai: 'o' }, fetchImpl as any);
     const r = await llm.jsonChain({ chain: [{ provider: 'openrouter', models: ['a/b'] }, { provider: 'openai', model: 'gpt-5.4-mini' }], system: 's', user: 'u', validate: (v: any) => v });
@@ -254,7 +254,7 @@ describe('LlmClient.jsonChain', () => {
 
 - [ ] **Step 2: Run test to verify it fails**
 Run: `npx vitest run tests/llm-client.test.ts`
-Expected: FAIL — `jsonChain` / new constructor not present.
+Expected: FAIL - `jsonChain` / new constructor not present.
 
 - [ ] **Step 3: Implement**
 Replace the `LlmClient` class in `src/llm.ts`. Keep `extractJson` and `LlmUsage`/`LlmJson` (extend `LlmUsage` with `provider`).
@@ -289,7 +289,7 @@ export class LlmClient {
         const out = await this.send<T>(tier, key, opts);
         if (out.kind === 'ok') {
           if (tier.provider === 'openai') {
-            console.warn(`llm.tier3.activated model=${out.usage.model} — both OpenRouter slots failed`);
+            console.warn(`llm.tier3.activated model=${out.usage.model} - both OpenRouter slots failed`);
           }
           return { ok: true, value: out.value, usage: out.usage };
         }
@@ -348,18 +348,18 @@ export class LlmClient {
   }
 }
 ```
-> **NOTE on the parse/validation "advance once" rule:** the per-tier loop above retries once on `retry`, then breaks to the next tier — so a 200-garbage on OpenRouter retries once then advances to OpenAI, and a 200-garbage on the (final) OpenAI tier retries once then exhausts the chain → `{ok:false}`. This satisfies the taxonomy without extra state.
+> **NOTE on the parse/validation "advance once" rule:** the per-tier loop above retries once on `retry`, then breaks to the next tier - so a 200-garbage on OpenRouter retries once then advances to OpenAI, and a 200-garbage on the (final) OpenAI tier retries once then exhausts the chain → `{ok:false}`. This satisfies the taxonomy without extra state.
 
 Update **all 10 construction sites** from `new LlmClient(<key>[, fetchImpl])` to the object form, e.g.:
 ```ts
 // src/jobs.ts:532, src/index.ts:212/304/330/578/606/618
 const llm = new LlmClient({ openrouter: env.OPENROUTER_API_KEY, openai: env.OPENAI_API_KEY });
-// src/inbox/sweep.ts:42/67/128/265 (these pass a fetchImpl second arg — keep it)
+// src/inbox/sweep.ts:42/67/128/265 (these pass a fetchImpl second arg - keep it)
 const llm = new LlmClient({ openrouter: env.OPENROUTER_API_KEY, openai: env.OPENAI_API_KEY }, fetchImpl);
 ```
-> Business callers still reference the old `json()` until Task 5. To keep the file compiling now, leave the 8 `json()` call sites untouched **but** they will not type-check against the removed `json()` — therefore Task 3 and Task 5 ship together is acceptable, OR add a thin temporary `json()` shim that wraps a single OpenRouter tier. **Chosen:** add the shim so Task 3 compiles standalone:
+> Business callers still reference the old `json()` until Task 5. To keep the file compiling now, leave the 8 `json()` call sites untouched **but** they will not type-check against the removed `json()` - therefore Task 3 and Task 5 ship together is acceptable, OR add a thin temporary `json()` shim that wraps a single OpenRouter tier. **Chosen:** add the shim so Task 3 compiles standalone:
 ```ts
-  /** @deprecated transitional — single-OpenRouter-tier wrapper, removed in Task 5. */
+  /** @deprecated transitional - single-OpenRouter-tier wrapper, removed in Task 5. */
   async json<T>(opts: { model: string; system: string; user: string; images?: string[]; maxTokens?: number; validate: (v: unknown) => T | null }): Promise<LlmJson<T>> {
     return this.jsonChain({ chain: [{ provider: 'openrouter', models: [opts.model] }], system: opts.system, user: opts.user, images: opts.images, maxTokens: opts.maxTokens, validate: opts.validate });
   }
@@ -385,7 +385,7 @@ git commit -m "feat(llm): provider-aware LlmClient.jsonChain (OpenRouter+OpenAI 
 - Test: `tests/llm-migrate.test.ts` (new)
 
 **Interfaces:**
-- Produces: `export function deriveModels(legacy: Record<string, unknown>): ModelsConfig` — maps `visionModel ?? curationModel ?? model → image`, `curationModel ?? model → text`, `model → fallback`; returns `{}` when no legacy slugs present.
+- Produces: `export function deriveModels(legacy: Record<string, unknown>): ModelsConfig` - maps `visionModel ?? curationModel ?? model → image`, `curationModel ?? model → text`, `model → fallback`; returns `{}` when no legacy slugs present.
 - `getConfig` returns `llm: { enabled, scoreThreshold, models }`, with `models = parsedLlm.models ?? deriveModels(parsedLlm)` and legacy slug keys stripped.
 
 - [ ] **Step 1: Write the failing test**
@@ -411,7 +411,7 @@ describe('deriveModels (legacy → models)', () => {
 
 - [ ] **Step 2: Run test to verify it fails**
 Run: `npx vitest run tests/llm-migrate.test.ts`
-Expected: FAIL — `src/llm-migrate.ts` missing.
+Expected: FAIL - `src/llm-migrate.ts` missing.
 
 - [ ] **Step 3: Implement**
 ```ts
@@ -444,7 +444,7 @@ In `src/tenant-store.ts` `getConfig`, replace the `llm:` line (120):
         return { enabled: DEFAULT_LLM.enabled, scoreThreshold: DEFAULT_LLM.scoreThreshold, ...{ enabled: raw.enabled, scoreThreshold: raw.scoreThreshold }, models } as TenantConfig['llm'];
       })(),
 ```
-> Use a clean merge — keep `raw.enabled`/`raw.scoreThreshold` only when present:
+> Use a clean merge - keep `raw.enabled`/`raw.scoreThreshold` only when present:
 ```ts
       llm: (() => {
         const raw = JSON.parse(row.llm || '{}') as Record<string, unknown>;
@@ -462,12 +462,12 @@ Add `import { deriveModels } from './llm-migrate';` at the top of `tenant-store.
 
 - [ ] **Step 4: Run the tests**
 Run: `npx vitest run tests/llm-migrate.test.ts tests/tenant-store.test.ts`
-Expected: PASS (derive tests; existing tenant-store tests still green — adjust any that asserted the old `llm.model` shape to assert `llm.models`).
+Expected: PASS (derive tests; existing tenant-store tests still green - adjust any that asserted the old `llm.model` shape to assert `llm.models`).
 
 - [ ] **Step 5: Commit**
 ```bash
 git add src/llm-migrate.ts src/tenant-store.ts tests/llm-migrate.test.ts
-git commit -m "feat(llm): read-side migration — derive models block from legacy llm fields"
+git commit -m "feat(llm): read-side migration - derive models block from legacy llm fields"
 ```
 
 ---
@@ -475,16 +475,16 @@ git commit -m "feat(llm): read-side migration — derive models block from legac
 ### Task 5: Route all 8 call sites through the role chain
 
 **Files:**
-- Modify: `src/llm.ts` (`curateProduct` 154/156, `pickHeroImage` 239/241, `rewriteDescription` 294/298, `classifyKeyword` 354) — replace `model` resolution + `llm.json(...)` with `resolveChain` + `llm.jsonChain(...)`; remove the deprecated `json()` shim
+- Modify: `src/llm.ts` (`curateProduct` 154/156, `pickHeroImage` 239/241, `rewriteDescription` 294/298, `classifyKeyword` 354) - replace `model` resolution + `llm.json(...)` with `resolveChain` + `llm.jsonChain(...)`; remove the deprecated `json()` shim
 - Modify: `src/semantic/library.ts:81-82`; `src/inbox/classify.ts:21-24`; `src/inbox/draft.ts:32-35`; `src/inbox/propose-invoice.ts:32-34`; `src/inbox/sweep.ts:286`
 - Test: `tests/llm.test.ts` (extend), `tests/inbox-classify.test.ts` / existing inbox tests
 
 **Interfaces:**
-- Consumes: `resolveChain` (Task 2), `jsonChain` (Task 3). Each call site needs a `TenantConfig` in scope — all already receive `cfg`.
+- Consumes: `resolveChain` (Task 2), `jsonChain` (Task 3). Each call site needs a `TenantConfig` in scope - all already receive `cfg`.
 
 - [ ] **Step 1: Write the failing test**
 ```ts
-// tests/llm.test.ts — add
+// tests/llm.test.ts - add
 it('curateProduct routes through the text chain (no cfg.llm.model)', async () => {
   const fetchImpl = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ model: 'cur/y', choices: [{ message: { content: JSON.stringify({ relevanceScore: 80, category: null, title: 'T', descriptionHtml: '<p>d</p>', petClass: 'dog' }) }, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1, cost: 0 } }) });
   const llm = new LlmClient({ openrouter: 'k', openai: 'o' }, fetchImpl as any);
@@ -498,7 +498,7 @@ it('curateProduct routes through the text chain (no cfg.llm.model)', async () =>
 
 - [ ] **Step 2: Run test to verify it fails**
 Run: `npx vitest run tests/llm.test.ts`
-Expected: FAIL — `curateProduct` still calls `llm.json({ model: cfg.llm.curationModel ?? cfg.llm.model })` (now a type error / wrong body).
+Expected: FAIL - `curateProduct` still calls `llm.json({ model: cfg.llm.curationModel ?? cfg.llm.model })` (now a type error / wrong body).
 
 - [ ] **Step 3: Implement**
 In `src/llm.ts`, add `import { resolveChain } from './llm-resolve';` (or co-locate). For each fn replace the model line + `llm.json({ model, ... })`:
@@ -519,7 +519,7 @@ Finally **remove the deprecated `json()` shim** from `LlmClient` (added in Task 
 
 - [ ] **Step 4: Run the tests**
 Run: `npx vitest run tests/llm.test.ts tests/inbox-classify.test.ts tests/inbox-draft.test.ts`
-Expected: PASS. Then `npx tsc --noEmit` — expect remaining errors ONLY in `validate.ts` / inbox types / console (Tasks 6-8).
+Expected: PASS. Then `npx tsc --noEmit` - expect remaining errors ONLY in `validate.ts` / inbox types / console (Tasks 6-8).
 
 - [ ] **Step 5: Commit**
 ```bash
@@ -541,7 +541,7 @@ git commit -m "feat(llm): route all 8 call sites (incl. inbox) through resolveCh
 
 - [ ] **Step 1: Write the failing test**
 ```ts
-// tests/inbox-validate.test.ts — add
+// tests/inbox-validate.test.ts - add
 it('inbox save persists no model slug', () => {
   const r = validateInboxPayload({ enabled: true, autosend: false, intentThreshold: 70, autoConfidenceThreshold: 80, labels: [], replyModel: 'anthropic/claude-haiku-4.5', classifyModel: 'google/gemini-2.5-flash-lite' });
   expect(r.ok).toBe(true);
@@ -551,7 +551,7 @@ it('inbox save persists no model slug', () => {
 
 - [ ] **Step 2: Run test to verify it fails**
 Run: `npx vitest run tests/inbox-validate.test.ts`
-Expected: FAIL — `r.value.replyModel` still present (`?? DEFAULT_INBOX.replyModel`).
+Expected: FAIL - `r.value.replyModel` still present (`?? DEFAULT_INBOX.replyModel`).
 
 - [ ] **Step 3: Implement**
 In `src/inbox/types.ts`: delete `classifyModel?` (line 16) and `replyModel` (line 21) from `InboxConfig`; delete lines 33 (`classifyModel: …`) and 36 (`replyModel: …`) from `DEFAULT_INBOX`.
@@ -559,12 +559,12 @@ In `src/validate.ts` `validateInboxPayload`: delete the `classifyModel` block (2
 
 - [ ] **Step 4: Run the tests**
 Run: `npx vitest run tests/inbox-validate.test.ts tests/inbox-config.test.ts`
-Expected: PASS (update `inbox-config.test.ts` line that asserted `classifyModel === 'google/gemini-2.5-flash-lite'` — delete that assertion).
+Expected: PASS (update `inbox-config.test.ts` line that asserted `classifyModel === 'google/gemini-2.5-flash-lite'` - delete that assertion).
 
 - [ ] **Step 5: Commit**
 ```bash
 git add src/inbox/types.ts src/validate.ts tests/inbox-validate.test.ts tests/inbox-config.test.ts
-git commit -m "feat(inbox): drop classifyModel/replyModel — inbox uses the text role"
+git commit -m "feat(inbox): drop classifyModel/replyModel - inbox uses the text role"
 ```
 
 ---
@@ -573,7 +573,7 @@ git commit -m "feat(inbox): drop classifyModel/replyModel — inbox uses the tex
 
 **Files:**
 - Modify: `src/validate.ts` (`validateLlmPayload` 128-156)
-- Modify: `src/index.ts` (the POST `/api/llm` handler around 91-126 — extend the existing `visionModelRejected` gate to image+fallback and add a catalog-allowlist check)
+- Modify: `src/index.ts` (the POST `/api/llm` handler around 91-126 - extend the existing `visionModelRejected` gate to image+fallback and add a catalog-allowlist check)
 - Test: `tests/validate-vision.test.ts` (update), `tests/llm-validate.test.ts` (new)
 
 **Interfaces:**
@@ -598,7 +598,7 @@ describe('validateLlmPayload (models block)', () => {
 
 - [ ] **Step 2: Run test to verify it fails**
 Run: `npx vitest run tests/llm-validate.test.ts`
-Expected: FAIL — validator still requires top-level `model`.
+Expected: FAIL - validator still requires top-level `model`.
 
 - [ ] **Step 3: Implement**
 Replace `validateLlmPayload` body (128-156):
@@ -646,7 +646,7 @@ git commit -m "feat(llm): validate models block + catalog/vision gate on /api/ll
 
 ---
 
-### Task 8: Console — one "AI models" block, remove all other selectors
+### Task 8: Console - one "AI models" block, remove all other selectors
 
 **Files:**
 - Modify: `src/console/page.ts` (LLM panel HTML 240-264; inbox model HTML 427-436; `populateForms` 556-559; `saveLlm` client 664-677; inbox populate 1358-1359; inbox save 1390-1391)
@@ -657,7 +657,7 @@ git commit -m "feat(llm): validate models block + catalog/vision gate on /api/ll
 
 - [ ] **Step 1: Write the failing test**
 ```ts
-// tests/console.test.ts — add
+// tests/console.test.ts - add
 it('renders one AI-models block and no legacy/inbox model selectors', () => {
   const html = consolePage('test-key');
   expect(html).toContain('id="mdl-image"');
@@ -673,7 +673,7 @@ it('renders one AI-models block and no legacy/inbox model selectors', () => {
 
 - [ ] **Step 2: Run test to verify it fails**
 Run: `npx vitest run tests/console.test.ts`
-Expected: FAIL — `mdl-image` absent; `llmcuration` present.
+Expected: FAIL - `mdl-image` absent; `llmcuration` present.
 
 - [ ] **Step 3: Implement**
 Replace the AI-curation model HTML (240-264) with a single block (keep Min score + Enabled in this section):
@@ -690,13 +690,13 @@ Replace the AI-curation model HTML (240-264) with a single block (keep Min score
     </div>
     <p class="sub muted" style="margin:8px 0 0">Last resort: GPT-5.4 mini · OpenAI direct (system-managed, used only if OpenRouter fails).</p>
 ```
-Delete the inbox model HTML (427-436 — the `inbox-reply-model` / `inbox-classify-model` row).
+Delete the inbox model HTML (427-436 - the `inbox-reply-model` / `inbox-classify-model` row).
 `populateForms` (556-559): replace the three `setModelSelect('llmmodel'…)`/`llmcuration`/`llmvision` lines with:
 ```js
   var mm=(l.models||{});
-  setModelSelect('mdl-image', mm.image, {vision:true, blank:'— '+esc(/* head label */'top model')});
-  setModelSelect('mdl-text', mm.text, {blank:'— top model'});
-  setModelSelect('mdl-fallback', mm.fallback, {vision:true, blank:'— none'});
+  setModelSelect('mdl-image', mm.image, {vision:true, blank:'- '+esc(/* head label */'top model')});
+  setModelSelect('mdl-text', mm.text, {blank:'- top model'});
+  setModelSelect('mdl-fallback', mm.fallback, {vision:true, blank:'- none'});
 ```
 `saveLlm()` client (664-677): replace the body with:
 ```js
@@ -711,7 +711,7 @@ Inbox save (1370-1391): delete `var rm=…`, `var cm=…`, and the `replyModel:�
 
 - [ ] **Step 4: Run the tests**
 Run: `npx vitest run tests/console.test.ts`
-Expected: PASS. Then `npx tsc --noEmit` — expect CLEAN across the repo now.
+Expected: PASS. Then `npx tsc --noEmit` - expect CLEAN across the repo now.
 
 - [ ] **Step 5: Commit**
 ```bash
@@ -729,7 +729,7 @@ git commit -m "feat(console): single AI-models block (image/text/fallback); remo
 Run: `npx tsc --noEmit`
 Expected: no errors.
 
-- [ ] **Step 2: Focused test batches** (never the whole suite — Windows pool contention)
+- [ ] **Step 2: Focused test batches** (never the whole suite - Windows pool contention)
 Run each: `npx vitest run tests/llm-config.test.ts tests/llm-resolve.test.ts tests/llm-client.test.ts tests/llm-migrate.test.ts`
 Then: `npx vitest run tests/llm.test.ts tests/llm-validate.test.ts tests/validate-vision.test.ts`
 Then: `npx vitest run tests/inbox-validate.test.ts tests/inbox-config.test.ts tests/console.test.ts`
@@ -737,7 +737,7 @@ Expected: all PASS.
 
 - [ ] **Step 3: Grep for residual hardcoded slugs in business logic**
 Run: `git grep -nE "(anthropic|google|openai|x-ai|deepseek)/" -- src ':!src/models-catalog.ts'`
-Expected: only `DEFAULT_MODEL = 'gpt-5.4-mini'` (and the `OPENAI_URL`) — no other functional slug literal.
+Expected: only `DEFAULT_MODEL = 'gpt-5.4-mini'` (and the `OPENAI_URL`) - no other functional slug literal.
 
 - [ ] **Step 4: Build-time effort A/B (manual, optional, behind your go)**
 Re-stand the token-gated diagnostic (or a focused script) to run `low` vs `medium` on 3 real catalog products (titles + image sets); record format adherence, agreement with the primary model, tokens, latency; confirm `finish_reason !== 'length'` at the 3000 cap. Document results in the spec.
@@ -748,4 +748,4 @@ git add docs/superpowers/specs/2026-06-19-llm-selection-centralization-design.md
 git commit -m "docs(spec): record A/B results + mark feature implemented"
 ```
 
-> **Deploy (separate, needs explicit go):** `npx wrangler deploy`. After deploy, the daily cron's `reconcileHeroImages`/`reconcileDescriptions` will exercise the new chain on real products — watch `wrangler tail` for `llm.tier3.activated` (should be silent unless OpenRouter is degraded).
+> **Deploy (separate, needs explicit go):** `npx wrangler deploy`. After deploy, the daily cron's `reconcileHeroImages`/`reconcileDescriptions` will exercise the new chain on real products - watch `wrangler tail` for `llm.tier3.activated` (should be silent unless OpenRouter is degraded).

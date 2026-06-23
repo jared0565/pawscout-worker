@@ -1,7 +1,7 @@
 -- Retention / reorder reminders (affiliate 1.3). Two per-shop tables:
---   reorder_reminders — one row per order we've reminded against (dedup, so a
+--   reorder_reminders - one row per order we've reminded against (dedup, so a
 --     customer is never nagged twice for the same purchase).
---   email_unsubscribes — email-level opt-out suppression (PECR/GDPR). Once here,
+--   email_unsubscribes - email-level opt-out suppression (PECR/GDPR). Once here,
 --     the customer is never emailed a reminder again.
 -- The feature ships DORMANT (env RETENTION_REORDER_ENABLED unset); these tables
 -- stay empty until it is switched on. Apply this migration before enabling.

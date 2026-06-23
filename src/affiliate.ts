@@ -10,7 +10,7 @@ const AFFILIATE_COLLECTION_TITLE = 'Affiliate Eligible';
 /**
  * A product is affiliate-eligible only if EVERY sellable variant clears the £6
  * floor. Product-level promotion can't control which variant an affiliate sells,
- * so one thin variant disqualifies the whole product — an affiliate must never
+ * so one thin variant disqualifies the whole product - an affiliate must never
  * be able to earn a commission on a SKU that doesn't carry it. Retail and COGS
  * are recomputed from CJ cost so eligibility tracks the same numbers the daily
  * price/cost sync writes.
@@ -33,7 +33,7 @@ export function productAffiliateEligible(
 /**
  * Ensure the internal smart collection that mirrors the `affiliate-eligible`
  * tag exists, so UpPromote can scope commissionable products to it. Idempotent
- * — looks up by handle first; the TAG-EQUALS rule auto-maintains membership
+ * - looks up by handle first; the TAG-EQUALS rule auto-maintains membership
  * thereafter. Not published to the Online Store (internal targeting only).
  */
 export async function ensureAffiliateCollection(admin: AdminGraphql): Promise<void> {

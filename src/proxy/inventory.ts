@@ -1,6 +1,6 @@
 import type { AdminGraphql } from '../shopify-admin';
 
-/** Cap written quantities — CJ "stock" can be five digits; Shopify doesn't need that. */
+/** Cap written quantities - CJ "stock" can be five digits; Shopify doesn't need that. */
 export const MAX_TRACKED_QTY = 999;
 
 export async function getPrimaryLocationId(admin: AdminGraphql): Promise<string | null> {
@@ -30,7 +30,7 @@ export async function productInventoryItems(admin: AdminGraphql, productId: stri
 
 /**
  * Set Shopify "Cost per item" (InventoryItem.unitCost) per variant. This is an
- * admin-only analytics field (drives native margin/profit reports) — NEVER
+ * admin-only analytics field (drives native margin/profit reports) - NEVER
  * customer-facing. One mutation per item (inventoryItemUpdate isn't bulk).
  * Throws on userErrors; callers pass only changed costs.
  */
@@ -54,7 +54,7 @@ export async function updateVariantCosts(
  * Activate Shopify inventory tracking on untracked variants (ghost-click
  * imports whose CJ detail lacked stock arrive untracked) and set their policy
  * to DENY so a tracked zero can never oversell. Must run BEFORE
- * inventorySetQuantities — quantity writes on untracked items error.
+ * inventorySetQuantities - quantity writes on untracked items error.
  */
 export async function enableTracking(
   admin: AdminGraphql,
@@ -117,7 +117,7 @@ export async function setInventoryQuantities(
         // API-VERSION DEBT: `ignoreCompareQuantity` is valid on our current
         // version (2025-07) but REMOVED in 2026-04. When @shopify/shopify-api is
         // bumped to a 2026-04+ API version, replace this line with a per-quantity
-        // `changeFromQuantity: null` (opt out of the concurrency check — same
+        // `changeFromQuantity: null` (opt out of the concurrency check - same
         // force-set behaviour). Deadline ~Jan 2027 / 2025-07 sunset. See TASKS.md.
         ignoreCompareQuantity: true,
         quantities: items.map((i) => ({ inventoryItemId: i.inventoryItemId, locationId, quantity: i.quantity }))
@@ -142,14 +142,14 @@ export async function setSupplierMetafields(
     { key: 'status', type: 'single_line_text_field', value: m.status },
     { key: 'available_qty', type: 'number_integer', value: String(Math.max(0, Math.floor(m.qty))) },
     { key: 'last_checked_at', type: 'date_time', value: m.checkedAt },
-    // Dispatch origin country code — used to pick the per-product delivery estimate (no shipping-origin claim shown to the customer).
+    // Dispatch origin country code - used to pick the per-product delivery estimate (no shipping-origin claim shown to the customer).
     ...(m.origin ? [{ key: 'origin', type: 'single_line_text_field', value: m.origin }] : []),
     // REPRESENTATIVE order->door estimate (shop display: PDP) from the synced matrix,
-    // bare calendar-day range e.g. "6-21". Written ONLY when non-empty — Shopify rejects
+    // bare calendar-day range e.g. "6-21". Written ONLY when non-empty - Shopify rejects
     // an empty single_line_text_field (would throw), so a stale/missing band just leaves
     // the last-good value (the theme falls back to its static window only when truly unset).
     ...(m.deliveryDays ? [{ key: 'delivery_days', type: 'single_line_text_field', value: m.deliveryDays }] : []),
-    // PER-PRODUCT ACTUAL order->door estimate (this product's own freight) — surfaced at
+    // PER-PRODUCT ACTUAL order->door estimate (this product's own freight) - surfaced at
     // checkout via a line-item property. Same non-empty rule.
     ...(m.deliveryDaysActual ? [{ key: 'delivery_days_actual', type: 'single_line_text_field', value: m.deliveryDaysActual }] : [])
   ];

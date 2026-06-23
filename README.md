@@ -1,8 +1,8 @@
-# PawScout Worker — Active Paw
+# PawScout Worker - Active Paw
 
 ## What is Active Paw?
 
-**Active Paw** ([activepaw.co.uk](https://activepaw.co.uk)) is a UK-based online pet store that sells pet accessories, toys, grooming tools, and health products. It is entirely demand-driven: the catalog is never hand-curated — it grows and shrinks automatically based on what real visitors search for and click on.
+**Active Paw** ([activepaw.co.uk](https://activepaw.co.uk)) is a UK-based online pet store that sells pet accessories, toys, grooming tools, and health products. It is entirely demand-driven: the catalog is never hand-curated - it grows and shrinks automatically based on what real visitors search for and click on.
 
 **PawScout** is the engine behind it. It is an embedded Shopify app (Cloudflare Worker) that connects the storefront to the CJdropshipping supplier catalogue, populates the search grid with quality-vetted supplier products in real time, imports them on first genuine interest, prices them automatically in GBP, and automates fulfilment end-to-end once an order is placed.
 
@@ -21,9 +21,9 @@ Production URL: **https://pawscout.activepaw.co.uk** (Cloudflare custom domain r
 
 Running a dropshipping store traditionally requires constant manual effort: hunting for products on the supplier's site, deciding what to list, writing descriptions, setting prices, re-checking stock, and repeating whenever a product goes out of fashion. Done manually, this either stagnates the catalogue or keeps the owner buried in admin.
 
-Active Paw was built to eliminate that work entirely. The founding idea: **let customer demand decide what gets listed**. If visitors are searching for something, stock it automatically. If nothing sells for 30 days, archive it automatically. The owner's job is strategy and fulfilment funding — not product management.
+Active Paw was built to eliminate that work entirely. The founding idea: **let customer demand decide what gets listed**. If visitors are searching for something, stock it automatically. If nothing sells for 30 days, archive it automatically. The owner's job is strategy and fulfilment funding - not product management.
 
-A secondary problem was quality. General-purpose dropshipping tools pull in whatever matches a keyword, resulting in kitchen tools appearing in pet stores (it happened) and low-quality products diluting search results. PawScout applies multi-layer quality gates — price, popularity, species-relevance, AI curation, and vision-based image validation — so the catalogue stays clean without manual review.
+A secondary problem was quality. General-purpose dropshipping tools pull in whatever matches a keyword, resulting in kitchen tools appearing in pet stores (it happened) and low-quality products diluting search results. PawScout applies multi-layer quality gates - price, popularity, species-relevance, AI curation, and vision-based image validation - so the catalogue stays clean without manual review.
 
 ---
 
@@ -32,8 +32,8 @@ A secondary problem was quality. General-purpose dropshipping tools pull in what
 ### Catalogue (zero manual listing)
 
 - **Search backfill**: when the Shopify store's own search returns fewer than 12 results, PawScout silently augments the grid with quality-gated supplier "ghost cards" priced in GBP. The visitor sees a complete grid; the products do not exist in Shopify yet.
-- **Import on first click**: clicking a ghost card opens an instant preview (served from cache — no network wait). The background import runs simultaneously: Shopify product created, priced, tagged, published. The next visitor sees a real buyable product.
-- **30-day cull**: imported products with zero qualifying views or add-to-carts in 30 days are automatically archived. URLs and order history are preserved; the listing disappears from search. Renewed demand revives it — no duplicate is created.
+- **Import on first click**: clicking a ghost card opens an instant preview (served from cache - no network wait). The background import runs simultaneously: Shopify product created, priced, tagged, published. The next visitor sees a real buyable product.
+- **30-day cull**: imported products with zero qualifying views or add-to-carts in 30 days are automatically archived. URLs and order history are preserved; the listing disappears from search. Renewed demand revives it - no duplicate is created.
 - **Nightly replenishment**: a daily cron re-fills collections that fall below target (12 products) from the local warehouse buffer, prioritising keywords that real visitors searched for and couldn't fully satisfy.
 
 ### Quality gates (no junk, no mismatches)
@@ -58,23 +58,23 @@ When a Shopify order is paid, the worker:
 
 ### Merchant console (embedded in Shopify)
 
-A full-featured admin UI, embedded via App Bridge, shows the supplier connection status, live catalogue stats, top search keywords with fill rates, and controls for every config value. Fulfilment mode, pricing rule, AI settings, collection map, and alert email are all set here — no config files to edit manually.
+A full-featured admin UI, embedded via App Bridge, shows the supplier connection status, live catalogue stats, top search keywords with fill rates, and controls for every config value. Fulfilment mode, pricing rule, AI settings, collection map, and alert email are all set here - no config files to edit manually.
 
 ---
 
 ## How it became helpful
 
-The project started as a basic search backfill — pad the grid when the store runs short. The improvements that made it genuinely useful came from real problems observed in production:
+The project started as a basic search backfill - pad the grid when the store runs short. The improvements that made it genuinely useful came from real problems observed in production:
 
-1. **"Non-pet products slipping in"** — a kitchen knife sharpener appeared in search results during an LLM outage because mechanical gates had no pet-relevance check. Fixed with `isLikelyPetProduct`: explicit pet tokens always admit; clear non-pet markers (kitchen, pruning, hairdressing) always reject. The LLM tightens further when available.
+1. **"Non-pet products slipping in"** - a kitchen knife sharpener appeared in search results during an LLM outage because mechanical gates had no pet-relevance check. Fixed with `isLikelyPetProduct`: explicit pet tokens always admit; clear non-pet markers (kitchen, pruning, hairdressing) always reject. The LLM tightens further when available.
 
-2. **"Cat on a dog listing"** — a supplier's search thumbnail (`productImage`) and detail gallery (`productImageSet`) are independent fields, set separately by the supplier. The search card showed a cat; the product detail showed a dog. Fixed with vision-based image vetting: the model identifies incongruent images; they are removed from Shopify and the grid self-heals on next search after the first preview is cached.
+2. **"Cat on a dog listing"** - a supplier's search thumbnail (`productImage`) and detail gallery (`productImageSet`) are independent fields, set separately by the supplier. The search card showed a cat; the product detail showed a dog. Fixed with vision-based image vetting: the model identifies incongruent images; they are removed from Shopify and the grid self-heals on next search after the first preview is cached.
 
-3. **"Duplicate flooding"** — the same product listed under subtly different titles would pass the deduplication check and create near-identical listings. Fixed with `titleSignature`: a sorted, stopword-stripped token fingerprint that collapses reorderings ("Pet Teeth Cleaning Powder 100g" = "Teeth Cleaning Powder for Pets 100g") while keeping genuinely distinct items distinct.
+3. **"Duplicate flooding"** - the same product listed under subtly different titles would pass the deduplication check and create near-identical listings. Fixed with `titleSignature`: a sorted, stopword-stripped token fingerprint that collapses reorderings ("Pet Teeth Cleaning Powder 100g" = "Teeth Cleaning Powder for Pets 100g") while keeping genuinely distinct items distinct.
 
-4. **"Category drift"** — dental products filed under toys, tug balls filed under health. Fixed with `signaledCategory`: a keyword-signal map re-files a product only when its title unambiguously points to a different collection, so it never overrides a reasonable LLM placement.
+4. **"Category drift"** - dental products filed under toys, tug balls filed under health. Fixed with `signaledCategory`: a keyword-signal map re-files a product only when its title unambiguously points to a different collection, so it never overrides a reasonable LLM placement.
 
-5. **"54% of orders would have errored"** — during fulfilment testing, only 32 of 69 imported products had a local warehouse row, and the fulfilment resolver read the supplier variant ID from there. The rest would have silently failed. Fixed with a live `cj.detail()` fallback: when the warehouse row is missing, the resolver fetches the variant ID from the supplier API in real time.
+5. **"54% of orders would have errored"** - during fulfilment testing, only 32 of 69 imported products had a local warehouse row, and the fulfilment resolver read the supplier variant ID from there. The rest would have silently failed. Fixed with a live `cj.detail()` fallback: when the warehouse row is missing, the resolver fetches the variant ID from the supplier API in real time.
 
 The running test suite (262 tests, all run inside a real Cloudflare `workerd` runtime against in-memory D1) catches regressions from all of the above.
 
@@ -84,12 +84,12 @@ The running test suite (262 tests, all run inside a real Cloudflare `workerd` ru
 
 **Scenario:** A visitor on activepaw.co.uk searches "dog rope toy".
 
-1. Shopify's native search finds 7 matching products — not enough to fill the 12-product grid cap.
+1. Shopify's native search finds 7 matching products - not enough to fill the 12-product grid cap.
 2. The theme calls `/apps/pawscout/search?q=dog+rope+toy&have=7&limit=5`.
 3. PawScout checks its local warehouse buffer first (zero CJ calls). It finds 3 matching gated products and adds them as ghost cards (priced in GBP, no Shopify product yet).
-4. Still 2 short — PawScout falls back to a cached CJ search (or fetches live and caches 30 days). It finds 15 results; quality gates reduce them to 4 valid items. The best 2 are added as ghost cards. Grid is full.
+4. Still 2 short - PawScout falls back to a cached CJ search (or fetches live and caches 30 days). It finds 15 results; quality gates reduce them to 4 valid items. The best 2 are added as ghost cards. Grid is full.
 5. The visitor sees 12 products. 5 of them are ghost cards with prices and images but no buy button.
-6. The visitor clicks a ghost card — "Braided Rope Chew Toy for Dogs, 3-pack". The preview modal opens instantly from cached supplier data.
+6. The visitor clicks a ghost card - "Braided Rope Chew Toy for Dogs, 3-pack". The preview modal opens instantly from cached supplier data.
 7. PawScout fires a background import: creates the Shopify product, uploads the vetted images, sets the GBP price (e.g. £12.99 on a £4.80 supplier cost), publishes it, and tags it `cj-pet-toys`. The modal CTA flips from "View details" to "Add to cart" within seconds.
 8. The next visitor searching "rope dog toy" sees the real product page.
 9. At 4:17 AM the next day, the daily cron logs that "dog rope toy" was searched 11 times yesterday with 5 ghost impressions. It replenishes the `pet-toys` collection to 12 products from the top-scoring warehouse candidates.
@@ -99,7 +99,7 @@ The running test suite (262 tests, all run inside a real Cloudflare `workerd` ru
 
 ## The search flywheel
 
-The goal: a visitor searching the store always sees up to **12 sellable products** (the grid display cap — never padded with weak matches), and the inventory self-optimizes over time.
+The goal: a visitor searching the store always sees up to **12 sellable products** (the grid display cap - never padded with weak matches), and the inventory self-optimizes over time.
 
 ```
 Visitor searches ─→ store answers from its own catalog
@@ -118,13 +118,13 @@ Visitor searches ─→ store answers from its own catalog
                                     the real PDP → normal checkout
 ```
 
-Products that never reach a preview are **never imported** — no catalog pollution. Imported products live or die by performance:
+Products that never reach a preview are **never imported** - no catalog pollution. Imported products live or die by performance:
 
 - **Beacons**: the theme sends JS-only `view` / `atc` signals for imported products (JS-only filters most crawlers).
-- **30-day cull** (daily cron): imported products with **zero qualifying events in 30 days** are **archived** (never deleted — order history and URLs stay intact), with a 30-day grace period from import. Fresh search demand can revive an archived product (it's re-activated, not duplicated).
-- **Warehouse** (W1): a PS-local buffer of ≥20 gated, in-stock products per category (`floors.warehouseDepth`), replenished nightly — demand keywords first. Searches and previews serve from it with **zero CJ calls**; the only CJ call near the request path is a live stock confirmation before import (`floors.stockFloor`, default 10 units — never list what CJ can't fulfil).
+- **30-day cull** (daily cron): imported products with **zero qualifying events in 30 days** are **archived** (never deleted - order history and URLs stay intact), with a 30-day grace period from import. Fresh search demand can revive an archived product (it's re-activated, not duplicated).
+- **Warehouse** (W1): a PS-local buffer of ≥20 gated, in-stock products per category (`floors.warehouseDepth`), replenished nightly - demand keywords first. Searches and previews serve from it with **zero CJ calls**; the only CJ call near the request path is a live stock confirmation before import (`floors.stockFloor`, default 10 units - never list what CJ can't fulfil).
 - **Refill** (daily cron, capped per run): imports top gated CJ products for the most-searched **under-served keywords** (logged from real searches), then tops up mapped collections below `target`.
-- **Retention**: cached CJ data and unrefreshed warehouse rows are purged after 30 days — the PS storage promise, enforced in code.
+- **Retention**: cached CJ data and unrefreshed warehouse rows are purged after 30 days - the PS storage promise, enforced in code.
 
 ## Stack
 
@@ -132,7 +132,7 @@ Products that never reach a preview are **never imported** — no catalog pollut
 - **Router:** [Hono](https://hono.dev)
 - **Shopify:** [`@shopify/shopify-api`](https://github.com/Shopify/shopify-api-js) v11 (cf-worker adapter), App Bridge v4, Admin GraphQL, App Proxy
 - **Database:** [D1](https://developers.cloudflare.com/d1/) (SQLite), migrations in `migrations/`
-- **Tests:** [Vitest](https://vitest.dev) with [`@cloudflare/vitest-pool-workers`](https://developers.cloudflare.com/workers/testing/vitest-integration/) — 262 tests run inside workerd against an in-memory D1 with real migrations
+- **Tests:** [Vitest](https://vitest.dev) with [`@cloudflare/vitest-pool-workers`](https://developers.cloudflare.com/workers/testing/vitest-integration/) - 262 tests run inside workerd against an in-memory D1 with real migrations
 
 ## Project layout
 
@@ -181,7 +181,7 @@ PAWSCOUT_MASTER_KEY (KEK, Worker secret, base64 32 bytes)
 
 - Plaintext secrets never touch D1; the master key never touches the repo.
 - **Uninstall = crypto-shredding**: HMAC-validated webhook empties the sealed token *and* the wrapped DEK, and deletes supplier credentials + cached CJ tokens.
-- **Console** (`/api/*`): App Bridge session tokens — signature verified, `aud` must equal the client ID (missing `aud` is rejected), `*.myshopify.com` destination enforced.
+- **Console** (`/api/*`): App Bridge session tokens - signature verified, `aud` must equal the client ID (missing `aud` is rejected), `*.myshopify.com` destination enforced.
 - **Storefront** (`/proxy/*`): Shopify **App Proxy** HMAC signatures verified with constant-time comparison and a replay window; the worker is never called cross-origin by the browser.
 - All console bodies are validated server-side (`validate.ts`); invalid payloads get `400`, unknown fields are stripped. CJ description HTML is stripped before it can reach a storefront preview.
 - **Tenant isolation enforced architecturally**: only `tenant-store.ts` may touch D1; a guard test fails the build otherwise.
@@ -190,7 +190,7 @@ PAWSCOUT_MASTER_KEY (KEK, Worker secret, base64 32 bytes)
 
 Landed USD supplier cost → GBP retail: `cost × fx × (1 + buffer) × multiplier`, with a hard multiplier **floor**, an absolute **minimum margin**, and `.99` rounding (always up, never below the computed price).
 
-Defaults target **~17% net margin** under the researched cost stack — ads ~33% of revenue (ROAS 3, the conservative case), payments ~2.5%, FX ~1.5%, refunds ~3%, fixed ~2%:
+Defaults target **~17% net margin** under the researched cost stack - ads ~33% of revenue (ROAS 3, the conservative case), payments ~2.5%, FX ~1.5%, refunds ~3%, fixed ~2%:
 
 | Field | Default | |
 |---|---|---|
@@ -218,8 +218,8 @@ Sales arriving through the on-site search flywheel carry near-zero acquisition c
 | `tenants` | Sealed offline token, wrapped DEK, scopes, status |
 | `supplier_credentials` | Sealed supplier API keys (`cj`) |
 | `tenant_config` | Per-shop JSON: collection map, gates, pricing, target |
-| `warehouse_products` | **W1**: PS-local buffer — ≥20 gated, in-stock, fully-detailed products per category; searches/previews serve from here with zero CJ calls |
-| `search_cache` | CJ search/detail payloads per normalized keyword — 30-day TTL |
+| `warehouse_products` | **W1**: PS-local buffer - ≥20 gated, in-stock, fully-detailed products per category; searches/previews serve from here with zero CJ calls |
+| `search_cache` | CJ search/detail payloads per normalized keyword - 30-day TTL |
 | `search_log` | Demand signal: keyword, store hits, ghost hits per search |
 | `product_links` | CJ pid ↔ Shopify product: `ghost → importing → imported ⇄ archived / failed` |
 | `product_events` | Qualifying events (`view`/`atc`/`order`) for the cull |
@@ -255,7 +255,7 @@ Sales arriving through the on-site search flywheel carry near-zero acquisition c
 |---|---|---|
 | `GET` | `/proxy/search?q=&have=&limit=` | Gated, priced, deduped ghost cards for a keyword |
 | `GET` | `/proxy/product?pid=` | Instant preview + qualifying view + background import |
-| `GET` | `/proxy/import-status?pid=` | `{state, url}` — the theme polls this to flip the CTA |
+| `GET` | `/proxy/import-status?pid=` | `{state, url}` - the theme polls this to flip the CTA |
 | `POST` | `/proxy/event` | `{pid, event: view\|atc}` performance beacons |
 
 ### System
@@ -293,7 +293,7 @@ npm run dev
 ```bash
 wrangler secret put SHOPIFY_API_SECRET
 wrangler secret put PAWSCOUT_MASTER_KEY
-wrangler secret put RESEND_API_KEY        # optional — owner alert emails for awaiting-payment orders
+wrangler secret put RESEND_API_KEY        # optional - owner alert emails for awaiting-payment orders
 ```
 
 > ⚠️ `PAWSCOUT_MASTER_KEY` is the KEK for every tenant secret. Losing it orphans all sealed credentials; leaking it compromises them.
@@ -316,7 +316,7 @@ The theme then calls `/apps/pawscout/*` on the store's own domain and Shopify si
 
 ### Testing notes
 
-Tests run in real workerd via `@cloudflare/vitest-pool-workers` with migrations applied to in-memory D1. External boundaries (Shopify Admin GraphQL, CJ API, token exchange) are injected as functions or fake `fetch` implementations — no network in tests. Cron logic is tested with backdated rows written directly by tests (production code still goes through `TenantStore` only, enforced by the guard test).
+Tests run in real workerd via `@cloudflare/vitest-pool-workers` with migrations applied to in-memory D1. External boundaries (Shopify Admin GraphQL, CJ API, token exchange) are injected as functions or fake `fetch` implementations - no network in tests. Cron logic is tested with backdated rows written directly by tests (production code still goes through `TenantStore` only, enforced by the guard test).
 
 ## Roadmap
 
@@ -337,8 +337,8 @@ Remaining before full go-live:
 
 Post-launch pipeline:
 
-- **W6** — automated CJ damage/claims pipeline.
-- **W5** — Resend email marketing (GDPR opt-in).
-- **W4** — weekly intelligence digest (needs ≥2 weeks of live order data).
+- **W6** - automated CJ damage/claims pipeline.
+- **W5** - Resend email marketing (GDPR opt-in).
+- **W4** - weekly intelligence digest (needs ≥2 weeks of live order data).
 - **Per-category pricing multipliers** (commodity vs problem-solver).
 - **Automated FX rate refresh**.

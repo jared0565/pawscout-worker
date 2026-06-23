@@ -221,7 +221,7 @@ describe('syncStoreInventory', () => {
     const reprice = calls.find((c) => c.query.includes('productVariantsBulkUpdate'))!;
     expect(reprice).toBeDefined();
     expect((reprice.variables!.variants as { price: string }[])[0].price).toBe('19.99');
-    // stock came from the detail payload — no separate stock call needed
+    // stock came from the detail payload - no separate stock call needed
     const inv = calls.find((c) => c.query.includes('inventorySetQuantities'))!;
     expect((inv.variables!.input as { quantities: { quantity: number }[] }).quantities[0].quantity).toBe(40);
   });
@@ -365,7 +365,7 @@ describe('syncStoreInventory', () => {
   });
 });
 
-describe('seedSemanticLibrary (Task 8 — cron seeding)', () => {
+describe('seedSemanticLibrary (Task 8 - cron seeding)', () => {
   const baseCfg = (collectionMap: TenantConfig['collectionMap'], semantic = DEFAULT_SEMANTIC): TenantConfig => ({
     collectionMap, gates: DEFAULT_GATES, pricing: DEFAULT_PRICING, floors: DEFAULT_FLOORS,
     llm: DEFAULT_LLM, addons: DEFAULT_ADDONS, fulfil: DEFAULT_FULFIL, inbox: DEFAULT_INBOX, semantic, target: 12

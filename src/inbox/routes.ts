@@ -75,9 +75,9 @@ export async function regenerateDraft(db: D1Database, env: Env, shop: string, dr
   if (!got) return { ok: false as const, error: 'Thread not found' };
   // Generate the replacement FIRST so an LLM failure never loses the current draft.
   const r = await composeDraftForThread(env, store, cfg, got.thread, fetchImpl);
-  if (!r) return { ok: false as const, error: 'Could not generate a new draft — model unavailable, try again.' };
+  if (!r) return { ok: false as const, error: 'Could not generate a new draft - model unavailable, try again.' };
   // Replacement is in (pending). Retire the old draft and keep the thread OPEN
-  // for review — never close it (that was the discard trap). Regenerate never sends.
+  // for review - never close it (that was the discard trap). Regenerate never sends.
   await store.setDraftStatus(draftId, 'discarded');
   if (got.thread.status === 'closed') await store.setThreadStatus(old.thread_id, 'needs_reply');
   return { ok: true as const, draft: await store.getPendingDraft(old.thread_id) };

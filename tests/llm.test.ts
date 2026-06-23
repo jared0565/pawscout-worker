@@ -100,7 +100,7 @@ describe('LlmClient', () => {
     ['HTTP error', llmFetch({}, { status: 500 })],
     ['non-JSON content', llmFetch(null, { raw: 'sorry, I cannot' })],
     ['network throw', (async () => { throw new Error('down'); }) as typeof fetch]
-  ])('degrades to ok:false on %s — never throws', async (_name, fetchImpl) => {
+  ])('degrades to ok:false on %s - never throws', async (_name, fetchImpl) => {
     const llm = new LlmClient({ openrouter: 'k' },fetchImpl);
     const r = await llm.jsonChain({ chain: CHAIN_OR, system: 's', user: 'u', validate: (v) => v });
     expect(r.ok).toBe(false);
@@ -259,7 +259,7 @@ describe('pickHeroImage (vision)', () => {
     expect(spend.calls).toBe(1);
   });
 
-  it('is ok with index null when the model picks image 0 (already correct — cacheable)', async () => {
+  it('is ok with index null when the model picks image 0 (already correct - cacheable)', async () => {
     const store = new TenantStore(env.DB, SHOP);
     const llm = new LlmClient({ openrouter: 'k' },llmFetch({ index: 0, reason: 'fine' }));
     expect(await pickHeroImage(llm, store, CFG, 'Dog Toy', URLS)).toEqual({ ok: true, index: null, drop: [] });

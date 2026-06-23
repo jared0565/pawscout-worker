@@ -105,7 +105,7 @@ describe('TenantStore warehouse', () => {
   });
 });
 
-describe('replenishWarehouse — addon lane', () => {
+describe('replenishWarehouse - addon lane', () => {
   it('admits cheap items under the addon band into the hidden addons category', async () => {
     const store = new TenantStore(env.DB, SHOP);
     const counters = { search: 0, detail: 0, stock: 0 };

@@ -148,7 +148,7 @@ describe('draftReply salutation', () => {
 
   it('strips an inline greeting the model added anyway (no double salutation)', async () => {
     const store = new TenantStore(env.DB, 'a.myshopify.com');
-    const llm = fakeLlm({ bodyText: 'Hi Jane, thanks for your message — yes we can help.', confidence: 88, quotesPriceOrOrder: false });
+    const llm = fakeLlm({ bodyText: 'Hi Jane, thanks for your message - yes we can help.', confidence: 88, quotesPriceOrOrder: false });
     const d = await draftReply(llm, store, CFG, { subject: 's', conversation: 'b', category: 'other', customerName: 'Jane' });
     expect(d?.bodyText.startsWith('Hi Jane,\n\nthanks for your message')).toBe(true);
     expect(d?.bodyText).not.toMatch(/Hi Jane,[\s\S]*Hi Jane,/); // exactly one salutation

@@ -33,7 +33,7 @@ describe('syncCjLogisticsRoutes (fetch-once-fan-out)', () => {
   it('keeps the last-good row and bumps the counter when a route quote fails', async () => {
     const a = new TenantStore(env.DB, 'a.myshopify.com');
     await a.upsertLogisticsRoute({ from: 'CN', to: 'GB', channel: 'old', transitMin: 4, transitMax: 9, agingRaw: '4-9', repVid: 'v0' });
-    const cj = fakeCj((to) => (to === 'GB' ? new Error('CJ HTTP 500 — boom') : ok('5-10')));
+    const cj = fakeCj((to) => (to === 'GB' ? new Error('CJ HTTP 500 - boom') : ok('5-10')));
     const res = await syncCjLogisticsRoutes([a], a, cj, 'vRep', ['GB', 'FR'], { pause: noPause });
     expect(res).toEqual({ refreshed: 1, failed: 1 });
     expect((await a.getLogisticsRoute('CN', 'GB', 72))!.transit_min).toBe(4); // last-good preserved

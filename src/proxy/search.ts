@@ -20,7 +20,7 @@ export function normalizeKeyword(q: string): string {
   return q.toLowerCase().trim().replace(/\s+/g, ' ').slice(0, 80);
 }
 
-// Words that carry no product meaning — dropped before matching so
+// Words that carry no product meaning - dropped before matching so
 // "toys for cats" behaves like "toy cat".
 const STOPWORDS = new Set(['for', 'the', 'and', 'with', 'an', 'to', 'of', 'in', 'on', 'my', 'your', 'a']);
 
@@ -46,10 +46,10 @@ export function keywordTokens(keyword: string): string[] {
 
 // --- Mechanical pet-relevance guard (LLM-free) ---
 // The LLM curation gate is the real niche filter, but admission degrades to
-// mechanical gates when the LLM is down — and those don't check pet-relevance,
+// mechanical gates when the LLM is down - and those don't check pet-relevance,
 // which is how human/kitchen/garden tools slipped in once. This is the floor:
 // a clear pet signal always admits; with no pet signal, a clear NON-pet signal
-// rejects. Ambiguous (neither signal) admits — the LLM tightens it when up.
+// rejects. Ambiguous (neither signal) admits - the LLM tightens it when up.
 const PET_TOKENS = new Set([
   'pet', 'pets', 'dog', 'dogs', 'puppy', 'puppies', 'pup', 'pups', 'canine', 'doggy', 'doggie',
   'cat', 'cats', 'kitten', 'kittens', 'kitty', 'feline', 'paw', 'paws', 'kennel', 'leash', 'collar',
@@ -58,7 +58,7 @@ const PET_TOKENS = new Set([
 // Distinctive non-pet markers (human grooming, kitchen, garden, power tools,
 // and human jewelry/accessories). Each is matched as a substring of the lowercased
 // text, so every entry MUST be a phrase that never legitimately appears in a pet
-// product title — that's why jewelry words like 'necklace'/'pendant' are safe but
+// product title - that's why jewelry words like 'necklace'/'pendant' are safe but
 // 'ring' (chew ring), 'sweater'/'shirt' (pet apparel is a real category) are NOT
 // listed here (the LLM curation gate handles those ambiguous apparel cases).
 const NONPET_MARKERS = [
@@ -79,11 +79,11 @@ export function isLikelyPetProduct(text: string): boolean {
  * STRICT live-feed pet gate: REQUIRE an explicit pet signal. Unlike isLikelyPetProduct,
  * an ambiguous item (no pet token AND no non-pet marker) is REJECTED, not admitted.
  * Used ONLY on the live-CJ supplier feed, where a non-pet false positive (human/baby/car
- * shampoo for a bare "shampoo" search) is the worst outcome — precision beats recall on a
+ * shampoo for a bare "shampoo" search) is the worst outcome - precision beats recall on a
  * supplemental feed. Safe because RAW CJ titles are keyword-stuffed (a real pet product
- * says "pet/dog/cat"; a human one does not) — note imported store titles are DE-stuffed by
+ * says "pet/dog/cat"; a human one does not) - note imported store titles are DE-stuffed by
  * curateProduct, so this gate is only sound on raw CJ results. PET_TOKENS is the recall
- * lever: if a legitimate pet product is dropped, EXPAND that set — don't drop the gate.
+ * lever: if a legitimate pet product is dropped, EXPAND that set - don't drop the gate.
  */
 export function isPetProductStrict(text: string): boolean {
   const words = (text || '').toLowerCase().split(/[^a-z0-9]+/);
@@ -97,7 +97,7 @@ const TITLE_STOP = new Set(['a', 'an', 'the', 'and', 'or', 'for', 'with', 'of', 
  * Order-independent fingerprint of a title's significant tokens. Two listings
  * with the same significant words (incl. reorderings, and the literal twins like
  * the duplicate "Pet Teeth Cleaning Powder 100g") collapse to one signature;
- * genuinely different products (glove vs spa vs shampoo brush) do NOT — so it
+ * genuinely different products (glove vs spa vs shampoo brush) do NOT - so it
  * blocks true duplicates at admission without over-merging distinct items.
  */
 export function titleSignature(title: string): string {
@@ -115,7 +115,7 @@ export function titleSignature(title: string): string {
 // --- Category signal (LLM-free): map a title to ONE collection, or nothing ---
 // Keyed to the standard Active Paw collections; a sweep only re-files a product
 // when its title points unambiguously at a single category that differs from
-// where it sits — so it never overrides a reasonable (possibly LLM-made) call.
+// where it sits - so it never overrides a reasonable (possibly LLM-made) call.
 const CATEGORY_SIGNALS: Record<string, string[]> = {
   'pet-health': ['dental', 'teeth', 'tooth', 'toothbrush', 'oral', 'tartar', 'gum', 'dewormer', 'supplement', 'vitamin', 'multivitamin', 'glucosamine', 'chondroitin', 'probiotic', 'prebiotic', 'omega', 'wound', 'first aid'],
   'pet-toys': ['toy', 'toys', 'ball', 'chew', 'squeaky', 'squeak', 'teaser', 'catnip', 'scratcher', 'fetch', 'plush', 'kicker', 'wand'],
@@ -126,7 +126,7 @@ const CATEGORY_SIGNALS: Record<string, string[]> = {
 
 // "Chew" is a toy signal, but supplements ship in chewable form too
 // ("Multivitamin Chews", "Glucosamine Joint Chewables", "Dental Chew Sticks").
-// Those are health/dental products, not chew toys — so when pet-toys' ONLY claim
+// Those are health/dental products, not chew toys - so when pet-toys' ONLY claim
 // is the chew family AND a health signal is also present, health wins. Without
 // this the mixed signal reads as ambiguous and the daily re-audit
 // (reconcileCategories) leaves the supplement mis-filed under pet-toys forever.
@@ -159,7 +159,7 @@ export function signaledCategory(title: string): string | null {
 // hard drop EVEN WHEN the title carries a pet token (the jewelry / phone-case /
 // human-shampoo false positives the title floor alone misses).
 //
-// ONLY tops PROVEN pet-free by the live probe belong here — jewelry / phones /
+// ONLY tops PROVEN pet-free by the live probe belong here - jewelry / phones /
 // human beauty held ZERO pet items across the sampled keywords. Apparel,
 // electronics and automotive were deliberately NOT added: CJ files real pet SKUs
 // under them (dog raincoats/sweaters, automatic feeders/GPS/cameras, dog
@@ -174,7 +174,7 @@ const HARD_DROP_TOP_CATEGORIES = ['jewel', 'phone', 'beauty'];
 /**
  * Live-CJ category gate: reject only when CJ's TOP category is unambiguously
  * non-pet. Blank/absent or an ambiguous catch-all → admit (defer to the title
- * pet floor). Composes WITH isPetProductStrict — it never replaces it, so the
+ * pet floor). Composes WITH isPetProductStrict - it never replaces it, so the
  * change is additive: an absent category behaves exactly as before.
  */
 export function categoryAdmitsLiveCj(topCategory?: string): boolean {
@@ -183,7 +183,7 @@ export function categoryAdmitsLiveCj(topCategory?: string): boolean {
   return !HARD_DROP_TOP_CATEGORIES.some((m) => t.includes(m));
 }
 
-// Species vocabulary — the single most important relevance signal in a
+// Species vocabulary - the single most important relevance signal in a
 // pet store (a "dog toy" search must never show cat products).
 const DOG_WORDS = new Set(['dog', 'dogs', 'puppy', 'puppies', 'pup', 'pups', 'canine', 'doggy', 'doggie']);
 const CAT_WORDS = new Set(['cat', 'cats', 'kitten', 'kittens', 'kitty', 'kitties', 'feline']);
@@ -213,7 +213,7 @@ export function speciesConflict(keyword: string, title: string): boolean {
 }
 
 export function relevanceMatch(keyword: string, title: string, mode: Gates['relevance']): boolean {
-  // Species gate FIRST — a cat product never matches a dog query, in any mode.
+  // Species gate FIRST - a cat product never matches a dog query, in any mode.
   if (speciesConflict(keyword, title)) return false;
   if (mode === 'loose') return true; // trust the source's own match
   // Word-boundary match: build the SET of stemmed title words, so a query
@@ -235,7 +235,7 @@ export function relevanceMatch(keyword: string, title: string, mode: Gates['rele
  * Gate for LIVE CJ (listV2) results. listV2 is CJ's elasticsearch search and
  * already did the category work, so we TRUST its relevance and instead enforce
  * the two things it doesn't: price/quality and SPECIES. When the query names an
- * animal, the product must be that animal — which both reaches the grid target
+ * animal, the product must be that animal - which both reaches the grid target
  * (any genuine dog product fills a "dog toy" search, not just ones with the
  * literal word "toy") AND blocks species-less junk (advent calendars) and the
  * wrong species. Non-species queries fall back to category-token matching.
@@ -280,13 +280,13 @@ function firstImage(row: WarehouseRow): string {
 }
 
 /**
- * Storefront search backfill — WAREHOUSE FIRST (W1).
+ * Storefront search backfill - WAREHOUSE FIRST (W1).
  *
  * 1. Match against the PS-local warehouse: zero CJ calls, gates re-applied at
  *    read time (config may have changed since admission), ranked by how many
  *    keyword tokens hit, then popularity.
  * 2. Only when the warehouse can't fill the grid, fall back to one live CJ
- *    search (30-day cached) — and the logged shortfall steers the nightly
+ *    search (30-day cached) - and the logged shortfall steers the nightly
  *    replenishment toward this keyword.
  */
 export async function searchBackfill(
@@ -301,7 +301,7 @@ export async function searchBackfill(
   const kw = normalizeKeyword(query);
   if (!kw) return [];
 
-  // Query expansion (skipped entirely in strict mode — expansion must never
+  // Query expansion (skipped entirely in strict mode - expansion must never
   // loosen an explicitly strict gate). Two sources, unioned:
   //  - W3 classified-keyword synonyms (e.g. "puppy chew" → "dog toy");
   //  - the shared pet semantic term library (collection-agnostic), cache-only
@@ -348,7 +348,7 @@ export async function searchBackfill(
   // --- 2) live CJ fallback (cached per keyword for 30 days) ---
   if (cards.length < limit && (opts.liveFallback ?? true)) {
     let items: CjSearchItem[];
-    // kw2: cache namespace — bumped from kw: when topCategory was added so the
+    // kw2: cache namespace - bumped from kw: when topCategory was added so the
     // category gate takes effect on already-cached hot keywords instead of
     // waiting up to CACHE_TTL_DAYS for stale (category-less) entries to expire.
     const cached = await store.getSearchCache(`kw2:${kw}`);
@@ -365,7 +365,7 @@ export async function searchBackfill(
     const gated = items.filter((i) => !seen.has(i.pid) && liveCjPasses(i, cfg.gates, kw) && categoryAdmitsLiveCj(i.topCategory) && isPetProductStrict(i.nameEn));
     // Observe the category gate's recall cost: items the title floor WOULD have
     // admitted (pet token present) but the top-category hard-drop removed. On a
-    // precision-first feed these should be rare and genuinely non-pet — a pet-token
+    // precision-first feed these should be rare and genuinely non-pet - a pet-token
     // title surfacing here means a marker is too aggressive, so tune
     // HARD_DROP_TOP_CATEGORIES. Logged only when nonzero (silent on the common case).
     const categoryDropped = items.filter((i) =>
@@ -393,7 +393,7 @@ export async function searchBackfill(
 
   // Swap CJ's raw thumbnail for the vision-vetted hero when we have one cached
   // (populated when a product is previewed or imported). This is what makes a
-  // "cat on a dog listing" card self-heal — the grid shows the congruent image.
+  // "cat on a dog listing" card self-heal - the grid shows the congruent image.
   const heroes = await store.getHeroImages(cards.map((c) => c.pid));
   if (heroes.size) {
     for (const card of cards) {

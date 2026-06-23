@@ -10,10 +10,10 @@ describe('inbox validators', () => {
     expect(validateInboxPayload({ enabled: true, intentThreshold: 250, autosend: false, autoConfidenceThreshold: 80, labels: [] }).ok).toBe(false);
   });
   it('rejects autosend:true in this phase', () => {
-    // autosend:true is now allowed — this test is superseded by the new acceptance test below
+    // autosend:true is now allowed - this test is superseded by the new acceptance test below
     // Keeping existing rejection test shape but verifying the old rejection is GONE:
     const r = validateInboxPayload({ enabled: true, intentThreshold: 70, autosend: true, autoConfidenceThreshold: 80, labels: [] });
-    // autosend:true now accepted — old hard-reject removed
+    // autosend:true now accepted - old hard-reject removed
     expect(r.ok).toBe(true);
   });
   it('rejects a bad alert email', () => {

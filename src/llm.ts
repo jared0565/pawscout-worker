@@ -51,7 +51,7 @@ type SendOutcome<T> =
 
 /**
  * Provider-aware LLM client (W3). Walks a tier chain (OpenRouter → OpenAI-direct).
- * Strict-JSON prompts, validated on parse. NEVER throws into a job — every failure
+ * Strict-JSON prompts, validated on parse. NEVER throws into a job - every failure
  * degrades to "no LLM", because the system must function on mechanical gates alone.
  */
 export class LlmClient {
@@ -75,7 +75,7 @@ export class LlmClient {
         const out = await this.send<T>(tier, key, opts);
         if (out.kind === 'ok') {
           if (tier.provider === 'openai') {
-            console.warn(`llm.tier3.activated model=${out.usage.model} — both OpenRouter slots failed`);
+            console.warn(`llm.tier3.activated model=${out.usage.model} - both OpenRouter slots failed`);
           }
           return { ok: true, value: out.value, usage: out.usage };
         }
@@ -145,7 +145,7 @@ export interface Curation {
   category: string | null;      // a collectionMap key, or null
   title: string;                // rewritten, <= 70 chars
   descriptionHtml: string;      // clean HTML
-  petClass: PetClass;           // target animal — for species-aware filtering
+  petClass: PetClass;           // target animal - for species-aware filtering
 }
 
 function clip(s: string, n: number): string {
@@ -154,7 +154,7 @@ function clip(s: string, n: number): string {
 
 /**
  * Score + rewrite a candidate at warehouse-admission time (background only).
- * Returns null on any LLM failure — the caller falls back to mechanical gates.
+ * Returns null on any LLM failure - the caller falls back to mechanical gates.
  */
 export async function curateProduct(
   llm: LlmClient,
@@ -173,13 +173,13 @@ export async function curateProduct(
     system:
       'You curate products for Active Paw, a UK online pet-care store (dogs and cats: grooming, toys, feeding, walking, health, daily care). ' +
       'You receive a raw supplier listing and the search CONTEXT that surfaced it. Respond with ONLY a JSON object: ' +
-      '{"relevanceScore": <0-100 integer — how strongly this is a quality, on-niche PET product matching the context. ' +
+      '{"relevanceScore": <0-100 integer - how strongly this is a quality, on-niche PET product matching the context. ' +
       'Products for children or general household score under 30. ' +
       'CRITICAL species rule: if the context targets one animal (e.g. "cat ...") but the product is clearly FOR a different animal (e.g. a dog harness, a dog chew), score it under 20 even if its description merely mentions the other animal in passing. A "cat toy" search must NOT accept dog products.>, ' +
       `"category": <one of ${JSON.stringify(categories)} or null>, ` +
       '"title": <rewritten product title, natural English, max 70 chars, no ALL CAPS, no year prefixes, no keyword stuffing>, ' +
       '"descriptionHtml": <clean simple HTML description, max 200 words, factual, UK English, no medical claims, no supplier names>, ' +
-      '"petClass": <the product\'s actual target animal — one of "cat", "dog", "both" (genuinely suitable for either), "small-pet" (rabbit/hamster/bird/fish), or "other" (not animal-specific, e.g. a generic bowl)>}',
+      '"petClass": <the product\'s actual target animal - one of "cat", "dog", "both" (genuinely suitable for either), "small-pet" (rabbit/hamster/bird/fish), or "other" (not animal-specific, e.g. a generic bowl)>}',
     user: JSON.stringify({
       context,
       supplierTitle: detail.nameEn,
@@ -231,11 +231,11 @@ export interface HeroPick { ok: boolean; index: number | null; drop?: number[] }
 /**
  * Vision pass: given a product TITLE and its images (in current order, index 0
  * first), return the 0-based index of the image that best represents the whole
- * product — so the caller can promote it to the featured slot. Catches the
+ * product - so the caller can promote it to the featured slot. Catches the
  * "title says SET but the default image is one comb" class of mismatch.
  *
  * Returns a HeroPick: `ok:false` means we couldn't decide (no LLM or a failure)
- * and the caller should NOT cache the result — retry later. `ok:true` means the
+ * and the caller should NOT cache the result - retry later. `ok:true` means the
  * model (or the trivial <2-image case) gave a definitive answer: `index` is the
  * 0-based image to promote, or null when the current first image is already best.
  * Never throws.
@@ -249,7 +249,7 @@ export async function pickHeroImage(
 ): Promise<HeroPick> {
   if (!llm.available || !cfg.llm.enabled) return { ok: false, index: null, drop: [] };
   const urls = imageUrls.slice(0, MAX_HERO_IMAGES);
-  if (urls.length < 2) return { ok: true, index: null, drop: [] }; // nothing to choose/vet — definitively fine
+  if (urls.length < 2) return { ok: true, index: null, drop: [] }; // nothing to choose/vet - definitively fine
   const chain = resolveChain(cfg, 'image');
 
   const result = await llm.jsonChain<{ index: number; drop: number[]; reason: string }>({
@@ -261,10 +261,10 @@ export async function pickHeroImage(
       'You are given the product TITLE and its images in order (image index 0 is shown first). Do two things:\n' +
       '1) HERO: pick the single image that best represents the WHOLE product as the title describes it. ' +
       'For a "set"/"kit"/"bundle"/"with X & Y" title, prefer the image showing ALL the included items together, NOT one component alone. ' +
-      'STRONGLY prefer a clean, well-lit photo of the product ITSELF with NO overlaid marketing/banner text baked into the image, NO watermarks, and NO cartoon or illustrated mascots — ' +
+      'STRONGLY prefer a clean, well-lit photo of the product ITSELF with NO overlaid marketing/banner text baked into the image, NO watermarks, and NO cartoon or illustrated mascots - ' +
       'over packaging-only, a size chart, any text/infographic/promotional graphic, a lifestyle-only scene, or an extreme close-up of one detail. ' +
       'A photo with large overlaid promo text or a cartoon mascot looks unprofessional; choose it as hero ONLY if no cleaner plain product photo exists in the set.\n' +
-      '2) DROP: list the indices of images that DO NOT BELONG to this listing — an image showing a DIFFERENT animal than the title names (e.g. the title says "dog" but the image shows a cat), an unrelated product, or a near-duplicate. ' +
+      '2) DROP: list the indices of images that DO NOT BELONG to this listing - an image showing a DIFFERENT animal than the title names (e.g. the title says "dog" but the image shows a cat), an unrelated product, or a near-duplicate. ' +
       'Be CONSERVATIVE: only drop an image you are confident is incongruent with the title; when unsure, KEEP it (do not drop). The hero must NOT be in drop. ' +
       'If the title names an animal, the hero MUST feature that animal when any image does.\n' +
       'Respond with ONLY JSON: {"index": <0-based hero index>, "drop": [<0-based indices to remove>], "reason": <short phrase, max 12 words>}.',
@@ -293,7 +293,7 @@ export async function pickHeroImage(
 
 /**
  * Rewrite a product description into clean, claim-safe UK-English HTML. Used to
- * repair legacy listings that still carry raw CJ copy — supplier shipping/refund
+ * repair legacy listings that still carry raw CJ copy - supplier shipping/refund
  * text, hotlinked images, and medical claims. Returns null on any failure, or if
  * the output still smells of a hotlink/supplier marker (defensive). Never throws.
  */
@@ -316,7 +316,7 @@ export async function rewriteDescription(
       'You rewrite a pet-product description for a UK online pet store. Respond with ONLY JSON: ' +
       '{"descriptionHtml": <clean HTML string>}. Rules: simple factual HTML using only <p>, <ul>, <li>, <strong>; ' +
       'UK English; max ~150 words; keep accurate specs (material, size, contents, colours) when present; ' +
-      'NO medical or disease claims — never say a product prevents, treats or cures disease; phrase care benefits softly ' +
+      'NO medical or disease claims - never say a product prevents, treats or cures disease; phrase care benefits softly ' +
       '("helps maintain", "supports"); NO supplier or brand names; NO shipping times, returns or refund policy; ' +
       'NO <img> tags, NO external links or URLs; no ALL CAPS, no keyword stuffing. ' +
       'For oral/dental products, add one short line to introduce gradually and consult a vet about existing concerns.',

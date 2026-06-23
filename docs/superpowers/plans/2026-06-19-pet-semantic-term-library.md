@@ -21,13 +21,13 @@
 
 ## File Structure
 
-- **Create** `migrations/0012_semantic_terms.sql` — the table.
-- **Modify** `src/tenant-store.ts` — `getSemanticExpansions`, `upsertSemanticTerm`, `listSemanticTermsForCollection`.
-- **Modify** `src/types.ts` — `SemanticConfig` + `DEFAULT_SEMANTIC` + add to `TenantConfig` + `getConfig` merge.
-- **Modify** `src/validate.ts` — `validateSemanticPayload`.
-- **Create** `src/semantic/library.ts` — `fetchSuggest`, `cleanToPetTerms`, `seedTerm`, `getExpansions`.
-- **Modify** `src/jobs.ts` — cron seeding batch + wire expansions into `replenishWarehouse`.
-- **Modify** `src/proxy/search.ts` — wire expansions into the on-site search path.
+- **Create** `migrations/0012_semantic_terms.sql` - the table.
+- **Modify** `src/tenant-store.ts` - `getSemanticExpansions`, `upsertSemanticTerm`, `listSemanticTermsForCollection`.
+- **Modify** `src/types.ts` - `SemanticConfig` + `DEFAULT_SEMANTIC` + add to `TenantConfig` + `getConfig` merge.
+- **Modify** `src/validate.ts` - `validateSemanticPayload`.
+- **Create** `src/semantic/library.ts` - `fetchSuggest`, `cleanToPetTerms`, `seedTerm`, `getExpansions`.
+- **Modify** `src/jobs.ts` - cron seeding batch + wire expansions into `replenishWarehouse`.
+- **Modify** `src/proxy/search.ts` - wire expansions into the on-site search path.
 - **Tests:** `tests/semantic-store.test.ts`, `tests/semantic-library.test.ts`, `tests/validate-semantic.test.ts`.
 
 ---
@@ -41,7 +41,7 @@
 - `upsertSemanticTerm(collection: string, term: string, expansions: string[], source: string): Promise<void>`
 - `listSemanticTermsForCollection(collection: string): Promise<{ term: string; updatedAt: string }[]>`
 
-- [ ] **Step 1 — migration:**
+- [ ] **Step 1 - migration:**
 ```sql
 CREATE TABLE IF NOT EXISTS semantic_terms (
   shop            TEXT NOT NULL,
@@ -55,9 +55,9 @@ CREATE TABLE IF NOT EXISTS semantic_terms (
 CREATE INDEX IF NOT EXISTS idx_semantic_terms_shop_coll ON semantic_terms (shop, collection);
 ```
 
-- [ ] **Step 2 — failing test** (`tests/semantic-store.test.ts`): upsert then read returns the expansions; second upsert overwrites (no dup row); read miss returns null; list returns terms for the collection. Use the existing harness (`applyD1Migrations(env.DB, env.TEST_MIGRATIONS)` in `beforeEach`, `new TenantStore(env.DB, SHOP)`).
+- [ ] **Step 2 - failing test** (`tests/semantic-store.test.ts`): upsert then read returns the expansions; second upsert overwrites (no dup row); read miss returns null; list returns terms for the collection. Use the existing harness (`applyD1Migrations(env.DB, env.TEST_MIGRATIONS)` in `beforeEach`, `new TenantStore(env.DB, SHOP)`).
 
-- [ ] **Step 3 — implement** (in `src/tenant-store.ts`, mirroring `getSearchCache`/`putSearchCache`):
+- [ ] **Step 3 - implement** (in `src/tenant-store.ts`, mirroring `getSearchCache`/`putSearchCache`):
 ```ts
 async getSemanticExpansions(collection: string, term: string): Promise<{ expansions: string[]; updatedAt: string } | null> {
   const row = await this.db
@@ -78,7 +78,7 @@ async listSemanticTermsForCollection(collection: string): Promise<{ term: string
   return (r.results ?? []).map((x) => ({ term: x.term, updatedAt: x.updated_at }));
 }
 ```
-- [ ] **Step 4** — run `tests/semantic-store.test.ts` + `tsc`; **Step 5** — commit.
+- [ ] **Step 4** - run `tests/semantic-store.test.ts` + `tsc`; **Step 5** - commit.
 
 ---
 
@@ -88,9 +88,9 @@ async listSemanticTermsForCollection(collection: string): Promise<{ term: string
 
 **Interfaces (produced):** `SemanticConfig = { enabled: boolean; maxExpansions: number; ttlDays: number; excludeCollections: string[] }`; `DEFAULT_SEMANTIC`; `TenantConfig.semantic`; `validateSemanticPayload(body): Validation<SemanticConfig>`.
 
-- [ ] **Step 1** — `src/types.ts`: add the interface, `DEFAULT_SEMANTIC = { enabled: true, maxExpansions: 8, ttlDays: 30, excludeCollections: ['more-to-love'] }`, add `semantic: SemanticConfig` to `TenantConfig`, and in `getConfig` add `semantic: { ...DEFAULT_SEMANTIC, ...JSON.parse(row.semantic || '{}') }` — **NOTE:** `semantic` is a NEW column; add it to the `SELECT` and rely on the `'{}'` default. Since `tenant_config` has no `semantic` column yet, add it in migration 0012: `ALTER TABLE tenant_config ADD COLUMN semantic TEXT NOT NULL DEFAULT '{}';`. (Confirm column-add against `getConfig`'s SELECT list — extend it.)
-- [ ] **Step 2 — failing test** (`tests/validate-semantic.test.ts`): accepts defaults; rejects `maxExpansions` out of [1,50] and `ttlDays` out of [1,365]; coerces/validates `excludeCollections` to a string array.
-- [ ] **Step 3 — implement** `validateSemanticPayload` in `src/validate.ts` (mirror `validateAddonsPayload`: type-check each field, clamp/reject ranges, default missing fields).
+- [ ] **Step 1** - `src/types.ts`: add the interface, `DEFAULT_SEMANTIC = { enabled: true, maxExpansions: 8, ttlDays: 30, excludeCollections: ['more-to-love'] }`, add `semantic: SemanticConfig` to `TenantConfig`, and in `getConfig` add `semantic: { ...DEFAULT_SEMANTIC, ...JSON.parse(row.semantic || '{}') }` - **NOTE:** `semantic` is a NEW column; add it to the `SELECT` and rely on the `'{}'` default. Since `tenant_config` has no `semantic` column yet, add it in migration 0012: `ALTER TABLE tenant_config ADD COLUMN semantic TEXT NOT NULL DEFAULT '{}';`. (Confirm column-add against `getConfig`'s SELECT list - extend it.)
+- [ ] **Step 2 - failing test** (`tests/validate-semantic.test.ts`): accepts defaults; rejects `maxExpansions` out of [1,50] and `ttlDays` out of [1,365]; coerces/validates `excludeCollections` to a string array.
+- [ ] **Step 3 - implement** `validateSemanticPayload` in `src/validate.ts` (mirror `validateAddonsPayload`: type-check each field, clamp/reject ranges, default missing fields).
 - [ ] **Step 4** run tests + tsc; **Step 5** commit.
 
 ---
@@ -99,10 +99,10 @@ async listSemanticTermsForCollection(collection: string): Promise<{ term: string
 
 **Files:** Create `src/semantic/library.ts`; Test `tests/semantic-library.test.ts`.
 
-**Interfaces (produced):** `fetchSuggest(term: string, collection: string, fetchImpl?: typeof fetch): Promise<string[]>` — pet-biased, deduped raw phrases; never throws.
+**Interfaces (produced):** `fetchSuggest(term: string, collection: string, fetchImpl?: typeof fetch): Promise<string[]>` - pet-biased, deduped raw phrases; never throws.
 
-- [ ] **Step 1 — failing test:** a mocked `fetchImpl` returning Google shape `["q",["dog shampoo","puppy shampoo"]]` and DDG shape → `fetchSuggest` unions+dedupes; assert the requested URLs include pet-anchored queries (`pet `/`dog `/the collection noun); a throwing `fetchImpl` → `[]`.
-- [ ] **Step 2 — implement:**
+- [ ] **Step 1 - failing test:** a mocked `fetchImpl` returning Google shape `["q",["dog shampoo","puppy shampoo"]]` and DDG shape → `fetchSuggest` unions+dedupes; assert the requested URLs include pet-anchored queries (`pet `/`dog `/the collection noun); a throwing `fetchImpl` → `[]`.
+- [ ] **Step 2 - implement:**
 ```ts
 const SUGGEST_PREFIXES = ['pet', 'dog', 'cat'];
 function collectionNoun(handle: string): string { return (handle || '').replace(/^pet-/, 'pet ').replace(/-/g, ' ').trim(); }
@@ -131,8 +131,8 @@ export async function fetchSuggest(term: string, collection: string, fetchImpl: 
 
 **Interfaces (produced):** `cleanToPetTerms(llm: LlmClient, cfg: TenantConfig, raw: string[], term: string, collection: string): Promise<string[]>`.
 
-- [ ] **Step 1 — failing test:** mocked LLM returns `['dog shampoo','puppy bath','head and shoulders']`; `cleanToPetTerms` keeps the pet ones and the **backstop drops 'head and shoulders'** (no pet token via `isPetProductStrict`); result capped at `cfg.semantic.maxExpansions`, deduped, excludes the seed term itself.
-- [ ] **Step 2 — implement:** call `llm.json` with a prompt scoped to "related SEARCH terms for PET products in the `<collection>` collection; drop anything human, medical-claim, brand-specific, or unrelated; return ONLY a JSON array of short lowercase terms". Then `.filter((t) => isPetProductStrict(t))`, dedupe, drop the seed, cap. On `!llm.available` or LLM failure → return the `isPetProductStrict`-filtered raw set (degrade, never throw). Import `isPetProductStrict` from `../proxy/search`.
+- [ ] **Step 1 - failing test:** mocked LLM returns `['dog shampoo','puppy bath','head and shoulders']`; `cleanToPetTerms` keeps the pet ones and the **backstop drops 'head and shoulders'** (no pet token via `isPetProductStrict`); result capped at `cfg.semantic.maxExpansions`, deduped, excludes the seed term itself.
+- [ ] **Step 2 - implement:** call `llm.json` with a prompt scoped to "related SEARCH terms for PET products in the `<collection>` collection; drop anything human, medical-claim, brand-specific, or unrelated; return ONLY a JSON array of short lowercase terms". Then `.filter((t) => isPetProductStrict(t))`, dedupe, drop the seed, cap. On `!llm.available` or LLM failure → return the `isPetProductStrict`-filtered raw set (degrade, never throw). Import `isPetProductStrict` from `../proxy/search`.
 - [ ] **Step 3** run test + tsc; **Step 4** commit.
 
 ---
@@ -145,8 +145,8 @@ export async function fetchSuggest(term: string, collection: string, fetchImpl: 
 - `seedTerm(store, llm, cfg, term, collection, source, fetchImpl?): Promise<string[]>`
 - `getExpansions(store, cfg, term, collection, opts?: { llm?; fetchImpl?; ctx?: { waitUntil(p: Promise<unknown>): void } }): Promise<string[]>`
 
-- [ ] **Step 1 — failing test:** excluded collection (`more-to-love`) or `enabled=false` → `[]` with no store/LLM/fetch calls; cache hit returns stored expansions; cache miss returns `[]` and (when `ctx` given) calls `ctx.waitUntil` with a seed promise; `seedTerm` runs fetchSuggest→cleanToPetTerms→`upsertSemanticTerm` and returns the cleaned list.
-- [ ] **Step 2 — implement:**
+- [ ] **Step 1 - failing test:** excluded collection (`more-to-love`) or `enabled=false` → `[]` with no store/LLM/fetch calls; cache hit returns stored expansions; cache miss returns `[]` and (when `ctx` given) calls `ctx.waitUntil` with a seed promise; `seedTerm` runs fetchSuggest→cleanToPetTerms→`upsertSemanticTerm` and returns the cleaned list.
+- [ ] **Step 2 - implement:**
 ```ts
 function excluded(cfg: TenantConfig, collection: string): boolean {
   return !cfg.semantic.enabled || cfg.semantic.excludeCollections.includes(collection);
@@ -167,7 +167,7 @@ export async function getExpansions(store, cfg, term, collection, opts = {}): Pr
   return [];
 }
 ```
-- [ ] **Step 3** run test + tsc; **Step 4** commit. **(Core complete here — engine is fully testable and inert until Tasks 6-8 wire it.)**
+- [ ] **Step 3** run test + tsc; **Step 4** commit. **(Core complete here - engine is fully testable and inert until Tasks 6-8 wire it.)**
 
 ---
 

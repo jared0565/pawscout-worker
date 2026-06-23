@@ -1,13 +1,13 @@
 import { defaultFetch } from './safe-fetch';
 
 // Transactional email via Resend (https://resend.com). The API key lives in the
-// RESEND_API_KEY Worker secret — never logged, never sent anywhere but Resend.
+// RESEND_API_KEY Worker secret - never logged, never sent anywhere but Resend.
 // This is the send primitive W5 (marketing) and the awaiting-payment owner alert
 // both build on.
 
 const RESEND_ENDPOINT = 'https://api.resend.com/emails';
 
-// Verified sending domain — all outbound mail uses @activepaw.co.uk.
+// Verified sending domain - all outbound mail uses @activepaw.co.uk.
 // Set up DKIM + SPF in Resend before deploying (see docs/INBOX_OPS.md).
 const DEFAULT_FROM = 'Active Paw <support@activepaw.co.uk>';
 

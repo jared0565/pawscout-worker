@@ -4,22 +4,22 @@
 
 **Goal:** Add a customer-facing "Reason" dropdown to the contact form whose selection routes a partnership inquiry into the Phase-1 affiliate funnel on first contact, stored as `inbox_threads.declared_intent`.
 
-**Architecture:** A self-declared intent flows: theme `<select name="contact[Reason]">` → Shopify contact notification → `extractContactForm` parses + validates the token → `ingestParsed` persists it on the new thread (`declared_intent`) → `maybePartnershipDraft` reads `got.thread.declared_intent` so the funnel fires on first touch. The console surfaces the declared intent. Declared intent **reinforces, never overrides** the content classifier — `primary_category` is untouched.
+**Architecture:** A self-declared intent flows: theme `<select name="contact[Reason]">` → Shopify contact notification → `extractContactForm` parses + validates the token → `ingestParsed` persists it on the new thread (`declared_intent`) → `maybePartnershipDraft` reads `got.thread.declared_intent` so the funnel fires on first touch. The console surfaces the declared intent. Declared intent **reinforces, never overrides** the content classifier - `primary_category` is untouched.
 
 **Tech Stack:** Cloudflare Worker (TypeScript) + D1 (SQLite); Vitest with `@cloudflare/vitest-pool-workers` (`cloudflare:test`); Shopify theme (Liquid, no build step).
 
 **Spec:** `docs/superpowers/specs/2026-06-22-affiliate-reason-dropdown-design.md`
-**Parent (shipped):** Phase 1 — `isPartnershipLane`, `maybePartnershipDraft`, `affiliate_applicants` (worker `d1870f90`).
+**Parent (shipped):** Phase 1 - `isPartnershipLane`, `maybePartnershipDraft`, `affiliate_applicants` (worker `d1870f90`).
 
 ## Global Constraints
 
 - **Reinforces, never overrides:** `declared_intent` only adds an OR-trigger to the partnership lane. `primary_category` and the content classifier are untouched.
 - **Lane is affiliate-only:** declared `partnerships` → funnel (qualifying email); declared `order`/`wholesale` → generic drafter (no funnel). `isPartnershipLane` already carries the `declaredIntent === 'partnerships'` on-ramp.
-- **Accepted tokens are exactly `{ order, partnerships, wholesale }`.** Anything else (incl. `general`, empty, absent, or an unknown string) → `null`. A parse miss degrades to **exactly today's behavior** (no auto-routing) — never a regression. This is the safety backstop; never trust a raw client value.
+- **Accepted tokens are exactly `{ order, partnerships, wholesale }`.** Anything else (incl. `general`, empty, absent, or an unknown string) → `null`. A parse miss degrades to **exactly today's behavior** (no auto-routing) - never a regression. This is the safety backstop; never trust a raw client value.
 - **Worker tests run in 1–4 file batches.** A full `vitest run` of the whole suite hits a miniflare runtime ceiling (a 529-like infra failure, NOT a real test failure). Always run the named test files for the task, never the whole suite.
 - **`src/console/page.ts` is one big template literal** (HTML + CSS + browser JS). `tsc` cannot see JS syntax errors inside it, so ALWAYS run `tests/console.test.ts` after editing it, and double-escape any `\\n` inside browser-JS strings.
 - **Theme changes are MANDATORY-process** (memory `theme-change-process`): reconcile live vs HEAD → dev-theme push → Playwright verify → live push → re-verify. Never `--only` clobber live-only work. The theme repo (`F:\Projects\Shopify\demo-store2`) is a SEPARATE git repo from the worker.
-- **Auto-push to GitHub** after each commit (both repos). Production deploys — `npx wrangler deploy`, the D1 migration on `--remote`, and the theme **live** push — require explicit owner go (gated, performed after the plan).
+- **Auto-push to GitHub** after each commit (both repos). Production deploys - `npx wrangler deploy`, the D1 migration on `--remote`, and the theme **live** push - require explicit owner go (gated, performed after the plan).
 
 ---
 
@@ -101,7 +101,7 @@ Then, just before the final `return` (currently line 77), insert the reason pars
   // /reason[:\s]*([a-z_]+)/i) so the word "reason" inside the message body cannot be
   // mistaken for the field. Validate against the known token set; anything else
   // (incl. "general", empty, absent, or any unknown string) → null, which degrades to
-  // exactly today's behaviour (no auto-routing) — never a regression.
+  // exactly today's behaviour (no auto-routing) - never a regression.
   const DECLARED_INTENTS = new Set(['order', 'partnerships', 'wholesale']);
   const rawReason = (p.text.match(/^\s*reason\b[:\s]*([a-z_]+)/im)?.[1] ?? '').toLowerCase();
   const reason = DECLARED_INTENTS.has(rawReason) ? rawReason : null;
@@ -109,7 +109,7 @@ Then, just before the final `return` (currently line 77), insert the reason pars
   return { email: replyEmail.toLowerCase(), name, phone, body, reason };
 ```
 
-(Delete the old `return { email: replyEmail.toLowerCase(), name, phone, body };` line — it is replaced by the block above.)
+(Delete the old `return { email: replyEmail.toLowerCase(), name, phone, body };` line - it is replaced by the block above.)
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
@@ -192,7 +192,7 @@ Add these to `tests/inbox-ingest.test.ts` inside the existing `describe('ingestP
 - [ ] **Step 4: Run the tests to verify they fail**
 
 Run: `npx vitest run tests/inbox-ingest.test.ts`
-Expected: the new "stores the contact-form declared intent" test FAILS (`declared_intent` is `null`, not `'partnerships'` — `createThread` doesn't persist it yet). The "leaves NULL" test will already pass (column defaults NULL). The migration must be picked up automatically by `applyD1Migrations(env.DB, env.TEST_MIGRATIONS)` — if you instead see "no such column: declared_intent", the test runner did not load migration 0016; confirm the file is named `migrations/0016_thread_declared_intent.sql` and re-run.
+Expected: the new "stores the contact-form declared intent" test FAILS (`declared_intent` is `null`, not `'partnerships'` - `createThread` doesn't persist it yet). The "leaves NULL" test will already pass (column defaults NULL). The migration must be picked up automatically by `applyD1Migrations(env.DB, env.TEST_MIGRATIONS)` - if you instead see "no such column: declared_intent", the test runner did not load migration 0016; confirm the file is named `migrations/0016_thread_declared_intent.sql` and re-run.
 
 - [ ] **Step 5: Persist `declaredIntent` in `createThread`**
 
@@ -227,7 +227,7 @@ In `src/inbox/ingest.ts`, update the `createThread` call (lines 37-39) to pass t
 - [ ] **Step 7: Run the tests to verify they pass**
 
 Run: `npx vitest run tests/inbox-ingest.test.ts tests/inbox-store.test.ts`
-Expected: PASS (both files — `inbox-store.test.ts` is a regression check that the additive `createThread` change broke no existing store test).
+Expected: PASS (both files - `inbox-store.test.ts` is a regression check that the additive `createThread` change broke no existing store test).
 
 - [ ] **Step 8: Commit**
 
@@ -241,11 +241,11 @@ git commit -m "feat(inbox): persist contact-form declared_intent on the thread (
 ### Task 3: Fire the partnership lane on `thread.declared_intent` at first touch
 
 **Files:**
-- Modify: `src/inbox/partnership.ts:198-220` (`maybePartnershipDraft` — the lane computation only)
+- Modify: `src/inbox/partnership.ts:198-220` (`maybePartnershipDraft` - the lane computation only)
 - Test: `tests/partnership-draft-screen.test.ts`
 
 **Interfaces:**
-- Consumes: `ThreadRow.declared_intent` (Task 2); `isPartnershipLane({ inboundToAddrs, declaredIntent, primaryCategory })` (existing — already returns `true` when `declaredIntent === 'partnerships'`).
+- Consumes: `ThreadRow.declared_intent` (Task 2); `isPartnershipLane({ inboundToAddrs, declaredIntent, primaryCategory })` (existing - already returns `true` when `declaredIntent === 'partnerships'`).
 - Produces: no signature change. Behaviour change: the funnel now fires on first touch from a declared-`partnerships` thread (no applicant row required).
 
 - [ ] **Step 1: Write the failing tests**
@@ -264,7 +264,7 @@ describe('partnership lane via declared intent (Phase 2 first-touch)', () => {
     await s.insertInboundMessageIfNew({ threadId: tid, messageId: '<c1@x>', inReplyTo: null, references: [], from: 'mia@creator.com', to: 'support@activepaw.co.uk', subject: 'Hello', bodyText: 'I run a dog TikTok and want to collaborate.', bodyHtml: null, headersJson: '{}', receivedAt: '2026-06-22T10:00:00Z' });
 
     const thread = (await s.getThreadWithMessages(tid))!.thread;
-    expect(await s.getApplicantByThread(tid)).toBeNull(); // no applicant row yet — genuinely first touch
+    expect(await s.getApplicantByThread(tid)).toBeNull(); // no applicant row yet - genuinely first touch
     const r = await composeDraftForThread({ ...env } as any, s, CFG, thread, noFetch);
     expect(r).not.toBeNull();
     const draft = await s.getPendingDraft(tid);
@@ -290,7 +290,7 @@ describe('partnership lane via declared intent (Phase 2 first-touch)', () => {
 - [ ] **Step 2: Run the tests to verify they fail**
 
 Run: `npx vitest run tests/partnership-draft-screen.test.ts`
-Expected: the "declared partnerships first-touch" test FAILS (`r` is `null` — the lane currently reads `applicant?.declared_intent`, which is `null` when there is no applicant row, so the intercept does not fire). The "declared wholesale" test passes (it asserts the funnel does NOT fire, which is the current behaviour too).
+Expected: the "declared partnerships first-touch" test FAILS (`r` is `null` - the lane currently reads `applicant?.declared_intent`, which is `null` when there is no applicant row, so the intercept does not fire). The "declared wholesale" test passes (it asserts the funnel does NOT fire, which is the current behaviour too).
 
 - [ ] **Step 3: Read declared intent from the thread, not the applicant**
 
@@ -308,7 +308,7 @@ with:
 ```ts
   const inboundToAddrs = got.messages.filter((m) => m.direction === 'inbound').map((m) => m.to_addr ?? '');
   // Phase 2: declared intent lives at THREAD level (set from the contact-form Reason
-  // dropdown at ingest), so the funnel fires on FIRST touch — before any applicant row
+  // dropdown at ingest), so the funnel fires on FIRST touch - before any applicant row
   // exists. Read got.thread (the fresh SELECT * row from getThreadWithMessages) rather
   // than the param thread, so the column is always present even if a future caller passes
   // a projected thread. Reinforces, never overrides, the classifier: primary_category is
@@ -318,12 +318,12 @@ with:
   if (!isPartnershipLane({ inboundToAddrs, declaredIntent, primaryCategory: thread.primary_category })) return null;
 ```
 
-(The `applicant` lookup is still needed by the stage logic below — only its role in computing `declaredIntent` is removed.)
+(The `applicant` lookup is still needed by the stage logic below - only its role in computing `declaredIntent` is removed.)
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `npx vitest run tests/partnership-draft-screen.test.ts tests/partnership-draft-score.test.ts`
-Expected: PASS (both files — `partnership-draft-score.test.ts` is a regression check that the screen-answered scoring path still behaves, since both exercise `maybePartnershipDraft`).
+Expected: PASS (both files - `partnership-draft-score.test.ts` is a regression check that the screen-answered scoring path still behaves, since both exercise `maybePartnershipDraft`).
 
 - [ ] **Step 5: Commit**
 
@@ -341,7 +341,7 @@ git commit -m "feat(inbox): partnership funnel fires from thread.declared_intent
 - Test: `tests/console.test.ts`
 
 **Interfaces:**
-- Consumes: `ThreadRow.declared_intent` (Task 2), already delivered through `getInboxThread`'s `thread` payload — **no `routes.ts` change is needed** (it returns `got.thread` directly).
+- Consumes: `ThreadRow.declared_intent` (Task 2), already delivered through `getInboxThread`'s `thread` payload - **no `routes.ts` change is needed** (it returns `got.thread` directly).
 - Produces: a "Declared: &lt;friendly label&gt;" line in the thread-detail header when `thread.declared_intent` is set.
 
 - [ ] **Step 1: Write the failing test**
@@ -353,7 +353,7 @@ Add this to `tests/console.test.ts` inside `describe('consolePage', ...)`:
     const html = await consolePage('test-api-key').text();
     const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
     // renderInboxThread maps the declared_intent token to a friendly label and shows a
-    // "Declared:" line when present — visible even on non-funnel order/wholesale threads
+    // "Declared:" line when present - visible even on non-funnel order/wholesale threads
     // where there is no Partnership screening panel. Reinforces the classifier.
     expect(scripts).toContain('thread.declared_intent');
     expect(scripts).toContain('Declared:');
@@ -392,7 +392,7 @@ In the `detail.innerHTML='...'` assignment (around line 1175-1179), insert `+dec
 - [ ] **Step 5: Run the test to verify it passes**
 
 Run: `npx vitest run tests/console.test.ts`
-Expected: PASS (all tests, including the inline-script syntax guard — confirms the template literal is still valid).
+Expected: PASS (all tests, including the inline-script syntax guard - confirms the template literal is still valid).
 
 - [ ] **Step 6: Commit**
 
@@ -405,7 +405,7 @@ git commit -m "feat(console): show contact-form declared intent in thread detail
 
 ### Task 5: Add the "Reason" dropdown to the contact form (theme)
 
-> **Repo note:** this task edits the THEME repo at `F:\Projects\Shopify\demo-store2`, NOT the worker. Commit there. The theme has no automated test harness, so the in-loop verification is a **static content check** (below). The full dev-theme Playwright verification and the **live** push are a gated post-implementation step the controller performs per the `theme-change-process` memory — do NOT push to the live theme from this task.
+> **Repo note:** this task edits the THEME repo at `F:\Projects\Shopify\demo-store2`, NOT the worker. Commit there. The theme has no automated test harness, so the in-loop verification is a **static content check** (below). The full dev-theme Playwright verification and the **live** push are a gated post-implementation step the controller performs per the `theme-change-process` memory - do NOT push to the live theme from this task.
 
 **Files:**
 - Modify: `F:\Projects\Shopify\demo-store2\snippets\contact-modal.liquid:49-52` (insert the select after the Phone field, before the Message field)
@@ -430,9 +430,9 @@ In `snippets/contact-modal.liquid`, insert this block **between** the Phone fiel
         </div>
 ```
 
-(Per spec §4, custom `contact[*]` fields are not re-exposed by Liquid `form.*` on a validation error, so the select simply defaults back to "General enquiry" on error re-render — the customer re-picks. Acceptable.)
+(Per spec §4, custom `contact[*]` fields are not re-exposed by Liquid `form.*` on a validation error, so the select simply defaults back to "General enquiry" on error re-render - the customer re-picks. Acceptable.)
 
-- [ ] **Step 2: Style the select like the other fields (DRY — extend, don't duplicate)**
+- [ ] **Step 2: Style the select like the other fields (DRY - extend, don't duplicate)**
 
 In `assets/theme.css`, add `select` to the two existing field rule selectors so it inherits the input styling. Change (line 2749-2750):
 
@@ -474,7 +474,7 @@ grep -n 'value="partnerships"' snippets/contact-modal.liquid
 grep -n '.contact-form select' assets/theme.css
 ```
 
-Expected: each grep prints a match — the select is present with the `contact[Reason]` name, the `partnerships` token option, and the CSS now covers `select`.
+Expected: each grep prints a match - the select is present with the `contact[Reason]` name, the `partnerships` token option, and the CSS now covers `select`.
 
 - [ ] **Step 4: Commit (theme repo)**
 
@@ -487,12 +487,12 @@ git commit -m "feat(theme): add What's-this-about Reason dropdown to contact for
 
 ## Post-plan gated steps (controller, with owner go)
 
-These are NOT plan tasks — they are deploys that require explicit owner approval:
+These are NOT plan tasks - they are deploys that require explicit owner approval:
 
 1. **Theme verification + live push** (per `theme-change-process`): `shopify theme pull` to reconcile live vs HEAD → push to a dev theme → Playwright-verify the dropdown renders, defaults to "General enquiry", and submits → push to the **live** theme → re-verify. Never `--only` clobber live-only work.
 2. **D1 migration:** `npx wrangler d1 execute pawscout --remote --file migrations/0016_thread_declared_intent.sql`.
 3. **Worker deploy:** `npx wrangler deploy`.
-4. **End-to-end live proof** (the true verification of the parse path, which no unit test can reach — spec §9/§11): submit the live contact form with Reason = "Creator / affiliate partnership", then confirm the new thread carries `declared_intent='partnerships'` and the qualifying email drafts on the next `*/15` sweep.
+4. **End-to-end live proof** (the true verification of the parse path, which no unit test can reach - spec §9/§11): submit the live contact form with Reason = "Creator / affiliate partnership", then confirm the new thread carries `declared_intent='partnerships'` and the qualifying email drafts on the next `*/15` sweep.
 
 ## Self-Review
 

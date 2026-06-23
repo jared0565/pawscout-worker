@@ -3,7 +3,7 @@ import type { TenantConfig } from './types';
 
 // W-FULFIL Stage A: receive a paid Shopify order, normalise it, and run the
 // pre-spend guardrails. The money leg (CJ createOrder + payBalance) is Stage B
-// and lives behind these checks — nothing here spends money or calls CJ.
+// and lives behind these checks - nothing here spends money or calls CJ.
 
 /** £ order total above which we always hold for a human (guardrail). */
 export const FULFIL_REVIEW_THRESHOLD_GBP = 100;
@@ -36,7 +36,7 @@ export interface OrderRecord {
   totalPrice: number;
   currency: string;
   financialStatus: string;
-  riskLevel: string | null; // LOW | MEDIUM | HIGH | null (unknown — fetched in Stage B)
+  riskLevel: string | null; // LOW | MEDIUM | HIGH | null (unknown - fetched in Stage B)
   address: OrderAddress | null;
   lineItems: OrderLineItem[];
   noteAttributes: Record<string, string>;
@@ -102,7 +102,7 @@ function addressComplete(a: OrderAddress | null): boolean {
 /**
  * Resolve each line item to its CJ pid and run the pre-spend guardrails. Returns
  * the holds (empty = clears auto-fulfil) and the line items with cjPid filled in.
- * A held order is never auto-submitted — it waits for an operator in the console.
+ * A held order is never auto-submitted - it waits for an operator in the console.
  */
 export async function validateOrder(
   order: OrderRecord,

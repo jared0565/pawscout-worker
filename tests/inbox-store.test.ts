@@ -150,7 +150,7 @@ describe('inbox store', () => {
       headersJson: '{}', receivedAt: '2026-06-18T12:00:00Z'
     });
 
-    // seed jane on a different shop — must remain untouched
+    // seed jane on a different shop - must remain untouched
     await otherStore.upsertContact({ email: 'jane@x.com', name: 'Jane', phone: null });
     const otherJaneTid = await otherStore.createThread({
       contactEmail: 'jane@x.com', subject: 'Other shop', subjectNorm: 'other shop',

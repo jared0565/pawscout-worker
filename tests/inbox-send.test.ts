@@ -45,7 +45,7 @@ describe('sendReply', () => {
     const s = new TenantStore(env.DB, 'b.myshopify.com');
     await s.upsertContact({ email: 'jane@x.com', name: null, phone: null });
     const tid = await s.createThread({ contactEmail: 'jane@x.com', subject: 'Ship?', subjectNorm: 'ship?', receivedAt: '2026-06-18T10:00:00Z', initialStatus: 'awaiting_customer' });
-    // Original customer inbound — its Message-ID is stored and is what our reply's References points at.
+    // Original customer inbound - its Message-ID is stored and is what our reply's References points at.
     await s.insertInboundMessageIfNew({ threadId: tid, messageId: '<cust-1@x>', inReplyTo: null, references: [], from: 'jane@x.com', to: 'support@activepaw.co.uk', subject: 'Ship?', bodyText: 'do you ship?', bodyHtml: null, headersJson: '{}', receivedAt: '2026-06-18T10:00:00Z' });
 
     // Customer's NEW reply: In-Reply-To is an id we never stored (simulating a Resend-overridden

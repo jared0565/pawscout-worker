@@ -31,7 +31,7 @@ describe('retailPriceGbp', () => {
     expect(retailPriceGbp(2, DEFAULT_PRICING, 10)).toBe(15.99);
     // same item without freight knowledge degrades to the old rule → 7.99
     expect(retailPriceGbp(2, DEFAULT_PRICING)).toBe(7.99);
-    // expensive item: multiplier already clears cost+freight+margin — sticker unchanged
+    // expensive item: multiplier already clears cost+freight+margin - sticker unchanged
     expect(retailPriceGbp(30, DEFAULT_PRICING, 5)).toBe(retailPriceGbp(30, DEFAULT_PRICING));
   });
 
@@ -42,7 +42,7 @@ describe('retailPriceGbp', () => {
 });
 
 describe('landedCostGbp (honest COGS, raw FX)', () => {
-  it('converts product cost at the raw FX rate — no buffer', () => {
+  it('converts product cost at the raw FX rate - no buffer', () => {
     // 10 USD × 0.78 = 7.80 (the retail path would use 0.78×1.02 = 0.7956)
     expect(landedCostGbp(10, DEFAULT_PRICING)).toBe(7.8);
   });

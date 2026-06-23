@@ -51,7 +51,7 @@ async function seedShop() {
     inbox: { ...DEFAULT_INBOX, alertEmail: 'owner@gmail.com' },
     target: 12,
   });
-  // saveInbox is required — seedConfig does NOT persist the inbox column
+  // saveInbox is required - seedConfig does NOT persist the inbox column
   await store.saveInbox({ ...DEFAULT_INBOX, alertEmail: 'owner@gmail.com', autosend: false });
   return store;
 }
@@ -175,7 +175,7 @@ describe('W-INBOX-2 end-to-end integration', () => {
     const afterReply = await store.getThreadWithMessages(threadId);
     // Thread re-opens to needs_reply because awaiting_customer + new inbound
     expect(afterReply?.thread.status).toBe('needs_reply');
-    // Old pending draft (if any) superseded — there was none after approve, but verify no stale draft
+    // Old pending draft (if any) superseded - there was none after approve, but verify no stale draft
     expect(await store.getPendingDraft(threadId)).toBeNull();
   });
 });

@@ -7,19 +7,19 @@ export interface Env {
   SHOPIFY_APP_URL: string;
   SHOPIFY_SCOPES: string;
   PAWSCOUT_MASTER_KEY: string; // base64, 32 bytes
-  // CJ egress relay (relay/ on Fly.io) — optional: absent = direct CJ calls
+  // CJ egress relay (relay/ on Fly.io) - optional: absent = direct CJ calls
   // (fine locally, 429s in production: CJ caps 3 API users per source IP).
   CJ_RELAY_URL?: string;
   CJ_RELAY_TOKEN?: string;
-  // OpenRouter (W3 LLM curation) — optional: absent = mechanical gates only.
+  // OpenRouter (W3 LLM curation) - optional: absent = mechanical gates only.
   OPENROUTER_API_KEY?: string;
-  // OpenAI direct (LLM-centralization last-resort floor, gpt-5.4-mini) — optional:
+  // OpenAI direct (LLM-centralization last-resort floor, gpt-5.4-mini) - optional:
   // absent = OpenAI tier skipped (OpenRouter tiers + mechanical degradation remain).
   OPENAI_API_KEY?: string;
-  // Firecrawl — optional: scrapes CJ's website search for diagnostics /
+  // Firecrawl - optional: scrapes CJ's website search for diagnostics /
   // higher-quality supply (absent = feature off).
   FIRECRAWL_API_KEY?: string;
-  // Resend (W5 email + owner alerts) — optional: absent = email features off.
+  // Resend (W5 email + owner alerts) - optional: absent = email features off.
   RESEND_API_KEY?: string;
   // W-INBOX-1 safety-net forward: owner's verified Email Routing destination.
   // Unset = no forward (stop forwarding once capture is trusted).
@@ -30,7 +30,7 @@ export interface Env {
   // Orchestrator sets this to a real flagship vid to activate. See src/inbox/freight.ts.
   INBOX_FREIGHT_REP_VID?: string;
   // Retention reorder reminders (affiliate 1.3). UNSET/'' = DORMANT (built but
-  // never emails customers). Set to '1' or 'true' to activate live sending —
+  // never emails customers). Set to '1' or 'true' to activate live sending -
   // a separate explicit go, and only after checkout marketing-consent capture
   // is confirmed (we send only to emailMarketingConsent SUBSCRIBED regardless).
   RETENTION_REORDER_ENABLED?: string;
@@ -66,7 +66,7 @@ export interface Pricing {
   fxBufferPct: number;  // safety buffer on conversion, in percent
 }
 
-/** Inventory floors. Goals the crons work toward — never bypass gates to hit them. */
+/** Inventory floors. Goals the crons work toward - never bypass gates to hit them. */
 export interface Floors {
   warehouseDepth: number; // PS-local warehouse: products held per category
   storeFloor: number;     // Shopify store: minimum listed per category (W2)
@@ -82,7 +82,7 @@ export interface ModelsConfig {
 /**
  * LLM behavioral config. Model SELECTION lives in `models` (one dashboard block);
  * `enabled`/`scoreThreshold` are the behavioral knobs. Disabled (or no key) =
- * mechanical gates only — the system never depends on the LLM to function.
+ * mechanical gates only - the system never depends on the LLM to function.
  */
 export interface LlmConfig {
   enabled: boolean;
@@ -92,11 +92,11 @@ export interface LlmConfig {
 
 /**
  * W-FULFIL Stage B fulfilment ownership (per-tenant; white-label toggle):
- *  - 'manual'   — PawScout queues orders only; you pay/fulfil by hand. (default, safe)
- *  - 'pawscout' — PawScout owns fulfilment end-to-end (create + pay + track). The
+ *  - 'manual'   - PawScout queues orders only; you pay/fulfil by hand. (default, safe)
+ *  - 'pawscout' - PawScout owns fulfilment end-to-end (create + pay + track). The
  *                 money leg. REQUIRES CJ's native Shopify order-import to be OFF
  *                 for this store, or you get duplicate CJ orders.
- *  - 'cj'       — CJ's own Shopify app owns fulfilment; PawScout stays out (no
+ *  - 'cj'       - CJ's own Shopify app owns fulfilment; PawScout stays out (no
  *                 create/pay/track) and just shows orders for visibility.
  */
 export type FulfilMode = 'manual' | 'pawscout' | 'cj';
@@ -112,7 +112,7 @@ export interface Fulfil {
   // CJ and is awaiting payment (so the owner can pay it ASAP). Empty = no email.
   alertEmail?: string;
   // logistics: policy knobs for the synced CJ delivery-time matrix (door-to-door
-  // model). OPTIONAL + read via resolveLogistics() with per-field defaults — never
+  // model). OPTIONAL + read via resolveLogistics() with per-field defaults - never
   // rely on the one-level DEFAULT_FULFIL merge to fill a nested object.
   logistics?: Partial<LogisticsConfig>;
 }
@@ -154,9 +154,9 @@ export interface TenantConfig {
 export { DEFAULT_INBOX } from './inbox/types';
 
 // popularityFloor: CJ listedNum is SMALL-VALUED in practice (max ~5 across a
-// typical 40-item search) — it counts listing merchants. 1 = "someone else
+// typical 40-item search) - it counts listing merchants. 1 = "someone else
 // stocks this"; W3's LLM curation is the real quality gate.
-/** W-ADDON: hidden basket-filler lane — cheap, LLM-curated, capped pool. */
+/** W-ADDON: hidden basket-filler lane - cheap, LLM-curated, capped pool. */
 export interface Addons { enabled: boolean; priceMinUsd: number; priceMaxUsd: number; poolSize: number; suppressFromBrowse: boolean }
 
 export const DEFAULT_GATES: Gates = { popularityFloor: 1, priceMin: 5, priceMax: 80, relevance: 'title' };
@@ -168,7 +168,7 @@ export const DEFAULT_ADDONS: Addons = { enabled: true, priceMinUsd: 0.5, priceMa
 /** Pet semantic term library: query/sourcing term expansion, per collection. */
 export interface SemanticConfig { enabled: boolean; maxExpansions: number; ttlDays: number; excludeCollections: string[] }
 export const DEFAULT_SEMANTIC: SemanticConfig = { enabled: true, maxExpansions: 8, ttlDays: 30, excludeCollections: ['more-to-love'] };
-// fulfilment mode 'manual' by default — Stage B never spends until set to 'pawscout'.
+// fulfilment mode 'manual' by default - Stage B never spends until set to 'pawscout'.
 export const DEFAULT_FULFIL: Fulfil = { mode: 'manual' };
 export const DEFAULT_TARGET = 12;
 

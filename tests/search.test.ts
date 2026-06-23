@@ -45,23 +45,23 @@ describe('isLikelyPetProduct (mechanical floor)', () => {
     expect(isLikelyPetProduct('Love Yourself More Phone Case Drop-resistant')).toBe(false);
   });
   it('does NOT over-reject pet items: a pet token admits before the marker check', () => {
-    // pet apparel/jewelry-charm products are real — the explicit pet signal wins first
+    // pet apparel/jewelry-charm products are real - the explicit pet signal wins first
     expect(isLikelyPetProduct('Dog Sweater Knitted Pet Hat')).toBe(true);
     expect(isLikelyPetProduct('Pet Collar with Pearl Chain Charm')).toBe(true);
   });
-  it('admits ambiguous items (no signal either way) — the LLM tightens when up', () => {
+  it('admits ambiguous items (no signal either way) - the LLM tightens when up', () => {
     expect(isLikelyPetProduct('Silicone Bath Brush')).toBe(true);
   });
 });
 
-describe('isPetProductStrict (live-feed pet gate — precision over recall)', () => {
+describe('isPetProductStrict (live-feed pet gate - precision over recall)', () => {
   it('requires an explicit pet signal: pet products pass, human/ambiguous are rejected', () => {
     expect(isPetProductStrict('Pet Dog Shampoo Oatmeal Soothing')).toBe(true);
     expect(isPetProductStrict('Cat Litter Deodorizing Mat')).toBe(true);
     // the exact bug: a bare "shampoo" search must not surface human shampoo (no pet token)
     expect(isPetProductStrict('Argan Oil Hair Shampoo 500ml')).toBe(false);
     // INTENTIONAL: ambiguous title with no pet token is dropped on the supplemental live
-    // feed (isLikelyPetProduct ADMITS this — a deliberately different, stricter gate).
+    // feed (isLikelyPetProduct ADMITS this - a deliberately different, stricter gate).
     expect(isPetProductStrict('Silicone Bath Brush')).toBe(false);
   });
 });
@@ -74,7 +74,7 @@ describe('categoryAdmitsLiveCj (CJ top-category hard-drop gate)', () => {
   });
   it('DEFERS apparel/electronics/automotive (CJ files real pet SKUs there) and pet/blank tops to the title floor', () => {
     // These were intentionally NOT hard-dropped: dog raincoats/sweaters, pet feeders/GPS,
-    // dog car-seat covers live under them — the title floor handles non-pet ones.
+    // dog car-seat covers live under them - the title floor handles non-pet ones.
     for (const c of ['Pet Supplies', 'Home, Garden & Furniture', 'Sports & Outdoors', 'Apparel', 'Consumer Electronics', 'Automobiles & Motorcycles', '', undefined]) {
       expect(categoryAdmitsLiveCj(c)).toBe(true);
     }
@@ -203,7 +203,7 @@ describe('searchBackfill', () => {
     expect(cards.find((c) => c.pid === 'ok')!.image).toBe('https://i/HERO.jpg');
   });
 
-  it('serves repeats from cache — CJ is hit once per keyword', async () => {
+  it('serves repeats from cache - CJ is hit once per keyword', async () => {
     const store = new TenantStore(env.DB, 'a.myshopify.com');
     const calls: string[] = [];
     const cj = fakeCj([item({})], calls);
@@ -242,7 +242,7 @@ describe('searchBackfill', () => {
 
   it('drops non-pet products (human shampoo) from the live feed on a bare query; keeps pet ones', async () => {
     const store = new TenantStore(env.DB, 'a.myshopify.com');
-    // 'shampoo' is a non-species query, so liveCjPasses lets both through on title match —
+    // 'shampoo' is a non-species query, so liveCjPasses lets both through on title match -
     // the pet floor is the only thing separating the human product from the pet one.
     const items = [
       item({ pid: 'human', nameEn: 'Argan Oil Hair Shampoo 500ml' }),
@@ -254,7 +254,7 @@ describe('searchBackfill', () => {
 
   it('hard-drops a pet-token item filed under a non-pet CJ top category; keeps the Pet Supplies one', async () => {
     const store = new TenantStore(env.DB, 'a.myshopify.com');
-    // Both titles carry a pet token, so the title floor (isPetProductStrict) ADMITS both —
+    // Both titles carry a pet token, so the title floor (isPetProductStrict) ADMITS both -
     // only CJ's top category separates the fashion necklace from the genuine pet collar tag.
     const items = [
       item({ pid: 'NECK', nameEn: 'Dog Mom Necklace Pendant', topCategory: 'Jewelry & Watches' }),

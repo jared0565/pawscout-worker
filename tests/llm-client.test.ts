@@ -36,7 +36,7 @@ describe('LlmClient.jsonChain', () => {
     if (r.ok) { expect(r.usage.provider).toBe('openai'); expect(r.usage.costUsd).toBeCloseTo(10/1e6*0.75 + 5/1e6*4.50); }
   });
 
-  it('HTTP 400 invalid_request stops — does NOT advance', async () => {
+  it('HTTP 400 invalid_request stops - does NOT advance', async () => {
     const fetchImpl = vi.fn().mockResolvedValue({ ok: false, status: 400, json: async () => ({ error: { type: 'invalid_request_error', message: 'bad' } }) });
     const llm = new LlmClient({ openrouter: 'k', openai: 'o' }, fetchImpl as any);
     const r = await llm.jsonChain({ chain: [{ provider: 'openrouter', models: ['a/b'] }, { provider: 'openai', model: 'gpt-5.4-mini' }], system: 's', user: 'u', validate: (v: any) => v });

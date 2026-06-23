@@ -157,7 +157,7 @@ describe('origins + freight', () => {
   });
 });
 
-describe('CjClient.search — listV2 first (real shape: id, nameEn, content[].productList)', () => {
+describe('CjClient.search - listV2 first (real shape: id, nameEn, content[].productList)', () => {
   it('parses listV2 results and uses the `id` field as pid (the fallback bug)', async () => {
     const urls: string[] = [];
     const fakeFetch = (async (input: RequestInfo | URL) => {

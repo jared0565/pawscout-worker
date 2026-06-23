@@ -25,7 +25,7 @@ it('falls back to email match when no attribute', async () => {
   await s.upsertContact({ email: 'c@x.com' });
   const tid = await s.createThread({ contactEmail: 'c@x.com', subject: 'x', subjectNorm: 'x', receivedAt: new Date().toISOString(), initialStatus: 'awaiting_customer' });
   const invId = await s.insertInvoice({ threadId: tid, lineItems: [], total: 5, currency: 'GBP', coverText: '', confidence: null, holdReasons: [], status: 'sent' });
-  // email lives on the webhook payload, exposed via a customerEmail field — see impl note
+  // email lives on the webhook payload, exposed via a customerEmail field - see impl note
   const r = await attributePaidOrder(s, { ...order({}), customerEmail: 'c@x.com' } as never);
   expect(r.converted).toBe(true);
   expect((await s.getInvoice(invId))?.status).toBe('paid');
@@ -44,7 +44,7 @@ it('normalises customerEmail to lowercase before email-fallback lookup', async (
   await s.upsertContact({ email: 'buyer@x.com' });
   const tid = await s.createThread({ contactEmail: 'buyer@x.com', subject: 'x', subjectNorm: 'x', receivedAt: new Date().toISOString(), initialStatus: 'awaiting_customer' });
   const invId = await s.insertInvoice({ threadId: tid, lineItems: [], total: 10, currency: 'GBP', coverText: '', confidence: null, holdReasons: [], status: 'sent' });
-  // Webhook delivers mixed-case email — attribution must normalise before lookup
+  // Webhook delivers mixed-case email - attribution must normalise before lookup
   const r = await attributePaidOrder(s, { ...order({}), customerEmail: 'Buyer@X.com' } as never);
   expect(r.converted).toBe(true);
   expect((await s.getInvoice(invId))?.status).toBe('paid');

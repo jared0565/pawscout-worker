@@ -18,7 +18,7 @@ function captureAdmin(): { admin: AdminGraphql; keys: () => string[]; valueOf: (
 
 const base = { status: 'available' as const, qty: 5, checkedAt: '2026-06-21T00:00:00.000Z', origin: 'CN' };
 
-describe('setSupplierMetafields — delivery_days', () => {
+describe('setSupplierMetafields - delivery_days', () => {
   it('writes a bare day-range when provided', async () => {
     const c = captureAdmin();
     await setSupplierMetafields(c.admin, 'gid://p/1', { ...base, deliveryDays: '6-21' });
@@ -26,7 +26,7 @@ describe('setSupplierMetafields — delivery_days', () => {
     expect(c.valueOf('delivery_days')).toBe('6-21');
   });
 
-  it('OMITS delivery_days when empty (Shopify rejects an empty value — never write "")', async () => {
+  it('OMITS delivery_days when empty (Shopify rejects an empty value - never write "")', async () => {
     const c = captureAdmin();
     await setSupplierMetafields(c.admin, 'gid://p/1', { ...base, deliveryDays: '' });
     expect(c.keys()).not.toContain('delivery_days');

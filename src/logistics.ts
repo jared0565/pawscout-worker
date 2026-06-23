@@ -1,7 +1,7 @@
 import { DEFAULT_LOGISTICS, type LogisticsConfig, type Fulfil } from './types';
 
 /**
- * Synced CJ delivery-TIME matrix — pure helpers (no I/O).
+ * Synced CJ delivery-TIME matrix - pure helpers (no I/O).
  *
  * CJ logisticAging is TRANSIT-only (dispatch->door), a CALENDAR-day range, and
  * route/channel-driven (weight-independent). The customer-facing ORDER->DOOR band
@@ -34,7 +34,7 @@ export interface LogisticsRoute {
  * never a wrong number). Mirrors freight.ts sanitizeDays but yields a range.
  */
 export function parseDaysRange(raw: string | null | undefined): DayRange | null {
-  const m = String(raw ?? '').replace(/[~–—]/g, '-').match(/(\d{1,3})\s*(?:-\s*(\d{1,3}))?/);
+  const m = String(raw ?? '').replace(/[~\u2013\u2014]/g, '-').match(/(\d{1,3})\s*(?:-\s*(\d{1,3}))?/);
   if (!m) return null;
   const min = Number(m[1]);
   const max = m[2] != null ? Number(m[2]) : min;
@@ -90,7 +90,7 @@ export function formatBand(band: DayRange | null): string {
 }
 
 /**
- * Door-to-door band straight from a CJ freight quote's aging string — for the
+ * Door-to-door band straight from a CJ freight quote's aging string - for the
  * PER-PRODUCT "actual" estimate (quote the product's own variant). Null on an
  * unparseable aging => caller omits the figure. Same conservative model as the
  * matrix path (parse -> doorToDoorBand).

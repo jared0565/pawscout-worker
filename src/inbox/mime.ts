@@ -17,7 +17,7 @@ function splitRefs(value: string | undefined): string[] {
 }
 
 /** Parse raw RFC822 bytes into a normalized ParsedEmail. Never throws on a
- * malformed body — returns best-effort fields (empty text rather than reject). */
+ * malformed body - returns best-effort fields (empty text rather than reject). */
 export async function parseInbound(raw: ArrayBuffer | Uint8Array | string): Promise<ParsedEmail> {
   try {
     const email = await PostalMime.parse(raw);
@@ -80,7 +80,7 @@ export function extractContactForm(
   // /reason[:\s]*([a-z_]+)/i) so the word "reason" inside the message body cannot be
   // mistaken for the field. Validate against the known token set; anything else
   // (incl. "general", empty, absent, or any unknown string) → null, which degrades to
-  // exactly today's behaviour (no auto-routing) — never a regression.
+  // exactly today's behaviour (no auto-routing) - never a regression.
   const DECLARED_INTENTS = new Set(['order', 'partnerships', 'wholesale']);
   const rawReason = (p.text.match(/^\s*reason\b[:\s]*([a-z_]+)/im)?.[1] ?? '').toLowerCase();
   const reason = DECLARED_INTENTS.has(rawReason) ? rawReason : null;

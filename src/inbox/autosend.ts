@@ -1,7 +1,7 @@
 export const AUTO_RATELIMIT_PER_SENDER_DAY = 3;
 const ALWAYS_HOLD_CATEGORIES = new Set(['complaint', 'wholesale-b2b', 'affiliate']);
 
-// Mechanical money/commitment detector — the deterministic backstop to the LLM's
+// Mechanical money/commitment detector - the deterministic backstop to the LLM's
 // self-reported flag. Conservative: false positives just route to HITL.
 const MONEY_RE = /[£$€]\s?\d|\b\d+(?:\.\d{2})?\s?(?:gbp|usd|eur|pounds?|dollars?|euros?|p|pence)\b|\b\d+\s?%|\b(?:discount|% ?off|percent off|coupon|promo ?code|voucher|invoice|checkout|order (?:now|today)|place (?:an|your) order)\b|\bfree\s+(?:ship\w*|deliver\w*|gift|sample|return\w*|upgrade)\b|\bhalf\s?(?:price|off)\b|\bbuy\s+\w+\s+get\b|\bbogo\b|\b(?:one|two|three|four|five|six|seven|eight|nine|ten|twenty|thirty|forty|fifty|hundred)\s+(?:pounds?|dollars?|euros?|quid|pence|cents?)\b/i;
 

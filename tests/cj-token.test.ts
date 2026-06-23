@@ -67,7 +67,7 @@ describe('CjTokenManager', () => {
     // Force the cached row to look expired while refreshed_at stays "just now".
     await env.DB.prepare(`UPDATE cj_tokens SET expires_at = ?1 WHERE shop = ?2`)
       .bind(new Date(base - 1000).toISOString(), SHOP).run();
-    now = base + 60_000; // only 60s later — inside the 300s cooldown
+    now = base + 60_000; // only 60s later - inside the 300s cooldown
 
     await expect(tm.getToken()).rejects.toThrow(/rate-limited/);
     expect(calls).toHaveLength(1);
@@ -85,7 +85,7 @@ describe('parseCjPrice', () => {
 
 describe('CjClient 429 backoff', () => {
   // Non-empty listV2 payload so search() succeeds on the V2 path and doesn't
-  // fall back to /product/list — isolating the get() 429-retry behaviour.
+  // fall back to /product/list - isolating the get() 429-retry behaviour.
   const ok = () =>
     new Response(JSON.stringify({ result: true, data: { list: [{ pid: 'p1', productNameEn: 'Dog Toy', sellPrice: '10', listedNum: 1 }] } }), { status: 200 });
 

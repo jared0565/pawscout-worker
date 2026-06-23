@@ -3,7 +3,7 @@ import type { TenantStore } from '../tenant-store';
 import type { ThreadRow, DraftRow } from './types';
 import { INBOX_LABELS } from './types';
 import { sendEmail } from '../email';
-import { renderReplyHtml } from './draft';
+import { renderReplyHtml, sanitizeOutbound } from './draft';
 import { defaultFetch } from '../safe-fetch';
 import { isPartnershipLane, resolveFromAddress } from './partnership';
 
@@ -14,7 +14,7 @@ export async function sendReply(
   bodyTextOverride?: string, fetchImpl: typeof fetch = defaultFetch
 ): Promise<{ ok: boolean; error?: string }> {
   if (!env.RESEND_API_KEY) return { ok: false, error: 'RESEND_API_KEY not set' };
-  const bodyText = (bodyTextOverride ?? draft.body_text).trim();
+  const bodyText = sanitizeOutbound((bodyTextOverride ?? draft.body_text).trim()); // strip em/en-dashes - final outbound net (covers owner-edited bodies too)
   if (!bodyText) return { ok: false, error: 'empty reply' };
   const bodyHtml = renderReplyHtml(bodyText);                 // safe HTML, built from text
 

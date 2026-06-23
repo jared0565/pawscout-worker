@@ -17,7 +17,7 @@ async function seedShopWithThread() {
     pricing: DEFAULT_PRICING, floors: DEFAULT_FLOORS, llm: DEFAULT_LLM, addons: DEFAULT_ADDONS,
     fulfil: DEFAULT_FULFIL, inbox: { ...DEFAULT_INBOX, alertEmail: 'owner@gmail.com' }, target: 12
   });
-  // seedConfig does NOT persist the inbox column — saveInbox must be called separately.
+  // seedConfig does NOT persist the inbox column - saveInbox must be called separately.
   await store.saveInbox({ ...DEFAULT_INBOX, alertEmail: 'owner@gmail.com' });
   await store.upsertContact({ email: 'jane@x.com', name: 'Jane', phone: null });
   const tid = await store.createThread({ contactEmail: 'jane@x.com', subject: 'Buy a bed', subjectNorm: 'buy a bed', receivedAt: '2026-06-18T10:00:00Z', initialStatus: 'new' });
@@ -134,7 +134,7 @@ describe('composeDeliveryDraft', () => {
   });
 
   it('flags quotesPriceOrder when a freight line is present (forces HITL review)', () => {
-    // The £ figure is the WORKER\'s trusted line, not the LLM body — but the draft
+    // The £ figure is the WORKER\'s trusted line, not the LLM body - but the draft
     // still carries the price flag so a proxy estimate is reviewed before sending.
     const line = 'Delivery to France: shipping from approx £4.00, est. 8-12 working days.';
     const out = composeDeliveryDraft({ bodyText: 'Yes, we ship internationally.', quotesPriceOrOrder: false }, line);

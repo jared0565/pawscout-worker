@@ -8,7 +8,7 @@ import { defaultFetch } from './safe-fetch';
 // purchases a second life so affiliate (and ad) CAC has LTV to pay back against.
 // Ships DORMANT (env RETENTION_REORDER_ENABLED) and only ever emails customers
 // who are emailMarketingConsent SUBSCRIBED, with an HMAC-signed one-click
-// unsubscribe. Deterministic template — no LLM, no prices.
+// unsubscribe. Deterministic template - no LLM, no prices.
 
 const DAY = 86_400_000;
 /** Remind on orders this many days old (≈ a typical consumable refill cycle). */
@@ -34,7 +34,7 @@ async function hmacHex(message: string, secret: string): Promise<string> {
   const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
   return hex(await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(message)));
 }
-/** Token binding a (shop, email) pair — unguessable without SHOPIFY_API_SECRET. */
+/** Token binding a (shop, email) pair - unguessable without SHOPIFY_API_SECRET. */
 export function signUnsubToken(shop: string, email: string, secret: string): Promise<string> {
   return hmacHex(`${shop}:${email.toLowerCase()}`, secret);
 }
@@ -131,13 +131,13 @@ export function buildReorderEmail(email: string, titles: string[], unsubUrl: str
     `Hi,\n\nA little while ago you picked up ${list} from Active Paw. ` +
     `If you're running low, it might be time to restock so your pet never goes without.\n\n` +
     `Shop again: ${STORE_URL}\n\n` +
-    `— The Active Paw team\n\nUnsubscribe from reminders: ${unsubUrl}\n`;
+    `- The Active Paw team\n\nUnsubscribe from reminders: ${unsubUrl}\n`;
   const html =
     `<p>Hi,</p>` +
     `<p>A little while ago you picked up <strong>${list}</strong> from Active Paw. ` +
     `If you're running low, it might be time to restock so your pet never goes without.</p>` +
     `<p><a href="${STORE_URL}">Shop again</a></p>` +
-    `<p>— The Active Paw team</p>` +
+    `<p>- The Active Paw team</p>` +
     `<p style="font-size:12px;color:#888">Don't want reminders? <a href="${unsubUrl}">Unsubscribe</a>.</p>`;
   return {
     to: email,

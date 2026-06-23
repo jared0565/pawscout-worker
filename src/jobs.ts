@@ -17,7 +17,7 @@ import { DEFAULT_SEMANTIC, type Env, type TenantConfig } from './types';
 
 export const CULL_WINDOW_DAYS = 30; // grace period AND inactivity window
 const LOG_RETENTION_DAYS = 90;
-const MAX_IMPORTS_PER_RUN = 30; // W2: promotions cost 1 CJ stock-check each — well within budget
+const MAX_IMPORTS_PER_RUN = 30; // W2: promotions cost 1 CJ stock-check each - well within budget
 const CJ_CALL_GAP_MS = 1100; // CJ allows ~1 request/second
 
 const ARCHIVE = `mutation pawscoutArchive($input: ProductInput!) {
@@ -53,11 +53,11 @@ export async function cullStaleProducts(
 }
 
 /**
- * W2.1 — store refill promotes FROM THE WAREHOUSE (no CJ search calls).
+ * W2.1 - store refill promotes FROM THE WAREHOUSE (no CJ search calls).
  * Two passes over the mapped collections: first raise every category to
  * `floors.storeFloor`, then top up toward `target`. Each promotion goes
  * through confirmAndImport (one live CJ stock check, paced). A warehouse
- * that can't supply a floor logs the shortfall — gates are never bypassed.
+ * that can't supply a floor logs the shortfall - gates are never bypassed.
  */
 export async function refillCollections(
   store: TenantStore,
@@ -114,7 +114,7 @@ export async function refillCollections(
 }
 
 /**
- * W2.3 — daily CJ→Shopify stock sync for every listed product:
+ * W2.3 - daily CJ→Shopify stock sync for every listed product:
  * tracked quantities set absolutely (per-variant via SKU↔vid mapping when the
  * warehouse detail provides it), products under the stock floor are zeroed and
  * flagged stock_paused (cull-exempt), recoveries restore automatically, and
@@ -141,7 +141,7 @@ export async function syncStoreInventory(
     if (!link.shopify_product_id) continue;
     try {
       // Fresh CJ detail: source of truth for variant costs (price sync) and,
-      // when present, stock — saving the separate stock call.
+      // when present, stock - saving the separate stock call.
       await pause(CJ_CALL_GAP_MS);
       let detail: CjDetail | null = null;
       try { detail = await cj.detail(link.cj_pid); } catch { detail = null; }
@@ -155,7 +155,7 @@ export async function syncStoreInventory(
       }
       if (!stockKnown) {
         // A broken stock endpoint must NEVER zero the store or block the
-        // price sync — unknown means "leave quantities alone", not "0".
+        // price sync - unknown means "leave quantities alone", not "0".
         try {
           await pause(CJ_CALL_GAP_MS);
           stockMap = await cj.stockByPid(link.cj_pid);
@@ -163,7 +163,7 @@ export async function syncStoreInventory(
           stockKnown = true; // a successful empty answer IS knowledge: no stock
         } catch (e) {
           console.warn(`stock unknown for ${link.cj_pid}: ${(e as Error).message}`);
-          opts.errors?.push(`${link.cj_pid}: stock unknown (${(e as Error).message}) — prices still synced`);
+          opts.errors?.push(`${link.cj_pid}: stock unknown (${(e as Error).message}) - prices still synced`);
         }
       }
       const paused = stockKnown && maxStock < cfg.floors.stockFloor;
@@ -304,7 +304,7 @@ export interface ReplenishOpts {
   maxAdmits?: number;
   pause?: (ms: number) => Promise<void>;
   now?: () => number;
-  /** W3: admission curation — score + rewrite. null result = mechanical gates only. */
+  /** W3: admission curation - score + rewrite. null result = mechanical gates only. */
   curate?: (detail: CjDetail, context: string) => Promise<Curation | null>;
 }
 
@@ -313,7 +313,7 @@ export interface ReplenishOpts {
  * under-served), then categories below `floors.warehouseDepth`. Admission =
  * gates + stock ≥ `floors.stockFloor` + not already warehoused/imported.
  * Budgets bound both CJ calls and admits per run; shortfalls just carry to the
- * next night — quality and pacing always outrank the quota.
+ * next night - quality and pacing always outrank the quota.
  */
 export async function replenishWarehouse(
   store: TenantStore,
@@ -355,7 +355,7 @@ export async function replenishWarehouse(
     }
     // Trust listV2 relevance + enforce species/price (then the LLM curates):
     // the same gate the storefront uses, so the warehouse stocks what searches
-    // can actually surface — and demand keywords like "dog toy" admit real dog
+    // can actually surface - and demand keywords like "dog toy" admit real dog
     // products, not only ones with the literal word "toy".
     return items.filter((i) => liveCjPasses(i, gates, kw)).sort((a, b) => b.listedNum - a.listedNum);
   };
@@ -383,7 +383,7 @@ export async function replenishWarehouse(
     }
     if (stock < cfg.floors.stockFloor) return false;
 
-    // W3: LLM curation — quality score + rewritten copy. A failed/absent LLM
+    // W3: LLM curation - quality score + rewritten copy. A failed/absent LLM
     // degrades to mechanical gates; a low score is a hard reject.
     let title = detail.nameEn;
     let admittedDetail: CjDetail = { ...detail, stock };
@@ -420,7 +420,7 @@ export async function replenishWarehouse(
       console.warn(`admission skipped (duplicate of stocked product) for ${item.pid}: ${title}`);
       return false;
     }
-    // W-ADDON: hidden fillers live under their own category key — never a
+    // W-ADDON: hidden fillers live under their own category key - never a
     // browsable collection, never counted toward category floors/targets.
     if (lane === 'addon') resolvedCategory = 'addons';
 
@@ -482,7 +482,7 @@ export async function replenishWarehouse(
     }
   }
 
-  // 3) W-ADDON: hidden basket-filler pool — sub-main-gate price band, SAME
+  // 3) W-ADDON: hidden basket-filler pool - sub-main-gate price band, SAME
   // LLM curation, capped pool. Reuses the keyword caches the sweep above
   // just filled, so this lane costs no extra CJ search calls.
   if (cfg.addons.enabled) {
@@ -534,7 +534,7 @@ export async function refreshWarehouseStock(
  * destination once and the parsed row is FANNED OUT to every CJ shop's partition.
  *
  * Resilient: per-route failure (CJ error / no options / unparseable aging) keeps
- * the last-good row and bumps its failure counter — never nulls a good row, never
+ * the last-good row and bumps its failure counter - never nulls a good row, never
  * throws. Bounded by maxCjCalls; aborts after 3 consecutive 429s (the relay IP is
  * shared). Refreshes oldest-synced destinations first so a truncated run never
  * starves the same tail. Governing rule: only a real, parseable quote becomes a
@@ -591,7 +591,7 @@ export async function syncCjLogisticsRoutes(
  * wins). A single arbitrary vid is unsafe: a bulky product routes via CJ's
  * oversized channels (e.g. "Sensitive Over Length", ~10-18d) which overstate the
  * typical small pet item (~4-9d). So sample several candidates, quote each CN->GB,
- * and pick the MEDIAN transit — robust to both bulky and unusually-fast outliers.
+ * and pick the MEDIAN transit - robust to both bulky and unusually-fast outliers.
  */
 async function findRepresentativeVid(store: TenantStore, cj: Pick<CjClient, 'freightQuote'>, envOverride?: string): Promise<string> {
   const ov = envOverride?.trim();
@@ -622,7 +622,7 @@ async function findRepresentativeVid(store: TenantStore, cj: Pick<CjClient, 'fre
 /**
  * Env wrapper: build a reference CjClient + representative vid, then refresh the
  * matrix and fan it out to every CJ shop. Called ONCE at the top of the daily cron
- * (idle relay window), before any per-shop work — so the matrix is fresh before any
+ * (idle relay window), before any per-shop work - so the matrix is fresh before any
  * shop's PDP metafield write. Best-effort: never throws.
  */
 export async function syncCjLogistics(
@@ -659,7 +659,7 @@ export async function syncCjLogistics(
  * search [[Task 7]] and CJ sourcing [[Task 6]] read warm cache; the long tail
  * lazy-fills on demand. Bounded by `maxTerms`/run; refreshes only rows older
  * than `semantic.ttlDays`; excluded collections (and the disabled flag) are
- * honoured. Never throws — `seedTerm` swallows its own network/LLM failures.
+ * honoured. Never throws - `seedTerm` swallows its own network/LLM failures.
  */
 export async function seedSemanticLibrary(
   store: TenantStore,
@@ -702,7 +702,7 @@ export async function runDailyMaintenance(env: Env): Promise<void> {
   await trimOldLogs(env.DB, new Date(Date.now() - LOG_RETENTION_DAYS * 86400_000).toISOString());
 
   // Refresh the CJ delivery-time matrix ONCE (fetch-once-fan-out), in the idle
-  // relay window before any per-shop work — so it's fresh before any PDP metafield
+  // relay window before any per-shop work - so it's fresh before any PDP metafield
   // write. Best-effort: a failure here must never block the rest of maintenance.
   try { await syncCjLogistics(env); } catch (e) { console.warn(`cj logistics sync failed: ${(e as Error).message}`); }
 
@@ -736,7 +736,7 @@ export async function runDailyMaintenance(env: Env): Promise<void> {
         await syncStoreInventory(store, cj, admin, cfg);
         await refillCollections(store, cj, admin, cfg, { curate, pickHero }); // promote-from-warehouse (floor 8, target 12)
         await reconcileAddonVisibility(store, admin, cfg); // align hidden/visible add-ons to the toggle
-        // Retention reorder reminders (1.3) — DORMANT unless explicitly enabled;
+        // Retention reorder reminders (1.3) - DORMANT unless explicitly enabled;
         // even then only emails marketing-SUBSCRIBED customers. Best-effort.
         if (env.RETENTION_REORDER_ENABLED === '1' || env.RETENTION_REORDER_ENABLED === 'true') {
           try { await sendReorderReminders(store, admin, cfg, env); }

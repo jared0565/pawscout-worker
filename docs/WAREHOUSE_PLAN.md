@@ -1,11 +1,11 @@
-# PawScout Warehouse Evolution — W1–W4 Implementation Plan
+# PawScout Warehouse Evolution - W1–W4 Implementation Plan
 
 > **Purpose of this document**: a self-sufficient implementation plan. If work is
 > interrupted or handed to another developer, reading this file plus the README
 > is enough to continue. Keep it updated: tick checkboxes as tasks land, and
 > append to the Decision Log when anything is decided differently.
 >
-> Last updated: 2026-06-12 (W1+W2+W3 complete — deploy: migrate:remote applies 0005, deploy, and set OPENROUTER_API_KEY secret) · Working branch (both repos): `claude/stoic-pasteur-a2ol7z`
+> Last updated: 2026-06-12 (W1+W2+W3 complete - deploy: migrate:remote applies 0005, deploy, and set OPENROUTER_API_KEY secret) · Working branch (both repos): `claude/stoic-pasteur-a2ol7z`
 
 ---
 
@@ -38,14 +38,14 @@
       tenant_config).
 - [x] **Flywheel verified end-to-end 2026-06-12**: 8 gated, priced ghost
       products returned from cache. Pre-W1 checklist CLOSED.
-- [x] Theme MERGED to `shopify-deploy` 2026-06-12 (5e8952d → 9f47311) — ghost
+- [x] Theme MERGED to `shopify-deploy` 2026-06-12 (5e8952d → 9f47311) - ghost
       cards, preview modal, and beacons are live to visitors.
 
 **Collection-tag rename (2026-06-14):** the `cj-cat-*` prefix was misleading
 (reads as "cat" the animal, not "category"). Renamed to `cj-pet-*` across the
 collection map (`cj-pet-cleaning`, `cj-pet-accessories`, `cj-pet-health`,
-`cj-pet-toys`, `cj-pet-grooming`, `cj-pet-more-to-love`). The LLM species tag —
-formerly `cj-pet-{class}` — moved to `cj-species-{class}` to keep the two
+`cj-pet-toys`, `cj-pet-grooming`, `cj-pet-more-to-love`). The LLM species tag -
+formerly `cj-pet-{class}` - moved to `cj-species-{class}` to keep the two
 namespaces distinct. Production re-tag done in a safe order: add new tags to all
 products → switch the 6 smart-collection rules → remove old tags → update
 `tenant_config.collection_map`, so no product ever drops out of a collection
@@ -53,7 +53,7 @@ mid-migration. Older "cj-cat" mentions below are historical.
 
 **Store state changes (2026-06-12, via Shopify MCP):**
 
-- Checkout/payments DISABLED by the user until the pricing strategy is final —
+- Checkout/payments DISABLED by the user until the pricing strategy is final -
   re-enable before any ad spend. Views/ATC signals unaffected.
 - New smart collection **Pet Grooming** (`pet-grooming`, tag
   `cj-pet-grooming`), added to the PawScout collection map; 11 existing
@@ -63,13 +63,13 @@ mid-migration. Older "cj-cat" mentions below are historical.
   chars) rewritten to <=55-char UK-English titles. Handles/URLs unchanged.
 - RESOLVED: 36 of the 42 legacy products (those carrying cj-pid tags) were
   ADOPTED into product_links (state=imported, category from their cj-cat tag,
-  2026-06-12) — they now count toward floors/targets, get stock+price synced
+  2026-06-12) - they now count toward floors/targets, get stock+price synced
   nightly, and enter the cull lifecycle (30-day grace from adoption). The
   6 without cj-pid tags have no CJ identity and stay outside PawScout
   (manual pricing/stock; consider archiving or tagging them manually).
 - Price sync added to the nightly job: retail = retailPriceGbp(CJ current
   cost) for every SKU-matched variant. Legacy prices (which predate the
-  pricing engine — none end in .99) realign on the first post-deploy run.
+  pricing engine - none end in .99) realign on the first post-deploy run.
 - Contact form: Shopify-native {% form 'contact' %} → emails
   contact@activepaw.co.uk (mailbox confirmed set up by the user). Theme
   mailto links aligned from support@ → contact@ (live 2026-06-12).
@@ -77,7 +77,7 @@ mid-migration. Older "cj-cat" mentions below are historical.
   "Enable reCAPTCHA on contact and comment forms". Optional later: Shopify
   Inbox app for an in-admin message inbox.
 - Social share row shipped to the PDP (FB / X / Pinterest / WhatsApp / copy
-  link; no third-party scripts) — live on shopify-deploy 2026-06-12.
+  link; no third-party scripts) - live on shopify-deploy 2026-06-12.
 
 **Production identifiers:**
 
@@ -97,7 +97,7 @@ mid-migration. Older "cj-cat" mentions below are historical.
                        ┌────────────────────────────────────────────┐
  Storefront search ──→ │ PS WAREHOUSE (D1): ≥20 gated, in-stock,    │ ←─ nightly
  (app proxy)           │ fully-detailed products per category       │    replenish
-                       │ — CJ is OUT of the request path —          │    from CJ
+                       │ - CJ is OUT of the request path -          │    from CJ
  ghost click ────────→ │ instant preview from warehouse row;        │    (paced)
                        │ ONE live CJ stock/price confirm at import  │
                        └────────────────────────────────────────────┘
@@ -142,7 +142,7 @@ Key invariants (do not violate):
 
 ---
 
-## 4. Phase W1 — Warehouse core
+## 4. Phase W1 - Warehouse core
 
 **Goal:** searches and previews served entirely from PS-local data.
 
@@ -180,9 +180,9 @@ CREATE INDEX idx_warehouse_lookup ON warehouse_products (shop, status, category)
 
 ### W1.3 CJ stock reading (`src/cj.ts`)
 - [x] Extend `CjClient.detail()` normalization to capture per-variant stock
-      (CJ exposes warehouse inventory on variant objects / stock endpoints —
+      (CJ exposes warehouse inventory on variant objects / stock endpoints -
       verify exact field against live response, normalize to
-      `variants[].stockUsd?` no — `variants[].stock: number` + `detail.minStock`).
+      `variants[].stockUsd?` no - `variants[].stock: number` + `detail.minStock`).
 - [x] Add `CjClient.stockByPid(pid)` if the detail payload proves insufficient.
 
 ### W1.4 Replenishment job (`src/jobs.ts`)
@@ -193,7 +193,7 @@ CREATE INDEX idx_warehouse_lookup ON warehouse_products (shop, status, category)
       3. paced 1.1s/call, per-run CJ call cap (~120), per-run admit cap (~40);
       4. admission = gates + stockFloor + dedupe vs existing warehouse/links.
 - [x] Freshness pass in the same nightly run:
-      stock re-check — store-linked products daily, warehouse-only rows > 48h old;
+      stock re-check - store-linked products daily, warehouse-only rows > 48h old;
       full detail re-fetch for rows > 7 days old; mark `low_stock`/`stale`.
 - [x] Wire into `runDailyMaintenance` (order: purge → freshness → cull → store
       refill (W2) → replenish). Respect Workers CPU/duration limits: process in
@@ -221,7 +221,7 @@ per category or logs a shortfall; all tests green.
 
 ---
 
-## 5. Phase W2 — Store floor + stock sync
+## 5. Phase W2 - Store floor + stock sync
 
 **Goal:** store always sellable: ≥8/category listed, nothing unfulfillable.
 
@@ -262,7 +262,7 @@ known stock (DENY policy).
 
 ---
 
-## 6. Phase W3 — LLM curation via OpenRouter
+## 6. Phase W3 - LLM curation via OpenRouter
 
 **Goal:** better products and better copy, at background time, model-swappable.
 
@@ -271,7 +271,7 @@ known stock (DENY policy).
 - [x] Thin client: `POST https://openrouter.ai/api/v1/chat/completions`,
       headers `Authorization: Bearer`, optional `HTTP-Referer`/`X-Title`
       attribution; injected `fetchImpl` for tests; strict JSON-mode prompts with
-      schema validation on parse; **never throws into a job** — failures degrade
+      schema validation on parse; **never throws into a job** - failures degrade
       to "no LLM" behavior.
 - [x] Config in `tenant_config.llm`:
       `{ enabled: bool, model: 'anthropic/claude-haiku-4.5', curationModel?, digestModel? }`
@@ -309,30 +309,30 @@ to mechanical-gates behavior with zero errors; console shows model + 30-day cost
 
 ---
 
-## 7. Phase W4 — Intelligence digest (after ≥2 weeks of data)
+## 7. Phase W4 - Intelligence digest (after ≥2 weeks of data)
 
 - [ ] Weekly cron task: aggregate search_log, product_events, llm_usage,
       category fill, cull/refill history → one LLM call → store digest row.
 - [ ] Console card: "This week: trending searches, gaps to stock, price-band
       observations, products to watch, suggested gate tweaks."
-- [ ] Strictly advisory — no automated actions from the digest in W4.
+- [ ] Strictly advisory - no automated actions from the digest in W4.
 - [ ] Future (post-W4, requires Shopify protected-data approval): orders
       ingestion for true ROAS; ad-creative generation fed by the digest.
 
 ---
 
-## 7a. Backlog — findings from live operation (2026-06-12)
+## 7a. Backlog - findings from live operation (2026-06-12)
 
 - [ ] **CJ category-browse replenishment.** Field-proven need: 5 keyword
-      searches (~200 items) could not surface grooming scissors — CJ's text
+      searches (~200 items) could not surface grooming scissors - CJ's text
       search OR-matches single tokens (returned car parts for "grooming
       scissors kit"). Teach replenish/search to browse CJ's category tree
       (`product/list` by categoryId, category ids cached) so the warehouse
       pulls from real categories; LLM curation still scores each candidate.
 - [ ] **Freight-aware pricing + origin warehouse selection.** CJ stocks
       products in multiple "From" countries (CN main; US/UK/DE regional).
-      Impacts: (a) shipping TIME — UK warehouse 2–4 days vs CN 8–15 days;
-      (b) shipping COST — freight varies by origin+weight and is currently
+      Impacts: (a) shipping TIME - UK warehouse 2–4 days vs CN 8–15 days;
+      (b) shipping COST - freight varies by origin+weight and is currently
       NOT in our landed cost (pricing uses product cost only; the £6 min
       margin partially shields cheap items). Fix: call CJ freightCalculate
       at admission/import (cheapest origin with stock ≥ floor, default CN),
@@ -344,7 +344,7 @@ to mechanical-gates behavior with zero errors; console shows model + 30-day cost
       before inventorySetQuantities. Also added: console **"Sync now"**
       button → `POST /api/sync` (session-token authed, batched: inventory
       phase 8 products/call with offset cursor, then refill phase 5
-      promotions/call) — the nightly sync, runnable on demand.
+      promotions/call) - the nightly sync, runnable on demand.
 - [x] Scissors hunt outcome: razor grooming comb imported via ghost-click
       pipeline (pid 2029158917514293249, £13.99, pet-grooming); nail shears
       pid 2007377705492574210 refused by the live stock floor (working as
@@ -358,11 +358,11 @@ to mechanical-gates behavior with zero errors; console shows model + 30-day cost
       renamed.**
       `/product/stock/queryByPid` → "Interface not found"; the live
       endpoint is **`/product/stock/getInventoryByPid`** (per-warehouse
-      rows: areaEn/countryCode/totalInventoryNum — parser handles both
+      rows: areaEn/countryCode/totalInventoryNum - parser handles both
       shapes). Better: `product/query` accepts
       **`features=enable_inventory`** → per-variant `inventories`
       (countryCode/totalInventory/cjInventory/factoryInventory) arrive
-      WITH the detail — one CJ call instead of two in sync + replenish.
+      WITH the detail - one CJ call instead of two in sync + replenish.
       Stock semantics fixed to **max single origin, never the sum**
       (closes the § 7a stockByPid-sums note). Source: CJ docs product.html
       (bot-blocked for agents; read via a GitHub docs mirror + user's
@@ -371,7 +371,7 @@ to mechanical-gates behavior with zero errors; console shows model + 30-day cost
       Live verification: 22/38 products fully synced (real quantities
       capped 999/variant, supplier.* metafields stamped, razor comb now
       tracked w/ 812 units); 16 still stock-unknown via BOTH routes this
-      run (left safely untouched — likely CJ rate-limit flakiness or
+      run (left safely untouched - likely CJ rate-limit flakiness or
       missing CJ inventory records; nightly sync retries, escalate to CJ
       dashboard if any stay unknown for days). No product zeroed.
 
@@ -381,7 +381,7 @@ Field incident: a storefront search for "pet food" backfilled CJ ghosts
 (CJ OR-matches tokens → "food" matched a kitchen vacuum sealer); one
 click imported it to the live store under more-to-love. Root cause:
 ghost-click imports bypassed W3 curation (which only gated warehouse
-admissions). Fix: `confirmAndImport` now takes a curate hook — score <
+admissions). Fix: `confirmAndImport` now takes a curate hook - score <
 threshold ⇒ link `failed` before Shopify is touched; passing imports get
 curated title/description/category; pre-curated details (llmScore set)
 skip re-scoring. Wired into /proxy/product, nightly refill, manual sync
@@ -392,26 +392,26 @@ ghost. LLM remains background-only (imports run in waitUntil).
 ## 7a-i-c. Inventory audit + sanitization (executed 2026-06-13 00:50)
 
 - Catalog 43→37 active. ARCHIVED the 6 demo/proposal products (no CJ
-  identity, unfulfillable; decision previously pending — user mandated).
+  identity, unfulfillable; decision previously pending - user mandated).
   With the vacuum sealer that makes 7 archived. **Invariant achieved:
   every ACTIVE product is PawScout-managed (37 actives = 37 imported
   links, 1:1).**
-- Relevance review of all 37 actives: clean — no further off-category
+- Relevance review of all 37 actives: clean - no further off-category
   items.
 - warehouse_products: EMPTY in production (replenishment debuts with
-  tonight's cron, behind the LLM gate) — nothing to sanitize.
+  tonight's cron, behind the LLM gate) - nothing to sanitize.
 - search_cache: all 12 kw:* rows purged (incl. "pet food" set carrying
   the vacuum-sealer ghost and the polluted scissors sets); regenerate on
   demand.
 - [x] LEVER PULLED 2026-06-13 01:07Z: gates.relevance = **strict** (user,
-  via console) — all search tokens must appear in ghost titles; fewer
+  via console) - all search tokens must appear in ghost titles; fewer
   multi-word backfill results accepted as the trade.
 
 ## 7a-i-d. Inventory qty sync confirmed + description sanitize (2026-06-13)
 
 - QTY SYNC VERIFIED: the 04:18Z cron synced all previously-stale (never-
   synced, qty 1-2) products with real CJ stock via the fixed
-  getInventoryByPid + enable_inventory path — e.g. grooming table 1->31,
+  getInventoryByPid + enable_inventory path - e.g. grooming table 1->31,
   sofa brush 1->999 (CJ 13,480), nail set 1->999 (CJ 30,000). NO products
   remain < 2 qty. Display caps 999; true qty in supplier.available_qty.
 - Sofa Hair Removal Brush had a THIN description (Colour/Material only) ->
@@ -424,8 +424,8 @@ ghost. LLM remains background-only (imports run in waitUntil).
   RETIRED 2026-06-14: superseded by the `reconcileDescriptions` LLM sweep
   (7a-i-m), which produces fully clean copy and inherently drops dev-notes.
   Removed the job, route, button, and its test; the Maintenance card is now
-  "Maintenance — run now" with three buttons (Sync now, Fix default images,
-  Rewrite legacy descriptions) — all on-demand versions of nightly cron steps.
+  "Maintenance - run now" with three buttons (Sync now, Fix default images,
+  Rewrite legacy descriptions) - all on-demand versions of nightly cron steps.
 
 ## 7a-i-e. Search quality fixes (2026-06-13, from a live "cat toys" review)
 
@@ -433,7 +433,7 @@ Symptoms on /search?q=cat+toys: 8 results incl. 4 DOG toys (cross-category
 noise), and stuck at 8 (target 12 unmet).
 Root causes + fixes:
 - BUG: relevanceMatch strict did exact includes(), so a plural query token
-  ("toys") never matched a singular title ("Toy") — strict rejected almost
+  ("toys") never matched a singular title ("Toy") - strict rejected almost
   everything, so backfill returned 0 ghosts. FIXED: keywordTokens() stems
   plurals (es>4 / s>3) + drops stopwords; shared by relevance gate AND
   warehouse LIKE search. ("cat toys" now matches cat toys, rejects dog.)
@@ -451,11 +451,11 @@ Root causes + fixes:
 
 From a live "cat toys" review (still showed a dog toy; CJ website gives a
 rich list the API didn't):
-- BUG: substring match — "cat" matched "catapult" → "Pet Food Catapult
+- BUG: substring match - "cat" matched "catapult" → "Pet Food Catapult
   Feeder ... Dog Toy" wrongly passed. FIXED: relevanceMatch + the theme's
   native filter now do WHOLE-WORD matching (stemmed word set / space-padded
   Liquid), so a token only matches a real title word.
-- CJ supply: switched cj.search to /product/listV2 (CJ's elasticsearch —
+- CJ supply: switched cj.search to /product/listV2 (CJ's elasticsearch -
   what their website uses; the old /product/list keyword endpoint returned
   advent calendars for "cat toys"). Safe: falls back to /product/list on
   error or empty. Defensive multi-shape parser (list / content[].productList).
@@ -463,14 +463,14 @@ rich list the API didn't):
   a different animal than the query context, and outputs petClass
   (cat/dog/both/small-pet/other). Stored on the warehouse detail; imports get
   a cj-pet-<class> tag. (Search-time species FILTER using the tag/class is a
-  future step once products are classified — new admissions get it now.)
-- popularityFloor 1->0 (live, via D1) — listedNum is mostly 0 and was
+  future step once products are classified - new admissions get it now.)
+- popularityFloor 1->0 (live, via D1) - listedNum is mostly 0 and was
   over-rejecting valid items; relevance + LLM curation are the real gates.
 - DEPLOY: worker code only + theme merged. AFTER deploy: purge kw:* search
   cache so listV2 repopulates (old cache holds junk from /product/list).
   178->179 tests.
 
-## 7a-i-g. Search: dog-toy review (2026-06-13 ~22:00) — PARTIAL, OPEN
+## 7a-i-g. Search: dog-toy review (2026-06-13 ~22:00) - PARTIAL, OPEN
 
 Live "dog toy": main grid correct (4 dog toys, catapult now valid), BUT:
 - [x] FIXED + LIVE: the "Add more play value" bundle/offer section pulled
@@ -480,18 +480,18 @@ Live "dog toy": main grid correct (4 dog toys, catapult now valid), BUT:
 - [x] Purged kw:* search cache (13 rows) so listV2 repopulates fresh (old
   rows were junk from /product/list); tonight's cron stocks the warehouse
   from listV2.
-- [ ] OPEN — REACHING 12: backfill returned only 2 ghosts. Root causes:
-  (a) warehouse still near-empty (6 rows) — replenish was crippled by the
+- [ ] OPEN - REACHING 12: backfill returned only 2 ghosts. Root causes:
+  (a) warehouse still near-empty (6 rows) - replenish was crippled by the
   earlier bugs; tonight's cron (listV2 + word-boundary + floor 0 + fresh
-  cache) should finally stock it — VERIFY tomorrow.
+  cache) should finally stock it - VERIFY tomorrow.
   (b) Strict 2-word relevance is too tight for filling: "dog toy" requires
   BOTH "dog" AND "toy" as title words, so valid dog products without the
   literal word "toy" (e.g. "Herding Ball for Dogs") are rejected. PROPOSED
-  FIX (next): SPECIES-AWARE relevance — when the query names a species,
+  FIX (next): SPECIES-AWARE relevance - when the query names a species,
   REQUIRE that species (or species-neutral) and treat category words (toy)
   as soft/optional; leverage petClass (now on new admissions) once the
   catalog is classified. This reaches 12 AND keeps cats out of dog searches.
-- [ ] CONSTRAINT: sandbox network egress is blocked — CANNOT run a headless
+- [ ] CONSTRAINT: sandbox network egress is blocked - CANNOT run a headless
   browser against the live store from here (activepaw.co.uk 403s; App Proxy
   needs Shopify HMAC). Live verification = user's browser. Verify via
   deployed-bundle greps + D1 + vitest instead.
@@ -500,7 +500,7 @@ Live "dog toy": main grid correct (4 dog toys, catapult now valid), BUT:
   + a query-species helper), re-test, and confirm warehouse fill after the
   04:17Z cron.
 
-## 7a-i-h. Species-aware relevance (2026-06-13 22:20) — code done, live-verify PENDING
+## 7a-i-h. Species-aware relevance (2026-06-13 22:20) - code done, live-verify PENDING
 
 Implements the resume item from 7a-i-g.
 - relevanceMatch: hard SPECIES gate first (cat product never matches a dog
@@ -508,7 +508,7 @@ Implements the resume item from 7a-i-g.
 - NEW liveCjPasses(item, gates, keyword): for CJ listV2 results (which already
   did category relevance) enforce price + popularityFloor + SPECIES-REQUIRED
   (if the query names an animal, the product title must name that animal or
-  both). This (a) reaches the 12 target — any genuine dog product fills a
+  both). This (a) reaches the 12 target - any genuine dog product fills a
   "dog toy" search, not only ones with the literal word "toy"; (b) blocks
   species-less junk (advent calendars) and the wrong species. Used by BOTH
   storefront backfill (src/proxy/search.ts CJ fallback) AND warehouse
@@ -517,7 +517,7 @@ Implements the resume item from 7a-i-g.
 - 184 vitest cases (incl. Herding-Ball-fills, cat-blocked, calendar-blocked,
   price/popularity). DEPLOY: worker code only.
 
-HEADLESS-BROWSER VERIFY — BLOCKED FROM SANDBOX (documented attempt):
+HEADLESS-BROWSER VERIFY - BLOCKED FROM SANDBOX (documented attempt):
 - curl https://activepaw.co.uk/search?q=dog+toy -> HTTP 403 (Cloudflare
   managed challenge; egress works, the request reaches the server).
 - Playwright chromium binary will NOT download (browser CDN off the egress
@@ -525,7 +525,7 @@ HEADLESS-BROWSER VERIFY — BLOCKED FROM SANDBOX (documented attempt):
 - => cannot run a headless browser here. Logic verified by unit tests; the
   LIVE check is the user's browser, OR a CI runner with open network +
   ability to solve/whitelist Cloudflare. "Reaches 12" also depends on CJ
-  listV2 supply for the term + warehouse stock (cron) — not artificially
+  listV2 supply for the term + warehouse stock (cron) - not artificially
   capped anymore, but supply-dependent.
 
 ## 7a-i-i. listV2 was never actually working (2026-06-14 02:40)
@@ -545,7 +545,7 @@ of the junk "dog toy"/"cat toys" results:
   also has startSellPrice/endSellPrice + categoryId/lv2categoryList (future:
   source-side price + category-browse).
 - Still NOT deployed by user as of this commit (deployed bundle had listV2
-  markers but NOT liveCjPasses/speciesConflict — i.e. the species round +
+  markers but NOT liveCjPasses/speciesConflict - i.e. the species round +
   this id-fix both await one `git pull && npx wrangler deploy`).
 - VERIFY LOOP (works via our worker, no sandbox CJ access needed): after
   deploy, purge kw:* cache, user searches "dog toy", then READ the new
@@ -557,16 +557,16 @@ of the junk "dog toy"/"cat toys" results:
 Firecrawl search diagnostic (console "Search source diagnostic" -> /api/
 search-diag, stores diag:ours / diag:web to D1) PROVED the listV2 id-field
 fix: diag:ours:dog toy returned 25 CLEAN dog toys (Cotton String Dog Toy,
-Aggressive Chew Dog Toy, Dog Rope Toy, Dog Teething Toy, ...) — zero junk.
+Aggressive Chew Dog Toy, Dog Rope Toy, Dog Teething Toy, ...) - zero junk.
 User's hypothesis (our method, not CJ's, was junk) confirmed. (Firecrawl
-diag:web returned 0 — CJ site render/scrape hiccup; moot since our own
+diag:web returned 0 - CJ site render/scrape hiccup; moot since our own
 listV2 is now clean. Firecrawl client kept for future supply/category use;
 the scrape may need URL-format/waitFor tuning if used later.)
 
 NEW finding from the same data: the clean dog toys cost $0.50–$5 to source,
 but priceMin was $5 -> filtered ~22 of 25. The £6 min-margin rule floors
 ALL retail at £6.99 regardless of cost, so the $5 source floor wasn't
-protecting price — it was hiding most of CJ's (cheap) pet catalog.
+protecting price - it was hiding most of CJ's (cheap) pet catalog.
 DECISION (user 2026-06-14): main gate priceMin 5 -> **0.50** (live via D1;
 {"popularityFloor":0,"priceMin":0.5,"priceMax":80,"relevance":"strict"}).
 kw:* cache purged so storefront repopulates with fixed listV2 + new floor.
@@ -580,7 +580,7 @@ Revisit whether to keep/repurpose the hidden add-on lane.
 
 Trigger: a "Pet Grooming Scissors Set with Comb & Storage Bag" listing whose
 DEFAULT image was a single comb, not the set. CJ's first image is often a lone
-component, packaging, or an infographic — a recurring polish problem the LLM
+component, packaging, or an infographic - a recurring polish problem the LLM
 should catch and fix, not just this one product.
 
 Built (`pickHeroImage` in `src/llm.ts`): a vision pass over a product's images.
@@ -589,7 +589,7 @@ Built (`pickHeroImage` in `src/llm.ts`): a vision pass over a product's images.
 returns the 0-based index of the image that best represents the WHOLE product
 (prefers the all-items-together shot for a "set"/"kit"/"with X" title; avoids
 packaging-only / size-chart / infographic / lone-component shots). Returns null
-on index 0 (already correct), <2 images, or any failure — never throws, never
+on index 0 (already correct), <2 images, or any failure - never throws, never
 blocks import. Uses the curation model (`anthropic/claude-haiku-4.5`, multimodal).
 
 Wired in three places:
@@ -604,7 +604,7 @@ Wired in three places:
   lifetime) because the sweep re-visioned the whole catalog nightly. Now each
   product stores an order-independent media fingerprint in the
   `pawscout.hero_sig` metafield (`mediaSignature` = FNV hash of the sorted media
-  IDs). The sweep skips any product whose current fingerprint matches — so a
+  IDs). The sweep skips any product whose current fingerprint matches - so a
   product is vision-checked ONCE, and again only if images are added/removed.
   `pickHeroImage` returns `{ok,index}`: `ok:false` (LLM down/failed) is never
   cached (retried next run); `ok:true` (incl. "image 0 is fine") caches the sig.
@@ -613,26 +613,26 @@ Wired in three places:
   `/api/hero-images` (background, LLM-gated). Manual fix already applied live to
   the scissors-set product via `productReorderMedia` (set shot → featured).
 
-## 7a-i-l. Inventory sweep — non-pet products + duplicate (2026-06-14 14:20)
+## 7a-i-l. Inventory sweep - non-pet products + duplicate (2026-06-14 14:20)
 
 Reviewing the scissors-set product surfaced a worse problem than the wrong
 thumbnail: **non-pet products were live**, a "scissors / grooming scissors"
 search having pulled in human/kitchen/garden tools that curation let through.
-Archived 6 (Shopify status ARCHIVED) AND removed from the PawScout pipeline —
+Archived 6 (Shopify status ARCHIVED) AND removed from the PawScout pipeline -
 deleted their `warehouse_products` rows and set `product_links.state='archived'`
-— because archiving alone doesn't stick: `refillCollections` re-promotes any
+- because archiving alone doesn't stick: `refillCollections` re-promotes any
 warehouse row whose link isn't imported/importing, so junk would revive nightly.
 The 6: scissors sharpener, kitchen knife sharpener, garden pruning shears,
 hairdressing/tailor/barber scissors. (Two also still had raw CJ-soup titles the
-retitle pass missed — moot, now archived.)
+retitle pass missed - moot, now archived.)
 
-Duplicate: "Pet Teeth Cleaning Powder 100g" listed twice — two DIFFERENT CJ
+Duplicate: "Pet Teeth Cleaning Powder 100g" listed twice - two DIFFERENT CJ
 SKUs (CJCT243272001AZ vs CJYD236798001AZ) imported 20s apart, same product type.
 Kept Listing A (pet-health, canonical handle, £13.99); archived Listing B
 (`…862034`, was mis-filed under pet-grooming, £12.99) + pipeline cleanup.
 
 GAP / BACKLOG (dedupe-at-admission): curation scores each candidate in
-isolation — no "we already stock this product type" check — so near-identical
+isolation - no "we already stock this product type" check - so near-identical
 items can both pass (the powder pair). Consider a similarity/embedding (or
 normalized-title) dedupe at warehouse admission so one product type → one
 listing. Not built; recorded so the cause is known.
@@ -641,24 +641,24 @@ listing. Not built; recorded so the cause is known.
 
 Full audit of the ~53 active products across six fronts:
 
-1. **Category correctness** — fixed 2 clear mis-files: "Portable Teeth Cleaning
+1. **Category correctness** - fixed 2 clear mis-files: "Portable Teeth Cleaning
    Wipe Tool" pet-grooming→**pet-health** (dental); "Suction-Cup Tug Ball &
    Tooth-Cleaning Dog Toy" pet-health→**pet-toys** (it's a toy). Tag swap +
    `product_links.category` updated. OPEN (subjective, not auto-changed):
-   nail-care is split across pet-health (3) and pet-grooming (3) — recommend
+   nail-care is split across pet-health (3) and pet-grooming (3) - recommend
    consolidating to grooming; and 3 dry-grooming combs (magic hair-removal,
-   detangling, slicker) sit under pet-cleaning — arguably pet-grooming. Left for
+   detangling, slicker) sit under pet-cleaning - arguably pet-grooming. Left for
    owner taxonomy call.
-2. **Near-duplicate redundancy** — catalog is concentrated: ~6 near-identical
+2. **Near-duplicate redundancy** - catalog is concentrated: ~6 near-identical
    silicone bath/massage brushes & gloves, ~7 grooming brushes/combs, 3
    bathrobes/towels, 2 finger toothbrushes. None exact dupes. "Which to keep"
-   deferred — needs the image-quality/vision signal (#4) and/or sales data to
+   deferred - needs the image-quality/vision signal (#4) and/or sales data to
    pick the best per cluster rather than guess.
-3. **Hero images catalog-wide** — BLOCKED on deploy; only heuristic done.
-4. **Image quality (watermarks/infographics/lifestyle)** — BLOCKED on vision.
-5. **Description compliance** — SYSTEMIC FINDING: the early-adopted legacy batch
+3. **Hero images catalog-wide** - BLOCKED on deploy; only heuristic done.
+4. **Image quality (watermarks/infographics/lifestyle)** - BLOCKED on vision.
+5. **Description compliance** - SYSTEMIC FINDING: the early-adopted legacy batch
    (the 10837xxx/10838xxx ID range, ~30 products) still carry **raw CJ
-   descriptions** — embedded medical claims ("prevent oral diseases", "prevent
+   descriptions** - embedded medical claims ("prevent oral diseases", "prevent
    the disease"), the SUPPLIER's own refund/shipping policy ("we accept returns
    and refunds within 30 days", "1-3 working days") which contradicts our
    14-day contact-first policy, and hotlinked cf.cjdropshipping.com images
@@ -674,13 +674,13 @@ Full audit of the ~53 active products across six fronts:
    calls (marker-gated). ALSO tidied the item-1 category split: consolidated nail
    care into pet-grooming (3 moved from pet-health) and moved 3 dry-grooming
    combs from pet-cleaning → pet-grooming.
-6. **Weak titles** — only "Electronic dog toy" (`…15911762`) is genuinely poor;
+6. **Weak titles** - only "Electronic dog toy" (`…15911762`) is genuinely poor;
    its CJ description ("appropriate age: 3 years old+") is also suspect. Can't
    retitle accurately without seeing the images (vision, #4). Flagged.
 
-## 7a-ii. STRATEGY DECISION — shipping display, origin choice, returns
+## 7a-ii. STRATEGY DECISION - shipping display, origin choice, returns
 ## (user-raised 2026-06-12; recommendation delivered same day; user
-##  decision pending — do not implement until the user confirms)
+##  decision pending - do not implement until the user confirms)
 
 Question as raised: show product price only in the shop with shipping
 transparency on the PDP vs baking freight into the retail price; let buyers
@@ -692,7 +692,7 @@ economics for net-profit impact.
 1. **Pricing model: hybrid (option c), which the store already runs.**
    Live Shopify rates: UK Standard £4.99 flat, FREE over £50, Express
    £6.99; EU £14.99; Int'l £23.99. Keep sticker = 2.5× product cost
-   (freight NOT in sticker — baking it in would double-dip with the £4.99
+   (freight NOT in sticker - baking it in would double-dip with the £4.99
    fee, overcharge multi-item carts, and make prices uncompetitive).
    BUT make the MARGIN FLOOR freight-aware: enforce minMargin/floor
    against (product cost + cheapest viable freight quote), so heavy/bulky
@@ -701,15 +701,15 @@ economics for net-profit impact.
 2. **PDP transparency block (theme):** delivery cost + estimated window on
    every PDP ("FREE UK delivery over £50 · Standard £4.99 (8–12 working
    days) · Ships from UK, 2–4 days" when origin is UK). Kills checkout
-   surprise — the top abandonment cause.
+   surprise - the top abandonment cause.
 3. **Origin: PS chooses, buyers don't.** Buyer-facing origin choice needs
    per-origin variants/SKUs + split inventory + CJ mapping mess, and
    Shopify Basic can't price origin-dependent rates without per-product
-   delivery profiles (mixed carts then SUM profile rates — confusing).
+   delivery profiles (mixed carts then SUM profile rates - confusing).
    Instead PS auto-prefers the UK warehouse when stock ≥ floor and margin
    holds; the buyer's speed lever is the Express rate. CAVEAT: Express
    £6.99 is currently offered on EVERYTHING including CN-origin items that
-   cannot be expressed — remove Express until a UK-stock delivery profile
+   cannot be expressed - remove Express until a UK-stock delivery profile
    exists (Phase 2: custom profile for UK-origin products carrying
    Express; default profile Standard-only).
 4. **Free-over-£50 threshold: keep.** At 2.5× a £50 order carries ~£17–20
@@ -734,7 +734,7 @@ economics for net-profit impact.
      cancellations. Keep the 3% refunds allowance; track actuals.
    - Mitigations: LLM size charts for harnesses/apparel (top return
      drivers); curated accurate descriptions (already live).
-   - **Refund-exposure math (user-raised 2026-06-12 follow-up — complete
+   - **Refund-exposure math (user-raised 2026-06-12 follow-up - complete
      refund obligation, full vs partial):**
      - FULL return (whole order, change of mind): refund = all products +
        original outbound delivery at basic rate (Express upgrade delta not
@@ -743,7 +743,7 @@ economics for net-profit impact.
        refunds) ≈ **£27 loss ≈ full landed cost + fees**. Returned goods
        have no salvage (no warehouse) except UK-origin restock to CJ UK or
        faulty items recovered via CJ dispute (loss shrinks to ≈ the fee).
-     - PARTIAL return: refund the returned line item only — outbound-
+     - PARTIAL return: refund the returned line item only - outbound-
        shipping refund duty applies to full cancellation, not partial.
        Apply the policy clawback: if the return drops the order below £50,
        deduct the £4.99 delivery charge from the refund (must be stated in
@@ -753,13 +753,13 @@ economics for net-profit impact.
      - Allowance sizing: a fully refunded order costs ~53–55% of its
        revenue, so the model's 3%-of-revenue refunds line absorbs full-
        loss refunds on ~5–6% of orders; pet-niche return rates run 2–5%
-       (apparel/harnesses are the risk subset). Adequate — track actuals
+       (apparel/harnesses are the risk subset). Adequate - track actuals
        split full-vs-partial once orders flow.
 
-**Implementation queue — EXECUTED 2026-06-12 evening:**
+**Implementation queue - EXECUTED 2026-06-12 evening:**
 (i) [x] PDP delivery-info block live (snippets/delivery-info.liquid;
     replaced stale "over £150 ship free" copy; Ships-from-UK badge reads
-    supplier.origin; rates mirrored from Shopify settings — update the
+    supplier.origin; rates mirrored from Shopify settings - update the
     snippet assigns if rates change).
 (ii) [x] Freight-aware margin floor + origin preference shipped
     (pricing.retailPriceGbp freight param; CjClient.freightEstimate via
@@ -770,8 +770,8 @@ economics for net-profit impact.
 (iii) [x] Express rate DELETED from the UK zone via deliveryProfileUpdate
     (was £6.99 on everything incl. CN-origin items). Reintroduce only
     with a UK-stock delivery profile.
-(iv) [x] Returns & Refunds policy text written — docs/RETURNS_POLICY.md.
-    DONE (confirmed live 2026-06-14): all SIX shop policies are published —
+(iv) [x] Returns & Refunds policy text written - docs/RETURNS_POLICY.md.
+    DONE (confirmed live 2026-06-14): all SIX shop policies are published -
     REFUND, SHIPPING, TERMS_OF_SERVICE, LEGAL_NOTICE, CONTACT_INFORMATION
     (trading address = Office 19589, 182-184 High Street North, East Ham,
     London E6 2JA) and PRIVACY (Shopify standard GDPR template). The live
@@ -779,13 +779,13 @@ economics for net-profit impact.
     contact-first, evidence-based faulty claims, £4.99 clawback below £50,
     statutory-rights preserved). The PDP delivery block links
     /policies/refund-policy. MINOR: no shop phone set, so the privacy
-    template's "call {{ phone }}" renders blank — set a phone or ignore.
+    template's "call {{ phone }}" renders blank - set a phone or ignore.
     NOT policy-page work, still pending pre-launch: cookie-consent banner
     (PECR/GDPR), reCAPTCHA on the contact form, re-enable checkout.
 
 ## 7a-iii. Returns evidence gating (user-approved direction 2026-06-12)
 
-Principle: **our buyer-evidence intake must mirror CJ's dispute bar** —
+Principle: **our buyer-evidence intake must mirror CJ's dispute bar** -
 never refund a faulty/damaged/wrong-item claim on less evidence than CJ
 requires, so every refund is already a CJ-recoverable claim (the −£0.85
 vs −£15.85 spread in the § 7a-ii refund math).
@@ -811,38 +811,38 @@ Phase 1 (manual, at launch):
       pin CJ's current dispute requirements into this doc when first seen
       in the dashboard.
 
-**Return-window rules (settled 2026-06-12 — policy page must follow):**
+**Return-window rules (settled 2026-06-12 - policy page must follow):**
 - Change of mind: 14 days from delivery to cancel + 14 to return = the
   CCR statutory minimum; lawful as-is. No CJ recovery exists for these
   anyway, so the CJ 30-day window is irrelevant here.
 - Faulty/damaged/wrong item: CANNOT be capped at 14 days. CRA 2015 gives
   a 30-day right to reject, 6-month fault presumption, multi-year claims.
   A shorter cap is void AND stating it is a misleading-practice offence.
-- CJ-buffer fix instead: policy ASKS (never bars) prompt reporting —
+- CJ-buffer fix instead: policy ASKS (never bars) prompt reporting -
   "if your item arrives damaged or incorrect, please contact us within
-  7 days of delivery with photos — this lets us resolve fastest." Framed
+  7 days of delivery with photos - this lets us resolve fastest." Framed
   as the fast path only; include "nothing in this policy affects your
   statutory rights." Transit damage surfaces at unboxing, so this pulls
   reports into days 1–3 ≈ 3 weeks of CJ-dispute buffer.
 - Accepted residual: valid fault reported near/after CJ's day-30 window
   is refunded with no CJ recovery; rare, lives inside the 3% allowance.
 
-Phase 2 (W6 — automated claims pipeline; CONFIRMED feasible 2026-06-12):
-CJ API 2.0 has a disputes module — `POST /api2.0/v1/disputes/create` takes
+Phase 2 (W6 - automated claims pipeline; CONFIRMED feasible 2026-06-12):
+CJ API 2.0 has a disputes module - `POST /api2.0/v1/disputes/create` takes
 {orderId, businessDisputeId, disputeReasonId, expectType, refundType,
 messageText, imageUrl[], productInfoList[{lineItemId, quantity}]} plus
 companion list/confirm/cancel/getDisputeProducts endpoints (docs:
-developers.cjdropshipping.com/en/api/api2/api/dispute.html — site blocks
+developers.cjdropshipping.com/en/api/api2/api/dispute.html - site blocks
 bots; verify disputeReasonId enum + image constraints via the relay with
 our token at build time). imageUrl[] means R2-hosted evidence URLs can be
-passed straight through — full automation is possible end-to-end.
+passed straight through - full automation is possible end-to-end.
 
 Target pipeline: buyer initiates → PS gates evidence → auto-file to CJ:
 - [ ] `/proxy/return` page (App Proxy HMAC, 200+ok rule): order number +
       email verified against Shopify; buyer picks line item + claim type.
 - [ ] Evidence intake: uploads → R2 bucket (new binding); LLM vision gate
       via OpenRouter (label legible? packaging shown? product matches our
-      catalog image for that SKU — doubles as fraud screen); instant
+      catalog image for that SKU - doubles as fraud screen); instant
       "retake showing X" feedback; claim blocked until checklist green.
 - [ ] D1 claims tables + state machine: draft → evidence_complete →
       filed → cj_accepted/cj_declined → refunded/closed; dispute deadline
@@ -851,30 +851,30 @@ Target pipeline: buyer initiates → PS gates evidence → auto-file to CJ:
       refund expectType, R2 image URLs, line items); poll dispute list
       for verdict; console claims card with days-remaining.
 - [ ] HUMAN GATE (initial): customer refund is one-click APPROVAL in the
-      console, not autonomous — relax to a config flag after ~a dozen
+      console, not autonomous - relax to a config flag after ~a dozen
       claims observed. Evidence gating + CJ filing fully automatic.
 
 PREREQUISITES (W6 depends on the order-fulfilment phase):
 - [ ] Order pipeline first: Shopify orders/create webhook → CJ
       createOrder → store shopifyOrderId↔cjOrderId mapping in D1.
       Does not exist yet (checkout disabled). Disputes reference cjOrderId.
-- [ ] Shopify protected-customer-data approval (read_orders) — same
+- [ ] Shopify protected-customer-data approval (read_orders) - same
       application the W4 orders/ROAS work needs; one approval covers both.
 
-## 7a-iv. Phase W-FULFIL — order→CJ fulfilment automation (designed
+## 7a-iv. Phase W-FULFIL - order→CJ fulfilment automation (designed
 ## 2026-06-12; runs BEFORE W6 claims, which consumes its order mapping)
 
 Money-leg corrections vs the naive design (decided with user):
 - Customer payment = Shopify Payments → bank payout (PayPal optional as a
   buyer-facing wallet only). Receipt = Shopify's automatic order
-  confirmation email — nothing to build.
+  confirmation email - nothing to build.
 - Paying CJ: NOT per-order PayPal automation. Use the CJ WALLET: user
   tops up balance (weekly, via PayPal/card), PS pays each order from
   balance via API (`pay/payBalance`). PS alerts (console + email) when
   balance < ~1 week of expected COGS.
 
 Decision (2026-06-14): launch model = **auto-fulfil with guardrails** (not a
-manual queue) — clean orders auto-submit after the grace window; held orders
+manual queue) - clean orders auto-submit after the grace window; held orders
 wait for the operator. STAGE A SHIPPED 2026-06-14 (F1+F2 + console queue, no
 money leg): `registerWebhooks`/`registerWebhookTopic` (webhooks.ts) subscribe
 `ORDERS_PAID`; `/webhooks/orders-paid` (HMAC) → `parseOrderWebhook` +
@@ -889,7 +889,7 @@ Pipeline:
       uninstall webhook). Needs protected-customer-data approval.
 - [x] F2. Pre-spend verification: all line items map to CJ pids in
       product_links; Shopify fraud risk not HIGH; address complete and
-      CJ-formattable; CJ stock ≥ floor at chosen origin; margin sanity —
+      CJ-formattable; CJ stock ≥ floor at chosen origin; margin sanity -
       amount paid still clears floor vs CURRENT CJ price. Any failure →
       console hold queue, never a silent CJ order.
 - [ ] F3. Grace window: wait ~60 min after payment before CJ submission
@@ -904,17 +904,17 @@ Pipeline:
 - [ ] F6. Delivery watch: CJ tracking milestones; DELIVERED starts the
       returns/dispute clock; delivered+5d → review-request email (W5
       Resend pipeline).
-- [ ] F7. Trust layer: proactive delay alert — no tracking movement for
+- [ ] F7. Trust layer: proactive delay alert - no tracking movement for
       N days → PS emails the buyer an honest status update BEFORE they
       ask (biggest dropship trust differentiator). Confirm CJ neutral/
       no-logo packaging per order.
 - [ ] F8. Mistype protection (decided 2026-06-12): NO pre-payment
-      confirmation modal — checkout UI is Plus-only AND interstitials at
+      confirmation modal - checkout UI is Plus-only AND interstitials at
       Pay Now are conversion poison (reflexive box-ticking catches no
       typos). Instead: (a) Shopify checkout's native address autocomplete/
       validation catches errors at entry; (b) customize the order-
       confirmation EMAIL template (all plans) with a prominent "double-
-      check your delivery address — reply within 60 minutes to correct"
+      check your delivery address - reply within 60 minutes to correct"
       block, pairing with the F3 grace window; (c) F2 validation holds
       CJ-unformattable addresses for proactive buyer contact.
 - [ ] HUMAN GATES (initial): first ~20 orders one-click approved in
@@ -926,27 +926,27 @@ Prereqs: pricing finalized → checkout re-enabled; protected-data approval
 top-up (user). Verify at build time: createOrderV2/payBalance exact
 params via relay; CJ no-logo packing flag.
 
-**Stage B build spec — CJ order API (read-only verification 2026-06-15).**
+**Stage B build spec - CJ order API (read-only verification 2026-06-15).**
 CJ docs site 403s bots on both .com/.cn mirrors; contract below is from the CJ
 SDK + search. CONFIRM exact field names via a read-only `getOrderList`/
 `getOrderDetail` through the relay when building (don't call create/pay to test).
 Base `https://developers.cjdropshipping.com/api2.0/v1`, routed via the relay.
-1. **createOrderV2** — POST `/shopping/order/createOrderV2`
+1. **createOrderV2** - POST `/shopping/order/createOrderV2`
    - `orderNumber` (our ref = shopify_order_id), `shippingCustomerName`,
      `shippingPhone`, `shippingAddress`, `shippingCity`, `shippingProvince`,
      `shippingCountry`, `shippingCountryCode`, `shippingZip` (+`shippingCounty`/
      `houseNumber` where the country needs them), `email`, `remark`,
      `fromCountryCode` (origin; UK-preferred), `logisticName`, `payType`.
-   - `products: [{ vid, quantity, storeLineItemId }]` — needs the CJ **variant id
+   - `products: [{ vid, quantity, storeLineItemId }]` - needs the CJ **variant id
      (`vid`)**, NOT the pid we store. Resolve `vid` by matching each order line's
      `sku` against the product's stored `CjDetail.variants` (warehouse_products.detail).
    - response: `orderId` (CJ) + `orderNum` → store as `orders.cj_order_id`.
-2. **payBalance** — POST `/shopping/pay/payBalance` — `{ orderId }`. THE money
+2. **payBalance** - POST `/shopping/pay/payBalance` - `{ orderId }`. THE money
    leg: pays from the CJ wallet. Guard: never call if `cj_order_id` already set.
-3. **getOrderDetail** — GET `/shopping/order/getOrderDetail?orderId=` — returns
+3. **getOrderDetail** - GET `/shopping/order/getOrderDetail?orderId=` - returns
    `trackNumber`, `logisticName`, status. Poll → when `trackNumber` appears,
    Shopify `fulfillmentCreate` with tracking → status `fulfilled`.
-4. **freightCalculate** — POST `/logistic/freightCalculate` — pick `logisticName`
+4. **freightCalculate** - POST `/logistic/freightCalculate` - pick `logisticName`
    (cheapest viable for the chosen origin); we already estimate freight at admission.
 Flow: cron `dueQueuedOrders` → resolve vids + logisticName → createOrderV2 →
 store cj_order_id (status `submitted`) → payBalance → poll getOrderDetail →
@@ -956,38 +956,38 @@ Idempotent on `shopify_order_id`. Requires: CJ wallet funded + field-name confir
 BUILT + verified 2026-06-15. Read-only `getOrderList` confirmed the field names
 AND surfaced that **CJ's native Shopify app is already importing orders into CJ**
 (test order #1001 was in CJ, status CREATED/unpaid, with the CORRECT shipping
-address — "Andy Chou" in the list view was just the account name, the order
+address - "Andy Chou" in the list view was just the account name, the order
 detail had the right recipient). So two systems can fulfil; to avoid double
 orders this is now a **per-tenant `fulfilMode` toggle** (white-label):
-- `manual` (default) — PS queues only; pay by hand.
-- `pawscout` — PS owns create+pay+track. REQUIRES CJ native order-import OFF.
-- `cj` — CJ's native app owns fulfilment; PS stays out (visibility only).
-Decision NOT to build the hybrid (CJ creates + PS pays) — two systems on the
+- `manual` (default) - PS queues only; pay by hand.
+- `pawscout` - PS owns create+pay+track. REQUIRES CJ native order-import OFF.
+- `cj` - CJ's native app owns fulfilment; PS stays out (visibility only).
+Decision NOT to build the hybrid (CJ creates + PS pays) - two systems on the
 payment leg = double-pay risk. `processDueOrders` is gated to `mode==='pawscout'`.
 
 ## 7a-v. Cart abandonment strategy (decided 2026-06-12)
 
 Baseline: ~70% abandonment is universal; target the recoverable 5–15%.
 
-Layer 1 — prevention (mostly already decided elsewhere): PDP delivery
+Layer 1 - prevention (mostly already decided elsewhere): PDP delivery
 block + free-over-£50 bar kill surprise-cost abandonment; guest checkout
 ON (confirm at re-enable); honest delivery estimates up front; Shopify
 Payments wallets (Apple/Google Pay) + ADD PAYPAL as buyer option (UK
 trust signal for new stores); policies + contact email visible in footer.
 
-Layer 2 — at checkout re-enable (user action, free, no app):
+Layer 2 - at checkout re-enable (user action, free, no app):
 - [ ] Turn on Shopify's native abandoned-checkout email automation
       (all plans, Marketing → Automations). Set delay to 1–4 HOURS (not
-      the 10h default — recovery decays fast); customize template (brand
+      the 10h default - recovery decays fast); customize template (brand
       voice, product image prominent, restore-cart link). This is the
       majority of recovered revenue industry-wide.
 
-Layer 3 — W5 extension (Resend/sequence):
+Layer 3 - W5 extension (Resend/sequence):
 - [ ] One follow-up at ~24h, max sequence = 2 emails total.
-- [ ] Carts at £40–49: "you're £X away from free delivery" nudge —
+- [ ] Carts at £40–49: "you're £X away from free delivery" nudge -
       margin-positive incentive, no discount devaluation.
 - [ ] PECR: abandoners ride soft opt-in (email collected in negotiations
-      for a sale, similar goods, opt-out offered) — unsubscribe link
+      for a sale, similar goods, opt-out offered) - unsubscribe link
       always.
 
 Deliberate NOs (decided): no discount codes in recovery emails (trains
@@ -996,18 +996,18 @@ brand); no SMS recovery. Revisit discounts only as email #2, small,
 rotated, if data demands.
 
 **Discount guardrail (decided 2026-06-12):** net margin is 17%, so the
-break-even discount is ~17–18% — a 20% discount LOSES ~£1/order (£50
+break-even discount is ~17–18% - a 20% discount LOSES ~£1/order (£50
 order: full price nets +£8.50; 10% off nets +£3.80, i.e. 55% of profit
 gone; 20% off nets −£0.90; volume can't fix a per-order loss; 10% off
 needs 2.2× volume just to tread water). CEILING: 10%, single-use,
-first-order or slow-mover only — never blanket. Preferred levers in
+first-order or slow-mover only - never blanket. Preferred levers in
 order: free-over-£50 threshold (self-funding), bundles/multi-buy (shared
 freight + second-item margin), first-order welcome code accounted as
 acquisition cost vs ad CPA. Sale events need room built into a genuine
 regular price first (UK rules ban fictitious was-prices).
 
 **Compare-at wipe (executed 2026-06-12):** all legacy products (42 of
-43, ~440 variants — every batch except the flywheel-imported razor comb)
+43, ~440 variants - every batch except the flywheel-imported razor comb)
 carried fake compareAtPrice values ×1.28–1.35 above price, rendering
 permanent "save 20–26%" badges = fictitious was-prices (CPR risk + trust
 damage). Cleared to null via productVariantsBulkUpdate, zero errors;
@@ -1018,19 +1018,19 @@ from genuine promotions only.
 Measurement: abandonment + recovery rate → W4 digest; Shopify's native
 automation self-reports recovered sales from day one.
 
-## 7a-iv-b. Phase W-ADDON — hidden basket-fillers (BUILT 2026-06-13 01:50)
+## 7a-iv-b. Phase W-ADDON - hidden basket-fillers (BUILT 2026-06-13 01:50)
 
 User decision: cheap-but-quality products ($1–5 cost) may enter inventory
-but must NEVER appear in browsing/search — they surface only as add-ons.
+but must NEVER appear in browsing/search - they surface only as add-ons.
 
-- Config: `addons` JSON col (migration 0006) — defaults {enabled:true,
+- Config: `addons` JSON col (migration 0006) - defaults {enabled:true,
   priceMinUsd:0.5, priceMaxUsd:5, poolSize:12}. CONSOLE CARD 6 added
   2026-06-13 (/api/addons + validateAddonsPayload): cost min/max, pool,
   enabled. Floor lowered to $0.50 (user 2026-06-13) so the cheapest CJ
-  fillers land. NOTE: retail still obeys the pricing rule — the £6 min-
+  fillers land. NOTE: retail still obeys the pricing rule - the £6 min-
   margin floor dominates sub-~$4 cost, so a $0.50 item still retails
   ~£6.99 (huge margin %, not a sub-£6 sticker). True low-price fillers
-  would need an addon-specific minMargin — NOT built (user chose to keep
+  would need an addon-specific minMargin - NOT built (user chose to keep
   £6 min / £6.99 add-ons 2026-06-13).
 - VISIBILITY TOGGLE (built 2026-06-13): `addons.suppressFromBrowse`
   (default true). Hidden = no collection tag + seo.hidden=1 (add-on slots
@@ -1046,7 +1046,7 @@ but must NEVER appear in browsing/search — they surface only as add-ons.
   `seo.hidden=1`, NO collection tag → buyable, invisible to search/
   collections/sitemap; GET /proxy/addons returns random filler handles.
 - Theme: PDP "Complete the kit" row + cart-drawer free-delivery nudge
-  ("£X away from FREE UK delivery", server-rendered amount) — pawscout.js
+  ("£X away from FREE UK delivery", server-rendered amount) - pawscout.js
   fetches handles → /products/{handle}.js → one-tap add via Section
   Rendering API re-render.
 - Lifecycle: addons excluded from category floors/targets; normal stock
@@ -1058,10 +1058,10 @@ but must NEVER appear in browsing/search — they surface only as add-ons.
 - First fills: the 04:17Z cron stocks the addon pool; widgets stay
   hidden until then (graceful empty state).
 
-## 7b. Phase W5 — Email marketing via Resend (designed, not yet scheduled)
+## 7b. Phase W5 - Email marketing via Resend (designed, not yet scheduled)
 
 The user has a Resend account. Newsletter signups currently post through the
-contact form (arrive as plain emails — no list). Target design:
+contact form (arrive as plain emails - no list). Target design:
 
 - [ ] W5.1 Worker: `POST /proxy/subscribe` (App Proxy HMAC, 200+ok rule).
       Validates the email, then (a) creates/updates the Shopify customer with
@@ -1077,22 +1077,22 @@ contact form (arrive as plain emails — no list). Target design:
       against the Audience (no PawScout code needed initially). Domain setup
       (user): verify activepaw.co.uk in Resend (SPF/DKIM records) so sends
       come from @activepaw.co.uk.
-- [ ] W5.4 (ties into W4): weekly "new arrivals" broadcast — the W4 digest
+- [ ] W5.4 (ties into W4): weekly "new arrivals" broadcast - the W4 digest
       pipeline drafts a product-picks email (top curated imports + demand
       keywords) via Resend's send API; user approves/sends from Resend.
       Strictly opt-in list, unsubscribe handled by Resend.
-- [ ] Compliance notes: UK PECR/GDPR — marketing only to subscribers from
+- [ ] Compliance notes: UK PECR/GDPR - marketing only to subscribers from
       this flow; consent recorded both in Shopify (source of truth) and
       Resend; consider double opt-in before first real campaign.
 
-## 7c. Reusability & white-label decoupling (principle — act at rollout)
+## 7c. Reusability & white-label decoupling (principle - act at rollout)
 
 The theme is a **reusable, Shopify-standards-compliant theme by design**, not a
 one-off for this store. Treat that as a hard constraint going forward:
 
 - **Anything Shopify lets a merchant customize must stay merchant-customizable.**
-  Surface it the standard way — `config/settings_schema.json`, section/block
-  settings, `{% schema %}` defaults, theme app extensions — never hardcode a
+  Surface it the standard way - `config/settings_schema.json`, section/block
+  settings, `{% schema %}` defaults, theme app extensions - never hardcode a
   value that Shopify's own guidelines expect to live in theme settings. If a
   change would remove a knob the theme template normally exposes, that's a
   regression against reusability, even if it "works" for Active Paw today.
@@ -1100,7 +1100,7 @@ one-off for this store. Treat that as a hard constraint going forward:
   currently entangled:
   - **PawScout** = the platform/worker (the engine: search proxy, warehouse,
     curation, fulfilment). Its name may itself change before public rollout.
-  - **Active Paw** = one *brand/storefront* — the first **spawn** of PawScout.
+  - **Active Paw** = one *brand/storefront* - the first **spawn** of PawScout.
     At rollout, "Active Paw" becomes a **variable** (a brand/tenant setting),
     not a literal. Each new store onboarded is another spawn with its own brand
     value; the theme installs clean and is branded purely through settings.
@@ -1110,25 +1110,25 @@ one-off for this store. Treat that as a hard constraint going forward:
   colours, contact details already partly are). Worker → it's already
   multi-tenant (`tenant_config` keyed by shop; `isActivePaw` shop-sniff in
   `auth/callback.ts` and the `4qkudm-ez.` checks are the current shortcut to
-  retire — replace with a per-tenant brand/config field, not a hardcoded shop).
+  retire - replace with a per-tenant brand/config field, not a hardcoded shop).
 - **Onboarding flow (future):** spawning a new brand = install theme → set brand
   variables in theme settings → worker seeds `tenant_config` for that shop. No
   code edits per brand.
 
-Not actionable now — recorded so the rollout work doesn't have to rediscover it.
+Not actionable now - recorded so the rollout work doesn't have to rediscover it.
 When we build onboarding, audit both repos for hardcoded "Active Paw"/"PawScout"
 and the `4qkudm-ez.` shop-sniff, and confirm every customizable surface is a
 theme setting.
 
 ## 8. Conventions & runbook (for any developer picking this up)
 
-**Admin / dashboard links (the real app — don't confuse with duplicates)**
-- See **`docs/LINKS.md`** — canonical IDs + dashboard/admin URLs (Dev Dashboard
+**Admin / dashboard links (the real app - don't confuse with duplicates)**
+- See **`docs/LINKS.md`** - canonical IDs + dashboard/admin URLs (Dev Dashboard
   app `378577780737` in org `221233114`; the decoy duplicate; store-admin
   settings; OAuth re-grant; and what the agent can self-verify vs what needs you).
 - TRAP (cost us a long detour 2026-06-14): there is an **empty duplicate**
   "PawScout" (client id `0416eedd…`, 0 installs, no scopes/App Proxy) under a
-  DIFFERENT Partner org (`4969856`). It is NOT the live app — never edit/release
+  DIFFERENT Partner org (`4969856`). It is NOT the live app - never edit/release
   it. The live app is in Dev Dashboard org `221233114`, client id `6bc07cd8…`.
 
 **Conventions**
@@ -1153,13 +1153,13 @@ npm run deploy
 ```
 Verify: `https://activepaw.co.uk/apps/pawscout/search?q=dog+toy` → `{"ok":true,...}`.
 
-**Known traps (already hit once — don't rediscover them)**
+**Known traps (already hit once - don't rediscover them)**
 | Symptom | Cause / fix |
 |---|---|
 | Storefront shows "error in the third-party application" | App Proxy masks non-2xx; `/proxy/*` must return 200+`ok:false` (already enforced) |
-| `Decryption failed … AES-GCM` | Secret sealed under a rotated DEK. Reinstalls must reuse DEK (fixed); if it recurs, the credential is unrecoverable — delete row, re-enter key |
+| `Decryption failed … AES-GCM` | Secret sealed under a rotated DEK. Reinstalls must reuse DEK (fixed); if it recurs, the credential is unrecoverable - delete row, re-enter key |
 | CJ auth failures right after connecting the key | CJ allows 1 auth per 300s and connect-validation consumes one; wait 5 min |
-| Worker 404 on `/proxy/*` | Old build deployed — `git pull && npm run deploy` |
-| `CJ HTTP 429 — code 1600200 "one ip limit 3 users"` | CJ caps **3 API accounts per source IP**; Workers egress IPs are shared and saturated. NOT a velocity problem — direct Worker→CJ calls can never be reliable. Fix: the `relay/` app on Fly.io with a static egress IP (`fly ips allocate-egress`, $3.60/mo); worker secrets `CJ_RELAY_URL` + `CJ_RELAY_TOKEN` route all CJ traffic through it (`relayedFetch` in `src/cj.ts`). See `relay/README.md` |
-| `Illegal invocation … incorrect this` in prod only | Raw global `fetch` stored as a default param; guard test now forbids it — always use `defaultFetch` from `src/safe-fetch.ts` |
-| Sync reports "0 products synced" / imports land untracked | Missing API scopes: the location query needs `read_locations`, quantity/tracking writes need `read_inventory,write_inventory`. The token-exchange token gets the scopes from the **Dev Dashboard config** (wrangler.toml's SHOPIFY_SCOPES only feeds legacy OAuth). Fix: add scopes in BOTH places, then clear `tenants.access_token_enc` in D1 (keep dek_wrapped! CJ key survives) — next console load re-mints the token with the new scopes |
+| Worker 404 on `/proxy/*` | Old build deployed - `git pull && npm run deploy` |
+| `CJ HTTP 429 - code 1600200 "one ip limit 3 users"` | CJ caps **3 API accounts per source IP**; Workers egress IPs are shared and saturated. NOT a velocity problem - direct Worker→CJ calls can never be reliable. Fix: the `relay/` app on Fly.io with a static egress IP (`fly ips allocate-egress`, $3.60/mo); worker secrets `CJ_RELAY_URL` + `CJ_RELAY_TOKEN` route all CJ traffic through it (`relayedFetch` in `src/cj.ts`). See `relay/README.md` |
+| `Illegal invocation … incorrect this` in prod only | Raw global `fetch` stored as a default param; guard test now forbids it - always use `defaultFetch` from `src/safe-fetch.ts` |
+| Sync reports "0 products synced" / imports land untracked | Missing API scopes: the location query needs `read_locations`, quantity/tracking writes need `read_inventory,write_inventory`. The token-exchange token gets the scopes from the **Dev Dashboard config** (wrangler.toml's SHOPIFY_SCOPES only feeds legacy OAuth). Fix: add scopes in BOTH places, then clear `tenants.access_token_enc` in D1 (keep dek_wrapped! CJ key survives) - next console load re-mints the token with the new scopes |

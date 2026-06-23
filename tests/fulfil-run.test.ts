@@ -64,7 +64,7 @@ describe('processDueOrders', () => {
 
   it('resolves the vid via a live CJ lookup when there is NO warehouse row', async () => {
     const store = new TenantStore(env.DB, SHOP);
-    // No seedWarehouse — mimics a live product that has been culled from the pool.
+    // No seedWarehouse - mimics a live product that has been culled from the pool.
     await seedOrder(store, 'O1', [{ sku: 'S9', quantity: 1, cjPid: 'CJ9' }]);
     const spy = { create: [] as any[], pay: [] as string[] };
     const liveDetail: CjDetail = { pid: 'CJ9', nameEn: 'X', images: [], descriptionHtml: '', variants: [{ vid: 'vLIVE', name: 'R', sellPriceUsd: 10, sku: 'S9' }], listedNum: 1, categoryName: 'Pet Toys', origins: { CN: 100 } };

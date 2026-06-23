@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 
-// Vite inlines these file contents as strings at build time (?raw) — no node:fs,
+// Vite inlines these file contents as strings at build time (?raw) - no node:fs,
 // which workerd doesn't implement. Local ImportMeta augmentation keeps plain tsc happy.
 declare global {
   interface ImportMeta {
@@ -23,7 +23,7 @@ describe('tenant isolation guard', () => {
     expect(offenders, `raw D1 access outside tenant-store.ts: ${offenders.join(', ')}`).toEqual([]);
   });
 
-  it('never defaults to the raw global fetch (workerd brand-checks `this` — use defaultFetch)', () => {
+  it('never defaults to the raw global fetch (workerd brand-checks `this` - use defaultFetch)', () => {
     const offenders: string[] = [];
     for (const [path, src] of Object.entries(sources)) {
       if (path.endsWith('safe-fetch.ts')) continue;

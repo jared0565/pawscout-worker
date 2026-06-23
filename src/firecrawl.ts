@@ -8,7 +8,7 @@ export interface FcProduct {
 /**
  * Scrape CJ's own website search via Firecrawl (runs from Firecrawl's servers,
  * so it gets past CJ's bot protection and renders the JS product grid). Returns
- * the relevance-ranked product list the website actually shows — the ground
+ * the relevance-ranked product list the website actually shows - the ground
  * truth for comparing against our `listV2` results.
  *
  * Firecrawl v1 /scrape with structured-JSON extraction. Never throws past the
@@ -52,7 +52,7 @@ export async function firecrawlCjSearch(
   if (!resp.ok) {
     let body = '';
     try { body = (await resp.text()).slice(0, 200); } catch { /* ignore */ }
-    throw new Error(`Firecrawl HTTP ${resp.status}${body ? ` — ${body}` : ''}`);
+    throw new Error(`Firecrawl HTTP ${resp.status}${body ? ` - ${body}` : ''}`);
   }
   const data = (await resp.json()) as { data?: { json?: { products?: FcProduct[] } } };
   const products = data?.data?.json?.products;

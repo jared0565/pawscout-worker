@@ -36,7 +36,7 @@ describe('consolePage', () => {
     // The old inline-accordion plumbing is gone.
     expect(scripts).not.toContain('function homeInboxDetail(');
     expect(scripts).not.toContain("row.insertAdjacentElement('afterend',detail)");
-    // Close TRIGGERS are wired at init — critical: awaiting_customer/no-draft threads
+    // Close TRIGGERS are wired at init - critical: awaiting_customer/no-draft threads
     // have no Approve & Send button, so x/backdrop/Esc is their ONLY exit. Without
     // this wiring the merchant would be trapped in the modal on exactly those threads.
     expect(scripts).toContain('function wireInboxModal(');
@@ -91,12 +91,12 @@ describe('consolePage', () => {
   });
 
   it('esc() renders a crafted <script> payload as HTML-escaped text (not raw tags)', async () => {
-    // consolePage is a static template — all esc() calls run client-side inside the
+    // consolePage is a static template - all esc() calls run client-side inside the
     // <script> block, not at SSR time. We extract the esc() helper from the emitted
     // source and execute it directly on the crafted payload so the assertion is over
     // real output, not source patterns.
     const html = await consolePage('test-api-key').text();
-    // esc is a single-line function — match the whole line so the nested {} in the
+    // esc is a single-line function - match the whole line so the nested {} in the
     // replacement map are captured correctly (non-greedy would truncate at the first }).
     const escMatch = html.match(/function esc\(s\)\{[^\n]+\}/);
     expect(escMatch).not.toBeNull();
@@ -124,7 +124,7 @@ describe('consolePage', () => {
     const html = await consolePage('test-api-key').text();
     const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
     // renderInboxThread maps the declared_intent token to a friendly label and shows a
-    // "Declared:" line when present — visible even on non-funnel order/wholesale threads
+    // "Declared:" line when present - visible even on non-funnel order/wholesale threads
     // where there is no Partnership screening panel. Reinforces the classifier.
     expect(scripts).toContain('thread.declared_intent');
     expect(scripts).toContain('Declared:');
@@ -135,7 +135,7 @@ describe('consolePage', () => {
     const html = await consolePage('test-api-key').text();
     // Verify that the renderInboxThread / invoice-card code wraps dynamic values in esc()
     // rather than raw-interpolating them. We check that the source references esc() in
-    // the invoice-card region — a source-level guard against the XSS class seen in W-INBOX-1.
+    // the invoice-card region - a source-level guard against the XSS class seen in W-INBOX-1.
     // The inline script block must contain esc() calls near invoice-related identifiers.
     const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
     // The invoice card must reference esc() and invoice fields in the same script block.
@@ -145,7 +145,7 @@ describe('consolePage', () => {
     const invoiceCardMatch = scripts.match(/invoice[\s\S]{0,3000}invoice_url/);
     expect(invoiceCardMatch).not.toBeNull();
     // No raw .title or .status insertion without esc() wrapping
-    // (i.e. the string '+inv.title+' pattern must not appear — only esc(inv.title))
+    // (i.e. the string '+inv.title+' pattern must not appear - only esc(inv.title))
     expect(scripts).not.toMatch(/'\s*\+\s*inv\.\s*title\s*\+\s*'/);
     expect(scripts).not.toMatch(/'\s*\+\s*inv\.\s*status\s*\+\s*'/);
   });

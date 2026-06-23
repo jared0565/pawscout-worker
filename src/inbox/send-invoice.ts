@@ -17,10 +17,10 @@ export async function sendInvoice(
   if (!invoice.invoice_url) return { ok: false, error: 'invoice has no invoice_url' };
 
   const items: InvoiceLineItem[] = JSON.parse(invoice.line_items_json);
-  const lines = items.map((i) => `${i.qty} × ${i.title} — £${i.priceGbp.toFixed(2)}`).join('\n');
+  const lines = items.map((i) => `${i.qty} × ${i.title} - £${i.priceGbp.toFixed(2)}`).join('\n');
   const cover = (invoice.cover_text ?? '').trim();
   const text = `${cover ? cover + '\n\n' : ''}${lines}\n\nTotal: £${invoice.total.toFixed(2)}\n\nComplete your order securely here:\n${invoice.invoice_url}`;
-  const html = `${cover ? `<p>${esc(cover)}</p>` : ''}<ul>${items.map((i) => `<li>${esc(`${i.qty} × ${i.title}`)} — £${i.priceGbp.toFixed(2)}</li>`).join('')}</ul><p><strong>Total: £${invoice.total.toFixed(2)}</strong></p><p><a href="${esc(invoice.invoice_url)}">Complete your order →</a></p>`;
+  const html = `${cover ? `<p>${esc(cover)}</p>` : ''}<ul>${items.map((i) => `<li>${esc(`${i.qty} × ${i.title}`)} - £${i.priceGbp.toFixed(2)}</li>`).join('')}</ul><p><strong>Total: £${invoice.total.toFixed(2)}</strong></p><p><a href="${esc(invoice.invoice_url)}">Complete your order →</a></p>`;
 
   // Thread to the customer's latest inbound message.
   const got = await store.getThreadWithMessages(thread.id);

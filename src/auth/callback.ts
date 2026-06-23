@@ -14,7 +14,7 @@ export async function persistInstall(
   const store = new TenantStore(db, session.shop);
   // Re-auths/reinstalls MUST reuse the existing DEK: minting a fresh one would
   // orphan every secret sealed under the old DEK (e.g. the CJ key). Only a
-  // first install — or a post-uninstall wipe, which empties dek_wrapped —
+  // first install - or a post-uninstall wipe, which empties dek_wrapped -
   // gets a new DEK.
   const existing = await store.getTenant();
   const dekWrapped = existing?.dek_wrapped ? existing.dek_wrapped : await vault.newTenantDek();
@@ -38,7 +38,7 @@ export async function persistInstall(
     await store.seedConfig(cfg);
   }
 
-  // Best-effort: a registration failure must never fail the install — the
+  // Best-effort: a registration failure must never fail the install - the
   // registrar itself never throws, so this only logs.
   if (registerWebhook) {
     const r = await registerWebhook(session.shop, session.accessToken);
@@ -46,7 +46,7 @@ export async function persistInstall(
   }
 }
 
-/** GET /auth/callback — completes OAuth, persists, redirects into the embedded app. Returns a Response. */
+/** GET /auth/callback - completes OAuth, persists, redirects into the embedded app. Returns a Response. */
 export async function handleCallback(
   shopify: ShopifyApp,
   db: D1Database,

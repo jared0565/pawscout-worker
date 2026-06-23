@@ -1,20 +1,20 @@
 // Subresource Integrity note:
-// app-bridge.js is loaded WITHOUT SRI deliberately — it is EVERGREEN and Shopify
+// app-bridge.js is loaded WITHOUT SRI deliberately - it is EVERGREEN and Shopify
 // ships updates continuously; an `integrity` hash would break it on the next update
 // (Shopify's own guidance). App Bridge v4 exposes a global `shopify` and reads the
 // API key from the <meta name="shopify-api-key"> tag, which MUST appear before the
-// script. `host` is read from the URL by App Bridge itself — no createApp needed.
+// script. `host` is read from the URL by App Bridge itself - no createApp needed.
 //
 // Theme note: this renders inside Shopify admin's iframe, which is usually DARK (admin
-// dark mode follows the OS color-scheme). The console must feel native, not alien — so
+// dark mode follows the OS color-scheme). The console must feel native, not alien - so
 // it defaults to a DARK palette congruent with Polaris dark, and flips to LIGHT only
 // when the environment prefers light (`@media (prefers-color-scheme: light)`). Colors
-// are explicit in BOTH modes — never inherit, or text washes out. Keep both palettes in
+// are explicit in BOTH modes - never inherit, or text washes out. Keep both palettes in
 // sync: every --token defined in :root must have a light counterpart in the media query.
 //
 // Feedback note: this app renders inside Shopify admin's cross-origin iframe, where
 // window.alert()/confirm() are silently blocked. ALL user feedback must be inline
-// (writing into DOM elements) — never alert(). Do not reintroduce alert() here.
+// (writing into DOM elements) - never alert(). Do not reintroduce alert() here.
 
 export function consolePage(apiKey: string): Response {
   const html = `<!doctype html><html lang="en"><head><meta charset="utf-8">
@@ -23,7 +23,7 @@ export function consolePage(apiKey: string): Response {
 <meta name="color-scheme" content="dark light">
 <script src="https://cdn.shopify.com/shopifycloud/app-bridge.js"></script>
 <style>
-  /* DARK always — forced regardless of OS preference. The merchant reported light
+  /* DARK always - forced regardless of OS preference. The merchant reported light
      sensitivity ("having problem looking at bright screens"), so the old
      prefers-color-scheme:light palette (white --surface was the glare source) was
      removed; the console never renders the bright theme now. */
@@ -179,9 +179,9 @@ export function consolePage(apiKey: string): Response {
       <div class="grow">
         <label for="rel">Relevance</label>
         <select id="rel">
-          <option value="loose">Loose — any keyword match</option>
-          <option value="title" selected>Title — keyword in title</option>
-          <option value="strict">Strict — all keywords in title</option>
+          <option value="loose">Loose - any keyword match</option>
+          <option value="title" selected>Title - keyword in title</option>
+          <option value="strict">Strict - all keywords in title</option>
         </select>
       </div>
       <div class="grow">
@@ -254,7 +254,7 @@ export function consolePage(apiKey: string): Response {
 
   <section class="card">
     <h2><span class="step">6</span> Add-on / filler products</h2>
-    <p class="sub" style="margin:0 0 12px">A hidden pool of cheap, curated items that never appear in browsing or search — they surface only as "Complete the kit" picks on product pages and in the cart's free-delivery nudge. Set the supplier cost band below your main price range.</p>
+    <p class="sub" style="margin:0 0 12px">A hidden pool of cheap, curated items that never appear in browsing or search - they surface only as "Complete the kit" picks on product pages and in the cart's free-delivery nudge. Set the supplier cost band below your main price range.</p>
     <div class="row">
       <div class="grow" style="flex:0 1 120px">
         <label for="addmin">Cost min ($)</label>
@@ -277,8 +277,8 @@ export function consolePage(apiKey: string): Response {
       <div class="grow">
         <label for="addvis">Visibility in storefront</label>
         <select id="addvis">
-          <option value="true" selected>Hidden — add-on slots only (default)</option>
-          <option value="false">Visible — also in browsing &amp; search</option>
+          <option value="true" selected>Hidden - add-on slots only (default)</option>
+          <option value="false">Visible - also in browsing &amp; search</option>
         </select>
       </div>
       <button onclick="saveAddons()">Save add-ons</button>
@@ -305,15 +305,15 @@ export function consolePage(apiKey: string): Response {
       <button class="ghost" id="testemailbtn" onclick="sendTestEmail()">Send test email</button>
     </div>
     <p class="sub" style="margin:6px 0 0">PawScout emails this address whenever it creates an order in CJ that is awaiting your payment, so you can pay it ASAP.</p>
-    <p class="sub" style="margin:0 0 8px"><strong>Manual</strong>: orders just queue — you pay in CJ by hand. <strong>CJ app</strong>: CJ's own Shopify app fulfils; PawScout stays out. <strong>PawScout auto</strong>: PawScout creates + pays + tracks automatically — only after the CJ wallet is funded AND CJ's native order-import is OFF (else duplicate orders). <strong>Create-only</strong> (PawScout mode only): PawScout creates the CJ order but does NOT pay it — it shows below as <em>awaiting-payment</em> with the CJ order id, you pay it in CJ, and tracking still flows back automatically. Use this until the wallet is funded.</p>
+    <p class="sub" style="margin:0 0 8px"><strong>Manual</strong>: orders just queue - you pay in CJ by hand. <strong>CJ app</strong>: CJ's own Shopify app fulfils; PawScout stays out. <strong>PawScout auto</strong>: PawScout creates + pays + tracks automatically - only after the CJ wallet is funded AND CJ's native order-import is OFF (else duplicate orders). <strong>Create-only</strong> (PawScout mode only): PawScout creates the CJ order but does NOT pay it - it shows below as <em>awaiting-payment</em> with the CJ order id, you pay it in CJ, and tracking still flows back automatically. Use this until the wallet is funded.</p>
     <div id="awaitbanner" class="msg" style="display:none"></div>
     <div id="ordlist"></div>
     <p id="ordmsg" class="msg muted"></p>
   </section>
 
   <section class="card">
-    <h2>Maintenance — run now</h2>
-    <p class="sub" style="margin:0 0 12px">These run automatically every night. Use them here to apply changes on demand — after a bulk import, before launch, or to backfill the catalog without waiting for the nightly job.</p>
+    <h2>Maintenance - run now</h2>
+    <p class="sub" style="margin:0 0 12px">These run automatically every night. Use them here to apply changes on demand - after a bulk import, before launch, or to backfill the catalog without waiting for the nightly job.</p>
     <div class="row">
       <button id="syncbtn" onclick="syncNow()">Sync now</button>
       <button class="ghost" id="herobtn" onclick="heroImagesNow()">Fix default images</button>
@@ -329,7 +329,7 @@ export function consolePage(apiKey: string): Response {
 
   <section class="card">
     <h2>Search source diagnostic</h2>
-    <p class="sub" style="margin:0 0 12px">Compares what our CJ <code>listV2</code> search returns vs CJ's own website (via Firecrawl) for a query — to verify relevance.</p>
+    <p class="sub" style="margin:0 0 12px">Compares what our CJ <code>listV2</code> search returns vs CJ's own website (via Firecrawl) for a query - to verify relevance.</p>
     <div class="row">
       <div class="grow"><label for="diagq">Query</label><input id="diagq" type="text" value="dog toy" spellcheck="false"></div>
       <button id="diagbtn" onclick="runDiag()">Compare</button>
@@ -339,7 +339,7 @@ export function consolePage(apiKey: string): Response {
 
   <section class="card">
     <h2>Shipping quote (CJ)</h2>
-    <p class="sub" style="margin:0 0 12px">What CJ actually charges to ship a given <strong>quantity</strong> to a destination, cheapest line first — the real freight behind a flat checkout rate. Read-only; creates nothing.</p>
+    <p class="sub" style="margin:0 0 12px">What CJ actually charges to ship a given <strong>quantity</strong> to a destination, cheapest line first - the real freight behind a flat checkout rate. Read-only; creates nothing.</p>
     <div class="row">
       <div class="grow"><label for="fqpid">CJ product id</label><input id="fqpid" type="text" placeholder="from the product's cj-pid-… tag" spellcheck="false"></div>
       <div class="grow" style="flex:0 1 220px"><label for="fqcountry">Country</label>
@@ -355,7 +355,7 @@ export function consolePage(apiKey: string): Response {
   </section>
 
   <section class="card">
-    <h2>Search demand — last 30 days</h2>
+    <h2>Search demand - last 30 days</h2>
     <div id="insights"><p class="muted">Loading…</p></div>
   </section>
 
@@ -370,7 +370,7 @@ export function consolePage(apiKey: string): Response {
     <div id="reply-mode" class="reply-mode">
       <div class="reply-mode__text">
         <div>Reply mode: <span class="reply-mode__state" id="reply-mode-state">Manual review</span></div>
-        <p class="sub" id="reply-mode-desc" style="margin:4px 0 0">Drafts wait here for you to approve and send — nothing is emailed to customers automatically.</p>
+        <p class="sub" id="reply-mode-desc" style="margin:4px 0 0">Drafts wait here for you to approve and send - nothing is emailed to customers automatically.</p>
       </div>
       <label class="reply-mode__sw">
         <input type="checkbox" id="inbox-autosend-chk" data-inbox-autosend onchange="onReplyModeToggle()">
@@ -429,7 +429,7 @@ export function consolePage(apiKey: string): Response {
     <p class="sub" style="margin:0 0 10px;font-weight:600;color:var(--ink)">Invoice settings</p>
     <div class="toggle-wrap">
       <input type="checkbox" id="inbox-autoinvoice-chk" data-inbox-autoinvoice>
-      <label for="inbox-autoinvoice-chk" style="display:inline;font-weight:550">Auto-invoice — create and send invoices automatically when confidence &ge; threshold (HITL off)</label>
+      <label for="inbox-autoinvoice-chk" style="display:inline;font-weight:550">Auto-invoice - create and send invoices automatically when confidence &ge; threshold (HITL off)</label>
     </div>
     <div class="row" style="margin-top:8px">
       <div class="grow">
@@ -468,7 +468,7 @@ async function api(path,body,method){
 }
 // Model dropdowns: fetch the curated catalog (with live pricing + vision flags)
 // once, cache the option HTML, and populate selects. The vision (image) select
-// is built only from vision-capable models — a text-only model can never be
+// is built only from vision-capable models - a text-only model can never be
 // chosen for image QA.
 var modelOptionsPromise=null;
 function ensureModelOptions(){
@@ -477,7 +477,7 @@ function ensureModelOptions(){
       var models=(r&&r.models)||[];
       function opt(m){
         var price=(m.promptPriceM==null)?'price n/a':('$'+m.promptPriceM+'/M in · $'+m.completionPriceM+'/M out');
-        return '<option value="'+esc(m.slug)+'">'+esc(m.name)+' — '+price+(m.vision?' · 👁':'')+'</option>';
+        return '<option value="'+esc(m.slug)+'">'+esc(m.name)+' - '+price+(m.vision?' · 👁':'')+'</option>';
       }
       return { all:models.map(opt).join(''), vision:models.filter(function(m){return m.vision;}).map(opt).join('') };
     }).catch(function(){ return {all:'',vision:''}; });
@@ -518,7 +518,7 @@ function renderStatus(s){
     : '<li class="muted">No collections mapped</li>';
   el('status').innerHTML='<dl class="kv">'+rows+'</dl><hr><div class="muted" style="font-weight:550;color:var(--ink)">Collection map</div><ul class="cols">'+cols+'</ul>';
 }
-// Forms are populated from the server exactly once — refresh() after a save
+// Forms are populated from the server exactly once - refresh() after a save
 // must not clobber fields the merchant is still editing.
 var formsPopulated=false;
 function populateForms(s){
@@ -537,9 +537,9 @@ function populateForms(s){
   if(p.fxBufferPct!=null) el('pfxb').value=p.fxBufferPct;
   var l=s.llm||{};
   var mm=(l.models||{});
-  setModelSelect('mdl-image', mm.image, {vision:true, blank:'— top model'});
-  setModelSelect('mdl-text', mm.text, {blank:'— top model'});
-  setModelSelect('mdl-fallback', mm.fallback, {vision:true, blank:'— none'});
+  setModelSelect('mdl-image', mm.image, {vision:true, blank:'- top model'});
+  setModelSelect('mdl-text', mm.text, {blank:'- top model'});
+  setModelSelect('mdl-fallback', mm.fallback, {vision:true, blank:'- none'});
   if(l.scoreThreshold!=null) el('llmthresh').value=l.scoreThreshold;
   if(l.enabled!=null) el('llmon').value=String(l.enabled);
   var a=s.addons||{};
@@ -572,7 +572,7 @@ async function refresh(){
     var s=await api('/status');
     renderStatus(s);
     populateForms(s);
-    setMsg('cjstatus', s.cjConnected?'Connected ✓':'Not connected — enter your CJ API key above.', s.cjConnected?'ok':'muted');
+    setMsg('cjstatus', s.cjConnected?'Connected ✓':'Not connected - enter your CJ API key above.', s.cjConnected?'ok':'muted');
   }catch(e){
     el('status').innerHTML='<p class="msg no">Could not load configuration: '+esc(errText(e))+'</p>';
     setMsg('cjstatus','Could not reach PawScout. Reload the page.','no');
@@ -592,7 +592,7 @@ async function loadInsights(){
     }
     var ks=(r&&r.keywords)||[];
     if(ks.length){
-      html+='<div class="muted" style="font-weight:550;color:var(--ink)">Top searches — 30 days</div><ul class="cols">'
+      html+='<div class="muted" style="font-weight:550;color:var(--ink)">Top searches - 30 days</div><ul class="cols">'
         +ks.map(function(k){
           var fill=(Number(k.avg_store_hits)+Number(k.avg_ghost_hits)).toFixed(1);
           return '<li><strong>'+esc(k.keyword_norm)+'</strong> <span class="muted">· '+esc(k.searches)+' searches · avg fill</span> <code>'+esc(fill)+'</code></li>';
@@ -710,7 +710,7 @@ var armPawscout=false;
 function renderMode(){
   var l=el('modelabel'); if(!l) return;
   var base=({manual:'Manual (queue only)',cj:'CJ app (PawScout not managing)',pawscout:'PawScout auto (create + pay + track)'}[currentMode]||currentMode);
-  l.textContent=base+((currentMode==='pawscout'&&currentCreateOnly)?' — create-only (you pay in CJ)':'');
+  l.textContent=base+((currentMode==='pawscout'&&currentCreateOnly)?' - create-only (you pay in CJ)':'');
   var cb=el('createonlybtn');
   if(cb){ cb.textContent='Create-only: '+(currentCreateOnly?'ON':'OFF'); cb.disabled=(currentMode!=='pawscout'); }
 }
@@ -729,7 +729,7 @@ async function toggleCreateOnly(){
     var r=await api('/fulfil',{mode:'pawscout',createOnly:next});
     if(!r.ok){ setMsg('ordmsg','Failed: '+(r.error||'unknown error'),'no'); return; }
     currentMode=r.mode; currentCreateOnly=!!r.createOnly; renderMode();
-    setMsg('ordmsg',currentCreateOnly?'Create-only ON — PawScout will create CJ orders and leave them for you to pay in CJ.':'Create-only OFF — PawScout will pay CJ orders from the wallet balance.',currentCreateOnly?'muted':'ok');
+    setMsg('ordmsg',currentCreateOnly?'Create-only ON - PawScout will create CJ orders and leave them for you to pay in CJ.':'Create-only OFF - PawScout will pay CJ orders from the wallet balance.',currentCreateOnly?'muted':'ok');
   }catch(e){ setMsg('ordmsg','Failed: '+errText(e),'no'); }
 }
 async function setMode(mode){
@@ -762,7 +762,7 @@ async function saveAlertEmail(){
   try{
     var r=await api('/fulfil',{mode:currentMode,alertEmail:to});
     if(!r.ok){ setMsg('ordmsg','Failed: '+(r.error||'unknown'),'no'); return; }
-    setMsg('ordmsg',to?('Alert email saved — PawScout will notify '+to+' on each CJ order awaiting payment.'):'Alert email cleared — no awaiting-payment emails will be sent.','ok');
+    setMsg('ordmsg',to?('Alert email saved - PawScout will notify '+to+' on each CJ order awaiting payment.'):'Alert email cleared - no awaiting-payment emails will be sent.','ok');
   }catch(e){ setMsg('ordmsg','Failed: '+errText(e),'no'); }
   finally{ b.disabled=false; }
 }
@@ -772,7 +772,7 @@ async function runFulfilNow(){
   try{
     var r=await api('/fulfil-run',{});
     if(!r.ok){ setMsg('ordmsg','Fulfilment run failed: '+(r.error||'unknown'),'no'); return; }
-    setMsg('ordmsg','Fulfilment run ✓ — created/awaiting '+(r.awaiting||0)+', submitted '+(r.submitted||0)+', errored '+(r.errored||0)+', tracking checked '+(r.checked||0)+', fulfilled '+(r.fulfilled||0)+'.',(r.errored?'no':'ok'));
+    setMsg('ordmsg','Fulfilment run ✓ - created/awaiting '+(r.awaiting||0)+', submitted '+(r.submitted||0)+', errored '+(r.errored||0)+', tracking checked '+(r.checked||0)+', fulfilled '+(r.fulfilled||0)+'.',(r.errored?'no':'ok'));
     loadOrders();
   }catch(e){ setMsg('ordmsg','Failed: '+errText(e),'no'); }
   finally{ b.disabled=false; }
@@ -856,7 +856,7 @@ async function runDiag(){
   try{
     var r=await api('/search-diag',{q:el('diagq').value});
     if(!r.ok){ out.className='msg no'; out.textContent='Failed: '+(r.error||'unknown'); return; }
-    function fmt(list){ return (list||[]).map(function(x){ return '• '+esc(x.title)+(x.price!=null?(' — '+esc(x.price)):''); }).join('<br>'); }
+    function fmt(list){ return (list||[]).map(function(x){ return '• '+esc(x.title)+(x.price!=null?(' - '+esc(x.price)):''); }).join('<br>'); }
     out.className='msg';
     out.innerHTML='<strong>Our listV2 ('+r.oursCount+')</strong><br>'+fmt(r.ours)+'<hr><strong>CJ website / Firecrawl ('+r.webCount+')</strong><br>'+fmt(r.web);
   }catch(e){ out.className='msg no'; out.textContent='Failed: '+errText(e); }
@@ -961,13 +961,13 @@ async function syncNow(){
     var promoted=0;
     for(;;){
       var p=await api('/sync',{phase:'refill'});
-      if(!p.ok){ syncBar('off'); setMsg('syncmsg','Sync done ('+done+' products) — refill failed: '+(p.error||'unknown error'),'no'); return; }
+      if(!p.ok){ syncBar('off'); setMsg('syncmsg','Sync done ('+done+' products) - refill failed: '+(p.error||'unknown error'),'no'); return; }
       promoted+=p.imported;
       if(p.next==null) break;
     }
     syncBar('off');
     if(failures.length&&done<total){
-      setMsg('syncmsg','Synced '+done+' of '+total+' — '+(total-done)+' failed. First error: '+failures[0],'no');
+      setMsg('syncmsg','Synced '+done+' of '+total+' - '+(total-done)+' failed. First error: '+failures[0],'no');
     } else {
       setMsg('syncmsg','Done ✓ '+done+' products synced'+(promoted?', '+promoted+' promoted from warehouse':'')+'.','ok');
     }
@@ -1009,10 +1009,10 @@ async function saveCollections(){
 // Thread detail opens in a focused MODAL overlay (#inbox-modal) so the merchant
 // works one thread at a time instead of scrolling a long accordion list. The detail
 // node (#inbox-thread) lives permanently inside the modal panel, so a list re-render
-// (innerHTML='') can never destroy it. Closing the modal reloads the list — so a
+// (innerHTML='') can never destroy it. Closing the modal reloads the list - so a
 // thread just processed (flipped to awaiting_customer on send) drops off the default
 // "Open (unprocessed)" view automatically.
-var inboxDraftOriginal=''; // draft body as rendered — used to warn on unsent edits before close
+var inboxDraftOriginal=''; // draft body as rendered - used to warn on unsent edits before close
 function openInboxModal(){
   var ov=el('inbox-modal'); if(!ov) return;
   ov.hidden=false;
@@ -1124,7 +1124,7 @@ function renderInboxThread(thread,messages,labels,draft,invoice,applicant){
       +'</div>'
       +'</div>';
   }
-  // Invoice card — only when thread has an open invoice
+  // Invoice card - only when thread has an open invoice
   var invoiceHtml='';
   if(invoice&&invoice.id){
     var invItems=[];
@@ -1180,7 +1180,7 @@ function renderInboxThread(thread,messages,labels,draft,invoice,applicant){
   statSel+='</select>';
   detail.innerHTML='<hr><div id="inbox-reconnect-banner" style="display:none;margin-bottom:8px;padding:8px 12px;background:var(--no-bg);color:var(--no-ink);border-radius:8px;font-size:13px"></div>'
     +'<strong>'+esc(thread.contact_email||'')+'</strong>'
-    +' — <span class="muted">'+esc(thread.subject||'(no subject)')+'</span>'
+    +' - <span class="muted">'+esc(thread.subject||'(no subject)')+'</span>'
     +(thread.summary?'<p class="muted" style="margin:6px 0 0;font-size:12px">'+esc(thread.summary)+'</p>':'')
     +declaredHtml
     +msgHtml
@@ -1227,15 +1227,15 @@ async function approveDraftAction(draftId,body,threadId){
   var appBtn=el('inbox-approve-btn'); if(appBtn) appBtn.disabled=true;
   try{
     var r=await api('/inbox/approve',{id:draftId,body:body});
-    // On success: close the modal (force — the edits we just sent aren't "unsent"),
+    // On success: close the modal (force - the edits we just sent aren't "unsent"),
     // which reloads the list so this now-processed thread drops off the Open view.
-    if(r.ok){ closeInboxModal(true); setMsg('inboxmsg','Sent ✓ — moved to Awaiting customer.','ok'); }
+    if(r.ok){ closeInboxModal(true); setMsg('inboxmsg','Sent ✓ - moved to Awaiting customer.','ok'); }
     else { setMsg('inbox-modal-msg','Failed: '+esc(r.error||'unknown error'),'no'); if(appBtn) appBtn.disabled=false; }
   }catch(e){ setMsg('inbox-modal-msg','Failed: '+errText(e),'no'); if(appBtn&&el('inbox-approve-btn')) el('inbox-approve-btn').disabled=false; }
 }
 async function regenerateDraftAction(draftId,threadId){
   setMsg('inbox-modal-msg','Regenerating…','muted');
-  var regenBtn=el('inbox-regen-btn'); if(regenBtn) regenBtn.disabled=true; // disabled BEFORE the await — guards double-click
+  var regenBtn=el('inbox-regen-btn'); if(regenBtn) regenBtn.disabled=true; // disabled BEFORE the await - guards double-click
   try{
     var r=await api('/inbox/regenerate',{id:draftId});
     if(r.ok){ openInboxThread(threadId); setMsg('inbox-modal-msg','Regenerated ✓','ok'); } // re-render in place; modal stays open
@@ -1243,7 +1243,7 @@ async function regenerateDraftAction(draftId,threadId){
   }catch(e){ setMsg('inbox-modal-msg','Failed: '+errText(e),'no'); if(regenBtn&&el('inbox-regen-btn')) el('inbox-regen-btn').disabled=false; }
 }
 // --- Invoice catalog search ---
-// Uses POST (consistent with api()) — the route is /api/inbox/catalog, POST {q}.
+// Uses POST (consistent with api()) - the route is /api/inbox/catalog, POST {q}.
 var inboxInvoiceItems=[]; // [{variantId, title, qty, priceGbp}]
 function renderInvoiceItems(){
   var box=el('inbox-invoice-items');
@@ -1306,7 +1306,7 @@ async function buildInvoiceAction(threadId){
     var items=inboxInvoiceItems.map(function(it){ return {variantId:it.variantId,qty:it.qty}; });
     var r=await api('/inbox/invoice/build',{threadId:threadId,items:items,coverText:coverText});
     if(r.ok===false&&r.error==='reconnect_required'){
-      showReconnectBanner(); if(msgEl) setMsg('inbox-invoice-msg','Re-authorise required — see banner above.','no');
+      showReconnectBanner(); if(msgEl) setMsg('inbox-invoice-msg','Re-authorise required - see banner above.','no');
       if(btn) btn.disabled=false; return;
     }
     if(!r.ok){ if(msgEl) setMsg('inbox-invoice-msg','Failed: '+esc(r.error||'unknown error'),'no'); if(btn) btn.disabled=false; return; }
@@ -1360,10 +1360,10 @@ var currentInboxCfg={enabled:true,labels:[]};
 function setReplyModeUI(on){
   var wrap=el('reply-mode'), st=el('reply-mode-state'), ds=el('reply-mode-desc');
   if(wrap) wrap.className='reply-mode'+(on?' is-auto':'');
-  if(st) st.textContent=on?'Automatic — human review OFF':'Manual review';
+  if(st) st.textContent=on?'Automatic - human review OFF':'Manual review';
   if(ds) ds.textContent=on
     ?'PawScout emails customers automatically when its confidence is at or above the threshold. No human review.'
-    :'Drafts wait here for you to approve and send — nothing is emailed to customers automatically.';
+    :'Drafts wait here for you to approve and send - nothing is emailed to customers automatically.';
 }
 async function onReplyModeToggle(){
   var chk=el('inbox-autosend-chk'); if(!chk) return;
@@ -1372,7 +1372,7 @@ async function onReplyModeToggle(){
   }
   setReplyModeUI(chk.checked);
   var ok=await saveInboxSettings();
-  setMsg('inboxmsg', ok?('Reply mode set to '+(chk.checked?'Automatic.':'Manual.')):'Could not save reply mode — try the Save button in Inbox settings.', ok?'ok':'no');
+  setMsg('inboxmsg', ok?('Reply mode set to '+(chk.checked?'Automatic.':'Manual.')):'Could not save reply mode - try the Save button in Inbox settings.', ok?'ok':'no');
 }
 async function loadInboxSettings(){
   try{

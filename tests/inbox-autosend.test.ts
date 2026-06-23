@@ -32,7 +32,7 @@ describe('autoSendDecision', () => {
     expect(autoSendDecision({ ...base, quotesPriceOrOrder: true }).send).toBe(false);
   });
   it('holds when the mechanical money regex matches even if the LLM flag is false', () => {
-    const d = autoSendDecision({ ...base, quotesPriceOrOrder: false, bodyText: 'Sure — that bundle is £29.99.' });
+    const d = autoSendDecision({ ...base, quotesPriceOrOrder: false, bodyText: 'Sure - that bundle is £29.99.' });
     expect(d.send).toBe(false); expect(d.holdReasons).toContain('mentions_money');
   });
   it('always holds complaint, wholesale-b2b, and affiliate', () => {

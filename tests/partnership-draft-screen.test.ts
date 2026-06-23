@@ -21,7 +21,7 @@ describe('partnership first-touch (qualifying email)', () => {
     const thread = (await s.getThreadWithMessages(tid))!.thread;
     const r = await composeDraftForThread({ ...env } as any, s, CFG, thread, noFetch);
     expect(r).not.toBeNull();
-    expect(r!.send).toBe(false); // HITL — owner approves
+    expect(r!.send).toBe(false); // HITL - owner approves
     const draft = await s.getPendingDraft(tid);
     expect(draft!.body_text).toMatch(/where would you promote/i);
     expect(draft!.body_text).toContain('Active Paw Partnerships');
@@ -53,7 +53,7 @@ describe('partnership lane via declared intent (Phase 2 first-touch)', () => {
     await s.insertInboundMessageIfNew({ threadId: tid, messageId: '<c1@x>', inReplyTo: null, references: [], from: 'mia@creator.com', to: 'support@activepaw.co.uk', subject: 'Hello', bodyText: 'I run a dog TikTok and want to collaborate.', bodyHtml: null, headersJson: '{}', receivedAt: '2026-06-22T10:00:00Z' });
 
     const thread = (await s.getThreadWithMessages(tid))!.thread;
-    expect(await s.getApplicantByThread(tid)).toBeNull(); // no applicant row yet — genuinely first touch
+    expect(await s.getApplicantByThread(tid)).toBeNull(); // no applicant row yet - genuinely first touch
     const r = await composeDraftForThread({ ...env } as any, s, CFG, thread, noFetch);
     expect(r).not.toBeNull();
     const draft = await s.getPendingDraft(tid);

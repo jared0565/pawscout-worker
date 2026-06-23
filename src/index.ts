@@ -49,7 +49,7 @@ app.get('/auth/callback', async (c) => {
 app.get('/app', (c) => consolePage(c.env.SHOPIFY_API_KEY));
 
 // Public one-click unsubscribe for retention reminders (affiliate 1.3). The
-// token is an HMAC over (shop, email) — unforgeable without SHOPIFY_API_SECRET.
+// token is an HMAC over (shop, email) - unforgeable without SHOPIFY_API_SECRET.
 // Handles GET (link click) and POST (RFC 8058 List-Unsubscribe-Post one-click).
 const handleUnsubscribe = async (c: Context<{ Bindings: Env }>) => {
   const url = new URL(c.req.url);
@@ -152,7 +152,7 @@ app.get('/api/models', async (c) => {
   return c.json({ ok: true, models: await getModelCatalog(store) });
 });
 // W-FULFIL Stage B: set the fulfilment mode (manual | pawscout | cj).
-// 'pawscout' is the money leg — only choose it once the CJ wallet is funded
+// 'pawscout' is the money leg - only choose it once the CJ wallet is funded
 // AND CJ's native order-import is off (else duplicate CJ orders).
 app.post('/api/fulfil', async (c) => {
   const s = await shopOf(c); if (typeof s !== 'string') return s;
@@ -186,9 +186,9 @@ app.post('/api/test-email', async (c) => {
   if (!to) return c.json({ ok: false, error: 'Provide a recipient email' }, 200);
   const r = await sendEmail(c.env.RESEND_API_KEY, {
     to,
-    subject: 'Active Paw — PawScout test email',
+    subject: 'Active Paw - PawScout test email',
     text: `This is a test email from PawScout for ${s}. If you received it, Resend is wired up correctly.`,
-    html: `<p>This is a test email from <strong>PawScout</strong> for ${s}.</p><p>If you received it, Resend is wired up correctly — owner alerts (e.g. "order awaiting payment in CJ") can now go to your inbox.</p>`
+    html: `<p>This is a test email from <strong>PawScout</strong> for ${s}.</p><p>If you received it, Resend is wired up correctly - owner alerts (e.g. "order awaiting payment in CJ") can now go to your inbox.</p>`
   });
   return c.json(r.ok ? { ok: true, id: r.id } : { ok: false, error: r.error }, 200);
 });
@@ -207,7 +207,7 @@ app.post('/api/fulfil-run', async (c) => {
   }
 });
 // Manual "Sync now": the nightly maintenance pieces, runnable on demand from
-// the console. Batched — each call does a slice of the work and tells the
+// the console. Batched - each call does a slice of the work and tells the
 // caller where to resume, so no single request outlives proxy/browser limits.
 const SYNC_BATCH = 8; // ~2 paced CJ calls/product ≈ 20s/batch
 const REFILL_BATCH = 5;
@@ -518,7 +518,7 @@ app.post('/api/inbox/regenerate', async (c) => {
   if (!body.id) return c.json({ ok: false, error: 'id required' }, 400);
   return c.json(await regenerateDraft(c.env.DB, c.env, s, body.id));
 });
-// W-INBOX-3: invoice build — creates draft order + sends invoice email
+// W-INBOX-3: invoice build - creates draft order + sends invoice email
 app.post('/api/inbox/invoice/build', async (c) => {
   const s = await shopOf(c); if (typeof s !== 'string') return s;
   let body: { threadId?: unknown; items?: unknown; coverText?: unknown } = {};
@@ -534,7 +534,7 @@ app.post('/api/inbox/invoice/build', async (c) => {
   const coverText = typeof body.coverText === 'string' ? body.coverText : '';
   return c.json(await buildInvoiceForThread(c.env, store, body.threadId, body.items as { variantId: string; qty: number }[], coverText));
 });
-// W-INBOX-3: invoice discard — marks invoice discarded
+// W-INBOX-3: invoice discard - marks invoice discarded
 app.post('/api/inbox/invoice/discard', async (c) => {
   const s = await shopOf(c); if (typeof s !== 'string') return s;
   let body: { invoiceId?: unknown } = {};
@@ -543,7 +543,7 @@ app.post('/api/inbox/invoice/discard', async (c) => {
   const store = new TenantStore(c.env.DB, s);
   return c.json(await discardInvoice(c.env, store, body.invoiceId));
 });
-// W-INBOX-3: catalog search — searches Shopify products for the invoice builder
+// W-INBOX-3: catalog search - searches Shopify products for the invoice builder
 app.post('/api/inbox/catalog', async (c) => {
   const s = await shopOf(c); if (typeof s !== 'string') return s;
   let body: { q?: unknown } = {};
@@ -590,7 +590,7 @@ app.get('/proxy/search', async (c) => {
   const q = c.req.query('q') ?? '';
   const have = Math.max(0, Number(c.req.query('have')) || 0);
   const limit = Math.min(Math.max(1, Number(c.req.query('limit')) || 12), 12);
-  // CJ pids already rendered on the search page — excluded so a ghost never
+  // CJ pids already rendered on the search page - excluded so a ghost never
   // duplicates a card the visitor can already see.
   const exclude = (c.req.query('exclude') ?? '').split(',').map((x) => x.trim()).filter(Boolean).slice(0, 50);
   try {
@@ -598,14 +598,14 @@ app.get('/proxy/search', async (c) => {
     // in the background (never the hot path); the same client classifies the keyword.
     const llm = new LlmClient({ openrouter: c.env.OPENROUTER_API_KEY, openai: c.env.OPENAI_API_KEY });
     const products = await searchBackfill(p.store, cjFor(c.env, p), p.cfg, q, have, limit, { exclude, llm, ctx: c.executionCtx });
-    // W3: classify new keywords in the background (cached 30d) — the NEXT
+    // W3: classify new keywords in the background (cached 30d) - the NEXT
     // search for this term benefits from category + synonyms. Never hot-path.
     if (llm.available && p.cfg.llm.enabled) {
       c.executionCtx.waitUntil(classifyKeyword(llm, p.store, p.cfg, normalizeKeyword(q)));
     }
     return c.json({ ok: true, products });
   } catch (e) {
-    const detail = (e as Error).message; // CJ/auth failure reasons — never secret-bearing
+    const detail = (e as Error).message; // CJ/auth failure reasons - never secret-bearing
     console.warn(`search backfill failed: ${detail}`);
     return c.json({ ok: false, error: `Search backfill unavailable: ${detail}` });
   }
@@ -665,7 +665,7 @@ app.get('/proxy/import-status', async (c) => {
 });
 
 // W-ADDON: hidden basket-filler handles for the PDP add-on row and the cart
-// drawer's free-delivery nudge. Returns handles only — the theme fetches
+// drawer's free-delivery nudge. Returns handles only - the theme fetches
 // /products/{handle}.js itself (price/image/variant stay Shopify-fresh).
 app.get('/proxy/addons', async (c) => {
   const p = await proxyCtx(c); if (p instanceof Response) return p;
@@ -711,7 +711,7 @@ app.post('/webhooks/orders-paid', async (c) => {
   try {
     const store = new TenantStore(c.env.DB, shop);
     const cfg = await store.getConfig();
-    if (!cfg) return c.text('ok'); // not configured — ack so Shopify stops retrying
+    if (!cfg) return c.text('ok'); // not configured - ack so Shopify stops retrying
     const order = parseOrderWebhook(JSON.parse(body));
     if (!order.shopifyOrderId) return c.text('ok');
     const { holds, lineItems } = await validateOrder(order, store, cfg);
@@ -734,7 +734,7 @@ app.post('/webhooks/orders-paid', async (c) => {
   } catch (e) {
     console.warn(`orders-paid handler failed for ${shop}: ${(e as Error).message}`);
   }
-  return c.text('ok'); // always 200 — a non-2xx makes Shopify retry the webhook
+  return c.text('ok'); // always 200 - a non-2xx makes Shopify retry the webhook
 });
 
 // --- GDPR mandatory webhooks (HMAC-verified; all return 200) ---
@@ -755,11 +755,11 @@ async function gdprWebhook(c: Context<{ Bindings: Env }>, handle: (store: Tenant
 app.post('/webhooks/customers-data-request', (c) =>
   gdprWebhook(c, async (store, p) => {
     const ids = Array.isArray(p.orders_requested) ? p.orders_requested.map(String) : [];
-    console.log(`customers/data_request: shop holds order shipping data for orders [${ids.join(',')}] — operator to provide to the data subject`);
+    console.log(`customers/data_request: shop holds order shipping data for orders [${ids.join(',')}] - operator to provide to the data subject`);
     const email = ((p.customer as { email?: string } | undefined)?.email ?? '').toString();
     if (email) {
       const s = await store.inboxDataSummary(email);
-      console.log(`customers/data_request: shop also holds ${s.threads} inbox thread(s) / ${s.messages} message(s) for ${email} — operator to provide to the data subject`);
+      console.log(`customers/data_request: shop also holds ${s.threads} inbox thread(s) / ${s.messages} message(s) for ${email} - operator to provide to the data subject`);
     }
   }));
 // Erase the PII we hold for the named orders.

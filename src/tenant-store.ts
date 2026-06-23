@@ -85,7 +85,7 @@ export class TenantStore {
   }
 
   async seedConfig(cfg: TenantConfig): Promise<void> {
-    // addons/fulfil/inbox are intentionally NOT written here — they ride the '{}' column default +
+    // addons/fulfil/inbox are intentionally NOT written here - they ride the '{}' column default +
     // getConfig's DEFAULT_* merge, and each has a dedicated saver (saveAddons/saveFulfil/saveInbox).
     // Keep them out of this INSERT to avoid clobbering a console-saved value on a core-config re-seed.
     await this.db
@@ -390,7 +390,7 @@ export class TenantStore {
   // --- orders (W-FULFIL) ---
 
   /**
-   * Idempotent insert — returns false if this Shopify order was already received
+   * Idempotent insert - returns false if this Shopify order was already received
    * (webhooks can fire more than once; we must never fulfil an order twice).
    */
   async insertOrderIfNew(o: {
@@ -428,7 +428,7 @@ export class TenantStore {
     return rs.results ?? [];
   }
 
-  /** Queued orders whose grace window has elapsed — ready for Stage-B auto-submit. */
+  /** Queued orders whose grace window has elapsed - ready for Stage-B auto-submit. */
   async dueQueuedOrders(nowIso: string, limit = 20): Promise<OrderRow[]> {
     const rs = await this.db
       .prepare(`SELECT * FROM orders WHERE shop = ?1 AND status = 'queued' AND (fulfil_after IS NULL OR fulfil_after <= ?2) ORDER BY created_at ASC LIMIT ${Math.min(Math.max(limit, 1), 50)}`)
@@ -512,7 +512,7 @@ export class TenantStore {
 
   /**
    * Imported products older than the grace cutoff with zero qualifying events
-   * since the window cutoff. Stock-paused products are exempt — they couldn't
+   * since the window cutoff. Stock-paused products are exempt - they couldn't
    * earn views while unsellable (W2.4).
    */
   async linksEligibleForArchive(cutoffIso: string): Promise<ProductLink[]> {
@@ -616,7 +616,7 @@ export class TenantStore {
     return rs.results ?? [];
   }
 
-  /** Available warehouse rows for a category, best (most-listed) first — promotion candidates. */
+  /** Available warehouse rows for a category, best (most-listed) first - promotion candidates. */
   async warehouseByCategory(category: string, limit: number): Promise<WarehouseRow[]> {
     const rs = await this.db
       .prepare(
@@ -628,7 +628,7 @@ export class TenantStore {
     return rs.results ?? [];
   }
 
-  /** All warehouse titles (any status) — for dedupe-at-admission signatures. */
+  /** All warehouse titles (any status) - for dedupe-at-admission signatures. */
   async warehouseTitles(): Promise<string[]> {
     const rs = await this.db
       .prepare(`SELECT title FROM warehouse_products WHERE shop = ?1`)
@@ -665,7 +665,7 @@ export class TenantStore {
     return rs.results ?? [];
   }
 
-  /** A few available warehouse detail JSONs (most-listed first) — used to pick a
+  /** A few available warehouse detail JSONs (most-listed first) - used to pick a
    *  representative in-stock vid for the logistics freight probe. */
   async sampleWarehouseDetails(limit: number): Promise<string[]> {
     const rs = await this.db
@@ -696,7 +696,7 @@ export class TenantStore {
       .run();
   }
 
-  /** Record a failed refresh for an EXISTING route — keeps the last-good row, bumps the
+  /** Record a failed refresh for an EXISTING route - keeps the last-good row, bumps the
    *  failure counter. No-op when the route has never synced (nothing to preserve => hedge). */
   async bumpLogisticsFailure(from: string, to: string, error: string): Promise<void> {
     await this.db
@@ -709,7 +709,7 @@ export class TenantStore {
   }
 
   /**
-   * Freshness-gated route read — the SINGLE consumption chokepoint. Returns null
+   * Freshness-gated route read - the SINGLE consumption chokepoint. Returns null
    * (== "hedge") when the row is missing, older than stalenessHours, or has no
    * parsed transit. 'stale == missing == null' holds identically for every caller.
    */
@@ -727,7 +727,7 @@ export class TenantStore {
     return row;
   }
 
-  /** (to_country, synced_at) for this origin — lets the sync refresh oldest-first
+  /** (to_country, synced_at) for this origin - lets the sync refresh oldest-first
    *  (so a budget-truncated run never starves the same tail). */
   async logisticsSyncedFor(from: string): Promise<Map<string, string>> {
     const rs = await this.db
@@ -840,7 +840,7 @@ export class TenantStore {
       // Default console view = threads still needing the merchant's attention, i.e.
       // ONLY new + needs_reply. awaiting_customer is excluded too: once a reply is
       // sent the thread flips to awaiting_customer (send.ts) and must drop OFF this
-      // list (it's processed — the ball is in the customer's court). Excluding only
+      // list (it's processed - the ball is in the customer's court). Excluding only
       // converted/closed/spam left replied threads lingering here, which read as
       // "still unprocessed". The merchant can still see them via the dedicated
       // "Awaiting customer" filter.
@@ -1036,7 +1036,7 @@ export class TenantStore {
   }
   /** True if a 'failed' invoice for this thread was created at/after sinceIso. Backoff
    * signal: a thread whose invoice keeps failing must NOT be re-proposed (a fresh LLM
-   * call + draft attempt) every sweep — hasActiveInvoice only covers proposed|sent. */
+   * call + draft attempt) every sweep - hasActiveInvoice only covers proposed|sent. */
   async hasRecentFailedInvoice(threadId: string, sinceIso: string): Promise<boolean> {
     const row = await this.db.prepare(`SELECT 1 FROM inbox_invoices WHERE shop = ?1 AND thread_id = ?2 AND status = 'failed' AND created_at >= ?3 LIMIT 1`).bind(this.shop, threadId, sinceIso).first<{ 1: number }>();
     return row !== null;
@@ -1066,7 +1066,7 @@ export class TenantStore {
   }
 }
 
-// --- cross-tenant maintenance (cron jobs) — keep all raw D1 in this file ---
+// --- cross-tenant maintenance (cron jobs) - keep all raw D1 in this file ---
 
 export async function listActiveShops(db: D1Database): Promise<string[]> {
   const rs = await db.prepare(`SELECT shop FROM tenants WHERE status = 'active' AND access_token_enc != ''`).all<{ shop: string }>();

@@ -10,15 +10,15 @@
 
 ## Global Constraints
 
-- **Source spec (verbatim authority):** `docs/superpowers/specs/2026-06-19-selectable-llm-models-design.md`. Where this plan and the spec disagree, the spec governs — escalate.
+- **Source spec (verbatim authority):** `docs/superpowers/specs/2026-06-19-selectable-llm-models-design.md`. Where this plan and the spec disagree, the spec governs - escalate.
 - **Curated list is exactly these 10 slugs** (accuracy-first; price secondary), vision flags as written, `google/gemini-3.1-pro-preview` MUST always appear, Opus excluded, Sonnet 4.6 INCLUDED:
   `google/gemini-3.1-pro-preview`(v), `openai/gpt-5.2`(v), `anthropic/claude-sonnet-4.6`(v), `x-ai/grok-4.3`(v), `google/gemini-3.5-flash`(v), `openai/gpt-5-mini`(v), `google/gemini-2.5-flash`(v), `google/gemini-3.1-flash-lite`(v), `anthropic/claude-haiku-4.5`(v), `deepseek/deepseek-v4-pro`(text). (9 of 10 vision-capable; only `deepseek-v4-pro` is text-only.)
-- **`/api/models` must NEVER error** — on any fetch/parse failure return the curated list with `promptPriceM`/`completionPriceM = null` and the static `vision` flag.
+- **`/api/models` must NEVER error** - on any fetch/parse failure return the curated list with `promptPriceM`/`completionPriceM = null` and the static `vision` flag.
 - **Never silently change a tenant's saved model:** a currently-saved slug not in the curated list is preserved as a selected `<option>`.
 - **Vision = `architecture.input_modalities` includes `"image"`** (live), else the static `vision` hint.
 - **Prices are $/million tokens** (`Number(pricing.prompt) * 1e6`), `null` when unknown.
-- **`src/console/page.ts` is one giant template literal** — a raw `\n`/`` ` ``/`${` inside the embedded browser JS breaks the whole inline script. Write `\\n`, escape backticks, and **ALWAYS run `tests/console.test.ts` (the JS-parse guard) after editing it** (see `[[console-page-template-literal-gotcha]]`).
-- **`digestModel` gets no UI** (dead config — out of scope).
+- **`src/console/page.ts` is one giant template literal** - a raw `\n`/`` ` ``/`${` inside the embedded browser JS breaks the whole inline script. Write `\\n`, escape backticks, and **ALWAYS run `tests/console.test.ts` (the JS-parse guard) after editing it** (see `[[console-page-template-literal-gotcha]]`).
+- **`digestModel` gets no UI** (dead config - out of scope).
 - All `/api/*` routes are gated by `shopOf(c)`; `/api/models` follows the same gate.
 - Run focused vitest batches, not the whole suite at once (documented Windows parallel-storage contention). `npx tsc --noEmit` must stay clean.
 
@@ -26,16 +26,16 @@
 
 ## File Structure
 
-- **Create** `src/models-catalog.ts` — `CURATED_MODELS` constant, `CatalogModel` type, `buildLiveMap()`, `getModelCatalog()`. One responsibility: define and assemble the model catalog.
-- **Modify** `src/types.ts` — add `visionModel?: string` to `LlmConfig`.
-- **Modify** `src/validate.ts` — `validateLlmPayload` accepts `visionModel` (shape/length only).
-- **Modify** `src/llm.ts:212` — `pickHeroImage` model resolution.
-- **Modify** `src/index.ts` — add `GET /api/models`; add server-side vision rejection in `POST /api/llm`.
-- **Modify** `src/console/page.ts` — five `<select>`s + browser JS that fetches `/api/models` and populates them.
-- **Create** `tests/models-catalog.test.ts` — catalog mapping + fetch-failure fallback.
-- **Modify** `tests/validate.test.ts` (or create if absent) — `visionModel` shape validation.
-- **Modify** `tests/llm.test.ts` (or the file covering `pickHeroImage`) — model resolution order.
-- **Existing** `tests/console.test.ts` — JS-parse guard, must stay green.
+- **Create** `src/models-catalog.ts` - `CURATED_MODELS` constant, `CatalogModel` type, `buildLiveMap()`, `getModelCatalog()`. One responsibility: define and assemble the model catalog.
+- **Modify** `src/types.ts` - add `visionModel?: string` to `LlmConfig`.
+- **Modify** `src/validate.ts` - `validateLlmPayload` accepts `visionModel` (shape/length only).
+- **Modify** `src/llm.ts:212` - `pickHeroImage` model resolution.
+- **Modify** `src/index.ts` - add `GET /api/models`; add server-side vision rejection in `POST /api/llm`.
+- **Modify** `src/console/page.ts` - five `<select>`s + browser JS that fetches `/api/models` and populates them.
+- **Create** `tests/models-catalog.test.ts` - catalog mapping + fetch-failure fallback.
+- **Modify** `tests/validate.test.ts` (or create if absent) - `visionModel` shape validation.
+- **Modify** `tests/llm.test.ts` (or the file covering `pickHeroImage`) - model resolution order.
+- **Existing** `tests/console.test.ts` - JS-parse guard, must stay green.
 
 ---
 
@@ -74,7 +74,7 @@ describe('CURATED_MODELS', () => {
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `npx vitest run tests/models-catalog.test.ts`
-Expected: FAIL — cannot resolve `../src/models-catalog`.
+Expected: FAIL - cannot resolve `../src/models-catalog`.
 
 - [ ] **Step 3: Write minimal implementation**
 
@@ -198,7 +198,7 @@ describe('getModelCatalog', () => {
 - [ ] **Step 2: Run to verify it fails**
 
 Run: `npx vitest run tests/models-catalog.test.ts`
-Expected: FAIL — `buildLiveMap`/`getModelCatalog`/`MODELS_CACHE_KEY` not exported.
+Expected: FAIL - `buildLiveMap`/`getModelCatalog`/`MODELS_CACHE_KEY` not exported.
 
 - [ ] **Step 3: Implement**
 
@@ -362,7 +362,7 @@ git commit -m "feat(llm): visionModel config field + shape validation"
 - Consumes: `LlmConfig.visionModel` (Task 3).
 - Produces: vision call uses `cfg.llm.visionModel ?? cfg.llm.curationModel ?? cfg.llm.model`.
 
-- [ ] **Step 1: Write the failing test** — assert the model passed to the LLM call. Stub `LlmClient.json` to capture `args.model`:
+- [ ] **Step 1: Write the failing test** - assert the model passed to the LLM call. Stub `LlmClient.json` to capture `args.model`:
 
 ```ts
 // tests/llm.test.ts (focused)
@@ -396,11 +396,11 @@ describe('pickHeroImage model resolution', () => {
 
 Run: `npx vitest run tests/llm.test.ts` → FAIL on the first case (`m/cur` returned, not `m/vis`).
 
-- [ ] **Step 3: Implement** — change `src/llm.ts:212`:
+- [ ] **Step 3: Implement** - change `src/llm.ts:212`:
 ```ts
   const model = cfg.llm.visionModel ?? cfg.llm.curationModel ?? cfg.llm.model;
 ```
-(Only `pickHeroImage`'s resolution — leave the two non-vision call sites at lines ~127 and ~265 unchanged.)
+(Only `pickHeroImage`'s resolution - leave the two non-vision call sites at lines ~127 and ~265 unchanged.)
 
 - [ ] **Step 4: Run to verify it passes**
 
@@ -425,7 +425,7 @@ git commit -m "feat(llm): pickHeroImage prefers visionModel"
 - Consumes: `getModelCatalog` (Task 2), `shopOf` (existing), `validateLlmPayload` (Task 3), `TenantStore`.
 - Produces: `GET /api/models` → `{ ok: true, models: CatalogModel[] }`; `POST /api/llm` rejects a text-only `visionModel` with `{ ok:false, error:'Selected image model is text-only and cannot process images' }`.
 
-- [ ] **Step 1: Write the failing test** — focused on the rejection helper. To keep the test pure (no session-token mint), extract the check into a small exported helper and test it directly:
+- [ ] **Step 1: Write the failing test** - focused on the rejection helper. To keep the test pure (no session-token mint), extract the check into a small exported helper and test it directly:
 
 ```ts
 // tests/api-models.test.ts
@@ -509,7 +509,7 @@ git commit -m "feat(llm): GET /api/models + server-side vision rejection"
 
 ---
 
-## Task 6: Console UI — five dropdowns populated from `/api/models`
+## Task 6: Console UI - five dropdowns populated from `/api/models`
 
 **Files:**
 - Modify: `src/console/page.ts`
@@ -517,7 +517,7 @@ git commit -m "feat(llm): GET /api/models + server-side vision rejection"
 
 **Interfaces:**
 - Consumes: `GET /api/models` (Task 5), existing console fetch helper + auth token plumbing already used by other `/api/*` calls.
-- Produces: five `<select>` elements — `#llmmodel`, `#llm-curation-model`, `#llm-vision-model` (NEW), `#inbox-classify-model`, `#inbox-reply-model` — populated on load; image-model select limited to vision models.
+- Produces: five `<select>` elements - `#llmmodel`, `#llm-curation-model`, `#llm-vision-model` (NEW), `#inbox-classify-model`, `#inbox-reply-model` - populated on load; image-model select limited to vision models.
 
 > **CRITICAL:** every newline inside embedded browser-JS strings is `\\n`, backticks are escaped, and `${...}` not meant for the outer literal is escaped. Run `tests/console.test.ts` after every edit.
 
@@ -547,7 +547,7 @@ async function loadModelOptions(){
 }
 ```
 
-- [ ] **Step 3: Preserve a saved slug not in the curated list** — after populating, for each select read its saved value from the loaded config; if the value is not among the options, prepend `<option value="SAVED" selected>SAVED (current)</option>`. Then set each select's value to the saved config value. Implement `preserveSaved(models)` to read the same config object the console already loads for the LLM card and call `setSelected(id, savedSlug, models)` per field.
+- [ ] **Step 3: Preserve a saved slug not in the curated list** - after populating, for each select read its saved value from the loaded config; if the value is not among the options, prepend `<option value="SAVED" selected>SAVED (current)</option>`. Then set each select's value to the saved config value. Implement `preserveSaved(models)` to read the same config object the console already loads for the LLM card and call `setSelected(id, savedSlug, models)` per field.
 
 - [ ] **Step 4: Call `loadModelOptions()` where the LLM/inbox settings card initializes**, and ensure Save reads `.value` from the selects (the save payload already sends `model`/`curationModel`/`classifyModel`/`replyModel`; add `visionModel` from `#llm-vision-model`).
 
@@ -572,13 +572,13 @@ git commit -m "feat(llm): console model dropdowns with pricing + vision filter"
 - [ ] **Step 1:** Run the focused batch: `npx vitest run tests/models-catalog.test.ts tests/validate.test.ts tests/llm.test.ts tests/api-models.test.ts tests/console.test.ts` → all PASS.
 - [ ] **Step 2:** `npx tsc --noEmit` → clean.
 - [ ] **Step 3:** Manual sanity (optional, post-deploy): open the console, confirm five dropdowns populate with prices, the image-model dropdown shows only vision models (👁), and saving a text-only model in the image field is rejected by the server (force via devtools).
-- [ ] **Step 4:** Do NOT deploy in this plan — deployment is a separate merchant-go step (the worker carries other undeployed commits; cutover is coordinated).
+- [ ] **Step 4:** Do NOT deploy in this plan - deployment is a separate merchant-go step (the worker carries other undeployed commits; cutover is coordinated).
 
 ---
 
 ## Self-Review (completed at authoring)
 
 - **Spec coverage:** §3 five fields → Tasks 3/6; §4 catalog+endpoint → Tasks 1/2/5; §5 schema+pickHeroImage → Tasks 3/4; §6 two-layer vision filter → Task 6 (UI) + Task 5 (server); §9 tests → each task's tests. `digestModel` UI correctly omitted (§11).
-- **Placeholder scan:** none — every code step carries real code.
+- **Placeholder scan:** none - every code step carries real code.
 - **Type consistency:** `CatalogModel` shape identical across Tasks 1/2/5; `promptPriceM`/`completionPriceM` are `number|null` everywhere; `visionModel?: string` consistent in types/validate/llm.
 - **Open risk flagged for implementer:** the console `api()` helper's exact signature (does it accept a GET method arg?) must be confirmed in Task 6 Step 2 against `src/console/page.ts`; if it is POST-only, add a tiny GET branch rather than forcing POST.

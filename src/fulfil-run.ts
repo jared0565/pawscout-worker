@@ -8,7 +8,7 @@ import type { OrderLineItem, OrderAddress } from './fulfil';
 
 // W-FULFIL Stage B: turn queued orders into paid CJ orders, then write tracking
 // back to Shopify. The money leg (createOrder + payBalance) only runs when
-// cfg.fulfil.mode is 'pawscout' — otherwise orders just sit queued ('manual') or
+// cfg.fulfil.mode is 'pawscout' - otherwise orders just sit queued ('manual') or
 // are left to CJ's native Shopify app ('cj').
 
 /** Match a line's sku to a CJ variant id (vid) + dispatch origin within one CjDetail. */
@@ -23,7 +23,7 @@ function matchVariant(detail: CjDetail, sku: string, stockFloor: number): { vid:
 
 /**
  * Resolve a line's CJ vid + origin. Tries the warehouse pool first (no API call),
- * then falls back to a live CJ product lookup — imported/live products are NOT
+ * then falls back to a live CJ product lookup - imported/live products are NOT
  * guaranteed to have a warehouse_products row (the pool is culled/refreshed), so
  * without this fallback ~half of live orders would fail to resolve.
  */
@@ -76,7 +76,7 @@ async function writeTracking(admin: AdminGraphql, orderGid: string, trackNumber:
   if (errs.length) throw new Error(errs.map((e) => e.message).join('; '));
 }
 
-/** A payBalance failure that means "wallet has no/insufficient funds" — recoverable
+/** A payBalance failure that means "wallet has no/insufficient funds" - recoverable
  * by the owner topping up + paying in CJ, NOT a code/data bug. We downgrade these
  * to 'awaiting-payment' instead of 'error'. CJ phrases it a few ways. */
 function looksLikeInsufficientBalance(msg: string): boolean {
@@ -95,7 +95,7 @@ export interface AwaitingPaymentNotice {
 
 /**
  * Submit queued orders to CJ and (optionally) pay them. GATED on
- * cfg.fulfil.mode==='pawscout' — a no-op in 'manual'/'cj' (orders stay queued /
+ * cfg.fulfil.mode==='pawscout' - a no-op in 'manual'/'cj' (orders stay queued /
  * left to CJ's app). createOrder is skipped when cj_order_id is already set (so a
  * pay-retry never duplicates the CJ order).
  *
@@ -170,7 +170,7 @@ export async function processDueOrders(
       }
 
       if (createOnly) {
-        // Interim: created but unpaid — owner pays it manually in CJ.
+        // Interim: created but unpaid - owner pays it manually in CJ.
         await markAwaiting(o, cjOrderId, `awaiting-payment: pay CJ order ${cjOrderId} manually`);
         continue;
       }
@@ -236,7 +236,7 @@ function makeAwaitingPaymentNotify(env: Env, alertEmail: string | undefined): ((
     const amount = n.total != null ? `${n.currency ?? ''} ${n.total}`.trim() : '';
     const r = await sendEmail(env.RESEND_API_KEY!, {
       to: alertEmail,
-      subject: `Active Paw — order ${n.orderName} awaiting payment in CJ`,
+      subject: `Active Paw - order ${n.orderName} awaiting payment in CJ`,
       text: `Order ${n.orderName}${amount ? ` (${amount})` : ''} has been created in CJ and is awaiting your payment.\n\nCJ order id: ${n.cjOrderId}\n\nPay it in CJ at https://app.cjdropshipping.com to start fulfilment. Tracking will sync back to Shopify automatically once paid.`,
       html: `<p>Order <strong>${n.orderName}</strong>${amount ? ` (${amount})` : ''} has been created in CJ and is <strong>awaiting your payment</strong>.</p>`
         + `<p>CJ order id: <strong>${n.cjOrderId}</strong></p>`

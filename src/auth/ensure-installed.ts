@@ -14,7 +14,7 @@ export interface ExchangedToken {
  * Shopify installs the app without calling our legacy OAuth callback, then loads
  * the embedded console with a signed session token (`id_token`). On the first
  * authenticated request we mint an *offline* access token via token exchange and
- * persist it — sealed — through the exact same path the legacy callback used.
+ * persist it - sealed - through the exact same path the legacy callback used.
  *
  * Idempotent: once a tenant holds a sealed token this is a no-op, so it is safe
  * to call on every authenticated request. An emptied token (post secret-wipe)
@@ -35,7 +35,7 @@ export async function ensureInstalled(
 ): Promise<void> {
   const store = new TenantStore(db, shop);
   const tenant = await store.getTenant();
-  if (tenant && tenant.access_token_enc) return; // already installed — nothing to do
+  if (tenant && tenant.access_token_enc) return; // already installed - nothing to do
 
   const { accessToken, scope } = await exchange(shop, sessionToken);
   if (!accessToken) throw new Error('token exchange returned no access token');

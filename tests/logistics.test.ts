@@ -12,7 +12,7 @@ describe('parseDaysRange', () => {
   it('parses with text and tilde', () => expect(parseDaysRange('8~12 days')).toEqual({ min: 8, max: 12 }));
   it('parses en/em dashes', () => {
     expect(parseDaysRange('8–12')).toEqual({ min: 8, max: 12 });
-    expect(parseDaysRange('10—18')).toEqual({ min: 10, max: 18 });
+    expect(parseDaysRange('10' + String.fromCharCode(0x2014) + '18')).toEqual({ min: 10, max: 18 });
   });
   it('parses a bare single number as min==max', () => expect(parseDaysRange('10')).toEqual({ min: 10, max: 10 }));
   it('returns null on junk / empty / null', () => {
