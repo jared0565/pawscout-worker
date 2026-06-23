@@ -198,7 +198,7 @@ function collectOrigins(variants: Record<string, unknown>[]): Record<string, num
 
 /**
  * Preferred dispatch origin: the UK warehouse when it can genuinely fulfil
- * (stock ≥ floor) - 2–4 day delivery beats CN's 8–15 every time the margin
+ * (stock ≥ floor) - 2-4 day delivery beats CN's 8-15 every time the margin
  * allows - otherwise the best-stocked origin, defaulting to CN.
  */
 export function chooseOrigin(detail: CjDetail, stockFloor: number): string {

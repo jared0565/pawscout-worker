@@ -20,7 +20,7 @@ CHANGED YOUR MIND? (14-DAY RETURNS)
 - You may cancel your order for any reason within 14 days of delivery, and then have 14 days to send the item back.
 - Items should be unused and in their original packaging.
 - Return postage for change-of-mind returns is paid by you. We recommend a tracked service - we can only refund items that reach us.
-- We'll refund you within 14 days of receiving the item back (or proof of postage), to your original payment method. Banks can take 5–10 working days to show the refund.
+- We'll refund you within 14 days of receiving the item back (or proof of postage), to your original payment method. Banks can take 5-10 working days to show the refund.
 - If you cancel a whole order, we also refund your original standard delivery charge.
 - If you return part of an order and the remaining items fall below the £50 free-delivery threshold, the £4.99 standard delivery charge is deducted from your refund.
 

@@ -13,7 +13,7 @@
 | | Partner type | Action |
 |---|---|---|
 | ✅ | Pet content/review creators, "best X for dogs" sites, breed/care bloggers, pet TikTok/IG/YouTube/UGC creators with a real, **verified**, pet- and UK-relevant audience | **Accept (manual)** - they introduce net-new audiences (substitute for paid ads) |
-| ⛔ | Coupon/voucher/deal sites, cashback portals, loyalty programs, browser extensions/toolbars (Honey-type), discount-code SEO pages, "we'll generate sales for commission" cold pitches with no named audience | **Auto-decline** - 66–71% non-incremental; they harvest demand you already created |
+| ⛔ | Coupon/voucher/deal sites, cashback portals, loyalty programs, browser extensions/toolbars (Honey-type), discount-code SEO pages, "we'll generate sales for commission" cold pitches with no named audience | **Auto-decline** - 66-71% non-incremental; they harvest demand you already created |
 
 **Vetting checklist (reject on any red flag), at approval AND monthly:**
 - [ ] **Identity + reach verified** before any commission/gift (handle ownership, audience size, engagement screenshots) - 🛡️ *closes the "fake low-reach identities under the per-creator cap" exploit*
@@ -37,7 +37,7 @@
 | **Per-order cap** | lesser of 8% or **£3.50/order** | App cap | - |
 | **Per-customer / rolling cap** | aggregate cap per customer & per rolling 7 days | 🛡️ App rolling cap / fraud flag - *closes order-splitting (split a £200 basket into 5 orders to beat the per-order cap)* | #6 |
 | **£6/unit margin floor** | **Manually-maintained eligible-SKU allowlist** - only enroll SKUs whose gross − commission ≥ £6; exclude floor-priced SKUs | 🛡️ **Manual list, NOT an app gate** - no affiliate app reads COGS | **#1** |
-| **Cookie window** | **7–15 days** | App attribution setting | - |
+| **Cookie window** | **7-15 days** | App attribution setting | - |
 | **Hold / validation** | **≥ 45 days**; **new affiliates: probationary rolling reserve spanning the ~120-day chargeback window** | 🛡️ App hold + manual reserve - *churn-and-burn affiliates get paid at day 45 then vanish before chargebacks land* | #3, #10 |
 | **Clawback** | Auto-reverse on refund / cancellation / chargeback - **against held/unvested commission only** | App clawback toggle | #3 |
 | **Coupon stacking** | An affiliate's locked code **must not stack** with any other discount; orders using a **non-affiliate** code earn **0%** | 🛡️ App rule - *reconciles the earlier contradiction (you can't exclude all coupon orders when the code IS the attribution)* | #5 |
@@ -51,7 +51,7 @@
 
 | Rule | Trigger | Decision |
 |---|---|---|
-| **Pause / holdout test** | Before scaling any partner/cohort; **quarterly** on top partners | 🛡️ **Deactivate the CODE *and* commission** in matched UK regions ~4–6 weeks (a live code keeps discounting → confounds the read), confirm the creator can geo-gate, and prefer **whole-cohort** holdouts (national creator content can't be geo-split). Measure lift in **total** orders. |
+| **Pause / holdout test** | Before scaling any partner/cohort; **quarterly** on top partners | 🛡️ **Deactivate the CODE *and* commission** in matched UK regions ~4-6 weeks (a live code keeps discounting → confounds the read), confirm the creator can geo-gate, and prefer **whole-cohort** holdouts (national creator content can't be geo-split). Measure lift in **total** orders. |
 | **Keep/cut** | Test result | **Keep** only if measured incremental lift clears **I\* = C/51** (at 8%, ≈16%). **Cut** if total revenue doesn't drop when paused. 🛡️ **A confounded/leaky result = do-NOT-scale, not keep.** |
 | **Reporting** | Always | **Net-profit-after-commission per partner *category*** - never a blended ROAS, which hides the dilutive tail. |
 
@@ -84,7 +84,7 @@
 8. **Validation period + clawback** apply to all commissions; refunded/cancelled/disputed orders earn nothing. Clawback reaches **held/unvested commission only** (not already-paid sums) to stay within UK penalty/unfair-terms law. 🛡️
 9. **No customer rebating/kickback:** the affiliate must not pass back any commission, cash, or incentive to purchasers (a private rebate recreates a cashback portal inside the program). Breach → clawback + termination. 🛡️ *closes the "use my code, I'll PayPal you £5 back" loophole*
 10. **No unauthorised use of brand name, logo, or look-alike domains.**
-11. **No false UK-dispatch / origin claims:** affiliates must not state or imply that Active Paw ships, dispatches, holds stock, or manufactures **in the UK**, nor quote UK-style delivery speeds (e.g. "next-day", "2–4 day UK"). Products are fulfilled by our supplier from outside the UK (China; ≈8–15-day transit). Approved framing: "ships internationally" / "delivered to your door"; **prohibited:** "UK dispatch", "sent from our UK warehouse", "UK stock", "UK fast delivery". Breach → commission void + removal. 🛡️ *(Governing rule - customer-facing claims must be real & defensible. Only a specific SKU **verified CJ-UK-warehoused at source** may carry a narrow per-SKU fast-UK claim - never a blanket program framing.)*
+11. **No false UK-dispatch / origin claims:** affiliates must not state or imply that Active Paw ships, dispatches, holds stock, or manufactures **in the UK**, nor quote UK-style delivery speeds (e.g. "next-day", "2-4 day UK"). Products are fulfilled by our supplier from outside the UK (China; ≈8-15-day transit). Approved framing: "ships internationally" / "delivered to your door"; **prohibited:** "UK dispatch", "sent from our UK warehouse", "UK stock", "UK fast delivery". Breach → commission void + removal. 🛡️ *(Governing rule - customer-facing claims must be real & defensible. Only a specific SKU **verified CJ-UK-warehoused at source** may carry a narrow per-SKU fast-UK claim - never a blanket program framing.)*
 
 ---
 

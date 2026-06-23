@@ -55,7 +55,7 @@ The HITL / Auto toggle and all W-INBOX-2 config live in the PawScout console **I
 |---|---|
 | **HITL / Auto toggle** (`autosend`) | `false` = Human-In-The-Loop (owner reviews every draft before sending); `true` = Auto-send if the draft passes all gates. **Start here on HITL.** |
 | **Reply guidance** (`replyGuidance`) | Owner's standing voice / instructions for every draft (e.g. "Always sign off with 'Warm regards, Sarah'"). |
-| **Auto-send confidence threshold** (`autoConfidenceThreshold`) | 0–100. The drafter must self-report ≥ this to auto-send (default 80). |
+| **Auto-send confidence threshold** (`autoConfidenceThreshold`) | 0-100. The drafter must self-report ≥ this to auto-send (default 80). |
 | **Classify model** / **Reply model** | OpenRouter model slugs for the triage and draft passes respectively. |
 
 ### 3. Resend Message-ID / threading - verified, no action needed

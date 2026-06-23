@@ -292,7 +292,7 @@ describe('inbox config', () => {
 - [ ] **Step 6: Run the test to verify it fails**
 
 Run: `npm test -- inbox-config`
-Expected: FAIL - `getConfig` doesn't yet return `inbox` / `saveInbox` undefined (until Steps 3–4 land). If you wrote Steps 3–4 first, it should PASS; if it fails on `no such column: inbox`, the migration in Step 1 wasn't picked up - confirm the file is in `migrations/`.
+Expected: FAIL - `getConfig` doesn't yet return `inbox` / `saveInbox` undefined (until Steps 3-4 land). If you wrote Steps 3-4 first, it should PASS; if it fails on `no such column: inbox`, the migration in Step 1 wasn't picked up - confirm the file is in `migrations/`.
 
 - [ ] **Step 7: Run the test to verify it passes**
 
@@ -2015,7 +2015,7 @@ git commit -m "feat(inbox): activepaw From default + ops cutover runbook + safet
 - LLM classify + label → Tasks 6, 7. ✅
 - Read-only console Inbox → Tasks 9, 10. ✅
 - Replace Gmail forward with high-signal alert → Tasks 7 (alert), 11 (cutover + forward net). ✅
-- Tenant-keyed, LLM-degrades, no customer send, untrusted-input handling → enforced across Tasks 4–9 (Global Constraints). ✅
+- Tenant-keyed, LLM-degrades, no customer send, untrusted-input handling → enforced across Tasks 4-9 (Global Constraints). ✅
 - GDPR purge of inbox PII → Task 4 (`redactShop`). ✅
 
 **Type consistency:** `ParsedEmail`, `Classification`, `InboxConfig`, `ThreadStatus`, `ThreadRow`/`MessageRow`/`ContactRow`, `AuthResults` are defined once (Tasks 1, 3) and consumed by name everywhere. `decideDisposition(c, intentThreshold=70)` signature matches its Task 7 call site. `TenantStore` method names used in routes/sweep match Task 4 definitions.

@@ -18,7 +18,7 @@ These were pulled by an early sourcing seed / legacy bulk import that chased the
 
 ### Part A+C - Audit + cull (standalone, reversible, no worker deploy)
 - Read all ACTIVE products via the data-scripts app (`f00b61bc`, has `read_products`/`write_products`).
-- Score each product's pet-niche relevance with an LLM via OpenRouter (`OPENROUTER_API_KEY` in `.env`): "Is this a genuine pet-care product for Active Paw (dogs/cats grooming, toys, feeding, walking, health, daily care)? 0–100." Mirrors `curateProduct`'s rubric (human/household < 30, species rule).
+- Score each product's pet-niche relevance with an LLM via OpenRouter (`OPENROUTER_API_KEY` in `.env`): "Is this a genuine pet-care product for Active Paw (dogs/cats grooming, toys, feeding, walking, health, daily care)? 0-100." Mirrors `curateProduct`'s rubric (human/household < 30, species rule).
 - Produce a **flagged list** (score < 50) and **review it by eye before archiving** - never auto-archive without the list being sane (guard against nuking a legit pet product).
 - Archive (set `status: ARCHIVED`) the confirmed non-pet items via `productUpdate`. **Reversible** - archived, not deleted; restore by flipping status back.
 - Re-scan afterward: 0 non-pet products active; `More To Love` holds only genuine pet items.

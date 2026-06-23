@@ -17,7 +17,7 @@ Lead with **exclusive bundles / value sets** and your own genuine recommendation
 - **Ask us** if you're unsure whether a claim is OK - we'd rather you check.
 
 ## ⛔ Do NOT (these void commission)
-- ❌ **No UK-dispatch / origin / speed claims.** Never say or imply we ship, dispatch, hold stock, or are made **in the UK**, and never quote UK delivery speeds (e.g. "next-day", "2–4 day UK", "UK warehouse", "UK stock"). Our products are fulfilled by our supplier from outside the UK - claiming otherwise is false and we're jointly liable. *(ruleset E.11)*
+- ❌ **No UK-dispatch / origin / speed claims.** Never say or imply we ship, dispatch, hold stock, or are made **in the UK**, and never quote UK delivery speeds (e.g. "next-day", "2-4 day UK", "UK warehouse", "UK stock"). Our products are fulfilled by our supplier from outside the UK - claiming otherwise is false and we're jointly liable. *(ruleset E.11)*
 - ❌ **No brand bidding** - don't run ads on, or SEO-target, "Active Paw" (or misspellings/variants/"+review/discount/code"). *(E.2)*
 - ❌ **No coupon/cashback/deal sites or browser extensions** - don't post your code or links there. *(E.6)*
 - ❌ **No rebating** - don't offer to send buyers cash/commission back for using your code. *(E.9)*

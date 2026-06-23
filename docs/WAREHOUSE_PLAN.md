@@ -1,4 +1,4 @@
-# PawScout Warehouse Evolution - W1–W4 Implementation Plan
+# PawScout Warehouse Evolution - W1-W4 Implementation Plan
 
 > **Purpose of this document**: a self-sufficient implementation plan. If work is
 > interrupted or handed to another developer, reading this file plus the README
@@ -91,7 +91,7 @@ mid-migration. Older "cj-cat" mentions below are historical.
 | Relay secret | `RELAY_TOKEN` (Fly secret; must equal the worker's `CJ_RELAY_TOKEN`) |
 | Cron | `17 4 * * *` UTC daily |
 
-## 2. Target architecture (what W1–W4 adds)
+## 2. Target architecture (what W1-W4 adds)
 
 ```
                        ┌────────────────────────────────────────────┐
@@ -331,7 +331,7 @@ to mechanical-gates behavior with zero errors; console shows model + 30-day cost
       pulls from real categories; LLM curation still scores each candidate.
 - [ ] **Freight-aware pricing + origin warehouse selection.** CJ stocks
       products in multiple "From" countries (CN main; US/UK/DE regional).
-      Impacts: (a) shipping TIME - UK warehouse 2–4 days vs CN 8–15 days;
+      Impacts: (a) shipping TIME - UK warehouse 2-4 days vs CN 8-15 days;
       (b) shipping COST - freight varies by origin+weight and is currently
       NOT in our landed cost (pricing uses product cost only; the £6 min
       margin partially shields cheap items). Fix: call CJ freightCalculate
@@ -563,7 +563,7 @@ diag:web returned 0 - CJ site render/scrape hiccup; moot since our own
 listV2 is now clean. Firecrawl client kept for future supply/category use;
 the scrape may need URL-format/waitFor tuning if used later.)
 
-NEW finding from the same data: the clean dog toys cost $0.50–$5 to source,
+NEW finding from the same data: the clean dog toys cost $0.50-$5 to source,
 but priceMin was $5 -> filtered ~22 of 25. The £6 min-margin rule floors
 ALL retail at £6.99 regardless of cost, so the $5 source floor wasn't
 protecting price - it was hiding most of CJ's (cheap) pet catalog.
@@ -572,7 +572,7 @@ DECISION (user 2026-06-14): main gate priceMin 5 -> **0.50** (live via D1;
 kw:* cache purged so storefront repopulates with fixed listV2 + new floor.
 Quality now gated by listV2 relevance + species + LLM curation, not price.
 
-SIDE EFFECT: the add-on lane (addons.priceMin 0.5–5) now fully overlaps the
+SIDE EFFECT: the add-on lane (addons.priceMin 0.5-5) now fully overlaps the
 main band -> mostly redundant (main admits $0.50+ as visible products).
 Revisit whether to keep/repurpose the hidden add-on lane.
 
@@ -637,7 +637,7 @@ items can both pass (the powder pair). Consider a similarity/embedding (or
 normalized-title) dedupe at warehouse admission so one product type → one
 listing. Not built; recorded so the cause is known.
 
-## 7a-i-m. Catalog audit 1–6 (2026-06-14 14:30)
+## 7a-i-m. Catalog audit 1-6 (2026-06-14 14:30)
 
 Full audit of the ~53 active products across six fronts:
 
@@ -699,8 +699,8 @@ economics for net-profit impact.
    items can never go out underwater. This refines the § 7a backlog item:
    freight informs the floor, it does not inflate the sticker.
 2. **PDP transparency block (theme):** delivery cost + estimated window on
-   every PDP ("FREE UK delivery over £50 · Standard £4.99 (8–12 working
-   days) · Ships from UK, 2–4 days" when origin is UK). Kills checkout
+   every PDP ("FREE UK delivery over £50 · Standard £4.99 (8-12 working
+   days) · Ships from UK, 2-4 days" when origin is UK). Kills checkout
    surprise - the top abandonment cause.
 3. **Origin: PS chooses, buyers don't.** Buyer-facing origin choice needs
    per-origin variants/SKUs + split inventory + CJ mapping mess, and
@@ -712,8 +712,8 @@ economics for net-profit impact.
    cannot be expressed - remove Express until a UK-stock delivery profile
    exists (Phase 2: custom profile for UK-origin products carrying
    Express; default profile Standard-only).
-4. **Free-over-£50 threshold: keep.** At 2.5× a £50 order carries ~£17–20
-   COGS; absorbing £4–8 freight still clears margin, and the threshold
+4. **Free-over-£50 threshold: keep.** At 2.5× a £50 order carries ~£17-20
+   COGS; absorbing £4-8 freight still clears margin, and the threshold
    lifts AOV. Revisit with real order data.
 5. **Returns policy (UK law + dropship economics):**
    - CCR 2013: 14-day change-of-mind on distance sales; we must refund
@@ -722,7 +722,7 @@ economics for net-profit impact.
    - CRA 2015: faulty/not-as-described = full refund incl. return costs,
      30 days.
    - Change-of-mind under ~£25 retail: refund-without-return ("keep it")
-     is cheaper than processing a return (product cost ~£7–10 vs postage +
+     is cheaper than processing a return (product cost ~£7-10 vs postage +
      admin). Case-by-case, never advertised, capped per customer.
    - Higher value: contact-first, buyer pays return postage; never publish
      the CN warehouse address; UK-origin items can return to CJ UK.
@@ -750,9 +750,9 @@ economics for net-profit impact.
        the policy). Loss ≈ that item's product cost + proportional fee;
        parcel freight already shared. Shopify supports per-line partial
        refunds natively.
-     - Allowance sizing: a fully refunded order costs ~53–55% of its
+     - Allowance sizing: a fully refunded order costs ~53-55% of its
        revenue, so the model's 3%-of-revenue refunds line absorbs full-
-       loss refunds on ~5–6% of orders; pet-niche return rates run 2–5%
+       loss refunds on ~5-6% of orders; pet-niche return rates run 2-5%
        (apparel/harnesses are the risk subset). Adequate - track actuals
        split full-vs-partial once orders flow.
 
@@ -823,7 +823,7 @@ Phase 1 (manual, at launch):
   7 days of delivery with photos - this lets us resolve fastest." Framed
   as the fast path only; include "nothing in this policy affects your
   statutory rights." Transit damage surfaces at unboxing, so this pulls
-  reports into days 1–3 ≈ 3 weeks of CJ-dispute buffer.
+  reports into days 1-3 ≈ 3 weeks of CJ-dispute buffer.
 - Accepted residual: valid fault reported near/after CJ's day-30 window
   is refunded with no CJ recovery; rare, lives inside the 3% allowance.
 
@@ -967,7 +967,7 @@ payment leg = double-pay risk. `processDueOrders` is gated to `mode==='pawscout'
 
 ## 7a-v. Cart abandonment strategy (decided 2026-06-12)
 
-Baseline: ~70% abandonment is universal; target the recoverable 5–15%.
+Baseline: ~70% abandonment is universal; target the recoverable 5-15%.
 
 Layer 1 - prevention (mostly already decided elsewhere): PDP delivery
 block + free-over-£50 bar kill surprise-cost abandonment; guest checkout
@@ -977,14 +977,14 @@ trust signal for new stores); policies + contact email visible in footer.
 
 Layer 2 - at checkout re-enable (user action, free, no app):
 - [ ] Turn on Shopify's native abandoned-checkout email automation
-      (all plans, Marketing → Automations). Set delay to 1–4 HOURS (not
+      (all plans, Marketing → Automations). Set delay to 1-4 HOURS (not
       the 10h default - recovery decays fast); customize template (brand
       voice, product image prominent, restore-cart link). This is the
       majority of recovered revenue industry-wide.
 
 Layer 3 - W5 extension (Resend/sequence):
 - [ ] One follow-up at ~24h, max sequence = 2 emails total.
-- [ ] Carts at £40–49: "you're £X away from free delivery" nudge -
+- [ ] Carts at £40-49: "you're £X away from free delivery" nudge -
       margin-positive incentive, no discount devaluation.
 - [ ] PECR: abandoners ride soft opt-in (email collected in negotiations
       for a sale, similar goods, opt-out offered) - unsubscribe link
@@ -996,7 +996,7 @@ brand); no SMS recovery. Revisit discounts only as email #2, small,
 rotated, if data demands.
 
 **Discount guardrail (decided 2026-06-12):** net margin is 17%, so the
-break-even discount is ~17–18% - a 20% discount LOSES ~£1/order (£50
+break-even discount is ~17-18% - a 20% discount LOSES ~£1/order (£50
 order: full price nets +£8.50; 10% off nets +£3.80, i.e. 55% of profit
 gone; 20% off nets −£0.90; volume can't fix a per-order loss; 10% off
 needs 2.2× volume just to tread water). CEILING: 10%, single-use,
@@ -1008,8 +1008,8 @@ regular price first (UK rules ban fictitious was-prices).
 
 **Compare-at wipe (executed 2026-06-12):** all legacy products (42 of
 43, ~440 variants - every batch except the flywheel-imported razor comb)
-carried fake compareAtPrice values ×1.28–1.35 above price, rendering
-permanent "save 20–26%" badges = fictitious was-prices (CPR risk + trust
+carried fake compareAtPrice values ×1.28-1.35 above price, rendering
+permanent "save 20-26%" badges = fictitious was-prices (CPR risk + trust
 damage). Cleared to null via productVariantsBulkUpdate, zero errors;
 selling prices untouched. Import pipeline and nightly sync never set
 compareAtPrice, so the catalog stays clean; future sale badges must come
@@ -1020,7 +1020,7 @@ automation self-reports recovered sales from day one.
 
 ## 7a-iv-b. Phase W-ADDON - hidden basket-fillers (BUILT 2026-06-13 01:50)
 
-User decision: cheap-but-quality products ($1–5 cost) may enter inventory
+User decision: cheap-but-quality products ($1-5 cost) may enter inventory
 but must NEVER appear in browsing/search - they surface only as add-ons.
 
 - Config: `addons` JSON col (migration 0006) - defaults {enabled:true,

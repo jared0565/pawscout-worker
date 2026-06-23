@@ -122,7 +122,7 @@ Mechanical gates (deterministic, first):
 
 LLM classifier (`LlmClient.json`, strict JSON, validated):
 - Input: subject + sanitized/truncated body + sender domain + auth summary.
-- Output: `{ isHuman: bool, category: <one label>, intentScore: 0–100, summary: string, suggestedLabels: string[] }`.
+- Output: `{ isHuman: bool, category: <one label>, intentScore: 0-100, summary: string, suggestedLabels: string[] }`.
 - Deterministic mapping `category + intentScore + gates → { thread.status, generate_draft?, alert? }`. Body is treated as data; classifier prompt is injection-resistant.
 
 ### 4.4 Reply drafting

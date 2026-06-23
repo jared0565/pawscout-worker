@@ -6,7 +6,7 @@
 Store CJ logistics (delivery **time**) in D1, synced nightly from CJ, so delivery-time queries (drafter, storefront PDP) read from the DB instead of hitting CJ live each time. Governing rule [[customer-facing-only-real-defensible]]: every surfaced figure must be real/defensible, with a safe hedge when unknown - never fabricated.
 
 ## Verified facts that shape the design
-- CJ `logisticAging` = **transit only** (dispatch→door), CALENDAR-day range, **weight-independent** (route/channel-driven). No processing field exists in any CJ API. CJ processing is policy (~1–3d stocked / 2–5d sourced).
+- CJ `logisticAging` = **transit only** (dispatch→door), CALENDAR-day range, **weight-independent** (route/channel-driven). No processing field exists in any CJ API. CJ processing is policy (~1-3d stocked / 2-5d sourced).
 - This catalog is **CN-only** (36/36 pet products probed; 0 GB warehouse). So origin ≈ always CN.
 - Customer shipping PRICE is **flat & decoupled** (£4.99 UK / £14.99 EU / £23.99 intl, in Liquid, not tenant config) → the matrix stores **time only, no price**.
 - Theme can only read **metafields**, never D1.
@@ -27,14 +27,14 @@ Store CJ logistics (delivery **time**) in D1, synced nightly from CJ, so deliver
 - `parseDaysRange(raw)` → `{min,max}|null` (handles "4-9", "8~12 days", "N", junk→null).
 - `doorToDoorBand(route, logisticsCfg)` → `{min,max}|null`: `min = procMin + transit_min`; `max = procMax + transit_max + (from≠to ? customsMax : 0) + slack`. Null-guards input, `Number.isFinite`-guards output (→ null, never NaN/throw). All CALENDAR days.
 
-**CRITICAL units rule (adversarial catch):** relabelling "N working days" → "N calendar days" at the same integer *tightens* the promise (working days span more wall-clock; "8–12 working days" ≈ 16–17 calendar). So calendar bands must be **widened**. GUARD TEST: assert `doorToDoorBand` CN→GB calendar `max ≥` legacy "8–12 working days" wall-clock (~17 cal), for GB and every in-scope market.
+**CRITICAL units rule (adversarial catch):** relabelling "N working days" → "N calendar days" at the same integer *tightens* the promise (working days span more wall-clock; "8-12 working days" ≈ 16-17 calendar). So calendar bands must be **widened**. GUARD TEST: assert `doorToDoorBand` CN→GB calendar `max ≥` legacy "8-12 working days" wall-clock (~17 cal), for GB and every in-scope market.
 
 ## Sync (`jobs.ts syncCjLogistics`, fetch-once-fan-out)
 At the **top** of `runDailyMaintenance`, before the per-shop loop (idle relay window): pick one reference shop's in-stock CN rep vid (reuse warehouse detail; `env.INBOX_FREIGHT_REP_VID` optional override). For each in-scope destination, `cj.freightQuote(repVid,'CN',dest,1)[0]` through the relay, paced; parse aging; **fan out** the same row to every active shop's partition. Per-route failure → keep prior row + `consecutive_failures++` + `last_error`, never null a good row, never throw. Bounded (`maxCjCalls`) + abort-on-3-consecutive-429. Prune removed-market rows. ~38 routes ≈ ~50s once/night.
 
 ## Consumption (one source, freshness-gated)
 - `store.getLogisticsRoute(from,to,stalenessHours)` → row or **null** when stale (`synced_at` older than `stalenessHours`) OR `transit_min` NULL. Freshness lives in the accessor (`stale == missing == null`).
-- **Drafter** (`sweep.ts`/`freight.ts`): read D1 + `doorToDoorBand` → **time-only** line ("Delivery to France: estimated 11–19 days."). Remove the CjClient construction, the live `freightEstimate`, and the misleading £ FX figure. Null → existing safe hedge. Keep forced HITL on a present figure.
+- **Drafter** (`sweep.ts`/`freight.ts`): read D1 + `doorToDoorBand` → **time-only** line ("Delivery to France: estimated 11-19 days."). Remove the CjClient construction, the live `freightEstimate`, and the misleading £ FX figure. Null → existing safe hedge. Keep forced HITL on a present figure.
 - **PDP**: in `syncStoreInventory`, AFTER stock/price writes, compute band for `(chooseOrigin, 'GB')`; write `supplier.delivery_days` as a bare range ("6-21"); **clear** ('') when band null (→ theme static fallback). Theme renders `{{ delivery_days | default: delivery_window }} days`.
 - **FAQ**: static, units-corrected **superset** bracketing every PDP band.
 

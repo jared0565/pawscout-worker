@@ -43,7 +43,7 @@ Inbound partnership inquiry
    │        └─ applicant replies → JUDGE (§6):
    │              • hard gate tripped   → [respectful decline]   (logged, reversible)
    │              • clear pass (≥8/12)  → [2] Application form
-   │              • genuine maybe (1–7) → [4] Escalate to owner with full breakdown
+   │              • genuine maybe (1-7) → [4] Escalate to owner with full breakdown
    │              • no reply            → one nudge after N days, then thread goes awaiting_customer
    │
    ├─ [2] Application form  (structured fields; bakes in #ad disclosure + terms agreement)
@@ -109,7 +109,7 @@ So: **hard gate → decline. No hard gate → a score sorts form-vs-escalate.** 
 | G5 Prohibited tactics | States plans for unauthorised discounts, fake reviews, cookie-stuffing, self-referral |
 
 ### 6.4 Score (only for those who clear all gates) - sorts form vs. owner
-Six signals, 0–2 each (max 12):
+Six signals, 0-2 each (max 12):
 
 | # | Signal | 0 / 1 / 2 |
 |---|---|---|
@@ -122,7 +122,7 @@ Six signals, 0–2 each (max 12):
 
 **Bands (configurable):**
 - **Score ≥ 8 → send the application form.**
-- **Score 1–7 → escalate to owner** with the full breakdown + recommendation.
+- **Score 1-7 → escalate to owner** with the full breakdown + recommendation.
 - **Optional dial, DEFAULT OFF:** auto-decline very low scores (≤3). Turn on later once the scoring is trusted.
 
 ### 6.5 Worked examples

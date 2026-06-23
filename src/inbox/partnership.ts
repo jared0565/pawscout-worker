@@ -48,7 +48,7 @@ const EXPERIENCE: Record<ScreenFacts['experience'], number> = { strong: 2, some:
 const METHOD: Record<ScreenFacts['method'], number> = { content: 2, mixed: 1, unknown: 1, discount: 0 };
 const SPECIFICITY: Record<ScreenFacts['specificity'], number> = { specific: 2, partial: 1, vague: 0 };
 
-/** Hard gates → decline. Otherwise a 0–12 score sorts form vs. escalate. The score
+/** Hard gates → decline. Otherwise a 0-12 score sorts form vs. escalate. The score
  * NEVER causes a decline unless the (default-OFF) auto-decline-low dial is on. */
 export function scoreScreen(
   facts: ScreenFacts,

@@ -22,7 +22,7 @@ This is the **configuration spec**: it translates the hardened ruleset into the 
 | **Base** ex-VAT, ex-shipping, ex-refunds | Commission base config → exclude tax + shipping | tax + shipping **excluded** |
 | **New-customer-only** (0% on returning) | "Only pay commission for **new** customers" toggle + **upload the full Shopify customer list** so matching is against all history, not affiliate-only | ON + full-list match |
 | **Attribution** link primary, code secondary | Per-affiliate **private referral link** primary; per-affiliate **locked coupon** secondary | link + locked code |
-| **Cookie window** 7–15 days | Referral/cookie window | **14 days** |
+| **Cookie window** 7-15 days | Referral/cookie window | **14 days** |
 | **Coupon no-stacking** | Coupon set to **not combine** with other discounts; non-affiliate-code orders earn 0% | no-combine |
 | **Hold / validation ≥45 days** | Auto-approve commission after N days | **45**; **new affiliates → manual approve only** |
 | **Clawback** on refund/cancel | "Deduct commission on refunded/cancelled orders" | ON (held/unvested only) |
@@ -37,18 +37,18 @@ This is the **configuration spec**: it translates the hardened ruleset into the 
 
 - [ ] **Gate 1 at the door:** accept only verified UK pet content/creators; auto-decline coupon/cashback/loyalty/extension pitches (incl. inbound commission spam like the samfeezco / gobocreative1 enquiries the inbox surfaces).
 - [ ] **Seeding gated on verified permanent delivery** - no further gift/commission until the prior post is confirmed live (#ad gifted, upfront).
-- [ ] **Gate 3 holdout:** before scaling any creator, **deactivate the code AND commission** in a matched region / whole cohort ~4–6 weeks; keep only if incremental lift clears **I\* = C/51** (≈16% at 8%, ~20% counting the 2% UpPromote fee). Report net-profit-after-commission **per category**, never blended ROAS.
+- [ ] **Gate 3 holdout:** before scaling any creator, **deactivate the code AND commission** in a matched region / whole cohort ~4-6 weeks; keep only if incremental lift clears **I\* = C/51** (≈16% at 8%, ~20% counting the 2% UpPromote fee). Report net-profit-after-commission **per category**, never blended ROAS.
 
 ## 4. Prerequisites that still gate "go configure" - do NOT enter §1 settings before these
 
-- [ ] **Phase 0:** program go/no-go confirmed + 3 numeric targets set (CAC vs paid, net-profit-after-commission > 0, cohort incrementality > ~16–20%).
+- [ ] **Phase 0:** program go/no-go confirmed + 3 numeric targets set (CAC vs paid, net-profit-after-commission > 0, cohort incrementality > ~16-20%).
 - [ ] **1.1 + 1.2 [CODE, gated on your go]:** per-variant COGS in Shopify → the **£6-floor eligible-SKU allowlist** that decides *which SKUs to enroll* (floor-priced SKUs excluded - UpPromote can't read COGS, so enrollment is the enforcement point).
 - [ ] **1.3 [CODE, parallel, gated]:** retention/reorder flow live or scheduled, so affiliate CAC has LTV to pay back against.
 - [ ] **2.1 / 2.2 [EXT]:** solicitor sign-off of the agreement (clawback/penalty + unfair-terms) and accountant VAT split (registered self-bill / unregistered no-VAT / non-UK reverse charge).
 
 ## 5. Re-evaluate-at-scale trigger (add to Phase 4)
 
-The §2 manual controls **do not scale**. Before growing past the 5–10-creator pilot, decide between (a) adding worker / Shopify-Flow logic for caps + identity, or (b) moving to a network (Awin) with native fraud + voucher-attribution. Also revisit the fee: **2% of referral sales ≈ ~12% of a 17% net margin** - at volume, a flat UpPromote tier or a network may beat it. The "no custom code / manual controls" stance is a **pilot decision, not permanent**.
+The §2 manual controls **do not scale**. Before growing past the 5-10-creator pilot, decide between (a) adding worker / Shopify-Flow logic for caps + identity, or (b) moving to a network (Awin) with native fraud + voucher-attribution. Also revisit the fee: **2% of referral sales ≈ ~12% of a 17% net margin** - at volume, a flat UpPromote tier or a network may beat it. The "no custom code / manual controls" stance is a **pilot decision, not permanent**.
 
 ---
 

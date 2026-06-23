@@ -38,7 +38,7 @@ A secondary problem was quality. General-purpose dropshipping tools pull in what
 
 ### Quality gates (no junk, no mismatches)
 
-- **Price and popularity floors**: supplier cost must fall in the configured band (default £4–62 landed); a minimum `listedNum` of 50 prevents listing products that the supplier barely stocks.
+- **Price and popularity floors**: supplier cost must fall in the configured band (default £4-62 landed); a minimum `listedNum` of 50 prevents listing products that the supplier barely stocks.
 - **Species gate**: a "dog toy" search never surfaces cat products, enforced at every relevance-matching step.
 - **AI curation** (OpenRouter): a configurable LLM model reviews each product description for pet-relevance, quality, and claim safety before import. Can be toggled off; mechanical gates take over.
 - **Vision-based image vetting**: before import, a vision model reviews the image set. Images that show the wrong animal, an unrelated product, or a duplicate are dropped. A listing with no congruent image is rejected outright. The search grid self-heals: once a product has been previewed, its vetted hero image replaces CJ's raw thumbnail on future search cards.

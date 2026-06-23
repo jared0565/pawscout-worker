@@ -41,12 +41,12 @@
 |---|---|---|---|---|---|
 | 2.1 | **Solicitor review** of the affiliate agreement (clawback/penalty + unfair-terms) | EXT | ruleset draft | Signed-off agreement | ruleset Part E note |
 | 2.2 | **Accountant: VAT split** (registered self-bill / unregistered no-VAT / non-UK reverse charge) | EXT | - | VAT handling confirmed | ruleset E.7 |
-| 2.3 | **Configure Gate 2** in the app: 8% net new-customer, ex-VAT base, 7–15d cookie, ≥45d hold + new-affiliate probationary reserve, clawback, no-stacking, per-order + rolling per-customer caps | CONFIG | 1.4, 2.1 | All rules set + screenshot-verified | ruleset Part B |
+| 2.3 | **Configure Gate 2** in the app: 8% net new-customer, ex-VAT base, 7-15d cookie, ≥45d hold + new-affiliate probationary reserve, clawback, no-stacking, per-order + rolling per-customer caps | CONFIG | 1.4, 2.1 | All rules set + screenshot-verified | ruleset Part B |
 | 2.4 | **New-vs-returning hardening:** upload full Shopify customer CSV; **test a fresh-email guest-checkout bypass** and confirm it's caught; disable any double-credit window | CONFIG | 1.4 | Bypass test order does NOT earn new-customer rate | ruleset D#2 |
 | 2.5 | **Attribution = private links primary; per-creator codes secondary, single-locked, no-stacking;** leak monitoring (code string + brand-discount SERPs) | CONFIG | 1.4 | Links issued; code-leak monitor live | ruleset D#5, E.6 |
 | 2.6 | **Monitoring via app + external tools** (per your call, gate logic stays in the app - no worker code): app-native fraud screening + BrandVerity / The Search Monitor for brand-SERP (paid+organic) + Shopify dispute dashboard for the ~1% threshold; order-splitting caught by the app's rolling caps (2.3) | CONFIG/EXT | 1.4, 2.3 | Monitors configured; brand + dispute alerts verified | ruleset D#7, D#10, B |
 
-**Gate:** agreement signed-off (2.1), Gate-2 rules verified (2.3–2.5), monitoring live (2.6).
+**Gate:** agreement signed-off (2.1), Gate-2 rules verified (2.3-2.5), monitoring live (2.6).
 
 ---
 
@@ -54,7 +54,7 @@
 
 | ID | Task | Type | Depends | Acceptance | Source |
 |---|---|---|---|---|---|
-| 3.1 | Recruit **5–10 UK pet content/creator partners**; decline coupon/cashback + cold commission pitches (incl. the inbox ones) | OPS | Phase 2 | Roster onboarded + manually vetted | ruleset Part A |
+| 3.1 | Recruit **5-10 UK pet content/creator partners**; decline coupon/cashback + cold commission pitches (incl. the inbox ones) | OPS | Phase 2 | Roster onboarded + manually vetted | ruleset Part A |
 | 3.2 | **Seeding gated on verified permanent delivery** (no further gift/commission until prior post confirmed) | OPS | 3.1 | Seeding ledger live; no un-delivered gifts outstanding | ruleset D#9, E.1 |
 | 3.3 | Pilot promotes **exclusive bundles / value sets** (the differentiation reviewers need - creator audience + bundle, **NOT** a delivery-speed / UK-dispatch claim) | OPS | 1.2, 3.1 | Pilot SKUs are allowlisted | analysis §3, ruleset E.11 |
 
@@ -110,9 +110,9 @@
 | Cookie / locked codes / no-stack | ✓ / ✓ / ✓ (Shopify default) | ✓ / ✓ / ✓ (Shopify default) |
 | Volume cap | Grow ~300 referral orders/mo | - |
 
-**RECOMMENDATION: UpPromote Grow for the pilot.** At 5–10 creators / low volume, `$29.99 + 2% of a small sales base` (e.g. ~£63/mo on £2k sales) is far cheaper than Refersion's ~£380/mo fixed Scale fee; UpPromote also does new-vs-returning out-of-box and has working UK auto-payouts. Refersion's only edge - 0% txn fee under $1M GMV - only pays off at high volume, and its new-vs-returning is worse (Scale-gated + CSV) with US-only payouts. *(Caveat: UpPromote's 2%-of-**sales** fee ≈ ~12% of a 17% net margin - real, but small in absolute terms at pilot volume and avoidable later by moving to a flat tier.)*
+**RECOMMENDATION: UpPromote Grow for the pilot.** At 5-10 creators / low volume, `$29.99 + 2% of a small sales base` (e.g. ~£63/mo on £2k sales) is far cheaper than Refersion's ~£380/mo fixed Scale fee; UpPromote also does new-vs-returning out-of-box and has working UK auto-payouts. Refersion's only edge - 0% txn fee under $1M GMV - only pays off at high volume, and its new-vs-returning is worse (Scale-gated + CSV) with US-only payouts. *(Caveat: UpPromote's 2%-of-**sales** fee ≈ ~12% of a 17% net margin - real, but small in absolute terms at pilot volume and avoidable later by moving to a flat tier.)*
 
-**Implication for the "gate logic in the app" decision:** it holds **for the pilot**, because the 3 unenforceable gates are covered by **manual compensating controls** that are feasible at 5–10 vetted creators:
+**Implication for the "gate logic in the app" decision:** it holds **for the pilot**, because the 3 unenforceable gates are covered by **manual compensating controls** that are feasible at 5-10 vetted creators:
 - **Caps (R6):** manual per-order/rolling review rule (flag same-customer/same-code order bursts).
 - **Fresh-email bypass (R1/R7):** UpPromote's full-list match catches email-reuse; the residual (fresh email + guest) needs manual address/payment review.
 - **Fraud (R8):** Gate-1 manual vetting + manual redemption-rate monitoring.

@@ -409,11 +409,11 @@ export function consolePage(apiKey: string): Response {
     <p class="sub" style="margin:0 0 12px">Controls how PawScout handles incoming emails and drafts replies. The <strong>Reply mode</strong> switch (manual vs. automatic) is at the top of the Inbox panel above.</p>
     <div class="row" style="margin-top:8px">
       <div class="grow">
-        <label for="inbox-auto-thresh">Auto-confidence threshold (0–100)</label>
+        <label for="inbox-auto-thresh">Auto-confidence threshold (0-100)</label>
         <input id="inbox-auto-thresh" type="number" min="0" max="100" step="1" value="80">
       </div>
       <div class="grow">
-        <label for="inbox-intent-thresh">Intent threshold (0–100)</label>
+        <label for="inbox-intent-thresh">Intent threshold (0-100)</label>
         <input id="inbox-intent-thresh" type="number" min="0" max="100" step="1" value="70">
       </div>
     </div>
@@ -433,7 +433,7 @@ export function consolePage(apiKey: string): Response {
     </div>
     <div class="row" style="margin-top:8px">
       <div class="grow">
-        <label for="inbox-invoice-conf-thresh">Invoice confidence threshold (0–100)</label>
+        <label for="inbox-invoice-conf-thresh">Invoice confidence threshold (0-100)</label>
         <input id="inbox-invoice-conf-thresh" type="number" min="0" max="100" step="1" value="95">
       </div>
       <div class="grow">
@@ -507,11 +507,11 @@ function renderStatus(s){
   var rows=''
     +'<dt>CJ supplier</dt><dd><span class="badge '+(s.cjConnected?'ok':'no')+'">'+(s.cjConnected?'Connected':'Not connected')+'</span></dd>'
     +'<dt>Popularity floor</dt><dd>'+esc(g.popularityFloor)+'</dd>'
-    +'<dt>Price range</dt><dd>$'+esc(g.priceMin)+' – $'+esc(g.priceMax)+'</dd>'
+    +'<dt>Price range</dt><dd>$'+esc(g.priceMin)+' - $'+esc(g.priceMax)+'</dd>'
     +'<dt>Relevance</dt><dd>'+esc(g.relevance)+'</dd>'
     +'<dt>Target count</dt><dd>'+esc(s.target)+'</dd>'
     +'<dt>Pricing</dt><dd>'+esc(p.multiplier)+'× (floor '+esc(p.floor)+'×, min £'+esc(p.minMarginGbp)+')</dd>'
-    +(function(){ var a=s.addons||{}; return '<dt>Add-on lane</dt><dd>'+(a.enabled?('$'+esc(a.priceMinUsd)+' – $'+esc(a.priceMaxUsd)+' · pool '+esc(a.poolSize)+' · '+(a.suppressFromBrowse?'hidden':'visible')):'Off')+'</dd>'; })();
+    +(function(){ var a=s.addons||{}; return '<dt>Add-on lane</dt><dd>'+(a.enabled?('$'+esc(a.priceMinUsd)+' - $'+esc(a.priceMaxUsd)+' · pool '+esc(a.poolSize)+' · '+(a.suppressFromBrowse?'hidden':'visible')):'Off')+'</dd>'; })();
   var cm=s.collectionMap||{}; var keys=Object.keys(cm);
   var cols = keys.length
     ? keys.map(function(k){ var v=cm[k]||{}; return '<li><strong>'+esc(v.handle||k)+'</strong> <span class="muted">← tag</span> <code>'+esc(v.tag)+'</code></li>'; }).join('')

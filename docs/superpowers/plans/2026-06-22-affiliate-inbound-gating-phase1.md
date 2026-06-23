@@ -4,13 +4,13 @@
 
 **Goal:** Route inbound partnership/affiliate threads through a structured qualifying-email gate that auto-declines objective disqualifiers, scores the rest, and forwards worthy applicants to the owner - all front-only (no payouts), reusing the existing inbox HITL draft/approve flow.
 
-**Architecture:** A partnership "lane" is detected at draft time (sales@ inbound · classified affiliate/wholesale-b2b · [P2] declared intent). For a lane thread the drafter composes the qualifying email instead of a generic reply; when the applicant answers, an LLM *extracts* structured facts into a controlled vocabulary and *deterministic code* decides (hard gates → respectful decline; a 0–12 score sorts form-invite vs. escalate-to-owner). State lives in a new `affiliate_applicants` table; every send stays HITL (owner approves via the inbox modal).
+**Architecture:** A partnership "lane" is detected at draft time (sales@ inbound · classified affiliate/wholesale-b2b · [P2] declared intent). For a lane thread the drafter composes the qualifying email instead of a generic reply; when the applicant answers, an LLM *extracts* structured facts into a controlled vocabulary and *deterministic code* decides (hard gates → respectful decline; a 0-12 score sorts form-invite vs. escalate-to-owner). State lives in a new `affiliate_applicants` table; every send stays HITL (owner approves via the inbox modal).
 
 **Tech Stack:** TypeScript Cloudflare Worker, D1 (SQLite), `LlmClient.jsonChain` (OpenRouter→OpenAI, JSON-validated), Resend (outbound), Vitest + `@cloudflare/vitest-pool-workers`.
 
 ## Global Constraints
 
-- **Spec:** `docs/superpowers/specs/2026-06-22-affiliate-inbound-gating-design.md`. Phase 1 only (front-only; **no payouts, no pilot, no application-form page, no contact-form dropdown** - those are Phases 2–4).
+- **Spec:** `docs/superpowers/specs/2026-06-22-affiliate-inbound-gating-design.md`. Phase 1 only (front-only; **no payouts, no pilot, no application-form page, no contact-form dropdown** - those are Phases 2-4).
 - **The bot only auto-declines on objective hard gates.** A weak-but-not-disqualified applicant is **escalated to the owner, never binned on a subjective score** (spec §6.1).
 - **LLM extracts, code decides.** The pass/fail decision is deterministic code over a validated controlled vocabulary; the LLM never makes the decision (spec §6.2). Extraction failure → **escalate**, never guess.
 - **Declared-intent reinforces, never overrides** the content classifier; `inbox_threads.primary_category` is untouched in meaning (spec §8.2).
@@ -18,7 +18,7 @@
 - **Pass threshold = 8/12; auto-decline-low (score ≤3) = OFF by default** (spec §6.4).
 - **HITL preserved:** every funnel email is inserted as a `pending` draft with `send:false`; the owner approves via the inbox modal. Nothing auto-sends in Phase 1.
 - **`src/console/page.ts` is one big template literal** - after editing it, run `tests/console.test.ts`; double-escape `\\n` inside browser-JS strings.
-- **Tests:** run in small batches - `npx vitest run <file> [<file2>]`. The full 70-file run hits the miniflare runtime ceiling (infra flake, not real failures); 2–3 files at a time pass cleanly.
+- **Tests:** run in small batches - `npx vitest run <file> [<file2>]`. The full 70-file run hits the miniflare runtime ceiling (infra flake, not real failures); 2-3 files at a time pass cleanly.
 - **After each commit, `git push`** (standing rule). `npx wrangler deploy` is a production deploy - **gated on explicit owner go**, not part of this plan.
 
 ---
@@ -384,7 +384,7 @@ const EXPERIENCE: Record<ScreenFacts['experience'], number> = { strong: 2, some:
 const METHOD: Record<ScreenFacts['method'], number> = { content: 2, mixed: 1, unknown: 1, discount: 0 };
 const SPECIFICITY: Record<ScreenFacts['specificity'], number> = { specific: 2, partial: 1, vague: 0 };
 
-/** Hard gates → decline. Otherwise a 0–12 score sorts form vs. escalate. The score
+/** Hard gates → decline. Otherwise a 0-12 score sorts form vs. escalate. The score
  * NEVER causes a decline unless the (default-OFF) auto-decline-low dial is on. */
 export function scoreScreen(
   facts: ScreenFacts,
@@ -793,7 +793,7 @@ Expected: PASS (3 tests).
 
 - [ ] **Step 5: Wire it into `sendReply`**
 
-In `src/inbox/send.ts`: add imports and replace the constant usage. The current code (lines 8, 22–30) computes `lastInbound` and uses the constant `FROM`. Change to derive the sender.
+In `src/inbox/send.ts`: add imports and replace the constant usage. The current code (lines 8, 22-30) computes `lastInbound` and uses the constant `FROM`. Change to derive the sender.
 
 Replace the import block top and the `FROM` constant region - add:
 

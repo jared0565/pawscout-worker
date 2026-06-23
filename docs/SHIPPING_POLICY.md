@@ -4,8 +4,8 @@ Where: **Settings → Policies → Shipping policy**
 (https://admin.shopify.com/store/4qkudm-ez/settings/legal)
 
 Mirrors live rates (UK £4.99 / free ≥ £50; EU £14.99; Int'l £23.99 - Express
-was removed 2026-06-12) and the PDP delivery-info estimates (8–12 working
-days standard, 2–4 for UK-stocked items). Includes the dropship-critical
+was removed 2026-06-12) and the PDP delivery-info estimates (8-12 working
+days standard, 2-4 for UK-stocked items). Includes the dropship-critical
 clauses: separate parcels, customs duties on EU/international, processing
 time, proactive delay handling.
 
@@ -25,8 +25,8 @@ DELIVERY CHARGES
 HOW LONG IT TAKES
 
 - Every product page shows an estimated delivery window for that item.
-- Most items: 8–12 working days (processing within 1–3 working days, then tracked transit).
-- Items marked "Ships from UK": 2–4 working days.
+- Most items: 8-12 working days (processing within 1-3 working days, then tracked transit).
+- Items marked "Ships from UK": 2-4 working days.
 - Estimates are made in good faith but aren't guaranteed - carriers and customs can occasionally add delays. If your order is running late, contact us and we'll chase it and keep you updated.
 
 TRACKING

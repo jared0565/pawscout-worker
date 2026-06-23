@@ -1,8 +1,8 @@
 # UpPromote registration form - paste-ready field set + terms + reviewer cheat-sheet
 
-**Purpose:** one UpPromote registration form that *screens at submission*, mirroring PawScout's qualifying-email funnel (`src/inbox/partnership.ts`) - the same signals it extracts and the same hard gates G1–G5 - plus the binding terms (ruleset Part E, incl. the new **E.11** no-UK-dispatch clause). Both lanes converge here: PawScout-screened email applicants (Lane A) and UpPromote Marketplace / self-serve applicants (Lane B). **Manual approval, always** - the form captures the signals; a human applies the gates below.
+**Purpose:** one UpPromote registration form that *screens at submission*, mirroring PawScout's qualifying-email funnel (`src/inbox/partnership.ts`) - the same signals it extracts and the same hard gates G1-G5 - plus the binding terms (ruleset Part E, incl. the new **E.11** no-UK-dispatch clause). Both lanes converge here: PawScout-screened email applicants (Lane A) and UpPromote Marketplace / self-serve applicants (Lane B). **Manual approval, always** - the form captures the signals; a human applies the gates below.
 
-Cross-refs: `affiliate-program-terms-and-ruleset.md` (Part A admission, Part E clauses), `affiliate-program-analysis.md` §3 (differentiator = bundles + creator audience, **no** UK-dispatch claim), `src/inbox/partnership.ts` (the email-lane equivalent: ScreenFacts + scoreScreen G1–G5).
+Cross-refs: `affiliate-program-terms-and-ruleset.md` (Part A admission, Part E clauses), `affiliate-program-analysis.md` §3 (differentiator = bundles + creator audience, **no** UK-dispatch claim), `src/inbox/partnership.ts` (the email-lane equivalent: ScreenFacts + scoreScreen G1-G5).
 
 > Field *types* below use generic names - confirm the exact control types your UpPromote plan exposes (text / paragraph / dropdown / checkbox) when you build it. Custom fields are plan-gated; **(verify on your plan)**.
 
@@ -29,12 +29,12 @@ Cross-refs: `affiliate-program-terms-and-ruleset.md` (Part A admission, Part E c
 |---|---|---|---|---|
 | 1 | **Where will you promote Active Paw?** Paste the full link(s) to the channel(s), profile(s) or site where you'd feature us. | Paragraph | ✅ | **G1** (no real link → decline); `channelUrls` |
 | 2 | **Main platform** | Dropdown: Instagram / TikTok / YouTube / Blog or website / Facebook / Pinterest / Other | ✅ | context |
-| 3 | **Approx. audience size** | Dropdown: <1k / 1k–10k / 10k–50k / 50k–250k / 250k+ | ✅ | relevance + engagement |
+| 3 | **Approx. audience size** | Dropdown: <1k / 1k-10k / 10k-50k / 50k-250k / 250k+ | ✅ | relevance + engagement |
 | 4 | **Recent engagement** - typical likes/comments/views on a recent post (a link to one really helps). | Text | ✅ | `engagement` (plausible / unclear / implausible) |
 | 5 | **Where are most of your audience based?** | Dropdown: Mostly UK / Roughly half UK / Mostly outside the UK / Not sure | ✅ | **G3** (audience fit); `specificity` |
 | 6 | **Is your audience pet-focused?** | Dropdown: Yes - pet/dog/cat focused / Partly - pets among other topics / No - general audience | ✅ | **G3** (audience fit) |
 | 7 | **How would you mainly promote us?** | Dropdown: Reviews / how-to / UGC content · "Best for dogs/cats" feature · Everyday content & mentions · Discount-code posts · Paid ads · **Coupon / cashback / deals site** | ✅ | `method` (content/mixed/discount); **G2** (coupon/cashback = decline flag) |
-| 8 | **Have you partnered with brands before?** Share 1–2 examples or links (pet-related especially welcome) and any results you can show. | Paragraph | ➖ (optional) | `experience` + `evidence` |
+| 8 | **Have you partnered with brands before?** Share 1-2 examples or links (pet-related especially welcome) and any results you can show. | Paragraph | ➖ (optional) | `experience` + `evidence` |
 | 9 | **Anything else we should know?** | Paragraph | ➖ | free signal |
 
 ---
@@ -52,9 +52,9 @@ Each is a separate **required** checkbox so acceptance is explicit and auditable
 
 ---
 
-## 5. Reviewer cheat-sheet (apply when approving in UpPromote = the human G1–G5 + score)
+## 5. Reviewer cheat-sheet (apply when approving in UpPromote = the human G1-G5 + score)
 
-**HARD DECLINE if ANY of these (mirror of PawScout G1–G5 - respectful decline, no commission):**
+**HARD DECLINE if ANY of these (mirror of PawScout G1-G5 - respectful decline, no commission):**
 - **G1** - no real channel link, or the link is a coupon/deals page, dead, or private (Field 1).
 - **G2** - Field 7 = "Coupon / cashback / deals site", or any sign they'll bid on the brand name.
 - **G3** - audience is **neither** pet-relevant **nor** UK-relevant (Fields 5 + 6 both off).

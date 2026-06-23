@@ -28,7 +28,7 @@ Sources/refs: UpPromote [sample T&C](https://docs.uppromote.com/management/affil
 
 **B4 - Prohibited activities.** You must not: bid on or SEO-target our brand name "Active Paw" (incl. misspellings/variants/"+review/discount/code"), paid or organic; cookie-stuff, force clicks, or auto-redirect; self-refer (incl. fresh-email/guest-checkout variants); distribute generic codes or stack codes; post codes/links on coupon, cashback, voucher or browser-extension sites; rebate/kick back any commission to buyers; or make unauthorised use of our name, logo, or look-alike domains. Breach voids affected (held) commission and may end your participation.
 
-**B5 - Honest delivery & origin (no UK-dispatch claims).** You must not state or imply that Active Paw ships, dispatches, holds stock, or is made **in the UK**, nor quote UK delivery speeds (e.g. "next-day", "2–4 day UK", "UK warehouse", "UK stock"). Products are fulfilled by our supplier from outside the UK. Approved phrasing: "ships internationally" / "delivered to your door". *(ruleset E.11)*
+**B5 - Honest delivery & origin (no UK-dispatch claims).** You must not state or imply that Active Paw ships, dispatches, holds stock, or is made **in the UK**, nor quote UK delivery speeds (e.g. "next-day", "2-4 day UK", "UK warehouse", "UK stock"). Products are fulfilled by our supplier from outside the UK. Approved phrasing: "ships internationally" / "delivered to your door". *(ruleset E.11)*
 
 **B6 - Governing law.** This agreement is governed by **[England & Wales - confirm]** and subject to its courts.
 

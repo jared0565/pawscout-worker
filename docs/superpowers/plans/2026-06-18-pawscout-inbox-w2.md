@@ -174,7 +174,7 @@ Extend `tests/inbox-validate.test.ts`:
 ```
 > Also update any EXISTING call to `validateInboxPayload` in that test file that omits `autoConfidenceThreshold` - add `autoConfidenceThreshold: 80` to each payload (it's now required), EXCEPT the test that intentionally checks rejection.
 
-- [ ] **Step 5: Run → fail, implement Steps 1–3, run → pass.**
+- [ ] **Step 5: Run → fail, implement Steps 1-3, run → pass.**
 Run: `npm test -- inbox-config inbox-validate` → expect PASS after implementation. Then `npm run typecheck` → clean.
 
 - [ ] **Step 6: Commit**
