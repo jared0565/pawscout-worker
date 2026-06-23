@@ -1,4 +1,5 @@
 import type { ParsedEmail } from './types';
+import { stripQuotedReply } from './quote';
 
 export interface AuthResults {
   spf: 'pass' | 'fail' | 'none';
@@ -32,6 +33,26 @@ export function isAutomated(p: ParsedEmail): boolean {
 /** Hard spam signal: DMARC failure means the sender domain is likely spoofed. */
 export function isHardSpam(auth: AuthResults): boolean {
   return auth.dmarc === 'fail';
+}
+
+/** True when an inbound carries nothing to action: no readable text once the quoted
+ * reply chain is stripped, no meaningful HTML text, and no attachment. There is no
+ * point drafting a reply to an empty email, and the owner should not have to triage it.
+ *
+ * Conservative by design - ANY letter or digit in the customer's new text or in the
+ * HTML body, or ANY attachment, makes it NOT blank. So a real inquiry is never hidden,
+ * including an attachment-only "my order arrived damaged" photo with no typed text. We
+ * would rather show a near-empty email than bury a genuine one. */
+export function isContentless(
+  bodyText: string | null | undefined,
+  html: string | null | undefined,
+  hasAttachments: boolean
+): boolean {
+  if (hasAttachments) return false;
+  const fromText = stripQuotedReply(bodyText ?? '');
+  const htmlPlain = (html ?? '').replace(/<[^>]+>/g, ' ').replace(/&[a-z]+;/gi, ' ');
+  const fromHtml = stripQuotedReply(htmlPlain);
+  return !/[\p{L}\p{N}]/u.test(`${fromText} ${fromHtml}`);
 }
 
 /** Re:/Fwd:/AW:/SV: prefix-stripped, lowercased subject for thread matching. */

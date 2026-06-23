@@ -44,6 +44,7 @@ export interface ParsedEmail {
   date: string;             // ISO 8601
   text: string;
   html: string | null;
+  hasAttachments?: boolean; // any MIME attachment present (a photo-only email is real content)
   headers: Record<string, string>;
 }
 

@@ -1,7 +1,7 @@
 import type { TenantStore } from '../tenant-store';
 import type { ParsedEmail, ThreadStatus } from './types';
 import { parseInbound, extractContactForm } from './mime';
-import { parseAuthResults, isAutomated, isHardSpam, normalizeSubject } from './gates';
+import { parseAuthResults, isAutomated, isHardSpam, normalizeSubject, isContentless } from './gates';
 
 /** Store one parsed inbound email: resolve the real sender, match-or-create the
  * thread, insert the message (deduped), and set the thread's initial status from
@@ -30,7 +30,11 @@ export async function ingestParsed(store: TenantStore, p: ParsedEmail): Promise<
   // envelope sender. The DMARC spam gate below still applies to everyone.
   const automated = form ? false : isAutomated(p);
   const spam = isHardSpam(auth);
-  const initialStatus: ThreadStatus = spam ? 'spam' : automated ? 'closed' : 'new';
+  // A blank/content-less email has nothing to action: suppress it like automated mail
+  // (status closed + pre-classified) so it never reaches the inbox view or the draft
+  // sweep. The owner should not waste time on empty messages.
+  const blank = !automated && !spam && isContentless(bodyText, p.html, !!p.hasAttachments);
+  const initialStatus: ThreadStatus = spam ? 'spam' : automated || blank ? 'closed' : 'new';
 
   let threadId: string;
   if (!matchedThreadId) {
@@ -38,14 +42,18 @@ export async function ingestParsed(store: TenantStore, p: ParsedEmail): Promise<
       contactEmail: email, subject: p.subject, subjectNorm, receivedAt: p.date, initialStatus,
       declaredIntent: form?.reason ?? null
     });
-    // Automated/spam never enter the classify sweep - mark them classified now.
-    if (automated || spam) {
+    // Automated/spam/blank never enter the classify sweep - mark them classified now.
+    if (automated || spam || blank) {
+      const category = automated ? 'automated' : spam ? 'spam' : 'no_content';
+      const summary = automated ? 'Automated/bulk message'
+        : spam ? 'Failed DMARC - likely spoofed'
+        : 'Empty message - nothing to action';
       await store.setThreadClassification(threadId, {
-        status: initialStatus, primaryCategory: automated ? 'automated' : 'spam',
-        intentScore: 0, summary: automated ? 'Automated/bulk message' : 'Failed DMARC - likely spoofed',
+        status: initialStatus, primaryCategory: category,
+        intentScore: 0, summary,
         classifiedAt: new Date().toISOString()
       });
-      await store.setThreadLabels(threadId, [automated ? 'automated' : 'spam']);
+      await store.setThreadLabels(threadId, [category]);
     }
   } else {
     threadId = matchedThreadId;
@@ -63,7 +71,7 @@ export async function ingestParsed(store: TenantStore, p: ParsedEmail): Promise<
     // Guard: only if this message is genuinely new (inserted) - a duplicate redelivery
     // (same Message-ID, already stored) must NOT re-open the thread or supersede drafts.
     // Only reopen conversations we'd engage with; never resurrect spam/closed/converted.
-    if (isExistingThread && !automated && !spam) {
+    if (isExistingThread && !automated && !spam && !blank) {
       const existing = await store.getThreadWithMessages(threadId);
       const st = existing?.thread.status;
       if (st === 'awaiting_customer' || st === 'needs_reply') {

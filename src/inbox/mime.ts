@@ -33,6 +33,7 @@ export async function parseInbound(raw: ArrayBuffer | Uint8Array | string): Prom
       date: email.date ? new Date(email.date).toISOString() : new Date().toISOString(),
       text: (email.text ?? '').trim(),
       html: email.html ?? null,
+      hasAttachments: (email.attachments?.length ?? 0) > 0,
       headers
     };
   } catch (e) {
@@ -47,6 +48,7 @@ export async function parseInbound(raw: ArrayBuffer | Uint8Array | string): Prom
       date: new Date().toISOString(),
       text: '',
       html: null,
+      hasAttachments: false,
       headers: {}
     };
   }

@@ -45,6 +45,34 @@ describe('ingestParsed', () => {
     expect(got?.thread.classified_at).not.toBeNull(); // skips the LLM sweep
   });
 
+  it('suppresses a content-less (blank) email: closed + pre-classified so it never drafts or shows', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const r = await ingestParsed(store, pe({ messageId: '<blank@x>', subject: '', text: '', html: null }));
+    const got = await store.getThreadWithMessages(r.threadId);
+    expect(got?.thread.status).toBe('closed');         // excluded from the default "open" inbox view
+    expect(got?.thread.classified_at).not.toBeNull();  // excluded from the LLM sweep → no draft generated
+    expect(got?.labels).toContain('no_content');
+  });
+
+  it('does NOT suppress an attachment-only email with no text (a real damage photo reaches the sweep)', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const r = await ingestParsed(store, pe({ messageId: '<photo@x>', subject: 'see photo', text: '', html: null, hasAttachments: true }));
+    const got = await store.getThreadWithMessages(r.threadId);
+    expect(got?.thread.status).toBe('new');
+    expect(got?.thread.classified_at).toBeNull();
+  });
+
+  it('does NOT re-open an awaiting_customer thread on a blank follow-up', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const a = await ingestParsed(store, pe({}));
+    await store.setThreadStatus(a.threadId, 'awaiting_customer');
+    await ingestParsed(store, pe({
+      messageId: '<blankreply@x>', inReplyTo: '<m1@x>', references: ['<m1@x>'],
+      subject: 'Re: Do you ship to IE?', text: '', html: null
+    }));
+    expect((await store.getThreadWithMessages(a.threadId))?.thread.status).toBe('awaiting_customer'); // NOT reopened
+  });
+
   it('dedupes a re-delivered Message-ID and threads a reply', async () => {
     const store = new TenantStore(env.DB, SHOP);
     const a = await ingestParsed(store, pe({}));

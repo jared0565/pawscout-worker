@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseAuthResults, isAutomated, isHardSpam, normalizeSubject } from '../src/inbox/gates';
+import { parseAuthResults, isAutomated, isHardSpam, normalizeSubject, isContentless } from '../src/inbox/gates';
 import type { ParsedEmail } from '../src/inbox/types';
 
 function email(over: Partial<ParsedEmail>): ParsedEmail {
@@ -58,5 +58,25 @@ describe('normalizeSubject', () => {
   it('strips Re:/Fwd: prefixes and lowercases', () => {
     expect(normalizeSubject('Re: Fwd:  Do you ship?')).toBe('do you ship?');
     expect(normalizeSubject('AW: SV: hello')).toBe('hello');
+  });
+});
+
+describe('isContentless', () => {
+  it('is true for empty / whitespace-only text and no html', () => {
+    expect(isContentless('', null, false)).toBe(true);
+    expect(isContentless('   \n  \t ', null, false)).toBe(true);
+  });
+  it('is false when there is real customer text', () => {
+    expect(isContentless('Do you ship to Ireland?', null, false)).toBe(false);
+  });
+  it('is true when the only text is a quoted reply chain (nothing new)', () => {
+    const quoteOnly = 'On Tue, 18 Jun 2026, Active Paw <support@activepaw.co.uk> wrote:\n> our earlier reply';
+    expect(isContentless(quoteOnly, null, false)).toBe(true);
+  });
+  it('is false when HTML carries real text even though plain text is empty', () => {
+    expect(isContentless('', '<p>Is the large bed in stock?</p>', false)).toBe(false);
+  });
+  it('is false when an attachment is present (a photo-only email is a real inquiry)', () => {
+    expect(isContentless('', null, true)).toBe(false);
   });
 });
