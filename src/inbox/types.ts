@@ -59,6 +59,7 @@ export interface DraftResult {
   bodyText: string;            // plain-text reply; HTML is built from this
   confidence: number;          // 0-100 self-reported
   quotesPriceOrOrder: boolean; // LLM's own flag (OR'd with mechanical mentionsMoney downstream)
+  customerAsks?: string[];     // the model's extract-first plan: what the customer is actually asking ([]=no answerable question)
 }
 
 export type DraftStatus = 'pending' | 'approved' | 'sent' | 'auto_sent' | 'discarded' | 'superseded';

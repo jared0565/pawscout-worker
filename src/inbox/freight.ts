@@ -82,7 +82,13 @@ export function deriveDestinationCountry(conversation: string, subject: string, 
   const text = `${subject}\n${conversation}`.toLowerCase();
 
   // UK home market - recognised so the caller can explicitly skip a CJ quote.
-  const ukNamed = /\b(uk|u\.k\.|united kingdom|britain|great britain|england|scotland|wales|northern ireland)\b/i.test(text);
+  // The bare "uk" token must NOT be the ".uk" inside an email/URL domain: a quoted
+  // "...@activepaw.co.uk" reply footer otherwise derived a false UK destination (a
+  // Texas shipping question got a "Delivery to the UK" line). Quote-stripping upstream
+  // is the primary fix; this lookaround is defense-in-depth.
+  const ukNamed =
+    /(?<![\w.])uk(?![\w.])/i.test(text) ||
+    /\b(u\.k\.|united kingdom|britain|great britain|england|scotland|wales|northern ireland)\b/i.test(text);
 
   const found = new Set<string>();
   if (ukNamed) found.add('GB');

@@ -53,13 +53,45 @@ describe('draftReply', () => {
     expect(await draftReply(new LlmClient({}), store, CFG, { subject: 's', conversation: 'b', category: 'other' })).toBeNull();
   });
 
-  it('instructs the LLM not to guess shipping when a freight line is appended separately', async () => {
+  it('defers the delivery TIME to the appended line but lets the LLM state the flat shipping cost', async () => {
     const store = new TenantStore(env.DB, 'a.myshopify.com');
     const sink: { system?: string } = {};
     const llm = capturingLlm({ bodyText: 'Yes, we ship internationally.', confidence: 85, quotesPriceOrOrder: false }, sink);
     await draftReply(llm, store, CFG, { subject: 'Shipping', conversation: 'Do you ship to France?', category: 'shipping-returns', shippingHandledSeparately: true });
     expect(sink.system).toMatch(/appended to your reply automatically/i);
-    expect(sink.system).toMatch(/do NOT state, guess, or hedge about any shipping cost/i);
+    expect(sink.system).toMatch(/do NOT state a delivery time or date/i);
+    expect(sink.system).toMatch(/MAY state the flat shipping COST/i);
+  });
+
+  it('runs the detect->analyse->ground workflow: extracts customerAsks, forbids inventing a question, returns the plan', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const sink: { system?: string; user?: string } = {};
+    const llm = capturingLlm({ customerAsks: ['how long is delivery to Ireland'], bodyText: 'We ship to Ireland.', confidence: 80, quotesPriceOrOrder: false }, sink);
+    const d = await draftReply(llm, store, CFG, { subject: 'Q', conversation: 'How long to Ireland?', latestMessage: 'How long to Ireland?', category: 'shipping-returns' });
+    expect(sink.system).toMatch(/customerAsks/);                              // schema asks for the plan first
+    expect(sink.system).toMatch(/NEVER invent a question/i);                  // anti-fabrication rule present
+    expect(sink.system).toMatch(/WORKFLOW - follow it in order/i);           // explicit detect->analyse->ground
+    expect(d?.customerAsks).toEqual(['how long is delivery to Ireland']);     // parsed + returned
+  });
+
+  it('tolerates a model that omits customerAsks (optional field)', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const llm = fakeLlm({ bodyText: 'Yes, we are open.', confidence: 80, quotesPriceOrOrder: false });
+    const d = await draftReply(llm, store, CFG, { subject: 's', conversation: 'are you open?', category: 'other' });
+    expect(d?.bodyText).toContain('Yes, we are open');
+    expect(d?.customerAsks).toBeUndefined();
+  });
+
+  it('gives the model the fixed shipping rates as stateable facts (so cost questions are not blind)', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const sink: { system?: string } = {};
+    const llm = capturingLlm({ customerAsks: [], bodyText: 'x', confidence: 80, quotesPriceOrOrder: false }, sink);
+    await draftReply(llm, store, CFG, { subject: 's', conversation: 'how much is shipping?', category: 'shipping-returns' });
+    expect(sink.system).toContain('£4.99');
+    expect(sink.system).toMatch(/free on orders over £50/i);
+    expect(sink.system).toContain('£14.99');
+    expect(sink.system).toContain('£23.99');
+    expect(sink.system).toMatch(/shown at checkout/i);
   });
 
   it('omits the shipping instruction when no freight line is appended', async () => {

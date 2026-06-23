@@ -19,6 +19,7 @@ import { sendInvoice } from './send-invoice';
 import { hasScope } from './scopes';
 import { resolveLogistics, doorToDoorBand } from '../logistics';
 import { isShippingIntent, deriveDestinationCountry, countryLabel, buildShippingLine } from './freight';
+import { stripQuotedReply } from './quote';
 import type { ThreadRow, InvoiceLineItem } from './types';
 
 const SWEEP_BATCH = 15;          // threads classified per shop per run
@@ -266,11 +267,18 @@ export async function composeDraftForThread(
   if (partnership) return partnership;
 
   const inbound = got.messages.filter((m) => m.direction === 'inbound');
-  const conversation = inbound.map((m) => m.body_text ?? '').join('\n\n---\n\n');
+  // Strip each inbound's quoted reply chain so we ground on the customer's NEW text only.
+  // The quoted copy of our own prior reply otherwise (a) made the drafter answer a stale
+  // earlier turn and (b) leaked our "...@activepaw.co.uk" footer into the destination
+  // derivation (a Texas question got a "Delivery to the UK" line).
+  const cleaned = inbound.map((m) => stripQuotedReply(m.body_text ?? ''));
+  const conversation = cleaned.filter(Boolean).join('\n\n---\n\n')
+    || inbound.map((m) => m.body_text ?? '').filter(Boolean).join('\n\n---\n\n'); // fallback: all-quote thread
   // The customer's LATEST inbound (messages are ASC by received_at) - the drafter and the
   // freight line both ground to this so a multi-turn thread answers what they JUST asked,
-  // not a stale earlier turn or a now-irrelevant first classification.
-  const latestInbound = inbound.length ? (inbound[inbound.length - 1].body_text ?? '') : '';
+  // not a stale earlier turn or a now-irrelevant first classification. May be '' when the
+  // latest message was only a quote (drafter then falls back to a brief acknowledgement).
+  const latestInbound = cleaned.length ? cleaned[cleaned.length - 1] : '';
 
   // Freight-grounded delivery line: when the customer asks about shipping to a
   // confidently-derived destination, read the SYNCED CJ logistics matrix from D1

@@ -31,6 +31,14 @@ describe('deriveDestinationCountry', () => {
   it('does not match substrings inside longer words', () => {
     expect(deriveDestinationCountry('shipping to indianapolis warehouse', '', 'a@b.com')).toBeNull();
   });
+
+  it('does not read the ".co.uk" in a quoted email footer as a UK destination (the Texas-thread bug)', () => {
+    // A bare email/URL domain ".uk" must NOT derive GB - it previously stapled a "Delivery
+    // to the UK" line onto a US (Texas) shipping question.
+    expect(deriveDestinationCountry('how long to Texas? On Tue Active Paw <support@activepaw.co.uk> wrote:', '', 'a@gmail.com')).toBeNull();
+    // ...but a genuine UK mention still maps to GB.
+    expect(deriveDestinationCountry('please ship to the UK', '', 'a@gmail.com')).toBe('GB');
+  });
 });
 
 describe('isShippingIntent', () => {
