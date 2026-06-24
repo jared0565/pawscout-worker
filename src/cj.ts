@@ -400,6 +400,31 @@ export class CjClient {
   }
 
   /**
+   * Aging-preserving freight quote: identical to freightQuote but does NOT drop
+   * price-0 options. US-domestic carriers (USPS/UPS/FedEx/Yunexpress) return
+   * logisticPrice=0 in the CJ API even when the service exists -- freightQuote
+   * drops those because it is used for margin calculations. Here we only need
+   * the delivery-time aging, so a free-$0 domestic option is valid and must be
+   * retained. Still sorts cheapest-first so the real cheapest wins when non-zero
+   * options also exist.
+   */
+  async freightQuoteAging(vid: string, fromCountry = 'CN', toCountry = 'GB', quantity = 1): Promise<{ priceUsd: number; days: string; name: string }[]> {
+    const data = await this.post('/logistic/freightCalculate', {
+      startCountryCode: fromCountry,
+      endCountryCode: toCountry,
+      products: [{ quantity, vid }]
+    });
+    const rows = (Array.isArray(data) ? data : []) as Record<string, unknown>[];
+    return rows
+      .map((r) => ({
+        priceUsd: parseCjPrice(r.logisticPrice),
+        days: String(r.logisticAging ?? ''),
+        name: String(r.logisticName ?? '')
+      }))
+      .sort((a, b) => a.priceUsd - b.priceUsd);
+  }
+
+  /**
    * Cheapest freight quote for one unit of a variant, `fromCountry` → `toCountry`.
    * Used at admission/import to keep the margin floor freight-aware.
    */

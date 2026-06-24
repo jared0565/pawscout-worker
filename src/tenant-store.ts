@@ -675,6 +675,51 @@ export class TenantStore {
     return (rs.results ?? []).map((r) => r.detail);
   }
 
+  /**
+   * Distinct non-CN origin ISO-2 codes that have at least one stocked unit in
+   * this shop's warehouse. Reads `origins` from each row's `detail` JSON via
+   * json_each and returns only keys where value > 0 and key != 'CN'.
+   * Used by the nightly logistics sync to discover which non-CN origins to sync.
+   */
+  async catalogNonCnOrigins(): Promise<string[]> {
+    const rs = await this.db
+      .prepare(
+        `SELECT DISTINCT je.key AS origin
+         FROM warehouse_products AS wp, json_each(json_extract(wp.detail, '$.origins')) AS je
+         WHERE wp.shop = ?1
+           AND je.key != 'CN'
+           AND CAST(je.value AS INTEGER) > 0
+         ORDER BY je.key`
+      )
+      .bind(this.shop)
+      .all<{ origin: string }>();
+    return (rs.results ?? []).map((r) => r.origin);
+  }
+
+  /**
+   * Available warehouse detail JSONs for rows that have at least one unit stocked
+   * in `origin` (i.e. origins[origin] > 0). Most-listed first. Mirrors
+   * sampleWarehouseDetails but scoped to a specific non-CN origin. Used by
+   * findRepresentativeVidForOrigin to pick a rep vid for the non-CN sync probe.
+   */
+  async sampleWarehouseDetailsForOrigin(origin: string, limit: number): Promise<string[]> {
+    const rs = await this.db
+      .prepare(
+        `SELECT detail FROM warehouse_products
+         WHERE shop = ?1
+           AND status = 'available'
+           AND EXISTS (
+             SELECT 1 FROM json_each(json_extract(detail, '$.origins')) AS je
+             WHERE je.key = ?2 AND CAST(je.value AS INTEGER) > 0
+           )
+         ORDER BY listed_num DESC
+         LIMIT ${Math.min(Math.max(limit, 1), 50)}`
+      )
+      .bind(this.shop, origin)
+      .all<{ detail: string }>();
+    return (rs.results ?? []).map((r) => r.detail);
+  }
+
   // --- CJ logistics (synced delivery-time matrix) -------------------------------
 
   /** Upsert a refreshed route row (a SUCCESSFUL quote): resets the failure counter. */

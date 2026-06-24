@@ -546,20 +546,28 @@ export async function syncCjLogisticsRoutes(
   cj: Pick<CjClient, 'freightQuote'>,
   repVid: string,
   destinations: string[],
-  opts: { from?: string; maxCjCalls?: number; pause?: (ms: number) => Promise<void> } = {}
+  opts: {
+    from?: string;
+    maxCjCalls?: number;
+    pause?: (ms: number) => Promise<void>;
+    allowInMarket?: boolean;
+    quote?: (vid: string, from: string, to: string, qty: number) => Promise<{ priceUsd: number; days: string; name: string }[]>;
+  } = {}
 ): Promise<{ refreshed: number; failed: number }> {
   const from = opts.from ?? 'CN';
   const pause = opts.pause ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const maxCjCalls = opts.maxCjCalls ?? destinations.length + 5;
+  const allowInMarket = opts.allowInMarket ?? false;
+  const quoteFn = opts.quote ?? cj.freightQuote.bind(cj);
   const synced = await reference.logisticsSyncedFor(from);
   const ordered = [...destinations].sort((a, b) => (synced.get(a) ?? '').localeCompare(synced.get(b) ?? ''));
   let refreshed = 0, failed = 0, cjCalls = 0, consecutive429 = 0;
   for (const dest of ordered) {
-    if (dest === from || cjCalls >= maxCjCalls) continue;
+    if ((dest === from && !allowInMarket) || cjCalls >= maxCjCalls) continue;
     await pause(CJ_CALL_GAP_MS);
     cjCalls++;
     try {
-      const options = await cj.freightQuote(repVid, from, dest, 1);
+      const options = await quoteFn(repVid, from, dest, 1);
       const cheapest = options[0];
       const range = parseDaysRange(cheapest?.days);
       if (cheapest && range) {
@@ -620,10 +628,50 @@ async function findRepresentativeVid(store: TenantStore, cj: Pick<CjClient, 'fre
 }
 
 /**
+ * Pick a representative in-stock variant id for a specific non-CN origin.
+ * Samples warehouse products stocked in `origin`, probes CJ with an in-market
+ * quote (origin -> origin) via freightQuoteAging (which retains price-0 domestic
+ * options), and returns the lower-median vid by transit max. Falls back to the
+ * first candidate; returns '' if no stocked variants exist.
+ */
+async function findRepresentativeVidForOrigin(
+  reference: TenantStore,
+  cj: Pick<CjClient, 'freightQuoteAging'>,
+  origin: string
+): Promise<string> {
+  const candidates: string[] = [];
+  for (const detailJson of await reference.sampleWarehouseDetailsForOrigin(origin, 8)) {
+    try {
+      const d = JSON.parse(detailJson) as CjDetail;
+      const v = (d.variants ?? []).find((x) => x.vid && x.vid !== 'default');
+      if (v) candidates.push(v.vid);
+    } catch { /* skip a malformed row */ }
+  }
+  if (!candidates.length) return '';
+  const scored: { vid: string; tmax: number }[] = [];
+  for (const vid of candidates) {
+    try {
+      const opts = await cj.freightQuoteAging(vid, origin, origin, 1);
+      const range = parseDaysRange(opts[0]?.days);
+      if (range) scored.push({ vid, tmax: range.max });
+    } catch { /* skip a vid that won't quote */ }
+    await new Promise((r) => setTimeout(r, CJ_CALL_GAP_MS));
+  }
+  if (!scored.length) return candidates[0];
+  scored.sort((a, b) => a.tmax - b.tmax);
+  return scored[Math.floor((scored.length - 1) / 2)].vid; // lower-median
+}
+
+/**
  * Env wrapper: build a reference CjClient + representative vid, then refresh the
  * matrix and fan it out to every CJ shop. Called ONCE at the top of the daily cron
  * (idle relay window), before any per-shop work - so the matrix is fresh before any
  * shop's PDP metafield write. Best-effort: never throws.
+ *
+ * In addition to the CN origin sync, discovers any non-CN origins in the catalog
+ * (currently US when US-warehoused products exist) and syncs those routes too,
+ * including the in-market route (e.g. US->US). Only real parseable CJ quotes
+ * become rows; missing routes fall back to the CN estimate hedge.
  */
 export async function syncCjLogistics(
   env: Env,
@@ -649,7 +697,26 @@ export async function syncCjLogistics(
   }
   if (!reference || !cj) { console.warn('logistics sync: no shop with CJ credentials; skipping'); return { refreshed: 0, failed: 0 }; }
   if (!repVid) { console.warn('logistics sync: no representative in-stock vid; skipping'); return { refreshed: 0, failed: 0 }; }
-  return syncCjLogisticsRoutes(cjStores, reference, cj, repVid, LOGISTICS_DESTINATIONS, opts);
+  const cnResult = await syncCjLogisticsRoutes(cjStores, reference, cj, repVid, LOGISTICS_DESTINATIONS, opts);
+  let refreshed = cnResult.refreshed;
+  let failed = cnResult.failed;
+  // Sync non-CN origins present in the catalog (e.g. US-warehoused products).
+  for (const origin of await reference.catalogNonCnOrigins()) {
+    const ov = await findRepresentativeVidForOrigin(reference, cj, origin);
+    if (!ov) { console.warn(`logistics sync: no rep vid for origin ${origin}; skipping`); continue; }
+    // Include the in-market dest (origin->origin) so US customers get the fast estimate.
+    const dests = [...new Set([origin, ...LOGISTICS_DESTINATIONS])];
+    const r = await syncCjLogisticsRoutes(cjStores, reference, cj, ov, dests, {
+      from: origin,
+      allowInMarket: true,
+      quote: cj.freightQuoteAging.bind(cj),
+      maxCjCalls: opts.maxCjCalls,
+      pause: opts.pause,
+    });
+    refreshed += r.refreshed;
+    failed += r.failed;
+  }
+  return { refreshed, failed };
 }
 
 /**
