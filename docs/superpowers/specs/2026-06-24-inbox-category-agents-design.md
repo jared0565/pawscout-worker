@@ -35,8 +35,9 @@ auto-send per agent as trust is earned.
   are untouched; agents dispatch off the existing `thread.primary_category`.
 - No autonomous tool-loop agents. An "agent" here is a small handler object, not a
   multi-step LLM loop.
-- No DB migration. Per-agent settings live in the existing `tenant_config.inbox`
-  JSON column.
+- No config migration. Per-agent settings live in the existing `tenant_config.inbox`
+  JSON column. (One small, backfill-safe `inbox_drafts` column is added for
+  observability - see Migration.)
 
 ## Decisions (locked in brainstorming)
 
@@ -56,6 +57,17 @@ auto-send per agent as trust is earned.
    always gets review" guard.
 5. **The Texas fix** (US state / CA province name to country resolution) belongs to
    the shipping agent's grounder.
+6. **Bounded commercial objective**: each sales-relevant agent has an explicit
+   first-class goal to advance the sale, strictly subject to the honesty and
+   compliance constraints below. The objective is sustainable revenue through trust,
+   never revenue at the expense of honesty. `complaint` and `other` are excluded.
+7. **Origin is per-product, never stated to the customer**: CJ warehouses vary by
+   product (CN, EU, US, and others); the catalog is not CN-only. The shipping agent
+   resolves the real origin per product where known and falls back to a conservative
+   default otherwise. The customer-facing reply gives the calculated delivery time
+   and never names the origin country. This is both more accurate (an EU-warehoused
+   item to an EU customer has no customs leg and a shorter transit) and compliant
+   (no fulfilment-origin claim either way).
 
 ## Architecture
 
@@ -157,7 +169,7 @@ injected `g.facts`.
 
 | Agent | `ground()` reads | Confident when | Appendix (verbatim) | Prompt slant |
 |---|---|---|---|---|
-| shipping-returns | `deriveDestinationCountry` -> `getLogisticsRoute('CN', dest)` -> `doorToDoorBand`; returns + shipping-cost from static facts | route found and fresh (< staleness) | `Delivery to X: estimated A-B days.` (today's freight line) | delivery time / cost / returns; hedge time if no route, cost still allowed from facts |
+| shipping-returns | `deriveDestinationCountry`; resolve origin per product where known (real CJ warehouse, may be EU/US/CN), else conservative default origin; `getLogisticsRoute(origin, dest)` -> `doorToDoorBand`; returns + shipping-cost from static facts | route found and fresh (< staleness) | `Delivery to X: estimated A-B days.` (today's freight line, origin never named) | delivery time / cost / returns; hedge time if no route, cost still allowed from facts |
 | order-status | `findCustomerByEmail` + new "recent orders + fulfillments/tracking" query; cross-ref local `orders` (CJ pipeline status/tracking) | exactly one order resolved (order # in message, else single recent) | `Order #1001: <status>, tracking <number> (<carrier>): <url>` | report grounded status; if none/ambiguous ask for order #; never invent status or tracking |
 | product-question | `resolveLineRequest(admin, namedProduct)` -> resolved/ambiguous/none + `warehouse_products.detail` (stock, specs) | single product resolved | none (facts go in prompt, flagged) | answer from resolved facts, suggest next step (PDP/cart); ambiguous -> ask which item; none -> point to site |
 | affiliate | reuse `partnership.ts` stance + screen verdict | always (policy-based) | none | today's affiliate slant: warm, ask audience/platform/reach, commit to nothing |
@@ -178,6 +190,117 @@ not US state / CA province names, so "Texas" fell through to a hedge. Add a
 state/province to country lookup inside the shipping grounder so "Texas" resolves to
 `US`, "Ontario" to `CA`, etc. Keep the existing ambiguity guard (multiple distinct
 destinations named -> hedge).
+
+### Shipping agent: origin is per-product, not CN
+
+CJ warehouses products in multiple countries (CN, EU, US, and others) depending on
+the product. The earlier `cj_logistics` assumption of a single `CN` origin "for this
+CN-only catalog" is therefore a simplification that can overstate delivery time: an
+EU-warehoused item shipped to an EU customer has no customs leg
+(`from_country === to_country` region) and a shorter transit, but a hardcoded `CN`
+origin always adds the cross-border customs window.
+
+Grounding priority for the shipping agent (most accurate first, each step defensible):
+
+1. **Per-product origin** - when a specific product/variant is identified (named in
+   the thread, or via an order/draft), read its real warehouse/origin from grounded
+   data: the variant `supplier.warehouse` metafield or a fresh CJ freight quote
+   (`bandFromQuote(aging, origin, dest, l)`, which already accepts an arbitrary
+   origin). This yields the real transit and the correct customs decision for that
+   item.
+2. **Route matrix fallback** - when no product is identified, use
+   `getLogisticsRoute(defaultOrigin, dest)`. The default origin stays conservative
+   (CN today) so we never under-promise.
+3. **Hedge** - missing/stale data -> `confident:false`.
+
+Two hard rules hold in every branch:
+
+- **Never under-promise dishonestly and never over-promise speculatively.** Quote a
+  faster EU/US-warehouse time ONLY when grounded that the specific product ships from
+  that warehouse to that customer. Absent that proof, fall back to the conservative
+  default. This is the `only-real-and-defensible` rule applied to origin.
+- **The reply never names the origin country.** It states the calculated time only
+  (e.g. "estimated 7 to 23 days"), satisfying the no-fulfilment-origin-claim rule
+  regardless of whether the true origin is CN, the EU, or the US.
+
+The `cj_logistics` table and `doorToDoorBand` already support arbitrary origins (the
+schema is keyed by `from_country`; `bandFromQuote` takes a `from` argument), so this
+is a grounding-resolution change, not a storage change. Populating non-CN matrix
+rows from the nightly sync is a follow-up that this design enables but does not
+require for Phase 1.
+
+## Commercial objective (bounded)
+
+Sales-relevant agents have an explicit first-class goal: advance the sale. The
+objective function is **maximize revenue subject to hard honesty and compliance
+constraints** - sustainable revenue through trust, never revenue at the expense of
+honesty. This is additive: it rides on top of the grounding-first contract above and
+never overrides it. When a commercial nudge would require an ungrounded claim, the
+grounding-first rule wins and the nudge is dropped.
+
+### Commercial goal per agent
+
+| Agent | Commercial goal | Notes |
+|---|---|---|
+| lead | **Flagship**: convert. Capture the minimum missing detail, then hand a real checkout via `createDraftOrder` / `propose-invoice`. One concrete next step, no pressure. | Draft-order creation needs `write_draft_orders` (re-auth); until then, direct to PDP/checkout. |
+| product-question | Answer first, then exactly one concrete next step (PDP link, "reply with the size and I will set it up", add-to-cart). | The conversion CTA, not a hard sell. |
+| shipping-returns | Reduce abandonment on delivery worry: state the honest delivery figure FIRST and plainly, THEN reassurance (tracking, returns cover). | Ordering is locked: never bury or reframe a long window (e.g. 23 days). |
+| order-status | After resolving status, a soft relationship touch ("anything else for <pet>?"). No pressure. | Repeat-purchase, not upsell-on-a-problem. |
+| affiliate | Keep gated; give a genuine good-fit affiliate a clear path. Commit to no terms. | Real channel; partnership.ts owns the gate. |
+| wholesale-b2b | **Capture + owner-alert only.** Politely hold to current policy, capture the contact, alert the owner. | MUST NOT imply a wholesale program or follow-up exists or is coming. Gated on the owner actually having a trade offering (they do not today). |
+| complaint | **Excluded.** Resolution and empathy only - no sale, no upsell. | Selling into a complaint is a dark pattern. |
+| other | **Excluded.** Generic safe handling only. | |
+
+### Flagship lever: the checkout path, not the nudge
+
+The real conversion mechanism already exists in the codebase: `createDraftOrder`
+(`src/shopify-drafts.ts`) and `propose-invoice.ts`. For a `lead` who states intent
+("I want X"), the highest-value, fully-grounded action is to create the draft order
+/ invoice and hand the customer a real checkout. The mandatory "one concrete next
+step" CTA on `lead` and `product-question` is the second pillar. These move revenue;
+the free-shipping nudge does not.
+
+### Secondary, opportunistic: free-shipping-threshold nudge
+
+"UK delivery is free over GBP 50" is a real, fixed fact and a legitimate honest
+upsell, but a minor one: in an email thread we rarely know the live basket value,
+and the threshold is UK-only (it does not apply to the EU GBP 14.99 or rest-of-world
+GBP 23.99 tiers). Use it ONLY when the basket/order total is grounded (the customer
+states it, or order-status / a draft order provides it) and the destination is UK.
+Never invent the customer's basket value. This is opportunistic, not a primary
+revenue driver.
+
+### Cross-cutting commercial guardrails
+
+These are hard limits, enforced in the shared prompt scaffolding for every
+sales-relevant agent:
+
+- Never invent discounts, prices, stock, delivery promises, urgency, or scarcity
+  ("only 2 left" only if real and grounded).
+- One nudge per reply, not repeated pushing across turns.
+- Honesty is never traded for conversion: true delivery times and product facts
+  stand as-is; reassurance never softens or hides them.
+- No commitments the owner has not authorized (commission rates, wholesale terms,
+  bespoke discounts).
+- The complaint and other agents carry no commercial objective.
+
+### Observability (what makes this an objective, not a wish)
+
+To claim the design serves revenue, commercial intent must be measurable. Each draft
+records a `commercial_intent` marker (did this reply carry a CTA or a grounded
+nudge?) alongside the existing `quotes_price_order` flag. This is a one-column
+addition to `inbox_drafts` (migration `0017`), surfaced in the console so the owner
+can later see which agents drive action. Without it, the honest answer to "does this
+maximize revenue" stays "we hope so."
+
+### Send-policy interaction (state it plainly)
+
+Commercial replies that mention money or commit to an order trip the universal money
+gate (`mentionsMoney` on the LLM body, or `quotesPriceOrOrder`) and route to HITL.
+That is correct and safe, but it means **commercial replies and auto-send rarely
+co-occur**: the most revenue-active replies are exactly the ones a human reviews
+before sending. The per-agent toggle still governs the figure-free commercial
+replies (e.g. "reply with the size and I will set it up").
 
 ## Per-agent auto toggle
 
@@ -255,15 +378,27 @@ path.
 - order-status: order-# match / single-recent fallback / ambiguous -> hedge /
   `admin:null` -> hedge.
 - product-question: resolved / ambiguous / none.
+- Shipping origin: per-product origin used when grounded (EU-warehoused item to an EU
+  customer -> no customs leg, shorter band); conservative default origin when no
+  product is identified; the reply never names the origin country.
+- Commercial: CTA present on `lead` / `product-question`; `complaint` and `other`
+  carry no commercial nudge (exclusion test); `wholesale-b2b` captures without
+  implying trade terms exist; free-shipping nudge fires ONLY when basket total is
+  grounded AND destination is UK; `commercial_intent` marker set correctly.
 - Console: `tests/console.test.ts` passes after `page.ts` edits.
 - Integration: `composeDraftForThread` end-to-end with a fake LLM, one per category.
 
 ## Migration and backward-compatibility
 
-No DB migration. `inbox` is JSON; `resolveAgents` fills all-OFF defaults, so
-behaviour is identical to today (full HITL) until the owner flips a toggle. The
+Config needs no migration: `inbox` is JSON; `resolveAgents` fills all-OFF defaults,
+so behaviour is identical to today (full HITL) until the owner flips a toggle. The
 master switch is preserved. The existing `replyGuidance` continues to apply to every
 agent as the owner's standing voice override.
+
+One small schema migration (`0017`) adds a `commercial_intent INTEGER NOT NULL
+DEFAULT 0` column to `inbox_drafts` for the observability requirement above. It is
+backfill-safe (defaults to 0 for existing rows) and orthogonal to the per-agent
+config.
 
 ## Phasing (for the implementation plan)
 
@@ -272,13 +407,23 @@ agent as the owner's standing voice override.
   console toggle panel, and migrate existing behaviour into agents
   (shipping-returns incl. the Texas fix, affiliate via partnership.ts, lead,
   wholesale-b2b, complaint, other, and a basic product-question that reuses
-  `resolveLineRequest`).
-- **Phase 2**: order-status new Shopify "recent orders + tracking" query (depends on
-  the outstanding `read_orders` / `read_customers` re-auth) and deeper
-  product-question grounding (warehouse detail, stock, specs).
+  `resolveLineRequest`). Commercial objective at the prompt level: CTA discipline on
+  `lead` / `product-question`, shipping-objection ordering, `wholesale-b2b` capture +
+  owner-alert, `complaint` / `other` exclusion, opportunistic free-shipping nudge.
+  `commercial_intent` marker + migration `0017` + console surface.
+- **Phase 2**: order-status new Shopify "recent orders + tracking" query and the
+  draft-order checkout handoff via `createDraftOrder` (both depend on the outstanding
+  `read_orders` / `read_customers` / `write_draft_orders` re-auth); per-product
+  origin resolution for the shipping agent (real warehouse via `supplier.warehouse` /
+  CJ quote, EU/US/CN); deeper product-question grounding (warehouse detail, stock,
+  specs); optional nightly sync of non-CN logistics matrix rows.
 
 ## Open dependencies
 
-- Order-status grounding requires the merchant re-auth for `read_orders` and
-  `read_customers` (tracked separately). Until then the agent hedges; no blocker for
-  Phase 1.
+- Order-status grounding and the lead draft-order checkout handoff require the
+  merchant re-auth for `read_orders`, `read_customers`, and `write_draft_orders`
+  (tracked separately). Until then those agents hedge or direct to PDP/checkout; no
+  blocker for Phase 1.
+- Per-product origin resolution (Phase 2) depends on grounded per-variant warehouse
+  data (`supplier.warehouse` metafield or a fresh CJ quote). Phase 1 uses the
+  conservative default origin, which is correct and defensible meanwhile.
