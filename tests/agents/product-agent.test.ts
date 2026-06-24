@@ -52,6 +52,26 @@ describe('productAgent.ground', () => {
     expect(g.facts).toContain('40');
   });
 
+  it('includes categoryName and petClass spec fields when warehouse detail has them', async () => {
+    const store = {
+      getLinkByShopifyProductId: async (_id: string) => ({ cj_pid: 'p1' }),
+      getWarehouseProduct: async (_pid: string) => ({
+        stock: 12,
+        status: 'available',
+        detail: JSON.stringify({ categoryName: 'Harnesses', petClass: 'dog' })
+      })
+    };
+    const ctx = {
+      store, cfg: {} as any, admin: singleProductAdmin,
+      thread: { subject: '' }, conversation: 'blue harness',
+      latestMessage: 'blue harness', contactEmail: 'a@b.com', customerName: null
+    } as any;
+    const g = await productAgent.ground(ctx);
+    expect(g.confident).toBe(true);
+    expect(g.facts).toContain('Category: Harnesses');
+    expect(g.facts).toContain('For: dog');
+  });
+
   it('stays confident and keeps price/title when no warehouse row exists', async () => {
     const store = {
       getLinkByShopifyProductId: async (_id: string) => null,

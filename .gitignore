@@ -5,7 +5,7 @@ dist/
 
 /pyproject.toml
 
-# Graphite — local code graph tooling/output
+# Graphite - local code graph tooling/output
 graph-out/
 .cache/graphite/
 .graphite-daemon/

@@ -7,5 +7,6 @@ describe('affiliateAgent', () => {
     expect(g.confident).toBe(true);
     expect(affiliateAgent.deterministicAppendix(g)).toBeNull();
     expect(affiliateAgent.promptFragment(g).toLowerCase()).toContain('commission');
+    expect(affiliateAgent.commercial).toBe(false);
   });
 });

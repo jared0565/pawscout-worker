@@ -16,6 +16,12 @@ describe('mentionsMoney', () => {
   it('does not match innocent uses of those words', () => {
     for (const t of ['feel free to ask us anything', 'I have two cats and one dog', 'we are happy to help']) expect(mentionsMoney(t)).toBe(false);
   });
+  it('catches currency-word-before-number (GBP prefix)', () => {
+    for (const t of ['Delivery is a flat GBP 14.99.', 'GBP 50', 'It is GBP 23.99 to your country.', 'free on orders over GBP 50']) expect(mentionsMoney(t)).toBe(true);
+  });
+  it('does not false-positive on plain prose without money', () => {
+    expect(mentionsMoney('Yes we ship to Ireland.')).toBe(false);
+  });
 });
 
 describe('autoSendDecision', () => {
