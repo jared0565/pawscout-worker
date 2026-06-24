@@ -51,6 +51,13 @@ const COUNTRY_NAMES: Record<string, string> = {
   brazil: 'BR', argentina: 'AR', chile: 'CL'
 };
 
+// US states + DC and Canadian provinces -> ISO-2 country. A bare state/province name
+// implies its country (a Texas shipping question is a US destination). Two-letter
+// abbreviations are NOT matched (too collision-prone with words); full names only.
+const US_STATES = ['alabama','alaska','arizona','arkansas','california','colorado','connecticut','delaware','florida','georgia','hawaii','idaho','illinois','indiana','iowa','kansas','kentucky','louisiana','maine','maryland','massachusetts','michigan','minnesota','mississippi','missouri','montana','nebraska','nevada','new hampshire','new jersey','new mexico','new york','north carolina','north dakota','ohio','oklahoma','oregon','pennsylvania','rhode island','south carolina','south dakota','tennessee','texas','utah','vermont','virginia','washington','west virginia','wisconsin','wyoming'];
+const CA_PROVINCES = ['alberta','british columbia','manitoba','new brunswick','newfoundland','nova scotia','ontario','prince edward island','quebec','saskatchewan'];
+const SUBNATIONAL: Array<[string[], string]> = [[US_STATES, 'US'], [CA_PROVINCES, 'CA']];
+
 /**
  * In-scope destinations for the synced CJ logistics matrix (owner decision
  * 2026-06-21: full markets). GB (home) + every unique ISO-2 the store recognises,
@@ -98,6 +105,14 @@ export function deriveDestinationCountry(conversation: string, subject: string, 
     // Word-boundary match; escape any regex metachars in the curated key.
     const re = new RegExp(`(?:^|[^a-z])${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:[^a-z]|$)`, 'i');
     if (re.test(text)) found.add(COUNTRY_NAMES[name]);
+  }
+
+  // State/province lookup: a bare US state or CA province name implies its country.
+  for (const [names, iso] of SUBNATIONAL) {
+    for (const name of names) {
+      const re = new RegExp(`(?:^|[^a-z])${name}(?:[^a-z]|$)`, 'i');
+      if (re.test(text)) { found.add(iso); break; }
+    }
   }
 
   if (found.size === 1) return [...found][0];
