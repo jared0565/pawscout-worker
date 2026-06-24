@@ -804,7 +804,14 @@ export async function seedOriginAssortment(
     let perCat = 0;
     for (const kw of kws) {
       if (perCat >= cap) break;
-      const items = await cj.searchByWarehouse(normalizeKeyword(kw), cc);
+      // Apply the same discovery gate the storefront feed + replenishWarehouse use
+      // (price band + popularity + species + keyword relevance). /product/list is a
+      // loose keyword endpoint, so without this an off-target or out-of-band product
+      // (e.g. a $110 stroller above priceMax, or a car-seat-cover under a grooming
+      // keyword) would be drafted into the wrong collection. The LLM curation gate
+      // downstream still applies on top of this.
+      const items = (await cj.searchByWarehouse(normalizeKeyword(kw), cc))
+        .filter((i) => liveCjPasses(i, cfg.gates, normalizeKeyword(kw)));
       await pause(CJ_CALL_GAP_MS);
       for (const item of items) {
         if (perCat >= cap) break;

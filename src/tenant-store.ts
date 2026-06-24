@@ -553,6 +553,15 @@ export class TenantStore {
     return rs.results ?? [];
   }
 
+  /** Hard-delete a product's link + warehouse rows. Used to purge bad seed drafts
+   *  before a clean re-seed (the Shopify product is deleted separately via the API). */
+  async purgeProductData(cjPid: string): Promise<void> {
+    await this.db.batch([
+      this.db.prepare(`DELETE FROM product_links WHERE shop = ?1 AND cj_pid = ?2`).bind(this.shop, cjPid),
+      this.db.prepare(`DELETE FROM warehouse_products WHERE shop = ?1 AND cj_pid = ?2`).bind(this.shop, cjPid)
+    ]);
+  }
+
   /** W-ADDON: hidden filler handles for the storefront widgets (random rotation). */
   async listAddonHandles(limit = 4): Promise<string[]> {
     const rs = await this.db

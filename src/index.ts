@@ -285,6 +285,35 @@ app.post('/api/admin/seed-gb-origin', async (c) => {
   }
 });
 
+// TEMPORARY (GB seed cleanup, 2026-06-24): purge bad GB seed DRAFTS (Shopify product
+// + D1 link/warehouse rows) so a corrected re-seed starts clean. Only touches links
+// in 'draft' state (never the live 'imported' catalog). Remove with the seed route.
+const PRODUCT_DELETE = `mutation pawscoutProductDelete($input: ProductDeleteInput!) { productDelete(input: $input) { deletedProductId userErrors { field message } } }`;
+app.post('/api/admin/purge-gb-drafts', async (c) => {
+  if (!c.env.MAINT_TOKEN || c.req.header('X-Maint-Token') !== c.env.MAINT_TOKEN) {
+    return c.json({ ok: false, error: 'unauthorized' }, 401);
+  }
+  const shop = c.req.query('shop') ?? '4qkudm-ez.myshopify.com';
+  const store = new TenantStore(c.env.DB, shop);
+  const tenant = await store.getTenant();
+  if (!tenant?.access_token_enc) return c.json({ ok: false, error: 'Not configured' }, 400);
+  const vault = await Vault.fromMasterKey(c.env.PAWSCOUT_MASTER_KEY);
+  const accessToken = await vault.open(tenant.dek_wrapped, tenant.access_token_enc);
+  const admin = makeAdminGraphql(shop, accessToken);
+  let purged = 0;
+  const errors: string[] = [];
+  for (const link of await store.linksByState('draft')) {
+    try {
+      if (link.shopify_product_id) await admin(PRODUCT_DELETE, { input: { id: link.shopify_product_id } });
+      await store.purgeProductData(link.cj_pid);
+      purged++;
+    } catch (e) {
+      errors.push(`${link.cj_pid}: ${(e as Error).message}`);
+    }
+  }
+  return c.json({ ok: true, purged, errors });
+});
+
 app.post('/api/addons', async (c) => {
   const s = await shopOf(c); if (typeof s !== 'string') return s;
   let body: unknown;

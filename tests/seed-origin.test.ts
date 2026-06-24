@@ -57,6 +57,26 @@ describe('seedOriginAssortment', () => {
     expect(JSON.parse(wh!.detail).origins.GB).toBe(40);   // origins cached for Phase-2 geo-ranking
   });
 
+  it('filters out-of-price-band candidates (liveCjPasses gate) before drafting', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const cj = {
+      searchByWarehouse: async (): Promise<CjSearchItem[]> => ([
+        { pid: 'GBOK', nameEn: 'Dog Chew Toy', image: '', sellPriceUsd: 6, listedNum: 20, categoryName: 'pet-toys' },
+        { pid: 'GBHI', nameEn: 'Dog Chew Toy', image: '', sellPriceUsd: 200, listedNum: 20, categoryName: 'pet-toys' } // over priceMax 80
+      ]),
+      detail: async (pid: string): Promise<CjDetail> => ({ pid, nameEn: 'Dog Chew Toy', images: ['https://img/x.jpg'], descriptionHtml: 'x', variants: [{ vid: `v-${pid}`, name: 'Default', sellPriceUsd: 6, sku: pid, stock: 50 }], listedNum: 20, categoryName: 'pet-toys', stock: 50, origins: { CN: 100, GB: 40 } }),
+      stockByPid: async () => new Map([['v-GBOK', 50]]),
+      freightEstimate: async () => ({ priceUsd: 0, days: '2-5', name: 'Royal Mail' })
+    } as unknown as CjClient;
+
+    const summary = await seedOriginAssortment(store, cj, fakeAdmin(), CFG, { countryCode: 'GB', perCollection: 12, pause: async () => {}, keywords: { 'pet-toys': ['dog chew toy'] } });
+
+    expect(summary.drafted).toBe(1);                          // only the in-band item
+    expect((await store.getLink('GBOK'))?.state).toBe('draft');
+    expect(await store.getLink('GBHI')).toBeNull();           // out-of-band filtered, never processed
+    expect(await store.getWarehouseProduct('GBHI')).toBeNull();
+  });
+
   it('skips a pid that is already linked', async () => {
     const store = new TenantStore(env.DB, SHOP);
     await store.putLink({ cjPid: 'GB1', state: 'imported', shopifyProductId: 'gid://x', category: 'pet-toys' });
