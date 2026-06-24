@@ -1,12 +1,13 @@
-// src/inbox/agents/complaint.ts (full implementation lands in Task 12; hedging stub shown)
-import type { CategoryAgent } from './types';
+import type { CategoryAgent, Grounding } from './types';
 
 export const complaintAgent: CategoryAgent = {
   category: 'complaint',
   displayName: 'Complaints',
   description: 'Empathetic resolution; no commercial objective',
   commercial: false,
-  async ground() { return { confident: true, facts: '', quotesFigure: false }; },
-  promptFragment() { return 'This is a complaint; respond with empathy, acknowledge the issue, and set out the next step to resolve it from the store facts. Do NOT make commercial offers.'; },
-  deterministicAppendix() { return null; }
+  async ground(): Promise<Grounding> { return { confident: true, facts: '', quotesFigure: false }; },
+  promptFragment(): string {
+    return 'The customer is dissatisfied. Lead with genuine empathy and apologise for the trouble. Acknowledge the specific issue, explain the next step to put it right (or that you are escalating to the team), and reassure them. Do NOT upsell, suggest a purchase, or add any commercial nudge; resolution and care only. Never admit legal liability or promise a specific refund amount unless the facts provide one.';
+  },
+  deterministicAppendix(): string | null { return null; }
 };

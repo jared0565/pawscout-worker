@@ -1,12 +1,13 @@
-// src/inbox/agents/wholesale.ts (full implementation lands in Task 10; hedging stub shown)
-import type { CategoryAgent } from './types';
+import type { CategoryAgent, Grounding } from './types';
 
 export const wholesaleAgent: CategoryAgent = {
   category: 'wholesale-b2b',
   displayName: 'Wholesale / Trade',
   description: 'Policy: not offering trade terms; capture + owner-alert only',
   commercial: false,
-  async ground() { return { confident: true, facts: '', quotesFigure: false }; },
-  promptFragment() { return 'This is a wholesale or trade enquiry; thank them, explain we are not offering trade terms right now, and say we have noted their interest. Do NOT quote trade pricing or commit to terms.'; },
-  deterministicAppendix() { return null; }
+  async ground(): Promise<Grounding> { return { confident: true, facts: '', quotesFigure: false }; },
+  promptFragment(): string {
+    return 'This is a wholesale, trade, reseller, or bulk-order enquiry. Active Paw is currently focused on individual retail buyers and is not offering wholesale or trade terms right now. Politely say so, do not offer bulk discounts or reseller arrangements, and do not imply a wholesale programme or follow-up exists or is coming. You may say they are welcome to order individual items through the website. Thank them and note we will keep their interest on file.';
+  },
+  deterministicAppendix(): string | null { return null; }
 };
