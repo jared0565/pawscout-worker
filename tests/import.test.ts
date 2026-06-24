@@ -512,6 +512,25 @@ describe('reconcileCategories (re-audit)', () => {
 });
 
 describe('importProduct publish flag', () => {
+  it('publish:false revival sets DRAFT status and records link state=draft', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    await store.putLink({ cjPid: 'PA', state: 'archived', shopifyProductId: 'gid://shopify/Product/99', handle: 'archived-product' });
+    const ops: { q: string; vars: any }[] = [];
+    const admin = (async (q: string, vars: any) => {
+      ops.push({ q, vars });
+      if (q.includes('productUpdate')) return { productUpdate: { product: { id: 'gid://shopify/Product/99' }, userErrors: [] } };
+      return {};
+    }) as unknown as AdminGraphql;
+    const detail: CjDetail = { pid: 'PA', nameEn: 'Revival Product', images: [], descriptionHtml: 'x', variants: [{ vid: 'VA', name: 'Default', sellPriceUsd: 6, sku: 'SA' }], listedNum: 5, categoryName: 'pet-toys', llmScore: 90 };
+
+    await importProduct(store, admin, CFG, detail, 'pet-toys', { publish: false });
+
+    expect(ops).toHaveLength(1); // single productUpdate, no productSet
+    expect(ops[0].q).toContain('productUpdate');
+    expect((ops[0].vars.input as { status: string }).status).toBe('DRAFT');
+    expect((await store.getLink('PA'))?.state).toBe('draft');
+  });
+
   it('publish:false imports as DRAFT, skips Online-Store publish, and links state=draft', async () => {
     const ops: { q: string; vars: any }[] = [];
     const admin = (async (q: string, vars: any) => {
