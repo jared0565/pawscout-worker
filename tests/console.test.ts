@@ -131,6 +131,24 @@ describe('consolePage', () => {
     expect(scripts).toContain('Creator / affiliate partnership');
   });
 
+  it('includes the per-agent auto-send toggle panel', async () => {
+    const html = await consolePage('test-api-key').text();
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+    // Markup: agents panel container and list mount point
+    expect(html).toContain('id="agents-panel"');
+    expect(html).toContain('id="agents-list"');
+    // JS: INBOX_AGENTS list and render/collect helpers
+    expect(scripts).toContain('INBOX_AGENTS');
+    expect(scripts).toContain('function renderAgents(');
+    expect(scripts).toContain('function collectAgents(');
+    // Each agent row uses data-agent attribute
+    expect(scripts).toContain('data-agent');
+    // Save payload includes agents
+    expect(scripts).toContain('agents:collectAgents()');
+    // setReplyModeUI re-renders agents on master toggle
+    expect(scripts).toContain('renderAgents({autosend:on,agents:collectAgents()})');
+  });
+
   it('wraps every invoice field in esc() in the client render code', async () => {
     const html = await consolePage('test-api-key').text();
     // Verify that the renderInboxThread / invoice-card code wraps dynamic values in esc()

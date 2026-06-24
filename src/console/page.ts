@@ -139,6 +139,10 @@ export function consolePage(apiKey: string): Response {
   .reply-mode.is-auto .reply-mode__state{color:var(--accent)}
   .reply-mode__sw{display:flex;align-items:center;gap:8px;margin:0;cursor:pointer;white-space:nowrap}
   .reply-mode__sw input[type=checkbox]{width:auto;cursor:pointer}
+  .agents-panel{margin:0 0 14px;padding:12px 14px;border:1px solid var(--border);border-radius:10px}
+  .agents-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:6px 0;border-top:1px solid var(--border)}
+  .agents-row:first-of-type{border-top:0}
+  .agents-row.is-disabled{opacity:.5}
 </style>
 </head><body>
 <div class="wrap">
@@ -376,6 +380,10 @@ export function consolePage(apiKey: string): Response {
         <input type="checkbox" id="inbox-autosend-chk" data-inbox-autosend onchange="onReplyModeToggle()">
         <span style="font-weight:600">Reply automatically</span>
       </label>
+    </div>
+    <div id="agents-panel" class="agents-panel">
+      <div class="agents-panel__head">Per-agent auto-send <span class="sub">(each agent stays on manual review until you switch it to Auto)</span></div>
+      <div id="agents-list"></div>
     </div>
     <div class="row" style="margin-bottom:12px">
       <div class="grow">
@@ -1357,6 +1365,30 @@ async function saveInboxLabels(id){
   }catch(e){ setMsg('inbox-modal-msg','Failed: '+errText(e),'no'); }
 }
 var currentInboxCfg={enabled:true,labels:[]};
+var INBOX_AGENTS=[
+  ['shipping-returns','Shipping & Returns'],['order-status','Order Status'],
+  ['product-question','Product Questions'],['lead','Sales Leads'],
+  ['wholesale-b2b','Wholesale / Trade'],['affiliate','Affiliate / Partnership'],
+  ['complaint','Complaints'],['other','General']
+];
+function renderAgents(cfg){
+  var list=el('agents-list'); if(!list) return;
+  var master=!!(cfg&&cfg.autosend); var agents=(cfg&&cfg.agents)||{};
+  list.innerHTML='';
+  INBOX_AGENTS.forEach(function(a){
+    var key=a[0], name=a[1], on=!!(agents[key]&&agents[key].autosend);
+    var row=document.createElement('div'); row.className='agents-row'+(master?'':' is-disabled');
+    var lbl=document.createElement('span'); lbl.textContent=name;
+    var sw=document.createElement('input'); sw.type='checkbox'; sw.checked=on; sw.disabled=!master;
+    sw.setAttribute('data-agent',key);
+    row.appendChild(lbl); row.appendChild(sw); list.appendChild(row);
+  });
+}
+function collectAgents(){
+  var out={}; var rows=document.querySelectorAll('#agents-list input[data-agent]');
+  for(var i=0;i<rows.length;i++){ out[rows[i].getAttribute('data-agent')]={autosend:!!rows[i].checked}; }
+  return out;
+}
 function setReplyModeUI(on){
   var wrap=el('reply-mode'), st=el('reply-mode-state'), ds=el('reply-mode-desc');
   if(wrap) wrap.className='reply-mode'+(on?' is-auto':'');
@@ -1364,6 +1396,7 @@ function setReplyModeUI(on){
   if(ds) ds.textContent=on
     ?'PawScout emails customers automatically when its confidence is at or above the threshold. No human review.'
     :'Drafts wait here for you to approve and send - nothing is emailed to customers automatically.';
+  renderAgents({autosend:on,agents:collectAgents()});
 }
 async function onReplyModeToggle(){
   var chk=el('inbox-autosend-chk'); if(!chk) return;
@@ -1382,6 +1415,7 @@ async function loadInboxSettings(){
     currentInboxCfg={enabled:cfg.enabled!==false,labels:Array.isArray(cfg.labels)?cfg.labels:[]};
     var chk=el('inbox-autosend-chk'); if(chk) chk.checked=!!cfg.autosend;
     setReplyModeUI(!!cfg.autosend);
+    renderAgents(cfg);
     var at=el('inbox-auto-thresh'); if(at&&cfg.autoConfidenceThreshold!=null) at.value=cfg.autoConfidenceThreshold;
     var it=el('inbox-intent-thresh'); if(it&&cfg.intentThreshold!=null) it.value=cfg.intentThreshold;
     var ae=el('inbox-alert-email'); if(ae&&cfg.alertEmail) ae.value=cfg.alertEmail;
@@ -1417,7 +1451,8 @@ async function saveInboxSettings(){
       autoInvoice:!!(aichk&&aichk.checked),
       invoiceConfidenceThreshold:Number(ict&&ict.value||95),
       invoiceValueCeiling:Number(ivc&&ivc.value||250),
-      invoiceRateLimit:Math.max(1,parseInt((irl&&irl.value)||'2',10)||2)
+      invoiceRateLimit:Math.max(1,parseInt((irl&&irl.value)||'2',10)||2),
+      agents:collectAgents()
     };
     var r=await api('/inbox/config',payload);
     if(r.ok){ setMsg('inboxcfgmsg','Saved ✓','ok'); return true; }
