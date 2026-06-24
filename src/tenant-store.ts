@@ -687,6 +687,7 @@ export class TenantStore {
         `SELECT DISTINCT je.key AS origin
          FROM warehouse_products AS wp, json_each(json_extract(wp.detail, '$.origins')) AS je
          WHERE wp.shop = ?1
+           AND wp.status = 'available'
            AND je.key != 'CN'
            AND CAST(je.value AS INTEGER) > 0
          ORDER BY je.key`

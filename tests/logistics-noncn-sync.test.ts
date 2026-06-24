@@ -74,6 +74,27 @@ describe('catalogNonCnOrigins', () => {
     await seedWarehouseRow(a, makeDetail({ US: 30 }));
     expect(await b.catalogNonCnOrigins()).toEqual([]);
   });
+
+  it('filters on status = available (ignores stale/unavailable)', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const gbDetail = makeDetail({ CN: 100, GB: 40 });
+    const usDetail = makeDetail({ CN: 100, US: 50 });
+    const now = new Date().toISOString();
+    const d = JSON.parse(gbDetail);
+    // Insert GB row with status 'unavailable' (not 'available')
+    await (env.DB as D1Database).prepare(
+      `INSERT INTO warehouse_products (shop, cj_pid, category, title, detail, price_usd, listed_num, stock, search_text, status, fetched_at, stock_checked_at, created_at)
+       VALUES (?1, ?2, 'pets', ?3, ?4, 9.99, 100, 5, ?3, 'unavailable', ?5, ?5, ?5)`
+    ).bind((store as unknown as { shop: string }).shop, d.pid, d.title, gbDetail, now).run();
+    // Insert US row with status 'available'
+    const usD = JSON.parse(usDetail);
+    await (env.DB as D1Database).prepare(
+      `INSERT INTO warehouse_products (shop, cj_pid, category, title, detail, price_usd, listed_num, stock, search_text, status, fetched_at, stock_checked_at, created_at)
+       VALUES (?1, ?2, 'pets', ?3, ?4, 9.99, 100, 5, ?3, 'available', ?5, ?5, ?5)`
+    ).bind((store as unknown as { shop: string }).shop, usD.pid, usD.title, usDetail, now).run();
+    const result = await store.catalogNonCnOrigins();
+    expect(result).toEqual(['US']); // GB filtered out because status != 'available'
+  });
 });
 
 // --- sampleWarehouseDetailsForOrigin ---------------------------------------
@@ -203,5 +224,29 @@ describe('syncCjLogisticsRoutes allowInMarket', () => {
     expect(res.refreshed).toBe(1);
     expect(await store.getLogisticsRoute('CN', 'CN', 72)).toBeNull();
     expect(await store.getLogisticsRoute('CN', 'GB', 72)).not.toBeNull();
+  });
+
+  it('rejects unparseable aging on in-market route (no fabrication)', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    // Return unparseable aging for US->US, valid for US->GB
+    const mockQuote = fakeQuoteWith((from, to) => {
+      if (from === 'US' && to === 'US') {
+        return [{ priceUsd: 0, days: 'soon', name: 'USPS' }]; // unparseable
+      }
+      return [{ priceUsd: 0, days: '3-5', name: 'USPS' }]; // valid
+    });
+
+    const res = await syncCjLogisticsRoutes(
+      [store], store,
+      { freightQuote: async () => [] } as unknown as CjClient,
+      'vRep',
+      ['US', 'GB'],
+      { from: 'US', allowInMarket: true, quote: mockQuote, pause: noPause }
+    );
+
+    // US->US should fail (unparseable aging), US->GB synced
+    expect(res.refreshed).toBe(1); // only US->GB
+    expect(res.failed).toBe(1); // US->US rejected
+    expect(await store.getLogisticsRoute('US', 'US', 72)).toBeNull(); // no row upserted
   });
 });
