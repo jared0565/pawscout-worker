@@ -1,5 +1,4 @@
 export const AUTO_RATELIMIT_PER_SENDER_DAY = 3;
-const ALWAYS_HOLD_CATEGORIES = new Set(['complaint', 'wholesale-b2b', 'affiliate']);
 
 // Mechanical money/commitment detector - the deterministic backstop to the LLM's
 // self-reported flag. Conservative: false positives just route to HITL.
@@ -18,7 +17,6 @@ export function autoSendDecision(opts: {
   if (!opts.autosend) reasons.push('autosend_off');
   if (opts.confidence < opts.threshold) reasons.push('low_confidence');
   if (opts.quotesPriceOrOrder || mentionsMoney(opts.bodyText)) reasons.push('mentions_money');
-  if (ALWAYS_HOLD_CATEGORIES.has(opts.category)) reasons.push('always_hold_category');
   if (opts.recentAutoCount >= AUTO_RATELIMIT_PER_SENDER_DAY) reasons.push('rate_limited');
   return { send: reasons.length === 0, holdReasons: reasons };
 }

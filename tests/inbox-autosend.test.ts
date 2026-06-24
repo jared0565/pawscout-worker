@@ -35,12 +35,12 @@ describe('autoSendDecision', () => {
     const d = autoSendDecision({ ...base, quotesPriceOrOrder: false, bodyText: 'Sure - that bundle is £29.99.' });
     expect(d.send).toBe(false); expect(d.holdReasons).toContain('mentions_money');
   });
-  it('always holds complaint, wholesale-b2b, and affiliate', () => {
-    expect(autoSendDecision({ ...base, category: 'complaint' }).send).toBe(false);
-    expect(autoSendDecision({ ...base, category: 'wholesale-b2b' }).send).toBe(false);
+  it('sends complaint, wholesale-b2b, and affiliate when autosend is true and floor passes', () => {
+    expect(autoSendDecision({ ...base, category: 'complaint' }).send).toBe(true);
+    expect(autoSendDecision({ ...base, category: 'wholesale-b2b' }).send).toBe(true);
     const aff = autoSendDecision({ ...base, category: 'affiliate' });
-    expect(aff.send).toBe(false);
-    expect(aff.holdReasons).toContain('always_hold_category');
+    expect(aff.send).toBe(true);
+    expect(aff.holdReasons.length).toBe(0); // no always_hold_category reason
   });
   it('holds over the rate limit', () => {
     expect(autoSendDecision({ ...base, recentAutoCount: AUTO_RATELIMIT_PER_SENDER_DAY }).send).toBe(false);
