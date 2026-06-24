@@ -30,6 +30,33 @@ describe('productAgent.ground', () => {
     expect(g.facts.toLowerCase()).toContain('which');
   });
 
+  it('ambiguous variants of ONE product -> confident, facts contain title + both variant options', async () => {
+    // Both variants belong to the same product (same id 'p1')
+    const admin = async () => ({ products: { edges: [
+      { node: { id: 'p1', title: 'Blue Harness', variants: { edges: [
+        { node: { id: 'v1', title: 'S', price: '12.00', availableForSale: true, inventoryQuantity: 3 } },
+        { node: { id: 'v2', title: 'L', price: '14.00', availableForSale: true, inventoryQuantity: 2 } }
+      ] } } }
+    ] } });
+    const g = await productAgent.ground(mkCtx(admin));
+    expect(g.confident).toBe(true);
+    expect(g.quotesFigure).toBe(true);
+    expect(g.facts).toContain('Blue Harness');
+    expect(g.facts).toContain('S');
+    expect(g.facts).toContain('L');
+  });
+
+  it('ambiguous candidates spanning two different productIds -> hedge (not confident)', async () => {
+    // Each variant belongs to a different product
+    const admin = async () => ({ products: { edges: [
+      { node: { id: 'p1', title: 'Blue Harness', variants: { edges: [{ node: { id: 'v1', title: 'S', price: '12.00', availableForSale: true, inventoryQuantity: 3 } }] } } },
+      { node: { id: 'p2', title: 'Red Harness', variants: { edges: [{ node: { id: 'v2', title: 'S', price: '13.00', availableForSale: true, inventoryQuantity: 3 } }] } } }
+    ] } });
+    const g = await productAgent.ground(mkCtx(admin));
+    expect(g.confident).toBe(false);
+    expect(g.facts.toLowerCase()).toContain('which');
+  });
+
   // Task 19: warehouse supplement tests
   it('appends warehouse stock info when D1 row is available', async () => {
     const store = {

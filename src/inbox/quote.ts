@@ -32,8 +32,8 @@ export function stripQuotedReply(text: string | null | undefined): string {
   ];
   let cut = t.length;
   for (const re of cutters) {
-    const m = re.exec(t);
-    if (m && m.index < cut) cut = m.index;
+    const m = t.match(re);
+    if (m && m.index !== undefined && m.index < cut) cut = m.index;
   }
 
   const head = t

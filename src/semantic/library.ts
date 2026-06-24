@@ -3,6 +3,7 @@ import type { TenantStore } from '../tenant-store';
 import { DEFAULT_SEMANTIC, type SemanticConfig, type TenantConfig } from '../types';
 import { resolveChain } from '../llm-resolve';
 import { isPetProductStrict } from '../proxy/search';
+import { defaultFetch } from '../safe-fetch';
 
 // cfg.semantic is optional on the type (getConfig always populates it); read it
 // through this guard so a hand-built config behaves as the enabled default.
@@ -48,7 +49,7 @@ async function suggestOne(q: string, fetchImpl: typeof fetch): Promise<string[]>
 // Pet-biased autocomplete: query "pet <term>", "dog <term>", "cat <term>", and
 // "<collection noun> <term>" so the raw set skews pet-domain (so "shampoo" yields
 // dog/puppy/pet shampoo, not human shampoo). Union + dedupe; never throws.
-export async function fetchSuggest(term: string, collection: string, fetchImpl: typeof fetch = fetch): Promise<string[]> {
+export async function fetchSuggest(term: string, collection: string, fetchImpl: typeof fetch = defaultFetch): Promise<string[]> {
   const noun = collectionNoun(collection);
   const queries = [...SUGGEST_PREFIXES.map((p) => `${p} ${term}`), ...(noun ? [`${noun} ${term}`] : [])];
   const all = (await Promise.all(queries.map((q) => suggestOne(q, fetchImpl)))).flat();
@@ -105,7 +106,7 @@ export async function seedTerm(
   term: string,
   collection: string,
   source: string,
-  fetchImpl: typeof fetch = fetch
+  fetchImpl: typeof fetch = defaultFetch
 ): Promise<string[]> {
   if (excluded(cfg, collection)) return [];
   const key = term.toLowerCase().trim();

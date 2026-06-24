@@ -1,4 +1,5 @@
 import type { TenantStore } from './tenant-store';
+import { defaultFetch } from './safe-fetch';
 
 export type CatalogModel = {
   slug: string;
@@ -74,7 +75,7 @@ async function loadLiveMap(store: TenantStore, fetchImpl: typeof fetch): Promise
 // Assemble the curated list enriched with live pricing ($/million tokens) and
 // the corrected vision flag. Never throws: on any catalog failure every model
 // surfaces with null prices and its static vision hint.
-export async function getModelCatalog(store: TenantStore, fetchImpl: typeof fetch = fetch): Promise<CatalogModel[]> {
+export async function getModelCatalog(store: TenantStore, fetchImpl: typeof fetch = defaultFetch): Promise<CatalogModel[]> {
   const live = await loadLiveMap(store, fetchImpl);
   return CURATED_MODELS.map((m) => {
     const l = live?.get(m.slug);

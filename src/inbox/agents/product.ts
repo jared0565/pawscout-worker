@@ -46,7 +46,25 @@ export const productAgent: CategoryAgent = {
           data: { variantId: v.variantId }
         };
       }
-      if (r.status === 'ambiguous') return hedge('Several products match; ask which specific item they mean before answering.');
+      if (r.status === 'ambiguous') {
+        const candidates = r.candidates ?? [];
+        const productIds = new Set(candidates.map((c) => c.productId));
+        if (productIds.size === 1) {
+          // All candidates are variants of the same product -- answer confidently.
+          const first = candidates[0];
+          const prices = candidates.map((c) => c.priceGbp);
+          const minPrice = Math.min(...prices);
+          const maxPrice = Math.max(...prices);
+          const priceRange = minPrice === maxPrice ? `GBP ${minPrice.toFixed(2)}` : `GBP ${minPrice.toFixed(2)}-${maxPrice.toFixed(2)}`;
+          const variantList = candidates.map((c) => c.variantTitle).filter(Boolean).join(', ');
+          return {
+            confident: true,
+            quotesFigure: true,
+            facts: `Product "${first.title}", price ${priceRange}${variantList ? `, available variants: ${variantList}` : ''}. Answer the product question and invite the customer to pick a variant.`
+          };
+        }
+        return hedge('Several products match; ask which specific item they mean before answering.');
+      }
       return hedge('No matching product found; point them to the website search and offer to help once they name the item.');
     } catch (e) {
       console.warn(`productAgent.ground failed: ${(e as Error).message}`);

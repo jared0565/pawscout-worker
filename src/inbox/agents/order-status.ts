@@ -48,7 +48,7 @@ export const orderStatusAgent: CategoryAgent = {
       return {
         confident: true,
         quotesFigure: true,
-        facts: `Order ${order.name} is ${status}. A precise status/tracking line is appended after your reply, so confirm the status warmly but do NOT restate the tracking number or invent any detail.`,
+        facts: `Order ${order.name} is ${status}.`,
         data: order
       };
     } catch (e) {
@@ -59,7 +59,7 @@ export const orderStatusAgent: CategoryAgent = {
 
   promptFragment(g: Grounding): string {
     void g;
-    return 'You are the order-status specialist. Report only the grounded order status. Never invent an order number, status, date, or tracking number. If no order is grounded, politely ask for the order number or the email used at checkout. After confirming status, a soft relationship touch is welcome but no pressure.';
+    return 'You are the order-status specialist. Report only the grounded order status. Never invent an order number, status, date, or tracking number. A precise status/tracking line is appended after your reply -- do NOT restate the tracking number from that appendix. If no order is grounded, politely ask for the order number or the email used at checkout. After confirming status, a soft relationship touch is welcome but no pressure.';
   },
 
   deterministicAppendix(g: Grounding): string | null {
@@ -69,7 +69,7 @@ export const orderStatusAgent: CategoryAgent = {
     if (!o.tracking) return `Order ${o.name}: ${(FRIENDLY[o.displayFulfillmentStatus] ?? 'being processed')}.`;
     const carrier = o.tracking.company ? ` (${o.tracking.company})` : '';
     const url = o.tracking.url ? `: ${o.tracking.url}` : '';
-    return `Order ${o.name}: ${(FRIENDLY[o.displayFulfillmentStatus] ?? 'dispatched')}, tracking ${o.tracking.number}${carrier}${url}`;
+    return `Order ${o.name}: ${(FRIENDLY[o.displayFulfillmentStatus] ?? 'being processed')}, tracking ${o.tracking.number}${carrier}${url}`;
   }
 };
 
