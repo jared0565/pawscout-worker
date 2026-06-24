@@ -545,6 +545,14 @@ export class TenantStore {
     return rs.results ?? [];
   }
 
+  async linksByState(state: ProductLink['state']): Promise<ProductLink[]> {
+    const rs = await this.db
+      .prepare(`SELECT * FROM product_links WHERE shop = ?1 AND state = ?2`)
+      .bind(this.shop, state)
+      .all<ProductLink>();
+    return rs.results ?? [];
+  }
+
   /** W-ADDON: hidden filler handles for the storefront widgets (random rotation). */
   async listAddonHandles(limit = 4): Promise<string[]> {
     const rs = await this.db

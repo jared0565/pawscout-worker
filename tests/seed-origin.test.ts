@@ -1,7 +1,7 @@
 import { env, applyD1Migrations } from 'cloudflare:test';
 import { beforeEach, describe, it, expect } from 'vitest';
 import { TenantStore } from '../src/tenant-store';
-import { seedOriginAssortment } from '../src/jobs';
+import { seedOriginAssortment, reconcileDraftLinks } from '../src/jobs';
 import type { CjClient, CjDetail, CjSearchItem } from '../src/cj';
 import type { AdminGraphql } from '../src/shopify-admin';
 
@@ -63,5 +63,24 @@ describe('seedOriginAssortment', () => {
     const summary = await seedOriginAssortment(store, fakeCj(), fakeAdmin(), CFG, { pause: async () => {}, keywords: { 'pet-toys': ['dog chew toy'] } });
     expect(summary.discovered).toBe(0);
     expect(summary.drafted).toBe(0);
+  });
+});
+
+describe('reconcileDraftLinks', () => {
+  beforeEach(async () => { await applyD1Migrations(env.DB, env.TEST_MIGRATIONS); });
+
+  it('flips only published (ACTIVE) drafts to imported', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await store.putLink({ cjPid: 'A', state: 'draft', shopifyProductId: 'gid://shopify/Product/A', category: 'pet-toys' });
+    await store.putLink({ cjPid: 'B', state: 'draft', shopifyProductId: 'gid://shopify/Product/B', category: 'pet-toys' });
+    const admin = (async (_q: string, vars: any) => ({
+      product: { status: vars.id.endsWith('/A') ? 'ACTIVE' : 'DRAFT' }
+    })) as unknown as AdminGraphql;
+
+    const flipped = await reconcileDraftLinks(store, admin);
+
+    expect(flipped).toBe(1);
+    expect((await store.getLink('A'))?.state).toBe('imported');
+    expect((await store.getLink('B'))?.state).toBe('draft');
   });
 });

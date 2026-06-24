@@ -843,6 +843,29 @@ export async function seedOriginAssortment(
   return { discovered, drafted, rejected };
 }
 
+const PRODUCT_STATUS_QUERY = `query pawscoutProductStatus($id: ID!) { product(id: $id) { status } }`;
+
+/**
+ * Flip seed drafts to 'imported' once the owner has published them (Shopify
+ * status ACTIVE). Runs daily; cheap (one status query per outstanding draft).
+ */
+export async function reconcileDraftLinks(store: TenantStore, admin: AdminGraphql): Promise<number> {
+  let flipped = 0;
+  for (const link of await store.linksByState('draft')) {
+    if (!link.shopify_product_id) continue;
+    try {
+      const data = (await admin(PRODUCT_STATUS_QUERY, { id: link.shopify_product_id })) as { product?: { status?: string } };
+      if (data.product?.status === 'ACTIVE') {
+        await store.putLink({ cjPid: link.cj_pid, state: 'imported' });
+        flipped++;
+      }
+    } catch (e) {
+      console.warn(`draft reconcile failed for ${link.cj_pid}: ${(e as Error).message}`);
+    }
+  }
+  return flipped;
+}
+
 /** Daily cron entry point: retention purges, then per-tenant cull + refill. */
 export async function runDailyMaintenance(env: Env): Promise<void> {
   await purgeExpiredSearchCache(env.DB);
@@ -883,6 +906,7 @@ export async function runDailyMaintenance(env: Env): Promise<void> {
         try { await ensureAffiliateCollection(admin); } catch (e) { console.warn(`affiliate collection ensure failed: ${(e as Error).message}`); }
         await syncStoreInventory(store, cj, admin, cfg);
         await refillCollections(store, cj, admin, cfg, { curate, pickHero }); // promote-from-warehouse (floor 8, target 12)
+        await reconcileDraftLinks(store, admin); // flip ACTIVE seed drafts to imported
         await reconcileAddonVisibility(store, admin, cfg); // align hidden/visible add-ons to the toggle
         // Retention reorder reminders (1.3) - DORMANT unless explicitly enabled;
         // even then only emails marketing-SUBSCRIBED customers. Best-effort.
