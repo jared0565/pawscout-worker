@@ -824,6 +824,9 @@ export async function seedOriginAssortment(
           // Cache the detail (with per-country origins) only for candidates that
           // passed the full gate chain - rejected candidates must not pollute
           // warehouse_products (those rows feed searchBackfill ghost cards).
+          // NOTE: the cached `detail` does NOT carry confirmAndImport's freightUsd enrichment
+          // (confirmAndImport mutates only its local copy); harmless in Phase 1 (chooseOrigin /
+          // geo-ranking read `origins`, not freight) and Phase 2's replenish re-derives freight on cache read.
           await store.putWarehouseProduct({
             cjPid: detail.pid,
             category,

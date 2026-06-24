@@ -333,7 +333,7 @@ export class CjClient {
       productNameEn: keyword,
       countryCode,
       pageNum: '1',
-      pageSize: String(pageSize)
+      pageSize: String(Math.min(pageSize, 100))
     })) as { list?: Record<string, unknown>[] } | null;
     return mapCjSearchItems(data?.list);
   }
@@ -441,11 +441,18 @@ export class CjClient {
   }
 
   /**
-   * Cheapest freight quote for one unit of a variant, `fromCountry` → `toCountry`.
+   * Cheapest freight quote for one unit of a variant, `fromCountry` -> `toCountry`.
    * Used at admission/import to keep the margin floor freight-aware.
+   *
+   * Domestic routes (fromCountry === toCountry) keep $0 options - they are real
+   * carriers (Royal Mail, USPS). Cross-border routes filter to priceUsd > 0
+   * because CJ sometimes returns a spurious logisticPrice:0 row for a service
+   * that does not actually carry the shipment; keeping it would zero freightUsd
+   * and undercut the margin floor.
    */
   async freightEstimate(vid: string, fromCountry = 'CN', toCountry = 'GB', quantity = 1): Promise<{ priceUsd: number; days: string; name: string } | null> {
-    const options = await this.freightQuoteAging(vid, fromCountry, toCountry, quantity);
+    const all = await this.freightQuoteAging(vid, fromCountry, toCountry, quantity);
+    const options = fromCountry === toCountry ? all : all.filter((o) => o.priceUsd > 0);
     return options.length ? options[0] : null;
   }
 

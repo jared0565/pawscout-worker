@@ -547,7 +547,7 @@ export class TenantStore {
 
   async linksByState(state: ProductLink['state']): Promise<ProductLink[]> {
     const rs = await this.db
-      .prepare(`SELECT * FROM product_links WHERE shop = ?1 AND state = ?2`)
+      .prepare(`SELECT * FROM product_links WHERE shop = ?1 AND state = ?2 ORDER BY updated_at ASC`)
       .bind(this.shop, state)
       .all<ProductLink>();
     return rs.results ?? [];

@@ -169,6 +169,27 @@ describe('origins + freight', () => {
     expect(est!.priceUsd).toBe(0);
     expect(est!.days).toBe('2-5');
   });
+
+  it('freightEstimate (CN->GB cross-border) drops the spurious $0 row and returns the cheapest non-zero option', async () => {
+    // CJ sometimes returns a logisticPrice:0 row for a service that does not actually carry
+    // the shipment on cross-border routes; keeping it would zero freightUsd and undercut the margin floor.
+    const fakeFetch = (async () => new Response(JSON.stringify({
+      result: true,
+      data: [
+        { logisticName: 'Spurious', logisticAging: '99', logisticPrice: 0 },
+        { logisticName: 'Economy', logisticAging: '12-20', logisticPrice: '4.20' },
+        { logisticName: 'CJPacket', logisticAging: '8-12', logisticPrice: 6.5 }
+      ]
+    }), { status: 200 })) as unknown as typeof fetch;
+    const cj = new CjClient(async () => 'tok', fakeFetch);
+
+    const est = await cj.freightEstimate('V', 'CN', 'GB');
+
+    // $0 option must be dropped; cheapest non-zero option returned
+    expect(est).not.toBeNull();
+    expect(est!.priceUsd).toBe(4.2);
+    expect(est!.name).toBe('Economy');
+  });
 });
 
 describe('CjClient.searchByWarehouse', () => {

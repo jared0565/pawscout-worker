@@ -8,4 +8,9 @@ describe('POST /api/admin/seed-gb-origin', () => {
     const res = await app.request('/api/admin/seed-gb-origin', { method: 'POST' }, { ...env, MAINT_TOKEN: 'secret' });
     expect(res.status).toBe(401);
   });
+
+  it('rejects when MAINT_TOKEN is unset (no header sent)', async () => {
+    const res = await app.request('/api/admin/seed-gb-origin', { method: 'POST' }, { ...env, MAINT_TOKEN: undefined });
+    expect(res.status).toBe(401);
+  });
 });
