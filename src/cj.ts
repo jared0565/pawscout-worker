@@ -445,7 +445,7 @@ export class CjClient {
    * Used at admission/import to keep the margin floor freight-aware.
    */
   async freightEstimate(vid: string, fromCountry = 'CN', toCountry = 'GB', quantity = 1): Promise<{ priceUsd: number; days: string; name: string } | null> {
-    const options = await this.freightQuote(vid, fromCountry, toCountry, quantity);
+    const options = await this.freightQuoteAging(vid, fromCountry, toCountry, quantity);
     return options.length ? options[0] : null;
   }
 

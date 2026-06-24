@@ -155,6 +155,20 @@ describe('origins + freight', () => {
     expect(bodies[0]).toContain('"vid":"v9"');
     expect(bodies[1]).toContain('"quantity":1'); // default
   });
+
+  it('freightEstimate returns the $0 domestic option (GB->GB) instead of null', async () => {
+    const fakeFetch = (async () => new Response(JSON.stringify({
+      result: true,
+      data: [{ logisticName: 'Royal Mail GB to GB', logisticAging: '2-5', logisticPrice: 0 }]
+    }), { status: 200 })) as unknown as typeof fetch;
+    const cj = new CjClient(async () => 'tok', fakeFetch);
+
+    const est = await cj.freightEstimate('V1', 'GB', 'GB');
+
+    expect(est).not.toBeNull();
+    expect(est!.priceUsd).toBe(0);
+    expect(est!.days).toBe('2-5');
+  });
 });
 
 describe('CjClient.searchByWarehouse', () => {
