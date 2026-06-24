@@ -272,13 +272,23 @@ export async function composeDraftForThread(
   // earlier turn and (b) leaked our "...@activepaw.co.uk" footer into the destination
   // derivation (a Texas question got a "Delivery to the UK" line).
   const cleaned = inbound.map((m) => stripQuotedReply(m.body_text ?? ''));
-  const conversation = cleaned.filter(Boolean).join('\n\n---\n\n')
-    || inbound.map((m) => m.body_text ?? '').filter(Boolean).join('\n\n---\n\n'); // fallback: all-quote thread
   // The customer's LATEST inbound (messages are ASC by received_at) - the drafter and the
   // freight line both ground to this so a multi-turn thread answers what they JUST asked,
-  // not a stale earlier turn or a now-irrelevant first classification. May be '' when the
-  // latest message was only a quote (drafter then falls back to a brief acknowledgement).
+  // not a stale earlier turn or a now-irrelevant first classification. If this is empty
+  // while the raw body has text, the latest message is quote-only and is suppressed below.
   const latestInbound = cleaned.length ? cleaned[cleaned.length - 1] : '';
+  const latestRaw = inbound.length ? (inbound[inbound.length - 1].body_text ?? '') : '';
+
+  // Defense in depth for historical rows / manual regenerates: ingest should prevent a
+  // quote-only follow-up from reopening a thread, but if such a thread is already in
+  // needs_reply, do not draft from the quoted copy of our own previous answer.
+  if (!latestInbound && latestRaw.trim()) {
+    const hasOutbound = got.messages.some((m) => m.direction === 'outbound');
+    await store.setThreadStatus(thread.id, hasOutbound ? 'awaiting_customer' : 'closed');
+    return null;
+  }
+
+  const conversation = cleaned.filter(Boolean).join('\n\n---\n\n');
 
   // Freight-grounded delivery line: when the customer asks about shipping to a
   // confidently-derived destination, read the SYNCED CJ logistics matrix from D1
