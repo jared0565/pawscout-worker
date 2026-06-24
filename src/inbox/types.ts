@@ -15,6 +15,7 @@ export interface InboxConfig {
   autosend: boolean;        // HITL (false) | Auto (true)
   autoConfidenceThreshold: number; // 0-100; Auto floor
   replyGuidance: string;           // owner's standing voice/instructions, steers every draft
+  agents?: Record<string, { autosend: boolean }>; // per-agent auto toggle; resolveAgents fills defaults
   autoInvoice: boolean;               // false = HITL invoicing; true = Auto behind the floor
   invoiceConfidenceThreshold: number; // 0-100; Auto-invoice floor (separate from replies)
   invoiceValueCeiling: number;        // GBP; total above this → HITL

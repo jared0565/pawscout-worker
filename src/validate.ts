@@ -206,6 +206,21 @@ export function validateInboxPayload(body: unknown): Validation<InboxConfig> {
   if (b.invoiceRateLimit !== undefined && (typeof b.invoiceRateLimit !== 'number' || !Number.isInteger(b.invoiceRateLimit) || b.invoiceRateLimit < 1)) return { ok: false, error: 'invoiceRateLimit must be a positive integer' };
   const labelsRes = validateLabels(b.labels ?? []);
   if (!labelsRes.ok) return labelsRes;
+  // Per-agent auto toggle map: optional; keep only known labels with a boolean autosend.
+  let agents: Record<string, { autosend: boolean }> | undefined;
+  if (b.agents !== undefined) {
+    if (typeof b.agents !== 'object' || b.agents === null || Array.isArray(b.agents)) {
+      return { ok: false, error: 'agents must be a JSON object' };
+    }
+    const src = b.agents as Record<string, unknown>;
+    const cleaned: Record<string, { autosend: boolean }> = {};
+    for (const k of Object.keys(src)) {
+      if (!(INBOX_LABELS as readonly string[]).includes(k)) continue; // drop unknown labels
+      const v = src[k] as Record<string, unknown> | null;
+      cleaned[k] = { autosend: !!(v && v.autosend === true) };
+    }
+    agents = cleaned;
+  }
   return {
     ok: true,
     value: {
@@ -216,7 +231,8 @@ export function validateInboxPayload(body: unknown): Validation<InboxConfig> {
       invoiceConfidenceThreshold: typeof b.invoiceConfidenceThreshold === 'number' ? b.invoiceConfidenceThreshold : DEFAULT_INBOX.invoiceConfidenceThreshold,
       invoiceValueCeiling: typeof b.invoiceValueCeiling === 'number' ? b.invoiceValueCeiling : DEFAULT_INBOX.invoiceValueCeiling,
       invoiceRateLimit: typeof b.invoiceRateLimit === 'number' ? b.invoiceRateLimit : DEFAULT_INBOX.invoiceRateLimit,
-      ...(alertEmail ? { alertEmail } : {})
+      ...(alertEmail ? { alertEmail } : {}),
+      ...(agents ? { agents } : {})
     }
   };
 }
