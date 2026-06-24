@@ -1,6 +1,6 @@
 // src/inbox/agents/shipping.ts
 import type { CategoryAgent, AgentContext, Grounding } from './types';
-import { deriveDestinationCountry, countryLabel, buildShippingLine } from '../freight';
+import { isShippingIntent, deriveDestinationCountry, countryLabel, buildShippingLine } from '../freight';
 import { resolveLogistics, doorToDoorBand, type DayRange } from '../../logistics';
 
 const SHIP_DEFAULT_ORIGIN = 'CN'; // Phase 1 conservative default; Phase 2 resolves per product
@@ -13,6 +13,9 @@ export const shippingAgent: CategoryAgent = {
   async ground(ctx: AgentContext): Promise<Grounding> {
     try {
       const subject = ctx.thread.subject ?? '';
+      const relevant = isShippingIntent(null, '', ctx.latestMessage)
+        || deriveDestinationCountry(ctx.latestMessage, '', ctx.contactEmail) !== null;
+      if (!relevant) return notConfident();
       const dest = deriveDestinationCountry(ctx.conversation, subject, ctx.contactEmail);
       if (!dest) return notConfident();
       const l = resolveLogistics(ctx.cfg.fulfil);
