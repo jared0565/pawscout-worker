@@ -16,7 +16,7 @@ export interface ProductLink {
   shopify_product_id: string | null;
   handle: string | null;
   category: string | null;
-  state: 'ghost' | 'importing' | 'imported' | 'archived' | 'failed';
+  state: 'ghost' | 'importing' | 'imported' | 'archived' | 'failed' | 'draft';
   stock_paused: number; // 1 = inventory zeroed because CJ stock fell below floor
   created_at: string;
   updated_at: string;

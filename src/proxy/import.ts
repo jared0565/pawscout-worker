@@ -156,7 +156,8 @@ export async function confirmAndImport(
   detail: CjDetail,
   category?: string | null,
   curate?: (detail: CjDetail, context: string) => Promise<Curation | null>,
-  pickHero?: (title: string, imageUrls: string[]) => Promise<HeroPick>
+  pickHero?: (title: string, imageUrls: string[]) => Promise<HeroPick>,
+  opts: { publish?: boolean } = {}
 ): Promise<void> {
   // Ghost-click curation gate (added 2026-06-12 after a "pet food" search
   // imported a kitchen vacuum sealer): clicked ghosts must pass the SAME
@@ -237,7 +238,7 @@ export async function confirmAndImport(
       return;
     }
   }
-  await importProduct(store, admin, cfg, detail, category);
+  await importProduct(store, admin, cfg, detail, category, opts);
 }
 
 const PRODUCT_SET = `mutation pawscoutImport($input: ProductSetInput!) {
@@ -271,8 +272,10 @@ export async function importProduct(
   admin: AdminGraphql,
   cfg: TenantConfig,
   detail: CjDetail,
-  category?: string | null
+  category?: string | null,
+  opts: { publish?: boolean } = {}
 ): Promise<void> {
+  const publish = opts.publish ?? true;
   const cat = category !== undefined ? category : resolveCategory(cfg, detail);
   try {
     const existing = await store.getLink(detail.pid);
@@ -280,10 +283,10 @@ export async function importProduct(
 
     // Revival: a previously culled product gets un-archived, not duplicated.
     if (existing?.shopify_product_id) {
-      const data = await admin(PRODUCT_STATUS, { input: { id: existing.shopify_product_id, status: 'ACTIVE' } });
+      const data = await admin(PRODUCT_STATUS, { input: { id: existing.shopify_product_id, status: publish ? 'ACTIVE' : 'DRAFT' } });
       const err = firstUserError(data, 'productUpdate');
       if (err) throw new Error(err);
-      await store.putLink({ cjPid: detail.pid, state: 'imported' });
+      await store.putLink({ cjPid: detail.pid, state: publish ? 'imported' : 'draft' });
       return;
     }
 
@@ -308,7 +311,7 @@ export async function importProduct(
     const input = {
       title: detail.nameEn,
       descriptionHtml: detail.descriptionHtml,
-      status: 'ACTIVE',
+      status: publish ? 'ACTIVE' : 'DRAFT',
       tags: [IMPORT_TAG, `cj-pid-${detail.pid}`, ...(isAddon ? [ADDON_TAG] : []), ...(detail.petClass ? [`cj-species-${detail.petClass}`] : []), ...(browseCat && cfg.collectionMap[browseCat] ? [cfg.collectionMap[browseCat].tag] : []), ...(!isAddon && productAffiliateEligible(variants, cfg.pricing, detail.freightUsd) ? [AFFILIATE_ELIGIBLE_TAG] : [])],
       files: detail.images.slice(0, MAX_IMAGES).map((src) => ({ originalSource: src, contentType: 'IMAGE' })),
       productOptions: [{ name: optionName, values: multi ? variants.map((v) => ({ name: v.name })) : [{ name: 'Default Title' }] }],
@@ -339,21 +342,23 @@ export async function importProduct(
 
     // Publish to the Online Store channel (best-effort: an unpublished import
     // still exists in admin and the link records success).
-    try {
-      const pubs = (await admin(PUBLICATIONS)) as { publications?: { nodes?: { id: string; name: string }[] } };
-      const online = pubs.publications?.nodes?.find((p) => p.name === 'Online Store');
-      if (online) {
-        const pubData = await admin(PUBLISH, { id: product.id, input: [{ publicationId: online.id }] });
-        const pubErr = firstUserError(pubData, 'publishablePublish');
-        if (pubErr) console.warn(`publish failed for ${detail.pid}: ${pubErr}`);
+    if (publish) {
+      try {
+        const pubs = (await admin(PUBLICATIONS)) as { publications?: { nodes?: { id: string; name: string }[] } };
+        const online = pubs.publications?.nodes?.find((p) => p.name === 'Online Store');
+        if (online) {
+          const pubData = await admin(PUBLISH, { id: product.id, input: [{ publicationId: online.id }] });
+          const pubErr = firstUserError(pubData, 'publishablePublish');
+          if (pubErr) console.warn(`publish failed for ${detail.pid}: ${pubErr}`);
+        }
+      } catch (e) {
+        console.warn(`publish failed for ${detail.pid}: ${(e as Error).message}`);
       }
-    } catch (e) {
-      console.warn(`publish failed for ${detail.pid}: ${(e as Error).message}`);
     }
 
     await store.putLink({
       cjPid: detail.pid,
-      state: 'imported',
+      state: publish ? 'imported' : 'draft',
       shopifyProductId: product.id,
       handle: product.handle,
       category: cat

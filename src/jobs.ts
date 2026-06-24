@@ -73,7 +73,7 @@ export async function refillCollections(
   const promote = async (row: { cj_pid: string; detail: string; stock: number }, category: string): Promise<boolean> => {
     if (row.stock < cfg.floors.stockFloor) return false;
     const link = await store.getLink(row.cj_pid);
-    if (link && (link.state === 'imported' || link.state === 'importing')) return false;
+    if (link && (link.state === 'imported' || link.state === 'importing' || link.state === 'draft')) return false;
     let detail: CjDetail;
     try { detail = JSON.parse(row.detail) as CjDetail; } catch { return false; }
     await pause(CJ_CALL_GAP_MS); // confirmAndImport makes one CJ stock call

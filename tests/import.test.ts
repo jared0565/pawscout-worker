@@ -510,3 +510,41 @@ describe('reconcileCategories (re-audit)', () => {
     expect(r.moved).toBe(0);
   });
 });
+
+describe('importProduct publish flag', () => {
+  it('publish:false imports as DRAFT, skips Online-Store publish, and links state=draft', async () => {
+    const ops: { q: string; vars: any }[] = [];
+    const admin = (async (q: string, vars: any) => {
+      ops.push({ q, vars });
+      if (q.includes('productSet')) return { productSet: { product: { id: 'gid://shopify/Product/1', handle: 'h' }, userErrors: [] } };
+      if (q.includes('publications(')) return { publications: { nodes: [{ id: 'pub1', name: 'Online Store' }] } };
+      return {};
+    }) as unknown as AdminGraphql;
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const detail: CjDetail = { pid: 'P1', nameEn: 'Dog Brush', images: [], descriptionHtml: 'x', variants: [{ vid: 'V1', name: 'Default', sellPriceUsd: 6, sku: 'S1', stock: 50 }], listedNum: 10, categoryName: 'pet-grooming', stock: 50, llmScore: 90 };
+
+    await importProduct(store, admin, CFG, detail, 'pet-grooming', { publish: false });
+
+    const setOp = ops.find((o) => o.q.includes('productSet'))!;
+    expect(setOp.vars.input.status).toBe('DRAFT');
+    expect(ops.some((o) => o.q.includes('publishablePublish'))).toBe(false);
+    expect((await store.getLink('P1'))?.state).toBe('draft');
+  });
+
+  it('default (publish omitted) imports ACTIVE, publishes, links state=imported', async () => {
+    const ops: string[] = [];
+    const admin = (async (q: string) => {
+      ops.push(q);
+      if (q.includes('productSet')) return { productSet: { product: { id: 'gid://shopify/Product/2', handle: 'h2' }, userErrors: [] } };
+      if (q.includes('publications(')) return { publications: { nodes: [{ id: 'pub1', name: 'Online Store' }] } };
+      return {};
+    }) as unknown as AdminGraphql;
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const detail: CjDetail = { pid: 'P2', nameEn: 'Cat Toy', images: [], descriptionHtml: 'x', variants: [{ vid: 'V2', name: 'Default', sellPriceUsd: 6, sku: 'S2', stock: 50 }], listedNum: 10, categoryName: 'pet-toys', stock: 50, llmScore: 90 };
+
+    await importProduct(store, admin, CFG, detail, 'pet-toys');
+
+    expect(ops.some((q) => q.includes('publishablePublish'))).toBe(true);
+    expect((await store.getLink('P2'))?.state).toBe('imported');
+  });
+});

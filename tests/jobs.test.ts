@@ -158,6 +158,20 @@ describe('refillCollections (promote-from-warehouse)', () => {
     expect(n).toBe(0);
     expect((await store.getLink('A'))?.state).toBe('failed');
   });
+
+  it('refillCollections never promotes a draft-state link', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    // seed a warehouse row for category pet-toys + a draft link for it
+    await store.putWarehouseProduct({ cjPid: 'D1', category: 'pet-toys', title: 'Cat Toy', detailJson: JSON.stringify({ pid: 'D1', nameEn: 'Cat Toy', images: [], descriptionHtml: '', variants: [{ vid: 'V', name: 'Default', sellPriceUsd: 6, sku: 'S', stock: 50 }], listedNum: 5, categoryName: 'pet-toys', stock: 50 }), priceUsd: 6, listedNum: 5, stock: 50 });
+    await store.putLink({ cjPid: 'D1', state: 'draft', shopifyProductId: 'gid://shopify/Product/9', category: 'pet-toys' });
+    const admin = (async () => ({})) as unknown as AdminGraphql;
+    const cj = { stockByPid: async () => new Map([['V', 50]]) } as unknown as CjClient;
+
+    await refillCollections(store, cj, admin, CFG, { maxImports: 5 });
+
+    // the draft link is untouched (still draft, not re-imported/published)
+    expect((await store.getLink('D1'))?.state).toBe('draft');
+  });
 });
 
 describe('syncStoreInventory', () => {
