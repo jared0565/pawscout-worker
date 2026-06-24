@@ -74,6 +74,27 @@ describe('draftReply', () => {
     expect(d?.customerAsks).toEqual(['how long is delivery to Ireland']);     // parsed + returned
   });
 
+  it('includes buyer-funnel guidance to move individual purchase enquiries toward checkout safely', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const sink: { system?: string } = {};
+    const llm = capturingLlm({ customerAsks: ['whether the large dog bed is suitable'], bodyText: 'The large bed is suitable for bigger dogs. If you would like to go ahead, choose the size on the product page.', confidence: 85, quotesPriceOrOrder: false }, sink);
+    await draftReply(llm, store, CFG, { subject: 'Dog bed', conversation: 'Is the large bed right for a lab? I want to buy today.', latestMessage: 'Is the large bed right for a lab? I want to buy today.', category: 'lead' });
+    expect(sink.system).toMatch(/Buyer funnel policy/i);
+    expect(sink.system).toMatch(/move the conversation toward purchase/i);
+    expect(sink.system).toMatch(/Never invent product URLs, prices, discounts, stock, or guarantees/i);
+  });
+
+  it('includes wholesale policy: no trade terms while focused on individual retail buyers', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const sink: { system?: string } = {};
+    const llm = capturingLlm({ customerAsks: ['whether wholesale pricing is available'], bodyText: 'We are not offering wholesale or trade terms right now, but you are welcome to order individual items through the website.', confidence: 90, quotesPriceOrOrder: false }, sink);
+    await draftReply(llm, store, CFG, { subject: 'Wholesale', conversation: 'Can I buy 500 units wholesale?', latestMessage: 'Can I buy 500 units wholesale?', category: 'wholesale-b2b' });
+    expect(sink.system).toMatch(/Wholesale policy/i);
+    expect(sink.system).toMatch(/focused on individual retail buyers/i);
+    expect(sink.system).toMatch(/not offering wholesale\/trade terms right now/i);
+    expect(sink.system).toMatch(/do not offer bulk discounts or reseller arrangements/i);
+  });
+
   it('tolerates a model that omits customerAsks (optional field)', async () => {
     const store = new TenantStore(env.DB, 'a.myshopify.com');
     const llm = fakeLlm({ bodyText: 'Yes, we are open.', confidence: 80, quotesPriceOrOrder: false });

@@ -18,14 +18,15 @@ export const AUTO_DECLINE_LOW = false; // dial: auto-decline score <= 3 (spec §
 // exists. See spec §8.1 - narrowed from the spec's affiliate+wholesale on review.
 const PARTNERSHIP_CATEGORIES = new Set(['affiliate']);
 
-/** Three converging on-ramps (OR). Declared intent reinforces but never overrides
- * the classifier; this is purely a routing signal. */
+/** Two converging on-ramps (OR): classifier or explicit form intent. The destination
+ * address is intentionally NOT a lane by itself; a buyer who emails sales@ must still
+ * stay in the buyer funnel instead of receiving creator screening questions. */
 export function isPartnershipLane(opts: {
   inboundToAddrs: string[]; declaredIntent: string | null; primaryCategory: string | null;
 }): boolean {
   if (opts.primaryCategory && PARTNERSHIP_CATEGORIES.has(opts.primaryCategory)) return true;
   if (opts.declaredIntent === 'partnerships') return true;
-  return opts.inboundToAddrs.some((t) => (t ?? '').toLowerCase() === PARTNERSHIP_ADDRESS);
+  return false;
 }
 
 /** Sender identity: partnership lane → sales@; otherwise reply from the address the

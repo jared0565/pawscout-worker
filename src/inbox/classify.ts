@@ -32,7 +32,12 @@ export async function classifyEmail(
       '"intentScore": <0-100 integer: how strong the buying intent is - 0 for spam/no intent, 90+ for "I want to buy X now">, ' +
       '"summary": <one sentence, max 160 chars, no quotes from the body>, ' +
       `"labels": <array of 1-3 distinct values from ${allowed}>}. ` +
-      'Use "lead" for clear buying intent, "wholesale-b2b" for bulk/trade buyers wanting to purchase stock, ' +
+      'Classify by the sender\'s real objective, not by the destination inbox address. ' +
+      'Use "lead" for an individual buyer who wants to buy now or is close to purchase, ' +
+      '"product-question" for an individual buyer asking about a product before purchase, ' +
+      '"shipping-returns" for delivery, returns, exchange, or shipping-cost questions, ' +
+      '"order-status" for questions about an existing order, ' +
+      '"wholesale-b2b" for bulk/trade/reseller buyers wanting to purchase stock or ask for wholesale pricing, ' +
       '"affiliate" for affiliate/commission/partnership outreach - someone offering to promote or sell our products for a commission or cut (distinct from a wholesale buyer; the sender wants to earn from us, not buy from us), ' +
       '"complaint" for dissatisfaction, "spam" for junk.',
     user: JSON.stringify({

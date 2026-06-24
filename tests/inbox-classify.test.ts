@@ -24,6 +24,19 @@ function fakeLlm(content: unknown): LlmClient {
   return new LlmClient({ openrouter: 'test-key' }, fetchImpl);
 }
 
+function capturingLlm(content: unknown, sink: { system?: string; user?: string }): LlmClient {
+  const fetchImpl = (async (_url: RequestInfo | URL, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body ?? '{}')) as { messages?: { role: string; content: string }[] };
+    sink.system = body.messages?.find((m) => m.role === 'system')?.content ?? '';
+    sink.user = body.messages?.find((m) => m.role === 'user')?.content ?? '';
+    return new Response(JSON.stringify({
+      choices: [{ message: { content: JSON.stringify(content) } }],
+      usage: { prompt_tokens: 10, completion_tokens: 5, cost: 0.0001 }
+    }), { status: 200 });
+  }) as unknown as typeof fetch;
+  return new LlmClient({ openrouter: 'test-key' }, fetchImpl);
+}
+
 describe('classifyEmail', () => {
   it('returns a validated classification and logs usage', async () => {
     const store = new TenantStore(env.DB, 'a.myshopify.com');
@@ -46,6 +59,17 @@ describe('classifyEmail', () => {
     const store = new TenantStore(env.DB, 'a.myshopify.com');
     const c = await classifyEmail(new LlmClient({}), store, CFG, { subject: 's', body: 'b', fromEmail: 'a@b.com', auth: { spf: 'none', dkim: 'none', dmarc: 'none' } });
     expect(c).toBeNull();
+  });
+
+  it('instructs the classifier to separate buyer, wholesale, and affiliate objectives', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const sink: { system?: string } = {};
+    const llm = capturingLlm({ isHuman: true, category: 'wholesale-b2b', intentScore: 35, summary: 'Asks for wholesale pricing', labels: ['wholesale-b2b'] }, sink);
+    await classifyEmail(llm, store, CFG, { subject: 'Wholesale', body: 'Can I buy 500 units wholesale?', fromEmail: 'buyer@trade.com', auth: { spf: 'pass', dkim: 'pass', dmarc: 'pass' } });
+    expect(sink.system).toMatch(/Classify by the sender's real objective/i);
+    expect(sink.system).toMatch(/individual buyer who wants to buy now/i);
+    expect(sink.system).toMatch(/bulk\/trade\/reseller buyers/i);
+    expect(sink.system).toMatch(/wants to earn from us, not buy from us/i);
   });
 });
 
