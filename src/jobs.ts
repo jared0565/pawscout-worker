@@ -818,20 +818,21 @@ export async function seedOriginAssortment(
         if (!detail) { rejected++; continue; }
         const sig = titleSignature(detail.nameEn);
         if (seenTitleSigs.has(sig)) { rejected++; continue; }
-        // Cache the detail (with per-country origins) so Phase-2 geo-ranking and
-        // chooseOrigin read real GB origins from D1 after the owner publishes.
-        await store.putWarehouseProduct({
-          cjPid: detail.pid,
-          category,
-          title: detail.nameEn,
-          detailJson: JSON.stringify(detail),
-          priceUsd: detail.variants[0]?.sellPriceUsd ?? 0,
-          listedNum: detail.listedNum,
-          stock: detail.stock ?? 0
-        });
         await confirmAndImport(store, cj, admin, cfg, detail, category, opts.curate, opts.pickHero, { publish: false });
         await pause(CJ_CALL_GAP_MS);
         if ((await store.getLink(detail.pid))?.state === 'draft') {
+          // Cache the detail (with per-country origins) only for candidates that
+          // passed the full gate chain - rejected candidates must not pollute
+          // warehouse_products (those rows feed searchBackfill ghost cards).
+          await store.putWarehouseProduct({
+            cjPid: detail.pid,
+            category,
+            title: detail.nameEn,
+            detailJson: JSON.stringify(detail),
+            priceUsd: detail.variants[0]?.sellPriceUsd ?? 0,
+            listedNum: detail.listedNum,
+            stock: detail.stock ?? 0
+          });
           drafted++; perCat++; seenTitleSigs.add(sig);
         } else {
           rejected++; // confirmAndImport's gate chain rejected it (link ends 'failed')

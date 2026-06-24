@@ -9,7 +9,7 @@ const SHOP = 'test.myshopify.com';
 // minimal config with one collection; mirror the config builder used in tests/jobs.test.ts
 const CFG: any = { collectionMap: { 'pet-toys': { tag: 'pet-toys' } }, gates: { popularityFloor: 0, priceMin: 0.5, priceMax: 80, relevance: 'strict' }, floors: { warehouseDepth: 20, storeFloor: 8, stockFloor: 10 }, pricing: { multiplier: 2.7, floor: 2.2, minMarginGbp: 6, fxUsdToGbp: 0.78, fxBufferPct: 2 }, llm: { enabled: false, scoreThreshold: 60 }, addons: { enabled: false }, target: 12 };
 
-function fakeCj(): CjClient {
+function fakeCj(stockOverride?: Map<string, number>): CjClient {
   const detail = (pid: string, name: string): CjDetail => ({ pid, nameEn: name, images: ['https://img/x.jpg'], descriptionHtml: 'x', variants: [{ vid: `v-${pid}`, name: 'Default', sellPriceUsd: 6, sku: pid, stock: 50 }], listedNum: 20, categoryName: 'pet-toys', stock: 50, origins: { CN: 100, GB: 40 } });
   return {
     searchByWarehouse: async (kw: string): Promise<CjSearchItem[]> => ([
@@ -17,7 +17,7 @@ function fakeCj(): CjClient {
       { pid: 'GB1', nameEn: 'Dog Chew Toy', image: '', sellPriceUsd: 6, listedNum: 20, categoryName: 'pet-toys' } // dup pid
     ]),
     detail: async (pid: string) => detail(pid, 'Dog Chew Toy'),
-    stockByPid: async () => new Map([['v-GB1', 50]]),
+    stockByPid: async () => stockOverride ?? new Map([['v-GB1', 50]]),
     freightEstimate: async () => ({ priceUsd: 0, days: '2-5', name: 'Royal Mail' })
   } as unknown as CjClient;
 }
@@ -32,6 +32,18 @@ function fakeAdmin(): AdminGraphql {
 
 describe('seedOriginAssortment', () => {
   beforeEach(async () => { await applyD1Migrations(env.DB, env.TEST_MIGRATIONS); });
+
+  it('does NOT cache a warehouse row when confirmAndImport rejects the candidate (live-stock gate)', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    // stockByPid returns below the stockFloor (10) so the live-stock gate in confirmAndImport rejects
+    const lowStock = new Map([['v-GB1', 2]]);
+    const summary = await seedOriginAssortment(store, fakeCj(lowStock), fakeAdmin(), CFG, { countryCode: 'GB', perCollection: 12, pause: async () => {}, keywords: { 'pet-toys': ['dog chew toy'] } });
+
+    expect(summary.drafted).toBe(0);
+    expect(summary.rejected).toBe(1);
+    // rejected candidate must NOT pollute warehouse_products
+    expect(await store.getWarehouseProduct('GB1')).toBeNull();
+  });
 
   it('discovers GB candidates, dedupes pids, caches origins, and DRAFT-imports', async () => {
     const store = new TenantStore(env.DB, SHOP);
