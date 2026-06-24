@@ -31,4 +31,22 @@ describe('orderStatusAgent.ground', () => {
     expect(g.confident).toBe(false);
     expect(g.facts.toLowerCase()).toContain('order number');
   });
+  it('picks order #1002 when explicitly named with hash', async () => {
+    vi.spyOn(orders, 'recentOrdersForEmail').mockResolvedValue([
+      { name: '#1001', displayFulfillmentStatus: 'IN_TRANSIT', financialStatus: 'PAID', createdAt: '2026-06-20', tracking: { number: 'TRK1', company: 'Royal Mail', url: 'http://t/TRK1' } },
+      { name: '#1002', displayFulfillmentStatus: 'DELIVERED', financialStatus: 'PAID', createdAt: '2026-06-22', tracking: { number: 'TRK2', company: 'DPD', url: 'http://t/TRK2' } }
+    ]);
+    const g = await orderStatusAgent.ground(ctx(async () => ({}), 'where is order #1002?'));
+    expect(g.confident).toBe(true);
+    expect(orderStatusAgent.deterministicAppendix(g)).toContain('#1002');
+  });
+  it('prioritises #-prefixed match over ambient numbers', async () => {
+    vi.spyOn(orders, 'recentOrdersForEmail').mockResolvedValue([
+      { name: '#1001', displayFulfillmentStatus: 'IN_TRANSIT', financialStatus: 'PAID', createdAt: '2026-06-20', tracking: { number: 'TRK1', company: 'Royal Mail', url: 'http://t/TRK1' } },
+      { name: '#1002', displayFulfillmentStatus: 'DELIVERED', financialStatus: 'PAID', createdAt: '2026-06-22', tracking: { number: 'TRK2', company: 'DPD', url: 'http://t/TRK2' } }
+    ]);
+    const g = await orderStatusAgent.ground(ctx(async () => ({}), 'my zip is 94107, where is order #1001?'));
+    expect(g.confident).toBe(true);
+    expect(orderStatusAgent.deterministicAppendix(g)).toContain('#1001');
+  });
 });

@@ -2,14 +2,23 @@
 import type { CategoryAgent, AgentContext, Grounding } from './types';
 import { recentOrdersForEmail, type CustomerOrder } from '../../shopify-orders';
 
-const ORDER_NO_RE = /#?\b(\d{3,})\b/; // a 3+ digit token, optionally #-prefixed
-
 function pick(list: CustomerOrder[], message: string): CustomerOrder | null {
-  const m = message.match(ORDER_NO_RE);
-  if (m) {
-    const hit = list.find((o) => o.name.replace(/\D/g, '') === m[1]);
+  // Try to match #-prefixed order number first (e.g., "#1001").
+  // Known limitation: if customer names two different order numbers, only the first #-match is tried.
+  const hashMatch = message.match(/#(\d{3,})/);
+  if (hashMatch) {
+    const hit = list.find((o) => o.name.replace(/\D/g, '') === hashMatch[1]);
     if (hit) return hit;
   }
+
+  // Fall back to bare 3+ digit token (e.g., "1001").
+  const bareMatch = message.match(/\b(\d{3,})\b/);
+  if (bareMatch) {
+    const hit = list.find((o) => o.name.replace(/\D/g, '') === bareMatch[1]);
+    if (hit) return hit;
+  }
+
+  // Fallback: single order or none.
   return list.length === 1 ? list[0] : null;
 }
 
