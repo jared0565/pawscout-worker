@@ -1,5 +1,6 @@
 import type { CategoryAgent, AgentContext, Grounding } from './types';
 import { resolveLineRequest } from '../../shopify-catalog';
+import type { CjDetail } from '../../cj';
 
 export const productAgent: CategoryAgent = {
   category: 'product-question',
@@ -15,9 +16,33 @@ export const productAgent: CategoryAgent = {
       if (r.status === 'resolved' && r.variant) {
         const v = r.variant;
         const stock = v.availableQty > 0 ? 'in stock' : 'availability shown at checkout';
+        let baseFacts = `Resolved product "${v.title}${v.variantTitle ? ' - ' + v.variantTitle : ''}", price GBP ${v.priceGbp.toFixed(2)}, ${stock}. You MAY state these. Suggest one concrete next step (view the product page or reply with the variant they want).`;
+
+        // Supplement with grounded warehouse stock/specs from D1 (non-fatal if missing)
+        let extra = '';
+        try {
+          const productId = v.productId;
+          if (productId && ctx.store?.getLinkByShopifyProductId) {
+            const link = await ctx.store.getLinkByShopifyProductId(productId);
+            if (link?.cj_pid) {
+              const row = await ctx.store.getWarehouseProduct(link.cj_pid);
+              if (row) {
+                extra = ` Stock: ${row.status} (${row.stock} units known).`;
+                try {
+                  const detail = JSON.parse(row.detail) as CjDetail;
+                  const specParts: string[] = [];
+                  if (detail.categoryName) specParts.push(`Category: ${detail.categoryName}`);
+                  if (detail.petClass) specParts.push(`For: ${detail.petClass}`);
+                  if (specParts.length > 0) extra += ` ${specParts.join(', ')}.`;
+                } catch { /* detail parse miss is non-fatal */ }
+              }
+            }
+          }
+        } catch { /* warehouse miss is non-fatal */ }
+
         return {
           confident: true, quotesFigure: true,
-          facts: `Resolved product "${v.title}${v.variantTitle ? ' - ' + v.variantTitle : ''}", price GBP ${v.priceGbp.toFixed(2)}, ${stock}. You MAY state these. Suggest one concrete next step (view the product page or reply with the variant they want).`,
+          facts: baseFacts + extra,
           data: { variantId: v.variantId }
         };
       }
