@@ -157,6 +157,27 @@ describe('origins + freight', () => {
   });
 });
 
+describe('CjClient.searchByWarehouse', () => {
+  it('searchByWarehouse queries /product/list with the warehouse countryCode', async () => {
+    let calledUrl = '';
+    const fakeFetch = (async (url: string) => {
+      calledUrl = String(url);
+      return new Response(JSON.stringify({
+        result: true,
+        data: { total: 1, list: [{ pid: 'P1', productNameEn: 'Dog Nail Clipper', sellPrice: '5.99', listedNum: 42 }] }
+      }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const cj = new CjClient(async () => 'tok', fakeFetch);
+
+    const items = await cj.searchByWarehouse('nail clipper', 'GB', 50);
+
+    expect(calledUrl).toContain('/product/list');
+    expect(calledUrl).toContain('countryCode=GB');
+    expect(calledUrl).toContain('productNameEn=nail+clipper');
+    expect(items).toEqual([{ pid: 'P1', nameEn: 'Dog Nail Clipper', image: '', sellPriceUsd: 5.99, listedNum: 42, categoryName: '', topCategory: '' }]);
+  });
+});
+
 describe('CjClient.search - listV2 first (real shape: id, nameEn, content[].productList)', () => {
   it('parses listV2 results and uses the `id` field as pid (the fallback bug)', async () => {
     const urls: string[] = [];

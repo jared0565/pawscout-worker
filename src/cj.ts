@@ -322,6 +322,22 @@ export class CjClient {
     return mapCjSearchItems(extractV2List(data));
   }
 
+  /**
+   * Warehouse-filtered discovery: products CJ stocks in `countryCode`'s warehouse.
+   * Uses /product/list (the legacy keyword endpoint) because it honors the
+   * `countryCode` warehouse filter that listV2 does not - the LLM curation gate
+   * downstream is the real niche filter, so the endpoint's lower precision is fine.
+   */
+  async searchByWarehouse(keyword: string, countryCode = 'GB', pageSize = 50): Promise<CjSearchItem[]> {
+    const data = (await this.get('/product/list', {
+      productNameEn: keyword,
+      countryCode,
+      pageNum: '1',
+      pageSize: String(pageSize)
+    })) as { list?: Record<string, unknown>[] } | null;
+    return mapCjSearchItems(data?.list);
+  }
+
   async detail(pid: string): Promise<CjDetail | null> {
     // enable_inventory embeds per-variant inventories in the SAME response -
     // saving the separate stock call that CJ renamed out from under us once.
