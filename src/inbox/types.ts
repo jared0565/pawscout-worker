@@ -60,6 +60,7 @@ export interface DraftResult {
   bodyText: string;            // plain-text reply; HTML is built from this
   confidence: number;          // 0-100 self-reported
   quotesPriceOrOrder: boolean; // LLM's own flag (OR'd with mechanical mentionsMoney downstream)
+  commercialIntent?: boolean;  // reply carried a CTA / grounded nudge
   customerAsks?: string[];     // the model's extract-first plan: what the customer is actually asking ([]=no answerable question)
 }
 
@@ -67,7 +68,7 @@ export type DraftStatus = 'pending' | 'approved' | 'sent' | 'auto_sent' | 'disca
 
 export interface DraftRow {
   shop: string; id: string; thread_id: string; body_text: string; body_html: string;
-  status: DraftStatus; confidence: number | null; quotes_price_order: number;
+  status: DraftStatus; confidence: number | null; quotes_price_order: number; commercial_intent: number;
   hold_reasons: string | null; model: string | null;
   created_at: string; sent_at: string | null; sent_message_id: string | null;
 }

@@ -911,12 +911,12 @@ export class TenantStore {
 
   // --- W-INBOX-2: draft + outbound-message store methods ---
 
-  async insertDraft(d: { threadId: string; bodyText: string; bodyHtml: string; confidence: number | null; quotesPriceOrder: boolean; holdReasons: string[]; model: string; status: DraftStatus }): Promise<string> {
+  async insertDraft(d: { threadId: string; bodyText: string; bodyHtml: string; confidence: number | null; quotesPriceOrder: boolean; commercialIntent?: boolean; holdReasons: string[]; model: string; status: DraftStatus }): Promise<string> {
     const id = crypto.randomUUID();
     await this.db
-      .prepare(`INSERT INTO inbox_drafts (shop, id, thread_id, body_text, body_html, status, confidence, quotes_price_order, hold_reasons, model, created_at)
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)`)
-      .bind(this.shop, id, d.threadId, d.bodyText, d.bodyHtml, d.status, d.confidence, d.quotesPriceOrder ? 1 : 0, JSON.stringify(d.holdReasons), d.model, new Date().toISOString())
+      .prepare(`INSERT INTO inbox_drafts (shop, id, thread_id, body_text, body_html, status, confidence, quotes_price_order, commercial_intent, hold_reasons, model, created_at)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)`)
+      .bind(this.shop, id, d.threadId, d.bodyText, d.bodyHtml, d.status, d.confidence, d.quotesPriceOrder ? 1 : 0, d.commercialIntent ? 1 : 0, JSON.stringify(d.holdReasons), d.model, new Date().toISOString())
       .run();
     return id;
   }
