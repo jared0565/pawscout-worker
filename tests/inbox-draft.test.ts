@@ -5,10 +5,23 @@ import { TenantStore } from '../src/tenant-store';
 import { LlmClient } from '../src/llm';
 import { draftReply, renderReplyHtml } from '../src/inbox/draft';
 import { DEFAULT_INBOX } from '../src/inbox/types';
+import type { CategoryAgent, Grounding } from '../src/inbox/agents/types';
 import { DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, type TenantConfig } from '../src/types';
 
 beforeEach(async () => { await applyD1Migrations(env.DB, env.TEST_MIGRATIONS); });
 const CFG: TenantConfig = { collectionMap: {}, gates: { popularityFloor: 1, priceMin: 1, priceMax: 9, relevance: 'title' }, pricing: DEFAULT_PRICING, floors: DEFAULT_FLOORS, llm: DEFAULT_LLM, addons: DEFAULT_ADDONS, fulfil: DEFAULT_FULFIL, inbox: DEFAULT_INBOX, target: 12 };
+
+// A minimal stub agent: emits a recognisable fragment token and never appends. The
+// generic-drafter behaviour (fragment + facts injection, commercialIntent) is covered
+// by tests/agents/draft-generic.test.ts; here we exercise the validate/log/salutation path.
+const stubAgent: CategoryAgent = {
+  category: 'other', displayName: 'X', description: '', commercial: false,
+  async ground() { return { confident: false, facts: '', quotesFigure: false }; },
+  promptFragment() { return 'STUB-FRAGMENT'; },
+  deterministicAppendix() { return null; }
+};
+const GROUNDING: Grounding = { confident: false, facts: '', quotesFigure: false };
+const base = { agent: stubAgent, grounding: GROUNDING };
 
 function fakeLlm(content: unknown): LlmClient {
   const f = (async () => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(content) } }], usage: { cost: 0.0001 } }), { status: 200 })) as unknown as typeof fetch;
@@ -39,110 +52,26 @@ describe('draftReply', () => {
   it('returns a validated draft + logs usage', async () => {
     const store = new TenantStore(env.DB, 'a.myshopify.com');
     const llm = fakeLlm({ bodyText: 'Hi Jane, yes we ship to Ireland in 5-7 days.', confidence: 92, quotesPriceOrOrder: false });
-    const d = await draftReply(llm, store, CFG, { subject: 'Shipping', conversation: 'Do you ship to Ireland?', category: 'product-question' });
+    const d = await draftReply(llm, store, CFG, { ...base, subject: 'Shipping', conversation: 'Do you ship to Ireland?' });
     expect(d?.bodyText).toContain('Ireland');
     expect(d?.confidence).toBe(92);
     expect((await store.llmSpendSince('2000-01-01T00:00:00Z')).calls).toBe(1);
   });
   it('returns null on unusable output (empty body)', async () => {
     const store = new TenantStore(env.DB, 'a.myshopify.com');
-    expect(await draftReply(fakeLlm({ bodyText: '', confidence: 90, quotesPriceOrOrder: false }), store, CFG, { subject: 's', conversation: 'b', category: 'other' })).toBeNull();
+    expect(await draftReply(fakeLlm({ bodyText: '', confidence: 90, quotesPriceOrOrder: false }), store, CFG, { ...base, subject: 's', conversation: 'b' })).toBeNull();
   });
   it('returns null when the LLM has no key', async () => {
     const store = new TenantStore(env.DB, 'a.myshopify.com');
-    expect(await draftReply(new LlmClient({}), store, CFG, { subject: 's', conversation: 'b', category: 'other' })).toBeNull();
+    expect(await draftReply(new LlmClient({}), store, CFG, { ...base, subject: 's', conversation: 'b' })).toBeNull();
   });
 
-  it('defers the delivery TIME to the appended line but lets the LLM state the flat shipping cost', async () => {
-    const store = new TenantStore(env.DB, 'a.myshopify.com');
-    const sink: { system?: string } = {};
-    const llm = capturingLlm({ bodyText: 'Yes, we ship internationally.', confidence: 85, quotesPriceOrOrder: false }, sink);
-    await draftReply(llm, store, CFG, { subject: 'Shipping', conversation: 'Do you ship to France?', category: 'shipping-returns', shippingHandledSeparately: true });
-    expect(sink.system).toMatch(/appended to your reply automatically/i);
-    expect(sink.system).toMatch(/do NOT state a delivery time or date/i);
-    expect(sink.system).toMatch(/MAY state the flat shipping COST/i);
-  });
-
-  it('runs the detect->analyse->ground workflow: extracts customerAsks, forbids inventing a question, returns the plan', async () => {
-    const store = new TenantStore(env.DB, 'a.myshopify.com');
-    const sink: { system?: string; user?: string } = {};
-    const llm = capturingLlm({ customerAsks: ['how long is delivery to Ireland'], bodyText: 'We ship to Ireland.', confidence: 80, quotesPriceOrOrder: false }, sink);
-    const d = await draftReply(llm, store, CFG, { subject: 'Q', conversation: 'How long to Ireland?', latestMessage: 'How long to Ireland?', category: 'shipping-returns' });
-    expect(sink.system).toMatch(/customerAsks/);                              // schema asks for the plan first
-    expect(sink.system).toMatch(/NEVER invent a question/i);                  // anti-fabrication rule present
-    expect(sink.system).toMatch(/WORKFLOW - follow it in order/i);           // explicit detect->analyse->ground
-    expect(d?.customerAsks).toEqual(['how long is delivery to Ireland']);     // parsed + returned
-  });
-
-  it('tolerates a model that omits customerAsks (optional field)', async () => {
-    const store = new TenantStore(env.DB, 'a.myshopify.com');
-    const llm = fakeLlm({ bodyText: 'Yes, we are open.', confidence: 80, quotesPriceOrOrder: false });
-    const d = await draftReply(llm, store, CFG, { subject: 's', conversation: 'are you open?', category: 'other' });
-    expect(d?.bodyText).toContain('Yes, we are open');
-    expect(d?.customerAsks).toBeUndefined();
-  });
-
-  it('gives the model the fixed shipping rates as stateable facts (so cost questions are not blind)', async () => {
-    const store = new TenantStore(env.DB, 'a.myshopify.com');
-    const sink: { system?: string } = {};
-    const llm = capturingLlm({ customerAsks: [], bodyText: 'x', confidence: 80, quotesPriceOrOrder: false }, sink);
-    await draftReply(llm, store, CFG, { subject: 's', conversation: 'how much is shipping?', category: 'shipping-returns' });
-    expect(sink.system).toContain('£4.99');
-    expect(sink.system).toMatch(/free on orders over £50/i);
-    expect(sink.system).toContain('£14.99');
-    expect(sink.system).toContain('£23.99');
-    expect(sink.system).toMatch(/shown at checkout/i);
-  });
-
-  it('omits the shipping instruction when no freight line is appended', async () => {
+  it('injects the agent prompt fragment into the system prompt', async () => {
     const store = new TenantStore(env.DB, 'a.myshopify.com');
     const sink: { system?: string } = {};
     const llm = capturingLlm({ bodyText: 'Hi there.', confidence: 85, quotesPriceOrOrder: false }, sink);
-    await draftReply(llm, store, CFG, { subject: 's', conversation: 'b', category: 'other' });
-    expect(sink.system).not.toMatch(/appended to your reply automatically/i);
-  });
-
-  it('grounds the reply to the customer\'s latest message (multi-turn: answer the new topic, not a stale earlier turn)', async () => {
-    const store = new TenantStore(env.DB, 'a.myshopify.com');
-    const sink: { system?: string; user?: string } = {};
-    const llm = capturingLlm({ bodyText: 'X', confidence: 80, quotesPriceOrOrder: false }, sink);
-    await draftReply(llm, store, CFG, {
-      subject: 'Quick question',
-      conversation: 'How long have you been running the store?\n\n---\n\nDo you ship to the United States, and how long to NYC?',
-      latestMessage: 'Do you ship to the United States, and how long to NYC?',
-      category: 'lead'
-    });
-    expect(sink.system).toMatch(/MOST RECENT message/i);                       // grounding instruction present
-    const u = JSON.parse(sink.user ?? '{}');
-    expect(u.latestMessage).toContain('how long to NYC');                       // latest message passed as its own field
-  });
-
-  it('omits the latest-message grounding instruction when no latestMessage is provided', async () => {
-    const store = new TenantStore(env.DB, 'a.myshopify.com');
-    const sink: { system?: string; user?: string } = {};
-    const llm = capturingLlm({ bodyText: 'Y', confidence: 80, quotesPriceOrOrder: false }, sink);
-    await draftReply(llm, store, CFG, { subject: 's', conversation: 'b', category: 'other' });
-    expect(sink.system).not.toMatch(/MOST RECENT message/i);
-  });
-
-  it('defers the sign-off to the owner guidance instead of forcing "no signature"', async () => {
-    const store = new TenantStore(env.DB, 'a.myshopify.com');
-    const sink: { system?: string } = {};
-    const cfgG: TenantConfig = { ...CFG, inbox: { ...CFG.inbox, replyGuidance: 'Always be warm and concise. Sign off as ActivePaw Team' } };
-    const llm = capturingLlm({ bodyText: 'Yes, we are open.\n\nActivePaw Team', confidence: 90, quotesPriceOrOrder: false }, sink);
-    await draftReply(llm, store, cfgG, { subject: 's', conversation: 'are you still active?', category: 'other' });
-    expect(sink.system).toContain('Sign off as ActivePaw Team');                // guidance injected verbatim
-    expect(sink.system).toMatch(/if the owner guidance specifies a sign-off/i);  // output spec defers to it
-    expect(sink.system).not.toMatch(/no signature/i);                           // the old conflicting instruction is gone
-  });
-
-  it('suppresses the sign-off on shipping replies (the delivery line is appended after the body)', async () => {
-    const store = new TenantStore(env.DB, 'a.myshopify.com');
-    const sink: { system?: string } = {};
-    const cfgG: TenantConfig = { ...CFG, inbox: { ...CFG.inbox, replyGuidance: 'Sign off as ActivePaw Team' } };
-    const llm = capturingLlm({ bodyText: 'Yes, we ship there.', confidence: 85, quotesPriceOrOrder: false }, sink);
-    await draftReply(llm, store, cfgG, { subject: 'Shipping', conversation: 'ship to France?', category: 'shipping-returns', shippingHandledSeparately: true });
-    expect(sink.system).toMatch(/Do NOT add a sign-off in this reply/i);
+    await draftReply(llm, store, CFG, { ...base, subject: 's', conversation: 'b' });
+    expect(sink.system).toContain('STUB-FRAGMENT');
   });
 });
 
@@ -150,7 +79,7 @@ describe('draftReply salutation', () => {
   it('opens with the customer first name from the contact record', async () => {
     const store = new TenantStore(env.DB, 'a.myshopify.com');
     const llm = fakeLlm({ bodyText: 'Yes, we ship to Ireland in 5-7 days.', confidence: 92, quotesPriceOrOrder: false });
-    const d = await draftReply(llm, store, CFG, { subject: 'Shipping', conversation: 'Do you ship to Ireland?', category: 'product-question', customerName: 'Jane Smith' });
+    const d = await draftReply(llm, store, CFG, { ...base, subject: 'Shipping', conversation: 'Do you ship to Ireland?', customerName: 'Jane Smith' });
     expect(d?.bodyText.startsWith('Hi Jane,\n\n')).toBe(true);
     expect(d?.bodyText).toContain('Ireland');
   });
@@ -158,7 +87,7 @@ describe('draftReply salutation', () => {
   it('falls back to "Hi there," when there is no usable name', async () => {
     const store = new TenantStore(env.DB, 'a.myshopify.com');
     const llm = fakeLlm({ bodyText: 'Yes, we can help.', confidence: 80, quotesPriceOrOrder: false });
-    const d = await draftReply(llm, store, CFG, { subject: 's', conversation: 'b', category: 'other', customerName: null });
+    const d = await draftReply(llm, store, CFG, { ...base, subject: 's', conversation: 'b', customerName: null });
     expect(d?.bodyText.startsWith('Hi there,\n\n')).toBe(true);
   });
 
@@ -166,7 +95,7 @@ describe('draftReply salutation', () => {
     const store = new TenantStore(env.DB, 'a.myshopify.com');
     const llm = fakeLlm({ bodyText: 'Thanks for getting in touch.', confidence: 80, quotesPriceOrOrder: false });
     for (const junk of ['info', 'sales@shop.com', '   ', '123']) {
-      const d = await draftReply(llm, store, CFG, { subject: 's', conversation: 'b', category: 'other', customerName: junk });
+      const d = await draftReply(llm, store, CFG, { ...base, subject: 's', conversation: 'b', customerName: junk });
       expect(d?.bodyText.startsWith('Hi there,')).toBe(true);
     }
   });
@@ -174,14 +103,14 @@ describe('draftReply salutation', () => {
   it('title-cases a shouty display name (JANE -> Jane)', async () => {
     const store = new TenantStore(env.DB, 'a.myshopify.com');
     const llm = fakeLlm({ bodyText: 'Happy to help.', confidence: 80, quotesPriceOrOrder: false });
-    const d = await draftReply(llm, store, CFG, { subject: 's', conversation: 'b', category: 'other', customerName: 'JANE' });
+    const d = await draftReply(llm, store, CFG, { ...base, subject: 's', conversation: 'b', customerName: 'JANE' });
     expect(d?.bodyText.startsWith('Hi Jane,')).toBe(true);
   });
 
   it('strips an inline greeting the model added anyway (no double salutation)', async () => {
     const store = new TenantStore(env.DB, 'a.myshopify.com');
     const llm = fakeLlm({ bodyText: 'Hi Jane, thanks for your message - yes we can help.', confidence: 88, quotesPriceOrOrder: false });
-    const d = await draftReply(llm, store, CFG, { subject: 's', conversation: 'b', category: 'other', customerName: 'Jane' });
+    const d = await draftReply(llm, store, CFG, { ...base, subject: 's', conversation: 'b', customerName: 'Jane' });
     expect(d?.bodyText.startsWith('Hi Jane,\n\nthanks for your message')).toBe(true);
     expect(d?.bodyText).not.toMatch(/Hi Jane,[\s\S]*Hi Jane,/); // exactly one salutation
   });
@@ -189,7 +118,7 @@ describe('draftReply salutation', () => {
   it('strips an own-line greeting too', async () => {
     const store = new TenantStore(env.DB, 'a.myshopify.com');
     const llm = fakeLlm({ bodyText: 'Hello there,\n\nYes, we are open and shipping.', confidence: 85, quotesPriceOrOrder: false });
-    const d = await draftReply(llm, store, CFG, { subject: 's', conversation: 'b', category: 'other', customerName: 'Bob' });
+    const d = await draftReply(llm, store, CFG, { ...base, subject: 's', conversation: 'b', customerName: 'Bob' });
     expect(d?.bodyText.startsWith('Hi Bob,\n\nYes, we are open')).toBe(true);
   });
 
@@ -197,7 +126,7 @@ describe('draftReply salutation', () => {
     const store = new TenantStore(env.DB, 'a.myshopify.com');
     const sink: { system?: string } = {};
     const llm = capturingLlm({ bodyText: 'Yes.', confidence: 80, quotesPriceOrOrder: false }, sink);
-    await draftReply(llm, store, CFG, { subject: 's', conversation: 'b', category: 'other', customerName: 'Jane' });
+    await draftReply(llm, store, CFG, { ...base, subject: 's', conversation: 'b', customerName: 'Jane' });
     expect(sink.system).toMatch(/Do NOT open with a greeting or salutation/i);
   });
 });

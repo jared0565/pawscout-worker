@@ -2,7 +2,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
 import { TenantStore } from '../src/tenant-store';
-import { runInboxClassifySweep, composeDeliveryDraft } from '../src/inbox/sweep';
+import { runInboxClassifySweep, composeAgentDraft } from '../src/inbox/sweep';
 import { DEFAULT_INBOX } from '../src/inbox/types';
 import { ACTIVE_PAW_COLLECTION_MAP, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL } from '../src/types';
 
@@ -102,7 +102,9 @@ describe('runInboxClassifySweep', () => {
   it('auto-sends a confident safe draft when autosend is on', async () => {
     const tid = await seedShopWithThread();
     const store = new TenantStore(env.DB, SHOP);
-    await store.saveInbox({ ...DEFAULT_INBOX, autosend: true, alertEmail: 'owner@gmail.com' });
+    // Auto requires BOTH the global switch AND the per-agent opt-in (resolveAgents
+    // defaults every label to autosend:false), so opt the product-question agent in.
+    await store.saveInbox({ ...DEFAULT_INBOX, autosend: true, agents: { 'product-question': { autosend: true } }, alertEmail: 'owner@gmail.com' });
     await store.setThreadClassification(tid, { status: 'needs_reply', primaryCategory: 'product-question', intentScore: 40, summary: 's', classifiedAt: '2026-06-18T10:05:00Z' });
     let sent = false;
     const fetchImpl = (async (url: string, init: RequestInit) => {
@@ -115,29 +117,30 @@ describe('runInboxClassifySweep', () => {
   });
 });
 
-describe('composeDeliveryDraft', () => {
-  it('returns the LLM body unchanged when there is no freight line', () => {
-    const out = composeDeliveryDraft({ bodyText: 'Hi there, happy to help.', quotesPriceOrOrder: false }, null);
+describe('composeAgentDraft', () => {
+  it('returns the LLM body unchanged when there is no appendix', () => {
+    const out = composeAgentDraft({ bodyText: 'Hi there, happy to help.', quotesPriceOrOrder: false }, null);
     expect(out.bodyText).toBe('Hi there, happy to help.');
     expect(out.quotesPriceOrder).toBe(false);
   });
 
-  it('still flags money-hold from the LLM body when no freight line is present', () => {
-    const out = composeDeliveryDraft({ bodyText: 'That bed is £45.', quotesPriceOrOrder: false }, null);
+  it('still flags money-hold from the LLM body when no appendix is present', () => {
+    const out = composeAgentDraft({ bodyText: 'That bed is £45.', quotesPriceOrOrder: false }, null);
     expect(out.quotesPriceOrder).toBe(true); // mentionsMoney caught the £ figure
   });
 
-  it('appends the trusted freight line AFTER the LLM body', () => {
+  it('appends the trusted appendix AFTER the LLM body', () => {
     const line = 'Delivery to France: shipping from approx £4.00, est. 8-12 working days.';
-    const out = composeDeliveryDraft({ bodyText: 'Yes, we ship to France.', quotesPriceOrOrder: false }, line);
+    const out = composeAgentDraft({ bodyText: 'Yes, we ship to France.', quotesPriceOrOrder: false }, line);
     expect(out.bodyText).toBe(`Yes, we ship to France.\n\n${line}`);
   });
 
-  it('flags quotesPriceOrder when a freight line is present (forces HITL review)', () => {
-    // The £ figure is the WORKER\'s trusted line, not the LLM body - but the draft
-    // still carries the price flag so a proxy estimate is reviewed before sending.
+  it('does NOT force quotesPriceOrder for a trusted appendix figure (money flag is the LLM body only)', () => {
+    // The £ figure lives in the WORKER's trusted appendix, not the LLM body. The money
+    // flag is computed on the body alone, so a trusted appendix is exempt and the draft
+    // is not held purely because an appendix was attached.
     const line = 'Delivery to France: shipping from approx £4.00, est. 8-12 working days.';
-    const out = composeDeliveryDraft({ bodyText: 'Yes, we ship internationally.', quotesPriceOrOrder: false }, line);
-    expect(out.quotesPriceOrder).toBe(true);
+    const out = composeAgentDraft({ bodyText: 'Yes, we ship internationally.', quotesPriceOrOrder: false }, line);
+    expect(out.quotesPriceOrder).toBe(false);
   });
 });

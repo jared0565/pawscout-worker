@@ -17,9 +17,10 @@ import { invoiceSendDecision } from './invoice-floor';
 import { createDraftOrder } from '../shopify-drafts';
 import { sendInvoice } from './send-invoice';
 import { hasScope } from './scopes';
-import { resolveLogistics, doorToDoorBand } from '../logistics';
-import { isShippingIntent, deriveDestinationCountry, countryLabel, buildShippingLine } from './freight';
 import { stripQuotedReply } from './quote';
+import { agentFor } from './agents/registry';
+import { resolveAgents } from './agents/config';
+import type { AgentContext } from './agents/types';
 import type { ThreadRow, InvoiceLineItem } from './types';
 
 const SWEEP_BATCH = 15;          // threads classified per shop per run
@@ -249,12 +250,12 @@ export async function proposeInvoiceOne(
 }
 
 /**
- * Build and persist a fresh PENDING draft for a thread - conversation → optional
- * freight line → LLM draft → compose → insert. Returns the new draftId and
- * whether the sweep should auto-send it, or null if there is nothing to draft /
- * the LLM is unavailable. NEVER sends (the caller decides). Shared by the nightly
- * sweep (which may then auto-send) and the manual Regenerate action (which never
- * does), so both paths produce drafts identically.
+ * Build and persist a fresh PENDING draft for a thread - conversation → category
+ * agent (ground) → LLM draft → optional trusted appendix → compose → insert.
+ * Returns the new draftId and whether the sweep should auto-send it, or null if
+ * there is nothing to draft / the LLM is unavailable. NEVER sends (the caller
+ * decides). Shared by the nightly sweep (which may then auto-send) and the manual
+ * Regenerate action (which never does), so both paths produce drafts identically.
  */
 export async function composeDraftForThread(
   env: Env, store: TenantStore, cfg: TenantConfig, thread: ThreadRow, fetchImpl: typeof fetch = defaultFetch
@@ -280,39 +281,57 @@ export async function composeDraftForThread(
   // latest message was only a quote (drafter then falls back to a brief acknowledgement).
   const latestInbound = cleaned.length ? cleaned[cleaned.length - 1] : '';
 
-  // Freight-grounded delivery line: when the customer asks about shipping to a
-  // confidently-derived destination, read the SYNCED CJ logistics matrix from D1
-  // (no live CJ call) and append a time-only line deterministically (the LLM never
-  // emits the figure). Resilient - a missing/stale row or ambiguous destination
-  // leaves shippingLine null and the drafter keeps its safe hedge.
-  const shippingLine = await buildShippingLineForThread(store, cfg, thread, conversation, latestInbound);
-
   const llm = new LlmClient({ openrouter: env.OPENROUTER_API_KEY, openai: env.OPENAI_API_KEY }, fetchImpl);
   const contact = await store.getContactByEmail(thread.contact_email);
+  // Build the Admin client defensively: a missing token returns null, and a decrypt
+  // failure (bad/rotated key) must degrade to null too, never abort the shop's sweep
+  // batch. Agents that need it hedge when admin is null (same as a missing token).
+  const admin = await adminForShop(env, store, fetchImpl).catch((e) => {
+    console.warn(`inbox admin unavailable for ${thread.id}: ${(e as Error).message}`);
+    return null;
+  });
+
+  // Dispatch to the category agent. The agent grounds (deterministic, never throws -
+  // a miss returns { confident:false }) and supplies its category-specific prompt
+  // fragment + grounded facts to the generic drafter. A trusted appendix is appended
+  // only when grounding is confident, and is exempt from the money-hold (it is our
+  // own trusted figure, not an LLM-emitted price).
+  const agent = agentFor(thread.primary_category);
+  const ctx: AgentContext = {
+    store, cfg, admin, thread, conversation, latestMessage: latestInbound,
+    contactEmail: thread.contact_email, customerName: contact?.name ?? null
+  };
+  const grounding = await agent.ground(ctx); // never throws; miss => { confident:false }
+
   const draft = await draftReply(llm, store, cfg, {
-    subject: thread.subject ?? '', conversation, latestMessage: latestInbound, category: thread.primary_category ?? 'other',
-    shippingHandledSeparately: !!shippingLine, customerName: contact?.name ?? null
+    agent, grounding, subject: thread.subject ?? '', conversation, latestMessage: latestInbound,
+    customerName: contact?.name ?? null
   });
   if (!draft) return null; // degrade: retry next sweep
 
-  // Auto-send gating is computed on the LLM body ONLY (not the appended freight
-  // line) so the trusted worker figure doesn't itself trip mentionsMoney. The
-  // freight line is a PROXY estimate, so when present we force HITL review (see
-  // composeDeliveryDraft) until the figure is trusted in practice.
+  const appendix = grounding.confident ? agent.deterministicAppendix(grounding) : null;
+  const composed = composeAgentDraft(draft, appendix);
+
+  // Auto-send gating: per-agent opt-in behind the global Auto switch, computed on the
+  // LLM body ONLY (composed.quotesPriceOrder) so a trusted appendix figure does not
+  // itself trip the money-hold.
+  const agents = resolveAgents(cfg.inbox);
+  const agentAutosend = cfg.inbox.autosend && agents[agent.category].autosend;
   const sinceIso = new Date(Date.now() - 86400_000).toISOString();
   const recentAutoCount = await store.recentAutoSendCount(thread.contact_email, sinceIso);
   const decision = autoSendDecision({
-    autosend: cfg.inbox.autosend, confidence: draft.confidence, threshold: cfg.inbox.autoConfidenceThreshold,
-    quotesPriceOrOrder: draft.quotesPriceOrOrder, bodyText: draft.bodyText, category: thread.primary_category ?? 'other', recentAutoCount
+    autosend: agentAutosend, confidence: draft.confidence, threshold: cfg.inbox.autoConfidenceThreshold,
+    quotesPriceOrOrder: composed.quotesPriceOrder, bodyText: draft.bodyText,
+    category: agent.category, recentAutoCount
   });
-  const composed = composeDeliveryDraft(draft, shippingLine);
+
   const draftId = await store.insertDraft({
     threadId: thread.id, bodyText: composed.bodyText, bodyHtml: renderReplyHtml(composed.bodyText),
     confidence: draft.confidence, quotesPriceOrder: composed.quotesPriceOrder,
-    holdReasons: decision.holdReasons, model: (resolveChain(cfg, 'text')[0] as { models: string[] }).models[0], status: 'pending'
+    commercialIntent: draft.commercialIntent, holdReasons: decision.holdReasons,
+    model: (resolveChain(cfg, 'text')[0] as { models: string[] }).models[0], status: 'pending'
   });
-  // A proxy freight figure always gets human review, even under Auto.
-  return { draftId, send: decision.send && !shippingLine };
+  return { draftId, send: decision.send }; // trusted appendix no longer force-holds
 }
 
 async function draftOne(env: Env, store: TenantStore, cfg: TenantConfig, thread: ThreadRow, fetchImpl: typeof fetch): Promise<void> {
@@ -324,57 +343,14 @@ async function draftOne(env: Env, store: TenantStore, cfg: TenantConfig, thread:
   }
 }
 
-/**
- * Combine the LLM draft with an optional worker-computed freight line into the
- * final reply body + the money-hold flag. PURE (no I/O) so the deliberate
- * decisions are unit-testable:
- *  - the trusted, claim-safe freight figure is appended AFTER the LLM body and is
- *    NOT fed into mentionsMoney - only the LLM body can trip the money-hold;
- *  - quotesPriceOrder still becomes true when a freight line is present, so the
- *    draft is flagged as quoting a figure (and held for review under Auto).
- */
-export function composeDeliveryDraft(
+/** Combine the LLM body with an optional TRUSTED appendix. PURE. The money flag is
+ * computed on the LLM body ONLY, so a trusted appendix figure (freight/tracking) is
+ * exempt and does not by itself force HITL. */
+export function composeAgentDraft(
   draft: { bodyText: string; quotesPriceOrOrder: boolean },
-  shippingLine: string | null
+  appendix: string | null
 ): { bodyText: string; quotesPriceOrder: boolean } {
-  const llmQuotes = draft.quotesPriceOrOrder || mentionsMoney(draft.bodyText);
-  if (!shippingLine) return { bodyText: draft.bodyText, quotesPriceOrder: llmQuotes };
-  return {
-    bodyText: `${draft.bodyText.trimEnd()}\n\n${shippingLine}`,
-    // The line is ours (trusted) and time-only, but it IS a worker-computed figure -
-    // flag it so the draft is reviewed before sending (HITL is also forced upstream
-    // while the door-to-door model is unvalidated against real fulfilment data).
-    quotesPriceOrder: true
-  };
-}
-
-/**
- * Resolve a real CJ freight line for the thread's destination, or null. Fully
- * guarded: never throws and never blocks the draft. Returns null fast when the
- * enquiry isn't shipping-related, the destination is ambiguous/GB, CJ isn't
- * connected, or the lookup fails.
- */
-export async function buildShippingLineForThread(
-  store: TenantStore, cfg: TenantConfig, thread: ThreadRow, conversation: string, latestMessage: string
-): Promise<string | null> {
-  try {
-    const subject = thread.subject ?? '';
-    // Gate on the customer's LATEST message ONLY: append a delivery line solely when they
-    // are asking about shipping right now. The thread's category/subject can be stale (a
-    // shipping-classified thread that has since pivoted to another topic), which previously
-    // stapled an irrelevant delivery line onto an off-topic reply. Pass null category + ''
-    // subject so the decision rests purely on the latest inbound body.
-    if (!isShippingIntent(null, '', latestMessage)) return null;
-    // Destination may have been named in an earlier turn, so derive it from the full thread.
-    const country = deriveDestinationCountry(conversation, subject, thread.contact_email);
-    if (!country) return null; // ambiguous/unknown destination → safe hedge
-    const l = resolveLogistics(cfg.fulfil);
-    // Origin is CN for this catalog; the freshness-gated accessor returns null when
-    // the matrix row is missing or stale, so doorToDoorBand → null → safe hedge.
-    const route = await store.getLogisticsRoute('CN', country, l.stalenessHours);
-    return buildShippingLine(countryLabel(country), doorToDoorBand(route, l));
-  } catch (e) {
-    console.warn(`inbox shipping-line resolve failed for ${thread.id}: ${(e as Error).message}`);
-    return null;
-  }
+  const quotesPriceOrder = draft.quotesPriceOrOrder || mentionsMoney(draft.bodyText);
+  if (!appendix) return { bodyText: draft.bodyText, quotesPriceOrder };
+  return { bodyText: `${draft.bodyText.trimEnd()}\n\n${appendix}`, quotesPriceOrder };
 }
