@@ -762,6 +762,86 @@ export async function seedSemanticLibrary(
   return { seeded, skipped };
 }
 
+/** Per-collection GB sourcing keywords (mirrors discover-cj-category-products.py). */
+const SEED_KEYWORDS: Record<string, string[]> = {
+  'pet-cleaning': ['pet cleaning wipes', 'paw cleaner', 'pet bath towel'],
+  'pet-grooming': ['dog grooming brush', 'pet nail clipper', 'dog comb'],
+  'pet-health': ['dog dental', 'dog supplement', 'pet probiotic'],
+  'pet-toys': ['dog chew toy', 'cat toy', 'pet puzzle toy'],
+  'pet-accessories': ['dog collar', 'dog harness', 'pet bowl', 'cat litter', 'pet carrier']
+};
+
+/**
+ * One-off origin seed: discover products CJ warehouses in `countryCode`, cache
+ * each (with its per-country origins) into warehouse_products, and DRAFT-import
+ * it (status DRAFT, unpublished) for owner review. Reuses confirmAndImport's
+ * full gate chain (curation/pet-floor/image-QA/stock); the only difference from
+ * the cron is publish:false. Idempotent: skips pids already linked.
+ */
+export async function seedOriginAssortment(
+  store: TenantStore,
+  cj: CjClient,
+  admin: AdminGraphql,
+  cfg: TenantConfig,
+  opts: {
+    countryCode?: string;
+    perCollection?: number;
+    curate?: (detail: CjDetail, context: string) => Promise<Curation | null>;
+    pickHero?: (title: string, imageUrls: string[]) => Promise<HeroPick>;
+    pause?: (ms: number) => Promise<void>;
+    keywords?: Record<string, string[]>;
+  } = {}
+): Promise<{ discovered: number; drafted: number; rejected: number }> {
+  const cc = opts.countryCode ?? 'GB';
+  const cap = opts.perCollection ?? 12;
+  const pause = opts.pause ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const keywords = opts.keywords ?? SEED_KEYWORDS;
+  const seenTitleSigs = new Set((await store.warehouseTitles()).map(titleSignature));
+  const seenPids = new Set<string>();
+  let discovered = 0, drafted = 0, rejected = 0;
+
+  for (const [category, kws] of Object.entries(keywords)) {
+    let perCat = 0;
+    for (const kw of kws) {
+      if (perCat >= cap) break;
+      const items = await cj.searchByWarehouse(normalizeKeyword(kw), cc);
+      await pause(CJ_CALL_GAP_MS);
+      for (const item of items) {
+        if (perCat >= cap) break;
+        if (seenPids.has(item.pid)) continue;
+        seenPids.add(item.pid);
+        const link = await store.getLink(item.pid);
+        if (link && (link.state === 'imported' || link.state === 'importing' || link.state === 'draft')) continue;
+        discovered++;
+        const detail = await getCachedDetail(store, cj, item.pid);
+        await pause(CJ_CALL_GAP_MS);
+        if (!detail) { rejected++; continue; }
+        const sig = titleSignature(detail.nameEn);
+        if (seenTitleSigs.has(sig)) { rejected++; continue; }
+        // Cache the detail (with per-country origins) so Phase-2 geo-ranking and
+        // chooseOrigin read real GB origins from D1 after the owner publishes.
+        await store.putWarehouseProduct({
+          cjPid: detail.pid,
+          category,
+          title: detail.nameEn,
+          detailJson: JSON.stringify(detail),
+          priceUsd: detail.variants[0]?.sellPriceUsd ?? 0,
+          listedNum: detail.listedNum,
+          stock: detail.stock ?? 0
+        });
+        await confirmAndImport(store, cj, admin, cfg, detail, category, opts.curate, opts.pickHero, { publish: false });
+        await pause(CJ_CALL_GAP_MS);
+        if ((await store.getLink(detail.pid))?.state === 'draft') {
+          drafted++; perCat++; seenTitleSigs.add(sig);
+        } else {
+          rejected++; // confirmAndImport's gate chain rejected it (link ends 'failed')
+        }
+      }
+    }
+  }
+  return { discovered, drafted, rejected };
+}
+
 /** Daily cron entry point: retention purges, then per-tenant cull + refill. */
 export async function runDailyMaintenance(env: Env): Promise<void> {
   await purgeExpiredSearchCache(env.DB);
