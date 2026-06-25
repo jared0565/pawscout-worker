@@ -68,39 +68,54 @@ function fakeCtx(opts: {
   const linksByPid = opts.linksByPid ?? {};
   const warehouse = opts.warehouse ?? {};
 
+  // Build a fake product edge with a single available variant.
+  const productEdge = (productId: string, variantId: string) => ({
+    node: {
+      id: productId,
+      title: 'Test Product',
+      variants: {
+        edges: [{
+          node: {
+            id: variantId,
+            title: 'Default',
+            sku: 'SKU-1',
+            price: '9.99',
+            availableForSale: true,
+            inventoryQuantity: 10
+          }
+        }]
+      }
+    }
+  });
+
   // When there is a URL/handle signal, admin is not needed. Only wire admin when
   // the test provides resolveLine (free-text path).
+  // resolveLineRequest derives its status from the number of AVAILABLE variants:
+  //   0 -> 'none', 1 -> 'resolved', 2+ -> 'ambiguous'. So we shape the edges to
+  //   genuinely produce the requested status (not by faking the status string).
   const hasAdminPath = opts.resolveLine !== undefined;
   const adminFn = hasAdminPath
     ? vi.fn().mockImplementation(() => {
         const rl = opts.resolveLine!;
-        if (rl.status !== 'resolved' || !rl.variant) {
-          // Return empty edges so resolveLineRequest returns status:'none'/'ambiguous'
-          return Promise.resolve({ products: { edges: [] } });
+        if (rl.status === 'resolved' && rl.variant) {
+          // One available variant -> resolveLineRequest returns 'resolved'.
+          return Promise.resolve({
+            products: { edges: [productEdge(rl.variant.productId, 'gid://shopify/ProductVariant/1')] }
+          });
         }
-        // Return one product with one variant so resolveLineRequest returns 'resolved'
-        return Promise.resolve({
-          products: {
-            edges: [{
-              node: {
-                id: rl.variant.productId,
-                title: 'Test Product',
-                variants: {
-                  edges: [{
-                    node: {
-                      id: 'gid://shopify/ProductVariant/1',
-                      title: 'Default',
-                      sku: 'SKU-1',
-                      price: '9.99',
-                      availableForSale: true,
-                      inventoryQuantity: 10
-                    }
-                  }]
-                }
-              }
-            }]
-          }
-        });
+        if (rl.status === 'ambiguous') {
+          // Two available variants -> resolveLineRequest returns 'ambiguous'.
+          return Promise.resolve({
+            products: {
+              edges: [
+                productEdge('gid://shopify/Product/A', 'gid://shopify/ProductVariant/A'),
+                productEdge('gid://shopify/Product/B', 'gid://shopify/ProductVariant/B'),
+              ]
+            }
+          });
+        }
+        // 'none' (or anything else): zero edges -> resolveLineRequest returns 'none'.
+        return Promise.resolve({ products: { edges: [] } });
       })
     : null; // URL path does not need admin
 
@@ -153,13 +168,39 @@ describe('resolveItemShipping', () => {
     expect(r?.verifiedGbWarehouse).toBe(false);
   });
 
-  it('returns null on ambiguous/no item or missing warehouse data', async () => {
-    expect(
-      await resolveItemShipping(fakeCtx({ resolveLine: { status: 'ambiguous' } }), 'GB')
-    ).toBeNull();
-    expect(
-      await resolveItemShipping(fakeCtx({ resolveLine: { status: 'none' } }), 'GB')
-    ).toBeNull();
+  it('returns null when the free-text match is ambiguous (2+ products)', async () => {
+    // The admin mock returns two available variants, so resolveLineRequest genuinely
+    // returns status:'ambiguous' (not 'none') and resolveItemShipping must bail.
+    const ctx = fakeCtx({
+      latestMessage: 'how long for a dog toy?',
+      resolveLine: { status: 'ambiguous' },
+    });
+    expect(await resolveItemShipping(ctx, 'GB')).toBeNull();
+  });
+
+  it('returns null when the free-text match resolves nothing (status none)', async () => {
+    const ctx = fakeCtx({
+      latestMessage: 'how long for a widget that does not exist?',
+      resolveLine: { status: 'none' },
+    });
+    expect(await resolveItemShipping(ctx, 'GB')).toBeNull();
+  });
+
+  it('returns null when a URL handle is present but not in the catalog', async () => {
+    // Critical path: a handle is present but getLinkByHandle misses. We must NOT
+    // fall through to the free-text path and guess a DIFFERENT product. To prove
+    // the early-return (not just an absent admin) is what stops the fall-through,
+    // we wire a free-text path that WOULD resolve a real, fully-stocked product:
+    // without the early-return, resolveItemShipping would wrongly return that.
+    const detail = JSON.stringify({ origins: { CN: 500 }, variants: [{ vid: 'VX', stock: 500 }] });
+    const ctx = fakeCtx({
+      latestMessage: 'how long for activepaw.co.uk/products/unknown-thing ?',
+      links: {}, // handle miss
+      resolveLine: { status: 'resolved', variant: { productId: 'gid://shopify/Product/9' } },
+      linksByPid: { 'gid://shopify/Product/9': { cj_pid: 'P9' } },
+      warehouse: { P9: { detail } },
+    });
+    expect(await resolveItemShipping(ctx, 'GB')).toBeNull();
   });
 
   it('returns null when no admin and no URL handle in message', async () => {
@@ -177,5 +218,16 @@ describe('resolveItemShipping', () => {
     });
     const r = await resolveItemShipping(ctx, 'GB');
     expect(r).toBeNull();
+  });
+
+  it('repVid is null when detail has no variants', async () => {
+    const detail = JSON.stringify({ origins: { GB: 40 } }); // no variants key
+    const ctx = fakeCtx({
+      latestMessage: 'activepaw.co.uk/products/cat-bed',
+      links: { 'cat-bed': { cj_pid: 'P4' } },
+      warehouse: { P4: { detail } },
+    });
+    const r = await resolveItemShipping(ctx, 'GB');
+    expect(r).toEqual({ chosenOrigin: 'GB', cjPid: 'P4', repVid: null, verifiedGbWarehouse: true });
   });
 });

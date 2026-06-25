@@ -29,11 +29,14 @@ const HANDLE_RE = /(?:activepaw\.co\.uk)?\/products\/([a-z0-9][a-z0-9-]{2,})/i;
  */
 export async function resolveItemShipping(ctx: AgentContext, dest: string): Promise<ItemShipping | null> {
   try {
-    // Signal 1: a product URL/handle in the message (strongest).
+    // Signal 1: a product URL/handle in the message (strongest, most specific).
     let cjPid: string | null = null;
     const m = HANDLE_RE.exec(ctx.latestMessage);
-    if (m) cjPid = (await ctx.store.getLinkByHandle(m[1]))?.cj_pid ?? null;
-    // Signal 2: a confident single free-text catalog match.
+    if (m) {
+      cjPid = (await ctx.store.getLinkByHandle(m[1]))?.cj_pid ?? null;
+      if (!cjPid) return null; // handle present but not in catalog -> do NOT fall through to free-text
+    }
+    // Signal 2: a confident single free-text catalog match (only when NO handle was present).
     if (!cjPid) {
       if (!ctx.admin) return null;
       const resolved = await resolveLineRequest(ctx.admin, ctx.latestMessage.slice(0, 80));
