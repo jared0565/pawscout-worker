@@ -25,6 +25,7 @@ function fakeCtx(opts: {
   matrixRoute?: any;
   routes?: Record<string, any>; // route-aware: keyed by `${from}->${to}`
   cj?: any;
+  fulfil?: any; // override cfg.fulfil (e.g. { gbFreeUkLive: true })
 }) {
   const links = opts.links ?? {};
   const warehouse = opts.warehouse ?? {};
@@ -44,7 +45,7 @@ function fakeCtx(opts: {
 
   return {
     store,
-    cfg: { fulfil: {} },
+    cfg: { fulfil: opts.fulfil ?? {} },
     admin: null,
     cj: opts.cj ?? null,
     thread: { subject: '', contact_email: 'a@gmail.com' },
@@ -232,5 +233,38 @@ describe('shippingAgent.ground', () => {
     const line = shippingAgent.deterministicAppendix(g)!;
     expect(line).toMatch(/Delivery to France/);
     expect(line).not.toMatch(/UK fulfilment|fulfilment location/i);
+  });
+});
+
+describe('free UK delivery flag (Task 6 - gbFreeUkLive verify-then-flip gate)', () => {
+  const GB_DETAIL = JSON.stringify({ origins: { GB: 40, CN: 500 }, variants: [{ vid: 'V1', stock: 40 }] });
+  const domesticCj = { freightQuoteAging: async () => [{ priceUsd: 0, days: '2-4', name: 'Domestic' }] };
+  const crossCj = { freightQuoteAging: async () => [{ priceUsd: 1, days: '5-11', name: 'CJPacket' }] };
+
+  it('flag ON: GB item to GB -> appendix adds the free UK delivery clause', async () => {
+    const ctx = fakeCtx({ msg: 'how long to activepaw.co.uk/products/cat-fountain to the UK?', links: { 'cat-fountain': { cj_pid: 'P1' } }, warehouse: { P1: { detail: GB_DETAIL } }, matrixRoute: null, cj: domesticCj, fulfil: { gbFreeUkLive: true } });
+    const line = shippingAgent.deterministicAppendix(await shippingAgent.ground(ctx))!;
+    expect(line).toMatch(/free UK delivery/i);
+    expect(line).toMatch(/UK fulfilment location/i);
+  });
+
+  it('flag OFF (absent): SAME GB item to GB -> location line but NO free UK delivery claim', async () => {
+    const ctx = fakeCtx({ msg: 'how long to activepaw.co.uk/products/cat-fountain to the UK?', links: { 'cat-fountain': { cj_pid: 'P1' } }, warehouse: { P1: { detail: GB_DETAIL } }, matrixRoute: null, cj: domesticCj });
+    const line = shippingAgent.deterministicAppendix(await shippingAgent.ground(ctx))!;
+    expect(line).not.toMatch(/free UK delivery/i);
+    expect(line).toMatch(/UK fulfilment location/i);
+  });
+
+  it('flag ON but CN-only item -> never claims free UK or UK fulfilment (verifiedGb false)', async () => {
+    const detail = JSON.stringify({ origins: { CN: 500 }, variants: [{ vid: 'V2', stock: 500 }] });
+    const ctx = fakeCtx({ msg: 'how long to activepaw.co.uk/products/dog-launcher to the UK?', links: { 'dog-launcher': { cj_pid: 'P2' } }, warehouse: { P2: { detail } }, matrixRoute: null, cj: crossCj, fulfil: { gbFreeUkLive: true } });
+    const line = shippingAgent.deterministicAppendix(await shippingAgent.ground(ctx))!;
+    expect(line).not.toMatch(/free UK delivery|UK fulfilment/i);
+  });
+
+  it('flag ON but GB item to a NON-GB dest (US) -> never claims free UK or UK fulfilment', async () => {
+    const ctx = fakeCtx({ msg: 'how long to activepaw.co.uk/products/cat-fountain to the US?', links: { 'cat-fountain': { cj_pid: 'P1' } }, warehouse: { P1: { detail: GB_DETAIL } }, matrixRoute: null, cj: crossCj, fulfil: { gbFreeUkLive: true } });
+    const line = shippingAgent.deterministicAppendix(await shippingAgent.ground(ctx))!;
+    expect(line).not.toMatch(/free UK delivery|UK fulfilment/i);
   });
 });

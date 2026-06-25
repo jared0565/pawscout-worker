@@ -117,6 +117,11 @@ export interface Fulfil {
   // model). OPTIONAL + read via resolveLogistics() with per-field defaults - never
   // rely on the one-level DEFAULT_FULFIL merge to fill a nested object.
   logistics?: Partial<LogisticsConfig>;
+  // gbFreeUkLive: the verify-then-flip gate for "free UK delivery". The shipping
+  // agent may state free UK delivery for a GB-warehoused item to GB ONLY when this
+  // is true, which the owner flips ONLY after a live GB-item-to-UK checkout is
+  // verified at GBP 0 (Phase 1 cutover). Default OFF (absent) = never claimed.
+  gbFreeUkLive?: boolean;
 }
 
 /**

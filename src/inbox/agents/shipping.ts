@@ -126,10 +126,13 @@ export const shippingAgent: CategoryAgent = {
       if (!band) return notConfidentFacts(dest);
 
       const verifiedGb = item.verifiedGbWarehouse && dest === 'GB';
+      // Free-UK-delivery clause is gated: only when the item is GB-verified to a GB dest
+      // AND the owner has flipped gbFreeUkLive (after a live GBP-0 checkout is verified).
+      const gbFreeUk = verifiedGb && ctx.cfg.fulfil?.gbFreeUkLive === true;
       return {
         confident: true, quotesFigure: true,
         facts: `Destination ${countryLabel(dest)}. A grounded delivery estimate line is appended after your reply, so do NOT state a delivery time yourself. You MAY state the flat shipping cost and returns policy. Do not add a sign-off; the appended line follows your text.`,
-        data: { label: countryLabel(dest), band, verifiedGb }
+        data: { label: countryLabel(dest), band, verifiedGb, gbFreeUk }
       };
     } catch (e) {
       console.warn(`shippingAgent.ground failed: ${(e as Error).message}`);
@@ -140,14 +143,19 @@ export const shippingAgent: CategoryAgent = {
     return 'You are the shipping and returns specialist. If they ask whether we deliver to a place, the FIRST word is Yes (or No) followed by the place. If a grounded delivery line is appended, do not state a time yourself, just confirm delivery and that a tracking link follows on dispatch. If they ask about cost, state the flat rate from the facts. Keep returns answers to the relevant policy only. Any reassurance comes after the answer, never softening it. Never name the dispatch country. Example: "Yes, we deliver to the US, including NYC. You will get a tracking link the moment it is on its way."';
   },
   deterministicAppendix(g: Grounding): string | null {
-    const d = g.data as { label: string; band: DayRange; verifiedGb?: boolean } | undefined;
+    const d = g.data as { label: string; band: DayRange; verifiedGb?: boolean; gbFreeUk?: boolean } | undefined;
     if (!g.confident || !d) return null;
     const line = buildShippingLine(d.label, d.band); // "Delivery to X: estimated A-B days."
     if (!line) return null;
     // Per-SKU, source-verified UK fulfilment wording (never blanket, never for non-GB stock).
-    return d.verifiedGb
-      ? `This item is held in a UK fulfilment location. ${line}`
-      : line;
+    // The "free UK delivery" clause is appended ONLY when the verify-then-flip flag is live.
+    if (d.verifiedGb) {
+      const loc = d.gbFreeUk
+        ? 'This item is held in a UK fulfilment location with free UK delivery.'
+        : 'This item is held in a UK fulfilment location.';
+      return `${loc} ${line}`;
+    }
+    return line;
   }
 };
 
