@@ -45,6 +45,14 @@ export function statesDayRange(text: string): boolean {
   return /\b\d{1,3}\s*-\s*\d{1,3}\s*days?\b/i.test(text);
 }
 
+/** True when the customer asked a yes/no "do you deliver to X" question (so the
+ * reply owes a direct affirmation). Anchored on an auxiliary + "you" + a ship/
+ * deliver verb so a delivery-TIME question ("how long does shipping take") and the
+ * "thank you, shipping..." red herring do NOT trigger it. */
+export function asksDoYouDeliver(text: string): boolean {
+  return /\b(?:do|does|did|can|could|will|would)\s+you\b[^.?!]{0,40}\b(?:ship|deliver|send|post|shipping|delivery)\b/i.test(text);
+}
+
 /** Context for the runtime gate: the conciseness ceiling and what the customer
  * actually asked, so the gate can demand a direct answer where one is owed. */
 export interface DraftQualityContext {

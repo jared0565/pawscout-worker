@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { hasFillerBookend, countWords, affirmsDelivery, statesDayRange, findDraftIssues, refineUntilClean } from '../src/inbox/draft-quality';
+import { hasFillerBookend, countWords, affirmsDelivery, statesDayRange, findDraftIssues, refineUntilClean, asksDoYouDeliver } from '../src/inbox/draft-quality';
 
 describe('hasFillerBookend', () => {
   it('flags the "do not hesitate to get in touch" boilerplate', () => {
@@ -73,6 +73,22 @@ describe('findDraftIssues (runtime quality gate)', () => {
   it('does not require an affirmation when the customer did NOT ask about delivery', () => {
     const buried = 'We are a small team focused on quality and customer care.';
     expect(findDraftIssues(buried, { maxWords: 70, askedDelivery: false })).toEqual([]);
+  });
+});
+
+describe('asksDoYouDeliver', () => {
+  it('true for direct yes/no delivery questions', () => {
+    expect(asksDoYouDeliver('Did you ship globally???')).toBe(true);
+    expect(asksDoYouDeliver('do you ship to the United States?')).toBe(true);
+    expect(asksDoYouDeliver('Do you currently offer international shipping?')).toBe(true);
+    expect(asksDoYouDeliver('can you deliver to NYC?')).toBe(true);
+  });
+  it('false for a delivery-TIME question (handled by the grounded day-range, not a yes)', () => {
+    expect(asksDoYouDeliver('how long does shipping take to NYC?')).toBe(false);
+  });
+  it('false for unrelated questions and the "thank you" red herring', () => {
+    expect(asksDoYouDeliver('what inspired you to start Active Paw?')).toBe(false);
+    expect(asksDoYouDeliver('Thank you, shipping looked fine.')).toBe(false);
   });
 });
 

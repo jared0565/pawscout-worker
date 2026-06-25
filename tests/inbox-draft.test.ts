@@ -39,6 +39,17 @@ function capturingLlm(content: unknown, sink: { system?: string; user?: string }
   return new LlmClient({ openrouter: 'k' }, f);
 }
 
+/** Returns a different JSON content per call, in order, for exercising the revise loop. */
+function sequenceLlm(contents: unknown[]): LlmClient {
+  let i = 0;
+  const f = (async () => {
+    const content = contents[Math.min(i, contents.length - 1)];
+    i++;
+    return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(content) } }], usage: { cost: 0.0001 } }), { status: 200 });
+  }) as unknown as typeof fetch;
+  return new LlmClient({ openrouter: 'k' }, f);
+}
+
 describe('renderReplyHtml', () => {
   it('escapes and paragraph-wraps plain text (no raw HTML survives)', () => {
     const h = renderReplyHtml('Hi <script>x</script>\n\nThanks');
@@ -72,6 +83,16 @@ describe('draftReply', () => {
     const llm = capturingLlm({ bodyText: 'Hi there.', confidence: 85, quotesPriceOrOrder: false }, sink);
     await draftReply(llm, store, CFG, { ...base, subject: 's', conversation: 'b' });
     expect(sink.system).toContain('STUB-FRAGMENT');
+  });
+
+  it('self-corrects a filler-padded first draft via the runtime revise loop', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const padded = { bodyText: 'Thank you for getting in touch! We do ship to Ireland.', confidence: 80, quotesPriceOrOrder: false };
+    const clean = { bodyText: 'Yes, we ship to Ireland. Your tracking link follows on dispatch.', confidence: 88, quotesPriceOrOrder: false };
+    const llm = sequenceLlm([padded, clean]);
+    const d = await draftReply(llm, store, CFG, { ...base, subject: 'Shipping', conversation: 'Do you ship to Ireland?', latestMessage: 'Do you ship to Ireland?' });
+    expect(d?.bodyText).toContain('Yes, we ship to Ireland');
+    expect(d?.bodyText).not.toMatch(/thank you for getting in touch|do not hesitate/i);
   });
 });
 

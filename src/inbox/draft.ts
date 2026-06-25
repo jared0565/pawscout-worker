@@ -5,6 +5,9 @@ import { resolveChain } from '../llm-resolve';
 import type { DraftResult } from './types';
 import { SHARED_SCAFFOLDING, STORE_FACTS, COMMERCIAL_GUARDRAILS, OUTPUT_CONTRACT } from './agents/scaffolding';
 import type { CategoryAgent, Grounding } from './agents/types';
+import { refineUntilClean, asksDoYouDeliver, type DraftQualityContext } from './draft-quality';
+
+const DRAFT_MAX_WORDS = 80; // conciseness ceiling for the runtime quality gate
 
 function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
@@ -60,10 +63,65 @@ export function applySalutation(bodyText: string, customerName: string | null | 
   return sanitizeOutbound(`${greeting}\n\n${stripped}`);
 }
 
+/** Shared JSON validator for a drafter response (initial draft AND revision). */
+function validateDraft(v: unknown): DraftResult | null {
+  const o = v as Record<string, unknown>;
+  if (typeof o !== 'object' || o === null) return null;
+  const bodyText = typeof o.bodyText === 'string' ? o.bodyText.trim() : '';
+  if (!bodyText) return null;
+  const confidence = Number(o.confidence);
+  if (!Number.isFinite(confidence) || confidence < 0 || confidence > 100) return null;
+  const customerAsks = Array.isArray(o.customerAsks)
+    ? o.customerAsks.filter((x): x is string => typeof x === 'string').map((s) => s.slice(0, 200)).slice(0, 10)
+    : undefined;
+  return { bodyText: bodyText.slice(0, 4000), confidence: Math.round(confidence), quotesPriceOrOrder: o.quotesPriceOrOrder === true, commercialIntent: o.commercialIntent === true, customerAsks };
+}
+
+/** Assemble the system prompt: shared safety/facts/format + the agent's own prompt.
+ * When `revisionIssues` is supplied, appends a revision instruction so the model
+ * rewrites its previous reply to clear the quality reviewer's specific objections. */
+function buildDraftSystem(
+  agent: CategoryAgent, grounding: Grounding,
+  opts: { hasLatest: boolean; guidance?: string; revisionIssues?: string[] }
+): string {
+  return (
+    SHARED_SCAFFOLDING + ' ' + STORE_FACTS + ' ' +
+    agent.promptFragment(grounding) + ' ' +
+    (grounding.facts ? `Grounded facts you MAY rely on for this reply: ${grounding.facts} ` : '') +
+    (agent.commercial ? COMMERCIAL_GUARDRAILS + ' ' : '') +
+    (opts.hasLatest
+      ? 'Reply to the customer\'s MOST RECENT message specifically (provided as latestMessage); earlier conversation is background. If the latest message has no new question (only a quote, thank-you, or acknowledgement), reply with a short warm acknowledgement, do not re-answer a previous turn. '
+      : '') +
+    (opts.guidance ? `Owner guidance - follow exactly; it OVERRIDES defaults including tone and sign-off: ${opts.guidance} ` : '') +
+    (opts.revisionIssues?.length
+      ? `REVISION REQUIRED: your previous reply (provided as previousReply) was rejected by a quality reviewer. Rewrite it from scratch to fix EVERY issue below while staying accurate and grounded in the facts. Issues: ${opts.revisionIssues.join(' ')} `
+      : '') +
+    OUTPUT_CONTRACT
+  );
+}
+
+/** LLM-backed reviser for the runtime self-correction loop. Re-prompts with the
+ * reviewer's issues plus the previous reply; returns the raw (pre-salutation)
+ * revised draft, or null on failure (the loop then keeps the best draft so far). */
+async function reviseDraft(
+  llm: LlmClient, store: TenantStore, chain: ReturnType<typeof resolveChain>,
+  agent: CategoryAgent, grounding: Grounding, guidance: string | undefined,
+  latest: string, baseUser: string, previousBody: string, issues: string[]
+): Promise<DraftResult | null> {
+  const system = buildDraftSystem(agent, grounding, { hasLatest: !!latest, guidance, revisionIssues: issues });
+  const user = JSON.stringify({ ...JSON.parse(baseUser), previousReply: previousBody.slice(0, 2000) });
+  const result = await llm.jsonChain<DraftResult>({ chain, maxTokens: 700, system, user, validate: validateDraft });
+  if (!result.ok) { console.warn(`inbox revise failed: ${result.error}`); return null; }
+  await store.logLlmUsage('inbox-revise', result.usage.model, result.usage.promptTokens, result.usage.completionTokens, result.usage.costUsd);
+  return result.value;
+}
+
 /** Draft a reply. LLM proposes only - returns null on ANY failure. The conversation
  * text is UNTRUSTED data; the prompt forbids following instructions inside it. The
- * agent supplies its category-specific fragment and grounded facts; the shared
- * scaffolding, store facts, and output contract come from scaffolding.ts. */
+ * agent supplies its category prompt and grounded facts; shared scaffolding/store
+ * facts/output contract come from scaffolding.ts. A runtime quality loop then holds
+ * the draft to the bar (concise, answer-first, no filler), revising via the LLM
+ * until it passes - the worker self-corrects in production, no dev tuning needed. */
 export async function draftReply(
   llm: LlmClient, store: TenantStore, cfg: TenantConfig,
   input: { agent: CategoryAgent; grounding: Grounding; subject: string; conversation: string; latestMessage?: string; customerName?: string | null }
@@ -74,34 +132,22 @@ export async function draftReply(
   const latest = (input.latestMessage ?? '').trim();
   const { agent, grounding } = input;
 
-  const system =
-    SHARED_SCAFFOLDING + ' ' + STORE_FACTS + ' ' +
-    agent.promptFragment(grounding) + ' ' +
-    (grounding.facts ? `Grounded facts you MAY rely on for this reply: ${grounding.facts} ` : '') +
-    (agent.commercial ? COMMERCIAL_GUARDRAILS + ' ' : '') +
-    (latest
-      ? 'Reply to the customer\'s MOST RECENT message specifically (provided as latestMessage); earlier conversation is background. If the latest message has no new question (only a quote, thank-you, or acknowledgement), reply with a short warm acknowledgement, do not re-answer a previous turn. '
-      : '') +
-    (guidance ? `Owner guidance - follow exactly; it OVERRIDES defaults including tone and sign-off: ${guidance} ` : '') +
-    OUTPUT_CONTRACT;
+  const system = buildDraftSystem(agent, grounding, { hasLatest: !!latest, guidance });
+  const baseUser = JSON.stringify({ subject: input.subject.slice(0, 200), category: agent.category, latestMessage: latest.slice(0, 2000), conversation: input.conversation.slice(0, 4000) });
 
-  const result = await llm.jsonChain<DraftResult>({
-    chain, maxTokens: 700, system,
-    user: JSON.stringify({ subject: input.subject.slice(0, 200), category: agent.category, latestMessage: latest.slice(0, 2000), conversation: input.conversation.slice(0, 4000) }),
-    validate: (v) => {
-      const o = v as Record<string, unknown>;
-      if (typeof o !== 'object' || o === null) return null;
-      const bodyText = typeof o.bodyText === 'string' ? o.bodyText.trim() : '';
-      if (!bodyText) return null;
-      const confidence = Number(o.confidence);
-      if (!Number.isFinite(confidence) || confidence < 0 || confidence > 100) return null;
-      const customerAsks = Array.isArray(o.customerAsks)
-        ? o.customerAsks.filter((x): x is string => typeof x === 'string').map((s) => s.slice(0, 200)).slice(0, 10)
-        : undefined;
-      return { bodyText: bodyText.slice(0, 4000), confidence: Math.round(confidence), quotesPriceOrOrder: o.quotesPriceOrOrder === true, commercialIntent: o.commercialIntent === true, customerAsks };
-    }
-  });
+  const result = await llm.jsonChain<DraftResult>({ chain, maxTokens: 700, system, user: baseUser, validate: validateDraft });
   if (!result.ok) { console.warn(`inbox draft failed: ${result.error}`); return null; }
   await store.logLlmUsage('inbox-draft', result.usage.model, result.usage.promptTokens, result.usage.completionTokens, result.usage.costUsd);
-  return { ...result.value, bodyText: applySalutation(result.value.bodyText, input.customerName) };
+
+  // Runtime self-correction: hold the draft to the bar; revise via the LLM until it
+  // passes (bounded). Runs on the pre-salutation body so the greeting never trips the
+  // answer-first check; the salutation is applied once at the end.
+  const qctx: DraftQualityContext = { maxWords: DRAFT_MAX_WORDS, askedDelivery: asksDoYouDeliver(latest) };
+  const refined = await refineUntilClean(
+    result.value,
+    (prev, issues) => reviseDraft(llm, store, chain, agent, grounding, guidance, latest, baseUser, prev.bodyText, issues),
+    qctx, 2
+  );
+
+  return { ...refined, bodyText: applySalutation(refined.bodyText, input.customerName) };
 }
