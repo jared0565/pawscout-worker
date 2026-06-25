@@ -8,6 +8,7 @@ export interface AgentContext {
   store: TenantStore;
   cfg: TenantConfig;
   admin: AdminGraphql | null;   // Shopify caller; null when not authed -> agents hedge
+  cj: import('../../cj').CjClient | null; // lazily-authed CJ client for live freight fallback; null when unconfigured
   thread: ThreadRow;
   conversation: string;         // full thread text, quoted replies stripped
   latestMessage: string;        // the turn we are answering ('' when only a quote)

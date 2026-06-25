@@ -13,9 +13,10 @@ describe('Texas fix', () => {
 
 describe('shippingAgent.ground', () => {
   const route = { from_country: 'CN', to_country: 'US', channel: 'c', transit_min: 5, transit_max: 11, aging_raw: '5-11', synced_at: new Date().toISOString() };
-  const ctx = (msg: string, routeRet: any) => ({
+  const ctx = (msg: string, routeRet: any, cj: any = null) => ({
     store: { async getLogisticsRoute() { return routeRet; } },
-    cfg: { fulfil: {} }, admin: null, thread: { subject: '', contact_email: 'a@gmail.com' },
+    cfg: { fulfil: {} }, admin: null, cj,
+    thread: { subject: '', contact_email: 'a@gmail.com' },
     conversation: msg, latestMessage: msg, contactEmail: 'a@gmail.com', customerName: null
   }) as any;
 
@@ -34,5 +35,9 @@ describe('shippingAgent.ground', () => {
   it('is not shipping intent -> not confident', async () => {
     const g = await shippingAgent.ground(ctx('do you sell cat food?', route));
     expect(g.confident).toBe(false);
+  });
+  it('ground tolerates cj:null (no throw, falls back to matrix)', async () => {
+    const g = await shippingAgent.ground(ctx('how long to Texas?', route, null));
+    expect(g).toBeDefined(); // no throw; cj:null means matrix-only path
   });
 });

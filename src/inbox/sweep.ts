@@ -22,6 +22,8 @@ import { agentFor } from './agents/registry';
 import { resolveAgents } from './agents/config';
 import type { AgentContext } from './agents/types';
 import type { ThreadRow, InvoiceLineItem } from './types';
+import { CjClient, CjTokenManager, cjFetchFromEnv } from '../cj';
+import { Vault } from '../vault';
 
 const SWEEP_BATCH = 15;          // threads classified per shop per run
 
@@ -291,6 +293,21 @@ export async function composeDraftForThread(
     return null;
   });
 
+  // Lazily-authed CJ client for the shipping agent's live nearest-warehouse fallback.
+  // Construction is cheap (token fetched only on first freight call); any setup failure
+  // degrades to null so the agent keeps the D1 matrix path.
+  const cj = await (async () => {
+    try {
+      if (!(await store.getSupplierCredential('cj'))) return null;
+      const vault = await Vault.fromMasterKey(env.PAWSCOUT_MASTER_KEY);
+      const f = cjFetchFromEnv(env);
+      return new CjClient(() => new CjTokenManager(store, vault, f).getToken(), f);
+    } catch (e) {
+      console.warn(`inbox cj unavailable for ${thread.id}: ${(e as Error).message}`);
+      return null;
+    }
+  })();
+
   // Dispatch to the category agent. The agent grounds (deterministic, never throws -
   // a miss returns { confident:false }) and supplies its category-specific prompt
   // fragment + grounded facts to the generic drafter. A trusted appendix is appended
@@ -298,7 +315,7 @@ export async function composeDraftForThread(
   // own trusted figure, not an LLM-emitted price).
   const agent = agentFor(thread.primary_category);
   const ctx: AgentContext = {
-    store, cfg, admin, thread, conversation, latestMessage: latestInbound,
+    store, cfg, admin, cj, thread, conversation, latestMessage: latestInbound,
     contactEmail: thread.contact_email, customerName: contact?.name ?? null
   };
   const grounding = await agent.ground(ctx); // never throws; miss => { confident:false }
