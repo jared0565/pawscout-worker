@@ -78,4 +78,26 @@ describe('cj_logistics accessors', () => {
     await s.pruneLogisticsRoutes('CN', []);
     expect(await s.getLogisticsRoute('CN', 'GB', 72)).not.toBeNull();
   });
+
+  it('persists and returns the CJ freight cost on a route', async () => {
+    const s = new TenantStore(env.DB, SHOP);
+    await s.upsertLogisticsRoute({ from: 'CN', to: 'US', channel: 'LuWei', transitMin: 5, transitMax: 11, agingRaw: '5-11', repVid: 'v1', freightCostUsd: 6.05 });
+    const r = await s.getLogisticsRoute('CN', 'US', 72);
+    expect(r?.freight_cost_usd).toBe(6.05);
+  });
+
+  it('a route synced without a freight cost reads back null (no cost claim)', async () => {
+    const s = new TenantStore(env.DB, SHOP);
+    await s.upsertLogisticsRoute(good); // no freightCostUsd supplied
+    const r = await s.getLogisticsRoute('CN', 'GB', 72);
+    expect(r!.freight_cost_usd ?? null).toBeNull();
+  });
+
+  it('re-upserting a route with a new freight cost overwrites the old one', async () => {
+    const s = new TenantStore(env.DB, SHOP);
+    await s.upsertLogisticsRoute({ ...good, freightCostUsd: 6.05 });
+    await s.upsertLogisticsRoute({ ...good, freightCostUsd: 7.20 });
+    const r = await s.getLogisticsRoute('CN', 'GB', 72);
+    expect(r!.freight_cost_usd).toBe(7.20);
+  });
 });

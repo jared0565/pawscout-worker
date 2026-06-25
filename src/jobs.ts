@@ -572,7 +572,7 @@ export async function syncCjLogisticsRoutes(
       const range = parseDaysRange(cheapest?.days);
       if (cheapest && range) {
         for (const s of cjStores) {
-          await s.upsertLogisticsRoute({ from, to: dest, channel: cheapest.name, transitMin: range.min, transitMax: range.max, agingRaw: cheapest.days, repVid });
+          await s.upsertLogisticsRoute({ from, to: dest, channel: cheapest.name, transitMin: range.min, transitMax: range.max, agingRaw: cheapest.days, repVid, freightCostUsd: cheapest.priceUsd });
         }
         refreshed++; consecutive429 = 0;
       } else {

@@ -24,6 +24,7 @@ export interface LogisticsRoute {
   transit_min: number | null;
   transit_max: number | null;
   aging_raw: string;
+  freight_cost_usd?: number | null; // cheapest CJ freight price (USD) for the route; NULL when unpriced/unsynced
   synced_at: string;
 }
 

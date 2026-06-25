@@ -752,18 +752,19 @@ export class TenantStore {
   async upsertLogisticsRoute(r: {
     from: string; to: string; channel: string;
     transitMin: number | null; transitMax: number | null; agingRaw: string; repVid: string;
+    freightCostUsd?: number | null;
   }): Promise<void> {
     const now = new Date().toISOString();
     await this.db
       .prepare(
         `INSERT INTO cj_logistics
-           (shop, from_country, to_country, channel, transit_min, transit_max, aging_raw, rep_vid, synced_at, consecutive_failures, last_error, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, NULL, ?9)
+           (shop, from_country, to_country, channel, transit_min, transit_max, aging_raw, rep_vid, freight_cost_usd, synced_at, consecutive_failures, last_error, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?10, ?9, 0, NULL, ?9)
          ON CONFLICT(shop, from_country, to_country) DO UPDATE SET
            channel = ?4, transit_min = ?5, transit_max = ?6, aging_raw = ?7, rep_vid = ?8,
-           synced_at = ?9, consecutive_failures = 0, last_error = NULL`
+           freight_cost_usd = ?10, synced_at = ?9, consecutive_failures = 0, last_error = NULL`
       )
-      .bind(this.shop, r.from, r.to, r.channel, r.transitMin, r.transitMax, r.agingRaw, r.repVid, now)
+      .bind(this.shop, r.from, r.to, r.channel, r.transitMin, r.transitMax, r.agingRaw, r.repVid, now, r.freightCostUsd ?? null)
       .run();
   }
 
@@ -787,7 +788,7 @@ export class TenantStore {
   async getLogisticsRoute(from: string, to: string, stalenessHours: number, now: number = Date.now()): Promise<LogisticsRoute | null> {
     const row = await this.db
       .prepare(
-        `SELECT from_country, to_country, channel, transit_min, transit_max, aging_raw, synced_at
+        `SELECT from_country, to_country, channel, transit_min, transit_max, aging_raw, freight_cost_usd, synced_at
          FROM cj_logistics WHERE shop = ?1 AND from_country = ?2 AND to_country = ?3`
       )
       .bind(this.shop, from, to)
