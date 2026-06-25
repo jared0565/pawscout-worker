@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { readDeliveryConfig } from '../../src/shipping/delivery-profile';
+import { readDeliveryConfig, ensureGbLocalProfile, type DeliveryZone } from '../../src/shipping/delivery-profile';
 
 // A representative live-shaped deliveryProfiles payload: one default profile with a
 // GB location group holding three zones (UK / Europe / Rest of World) each with a
@@ -83,5 +83,58 @@ describe('readDeliveryConfig', () => {
     expect(cfg.locationGroups).toEqual([]);
     expect(cfg.locations).toEqual([]);
     expect(cfg.ukZonePresent).toBe(false);
+  });
+});
+
+describe('ensureGbLocalProfile', () => {
+  const mirrorZones: DeliveryZone[] = [
+    { id: 'z-eu', name: 'Europe', countryCodes: ['FR', 'DE'], restOfWorld: false, rates: [{ name: 'Standard', amount: '14.99', currencyCode: 'GBP' }] },
+    { id: 'z-row', name: 'Rest of World', countryCodes: [], restOfWorld: true, rates: [{ name: 'Standard', amount: '23.99', currencyCode: 'GBP' }] },
+  ];
+
+  it('creates the GB Local profile with a free UK rate + mirrored EU/World zones when absent', async () => {
+    const calls: { q: string; v: any }[] = [];
+    const admin = vi.fn().mockImplementation((q: string, v: any) => {
+      calls.push({ q, v });
+      if (q.includes('deliveryProfiles(')) return Promise.resolve({ deliveryProfiles: { edges: [] } }); // no "GB Local" yet
+      if (q.includes('deliveryProfileCreate')) return Promise.resolve({ deliveryProfileCreate: { profile: { id: 'gid://shopify/DeliveryProfile/77' }, userErrors: [] } });
+      return Promise.resolve({});
+    });
+    const r = await ensureGbLocalProfile(admin as any, { locationIds: ['gid://shopify/Location/5'], ukRateAmount: '0.00', mirrorZones });
+    expect(r).toEqual({ profileId: 'gid://shopify/DeliveryProfile/77', created: true });
+
+    const create = calls.find((c) => c.q.includes('deliveryProfileCreate'))!;
+    const prof = create.v.profile;
+    expect(prof.name).toBe('GB Local');
+    expect(prof.locationGroupsToCreate[0].locationsToAdd).toEqual(['gid://shopify/Location/5']);
+    const zones = prof.locationGroupsToCreate[0].zonesToCreate;
+    const uk = zones.find((z: any) => z.name === 'United Kingdom');
+    expect(uk.countries).toEqual([{ code: 'GB' }]);
+    expect(uk.methodDefinitionsToCreate[0].rateDefinition.price).toEqual({ amount: '0.00', currencyCode: 'GBP' });
+    const eu = zones.find((z: any) => z.name === 'Europe');
+    expect(eu.countries).toEqual([{ code: 'FR' }, { code: 'DE' }]);
+    expect(eu.methodDefinitionsToCreate[0].rateDefinition.price).toEqual({ amount: '14.99', currencyCode: 'GBP' });
+    const row = zones.find((z: any) => z.name === 'Rest of World');
+    expect(row.countries).toEqual([{ restOfWorld: true }]);
+    expect(row.methodDefinitionsToCreate[0].rateDefinition.price).toEqual({ amount: '23.99', currencyCode: 'GBP' });
+  });
+
+  it('is idempotent: returns the existing GB Local profile and never creates a duplicate', async () => {
+    const admin = vi.fn().mockImplementation((q: string) => {
+      if (q.includes('deliveryProfiles(')) return Promise.resolve({ deliveryProfiles: { edges: [{ node: { id: 'gid://shopify/DeliveryProfile/99', name: 'GB Local' } }] } });
+      if (q.includes('deliveryProfileCreate')) throw new Error('must NOT create when GB Local already exists');
+      return Promise.resolve({});
+    });
+    const r = await ensureGbLocalProfile(admin as any, { locationIds: ['L1'], ukRateAmount: '0.00', mirrorZones });
+    expect(r).toEqual({ profileId: 'gid://shopify/DeliveryProfile/99', created: false });
+  });
+
+  it('throws on userErrors from create (never silently swallows)', async () => {
+    const admin = vi.fn().mockImplementation((q: string) => {
+      if (q.includes('deliveryProfiles(')) return Promise.resolve({ deliveryProfiles: { edges: [] } });
+      if (q.includes('deliveryProfileCreate')) return Promise.resolve({ deliveryProfileCreate: { profile: null, userErrors: [{ field: ['name'], message: 'name taken' }] } });
+      return Promise.resolve({});
+    });
+    await expect(ensureGbLocalProfile(admin as any, { locationIds: ['L1'], ukRateAmount: '0.00', mirrorZones })).rejects.toThrow(/name taken/);
   });
 });

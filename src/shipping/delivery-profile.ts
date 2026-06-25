@@ -132,3 +132,70 @@ export async function readDeliveryConfig(admin: AdminGraphql): Promise<DeliveryC
 
   return { defaultProfileId: String(def?.id ?? ''), locationGroups, locations, ukZonePresent };
 }
+
+export const GB_LOCAL_PROFILE_NAME = 'GB Local';
+
+const PROFILES_BY_NAME_QUERY = `{ deliveryProfiles(first: 30) { edges { node { id name } } } }`;
+
+const CREATE_PROFILE_MUTATION = `mutation pawscoutCreateDeliveryProfile($profile: DeliveryProfileInput!) {
+  deliveryProfileCreate(profile: $profile) {
+    profile { id name }
+    userErrors { field message }
+  }
+}`;
+
+/** A zone's flat rates mapped to methodDefinitionsToCreate input (DeliveryRateDefinitionInput). */
+function ratesToMethodInput(rates: DeliveryRate[]): unknown[] {
+  const list = rates.length ? rates : [{ name: 'Standard', amount: '0.00', currencyCode: 'GBP' }];
+  return list.map((r) => ({
+    name: r.name || 'Standard',
+    rateDefinition: { price: { amount: r.amount ?? '0.00', currencyCode: r.currencyCode ?? 'GBP' } },
+  }));
+}
+
+/** A mirrored zone -> DeliveryLocationGroupZoneInput (countries list of {code} or [{restOfWorld:true}]). */
+function zoneToInput(zone: DeliveryZone): unknown {
+  const countries = zone.restOfWorld ? [{ restOfWorld: true }] : zone.countryCodes.map((c) => ({ code: c }));
+  return { name: zone.name, countries, methodDefinitionsToCreate: ratesToMethodInput(zone.rates) };
+}
+
+/**
+ * Idempotently ensure a "GB Local" delivery profile exists: free UK shipping (ukRateAmount,
+ * default "0.00") with the merchant's EU/World zones MIRRORED from the live default profile
+ * (passed in as mirrorZones, so rates are never hardcoded). Returns the existing profile if
+ * already present (created:false), else creates it (created:true). Throws on userErrors.
+ *
+ * The UK zone is replaced with the free rate; mirrorZones should be the default profile's
+ * NON-UK zones (the caller filters out the GB-covering zone).
+ */
+export async function ensureGbLocalProfile(
+  admin: AdminGraphql,
+  opts: { locationIds: string[]; ukRateAmount: string; mirrorZones: DeliveryZone[] }
+): Promise<{ profileId: string; created: boolean }> {
+  const existing = (await admin(PROFILES_BY_NAME_QUERY)) as any;
+  const found = ((existing?.deliveryProfiles?.edges ?? []) as any[])
+    .map((e) => e?.node)
+    .find((n) => n?.name === GB_LOCAL_PROFILE_NAME);
+  if (found?.id) return { profileId: found.id, created: false };
+
+  const ukZone = {
+    name: 'United Kingdom',
+    countries: [{ code: 'GB' }],
+    methodDefinitionsToCreate: [{ name: 'Standard', rateDefinition: { price: { amount: opts.ukRateAmount, currencyCode: 'GBP' } } }],
+  };
+  const profile = {
+    name: GB_LOCAL_PROFILE_NAME,
+    locationGroupsToCreate: [{
+      locationsToAdd: opts.locationIds,
+      zonesToCreate: [ukZone, ...opts.mirrorZones.map(zoneToInput)],
+    }],
+  };
+
+  const res = (await admin(CREATE_PROFILE_MUTATION, { profile })) as any;
+  const payload = res?.deliveryProfileCreate;
+  const errs = (payload?.userErrors ?? []) as { message?: string }[];
+  if (errs.length) throw new Error(`deliveryProfileCreate failed: ${errs.map((e) => e.message).join('; ')}`);
+  const id = payload?.profile?.id;
+  if (!id) throw new Error('deliveryProfileCreate returned no profile id');
+  return { profileId: id, created: true };
+}
