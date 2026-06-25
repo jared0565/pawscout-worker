@@ -1,22 +1,9 @@
 /// <reference types="@cloudflare/vitest-pool-workers" />
 import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
-import { app } from '../src/index';
 import { TenantStore } from '../src/tenant-store';
 
 const SHOP = 'test.myshopify.com';
-
-describe('POST /api/admin/purge-gb-drafts', () => {
-  it('rejects a missing/wrong MAINT_TOKEN', async () => {
-    const res = await app.request('/api/admin/purge-gb-drafts', { method: 'POST' }, { ...env, MAINT_TOKEN: 'secret' });
-    expect(res.status).toBe(401);
-  });
-
-  it('rejects when MAINT_TOKEN is unset (no header sent)', async () => {
-    const res = await app.request('/api/admin/purge-gb-drafts', { method: 'POST' }, { ...env, MAINT_TOKEN: undefined });
-    expect(res.status).toBe(401);
-  });
-});
 
 describe('purgeProductData', () => {
   beforeEach(async () => { await applyD1Migrations(env.DB, env.TEST_MIGRATIONS); });

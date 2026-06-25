@@ -27,7 +27,7 @@ import { searchBackfill, normalizeKeyword } from './proxy/search';
 import { LlmClient, classifyKeyword, curateProduct, pickHeroImage, rewriteDescription } from './llm';
 import { buildPreview, getDetailPreferWarehouse, curateDetailImages, confirmAndImport, reconcileAddonVisibility, reconcileHeroImages, reconcileDescriptions, reconcileCategories } from './proxy/import';
 import { makeAdminGraphql } from './shopify-admin';
-import { runDailyMaintenance, syncStoreInventory, refillCollections, seedOriginAssortment } from './jobs';
+import { runDailyMaintenance, syncStoreInventory, refillCollections } from './jobs';
 import { runOrderPipeline, runOrderPipelineForShop } from './fulfil-run';
 import { parseOrderWebhook, validateOrder, FULFIL_GRACE_MINUTES } from './fulfil';
 import { attributePaidOrder } from './inbox/attribution';
@@ -251,67 +251,6 @@ app.post('/api/sync', async (c) => {
     console.warn(`manual sync failed: ${(e as Error).message}`);
     return c.json({ ok: false, error: `Sync failed: ${(e as Error).message}` }, 500);
   }
-});
-
-// TEMPORARY (GB seed, 2026-06-24): one-off owner-triggered GB-warehouse sourcing.
-// Imports GB-warehoused pet products as DRAFTS for review. Remove this route AND
-// the MAINT_TOKEN secret after the seed run completes.
-app.post('/api/admin/seed-gb-origin', async (c) => {
-  if (!c.env.MAINT_TOKEN || c.req.header('X-Maint-Token') !== c.env.MAINT_TOKEN) {
-    return c.json({ ok: false, error: 'unauthorized' }, 401);
-  }
-  const shop = c.req.query('shop') ?? '4qkudm-ez.myshopify.com';
-  const store = new TenantStore(c.env.DB, shop);
-  const tenant = await store.getTenant();
-  const cfg = await store.getConfig();
-  if (!tenant?.access_token_enc || !cfg) return c.json({ ok: false, error: 'Not configured' }, 400);
-  const vault = await Vault.fromMasterKey(c.env.PAWSCOUT_MASTER_KEY);
-  const accessToken = await vault.open(tenant.dek_wrapped, tenant.access_token_enc);
-  const admin = makeAdminGraphql(shop, accessToken);
-  const f = cjFetchFromEnv(c.env);
-  const cj = new CjClient(() => new CjTokenManager(store, vault, f).getToken(), f);
-  const llm = new LlmClient({ openrouter: c.env.OPENROUTER_API_KEY, openai: c.env.OPENAI_API_KEY });
-  const curate = llm.available && cfg.llm.enabled
-    ? (d: Parameters<typeof curateProduct>[3], ctx: string) => curateProduct(llm, store, cfg, d, ctx)
-    : undefined;
-  const pickHero = llm.available && cfg.llm.enabled
-    ? (title: string, urls: string[]) => pickHeroImage(llm, store, cfg, title, urls)
-    : undefined;
-  try {
-    const summary = await seedOriginAssortment(store, cj, admin, cfg, { countryCode: 'GB', curate, pickHero });
-    return c.json({ ok: true, ...summary });
-  } catch (e) {
-    return c.json({ ok: false, error: (e as Error).message }, 500);
-  }
-});
-
-// TEMPORARY (GB seed cleanup, 2026-06-24): purge bad GB seed DRAFTS (Shopify product
-// + D1 link/warehouse rows) so a corrected re-seed starts clean. Only touches links
-// in 'draft' state (never the live 'imported' catalog). Remove with the seed route.
-const PRODUCT_DELETE = `mutation pawscoutProductDelete($input: ProductDeleteInput!) { productDelete(input: $input) { deletedProductId userErrors { field message } } }`;
-app.post('/api/admin/purge-gb-drafts', async (c) => {
-  if (!c.env.MAINT_TOKEN || c.req.header('X-Maint-Token') !== c.env.MAINT_TOKEN) {
-    return c.json({ ok: false, error: 'unauthorized' }, 401);
-  }
-  const shop = c.req.query('shop') ?? '4qkudm-ez.myshopify.com';
-  const store = new TenantStore(c.env.DB, shop);
-  const tenant = await store.getTenant();
-  if (!tenant?.access_token_enc) return c.json({ ok: false, error: 'Not configured' }, 400);
-  const vault = await Vault.fromMasterKey(c.env.PAWSCOUT_MASTER_KEY);
-  const accessToken = await vault.open(tenant.dek_wrapped, tenant.access_token_enc);
-  const admin = makeAdminGraphql(shop, accessToken);
-  let purged = 0;
-  const errors: string[] = [];
-  for (const link of await store.linksByState('draft')) {
-    try {
-      if (link.shopify_product_id) await admin(PRODUCT_DELETE, { input: { id: link.shopify_product_id } });
-      await store.purgeProductData(link.cj_pid);
-      purged++;
-    } catch (e) {
-      errors.push(`${link.cj_pid}: ${(e as Error).message}`);
-    }
-  }
-  return c.json({ ok: true, purged, errors });
 });
 
 app.post('/api/addons', async (c) => {
