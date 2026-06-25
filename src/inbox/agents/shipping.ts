@@ -7,45 +7,64 @@ import type { CjDetail } from '../../cj';
 
 const SHIP_DEFAULT_ORIGIN = 'CN'; // Conservative default; overridden when real warehouse data exists
 
+export interface ItemShipping {
+  chosenOrigin: string;
+  cjPid: string;
+  repVid: string | null;
+  verifiedGbWarehouse: boolean;
+}
+
+const HANDLE_RE = /(?:activepaw\.co\.uk)?\/products\/([a-z0-9][a-z0-9-]{2,})/i;
+
 /**
- * Resolve the real dispatch origin for the product named in the customer message.
- * Fully guarded: returns null on any miss (no admin, product not resolved, no D1 row,
- * no origins data). When it returns non-null, the caller may use it as the `from`
- * country for the logistics route lookup. Never throws.
+ * Resolve the inquiry's product (high-confidence only) plus its nearest in-stock
+ * warehouse for `dest` and a representative variant id for a live CJ quote.
+ * Fully guarded: any miss returns null and the caller keeps the generic/hedge path.
  *
- * Origin selection priority:
- *   1. Destination country (in-market, no customs leg) if it has stock > 0
- *   2. Best-stocked origin among all warehouses
- *   3. null (fall back to CN default)
+ * Signal priority:
+ *   1. Product URL/handle in the message (strongest - does not require admin)
+ *   2. Confident single free-text catalog match via resolveLineRequest
+ *
+ * Origin priority: in-market (dest country) if stocked -> best-stocked origin.
  */
-export async function resolveProductOrigin(ctx: AgentContext, dest: string): Promise<string | null> {
+export async function resolveItemShipping(ctx: AgentContext, dest: string): Promise<ItemShipping | null> {
   try {
-    if (!ctx.admin) return null;
-    const resolved = await resolveLineRequest(ctx.admin, ctx.latestMessage.slice(0, 80));
-    if (resolved.status !== 'resolved' || !resolved.variant) return null;
-    const productId = resolved.variant.productId;
-    if (!productId) return null;
-    const link = await ctx.store.getLinkByShopifyProductId(productId);
-    if (!link?.cj_pid) return null;
-    const row = await ctx.store.getWarehouseProduct(link.cj_pid);
+    // Signal 1: a product URL/handle in the message (strongest).
+    let cjPid: string | null = null;
+    const m = HANDLE_RE.exec(ctx.latestMessage);
+    if (m) cjPid = (await ctx.store.getLinkByHandle(m[1]))?.cj_pid ?? null;
+    // Signal 2: a confident single free-text catalog match.
+    if (!cjPid) {
+      if (!ctx.admin) return null;
+      const resolved = await resolveLineRequest(ctx.admin, ctx.latestMessage.slice(0, 80));
+      if (resolved.status !== 'resolved' || !resolved.variant?.productId) return null;
+      cjPid = (await ctx.store.getLinkByShopifyProductId(resolved.variant.productId))?.cj_pid ?? null;
+    }
+    if (!cjPid) return null;
+
+    const row = await ctx.store.getWarehouseProduct(cjPid);
     if (!row?.detail) return null;
     let detail: CjDetail;
-    try {
-      detail = JSON.parse(row.detail) as CjDetail;
-    } catch {
-      return null;
-    }
+    try { detail = JSON.parse(row.detail) as CjDetail; } catch { return null; }
     const origins = detail.origins;
     if (!origins || Object.keys(origins).length === 0) return null;
-    // Prefer in-market (same country as dest) to avoid customs
-    if ((origins[dest] ?? 0) > 0) return dest;
-    // Otherwise pick the best-stocked origin
-    let best: string | null = null;
-    let bestQty = 0;
-    for (const [cc, qty] of Object.entries(origins)) {
-      if (qty > bestQty) { best = cc; bestQty = qty; }
+
+    const verifiedGbWarehouse = (origins.GB ?? 0) > 0;
+    // Nearest in-stock warehouse: in-market (no customs) if stocked, else best-stocked.
+    let chosenOrigin: string;
+    if ((origins[dest] ?? 0) > 0) {
+      chosenOrigin = dest;
+    } else {
+      let best = ''; let bestQty = 0;
+      for (const [cc, qty] of Object.entries(origins)) if (qty > bestQty) { best = cc; bestQty = qty; }
+      if (!best) return null;
+      chosenOrigin = best;
     }
-    return best;
+    // Representative vid: prefer an in-stock variant; else the first listed.
+    const variants = detail.variants ?? [];
+    const repVid = (variants.find((v) => (v.stock ?? 0) > 0) ?? variants[0])?.vid ?? null;
+
+    return { chosenOrigin, cjPid, repVid, verifiedGbWarehouse };
   } catch {
     return null;
   }
@@ -66,7 +85,7 @@ export const shippingAgent: CategoryAgent = {
       if (!dest) return notConfident();
       const l = resolveLogistics(ctx.cfg.fulfil);
       // Phase 2: prefer the product's real warehouse origin when D1 has it
-      const origin = await resolveProductOrigin(ctx, dest);
+      const item = await resolveItemShipping(ctx, dest); const origin = item?.chosenOrigin ?? null;
       let route = (origin && origin !== SHIP_DEFAULT_ORIGIN)
         ? await ctx.store.getLogisticsRoute(origin, dest, l.stalenessHours)
         : null;
