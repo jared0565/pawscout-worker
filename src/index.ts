@@ -27,6 +27,7 @@ import { searchBackfill, normalizeKeyword } from './proxy/search';
 import { LlmClient, classifyKeyword, curateProduct, pickHeroImage, rewriteDescription } from './llm';
 import { buildPreview, getDetailPreferWarehouse, curateDetailImages, confirmAndImport, reconcileAddonVisibility, reconcileHeroImages, reconcileDescriptions, reconcileCategories } from './proxy/import';
 import { makeAdminGraphql } from './shopify-admin';
+import { readDeliveryConfig, syncGbProfileMembership } from './shipping/delivery-profile';
 import { runDailyMaintenance, syncStoreInventory, refillCollections } from './jobs';
 import { runOrderPipeline, runOrderPipelineForShop } from './fulfil-run';
 import { parseOrderWebhook, validateOrder, FULFIL_GRACE_MINUTES } from './fulfil';
@@ -109,6 +110,27 @@ app.post('/api/gb-free-uk', async (c) => {
   try { body = await c.req.json(); } catch {}
   await saveGbFreeUk(c.env.DB, s, body.on === true);
   return c.json({ ok: true });
+});
+// On-demand GB Local profile create/reconcile (the daily cron also runs this). Reports the
+// live zone-isolation check + the sync result so the owner can verify before relying on it.
+app.post('/api/gb-sync', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  const store = new TenantStore(c.env.DB, s);
+  const tenant = await store.getTenant();
+  if (!tenant?.access_token_enc) return c.json({ ok: false, error: 'reconnect_required' }, 400);
+  const vault = await Vault.fromMasterKey(c.env.PAWSCOUT_MASTER_KEY);
+  const accessToken = await vault.open(tenant.dek_wrapped, tenant.access_token_enc);
+  const admin = makeAdminGraphql(s, accessToken);
+  try {
+    const cfg = await readDeliveryConfig(admin);
+    const allZones = cfg.locationGroups.flatMap((g) => g.zones);
+    const gbZones = allZones.filter((z) => z.countryCodes.includes('GB'));
+    const gbIsolated = gbZones.length > 0 && gbZones.every((z) => z.countryCodes.length === 1 && z.countryCodes[0] === 'GB');
+    const result = await syncGbProfileMembership(admin, store);
+    return c.json({ ok: true, gbIsolated, gbZones: gbZones.map((z) => ({ name: z.name, countries: z.countryCodes })), zoneNames: allZones.map((z) => z.name), defaultProfileId: cfg.defaultProfileId, result });
+  } catch (e) {
+    return c.json({ ok: false, error: (e as Error).message }, 500);
+  }
 });
 app.post('/api/connect-cj', async (c) => {
   const s = await shopOf(c); if (typeof s !== 'string') return s;

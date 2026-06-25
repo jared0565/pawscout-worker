@@ -393,6 +393,11 @@ export function consolePage(apiKey: string): Response {
         <label for="gb-free-uk-chk" style="display:inline;font-weight:550">State &ldquo;free UK delivery&rdquo; in replies. Flip this ON only after a live GB-item-to-UK checkout shows GBP 0.</label>
       </div>
       <p class="sub" style="margin:8px 0 0">Tradeoff: free UK shipping on a GB item gives up about GBP 4.99 per GB UK order; the item margin absorbs it as a conversion lever.</p>
+      <div style="margin-top:10px">
+        <button type="button" id="gb-sync-btn" onclick="syncGbLocal()">Create / sync GB Local profile now</button>
+        <span id="gb-sync-msg" class="sub"></span>
+      </div>
+      <pre id="gb-sync-result" class="sub" style="white-space:pre-wrap;margin:6px 0 0"></pre>
     </div>
     <div class="row" style="margin-bottom:12px">
       <div class="grow">
@@ -1020,6 +1025,20 @@ async function saveGbFreeUk(){
     if(r&&r.ok){ setGbStatus(el('gb-profile-status').dataset.count, on); }
     else { el('gb-free-uk-chk').checked=!on; }
   }catch(e){ el('gb-free-uk-chk').checked=!on; }
+}
+async function syncGbLocal(){
+  var b=el('gb-sync-btn'); b.disabled=true; setMsg('gb-sync-msg','Syncing…','muted');
+  try{
+    var r=await api('/gb-sync',{});
+    if(r&&r.ok){
+      var res=r.result||{};
+      setMsg('gb-sync-msg', res.profileId?'Synced ✓':'No change','ok');
+      el('gb-sync-result').textContent='GB isolated in its own zone: '+r.gbIsolated
+        +'\\nzones: '+((r.zoneNames||[]).join(', '))
+        +'\\nprofile: '+(res.profileId||'(none - refused or unchanged)')+'  added: '+res.added+'  removed: '+res.removed;
+    } else { setMsg('gb-sync-msg','Failed: '+((r&&r.error)||'unknown error'),'no'); }
+  }catch(e){ setMsg('gb-sync-msg','Failed: '+errText(e),'no'); }
+  finally{ b.disabled=false; }
 }
 async function saveCollections(){
   setMsg('mapmsg','Saving…','muted');

@@ -160,6 +160,15 @@ describe('consolePage', () => {
     expect(scripts).toContain('/gb-free-uk'); // api() prepends /api
   });
 
+  it('includes the GB Local "sync now" trigger (create/reconcile the profile on demand)', async () => {
+    const html = await consolePage('test-api-key').text();
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+    expect(html).toContain('id="gb-sync-btn"');
+    expect(html).toContain('id="gb-sync-result"');
+    expect(scripts).toContain('function syncGbLocal(');
+    expect(scripts).toContain('/gb-sync'); // api() prepends /api
+  });
+
   it('wraps every invoice field in esc() in the client render code', async () => {
     const html = await consolePage('test-api-key').text();
     // Verify that the renderInboxThread / invoice-card code wraps dynamic values in esc()
