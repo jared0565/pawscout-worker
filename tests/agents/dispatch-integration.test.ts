@@ -55,6 +55,15 @@ describe('composeDraftForThread (agent dispatch E2E)', () => {
     await seedShop(store);
     await store.upsertContact({ email: 'customer@example.com', name: 'Sam', phone: null });
 
+    // Per-item shipping needs a resolvable product: seed a CN-warehoused item the
+    // customer links by URL, so resolveItemShipping grounds confidently (CN->US).
+    await store.putLink({ cjPid: 'P1', state: 'imported', handle: 'dog-bed' });
+    await store.putWarehouseProduct({
+      cjPid: 'P1', category: 'pet-accessories', title: 'Dog Bed',
+      detailJson: JSON.stringify({ origins: { CN: 500 }, variants: [{ vid: 'v1', stock: 500 }] }),
+      priceUsd: 20, listedNum: 100, stock: 500
+    });
+
     const tid = await store.createThread({
       contactEmail: 'customer@example.com',
       subject: 'Delivery question',
@@ -70,7 +79,7 @@ describe('composeDraftForThread (agent dispatch E2E)', () => {
       from: 'customer@example.com',
       to: 'support@activepaw.co.uk',
       subject: 'Delivery question',
-      bodyText: 'How long will delivery take to Texas?',
+      bodyText: 'How long will delivery take to Texas for activepaw.co.uk/products/dog-bed?',
       bodyHtml: null,
       headersJson: '{"authentication-results":"mx; spf=pass dkim=pass dmarc=pass"}',
       receivedAt: '2026-06-24T09:00:00Z'
