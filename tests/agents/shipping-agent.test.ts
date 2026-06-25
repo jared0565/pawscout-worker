@@ -151,4 +151,26 @@ describe('shippingAgent.ground', () => {
     const g = await shippingAgent.ground(ctx);
     expect(g).toBeDefined(); // no throw; cj:null means matrix-only path
   });
+
+  // CRITICAL: GB-warehoused item shipped to a non-GB dest must NOT emit the UK-fulfilment line.
+  // This pins the dest==='GB' gate: verifiedGbWarehouse=true alone is not enough.
+  it('GB-warehoused item to France -> time-only line, never UK-fulfilment', async () => {
+    const detail = JSON.stringify({
+      origins: { GB: 40, CN: 500 },
+      variants: [{ vid: 'V5', stock: 40 }],
+    });
+    const cj = { freightQuoteAging: async () => [{ priceUsd: 2, days: '5-8', name: 'CJPacket' }] };
+    const ctx = fakeCtx({
+      msg: 'how long to deliver activepaw.co.uk/products/cat-bed to France?',
+      links: { 'cat-bed': { cj_pid: 'P5' } },
+      warehouse: { P5: { detail } },
+      matrixRoute: null,
+      cj,
+    });
+    const g = await shippingAgent.ground(ctx);
+    expect(g.confident).toBe(true);
+    const line = shippingAgent.deterministicAppendix(g)!;
+    expect(line).toMatch(/Delivery to France/);
+    expect(line).not.toMatch(/UK fulfilment|fulfilment location/i);
+  });
 });
