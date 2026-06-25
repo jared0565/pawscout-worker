@@ -200,4 +200,12 @@ describe('inbox store', () => {
     await s2.redactContact('c@x.com');
     expect((await s2.inboxDataSummary('c@x.com')).invoices).toBe(0);
   });
+
+  it('getLinkByHandle returns the link for a handle, else null', async () => {
+    const store = s();
+    await store.putLink({ cjPid: 'P9', state: 'imported', shopifyProductId: 'gid://shopify/Product/9', category: 'pet-toys', handle: 'cat-fountain' });
+    const hit = await store.getLinkByHandle('cat-fountain');
+    expect(hit?.cj_pid).toBe('P9');
+    expect(await store.getLinkByHandle('nope')).toBeNull();
+  });
 });
