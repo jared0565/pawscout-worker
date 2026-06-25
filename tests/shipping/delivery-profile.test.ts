@@ -204,6 +204,35 @@ describe('syncGbProfileMembership', () => {
     expect(upd.v.profile.variantsToAssociate).toBeUndefined();
   });
 
+  it('refuses to sync (no create or update) when GB is bundled with other countries in a default zone', async () => {
+    // The default profile bundles GB + IE in one "UK & Ireland" zone. Mirroring drops every
+    // GB-containing zone, so creating GB Local would strip IE coverage from GB items (a silent
+    // checkout breakage). The worker must refuse + log, never create a broken profile.
+    const bundled = {
+      deliveryProfiles: { edges: [{ node: {
+        id: 'gid://shopify/DeliveryProfile/1', default: true,
+        profileLocationGroups: [{
+          locationGroup: { id: 'lg1', locations: { nodes: [{ id: 'L1', name: 'Main', address: { country: 'United Kingdom', countryCode: 'GB' } }] } },
+          locationGroupZones: { edges: [{ node: {
+            zone: { id: 'z1', name: 'UK & Ireland', countries: [{ code: { countryCode: 'GB', restOfWorld: false } }, { code: { countryCode: 'IE', restOfWorld: false } }] },
+            methodDefinitions: { edges: [{ node: { name: 'Standard', rateProvider: { price: { amount: '4.99', currencyCode: 'GBP' } } } }] }
+          } }] }
+        }]
+      } }] }
+    };
+    let mutated = false;
+    const admin = vi.fn().mockImplementation((q: string) => {
+      if (q.includes('profileLocationGroups')) return Promise.resolve(bundled);
+      if (q.includes('deliveryProfileCreate') || q.includes('deliveryProfileUpdate')) { mutated = true; return Promise.resolve({}); }
+      if (q.includes('deliveryProfiles(')) return Promise.resolve({ deliveryProfiles: { edges: [] } });
+      return Promise.resolve({});
+    });
+    const store = { listGbWarehousedShopifyProductIds: async () => ['gid://shopify/Product/1'] };
+    const r = await syncGbProfileMembership(admin as any, store as any);
+    expect(r).toEqual({ added: 0, removed: 0, profileId: '' });
+    expect(mutated).toBe(false); // never created or updated a delivery profile
+  });
+
   it('throws on deliveryProfileUpdate userErrors', async () => {
     const { admin } = routedAdmin({
       profileEdges: [{ node: { id: 'gid://shopify/DeliveryProfile/77', name: 'GB Local' } }],

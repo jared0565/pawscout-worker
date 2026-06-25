@@ -250,6 +250,19 @@ export async function syncGbProfileMembership(
   opts: { ukRateAmount?: string } = {}
 ): Promise<{ added: number; removed: number; profileId: string }> {
   const cfg = await readDeliveryConfig(admin);
+
+  // SAFETY (quote==checkout): the mirror below drops every zone containing GB (the UK zone is
+  // replaced with the free rate). If GB is BUNDLED with other countries in a single default
+  // zone, dropping it would strip those countries' coverage from GB items - a silent checkout
+  // breakage that bites even with the agent flag off. Refuse + log; the owner isolates GB into
+  // its own zone first. Self-protecting so the daily cron can never arm a broken profile.
+  const gbZones = cfg.locationGroups.flatMap((g) => g.zones).filter((z) => z.countryCodes.includes('GB'));
+  const gbBundled = gbZones.some((z) => z.countryCodes.some((c) => c !== 'GB'));
+  if (gbBundled) {
+    console.warn('GB Local sync skipped: GB is bundled with other countries in a default-profile zone; isolate GB into its own zone before enabling free UK shipping.');
+    return { added: 0, removed: 0, profileId: '' };
+  }
+
   const locationIds = cfg.locations.map((l) => l.id);
   // Mirror the default profile's NON-UK zones (the UK zone is replaced with the free rate).
   const mirrorZones = cfg.locationGroups.flatMap((g) => g.zones).filter((z) => !z.countryCodes.includes('GB'));
