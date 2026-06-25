@@ -92,9 +92,15 @@ export const shippingAgent: CategoryAgent = {
       // No confident item -> ask which item, but offer the generic dest band as a soft anchor.
       if (!item) {
         const generic = doorToDoorBand(await ctx.store.getLogisticsRoute(SHIP_DEFAULT_ORIGIN, dest, l.stalenessHours), l);
+        const genericBand = formatBand(generic);
+        // Only include the soft-anchor band clause when we actually have a band; an empty
+        // band would otherwise produce a dangling "arrive in about  and..." fragment.
+        const softAnchor = genericBand
+          ? ` You MAY offer, as a soft general guide only, that most ${countryLabel(dest)} orders arrive in about ${genericBand} days and that the exact time depends on the item.`
+          : '';
         return {
           confident: false, quotesFigure: false,
-          facts: `The customer asked about delivery time but did not name a specific product. ASK which item (or a product link) so you can give a precise estimate. You MAY offer, as a soft general guide only, that most ${countryLabel(dest)} orders arrive in about ${formatBand(generic)} and that the exact time depends on the item. You MAY also state the flat shipping cost and returns policy from the store facts.`,
+          facts: `The customer asked about delivery time but did not name a specific product. ASK which item (or a product link) so you can give a precise estimate.${softAnchor} You MAY also state the flat shipping cost and returns policy from the store facts.`,
           data: { askForItem: true }
         };
       }

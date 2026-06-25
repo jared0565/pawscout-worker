@@ -128,15 +128,25 @@ describe('shippingAgent.ground', () => {
     expect(line).not.toMatch(/China|CN|UK/);
   });
 
-  // No route and no CJ client -> hedges
-  it('hedges when no route (stale/missing -> null)', async () => {
+  // Item resolves but NO band is obtainable anywhere (no matrix route, CJ returns no usable
+  // option) -> notConfidentFacts hedge. This is the real degrade-don't-fabricate path.
+  it('resolved item but no band (matrix null + empty CJ quote) -> hedges via notConfidentFacts', async () => {
+    const detail = JSON.stringify({
+      origins: { CN: 500 },
+      variants: [{ vid: 'V6', stock: 500 }],
+    });
+    const cj = { freightQuoteAging: async () => [] }; // no usable option
     const ctx = fakeCtx({
-      msg: 'how long does shipping take to the UK?',
+      msg: 'how long to deliver activepaw.co.uk/products/cat-collar to the US?',
+      links: { 'cat-collar': { cj_pid: 'P6' } },
+      warehouse: { P6: { detail } },
       matrixRoute: null,
+      cj,
     });
     const g = await shippingAgent.ground(ctx);
-    // No item resolved and no route -> not confident (ask-for-item or hedge)
     expect(g.confident).toBe(false);
+    expect((g.data as any)?.askForItem).toBeUndefined(); // item DID resolve - this is the hedge, not ask-for-item
+    expect(g.facts).toMatch(/hedge on time/i);
     expect(shippingAgent.deterministicAppendix(g)).toBeNull();
   });
 
@@ -146,10 +156,25 @@ describe('shippingAgent.ground', () => {
     expect(g.confident).toBe(false);
   });
 
-  it('ground tolerates cj:null (no throw, falls back to matrix)', async () => {
-    const ctx = fakeCtx({ msg: 'how long to deliver to the UK?', cj: null });
+  // Resolved item + matrix route + cj:null -> band comes from the matrix, no CJ call, no throw.
+  it('ground tolerates cj:null and grounds the band from the matrix route', async () => {
+    const detail = JSON.stringify({
+      origins: { CN: 500 },
+      variants: [{ vid: 'V7', stock: 500 }],
+    });
+    const matrixRoute = { from_country: 'CN', to_country: 'US', channel: 'c', transit_min: 5, transit_max: 11, aging_raw: '5-11', synced_at: new Date().toISOString() };
+    const ctx = fakeCtx({
+      msg: 'how long to deliver activepaw.co.uk/products/cat-mat to the US?',
+      links: { 'cat-mat': { cj_pid: 'P7' } },
+      warehouse: { P7: { detail } },
+      matrixRoute,
+      cj: null,
+    });
     const g = await shippingAgent.ground(ctx);
-    expect(g).toBeDefined(); // no throw; cj:null means matrix-only path
+    expect(g.confident).toBe(true); // no throw; matrix band used despite cj:null
+    const line = shippingAgent.deterministicAppendix(g)!;
+    expect(line).toMatch(/Delivery to the United States: estimated \d+-\d+ days/);
+    expect(line).not.toMatch(/UK|China|CN/);
   });
 
   // CRITICAL: GB-warehoused item shipped to a non-GB dest must NOT emit the UK-fulfilment line.
