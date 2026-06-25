@@ -24,8 +24,9 @@ SHOPIFY_APP_URL = "https://pawscout.activepaw.co.uk"
 # read_locations + inventory scopes: the stock/price sync reads the primary
 # location and writes tracked quantities — without them the nightly sync
 # silently no-ops ("no primary location"). read_orders + the fulfilment scope
-# are for W-FULFIL (receive paid orders, write tracking back). Keep in lockstep
-# with the scopes configured in the Shopify Dev Dashboard (token exchange grants
-# THOSE — this var only feeds the legacy OAuth path).
-SHOPIFY_SCOPES = "write_products,read_products,write_publications,read_publications,read_locations,read_inventory,write_inventory,read_orders,write_merchant_managed_fulfillment_orders,write_draft_orders,read_customers"
+# are for W-FULFIL (receive paid orders, write tracking back). read_shipping +
+# write_shipping let the worker manage delivery profiles (origin-aware shipping
+# cost, Phase 1). Keep in lockstep with the scopes configured in the Shopify Dev
+# Dashboard (token exchange grants THOSE — this var only feeds the legacy OAuth path).
+SHOPIFY_SCOPES = "write_products,read_products,write_publications,read_publications,read_locations,read_inventory,write_inventory,read_orders,write_merchant_managed_fulfillment_orders,write_draft_orders,read_customers,read_shipping,write_shipping"
 # SHOPIFY_API_SECRET and PAWSCOUT_MASTER_KEY are secrets (wrangler secret put / .dev.vars), not vars.
