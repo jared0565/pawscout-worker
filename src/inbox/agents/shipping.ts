@@ -128,6 +128,9 @@ export const shippingAgent: CategoryAgent = {
       const verifiedGb = item.verifiedGbWarehouse && dest === 'GB';
       // Free-UK-delivery clause is gated: only when the item is GB-verified to a GB dest
       // AND the owner has flipped gbFreeUkLive (after a live GBP-0 checkout is verified).
+      // CAVEAT (Phase 2): keyed on warehouse origin, NOT actual GB-Local profile membership,
+      // so a GB item imported between daily reconciles could claim free UK before checkout
+      // reflects it. Fix later via sync-on-import or gating the claim on membership.
       const gbFreeUk = verifiedGb && ctx.cfg.fulfil?.gbFreeUkLive === true;
       return {
         confident: true, quotesFigure: true,
