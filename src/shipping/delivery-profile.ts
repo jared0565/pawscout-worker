@@ -199,3 +199,85 @@ export async function ensureGbLocalProfile(
   if (!id) throw new Error('deliveryProfileCreate returned no profile id');
   return { profileId: id, created: true };
 }
+
+const PROFILE_MEMBERS_QUERY = `query pawscoutGbProfileMembers($id: ID!) {
+  deliveryProfile(id: $id) {
+    profileItems(first: 250) { edges { node { product { id } } } }
+  }
+}`;
+
+const PRODUCT_VARIANTS_QUERY = `query pawscoutProductVariants($ids: [ID!]!) {
+  nodes(ids: $ids) {
+    ... on Product { id variants(first: 100) { nodes { id } } }
+  }
+}`;
+
+const UPDATE_PROFILE_MUTATION = `mutation pawscoutUpdateDeliveryProfile($id: ID!, $profile: DeliveryProfileInput!) {
+  deliveryProfileUpdate(id: $id, profile: $profile) {
+    profile { id }
+    userErrors { field message }
+  }
+}`;
+
+/** Resolve all Shopify variant ids for the given product ids (batched; nodes(ids) is capped). */
+async function resolveVariantIds(admin: AdminGraphql, productIds: string[]): Promise<string[]> {
+  const out: string[] = [];
+  for (let i = 0; i < productIds.length; i += 50) {
+    const chunk = productIds.slice(i, i + 50);
+    const res = (await admin(PRODUCT_VARIANTS_QUERY, { ids: chunk })) as any;
+    for (const n of (res?.nodes ?? []) as any[]) {
+      for (const v of (n?.variants?.nodes ?? []) as any[]) if (v?.id) out.push(v.id);
+    }
+  }
+  return out;
+}
+
+/** Minimal store surface syncGbProfileMembership needs (the real TenantStore satisfies it). */
+interface GbMembershipStore {
+  listGbWarehousedShopifyProductIds(): Promise<string[]>;
+}
+
+/**
+ * Reconcile GB Local profile membership: ensure the profile exists (mirroring the live
+ * default profile's non-UK zones), then diff its current product members against the GB-
+ * warehoused product set and associate/dissociate the corresponding VARIANTS (Shopify
+ * delivery profiles associate by variant id, not product id). Idempotent: a no-op when
+ * membership already matches. Throws on a deliveryProfileUpdate userError.
+ */
+export async function syncGbProfileMembership(
+  admin: AdminGraphql,
+  store: GbMembershipStore,
+  opts: { ukRateAmount?: string } = {}
+): Promise<{ added: number; removed: number; profileId: string }> {
+  const cfg = await readDeliveryConfig(admin);
+  const locationIds = cfg.locations.map((l) => l.id);
+  // Mirror the default profile's NON-UK zones (the UK zone is replaced with the free rate).
+  const mirrorZones = cfg.locationGroups.flatMap((g) => g.zones).filter((z) => !z.countryCodes.includes('GB'));
+
+  const { profileId } = await ensureGbLocalProfile(admin, { locationIds, ukRateAmount: opts.ukRateAmount ?? '0.00', mirrorZones });
+
+  const membersRes = (await admin(PROFILE_MEMBERS_QUERY, { id: profileId })) as any;
+  const current = new Set(
+    ((membersRes?.deliveryProfile?.profileItems?.edges ?? []) as any[]).map((e) => e?.node?.product?.id).filter(Boolean)
+  );
+  const desired = new Set(await store.listGbWarehousedShopifyProductIds());
+
+  const toAdd = [...desired].filter((id) => !current.has(id));
+  const toRemove = [...current].filter((id) => !desired.has(id));
+  if (!toAdd.length && !toRemove.length) return { added: 0, removed: 0, profileId };
+
+  const variantsToAssociate = toAdd.length ? await resolveVariantIds(admin, toAdd) : [];
+  const variantsToDissociate = toRemove.length ? await resolveVariantIds(admin, toRemove) : [];
+
+  const profile: Record<string, unknown> = {};
+  if (variantsToAssociate.length) profile.variantsToAssociate = variantsToAssociate;
+  if (variantsToDissociate.length) profile.variantsToDissociate = variantsToDissociate;
+
+  if (Object.keys(profile).length) {
+    const res = (await admin(UPDATE_PROFILE_MUTATION, { id: profileId, profile })) as any;
+    const errs = (res?.deliveryProfileUpdate?.userErrors ?? []) as { message?: string }[];
+    if (errs.length) throw new Error(`deliveryProfileUpdate failed: ${errs.map((e) => e.message).join('; ')}`);
+  }
+
+  return { added: toAdd.length, removed: toRemove.length, profileId };
+}

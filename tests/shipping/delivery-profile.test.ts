@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { readDeliveryConfig, ensureGbLocalProfile, type DeliveryZone } from '../../src/shipping/delivery-profile';
+import { readDeliveryConfig, ensureGbLocalProfile, syncGbProfileMembership, type DeliveryZone } from '../../src/shipping/delivery-profile';
 
 // A representative live-shaped deliveryProfiles payload: one default profile with a
 // GB location group holding three zones (UK / Europe / Rest of World) each with a
@@ -136,5 +136,81 @@ describe('ensureGbLocalProfile', () => {
       return Promise.resolve({});
     });
     await expect(ensureGbLocalProfile(admin as any, { locationIds: ['L1'], ukRateAmount: '0.00', mirrorZones })).rejects.toThrow(/name taken/);
+  });
+});
+
+describe('syncGbProfileMembership', () => {
+  // Route a mocked admin by query content. Order matters: the config read and the
+  // name-lookup both contain "deliveryProfiles(", so check the more specific markers first.
+  function routedAdmin(opts: {
+    profileEdges: any[];          // result of the GB Local name lookup (and any create)
+    currentMembers: string[];     // product ids currently in the profile
+    variantsByProduct: Record<string, string[]>;
+    onUpdate?: () => void;
+    updateUserErrors?: any[];
+  }) {
+    const calls: { q: string; v: any }[] = [];
+    const admin = vi.fn().mockImplementation((q: string, v: any) => {
+      calls.push({ q, v });
+      if (q.includes('profileLocationGroups')) return Promise.resolve(FULL); // readDeliveryConfig
+      if (q.includes('deliveryProfileCreate')) return Promise.resolve({ deliveryProfileCreate: { profile: { id: 'gid://shopify/DeliveryProfile/77' }, userErrors: [] } });
+      if (q.includes('deliveryProfileUpdate')) { opts.onUpdate?.(); return Promise.resolve({ deliveryProfileUpdate: { profile: { id: 'gid://shopify/DeliveryProfile/77' }, userErrors: opts.updateUserErrors ?? [] } }); }
+      if (q.includes('profileItems')) return Promise.resolve({ deliveryProfile: { profileItems: { edges: opts.currentMembers.map((id) => ({ node: { product: { id } } })) } } });
+      if (q.includes('nodes(ids')) return Promise.resolve({ nodes: (v.ids as string[]).map((id) => ({ id, variants: { nodes: (opts.variantsByProduct[id] ?? []).map((vid) => ({ id: vid })) } })) });
+      if (q.includes('deliveryProfiles(')) return Promise.resolve({ deliveryProfiles: { edges: opts.profileEdges } }); // name lookup
+      return Promise.resolve({});
+    });
+    return { admin, calls };
+  }
+
+  const storeOf = (ids: string[]) => ({ listGbWarehousedShopifyProductIds: async () => ids });
+
+  it('associates variants for newly GB-warehoused products and reports product counts', async () => {
+    const { admin, calls } = routedAdmin({
+      profileEdges: [], // no GB Local yet -> create
+      currentMembers: [],
+      variantsByProduct: { 'gid://shopify/Product/1': ['gid://shopify/ProductVariant/11'] },
+    });
+    const r = await syncGbProfileMembership(admin as any, storeOf(['gid://shopify/Product/1']) as any);
+    expect(r).toEqual({ added: 1, removed: 0, profileId: 'gid://shopify/DeliveryProfile/77' });
+    const upd = calls.find((c) => c.q.includes('deliveryProfileUpdate'))!;
+    expect(upd.v.profile.variantsToAssociate).toEqual(['gid://shopify/ProductVariant/11']);
+    expect(upd.v.profile.variantsToDissociate).toBeUndefined();
+  });
+
+  it('is a no-op (no update call) when membership already matches', async () => {
+    let updated = false;
+    const { admin } = routedAdmin({
+      profileEdges: [{ node: { id: 'gid://shopify/DeliveryProfile/77', name: 'GB Local' } }],
+      currentMembers: ['gid://shopify/Product/1'],
+      variantsByProduct: {},
+      onUpdate: () => { updated = true; },
+    });
+    const r = await syncGbProfileMembership(admin as any, storeOf(['gid://shopify/Product/1']) as any);
+    expect(r).toEqual({ added: 0, removed: 0, profileId: 'gid://shopify/DeliveryProfile/77' });
+    expect(updated).toBe(false);
+  });
+
+  it('dissociates variants for products no longer GB-warehoused', async () => {
+    const { admin, calls } = routedAdmin({
+      profileEdges: [{ node: { id: 'gid://shopify/DeliveryProfile/77', name: 'GB Local' } }],
+      currentMembers: ['gid://shopify/Product/9'],
+      variantsByProduct: { 'gid://shopify/Product/9': ['gid://shopify/ProductVariant/99'] },
+    });
+    const r = await syncGbProfileMembership(admin as any, storeOf([]) as any); // P9 no longer GB
+    expect(r).toEqual({ added: 0, removed: 1, profileId: 'gid://shopify/DeliveryProfile/77' });
+    const upd = calls.find((c) => c.q.includes('deliveryProfileUpdate'))!;
+    expect(upd.v.profile.variantsToDissociate).toEqual(['gid://shopify/ProductVariant/99']);
+    expect(upd.v.profile.variantsToAssociate).toBeUndefined();
+  });
+
+  it('throws on deliveryProfileUpdate userErrors', async () => {
+    const { admin } = routedAdmin({
+      profileEdges: [{ node: { id: 'gid://shopify/DeliveryProfile/77', name: 'GB Local' } }],
+      currentMembers: [],
+      variantsByProduct: { 'gid://shopify/Product/1': ['gid://shopify/ProductVariant/11'] },
+      updateUserErrors: [{ message: 'limit exceeded' }],
+    });
+    await expect(syncGbProfileMembership(admin as any, storeOf(['gid://shopify/Product/1']) as any)).rejects.toThrow(/limit exceeded/);
   });
 });
