@@ -41,6 +41,23 @@ describe('deriveDestinationCountry', () => {
   });
 });
 
+describe('deriveDestinationCountry US shorthand', () => {
+  it('resolves "the US" to US', () => {
+    expect(deriveDestinationCountry('how long to ship to the US?', '', 'a@b.com')).toBe('US');
+  });
+  it('resolves "U.S." and "U.S.A." to US', () => {
+    expect(deriveDestinationCountry('delivery to the U.S. please', '', 'a@b.com')).toBe('US');
+    expect(deriveDestinationCountry('I am in the U.S.A.', '', 'a@b.com')).toBe('US');
+  });
+  it('does NOT match the bare pronoun "us"', () => {
+    expect(deriveDestinationCountry('please let us know the timeframe', '', 'a@b.com')).toBeNull();
+  });
+  it('still resolves named countries and GB (regression)', () => {
+    expect(deriveDestinationCountry('shipping to Germany', '', 'a@b.com')).toBe('DE');
+    expect(deriveDestinationCountry('delivery to the UK', '', 'a@b.com')).toBe('GB');
+  });
+});
+
 describe('isShippingIntent', () => {
   it('is true for the shipping-returns category regardless of text', () => {
     expect(isShippingIntent('shipping-returns', 'Re: order', 'thanks')).toBe(true);

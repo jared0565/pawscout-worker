@@ -99,6 +99,17 @@ export function deriveDestinationCountry(conversation: string, subject: string, 
 
   const found = new Set<string>();
   if (ukNamed) found.add('GB');
+
+  // US shorthand: match "U.S."/"U.S.A." (periods = unambiguous) and the phrase
+  // "the US"/"the U.S." case-insensitively, plus an UPPERCASE bare "US"/"USA" in
+  // the original text. The lowercase pronoun "us" ("let us know") must NOT match,
+  // which is why COUNTRY_NAMES deliberately omits a bare "us" key.
+  const rawText = `${subject}\n${conversation}`;
+  const usShorthand =
+    /\bu\.s\.(?:a\.?)?/i.test(rawText) ||           // U.S. / U.S.A.
+    /\bthe\s+us\b/i.test(rawText) ||                // the US
+    /\bUS\b/.test(rawText) || /\bUSA\b/.test(rawText); // UPPERCASE US/USA (case-sensitive)
+  if (usShorthand) found.add('US');
   // Multi-word names first (longest match wins for overlapping phrases).
   const names = Object.keys(COUNTRY_NAMES).sort((a, b) => b.length - a.length);
   for (const name of names) {
