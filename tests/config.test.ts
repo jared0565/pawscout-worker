@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
-import { connectCj, saveGates, savePricing, getStatus } from '../src/console/routes';
+import { connectCj, saveGates, savePricing, getStatus, saveGbFreeUk } from '../src/console/routes';
 import { Vault } from '../src/vault';
 import { TenantStore } from '../src/tenant-store';
 import { DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, DEFAULT_INBOX } from '../src/types';
@@ -68,5 +68,22 @@ describe('console handlers', () => {
     expect((await getStatus(env.DB, 'a.myshopify.com')).target).toBe(32);
     await saveGates(env.DB, 'a.myshopify.com', gates);
     expect((await getStatus(env.DB, 'a.myshopify.com')).target).toBe(32); // unchanged
+  });
+
+  it('getStatus reports gbFreeUkLive + the GB-warehoused count; saveGbFreeUk toggles the flag', async () => {
+    await seedTenant('a.myshopify.com');
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    await store.putWarehouseProduct({ cjPid: 'G1', category: 'pet-toys', title: 'Cat Tree', detailJson: JSON.stringify({ origins: { GB: 40 } }), priceUsd: 10, listedNum: 5, stock: 40 });
+    await store.putLink({ cjPid: 'G1', state: 'imported', shopifyProductId: 'gid://shopify/Product/1', handle: 'cat-tree' });
+
+    const before = await getStatus(env.DB, 'a.myshopify.com');
+    expect(before.gbFreeUkLive).toBe(false); // default OFF
+    expect(before.gbWarehousedCount).toBe(1);
+
+    await saveGbFreeUk(env.DB, 'a.myshopify.com', true);
+    expect((await getStatus(env.DB, 'a.myshopify.com')).gbFreeUkLive).toBe(true);
+
+    await saveGbFreeUk(env.DB, 'a.myshopify.com', false);
+    expect((await getStatus(env.DB, 'a.myshopify.com')).gbFreeUkLive).toBe(false);
   });
 });

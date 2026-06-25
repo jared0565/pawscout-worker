@@ -149,6 +149,17 @@ describe('consolePage', () => {
     expect(scripts).toContain('renderAgents({autosend:on,agents:collectAgents()})');
   });
 
+  it('includes the GB Local free-UK shipping panel + the verify-then-flip toggle', async () => {
+    const html = await consolePage('test-api-key').text();
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+    expect(html).toContain('id="gb-shipping-panel"');
+    expect(html).toContain('id="gb-free-uk-chk"');
+    expect(html).toContain('data-gb-free-uk');
+    expect(html).toContain('id="gb-profile-status"');
+    expect(scripts).toContain('function saveGbFreeUk(');
+    expect(scripts).toContain('/gb-free-uk'); // api() prepends /api
+  });
+
   it('wraps every invoice field in esc() in the client render code', async () => {
     const html = await consolePage('test-api-key').text();
     // Verify that the renderInboxThread / invoice-card code wraps dynamic values in esc()

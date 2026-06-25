@@ -13,7 +13,7 @@ import { handleCallback } from './auth/callback';
 import { ensureInstalled } from './auth/ensure-installed';
 import { handleUninstall } from './auth/uninstall';
 import { resolveShopFromToken } from './console/session';
-import { connectCj, saveGates, savePricing, saveLlm, saveAddons, saveCollectionMap, getStatus, getInsights } from './console/routes';
+import { connectCj, saveGates, savePricing, saveLlm, saveAddons, saveCollectionMap, getStatus, getInsights, saveGbFreeUk } from './console/routes';
 import { listInboxThreads, getInboxThread, setInboxStatus, setInboxLabels, getInboxConfig, saveInboxConfig, approveDraft, regenerateDraft } from './inbox/routes';
 import { buildInvoiceForThread, discardInvoice, searchCatalog } from './inbox/invoice-routes';
 import { consolePage } from './console/page';
@@ -103,6 +103,13 @@ async function shopOf(c: Context<{ Bindings: Env }>): Promise<string | Response>
 
 app.post('/api/status', async (c) => { const s = await shopOf(c); if (typeof s !== 'string') return s; return c.json(await getStatus(c.env.DB, s)); });
 app.post('/api/insights', async (c) => { const s = await shopOf(c); if (typeof s !== 'string') return s; return c.json(await getInsights(c.env.DB, s)); });
+app.post('/api/gb-free-uk', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: { on?: boolean } = {};
+  try { body = await c.req.json(); } catch {}
+  await saveGbFreeUk(c.env.DB, s, body.on === true);
+  return c.json({ ok: true });
+});
 app.post('/api/connect-cj', async (c) => {
   const s = await shopOf(c); if (typeof s !== 'string') return s;
   const { apiKey } = await c.req.json<{ apiKey: string }>();

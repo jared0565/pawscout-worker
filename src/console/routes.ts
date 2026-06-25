@@ -61,6 +61,8 @@ export interface Status {
   llm: LlmConfig;
   addons: Addons;
   target: number;
+  gbFreeUkLive: boolean;      // the verify-then-flip "free UK delivery" gate (Phase 1)
+  gbWarehousedCount: number;  // GB-warehoused imported products = the GB Local membership size
 }
 
 export async function getStatus(db: D1Database, shop: string): Promise<Status> {
@@ -75,8 +77,20 @@ export async function getStatus(db: D1Database, shop: string): Promise<Status> {
     floors: cfg?.floors ?? DEFAULT_FLOORS,
     llm: cfg?.llm ?? DEFAULT_LLM,
     addons: cfg?.addons ?? DEFAULT_ADDONS,
-    target: cfg?.target ?? DEFAULT_TARGET
+    target: cfg?.target ?? DEFAULT_TARGET,
+    gbFreeUkLive: cfg?.fulfil?.gbFreeUkLive === true,
+    gbWarehousedCount: (await store.listGbWarehousedShopifyProductIds()).length
   };
+}
+
+/** Flip the verify-then-flip "free UK delivery" gate (Fulfil.gbFreeUkLive). Owner flips ON
+ *  only after a live GB-item-to-UK checkout is verified at GBP 0 (Phase 1 cutover).
+ *  Uses the dedicated saveFulfil (seedConfig intentionally does NOT persist fulfil). */
+export async function saveGbFreeUk(db: D1Database, shop: string, on: boolean): Promise<void> {
+  const store = new TenantStore(db, shop);
+  const cfg = await store.getConfig();
+  if (!cfg) return;
+  await store.saveFulfil({ ...(cfg.fulfil ?? { mode: 'manual' as const }), gbFreeUkLive: on });
 }
 
 export interface CategoryFill { key: string; imported: number; warehouse: number; floor: number; target: number }

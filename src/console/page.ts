@@ -385,6 +385,15 @@ export function consolePage(apiKey: string): Response {
       <div class="agents-panel__head">Per-agent auto-send <span class="sub">(each agent stays on manual review until you switch it to Auto)</span></div>
       <div id="agents-list"></div>
     </div>
+    <div id="gb-shipping-panel" class="agents-panel" style="margin-top:14px">
+      <div class="agents-panel__head">GB Local shipping <span class="sub">(free UK delivery on GB-warehoused items)</span></div>
+      <p id="gb-profile-status" class="sub" style="margin:6px 0">Loading&hellip;</p>
+      <div class="toggle-wrap" style="margin-top:8px">
+        <input type="checkbox" id="gb-free-uk-chk" data-gb-free-uk onchange="saveGbFreeUk()">
+        <label for="gb-free-uk-chk" style="display:inline;font-weight:550">State &ldquo;free UK delivery&rdquo; in replies. Flip this ON only after a live GB-item-to-UK checkout shows GBP 0.</label>
+      </div>
+      <p class="sub" style="margin:8px 0 0">Tradeoff: free UK shipping on a GB item gives up about GBP 4.99 per GB UK order; the item margin absorbs it as a conversion lever.</p>
+    </div>
     <div class="row" style="margin-bottom:12px">
       <div class="grow">
         <label for="inbox-status-filter">Filter by status</label>
@@ -556,6 +565,8 @@ function populateForms(s){
   if(a.poolSize!=null) el('addpool').value=a.poolSize;
   if(a.enabled!=null) el('addon').value=String(a.enabled);
   if(a.suppressFromBrowse!=null) el('addvis').value=String(a.suppressFromBrowse);
+  if(s.gbFreeUkLive!=null) el('gb-free-uk-chk').checked=!!s.gbFreeUkLive;
+  setGbStatus(s.gbWarehousedCount, s.gbFreeUkLive);
   var cm=s.collectionMap||{};
   el('maprows').textContent='';
   Object.keys(cm).forEach(function(k){ var v=cm[k]||{}; addMapRow(v.handle||k, v.tag||''); });
@@ -996,6 +1007,19 @@ async function saveAddons(){
     if(r.ok){ setMsg('addmsg','Saved ✓','ok'); refresh(); }
     else setMsg('addmsg','Failed: '+(r.error||'unknown error'),'no');
   }catch(e){ setMsg('addmsg','Failed: '+errText(e),'no'); }
+}
+function setGbStatus(n,on){
+  var elx=el('gb-profile-status'); if(!elx) return;
+  n=Number(n)||0; elx.dataset.count=String(n);
+  elx.textContent='GB Local profile: '+n+' GB-warehoused product'+(n===1?'':'s')+' · free UK shipping '+(on?'ON':'off');
+}
+async function saveGbFreeUk(){
+  var on=el('gb-free-uk-chk').checked;
+  try{
+    var r=await api('/gb-free-uk',{on:on});
+    if(r&&r.ok){ setGbStatus(el('gb-profile-status').dataset.count, on); }
+    else { el('gb-free-uk-chk').checked=!on; }
+  }catch(e){ el('gb-free-uk-chk').checked=!on; }
 }
 async function saveCollections(){
   setMsg('mapmsg','Saving…','muted');
