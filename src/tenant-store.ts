@@ -388,12 +388,11 @@ export class TenantStore {
   }
 
   /** Look up a product link by its storefront handle (URL/handle item signal). */
-  async getLinkByHandle(handle: string): Promise<ProductLink | null> {
-    const rs = await this.db
+  getLinkByHandle(handle: string): Promise<ProductLink | null> {
+    return this.db
       .prepare(`SELECT * FROM product_links WHERE shop = ?1 AND handle = ?2 LIMIT 1`)
       .bind(this.shop, handle)
       .first<ProductLink>();
-    return rs ?? null;
   }
 
   // --- orders (W-FULFIL) ---
