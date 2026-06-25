@@ -153,9 +153,11 @@ function ratesToMethodInput(rates: DeliveryRate[]): unknown[] {
   }));
 }
 
-/** A mirrored zone -> DeliveryLocationGroupZoneInput (countries list of {code} or [{restOfWorld:true}]). */
+/** A mirrored zone -> DeliveryLocationGroupZoneInput (countries list of {code} or [{restOfWorld:true}]).
+ *  includeAllProvinces:true is required by Shopify for province-bearing countries (GB/US/CA),
+ *  else deliveryProfileCreate fails "must have at least one province associated". */
 function zoneToInput(zone: DeliveryZone): unknown {
-  const countries = zone.restOfWorld ? [{ restOfWorld: true }] : zone.countryCodes.map((c) => ({ code: c }));
+  const countries = zone.restOfWorld ? [{ restOfWorld: true }] : zone.countryCodes.map((c) => ({ code: c, includeAllProvinces: true }));
   return { name: zone.name, countries, methodDefinitionsToCreate: ratesToMethodInput(zone.rates) };
 }
 
@@ -180,7 +182,7 @@ export async function ensureGbLocalProfile(
 
   const ukZone = {
     name: 'United Kingdom',
-    countries: [{ code: 'GB' }],
+    countries: [{ code: 'GB', includeAllProvinces: true }],
     methodDefinitionsToCreate: [{ name: 'Standard', rateDefinition: { price: { amount: opts.ukRateAmount, currencyCode: 'GBP' } } }],
   };
   const profile = {

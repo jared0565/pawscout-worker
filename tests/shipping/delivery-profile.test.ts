@@ -109,10 +109,12 @@ describe('ensureGbLocalProfile', () => {
     expect(prof.locationGroupsToCreate[0].locationsToAdd).toEqual(['gid://shopify/Location/5']);
     const zones = prof.locationGroupsToCreate[0].zonesToCreate;
     const uk = zones.find((z: any) => z.name === 'United Kingdom');
-    expect(uk.countries).toEqual([{ code: 'GB' }]);
+    // includeAllProvinces is required by Shopify for province-bearing countries (GB/US/CA),
+    // else deliveryProfileCreate fails "must have at least one province associated".
+    expect(uk.countries).toEqual([{ code: 'GB', includeAllProvinces: true }]);
     expect(uk.methodDefinitionsToCreate[0].rateDefinition.price).toEqual({ amount: '0.00', currencyCode: 'GBP' });
     const eu = zones.find((z: any) => z.name === 'Europe');
-    expect(eu.countries).toEqual([{ code: 'FR' }, { code: 'DE' }]);
+    expect(eu.countries).toEqual([{ code: 'FR', includeAllProvinces: true }, { code: 'DE', includeAllProvinces: true }]);
     expect(eu.methodDefinitionsToCreate[0].rateDefinition.price).toEqual({ amount: '14.99', currencyCode: 'GBP' });
     const row = zones.find((z: any) => z.name === 'Rest of World');
     expect(row.countries).toEqual([{ restOfWorld: true }]);
