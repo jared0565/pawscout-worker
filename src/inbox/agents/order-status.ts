@@ -59,7 +59,7 @@ export const orderStatusAgent: CategoryAgent = {
 
   promptFragment(g: Grounding): string {
     void g;
-    return 'You are the order-status specialist. Report only the grounded order status. Never invent an order number, status, date, or tracking number. A precise status/tracking line is appended after your reply -- do NOT restate the tracking number from that appendix. If no order is grounded, politely ask for the order number or the email used at checkout. After confirming status, a soft relationship touch is welcome but no pressure.';
+    return 'You are the order-status specialist. Report only the grounded order status. Never invent an order number, status, date, or tracking number. A precise status/tracking line is appended after your reply, so do NOT restate the tracking number from that appendix. If no order is grounded, ask in the first sentence for the order number or the email used at checkout. After confirming status, a brief relationship touch is welcome but no pressure. Example (no order grounded): "Happy to check that for you. Could you share your order number or the email you used at checkout?"';
   },
 
   deterministicAppendix(g: Grounding): string | null {

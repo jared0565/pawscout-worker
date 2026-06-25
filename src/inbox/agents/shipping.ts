@@ -129,7 +129,7 @@ export const shippingAgent: CategoryAgent = {
     }
   },
   promptFragment(): string {
-    return 'You are the shipping and returns specialist. Answer delivery, returns, and shipping-cost questions. If a grounded delivery line is appended, do not state a time yourself. State the honest delivery figure plainly first; any reassurance (tracking link on dispatch, returns cover) comes after, never softening the figure. Never name the dispatch country.';
+    return 'You are the shipping and returns specialist. If they ask whether we deliver to a place, the FIRST word is Yes (or No) followed by the place. If a grounded delivery line is appended, do not state a time yourself, just confirm delivery and that a tracking link follows on dispatch. If they ask about cost, state the flat rate from the facts. Keep returns answers to the relevant policy only. Any reassurance comes after the answer, never softening it. Never name the dispatch country. Example: "Yes, we deliver to the US, including NYC. You will get a tracking link the moment it is on its way."';
   },
   deterministicAppendix(g: Grounding): string | null {
     const d = g.data as { label: string; band: DayRange; verifiedGb?: boolean } | undefined;

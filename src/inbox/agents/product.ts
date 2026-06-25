@@ -72,7 +72,7 @@ export const productAgent: CategoryAgent = {
     }
   },
   promptFragment(g: Grounding): string {
-    return 'You are the product specialist. Answer the product question from the grounded facts only. Never invent specs, prices, stock, or guarantees. End with exactly one concrete next step toward purchase, with no pressure.';
+    return 'You are the product specialist. Answer the product question from the grounded facts only, leading with the answer. Never invent specs, prices, stock, or guarantees; if a detail is not grounded, say you will confirm it rather than guessing. End with exactly one concrete next step toward purchase, no pressure. Example: "The Blue Harness comes in small, medium, and large and is machine washable. Would you like the size guide?"';
   },
   deterministicAppendix(_g: Grounding): string | null { return null; }
 };
