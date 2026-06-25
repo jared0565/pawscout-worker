@@ -1,7 +1,7 @@
 // src/inbox/agents/shipping.ts
 import type { CategoryAgent, AgentContext, Grounding } from './types';
 import { isShippingIntent, deriveDestinationCountry, countryLabel, buildShippingLine } from '../freight';
-import { resolveLogistics, doorToDoorBand, type DayRange } from '../../logistics';
+import { resolveLogistics, doorToDoorBand, bandFromQuote, formatBand, type DayRange } from '../../logistics';
 import { resolveLineRequest } from '../../shopify-catalog';
 import type { CjDetail } from '../../cj';
 
@@ -87,19 +87,35 @@ export const shippingAgent: CategoryAgent = {
       const dest = deriveDestinationCountry(ctx.conversation, subject, ctx.contactEmail);
       if (!dest) return notConfident();
       const l = resolveLogistics(ctx.cfg.fulfil);
-      // Phase 2: prefer the product's real warehouse origin when D1 has it
-      const item = await resolveItemShipping(ctx, dest); const origin = item?.chosenOrigin ?? null;
-      let route = (origin && origin !== SHIP_DEFAULT_ORIGIN)
-        ? await ctx.store.getLogisticsRoute(origin, dest, l.stalenessHours)
-        : null;
-      if (!route) route = await ctx.store.getLogisticsRoute(SHIP_DEFAULT_ORIGIN, dest, l.stalenessHours);
-      const band = doorToDoorBand(route, l);
-      if (!band) return notConfidentFacts(dest); // known dest, no figure -> hedge time, keep cost
+      const item = await resolveItemShipping(ctx, dest);
+
+      // No confident item -> ask which item, but offer the generic dest band as a soft anchor.
+      if (!item) {
+        const generic = doorToDoorBand(await ctx.store.getLogisticsRoute(SHIP_DEFAULT_ORIGIN, dest, l.stalenessHours), l);
+        return {
+          confident: false, quotesFigure: false,
+          facts: `The customer asked about delivery time but did not name a specific product. ASK which item (or a product link) so you can give a precise estimate. You MAY offer, as a soft general guide only, that most ${countryLabel(dest)} orders arrive in about ${formatBand(generic)} and that the exact time depends on the item. You MAY also state the flat shipping cost and returns policy from the store facts.`,
+          data: { askForItem: true }
+        };
+      }
+
+      // Resolve the band for the item's nearest warehouse: D1 matrix first, live CJ fallback.
+      let band = doorToDoorBand(await ctx.store.getLogisticsRoute(item.chosenOrigin, dest, l.stalenessHours), l);
+      if (!band && ctx.cj && item.repVid) {
+        try {
+          const opts = await ctx.cj.freightQuoteAging(item.repVid, item.chosenOrigin, dest);
+          const cheapest = opts.filter((o: { days: string }) => o.days).sort((a: { priceUsd: number }, b: { priceUsd: number }) => a.priceUsd - b.priceUsd)[0];
+          if (cheapest) band = bandFromQuote(cheapest.days, item.chosenOrigin, dest, l);
+        } catch (e) { console.warn(`ship cj fallback failed: ${(e as Error).message}`); }
+      }
+      if (!band) band = doorToDoorBand(await ctx.store.getLogisticsRoute(SHIP_DEFAULT_ORIGIN, dest, l.stalenessHours), l);
+      if (!band) return notConfidentFacts(dest);
+
+      const verifiedGb = item.verifiedGbWarehouse && dest === 'GB';
       return {
-        confident: true,
-        quotesFigure: true,
-        facts: `Destination ${countryLabel(dest)}. A grounded delivery estimate line is appended after your reply, so do NOT state a delivery time yourself. You MAY state the flat shipping cost and the returns policy from the store facts. Do not add a sign-off; the appended line follows your text.`,
-        data: { label: countryLabel(dest), band }
+        confident: true, quotesFigure: true,
+        facts: `Destination ${countryLabel(dest)}. A grounded delivery estimate line is appended after your reply, so do NOT state a delivery time yourself. You MAY state the flat shipping cost and returns policy. Do not add a sign-off; the appended line follows your text.`,
+        data: { label: countryLabel(dest), band, verifiedGb }
       };
     } catch (e) {
       console.warn(`shippingAgent.ground failed: ${(e as Error).message}`);
@@ -110,9 +126,14 @@ export const shippingAgent: CategoryAgent = {
     return 'You are the shipping and returns specialist. Answer delivery, returns, and shipping-cost questions. If a grounded delivery line is appended, do not state a time yourself. State the honest delivery figure plainly first; any reassurance (tracking link on dispatch, returns cover) comes after, never softening the figure. Never name the dispatch country.';
   },
   deterministicAppendix(g: Grounding): string | null {
-    const d = g.data as { label: string; band: DayRange } | undefined;
+    const d = g.data as { label: string; band: DayRange; verifiedGb?: boolean } | undefined;
     if (!g.confident || !d) return null;
-    return buildShippingLine(d.label, d.band); // "Delivery to X: estimated A-B days."
+    const line = buildShippingLine(d.label, d.band); // "Delivery to X: estimated A-B days."
+    if (!line) return null;
+    // Per-SKU, source-verified UK fulfilment wording (never blanket, never for non-GB stock).
+    return d.verifiedGb
+      ? `This item is held in a UK fulfilment location. ${line}`
+      : line;
   }
 };
 
