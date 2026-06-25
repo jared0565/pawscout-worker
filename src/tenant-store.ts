@@ -592,6 +592,25 @@ export class TenantStore {
     return row?.n ?? 0;
   }
 
+  /**
+   * Shopify product ids for imported, GB-warehoused products: the membership source for
+   * the GB Local delivery profile (free UK shipping). GB-warehoused = the cached
+   * warehouse_products.detail (origins JSON) contains the "GB" key. Only state='imported'
+   * with a non-null shopify_product_id (a live, assignable product). Shop-scoped.
+   */
+  async listGbWarehousedShopifyProductIds(): Promise<string[]> {
+    const rs = await this.db
+      .prepare(
+        `SELECT l.shopify_product_id AS id
+         FROM product_links l
+         JOIN warehouse_products w ON w.shop = l.shop AND w.cj_pid = l.cj_pid
+         WHERE l.shop = ?1 AND l.state = 'imported' AND l.shopify_product_id IS NOT NULL AND w.detail LIKE '%"GB"%'`
+      )
+      .bind(this.shop)
+      .all<{ id: string }>();
+    return (rs.results ?? []).map((r) => r.id);
+  }
+
   // --- W1: PS-local product warehouse ---
 
   async putWarehouseProduct(p: {

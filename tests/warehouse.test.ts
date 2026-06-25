@@ -364,3 +364,32 @@ describe('preview + confirmAndImport', () => {
     expect((await store.getLink('A'))?.state).toBe('imported');
   });
 });
+
+describe('listGbWarehousedShopifyProductIds (GB Local profile membership source)', () => {
+  it('returns only imported, GB-warehoused products that have a shopify product id', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    // GB, imported, linked -> included
+    await store.putWarehouseProduct({ cjPid: 'G1', category: 'pet-toys', title: 'Cat Tree', detailJson: JSON.stringify({ origins: { GB: 40 } }), priceUsd: 10, listedNum: 5, stock: 40 });
+    await store.putLink({ cjPid: 'G1', state: 'imported', shopifyProductId: 'gid://shopify/Product/1', handle: 'cat-tree' });
+    // CN only -> excluded
+    await store.putWarehouseProduct({ cjPid: 'C1', category: 'pet-toys', title: 'CN Toy', detailJson: JSON.stringify({ origins: { CN: 99 } }), priceUsd: 8, listedNum: 5, stock: 99 });
+    await store.putLink({ cjPid: 'C1', state: 'imported', shopifyProductId: 'gid://shopify/Product/2', handle: 'cn-toy' });
+    // GB but still draft -> excluded (only imported products are live members)
+    await store.putWarehouseProduct({ cjPid: 'G2', category: 'pet-toys', title: 'GB Draft', detailJson: JSON.stringify({ origins: { GB: 5 } }), priceUsd: 9, listedNum: 5, stock: 5 });
+    await store.putLink({ cjPid: 'G2', state: 'draft', shopifyProductId: 'gid://shopify/Product/3', handle: 'gb-draft' });
+    // GB, imported, but no shopify id yet -> excluded
+    await store.putWarehouseProduct({ cjPid: 'G3', category: 'pet-toys', title: 'GB NoId', detailJson: JSON.stringify({ origins: { GB: 7 } }), priceUsd: 9, listedNum: 5, stock: 7 });
+    await store.putLink({ cjPid: 'G3', state: 'imported', shopifyProductId: null, handle: 'gb-noid' });
+
+    const ids = await store.listGbWarehousedShopifyProductIds();
+    expect(ids).toEqual(['gid://shopify/Product/1']);
+  });
+
+  it('is shop-scoped (no cross-tenant leakage)', async () => {
+    const a = new TenantStore(env.DB, SHOP);
+    await a.putWarehouseProduct({ cjPid: 'G1', category: 'pet-toys', title: 'Cat Tree', detailJson: JSON.stringify({ origins: { GB: 40 } }), priceUsd: 10, listedNum: 5, stock: 40 });
+    await a.putLink({ cjPid: 'G1', state: 'imported', shopifyProductId: 'gid://shopify/Product/1', handle: 'cat-tree' });
+    const other = await new TenantStore(env.DB, 'b.myshopify.com').listGbWarehousedShopifyProductIds();
+    expect(other).toEqual([]);
+  });
+});
