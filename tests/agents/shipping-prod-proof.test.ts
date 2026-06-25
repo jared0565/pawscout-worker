@@ -42,6 +42,7 @@ const ROUTES: Record<string, any> = {
   'GB->GB': { from_country: 'GB', to_country: 'GB', channel: 'Yodel GB to GB', transit_min: 2, transit_max: 5, aging_raw: '2-5', synced_at: ISO },
   'CN->GB': { from_country: 'CN', to_country: 'GB', channel: 'CJPacket Ordinary', transit_min: 4, transit_max: 9, aging_raw: '4-9', synced_at: ISO },
   'CN->US': { from_country: 'CN', to_country: 'US', channel: 'LuWei Ordinary US', transit_min: 5, transit_max: 11, aging_raw: '5-11', synced_at: ISO },
+  'US->US': { from_country: 'US', to_country: 'US', channel: 'Yunexpress US to US #3', transit_min: 3, transit_max: 5, aging_raw: '3-5', synced_at: ISO },
   // NOTE: no 'GB->US' key on purpose - prod has no such matrix row.
 };
 
@@ -134,12 +135,16 @@ describe('PROD PROOF: per-item nearest-warehouse shipping (real D1 data, deploye
     expect(deriveDestinationCountry(cleaned, 'International Order Inquiry', 'gift@gmail.com')).toBe('US');
   });
 
-  it('D2) live "the US" thread, no item named -> ask-for-item branch + soft general US band (7-23)', async () => {
+  it('D2) live "the US" thread, no item named -> ask-for-item branch + LOCAL (US warehouse) fast band (5-12)', async () => {
     const cleaned = stripQuotedReply(RAW_LATEST); // no product URL/handle present
     const ctx = ctxFor({ msg: cleaned });        // admin:null, cj:null -> no item resolves
     const g = await shippingAgent.ground(ctx);
     expect((g.data as any).askForItem).toBe(true);
     expect(g.facts).toMatch(/ask .*which item/i);
-    expect(g.facts).toMatch(/7-23 days/);        // grounded soft anchor (CN->US generic), not a non-answer
+    // Sale-positive default: the nearest/local warehouse for US is US->US (3-5 transit, no
+    // customs) -> door-to-door 5-12, NOT the CN worst-case 7-23. Time only; depends-on-item caveat.
+    expect(g.facts).toMatch(/5-12 days/);
+    expect(g.facts).not.toMatch(/7-23/);
+    expect(g.facts).toMatch(/depends on the specific product/i);
   });
 });

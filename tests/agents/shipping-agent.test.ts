@@ -23,6 +23,7 @@ function fakeCtx(opts: {
   links?: Record<string, { cj_pid: string }>;
   warehouse?: Record<string, { detail: string }>;
   matrixRoute?: any;
+  routes?: Record<string, any>; // route-aware: keyed by `${from}->${to}`
   cj?: any;
 }) {
   const links = opts.links ?? {};
@@ -36,7 +37,9 @@ function fakeCtx(opts: {
     getWarehouseProduct: vi.fn().mockImplementation((cjPid: string) =>
       Promise.resolve(warehouse[cjPid] ?? null)
     ),
-    getLogisticsRoute: vi.fn().mockResolvedValue(opts.matrixRoute ?? null),
+    getLogisticsRoute: vi.fn().mockImplementation((from: string, to: string) =>
+      Promise.resolve(opts.routes ? (opts.routes[`${from}->${to}`] ?? null) : (opts.matrixRoute ?? null))
+    ),
   };
 
   return {
@@ -94,6 +97,38 @@ describe('shippingAgent.ground', () => {
     const line = shippingAgent.deterministicAppendix(g)!;
     expect(line).toMatch(/Delivery to the United States: estimated \d+-\d+ days\./);
     expect(line).not.toMatch(/UK|fulfilment|warehouse|China/i);
+  });
+
+  // No item + the destination has a LOCAL warehouse -> default to the LOCAL fast band
+  // (sale-positive), NOT the CN worst-case. Time-only, with the "depends on the product" caveat.
+  it('no item, dest has a local warehouse -> defaults to the local fast band, not CN worst-case', async () => {
+    const fresh = new Date().toISOString();
+    const ctx = fakeCtx({
+      msg: 'do you ship to the US and how long does it take?',
+      routes: {
+        'US->US': { from_country: 'US', to_country: 'US', channel: 'c', transit_min: 3, transit_max: 5, aging_raw: '3-5', synced_at: fresh },
+        'CN->US': { from_country: 'CN', to_country: 'US', channel: 'c', transit_min: 5, transit_max: 11, aging_raw: '5-11', synced_at: fresh },
+      },
+    });
+    const g = await shippingAgent.ground(ctx);
+    expect((g.data as any).askForItem).toBe(true);
+    // local US->US door-to-door = {2+3 .. 5+5+0+2} = 5-12; NOT the CN worst-case 7-23
+    expect(g.facts).toMatch(/5-12 days/);
+    expect(g.facts).not.toMatch(/7-23/);
+    expect(g.facts).toMatch(/depends on the specific product/i);
+  });
+
+  // No local warehouse for the destination -> fall back to the CN route (still answers).
+  it('no item, no local warehouse -> falls back to the CN route band', async () => {
+    const fresh = new Date().toISOString();
+    const ctx = fakeCtx({
+      msg: 'how long does delivery take to France?',
+      routes: { 'CN->FR': { from_country: 'CN', to_country: 'FR', channel: 'c', transit_min: 4, transit_max: 10, aging_raw: '4-10', synced_at: fresh } },
+    });
+    const g = await shippingAgent.ground(ctx);
+    expect((g.data as any).askForItem).toBe(true);
+    // CN->FR door-to-door = {2+4 .. 5+10+5+2} = 6-22
+    expect(g.facts).toMatch(/6-22 days/);
   });
 
   // No item resolved -> askForItem branch with soft general band

@@ -89,18 +89,26 @@ export const shippingAgent: CategoryAgent = {
       const l = resolveLogistics(ctx.cfg.fulfil);
       const item = await resolveItemShipping(ctx, dest);
 
-      // No confident item -> ask which item, but offer the generic dest band as a soft anchor.
+      // No confident item -> ask which item, but DEFAULT the soft anchor to the NEAREST
+      // (in-market/local) warehouse for this destination, not the slowest CN route. A
+      // no-item question is often a buying signal; leading with the worst case works
+      // against the sale. We prefer the dest-local route (fast, e.g. GB->GB / US->US) and
+      // fall back to CN only when there is no local route. The exact time still depends on
+      // the specific product's warehouse, which is exactly why we ask for the item. Time
+      // only, never an origin.
       if (!item) {
-        const generic = doorToDoorBand(await ctx.store.getLogisticsRoute(SHIP_DEFAULT_ORIGIN, dest, l.stalenessHours), l);
+        const localRoute = await ctx.store.getLogisticsRoute(dest, dest, l.stalenessHours);
+        const fallbackRoute = await ctx.store.getLogisticsRoute(SHIP_DEFAULT_ORIGIN, dest, l.stalenessHours);
+        const generic = doorToDoorBand(localRoute ?? fallbackRoute, l);
         const genericBand = formatBand(generic);
-        // Only include the soft-anchor band clause when we actually have a band; an empty
-        // band would otherwise produce a dangling "arrive in about  and..." fragment.
+        // Only include the soft-anchor clause when we actually have a band; an empty band
+        // would otherwise produce a dangling fragment.
         const softAnchor = genericBand
-          ? ` You MAY offer, as a soft general guide only, that most ${countryLabel(dest)} orders arrive in about ${genericBand} days and that the exact time depends on the item.`
+          ? ` Lead with a helpful estimate: the fastest options reach ${countryLabel(dest)} in around ${genericBand} days, and the exact delivery time depends on the specific product and which warehouse stocks it.`
           : '';
         return {
           confident: false, quotesFigure: false,
-          facts: `The customer asked about delivery time but did not name a specific product. ASK which item (or a product link) so you can give a precise estimate.${softAnchor} You MAY also state the flat shipping cost and returns policy from the store facts.`,
+          facts: `The customer asked about delivery time but did not name a specific product.${softAnchor} Then ASK which item (or a product link) so you can confirm the exact time. You MAY also state the flat shipping cost and returns policy from the store facts.`,
           data: { askForItem: true }
         };
       }
