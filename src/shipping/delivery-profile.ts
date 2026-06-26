@@ -349,6 +349,164 @@ export async function syncGbProfileMembership(
   return { added: toAdd.length, removed: toRemove.length, profileId };
 }
 
+/** Human-readable profile name for an origin signature.
+ *  'GB' maps to GB_LOCAL_PROFILE_NAME; every other signature gets 'Origin <sig>'. */
+export function signatureProfileName(sig: string): string {
+  return sig === 'GB' ? GB_LOCAL_PROFILE_NAME : `Origin ${sig}`;
+}
+
+/** Query to list all delivery profiles with their location-group ids and zone ids.
+ *  Reuses the same shape as GB_LOCAL_GROUPS_QUERY so the mock discriminates on
+ *  'pawscoutGbLocalGroups' first. */
+const SIGNATURE_GROUPS_QUERY = `query pawscoutGbLocalGroups {
+  deliveryProfiles(first: 30) {
+    edges { node { id name profileLocationGroups {
+      locationGroup { id }
+      locationGroupZones(first: 50) { edges { node { zone { id } } } }
+    } } }
+  }
+}`;
+
+/** Ensure a signature delivery profile exists (create) or refresh its zones (found-path
+ *  recreate). Returns the profile id. Throws on userErrors.
+ *
+ *  Create path: deliveryProfileCreate with locationGroupsToCreate.
+ *  Found path: deliveryProfileUpdate to delete all existing zone ids then recreate from
+ *  the formula result. Operates on the first location group (one group is the standard
+ *  layout for all profiles we create). */
+async function ensureSignatureProfile(
+  admin: AdminGraphql,
+  opts: { name: string; locationIds: string[]; zones: unknown[] }
+): Promise<string> {
+  const root = (await admin(SIGNATURE_GROUPS_QUERY)) as any;
+  const existing = ((root?.deliveryProfiles?.edges ?? []) as any[])
+    .map((e) => e?.node)
+    .find((n) => n?.name === opts.name);
+
+  if (!existing?.id) {
+    // Create path: new profile
+    const profile = {
+      name: opts.name,
+      locationGroupsToCreate: [{
+        locationsToAdd: opts.locationIds,
+        zonesToCreate: opts.zones,
+      }],
+    };
+    const res = (await admin(CREATE_PROFILE_MUTATION, { profile })) as any;
+    const payload = res?.deliveryProfileCreate;
+    const errs = (payload?.userErrors ?? []) as { message?: string }[];
+    if (errs.length) throw new Error(`deliveryProfileCreate failed: ${errs.map((e) => e.message).join('; ')}`);
+    const id = payload?.profile?.id;
+    if (!id) throw new Error('deliveryProfileCreate returned no profile id');
+    return id;
+  }
+
+  // Found path: recreate zones in the first location group to keep formula-fresh
+  const firstPlg = ((existing.profileLocationGroups ?? []) as any[])[0];
+  const locationGroupId = firstPlg?.locationGroup?.id;
+  if (!locationGroupId) throw new Error(`ensureSignatureProfile: no location group found for profile ${existing.id}`);
+  const existingZoneIds = ((firstPlg?.locationGroupZones?.edges ?? []) as any[])
+    .map((ze: any) => ze?.node?.zone?.id)
+    .filter(Boolean);
+
+  const profile: Record<string, unknown> = {
+    locationGroupsToUpdate: [{
+      id: locationGroupId,
+      zonesToDelete: existingZoneIds,
+      zonesToCreate: opts.zones,
+    }],
+  };
+  const res = (await admin(UPDATE_PROFILE_MUTATION, { id: existing.id, profile })) as any;
+  const errs = (res?.deliveryProfileUpdate?.userErrors ?? []) as { message?: string }[];
+  if (errs.length) throw new Error(`deliveryProfileUpdate (zone recreate) failed: ${errs.map((e) => e.message).join('; ')}`);
+  return existing.id;
+}
+
+/**
+ * Materialize the nearest-warehouse shipping formula into one Shopify delivery profile
+ * per origin signature. One profile per unique signature (e.g. 'GB', 'CN', 'US,DE').
+ *
+ * For each signature: build its zones via buildSignatureZones (routes from store),
+ * ensure a delivery profile with those zones exists (create or zone-recreate), then
+ * reconcile which product variants belong to that profile (associate/dissociate).
+ *
+ * Defensive: a signature that produces zero zones is skipped (checkout blocked = honest).
+ */
+export async function syncSignatureProfiles(
+  admin: AdminGraphql,
+  store: {
+    listSignatureMemberships(): Promise<Map<string, string[]>>;
+    getLogisticsRoute(from: string, to: string, staleness: number): Promise<LogisticsRoute | null>;
+  },
+  opts: { servedCountries: string[]; fx: number; handlingGbp: number; stalenessHours: number }
+): Promise<{ profiles: { sig: string; profileId: string; added: number; removed: number; zones: number }[] }> {
+  const cfg = await readDeliveryConfig(admin);
+  const locationIds = cfg.locations.map((l) => l.id);
+  const memberships = await store.listSignatureMemberships();
+
+  const profiles: { sig: string; profileId: string; added: number; removed: number; zones: number }[] = [];
+
+  for (const [sig, productIds] of memberships) {
+    const originCodes = sig.split(',');
+
+    // Prefetch route lookup for all origin x dest combinations
+    const routeMap = new Map<string, LogisticsRoute | null>();
+    for (const origin of originCodes) {
+      for (const dest of opts.servedCountries) {
+        routeMap.set(`${origin}|${dest}`, await store.getLogisticsRoute(origin, dest, opts.stalenessHours));
+      }
+    }
+    const lookup = (o: string, d: string): LogisticsRoute | null => routeMap.get(`${o}|${d}`) ?? null;
+
+    const zones = buildSignatureZones(originCodes, opts.servedCountries, lookup, opts.fx, opts.handlingGbp);
+
+    if (zones.length === 0) {
+      console.warn(`syncSignatureProfiles: signature '${sig}' has no fulfillable zones for served countries [${opts.servedCountries.join(',')}]; skipping profile creation`);
+      profiles.push({ sig, profileId: '', added: 0, removed: 0, zones: 0 });
+      continue;
+    }
+
+    const name = signatureProfileName(sig);
+    const profileId = await ensureSignatureProfile(admin, { name, locationIds, zones });
+
+    // Reconcile membership: diff current product members vs desired productIds
+    const membersRes = (await admin(PROFILE_MEMBERS_QUERY, { id: profileId })) as any;
+    const current = new Set(
+      ((membersRes?.deliveryProfile?.profileItems?.edges ?? []) as any[])
+        .map((e: any) => e?.node?.product?.id)
+        .filter(Boolean)
+    );
+    const desired = new Set(productIds);
+
+    const toAdd = [...desired].filter((id) => !current.has(id));
+    const toRemove = [...current].filter((id) => !desired.has(id));
+
+    let added = 0;
+    let removed = 0;
+
+    if (toAdd.length || toRemove.length) {
+      const variantsToAssociate = toAdd.length ? await resolveVariantIds(admin, toAdd) : [];
+      const variantsToDissociate = toRemove.length ? await resolveVariantIds(admin, toRemove) : [];
+
+      const profile: Record<string, unknown> = {};
+      if (variantsToAssociate.length) profile.variantsToAssociate = variantsToAssociate;
+      if (variantsToDissociate.length) profile.variantsToDissociate = variantsToDissociate;
+
+      if (Object.keys(profile).length) {
+        const res = (await admin(UPDATE_PROFILE_MUTATION, { id: profileId, profile })) as any;
+        const errs = (res?.deliveryProfileUpdate?.userErrors ?? []) as { message?: string }[];
+        if (errs.length) throw new Error(`deliveryProfileUpdate failed: ${errs.map((e) => e.message).join('; ')}`);
+        added = toAdd.length;
+        removed = toRemove.length;
+      }
+    }
+
+    profiles.push({ sig, profileId, added, removed, zones: zones.length });
+  }
+
+  return { profiles };
+}
+
 export function buildSignatureZones(
   originCodes: string[], servedCountries: string[],
   lookup: (origin: string, dest: string) => LogisticsRoute | null,

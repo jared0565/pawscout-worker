@@ -1,5 +1,5 @@
 import { describe, it, expect, test, vi } from 'vitest';
-import { readDeliveryConfig, ensureGbLocalProfile, syncGbProfileMembership, computeNonUkZoneIds, restrictGbProfileToUk, buildSignatureZones, type DeliveryZone } from '../../src/shipping/delivery-profile';
+import { readDeliveryConfig, ensureGbLocalProfile, syncGbProfileMembership, computeNonUkZoneIds, restrictGbProfileToUk, buildSignatureZones, signatureProfileName, syncSignatureProfiles, type DeliveryZone } from '../../src/shipping/delivery-profile';
 import type { LogisticsRoute } from '../../src/logistics';
 
 const routeRow = (from: string, to: string, freight: number | null): LogisticsRoute => ({
@@ -352,4 +352,180 @@ test('buildSignatureZones: CN signature omits a destination with no route (FR)',
   const lookup = (o: string, d: string) => (o === 'CN' && d === 'DE' ? routeRow('CN','DE',9.83) : null);
   const zones = buildSignatureZones(['CN'], ['DE','FR'], lookup, 0.8, 0);
   expect(zones.map((z) => z.name)).toEqual(['DE']); // FR omitted (unfulfillable)
+});
+
+// ---------------------------------------------------------------------------
+// signatureProfileName
+// ---------------------------------------------------------------------------
+test('signatureProfileName: GB -> GB Local', () => {
+  expect(signatureProfileName('GB')).toBe('GB Local');
+});
+
+test('signatureProfileName: CN -> Origin CN', () => {
+  expect(signatureProfileName('CN')).toBe('Origin CN');
+});
+
+test('signatureProfileName: US,DE -> Origin US,DE', () => {
+  expect(signatureProfileName('US,DE')).toBe('Origin US,DE');
+});
+
+// ---------------------------------------------------------------------------
+// syncSignatureProfiles (end-to-end mock-admin test)
+// ---------------------------------------------------------------------------
+describe('syncSignatureProfiles', () => {
+  // Fake store: GB warehouses product 1, CN warehouses product 2.
+  // Routes: GB->GB free (freight 0); CN->DE has freight 9.83; GB->DE and CN->GB have no route.
+  const storeOf = (memberships: Map<string, string[]>, routes: Record<string, LogisticsRoute | null>) => ({
+    listSignatureMemberships: async () => memberships,
+    getLogisticsRoute: async (from: string, to: string, _staleness: number) =>
+      routes[`${from}|${to}`] ?? null,
+  });
+
+  function makeAdmin() {
+    let profileCounter = 100;
+    const calls: { q: string; v: any }[] = [];
+    const admin = vi.fn().mockImplementation((q: string, v: any) => {
+      calls.push({ q, v });
+      // readDeliveryConfig: anonymous query with profileLocationGroups + methodDefinitions
+      // Discriminate on methodDefinitions (not present in pawscoutGbLocalGroups)
+      if (q.includes('profileLocationGroups') && q.includes('methodDefinitions')) {
+        return Promise.resolve({
+          deliveryProfiles: { edges: [{
+            node: {
+              id: 'gid://shopify/DeliveryProfile/1',
+              name: 'General Profile',
+              default: true,
+              profileLocationGroups: [{
+                locationGroup: {
+                  id: 'gid://shopify/DeliveryLocationGroup/9',
+                  locations: { nodes: [{ id: 'gid://shopify/Location/1', name: 'Main', address: { country: 'United Kingdom', countryCode: 'GB' } }] },
+                },
+                locationGroupZones: { edges: [] },
+              }],
+            },
+          }] },
+        });
+      }
+      // ensureSignatureProfile: pawscoutGbLocalGroups (find profile by name to decide create vs update)
+      if (q.includes('pawscoutGbLocalGroups')) {
+        // No existing signature profiles found -> always create
+        return Promise.resolve({ deliveryProfiles: { edges: [] } });
+      }
+      // deliveryProfileCreate -> return a fresh profile id
+      if (q.includes('deliveryProfileCreate')) {
+        const id = `gid://shopify/DeliveryProfile/${++profileCounter}`;
+        return Promise.resolve({ deliveryProfileCreate: { profile: { id, name: v?.profile?.name ?? '' }, userErrors: [] } });
+      }
+      // PROFILE_MEMBERS_QUERY: no current members for any profile
+      if (q.includes('profileItems')) {
+        return Promise.resolve({ deliveryProfile: { profileItems: { edges: [] } } });
+      }
+      // PRODUCT_VARIANTS_QUERY: one variant per product
+      if (q.includes('nodes(ids')) {
+        const variantMap: Record<string, string> = {
+          'gid://shopify/Product/1': 'gid://shopify/ProductVariant/11',
+          'gid://shopify/Product/2': 'gid://shopify/ProductVariant/22',
+        };
+        return Promise.resolve({
+          nodes: (v.ids as string[]).map((id: string) => ({
+            id,
+            variants: { nodes: variantMap[id] ? [{ id: variantMap[id] }] : [] },
+          })),
+        });
+      }
+      // UPDATE_PROFILE_MUTATION (membership reconcile)
+      if (q.includes('deliveryProfileUpdate')) {
+        return Promise.resolve({ deliveryProfileUpdate: { profile: { id: v?.id }, userErrors: [] } });
+      }
+      return Promise.resolve({});
+    });
+    return { admin, calls };
+  }
+
+  it('creates one profile per signature, zones correct, variants associated', async () => {
+    const { admin, calls } = makeAdmin();
+    const memberships = new Map<string, string[]>([
+      ['GB', ['gid://shopify/Product/1']],
+      ['CN', ['gid://shopify/Product/2']],
+    ]);
+    const routes: Record<string, LogisticsRoute | null> = {
+      'GB|GB': routeRow('GB', 'GB', 0),
+      'GB|DE': null,
+      'CN|GB': null,
+      'CN|DE': routeRow('CN', 'DE', 9.83),
+    };
+    const result = await syncSignatureProfiles(
+      admin as any,
+      storeOf(memberships, routes),
+      { servedCountries: ['GB', 'DE'], fx: 0.8, handlingGbp: 0, stalenessHours: 72 }
+    );
+
+    // Two profiles created (GB and CN)
+    expect(result.profiles).toHaveLength(2);
+
+    const gbEntry = result.profiles.find((p) => p.sig === 'GB')!;
+    expect(gbEntry).toBeDefined();
+    expect(gbEntry.zones).toBe(1);
+    expect(gbEntry.added).toBe(1);
+    expect(gbEntry.profileId).toBeTruthy();
+
+    const cnEntry = result.profiles.find((p) => p.sig === 'CN')!;
+    expect(cnEntry).toBeDefined();
+    expect(cnEntry.zones).toBe(1);
+    expect(cnEntry.added).toBe(1);
+    expect(cnEntry.profileId).toBeTruthy();
+
+    // GB profile named 'GB Local', CN profile named 'Origin CN'
+    const createCalls = calls.filter((c) => c.q.includes('deliveryProfileCreate'));
+    expect(createCalls).toHaveLength(2);
+
+    const gbCreate = createCalls.find((c) => c.v.profile.name === 'GB Local')!;
+    expect(gbCreate).toBeDefined();
+    const gbZones = gbCreate.v.profile.locationGroupsToCreate[0].zonesToCreate;
+    expect(gbZones).toHaveLength(1);
+    expect(gbZones[0].name).toBe('GB');
+    expect(gbZones[0].methodDefinitionsToCreate[0].rateDefinition.price.amount).toBe('0.00');
+
+    const cnCreate = createCalls.find((c) => c.v.profile.name === 'Origin CN')!;
+    expect(cnCreate).toBeDefined();
+    const cnZones = cnCreate.v.profile.locationGroupsToCreate[0].zonesToCreate;
+    expect(cnZones).toHaveLength(1);
+    expect(cnZones[0].name).toBe('DE');
+    expect(cnZones[0].methodDefinitionsToCreate[0].rateDefinition.price.amount).toBe('7.86');
+    // CN has no GB route so no GB zone
+    expect(cnZones.find((z: any) => z.name === 'GB')).toBeUndefined();
+
+    // Both profiles use location id from config
+    expect(gbCreate.v.profile.locationGroupsToCreate[0].locationsToAdd).toEqual(['gid://shopify/Location/1']);
+    expect(cnCreate.v.profile.locationGroupsToCreate[0].locationsToAdd).toEqual(['gid://shopify/Location/1']);
+
+    // Membership updates: each product's variant should be associated
+    const updateCalls = calls.filter((c) => c.q.includes('deliveryProfileUpdate'));
+    expect(updateCalls).toHaveLength(2);
+    const associatedVariants = updateCalls.flatMap((c) => c.v.profile.variantsToAssociate ?? []);
+    expect(associatedVariants).toContain('gid://shopify/ProductVariant/11');
+    expect(associatedVariants).toContain('gid://shopify/ProductVariant/22');
+  });
+
+  it('skips a signature with no fulfillable zones (no profile created, zones:0 in result)', async () => {
+    const { admin, calls } = makeAdmin();
+    // CN has no routes to any served country
+    const memberships = new Map<string, string[]>([
+      ['CN', ['gid://shopify/Product/2']],
+    ]);
+    const routes: Record<string, LogisticsRoute | null> = {
+      'CN|GB': null,
+      'CN|DE': null,
+    };
+    const result = await syncSignatureProfiles(
+      admin as any,
+      storeOf(memberships, routes),
+      { servedCountries: ['GB', 'DE'], fx: 0.8, handlingGbp: 0, stalenessHours: 72 }
+    );
+    expect(result.profiles).toHaveLength(1);
+    expect(result.profiles[0]).toEqual({ sig: 'CN', profileId: '', added: 0, removed: 0, zones: 0 });
+    // No create or update mutations were called
+    const createCalls = calls.filter((c) => c.q.includes('deliveryProfileCreate'));
+    expect(createCalls).toHaveLength(0);
+  });
 });
