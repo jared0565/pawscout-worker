@@ -122,6 +122,14 @@ export interface Fulfil {
   // is true, which the owner flips ONLY after a live GB-item-to-UK checkout is
   // verified at GBP 0 (Phase 1 cutover). Default OFF (absent) = never claimed.
   gbFreeUkLive?: boolean;
+  // shipFx: conservative USD->GBP multiplier applied to CJ freight to set the GBP shipping
+  // charge (default 0.82). shipHandlingGbp: flat handling added per shipment (default 0).
+  shipFx?: number;
+  shipHandlingGbp?: number;
+  // servedCountries: ISO-2 destinations the signature delivery profiles offer zones for.
+  // Default = LOGISTICS_DESTINATIONS (the set the CJ logistics sync already populates); a
+  // destination with no real route is omitted per-signature (checkout blocked there).
+  servedCountries?: string[];
 }
 
 /**

@@ -10,7 +10,8 @@ import { sendReorderReminders } from './retention';
 import { enableTracking, getPrimaryLocationId, productInventoryItems, setInventoryQuantities, setSupplierMetafields, updateVariantPrices, updateVariantCosts, MAX_TRACKED_QTY } from './proxy/inventory';
 import { retailPriceGbp, landedCostGbp } from './pricing';
 import { parseDaysRange, resolveLogistics, doorToDoorBand, formatBand, bandFromQuote } from './logistics';
-import { syncGbProfileMembership } from './shipping/delivery-profile';
+import { syncSignatureProfiles } from './shipping/delivery-profile';
+import { resolveShipConfig } from './shipping/ship-config';
 import { LOGISTICS_DESTINATIONS } from './inbox/freight';
 import type { CjDetail } from './cj';
 import { LlmClient, curateProduct, pickHeroImage, rewriteDescription, type Curation, type HeroPick } from './llm';
@@ -918,13 +919,16 @@ export async function runDailyMaintenance(env: Env): Promise<void> {
         await syncStoreInventory(store, cj, admin, cfg);
         await refillCollections(store, cj, admin, cfg, { curate, pickHero }); // promote-from-warehouse (floor 8, target 12)
         await reconcileDraftLinks(store, admin); // flip ACTIVE seed drafts to imported
-        // Origin-aware shipping (Phase 1): reconcile GB Local delivery-profile membership
-        // (free UK on GB-warehoused items). Best-effort - until the worker token is re-minted
-        // with read_shipping/write_shipping (Task 8 cutover) this logs ACCESS_DENIED and skips.
+        // Unified nearest-warehouse shipping: reconcile per-origin-signature delivery profiles
+        // (free UK on GB items; per-route nearest-warehouse pricing elsewhere). Best-effort -
+        // needs read_shipping/write_shipping on the worker token.
         try {
-          const gb = await syncGbProfileMembership(admin, store);
-          if (gb.added || gb.removed) console.log(`GB Local profile reconcile: +${gb.added} / -${gb.removed} members`);
-        } catch (e) { console.warn(`GB Local profile sync skipped: ${(e as Error).message}`); }
+          const sc = resolveShipConfig(cfg.fulfil);
+          const l = resolveLogistics(cfg.fulfil);
+          const r = await syncSignatureProfiles(admin, store, { servedCountries: sc.servedCountries, fx: sc.fx, handlingGbp: sc.handlingGbp, stalenessHours: l.stalenessHours });
+          const moved = r.profiles.filter((p) => p.added || p.removed);
+          if (moved.length) console.log(`signature profiles reconcile: ${moved.map((p) => `${p.sig} +${p.added}/-${p.removed}`).join(', ')}`);
+        } catch (e) { console.warn(`signature profile sync skipped: ${(e as Error).message}`); }
         await reconcileAddonVisibility(store, admin, cfg); // align hidden/visible add-ons to the toggle
         // Retention reorder reminders (1.3) - DORMANT unless explicitly enabled;
         // even then only emails marketing-SUBSCRIBED customers. Best-effort.
