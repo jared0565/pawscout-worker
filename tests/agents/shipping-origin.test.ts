@@ -1,10 +1,11 @@
 /**
- * Task 3: resolveItemShipping - item + nearest origin + verified-GB + representative vid
+ * resolveItemShipping - item + nearest-warehouse route + verified-GB + representative vid
  *
  * Tests:
  * 1. Band-math assertion: EU origin -> EU dest (same country) has shorter max than CN -> same dest.
- * 2. resolveItemShipping: URL/handle signal -> verified GB warehouse + in-market origin.
- * 3. resolveItemShipping: free-text confident match -> best-stocked origin when dest not stocked.
+ * 2. resolveItemShipping: URL/handle signal -> verified GB warehouse + in-market origin (resolved).
+ * 3. resolveItemShipping: free-text confident match -> resolved when a route exists, unfulfillable
+ *    when no route exists for the destination.
  * 4. resolveItemShipping: returns null on ambiguous/no item or missing warehouse data.
  */
 import { describe, it, expect, vi } from 'vitest';
@@ -63,10 +64,12 @@ function fakeCtx(opts: {
   resolveLine?: { status: string; variant?: { productId: string } };
   linksByPid?: Record<string, { cj_pid: string }>;
   warehouse?: Record<string, { detail: string }>;
+  routes?: Record<string, any>;
 }) {
   const links = opts.links ?? {};
   const linksByPid = opts.linksByPid ?? {};
   const warehouse = opts.warehouse ?? {};
+  const routes = opts.routes ?? {};
 
   // Build a fake product edge with a single available variant.
   const productEdge = (productId: string, variantId: string) => ({
@@ -129,11 +132,15 @@ function fakeCtx(opts: {
     getWarehouseProduct: vi.fn().mockImplementation((cjPid: string) =>
       Promise.resolve(warehouse[cjPid] ?? null)
     ),
+    getLogisticsRoute: vi.fn().mockImplementation((from: string, to: string) =>
+      Promise.resolve(routes[`${from}->${to}`] ?? null)
+    ),
   };
 
   return {
     admin: adminFn,
     store,
+    cj: null,
     cfg: { fulfil: {} },
     thread: { subject: '', contact_email: 'test@example.com' },
     conversation: opts.latestMessage ?? 'How long to GB?',
@@ -144,28 +151,48 @@ function fakeCtx(opts: {
 }
 
 describe('resolveItemShipping', () => {
-  it('URL/handle signal -> verified GB warehouse + in-market origin', async () => {
+  it('URL/handle signal -> verified GB warehouse + in-market origin (resolved)', async () => {
     const detail = JSON.stringify({ origins: { GB: 40, CN: 500 }, variants: [{ vid: 'V1', stock: 40 }] });
     const ctx = fakeCtx({
       latestMessage: 'how long to deliver activepaw.co.uk/products/cat-fountain to me?',
       links: { 'cat-fountain': { cj_pid: 'P1' } },
       warehouse: { P1: { detail } },
+      // Provide both routes; GB->GB is nearest (smaller transit) so it wins.
+      routes: {
+        'GB->GB': { from_country: 'GB', to_country: 'GB', transit_min: 2, transit_max: 5, channel: 'Domestic', aging_raw: '2-5', synced_at: '' },
+        'CN->GB': { from_country: 'CN', to_country: 'GB', transit_min: 8, transit_max: 15, channel: 'CJPacket', aging_raw: '8-15', synced_at: '' },
+      },
     });
     const r = await resolveItemShipping(ctx, 'GB');
-    expect(r).toEqual({ chosenOrigin: 'GB', cjPid: 'P1', repVid: 'V1', verifiedGbWarehouse: true });
+    expect(r).toMatchObject({ kind: 'resolved', chosenOrigin: 'GB', cjPid: 'P1', repVid: 'V1', verifiedGbWarehouse: true });
   });
 
-  it('free-text confident match -> best-stocked origin when dest not stocked', async () => {
+  it('free-text confident match -> resolved via nearest route when route exists, unfulfillable when no route', async () => {
     const detail = JSON.stringify({ origins: { CN: 500 }, variants: [{ vid: 'V2', stock: 500 }] });
-    const ctx = fakeCtx({
+
+    // (a) CN->US route exists: result is resolved with CN as origin.
+    const ctxWithRoute = fakeCtx({
       latestMessage: 'shipping time for the dog ball launcher?',
       resolveLine: { status: 'resolved', variant: { productId: 'gid://shopify/Product/2' } },
       linksByPid: { 'gid://shopify/Product/2': { cj_pid: 'P2' } },
       warehouse: { P2: { detail } },
+      routes: {
+        'CN->US': { from_country: 'CN', to_country: 'US', transit_min: 5, transit_max: 11, channel: 'LuWei', aging_raw: '5-11', synced_at: '' },
+      },
     });
-    const r = await resolveItemShipping(ctx, 'US');
-    expect(r?.chosenOrigin).toBe('CN');
-    expect(r?.verifiedGbWarehouse).toBe(false);
+    const rResolved = await resolveItemShipping(ctxWithRoute, 'US');
+    expect(rResolved).toMatchObject({ kind: 'resolved', chosenOrigin: 'CN', verifiedGbWarehouse: false });
+
+    // (b) No route to US in matrix and cj:null: result is unfulfillable, not a fabricated band.
+    const ctxNoRoute = fakeCtx({
+      latestMessage: 'shipping time for the dog ball launcher?',
+      resolveLine: { status: 'resolved', variant: { productId: 'gid://shopify/Product/2' } },
+      linksByPid: { 'gid://shopify/Product/2': { cj_pid: 'P2' } },
+      warehouse: { P2: { detail } },
+      routes: {}, // no CN->US matrix row; cj is null so no live fallback
+    });
+    const rUnfulfillable = await resolveItemShipping(ctxNoRoute, 'US');
+    expect(rUnfulfillable).toMatchObject({ kind: 'unfulfillable', dest: 'US' });
   });
 
   it('returns null when the free-text match is ambiguous (2+ products)', async () => {
@@ -226,8 +253,11 @@ describe('resolveItemShipping', () => {
       latestMessage: 'activepaw.co.uk/products/cat-bed',
       links: { 'cat-bed': { cj_pid: 'P4' } },
       warehouse: { P4: { detail } },
+      routes: {
+        'GB->GB': { from_country: 'GB', to_country: 'GB', transit_min: 2, transit_max: 5, channel: 'Domestic', aging_raw: '2-5', synced_at: '' },
+      },
     });
     const r = await resolveItemShipping(ctx, 'GB');
-    expect(r).toEqual({ chosenOrigin: 'GB', cjPid: 'P4', repVid: null, verifiedGbWarehouse: true });
+    expect(r).toMatchObject({ kind: 'resolved', chosenOrigin: 'GB', cjPid: 'P4', repVid: null, verifiedGbWarehouse: true });
   });
 });

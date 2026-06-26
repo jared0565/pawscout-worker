@@ -90,16 +90,22 @@ describe('PROD PROOF: per-item nearest-warehouse shipping (real D1 data, deploye
     expect(line).toBe('This item is held in a UK fulfilment location. Delivery to the UK: estimated 4-12 days.');
   });
 
-  // CASE B - SAME GB-warehoused item shipped to a NON-GB dest (US): the dest gate
-  // SUPPRESSES the UK line even though verifiedGbWarehouse is true. cj=null -> no GB->US
-  // matrix row -> conservative CN->US fallback band (7-23). Origin is never named.
-  it('B) real GB-warehoused product -> US: NO UK line (dest gate), time-only US band', async () => {
+  // CASE B - SAME GB-warehoused item shipped to a NON-GB dest (US): the product has
+  // origins:{GB:85} only. There is NO GB->US row in the matrix and cj=null, so there is
+  // no real route to the US. The new honest behavior is UNFULFILLABLE (no ship, no band),
+  // NOT a borrowed CN->US band. The borrowed 7-23 days band was fabricated and has been removed.
+  it('B) real GB-warehoused product -> US: no route to US -> honest unfulfillable, no day band', async () => {
     const ctx = ctxFor({ msg: `How long to the US for ${GB_URL}?`, handle: 'interactive-wood-sisal-cat-turntable-scratching-post', cjPid: '2059208486801747970', detail: GB_TURNTABLE });
     const g = await shippingAgent.ground(ctx);
     expect(g.confident).toBe(true);
-    expect((g.data as any).verifiedGb).toBe(false); // verifiedGbWarehouse true, but dest !== 'GB'
+    // The unfulfillable grounding carries { unfulfillable: true, label } not verifiedGb.
+    expect((g.data as any).unfulfillable).toBe(true);
     const line = shippingAgent.deterministicAppendix(g)!;
-    expect(line).toBe('Delivery to the United States: estimated 7-23 days.');
+    // Honest no-ship sentence, verbatim from deterministicAppendix unfulfillable branch.
+    expect(line).toBe('We are not able to ship this item to the United States at the moment.');
+    // No day band in the unfulfillable line.
+    expect(line).not.toMatch(/\d+\s*-\s*\d+\s*days/);
+    // Origin is never named.
     expect(line).not.toMatch(/UK fulfilment|fulfilment location|warehouse|China|CN/i);
   });
 
