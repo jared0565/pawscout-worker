@@ -393,3 +393,58 @@ describe('listGbWarehousedShopifyProductIds (GB Local profile membership source)
     expect(other).toEqual([]);
   });
 });
+
+describe('listSignatureMemberships (Phase B origin-signature grouping)', () => {
+  it('groups imported+linked products by sorted comma-joined origin signature, excluding zero-stock origins', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+
+    // Product A: GB only -> signature "GB"
+    await store.putWarehouseProduct({ cjPid: 'A1', category: 'pet-toys', title: 'GB Toy', detailJson: JSON.stringify({ origins: { GB: 5 } }), priceUsd: 10, listedNum: 5, stock: 5 });
+    await store.putLink({ cjPid: 'A1', state: 'imported', shopifyProductId: 'gid://shopify/Product/100', handle: 'gb-toy' });
+
+    // Product B: CN only -> signature "CN"
+    await store.putWarehouseProduct({ cjPid: 'B1', category: 'pet-toys', title: 'CN Toy', detailJson: JSON.stringify({ origins: { CN: 100 } }), priceUsd: 8, listedNum: 5, stock: 100 });
+    await store.putLink({ cjPid: 'B1', state: 'imported', shopifyProductId: 'gid://shopify/Product/200', handle: 'cn-toy' });
+
+    // Product C: CN+US (unordered in detail) -> signature "CN,US"
+    await store.putWarehouseProduct({ cjPid: 'C1', category: 'pet-toys', title: 'Multi Toy', detailJson: JSON.stringify({ origins: { US: 3, CN: 50 } }), priceUsd: 12, listedNum: 5, stock: 53 });
+    await store.putLink({ cjPid: 'C1', state: 'imported', shopifyProductId: 'gid://shopify/Product/300', handle: 'multi-toy' });
+
+    // Excluded: draft state
+    await store.putWarehouseProduct({ cjPid: 'D1', category: 'pet-toys', title: 'Draft Toy', detailJson: JSON.stringify({ origins: { GB: 2 } }), priceUsd: 9, listedNum: 5, stock: 2 });
+    await store.putLink({ cjPid: 'D1', state: 'draft', shopifyProductId: 'gid://shopify/Product/400', handle: 'draft-toy' });
+
+    // Excluded: zero-stock origin (CN=0 means CN does not count; US=5 -> signature "US")
+    await store.putWarehouseProduct({ cjPid: 'E1', category: 'pet-toys', title: 'ZeroSrc Toy', detailJson: JSON.stringify({ origins: { CN: 0, US: 5 } }), priceUsd: 9, listedNum: 5, stock: 5 });
+    await store.putLink({ cjPid: 'E1', state: 'imported', shopifyProductId: 'gid://shopify/Product/500', handle: 'zerosrc-toy' });
+
+    const map = await store.listSignatureMemberships();
+
+    // Core assertions: three distinct signatures from A, B, C
+    expect(map.get('GB')).toEqual(['gid://shopify/Product/100']);
+    expect(map.get('CN')).toEqual(['gid://shopify/Product/200']);
+    expect(map.get('CN,US')).toEqual(['gid://shopify/Product/300']);
+
+    // Draft product must not appear in any signature
+    const allIds = [...map.values()].flat();
+    expect(allIds).not.toContain('gid://shopify/Product/400');
+
+    // Zero-stock origin correctly excluded from CN,US: E1 should be "US" only
+    expect(map.get('US')).toEqual(['gid://shopify/Product/500']);
+  });
+
+  it('returns an empty Map when no products are imported+linked', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const map = await store.listSignatureMemberships();
+    expect(map.size).toBe(0);
+  });
+
+  it('is shop-scoped (no cross-tenant leakage)', async () => {
+    const a = new TenantStore(env.DB, SHOP);
+    await a.putWarehouseProduct({ cjPid: 'X1', category: 'pet-toys', title: 'Scoped Toy', detailJson: JSON.stringify({ origins: { GB: 10 } }), priceUsd: 10, listedNum: 5, stock: 10 });
+    await a.putLink({ cjPid: 'X1', state: 'imported', shopifyProductId: 'gid://shopify/Product/999', handle: 'scoped-toy' });
+
+    const other = await new TenantStore(env.DB, 'b.myshopify.com').listSignatureMemberships();
+    expect(other.size).toBe(0);
+  });
+});

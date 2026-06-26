@@ -611,6 +611,36 @@ export class TenantStore {
     return (rs.results ?? []).map((r) => r.id);
   }
 
+  /**
+   * Groups imported, shopify-linked products by their origin signature.
+   * The signature is the sorted comma-joined set of origin codes whose stock
+   * value in the warehouse_products.detail origins map is greater than zero
+   * (e.g. "CN", "GB", "CN,US"). Returns a Map from signature to the list of
+   * Shopify product ids that share that signature. Shop-scoped.
+   */
+  async listSignatureMemberships(): Promise<Map<string, string[]>> {
+    const rs = await this.db.prepare(
+      `SELECT l.shopify_product_id AS id, je.key AS origin
+         FROM product_links l
+         JOIN warehouse_products w ON w.shop = l.shop AND w.cj_pid = l.cj_pid
+         JOIN json_each(json_extract(w.detail, '$.origins')) je
+         WHERE l.shop = ?1 AND l.state = 'imported' AND l.shopify_product_id IS NOT NULL
+           AND CAST(je.value AS INTEGER) > 0`
+    ).bind(this.shop).all<{ id: string; origin: string }>();
+    const perProduct = new Map<string, Set<string>>();
+    for (const r of rs.results ?? []) {
+      if (!perProduct.has(r.id)) perProduct.set(r.id, new Set());
+      perProduct.get(r.id)!.add(r.origin);
+    }
+    const bySig = new Map<string, string[]>();
+    for (const [id, origins] of perProduct) {
+      const sig = [...origins].sort().join(',');
+      if (!bySig.has(sig)) bySig.set(sig, []);
+      bySig.get(sig)!.push(id);
+    }
+    return bySig;
+  }
+
   // --- W1: PS-local product warehouse ---
 
   async putWarehouseProduct(p: {
