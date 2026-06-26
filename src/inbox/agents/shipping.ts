@@ -1,7 +1,7 @@
 // src/inbox/agents/shipping.ts
 import type { CategoryAgent, AgentContext, Grounding } from './types';
 import { isShippingIntent, deriveDestinationCountry, countryLabel, buildShippingLine } from '../freight';
-import { resolveLogistics, doorToDoorBand, parseDaysRange, formatBand, type DayRange, type LogisticsRoute } from '../../logistics';
+import { resolveLogistics, doorToDoorBand, formatBand, type DayRange, type LogisticsRoute } from '../../logistics';
 import { resolveLineRequest } from '../../shopify-catalog';
 import { resolveNearestRoute } from '../../shipping/nearest-route';
 import type { CjDetail } from '../../cj';
@@ -11,9 +11,6 @@ const SHIP_DEFAULT_ORIGIN = 'CN'; // Used for the ask-for-item fallback band onl
 export type ItemShippingResult =
   | { kind: 'resolved'; chosenOrigin: string; route: LogisticsRoute; cjPid: string; repVid: string | null; verifiedGbWarehouse: boolean }
   | { kind: 'unfulfillable'; dest: string; cjPid: string; verifiedGbWarehouse: boolean };
-
-// Keep the old interface name as an alias for backwards-compat in case anything else relies on it
-export type ItemShipping = ItemShippingResult;
 
 const HANDLE_RE = /(?:activepaw\.co\.uk)?\/products\/([a-z0-9][a-z0-9-]{2,})/i;
 
@@ -63,24 +60,13 @@ export async function resolveItemShipping(ctx: AgentContext, dest: string): Prom
     const l = resolveLogistics(ctx.cfg.fulfil);
 
     // Candidate routes: the matrix row for each stocking warehouse to dest.
+    // Candidates come ONLY from D1 (ctx.store.getLogisticsRoute). No live-CJ fallback:
+    // the live freight API can return routes the static delivery-profile sync never emits
+    // (sync reads D1 only), so a live fallback breaks the quote==checkout invariant.
     const candidates: LogisticsRoute[] = [];
     for (const oc of originCodes) {
       const r = await ctx.store.getLogisticsRoute(oc, dest, l.stalenessHours);
       if (r) candidates.push(r);
-    }
-    // Live CJ fallback (only when the matrix has nothing): probe each origin to dest.
-    if (!candidates.length && ctx.cj && repVid) {
-      for (const oc of originCodes) {
-        try {
-          const opts = await ctx.cj.freightQuoteAging(repVid, oc, dest);
-          const cheapest = opts.filter((o: { days: string }) => o.days).sort((a: { priceUsd: number }, b: { priceUsd: number }) => a.priceUsd - b.priceUsd)[0];
-          const band = cheapest ? parseDaysRange(cheapest.days) : null;
-          if (cheapest && band) candidates.push({
-            from_country: oc, to_country: dest, channel: '', transit_min: band.min, transit_max: band.max,
-            aging_raw: cheapest.days, freight_cost_usd: cheapest.priceUsd, synced_at: new Date().toISOString(),
-          });
-        } catch (e) { console.warn(`ship cj probe ${oc}->${dest} failed: ${(e as Error).message}`); }
-      }
     }
 
     const resolved = resolveNearestRoute(candidates);

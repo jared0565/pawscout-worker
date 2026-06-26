@@ -507,6 +507,81 @@ describe('syncSignatureProfiles', () => {
     expect(associatedVariants).toContain('gid://shopify/ProductVariant/22');
   });
 
+  it('I1 safety net: restrictGbProfileToUk runs at start of every sync, stripping EU zone from existing GB Local profile', async () => {
+    // This is the I1 regression guard. If buildSignatureZones returns [] for 'GB' (D1 row
+    // absent), ensureSignatureProfile is never called and the old GB Local profile (with EU
+    // zones) stays armed, letting GB items be bought in the EU. The safety net at the top of
+    // syncSignatureProfiles calls restrictGbProfileToUk regardless, stripping those zones.
+    //
+    // Setup: GB Local profile exists with a UK zone and a stale EU zone. Memberships has
+    // only 'CN' (no 'GB' signature) so the membership loop never touches the GB profile.
+    // The ONLY deliveryProfileUpdate carrying zonesToDelete should be the restrict call.
+    const calls: { q: string; v: any }[] = [];
+    const admin = vi.fn().mockImplementation((q: string, v: any) => {
+      calls.push({ q, v });
+      // readDeliveryConfig (has profileLocationGroups + methodDefinitions)
+      if (q.includes('profileLocationGroups') && q.includes('methodDefinitions')) {
+        return Promise.resolve({
+          deliveryProfiles: { edges: [{
+            node: {
+              id: 'gid://shopify/DeliveryProfile/1', name: 'General Profile', default: true,
+              profileLocationGroups: [{
+                locationGroup: { id: 'gid://shopify/DeliveryLocationGroup/9', locations: { nodes: [{ id: 'gid://shopify/Location/1', name: 'Main', address: { country: 'United Kingdom', countryCode: 'GB' } }] } },
+                locationGroupZones: { edges: [] },
+              }],
+            },
+          }] },
+        });
+      }
+      // restrictGbProfileToUk + ensureSignatureProfile both use pawscoutGbLocalGroups.
+      // Return GB Local with UK + EU zones so restrict has something to delete.
+      if (q.includes('pawscoutGbLocalGroups')) {
+        return Promise.resolve({
+          deliveryProfiles: { edges: [{
+            node: {
+              id: 'gid://shopify/DeliveryProfile/55', name: 'GB Local',
+              profileLocationGroups: [{
+                locationGroup: { id: 'gid://shopify/DeliveryLocationGroup/20' },
+                locationGroupZones: { edges: [
+                  { node: { zone: { id: 'z-uk', name: 'United Kingdom', countries: [{ code: { countryCode: 'GB', restOfWorld: false } }] } } },
+                  { node: { zone: { id: 'z-eu', name: 'Europe', countries: [{ code: { countryCode: 'DE', restOfWorld: false } }] } } },
+                ] },
+              }],
+            },
+          }] },
+        });
+      }
+      if (q.includes('deliveryProfileCreate')) {
+        return Promise.resolve({ deliveryProfileCreate: { profile: { id: 'gid://shopify/DeliveryProfile/101' }, userErrors: [] } });
+      }
+      if (q.includes('profileItems')) {
+        return Promise.resolve({ deliveryProfile: { profileItems: { edges: [] } } });
+      }
+      if (q.includes('nodes(ids')) {
+        return Promise.resolve({ nodes: (v.ids as string[]).map((id: string) => ({ id, variants: { nodes: [] } })) });
+      }
+      if (q.includes('deliveryProfileUpdate')) {
+        return Promise.resolve({ deliveryProfileUpdate: { profile: { id: v?.id }, userErrors: [] } });
+      }
+      return Promise.resolve({});
+    });
+
+    const memberships = new Map<string, string[]>([['CN', ['gid://shopify/Product/2']]]);
+    const routes: Record<string, LogisticsRoute | null> = { 'CN|DE': routeRow('CN', 'DE', 9.83), 'CN|GB': null };
+    const store = {
+      listSignatureMemberships: async () => memberships,
+      getLogisticsRoute: async (from: string, to: string) => routes[`${from}|${to}`] ?? null,
+    };
+    await syncSignatureProfiles(admin as any, store, { servedCountries: ['GB', 'DE'], fx: 0.8, handlingGbp: 0, stalenessHours: 72 });
+
+    // The restrict call must have issued a deliveryProfileUpdate with zonesToDelete containing z-eu.
+    const restrictUpdate = calls.find((c) =>
+      c.q.includes('deliveryProfileUpdate') &&
+      (c.v.profile?.locationGroupsToUpdate ?? []).some((lg: any) => (lg.zonesToDelete ?? []).includes('z-eu'))
+    );
+    expect(restrictUpdate).toBeDefined();
+  });
+
   it('skips a signature with no fulfillable zones (no profile created, zones:0 in result)', async () => {
     const { admin, calls } = makeAdmin();
     // CN has no routes to any served country

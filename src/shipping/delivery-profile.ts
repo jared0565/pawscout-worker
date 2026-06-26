@@ -428,6 +428,12 @@ export async function syncSignatureProfiles(
   },
   opts: { servedCountries: string[]; fx: number; handlingGbp: number; stalenessHours: number }
 ): Promise<{ profiles: { sig: string; profileId: string; added: number; removed: number; zones: number }[] }> {
+  // Safety net: always restrict the GB Local profile to UK-only at the start of each run.
+  // If buildSignatureZones returns [] (D1 row absent/stale), the GB signature is skipped
+  // and ensureSignatureProfile never runs - but the old profile (with EU zones) stays armed.
+  // Restricting here ensures the profile is UK-only even when D1 is empty for that run.
+  try { await restrictGbProfileToUk(admin); } catch (e) { console.warn(`gb restrict (safety net) failed: ${(e as Error).message}`); }
+
   const cfg = await readDeliveryConfig(admin);
   const locationIds = cfg.locations.map((l) => l.id);
   const memberships = await store.listSignatureMemberships();
@@ -464,6 +470,7 @@ export async function syncSignatureProfiles(
         .map((e: any) => e?.node?.product?.id)
         .filter(Boolean)
     );
+    if (current.size >= 250) console.warn(`signature ${sig}: profile membership at/over the 250 read cap; some members may be unpaged`);
     const desired = new Set(productIds);
 
     const toAdd = [...desired].filter((id) => !current.has(id));

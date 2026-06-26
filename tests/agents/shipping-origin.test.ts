@@ -247,6 +247,24 @@ describe('resolveItemShipping', () => {
     expect(r).toBeNull();
   });
 
+  it('D1-empty + non-null ctx.cj -> unfulfillable; freightQuoteAging NOT called (quote==checkout guard)', async () => {
+    // C1 regression guard: the live-CJ fallback was deleted. Even with a non-null ctx.cj
+    // that would return a valid route, the result must be unfulfillable when D1 has no row.
+    const detail = JSON.stringify({ origins: { CN: 500 }, variants: [{ vid: 'V99', stock: 500 }] });
+    const ctx = fakeCtx({
+      latestMessage: 'activepaw.co.uk/products/rope-toy',
+      links: { 'rope-toy': { cj_pid: 'P99' } },
+      warehouse: { P99: { detail } },
+      routes: {}, // no CN->US row in D1
+    });
+    // Inject a spy that WOULD return a valid route if the fallback were still live.
+    const spy = vi.fn().mockResolvedValue([{ days: '5-11', priceUsd: 10 }]);
+    (ctx as any).cj = { freightQuoteAging: spy };
+    const r = await resolveItemShipping(ctx, 'US');
+    expect(r).toMatchObject({ kind: 'unfulfillable', dest: 'US' });
+    expect(spy).not.toHaveBeenCalled();
+  });
+
   it('repVid is null when detail has no variants', async () => {
     const detail = JSON.stringify({ origins: { GB: 40 } }); // no variants key
     const ctx = fakeCtx({
