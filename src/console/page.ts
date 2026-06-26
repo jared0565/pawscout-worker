@@ -386,7 +386,7 @@ export function consolePage(apiKey: string): Response {
       <div id="agents-list"></div>
     </div>
     <div id="gb-shipping-panel" class="agents-panel" style="margin-top:14px">
-      <div class="agents-panel__head">GB Local shipping <span class="sub">(free UK delivery on GB-warehoused items)</span></div>
+      <div class="agents-panel__head">Shipping profiles <span class="sub">(free UK delivery on GB-warehoused items)</span></div>
       <p id="gb-profile-status" class="sub" style="margin:6px 0">Loading&hellip;</p>
       <div class="toggle-wrap" style="margin-top:8px">
         <input type="checkbox" id="gb-free-uk-chk" data-gb-free-uk onchange="saveGbFreeUk()">
@@ -394,7 +394,7 @@ export function consolePage(apiKey: string): Response {
       </div>
       <p class="sub" style="margin:8px 0 0">Tradeoff: free UK shipping on a GB item gives up about GBP 4.99 per GB UK order; the item margin absorbs it as a conversion lever.</p>
       <div style="margin-top:10px">
-        <button type="button" id="gb-sync-btn" onclick="syncGbLocal()">Create / sync GB Local profile now</button>
+        <button type="button" id="gb-sync-btn" onclick="syncGbLocal()">Sync shipping profiles now</button>
         <span id="gb-sync-msg" class="sub"></span>
       </div>
       <pre id="gb-sync-result" class="sub" style="white-space:pre-wrap;margin:6px 0 0"></pre>
@@ -1031,11 +1031,12 @@ async function syncGbLocal(){
   try{
     var r=await api('/gb-sync',{});
     if(r&&r.ok){
-      var res=r.result||{};
-      setMsg('gb-sync-msg', res.profileId?'Synced ✓':'No change','ok');
-      el('gb-sync-result').textContent='GB isolated in its own zone: '+r.gbIsolated
-        +'\\nzones: '+((r.zoneNames||[]).join(', '))
-        +'\\nprofile: '+(res.profileId||'(none - refused or unchanged)')+'  added: '+res.added+'  removed: '+res.removed;
+      var res=r.result||{}; var profs=res.profiles||[];
+      var anyChanged=profs.some(function(p){return p.added||p.removed;});
+      setMsg('gb-sync-msg', profs.length&&anyChanged?'Synced':'No change','ok');
+      var lines=profs.map(function(p){return p.sig+': '+p.zones+' zones (+'+p.added+'/-'+p.removed+')';});
+      lines.push('GB isolated in its own zone: '+r.gbIsolated);
+      el('gb-sync-result').textContent=lines.join('\\n');
     } else { setMsg('gb-sync-msg','Failed: '+((r&&r.error)||'unknown error'),'no'); }
   }catch(e){ setMsg('gb-sync-msg','Failed: '+errText(e),'no'); }
   finally{ b.disabled=false; }

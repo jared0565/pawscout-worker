@@ -126,7 +126,7 @@ export const shippingAgent: CategoryAgent = {
           : '';
         return {
           confident: false, quotesFigure: false,
-          facts: `The customer asked about delivery time but did not name a specific product.${softAnchor} Then ASK which item (or a product link) so you can confirm the exact time. You MAY also state the flat shipping cost and returns policy from the store facts.`,
+          facts: `The customer asked about delivery time but did not name a specific product.${softAnchor} Then ASK which item (or a product link) so you can confirm the exact time. You MAY tell the customer the exact shipping cost for their destination is shown at checkout; do NOT state a specific shipping figure. You MAY state the returns policy from the store facts.`,
           data: { askForItem: true }
         };
       }
@@ -154,7 +154,7 @@ export const shippingAgent: CategoryAgent = {
       const gbFreeUk = verifiedGb && ctx.cfg.fulfil?.gbFreeUkLive === true;
       return {
         confident: true, quotesFigure: true,
-        facts: `Destination ${countryLabel(dest)}. A grounded delivery estimate line is appended after your reply, so do NOT state a delivery time yourself. You MAY state the flat shipping cost and returns policy. Do not add a sign-off; the appended line follows your text.`,
+        facts: `Destination ${countryLabel(dest)}. A grounded delivery estimate line is appended after your reply, so do NOT state a delivery time yourself. You MAY tell the customer the exact shipping cost for their destination is calculated and shown at checkout before payment - do NOT state a specific shipping figure. You MAY state the returns policy. Do not add a sign-off; the appended line follows your text.`,
         data: { label: countryLabel(dest), band, verifiedGb, gbFreeUk }
       };
     } catch (e) {
@@ -163,7 +163,7 @@ export const shippingAgent: CategoryAgent = {
     }
   },
   promptFragment(): string {
-    return 'You are the shipping and returns specialist. If they ask whether we deliver to a place, the FIRST word is Yes (or No) followed by the place. If a grounded delivery line is appended, do not state a time yourself, just confirm delivery and that a tracking link follows on dispatch. If they ask about cost, state the flat rate from the facts. Keep returns answers to the relevant policy only. Any reassurance comes after the answer, never softening it. Never name the dispatch country. Example: "Yes, we deliver to the US, including NYC. You will get a tracking link the moment it is on its way."';
+    return 'You are the shipping and returns specialist. If they ask whether we deliver to a place, the FIRST word is Yes (or No) followed by the place. If a grounded delivery line is appended, do not state a time yourself, just confirm delivery and that a tracking link follows on dispatch. If they ask about cost, tell the customer the exact shipping cost for their destination is calculated and shown at checkout before payment - do NOT state a specific shipping figure yourself. Keep returns answers to the relevant policy only. Any reassurance comes after the answer, never softening it. Never name the dispatch country. Example: "Yes, we deliver to the US, including NYC. You will get a tracking link the moment it is on its way."';
   },
   deterministicAppendix(g: Grounding): string | null {
     const d = g.data as { label: string; band?: DayRange; verifiedGb?: boolean; gbFreeUk?: boolean; unfulfillable?: boolean } | undefined;
@@ -189,5 +189,5 @@ export const shippingAgent: CategoryAgent = {
 
 function notConfident(): Grounding { return { confident: false, facts: '', quotesFigure: false }; }
 function notConfidentFacts(_dest: string): Grounding {
-  return { confident: false, quotesFigure: false, facts: `Destination mentioned but no grounded delivery estimate is available; hedge on time (say we confirm the timeframe when dispatched) but you MAY still state the flat shipping cost and returns policy from the store facts.` };
+  return { confident: false, quotesFigure: false, facts: `Destination mentioned but no grounded delivery estimate is available; hedge on time (say we confirm the timeframe when dispatched). You MAY tell the customer the exact shipping cost for their destination is shown at checkout; do NOT state a specific shipping figure. You MAY state the returns policy from the store facts.` };
 }
