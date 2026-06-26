@@ -27,7 +27,9 @@ import { searchBackfill, normalizeKeyword } from './proxy/search';
 import { LlmClient, classifyKeyword, curateProduct, pickHeroImage, rewriteDescription } from './llm';
 import { buildPreview, getDetailPreferWarehouse, curateDetailImages, confirmAndImport, reconcileAddonVisibility, reconcileHeroImages, reconcileDescriptions, reconcileCategories } from './proxy/import';
 import { makeAdminGraphql } from './shopify-admin';
-import { readDeliveryConfig, syncGbProfileMembership } from './shipping/delivery-profile';
+import { readDeliveryConfig, syncSignatureProfiles } from './shipping/delivery-profile';
+import { resolveShipConfig } from './shipping/ship-config';
+import { resolveLogistics } from './logistics';
 import { runDailyMaintenance, syncStoreInventory, refillCollections } from './jobs';
 import { runOrderPipeline, runOrderPipelineForShop } from './fulfil-run';
 import { parseOrderWebhook, validateOrder, FULFIL_GRACE_MINUTES } from './fulfil';
@@ -126,7 +128,10 @@ app.post('/api/gb-sync', async (c) => {
     const allZones = cfg.locationGroups.flatMap((g) => g.zones);
     const gbZones = allZones.filter((z) => z.countryCodes.includes('GB'));
     const gbIsolated = gbZones.length > 0 && gbZones.every((z) => z.countryCodes.length === 1 && z.countryCodes[0] === 'GB');
-    const result = await syncGbProfileMembership(admin, store);
+    const tcfg = await store.getConfig();
+    const sc = resolveShipConfig(tcfg?.fulfil);
+    const l = resolveLogistics(tcfg?.fulfil);
+    const result = await syncSignatureProfiles(admin, store, { servedCountries: sc.servedCountries, fx: sc.fx, handlingGbp: sc.handlingGbp, stalenessHours: l.stalenessHours });
     return c.json({ ok: true, gbIsolated, gbZones: gbZones.map((z) => ({ name: z.name, countries: z.countryCodes })), zoneNames: allZones.map((z) => z.name), defaultProfileId: cfg.defaultProfileId, result });
   } catch (e) {
     return c.json({ ok: false, error: (e as Error).message }, 500);
