@@ -658,9 +658,13 @@ Ensure the nightly logistics sync already populates `cj_logistics` for every `(o
 
 Prevents the sellable-but-unfulfillable international orders that delivery-profile zone omission cannot stop on this store (Managed Markets backfill). Product lists come from `listSignatureMemberships` (Task 6, built). The 4 origin-signatures (verified remote D1 2026-06-26): `CN`(49), `GB`(40), `US`(2), `CN,US`(1). The 4 active markets: UK (primary, merchant-managed), European Union (Managed, 27 regions), United States and Canada (Managed, one market for both), Australia (Managed).
 
+**Exclusion rule (general):** exclude a product from EVERY market in which none of that market's countries is a fulfillable destination; keep it where >= 1 country is fulfillable.
+
+**Confirm the full market set at execution:** the analysis assumes the 4 markets observed at checkout (UK, EU, US/CA, AU), but the Managed Markets considerations doc lists prepaid duties for "Australia, New Zealand, Norway, Singapore, UK, and EU" - so there may be additional managed regions (we could not enumerate: `read_markets` denied). Apply the rule against the ACTUAL market list the owner sees in admin (or via `read_markets`), not a hardcoded set.
+
 **Fulfillability matrix (CJ source-verified 2026-06-26):**
-- `GB`-only (40): fulfillable to **UK only** (GB warehouse is domestic-only; GB->US/DE/CA all 0 CJ options). Exclude from EU + US/CA + AU. CLEAN, no residual.
-- `US`-only (2 supplements): fulfillable to **US only** (US->US works; US->CA/GB/DE all 0). Exclude from EU + AU. RESIDUAL: the market is "United States and Canada" - cannot exclude from Canada alone, so they stay sellable-but-unfulfillable to Canada (owner decision; 2 niche products, one titled "Do Not Sell On Amazon").
+- `GB`-only (40): fulfillable to **UK only** (GB warehouse is domestic-only; GB->US/DE/CA all 0 CJ options). Exclude from EVERY non-UK market (observed: EU + US/CA + AU). CLEAN, no residual.
+- `US`-only (2 supplements): fulfillable to **US only** (US->US works; **US->GB / US->CA / US->DE all 0**). Unfulfillable to every non-US destination INCLUDING the **UK primary market**. Exclude from **UK + EU + AU** (+ any other non-US market); keep only in US/CA. Wrinkles: (a) Canada residual (US/CA is one market, cannot exclude CA alone); (b) excluding from the **UK primary merchant-managed market** may use a different mechanism than a managed market - VERIFY. **Recommended: delist/archive these 2** (unpublish from the Online Store channel - removes them from all markets at once; they are fulfillable only to the US, a secondary market here, one titled "Do Not Sell On Amazon").
 - `CN`(49) + `CN,US`(1): fulfillable to all markets via the CN hub. Stay everywhere. RESIDUAL: ~3-4 CN ingestibles/supplements have per-country EU gaps (verified: Dog Itching Relief CN->FR=0 & CN->NL=0; Dog Vitamin Supplement & Prebiotics Snacks CN->NL=0). EU is one managed market (27 regions) - cannot exclude only FR/NL (owner decision).
 
 ### Task 11: Owner-admin exclusion + linchpin proof (GATED, owner-driven; NO scope/code change)
@@ -670,15 +674,17 @@ This path needs no API scope add, no re-auth, no worker code. The first exclusio
 - [ ] **Step 1 (owner): create a market catalog for each managed market.** Shopify admin > Markets (or Settings > Markets) > Catalogs > Create catalog, one for **European Union**, **United States and Canada**, and **Australia**. (If the store is on the new Markets experience, the path is Markets > [market] > manage product availability / catalog.)
 - [ ] **Step 2 (linchpin - do ONE product first):** in the **European Union** catalog, exclude ONE GB-only product (e.g. `interactive-wood-sisal-cat-turntable-scratching-post` or any from the GB-only list). Use "Exclude from catalog".
 - [ ] **Step 3 (linchpin proof - Playwright, can be agent-driven):** with that GB product, drive a real checkout to a **German** address -> it MUST be blocked / removed from cart; and a CN product to Germany -> it MUST still sell. **GATE:** if a merchant catalog cannot be created/attached to the EU managed market, or the excluded GB product still checks out to Germany, STOP - the per-market-availability approach is invalid here; return to the design doc before touching the other products.
-- [ ] **Step 4 (owner, after the linchpin passes): bulk-exclude the rest via CSV.** Markets > Catalogs > select catalog > Export > Export CSV; set `Published=FALSE` for the excluded handles; re-import. Per market:
-  - **European Union** catalog: exclude the **40 GB-only + 2 US-only** products.
-  - **Australia** catalog: exclude the **40 GB-only + 2 US-only** products.
-  - **United States and Canada** catalog: exclude the **40 GB-only** products only (keep the 2 US-only - US is their only fulfillable market).
+- [ ] **Step 4a (owner, decide the 2 US-only first):** recommended **delist/archive** them (unpublish from the Online Store channel - one step, removes them from all markets, avoids the UK-primary and Canada wrinkles). If kept for US sales, they must be excluded from UK + EU + AU and kept only in US/CA.
+- [ ] **Step 4b (owner, after the linchpin passes): bulk-exclude via CSV.** Markets > Catalogs > select catalog > Export > Export CSV; set `Published=FALSE` for the excluded handles; re-import. Per market (against the confirmed full market list):
+  - **United Kingdom** (primary): exclude the 2 US-only IF kept (verify the primary-market exclusion mechanism). GB-only stay.
+  - **European Union** catalog: exclude the **40 GB-only** + 2 US-only (if kept).
+  - **Australia** catalog: exclude the **40 GB-only** + 2 US-only (if kept).
+  - **United States and Canada** catalog: exclude the **40 GB-only** only (keep the 2 US-only - US is their only fulfillable market).
   - Leave the 49 CN + 1 CN+US products in every catalog (the CN hub fulfills them).
 - [ ] **Step 5 (owner decisions - the residuals, document the choice):**
-  - US-only -> Canada exposure: accept+monitor / delist the 2 supplements / split US and CA into separate markets if Managed Markets permits.
+  - US-only -> UK + Canada exposure: delist (recommended) / keep-in-US-only + accept the Canada residual / split US and CA into separate markets if Managed Markets permits.
   - CN ingestibles -> FR/NL exposure: accept+monitor / pull the ~3-4 affected CN health products from the entire EU market / defer to a CarrierService plan upgrade.
-- [ ] **Step 6 (verify):** Playwright re-checkout a sample per market (GB product -> EU/AU/CA all blocked; CN product -> EU/AU/CA all sell; US-only -> US sells, EU/AU blocked). Record results.
+- [ ] **Step 6 (verify):** Playwright re-checkout a sample per market: GB product -> UK sells, EU/AU/CA all blocked; CN product -> every market sells; US-only -> US sells, **UK/EU/AU all blocked (or delisted)**. The US-only->UK case is mandatory - omitting it is how the UK exposure would ship silently. Record results.
 
 **To make the owner's bulk edit easy (optional helper):** the worker can emit the exact GB-only / US-only handle+SKU lists via `listSignatureMemberships`, or one-shot-tag the products (e.g. `origin:gb-only`) via the Admin API (`write_products`, already granted) so the owner can filter the catalog editor by tag. This is a read/label helper, not the exclusion itself.
 
