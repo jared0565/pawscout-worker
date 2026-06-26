@@ -1,5 +1,11 @@
 import { describe, it, expect, test, vi } from 'vitest';
-import { readDeliveryConfig, ensureGbLocalProfile, syncGbProfileMembership, computeNonUkZoneIds, restrictGbProfileToUk, type DeliveryZone } from '../../src/shipping/delivery-profile';
+import { readDeliveryConfig, ensureGbLocalProfile, syncGbProfileMembership, computeNonUkZoneIds, restrictGbProfileToUk, buildSignatureZones, type DeliveryZone } from '../../src/shipping/delivery-profile';
+import type { LogisticsRoute } from '../../src/logistics';
+
+const routeRow = (from: string, to: string, freight: number | null): LogisticsRoute => ({
+  from_country: from, to_country: to, channel: '', transit_min: 5, transit_max: 9,
+  aging_raw: '5-9', freight_cost_usd: freight, synced_at: '2026-06-26T00:00:00Z',
+});
 
 // A representative live-shaped deliveryProfiles payload: one default profile with a
 // GB location group holding three zones (UK / Europe / Rest of World) each with a
@@ -333,4 +339,17 @@ describe('restrictGbProfileToUk', () => {
     expect(r.profileId).toBe('gid://shopify/DeliveryProfile/55');
     expect(mutated).toBe(false);
   });
+});
+
+test('buildSignatureZones: GB-only signature yields a UK zone only', () => {
+  const lookup = (o: string, d: string) => (o === 'GB' && d === 'GB' ? routeRow('GB','GB',0) : null);
+  const zones = buildSignatureZones(['GB'], ['GB','DE','US'], lookup, 0.8, 0);
+  expect(zones.map((z) => z.name)).toEqual(['GB']);
+  expect(zones[0].countries).toEqual([{ code: 'GB', includeAllProvinces: true }]);
+});
+
+test('buildSignatureZones: CN signature omits a destination with no route (FR)', () => {
+  const lookup = (o: string, d: string) => (o === 'CN' && d === 'DE' ? routeRow('CN','DE',9.83) : null);
+  const zones = buildSignatureZones(['CN'], ['DE','FR'], lookup, 0.8, 0);
+  expect(zones.map((z) => z.name)).toEqual(['DE']); // FR omitted (unfulfillable)
 });

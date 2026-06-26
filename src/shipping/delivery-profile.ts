@@ -10,6 +10,9 @@
 // reader never throws, so a malformed payload yields an empty config (the caller then
 // no-ops) rather than a crash.
 import type { AdminGraphql } from '../shopify-admin';
+import { resolveNearestRoute } from './nearest-route';
+import { freightUsdToGbp } from './pricing';
+import type { LogisticsRoute } from '../logistics';
 
 export interface DeliveryRate {
   name: string;
@@ -344,4 +347,24 @@ export async function syncGbProfileMembership(
   }
 
   return { added: toAdd.length, removed: toRemove.length, profileId };
+}
+
+export function buildSignatureZones(
+  originCodes: string[], servedCountries: string[],
+  lookup: (origin: string, dest: string) => LogisticsRoute | null,
+  fx: number, handlingGbp: number
+) {
+  const zones: { name: string; countries: { code: string; includeAllProvinces: true }[]; methodDefinitionsToCreate: unknown[] }[] = [];
+  for (const dest of servedCountries) {
+    const candidates = originCodes.map((o) => lookup(o, dest)).filter((r): r is LogisticsRoute => !!r);
+    const res = resolveNearestRoute(candidates);
+    if (!res.fulfillable) continue; // omit -> checkout blocked there (honest)
+    const amount = freightUsdToGbp(res.nearest.route.freight_cost_usd, fx, handlingGbp);
+    zones.push({
+      name: dest,
+      countries: [{ code: dest, includeAllProvinces: true }],
+      methodDefinitionsToCreate: [{ name: 'Standard', rateDefinition: { price: { amount, currencyCode: 'GBP' } } }],
+    });
+  }
+  return zones;
 }
