@@ -25,7 +25,8 @@ const HANDLE_RE = /(?:activepaw\.co\.uk)?\/products\/([a-z0-9][a-z0-9-]{2,})/i;
  *   1. Product URL/handle in the message (strongest - does not require admin)
  *   2. Confident single free-text catalog match via resolveLineRequest
  *
- * Route resolution: D1 matrix first, CJ live fallback if matrix has nothing.
+ * Route resolution: D1 matrix ONLY (the same rows the checkout profile sync reads),
+ * so the agent never declares a destination shippable that checkout would block.
  * NEVER borrows a route for a different destination (quote == checkout).
  */
 export async function resolveItemShipping(ctx: AgentContext, dest: string): Promise<ItemShippingResult | null> {
