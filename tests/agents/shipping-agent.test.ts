@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { deriveDestinationCountry } from '../../src/inbox/freight';
-import { shippingAgent } from '../../src/inbox/agents/shipping';
+import { shippingAgent, resolveItemShipping } from '../../src/inbox/agents/shipping';
 
 describe('Texas fix', () => {
   it('resolves a US state name to US', () => {
@@ -164,9 +164,10 @@ describe('shippingAgent.ground', () => {
     expect(line).not.toMatch(/China|CN|UK/);
   });
 
-  // Item resolves but NO band is obtainable anywhere (no matrix route, CJ returns no usable
-  // option) -> notConfidentFacts hedge. This is the real degrade-don't-fabricate path.
-  it('resolved item but no band (matrix null + empty CJ quote) -> hedges via notConfidentFacts', async () => {
+  // Item resolves but NO route exists to the destination (no matrix row, CJ returns empty)
+  // -> unfulfillable: honest "not able to ship to X", never fabricate a delivery time.
+  // This pins the new behavior: item identified + no route => unfulfillable, NOT a hedge.
+  it('resolved item but no route (matrix null + empty CJ quote) -> unfulfillable: honest cannot-ship, no day band', async () => {
     const detail = JSON.stringify({
       origins: { CN: 500 },
       variants: [{ vid: 'V6', stock: 500 }],
@@ -180,8 +181,35 @@ describe('shippingAgent.ground', () => {
       cj,
     });
     const g = await shippingAgent.ground(ctx);
+    // Unfulfillable: confident=true (we ARE certain we cannot ship), no day band
+    expect(g.confident).toBe(true);
+    expect((g.data as any)?.unfulfillable).toBe(true);
+    expect((g.data as any)?.askForItem).toBeUndefined();
+    expect(g.facts).toMatch(/not able to ship|cannot ship/i);
+    // appendix must be honest no-ship, never a "\d+-\d+ days" band
+    const appendix = shippingAgent.deterministicAppendix(g);
+    expect(appendix).toBeTruthy();
+    expect(appendix).not.toMatch(/\d+-\d+ days/);
+  });
+
+  // notConfidentFacts is still reachable: item resolves with a route, but the matrix row
+  // has null transit_min/max (doorToDoorBand returns null) and no CJ quote available.
+  it('resolved item, matrix route has null transit -> notConfidentFacts hedge (no band, no unfulfillable)', async () => {
+    const detail = JSON.stringify({
+      origins: { CN: 500 },
+      variants: [{ vid: 'V9', stock: 500 }],
+    });
+    const nullTransitRoute = { from_country: 'CN', to_country: 'US', channel: 'c', transit_min: null, transit_max: null, aging_raw: '', synced_at: new Date().toISOString() };
+    const ctx = fakeCtx({
+      msg: 'how long to deliver activepaw.co.uk/products/cat-brush to the US?',
+      links: { 'cat-brush': { cj_pid: 'P9' } },
+      warehouse: { P9: { detail } },
+      routes: { 'CN->US': nullTransitRoute },
+      cj: null,
+    });
+    const g = await shippingAgent.ground(ctx);
     expect(g.confident).toBe(false);
-    expect((g.data as any)?.askForItem).toBeUndefined(); // item DID resolve - this is the hedge, not ask-for-item
+    expect((g.data as any)?.askForItem).toBeUndefined();
     expect(g.facts).toMatch(/hedge on time/i);
     expect(shippingAgent.deterministicAppendix(g)).toBeNull();
   });
@@ -233,6 +261,69 @@ describe('shippingAgent.ground', () => {
     const line = shippingAgent.deterministicAppendix(g)!;
     expect(line).toMatch(/Delivery to France/);
     expect(line).not.toMatch(/UK fulfilment|fulfilment location/i);
+  });
+});
+
+describe('resolveItemShipping - nearest-warehouse resolver', () => {
+  // Task 4+5: GB-only product to FR with only a GB->GB matrix row and no CJ fallback
+  // -> unfulfillable (must NOT borrow a GB->GB row for a non-GB destination).
+  it('GB-only product + GB->GB matrix row only + cj:null + dest=FR -> unfulfillable', async () => {
+    const detail = JSON.stringify({
+      origins: { GB: 40 },
+      variants: [{ vid: 'VA', stock: 40 }],
+    });
+    const ctx = fakeCtx({
+      msg: 'how long to activepaw.co.uk/products/gb-toy to France?',
+      links: { 'gb-toy': { cj_pid: 'PGB' } },
+      warehouse: { PGB: { detail } },
+      routes: { 'GB->GB': { from_country: 'GB', to_country: 'GB', channel: 'c', transit_min: 1, transit_max: 2, aging_raw: '1-2', synced_at: new Date().toISOString() } },
+      cj: null,
+    });
+    const result = await resolveItemShipping(ctx, 'FR');
+    expect(result).not.toBeNull();
+    expect(result!.kind).toBe('unfulfillable');
+    expect((result as any).dest).toBe('FR');
+  });
+
+  // Task 4+5: CN-only product to DE with a CN->DE matrix row -> resolved, chosenOrigin=CN.
+  it('CN-only product + CN->DE matrix row + dest=DE -> resolved, chosenOrigin=CN', async () => {
+    const detail = JSON.stringify({
+      origins: { CN: 500 },
+      variants: [{ vid: 'VB', stock: 500 }],
+    });
+    const ctx = fakeCtx({
+      msg: 'how long to activepaw.co.uk/products/cn-toy to Germany?',
+      links: { 'cn-toy': { cj_pid: 'PCN' } },
+      warehouse: { PCN: { detail } },
+      routes: { 'CN->DE': { from_country: 'CN', to_country: 'DE', channel: 'c', transit_min: 6, transit_max: 12, aging_raw: '6-12', synced_at: new Date().toISOString() } },
+      cj: null,
+    });
+    const result = await resolveItemShipping(ctx, 'DE');
+    expect(result).not.toBeNull();
+    expect(result!.kind).toBe('resolved');
+    expect((result as any).chosenOrigin).toBe('CN');
+  });
+
+  // Task 4+5: unfulfillable -> ground() returns confident=true + honest no-ship + no day band in appendix.
+  it('ground() unfulfillable case: confident=true, facts says not able to ship, appendix has no day band', async () => {
+    const detail = JSON.stringify({
+      origins: { GB: 40 },
+      variants: [{ vid: 'VC', stock: 40 }],
+    });
+    const ctx = fakeCtx({
+      msg: 'how long to activepaw.co.uk/products/gb-collar to France?',
+      links: { 'gb-collar': { cj_pid: 'PGC' } },
+      warehouse: { PGC: { detail } },
+      routes: {},
+      cj: null,
+    });
+    const g = await shippingAgent.ground(ctx);
+    expect(g.confident).toBe(true);
+    expect((g.data as any)?.unfulfillable).toBe(true);
+    expect(g.facts).toMatch(/not able to ship|cannot ship/i);
+    const appendix = shippingAgent.deterministicAppendix(g)!;
+    expect(appendix).toBeTruthy();
+    expect(appendix).not.toMatch(/\d+-\d+ days/);
   });
 });
 

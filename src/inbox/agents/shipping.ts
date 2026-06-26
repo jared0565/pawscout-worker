@@ -1,33 +1,37 @@
 // src/inbox/agents/shipping.ts
 import type { CategoryAgent, AgentContext, Grounding } from './types';
 import { isShippingIntent, deriveDestinationCountry, countryLabel, buildShippingLine } from '../freight';
-import { resolveLogistics, doorToDoorBand, bandFromQuote, formatBand, type DayRange } from '../../logistics';
+import { resolveLogistics, doorToDoorBand, parseDaysRange, formatBand, type DayRange, type LogisticsRoute } from '../../logistics';
 import { resolveLineRequest } from '../../shopify-catalog';
+import { resolveNearestRoute } from '../../shipping/nearest-route';
 import type { CjDetail } from '../../cj';
 
-const SHIP_DEFAULT_ORIGIN = 'CN'; // Conservative default; overridden when real warehouse data exists
+const SHIP_DEFAULT_ORIGIN = 'CN'; // Used for the ask-for-item fallback band only; per-item routing uses resolveNearestRoute
 
-export interface ItemShipping {
-  chosenOrigin: string;
-  cjPid: string;
-  repVid: string | null;
-  verifiedGbWarehouse: boolean;
-}
+export type ItemShippingResult =
+  | { kind: 'resolved'; chosenOrigin: string; route: LogisticsRoute; cjPid: string; repVid: string | null; verifiedGbWarehouse: boolean }
+  | { kind: 'unfulfillable'; dest: string; cjPid: string; verifiedGbWarehouse: boolean };
+
+// Keep the old interface name as an alias for backwards-compat in case anything else relies on it
+export type ItemShipping = ItemShippingResult;
 
 const HANDLE_RE = /(?:activepaw\.co\.uk)?\/products\/([a-z0-9][a-z0-9-]{2,})/i;
 
 /**
  * Resolve the inquiry's product (high-confidence only) plus its nearest in-stock
- * warehouse for `dest` and a representative variant id for a live CJ quote.
- * Fully guarded: any miss returns null and the caller keeps the generic/hedge path.
+ * warehouse route for `dest` via the nearest-warehouse resolver.
+ * Returns null when no confident product is identified (ask-for-item path unchanged).
+ * Returns unfulfillable when a product IS identified but no real route to dest exists.
+ * Returns resolved with the chosen origin and route when a real route is found.
  *
  * Signal priority:
  *   1. Product URL/handle in the message (strongest - does not require admin)
  *   2. Confident single free-text catalog match via resolveLineRequest
  *
- * Origin priority: in-market (dest country) if stocked -> best-stocked origin.
+ * Route resolution: D1 matrix first, CJ live fallback if matrix has nothing.
+ * NEVER borrows a route for a different destination (quote == checkout).
  */
-export async function resolveItemShipping(ctx: AgentContext, dest: string): Promise<ItemShipping | null> {
+export async function resolveItemShipping(ctx: AgentContext, dest: string): Promise<ItemShippingResult | null> {
   try {
     // Signal 1: a product URL/handle in the message (strongest, most specific).
     let cjPid: string | null = null;
@@ -53,21 +57,35 @@ export async function resolveItemShipping(ctx: AgentContext, dest: string): Prom
     if (!origins || Object.keys(origins).length === 0) return null;
 
     const verifiedGbWarehouse = (origins.GB ?? 0) > 0;
-    // Nearest in-stock warehouse: in-market (no customs) if stocked, else best-stocked.
-    let chosenOrigin: string;
-    if ((origins[dest] ?? 0) > 0) {
-      chosenOrigin = dest;
-    } else {
-      let best = ''; let bestQty = 0;
-      for (const [cc, qty] of Object.entries(origins)) if (qty > bestQty) { best = cc; bestQty = qty; }
-      if (!best) return null;
-      chosenOrigin = best;
-    }
-    // Representative vid: prefer an in-stock variant; else the first listed.
+    const originCodes = Object.keys(origins).filter((c) => (origins[c] ?? 0) > 0);
     const variants = detail.variants ?? [];
     const repVid = (variants.find((v) => (v.stock ?? 0) > 0) ?? variants[0])?.vid ?? null;
+    const l = resolveLogistics(ctx.cfg.fulfil);
 
-    return { chosenOrigin, cjPid, repVid, verifiedGbWarehouse };
+    // Candidate routes: the matrix row for each stocking warehouse to dest.
+    const candidates: LogisticsRoute[] = [];
+    for (const oc of originCodes) {
+      const r = await ctx.store.getLogisticsRoute(oc, dest, l.stalenessHours);
+      if (r) candidates.push(r);
+    }
+    // Live CJ fallback (only when the matrix has nothing): probe each origin to dest.
+    if (!candidates.length && ctx.cj && repVid) {
+      for (const oc of originCodes) {
+        try {
+          const opts = await ctx.cj.freightQuoteAging(repVid, oc, dest);
+          const cheapest = opts.filter((o: { days: string }) => o.days).sort((a: { priceUsd: number }, b: { priceUsd: number }) => a.priceUsd - b.priceUsd)[0];
+          const band = cheapest ? parseDaysRange(cheapest.days) : null;
+          if (cheapest && band) candidates.push({
+            from_country: oc, to_country: dest, channel: '', transit_min: band.min, transit_max: band.max,
+            aging_raw: cheapest.days, freight_cost_usd: cheapest.priceUsd, synced_at: new Date().toISOString(),
+          });
+        } catch (e) { console.warn(`ship cj probe ${oc}->${dest} failed: ${(e as Error).message}`); }
+      }
+    }
+
+    const resolved = resolveNearestRoute(candidates);
+    if (!resolved.fulfillable) return { kind: 'unfulfillable', dest, cjPid, verifiedGbWarehouse };
+    return { kind: 'resolved', chosenOrigin: resolved.nearest.origin, route: resolved.nearest.route, cjPid, repVid, verifiedGbWarehouse };
   } catch {
     return null;
   }
@@ -113,16 +131,18 @@ export const shippingAgent: CategoryAgent = {
         };
       }
 
-      // Resolve the band for the item's nearest warehouse: D1 matrix first, live CJ fallback.
-      let band = doorToDoorBand(await ctx.store.getLogisticsRoute(item.chosenOrigin, dest, l.stalenessHours), l);
-      if (!band && ctx.cj && item.repVid) {
-        try {
-          const opts = await ctx.cj.freightQuoteAging(item.repVid, item.chosenOrigin, dest);
-          const cheapest = opts.filter((o: { days: string }) => o.days).sort((a: { priceUsd: number }, b: { priceUsd: number }) => a.priceUsd - b.priceUsd)[0];
-          if (cheapest) band = bandFromQuote(cheapest.days, item.chosenOrigin, dest, l);
-        } catch (e) { console.warn(`ship cj fallback failed: ${(e as Error).message}`); }
+      // Product identified but no real route to this destination exists.
+      if (item.kind === 'unfulfillable') {
+        const label = countryLabel(dest);
+        return {
+          confident: true, quotesFigure: false,
+          facts: `We are not able to ship this item to ${label} at the moment. Apologise briefly and offer to help the customer find an alternative product that we can ship to them. Do NOT state a delivery time.`,
+          data: { unfulfillable: true, label }
+        };
       }
-      if (!band) band = doorToDoorBand(await ctx.store.getLogisticsRoute(SHIP_DEFAULT_ORIGIN, dest, l.stalenessHours), l);
+
+      // item.kind === 'resolved': compute the band from the nearest-warehouse route.
+      const band = doorToDoorBand(item.route, l);
       if (!band) return notConfidentFacts(dest);
 
       const verifiedGb = item.verifiedGbWarehouse && dest === 'GB';
@@ -146,8 +166,13 @@ export const shippingAgent: CategoryAgent = {
     return 'You are the shipping and returns specialist. If they ask whether we deliver to a place, the FIRST word is Yes (or No) followed by the place. If a grounded delivery line is appended, do not state a time yourself, just confirm delivery and that a tracking link follows on dispatch. If they ask about cost, state the flat rate from the facts. Keep returns answers to the relevant policy only. Any reassurance comes after the answer, never softening it. Never name the dispatch country. Example: "Yes, we deliver to the US, including NYC. You will get a tracking link the moment it is on its way."';
   },
   deterministicAppendix(g: Grounding): string | null {
-    const d = g.data as { label: string; band: DayRange; verifiedGb?: boolean; gbFreeUk?: boolean } | undefined;
+    const d = g.data as { label: string; band?: DayRange; verifiedGb?: boolean; gbFreeUk?: boolean; unfulfillable?: boolean } | undefined;
     if (!g.confident || !d) return null;
+    // Unfulfillable: honest no-ship sentence, never a day band.
+    if (d.unfulfillable) {
+      return `We are not able to ship this item to ${d.label} at the moment.`;
+    }
+    if (!d.band) return null;
     const line = buildShippingLine(d.label, d.band); // "Delivery to X: estimated A-B days."
     if (!line) return null;
     // Per-SKU, source-verified UK fulfilment wording (never blanket, never for non-GB stock).
