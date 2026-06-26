@@ -355,18 +355,6 @@ export function signatureProfileName(sig: string): string {
   return sig === 'GB' ? GB_LOCAL_PROFILE_NAME : `Origin ${sig}`;
 }
 
-/** Query to list all delivery profiles with their location-group ids and zone ids.
- *  Reuses the same shape as GB_LOCAL_GROUPS_QUERY so the mock discriminates on
- *  'pawscoutGbLocalGroups' first. */
-const SIGNATURE_GROUPS_QUERY = `query pawscoutGbLocalGroups {
-  deliveryProfiles(first: 30) {
-    edges { node { id name profileLocationGroups {
-      locationGroup { id }
-      locationGroupZones(first: 50) { edges { node { zone { id } } } }
-    } } }
-  }
-}`;
-
 /** Ensure a signature delivery profile exists (create) or refresh its zones (found-path
  *  recreate). Returns the profile id. Throws on userErrors.
  *
@@ -378,7 +366,7 @@ async function ensureSignatureProfile(
   admin: AdminGraphql,
   opts: { name: string; locationIds: string[]; zones: unknown[] }
 ): Promise<string> {
-  const root = (await admin(SIGNATURE_GROUPS_QUERY)) as any;
+  const root = (await admin(GB_LOCAL_GROUPS_QUERY)) as any;
   const existing = ((root?.deliveryProfiles?.edges ?? []) as any[])
     .map((e) => e?.node)
     .find((n) => n?.name === opts.name);
