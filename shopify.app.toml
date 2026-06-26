@@ -7,7 +7,7 @@ name = "PawScout"
 
 [access_scopes]
 # Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
-scopes = "write_inventory,read_inventory,read_locations,write_merchant_managed_fulfillment_orders,read_orders,read_products,write_products,read_publications,write_publications,write_draft_orders,read_customers,read_shipping,write_shipping"
+scopes = "write_inventory,read_inventory,read_locations,write_merchant_managed_fulfillment_orders,read_orders,read_products,write_products,read_publications,write_publications,write_draft_orders,read_customers,read_shipping,write_shipping,read_markets,write_markets"
 optional_scopes = [ ]
 use_legacy_install_flow = false
 
