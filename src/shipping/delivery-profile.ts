@@ -279,7 +279,10 @@ export async function restrictGbProfileToUk(admin: AdminGraphql): Promise<{ dele
 
   const dels = computeNonUkZoneIds(groups);
   if (!dels.length) return { deletedZoneIds: [], profileId: node.id };
-  const profile = { locationGroupsToUpdate: dels.map((d) => ({ id: d.locationGroupId, zonesToDelete: d.zoneIds })) };
+  // zonesToDelete is a TOP-LEVEL field on DeliveryProfileInput (a flat [ID!]), NOT a field on
+  // DeliveryProfileLocationGroupInput. Deleting the non-UK zones leaves the UK zone intact.
+  const zoneIds = dels.flatMap((d) => d.zoneIds);
+  const profile = { zonesToDelete: zoneIds };
   const res = (await admin(UPDATE_PROFILE_MUTATION, { id: node.id, profile })) as any;
   const errs = (res?.deliveryProfileUpdate?.userErrors ?? []) as { message?: string }[];
   if (errs.length) throw new Error(`restrictGbProfileToUk failed: ${errs.map((e) => e.message).join('; ')}`);
@@ -397,10 +400,13 @@ async function ensureSignatureProfile(
     .map((ze: any) => ze?.node?.zone?.id)
     .filter(Boolean);
 
+  // zonesToDelete is TOP-LEVEL on DeliveryProfileInput; zonesToCreate is on the location group.
+  // Delete the old zones and create the formula-fresh ones in one update (final state has the
+  // new zones, so the group is never left empty).
   const profile: Record<string, unknown> = {
+    zonesToDelete: existingZoneIds,
     locationGroupsToUpdate: [{
       id: locationGroupId,
-      zonesToDelete: existingZoneIds,
       zonesToCreate: opts.zones,
     }],
   };
@@ -408,6 +414,24 @@ async function ensureSignatureProfile(
   const errs = (res?.deliveryProfileUpdate?.userErrors ?? []) as { message?: string }[];
   if (errs.length) throw new Error(`deliveryProfileUpdate (zone recreate) failed: ${errs.map((e) => e.message).join('; ')}`);
   return existing.id;
+}
+
+/** Apply variant membership changes in batches of at most 250 (Shopify caps the
+ *  variantsToAssociate / variantsToDissociate arrays at 250 ids per deliveryProfileUpdate;
+ *  a 49-product signature can expand to ~300 variants). Each chunk is its own update call. */
+async function applyVariantMembership(
+  admin: AdminGraphql, profileId: string,
+  variantsToAssociate: string[], variantsToDissociate: string[]
+): Promise<void> {
+  const CHUNK = 250;
+  const calls: Record<string, unknown>[] = [];
+  for (let i = 0; i < variantsToAssociate.length; i += CHUNK) calls.push({ variantsToAssociate: variantsToAssociate.slice(i, i + CHUNK) });
+  for (let i = 0; i < variantsToDissociate.length; i += CHUNK) calls.push({ variantsToDissociate: variantsToDissociate.slice(i, i + CHUNK) });
+  for (const profile of calls) {
+    const res = (await admin(UPDATE_PROFILE_MUTATION, { id: profileId, profile })) as any;
+    const errs = (res?.deliveryProfileUpdate?.userErrors ?? []) as { message?: string }[];
+    if (errs.length) throw new Error(`deliveryProfileUpdate failed: ${errs.map((e) => e.message).join('; ')}`);
+  }
 }
 
 /**
@@ -482,15 +506,8 @@ export async function syncSignatureProfiles(
     if (toAdd.length || toRemove.length) {
       const variantsToAssociate = toAdd.length ? await resolveVariantIds(admin, toAdd) : [];
       const variantsToDissociate = toRemove.length ? await resolveVariantIds(admin, toRemove) : [];
-
-      const profile: Record<string, unknown> = {};
-      if (variantsToAssociate.length) profile.variantsToAssociate = variantsToAssociate;
-      if (variantsToDissociate.length) profile.variantsToDissociate = variantsToDissociate;
-
-      if (Object.keys(profile).length) {
-        const res = (await admin(UPDATE_PROFILE_MUTATION, { id: profileId, profile })) as any;
-        const errs = (res?.deliveryProfileUpdate?.userErrors ?? []) as { message?: string }[];
-        if (errs.length) throw new Error(`deliveryProfileUpdate failed: ${errs.map((e) => e.message).join('; ')}`);
+      if (variantsToAssociate.length || variantsToDissociate.length) {
+        await applyVariantMembership(admin, profileId, variantsToAssociate, variantsToDissociate);
         added = toAdd.length;
         removed = toRemove.length;
       }

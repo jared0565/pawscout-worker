@@ -320,9 +320,10 @@ describe('restrictGbProfileToUk', () => {
     expect(r.deletedZoneIds).not.toContain('z-uk');
     const upd = calls.find((c) => c.q.includes('deliveryProfileUpdate'))!;
     expect(upd).toBeDefined();
-    const lg = upd.v.profile.locationGroupsToUpdate[0];
-    expect(lg.zonesToDelete).toContain('z-eu');
-    expect(lg.zonesToDelete).not.toContain('z-uk');
+    // zonesToDelete is a TOP-LEVEL field on DeliveryProfileInput (not on the location group).
+    expect(upd.v.profile.zonesToDelete).toContain('z-eu');
+    expect(upd.v.profile.zonesToDelete).not.toContain('z-uk');
+    expect(upd.v.profile.locationGroupsToUpdate).toBeUndefined();
   });
 
   it('is idempotent: sends no update when only a UK zone exists', async () => {
@@ -507,6 +508,39 @@ describe('syncSignatureProfiles', () => {
     expect(associatedVariants).toContain('gid://shopify/ProductVariant/22');
   });
 
+  it('batches variant association into chunks of <=250 (Shopify array cap)', async () => {
+    const calls: { q: string; v: any }[] = [];
+    let pc = 100;
+    const VARIANTS = Array.from({ length: 294 }, (_, i) => `gid://shopify/ProductVariant/${i}`);
+    const admin = vi.fn().mockImplementation((q: string, v: any) => {
+      calls.push({ q, v });
+      if (q.includes('profileLocationGroups') && q.includes('methodDefinitions')) {
+        return Promise.resolve({ deliveryProfiles: { edges: [{ node: {
+          id: 'gid://shopify/DeliveryProfile/1', name: 'General Profile', default: true,
+          profileLocationGroups: [{ locationGroup: { id: 'gid://shopify/DeliveryLocationGroup/9', locations: { nodes: [{ id: 'gid://shopify/Location/1', name: 'Main', address: { country: 'United Kingdom', countryCode: 'GB' } }] } }, locationGroupZones: { edges: [] } }],
+        } }] } });
+      }
+      if (q.includes('pawscoutGbLocalGroups')) return Promise.resolve({ deliveryProfiles: { edges: [] } });
+      if (q.includes('deliveryProfileCreate')) return Promise.resolve({ deliveryProfileCreate: { profile: { id: `gid://shopify/DeliveryProfile/${++pc}`, name: v?.profile?.name ?? '' }, userErrors: [] } });
+      if (q.includes('profileItems')) return Promise.resolve({ deliveryProfile: { profileItems: { edges: [] } } });
+      if (q.includes('nodes(ids')) {
+        return Promise.resolve({ nodes: (v.ids as string[]).map((id: string) => ({ id, variants: { nodes: VARIANTS.map((vid) => ({ id: vid })) } })) });
+      }
+      if (q.includes('deliveryProfileUpdate')) return Promise.resolve({ deliveryProfileUpdate: { profile: { id: v?.id }, userErrors: [] } });
+      return Promise.resolve({});
+    });
+    const memberships = new Map<string, string[]>([['CN', ['gid://shopify/Product/1']]]);
+    const routes: Record<string, LogisticsRoute | null> = { 'CN|DE': routeRow('CN', 'DE', 9.83) };
+    await syncSignatureProfiles(admin as any, storeOf(memberships, routes), { servedCountries: ['DE'], fx: 0.8, handlingGbp: 0, stalenessHours: 72 });
+
+    const assocCalls = calls.filter((c) => c.q.includes('deliveryProfileUpdate') && Array.isArray(c.v.profile?.variantsToAssociate));
+    expect(assocCalls.length).toBe(2); // 294 -> 250 + 44, two calls
+    for (const c of assocCalls) expect(c.v.profile.variantsToAssociate.length).toBeLessThanOrEqual(250);
+    const all = assocCalls.flatMap((c) => c.v.profile.variantsToAssociate as string[]);
+    expect(all.length).toBe(294);
+    expect(new Set(all).size).toBe(294);
+  });
+
   it('I1 safety net: restrictGbProfileToUk runs at start of every sync, stripping EU zone from existing GB Local profile', async () => {
     // This is the I1 regression guard. If buildSignatureZones returns [] for 'GB' (D1 row
     // absent), ensureSignatureProfile is never called and the old GB Local profile (with EU
@@ -574,10 +608,11 @@ describe('syncSignatureProfiles', () => {
     };
     await syncSignatureProfiles(admin as any, store, { servedCountries: ['GB', 'DE'], fx: 0.8, handlingGbp: 0, stalenessHours: 72 });
 
-    // The restrict call must have issued a deliveryProfileUpdate with zonesToDelete containing z-eu.
+    // The restrict call must have issued a deliveryProfileUpdate with TOP-LEVEL zonesToDelete
+    // containing z-eu (zonesToDelete is on DeliveryProfileInput, not the location group).
     const restrictUpdate = calls.find((c) =>
       c.q.includes('deliveryProfileUpdate') &&
-      (c.v.profile?.locationGroupsToUpdate ?? []).some((lg: any) => (lg.zonesToDelete ?? []).includes('z-eu'))
+      ((c.v.profile?.zonesToDelete ?? []) as string[]).includes('z-eu')
     );
     expect(restrictUpdate).toBeDefined();
   });
