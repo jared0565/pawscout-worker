@@ -59,8 +59,10 @@ The original static-profile design expressed fulfillability **per-country** (zon
 
 Lead with the **owner / admin-UI path** - it needs no API scope add, no re-auth, no worker code, and the first exclusion IS the linchpin test:
 1. Owner: Markets > Catalogs > create a catalog for **European Union**, **United States and Canada**, and **Australia** (the three managed markets).
-2. In the EU and AU catalogs, exclude the 40 GB-only products (list below / exportable via `listSignatureMemberships('GB')`). In the US/CA catalog, exclude the 40 GB-only products AND the 2 US-only products are kept (US/CA is their only fulfillable market; do not exclude them there).
-   - Net per market: **EU** excludes 40 GB-only + 2 US-only; **AU** excludes 40 GB-only + 2 US-only; **US/CA** excludes 40 GB-only only.
+2. Exclude per market (product lists exportable via `listSignatureMemberships`):
+   - **European Union** catalog: exclude the **40 GB-only + 2 US-only** (the US-only supplements are unfulfillable to the EU: US->DE/anything = 0 CJ options).
+   - **Australia** catalog: exclude the **40 GB-only + 2 US-only** (same reason).
+   - **United States and Canada** catalog: exclude the **40 GB-only only**. KEEP the 2 US-only here (US is their only fulfillable market; US/CA is one market so they cannot be excluded from Canada alone - that is the documented Canada residual).
    - The 49 CN + 1 CN+US products stay in every market (CN hub fulfills them), except the optional EU-FR/NL residual decision for the ~3-4 CN ingestibles.
 3. Use the CSV bulk path (export each catalog, set `Published=FALSE` for the excluded handles, re-import) for the 40-row edits rather than clicking 40 checkboxes.
 4. Re-run the linchpin Playwright checkout proofs after the EU catalog exists.
