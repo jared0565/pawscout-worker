@@ -2,9 +2,13 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make every shipping time and cost (inbox inquiries and checkout) resolve from the item's nearest warehouse to the destination, using one shared resolver over CJ's real per-route data, so quote == checkout and unfulfillable routes are honestly blocked.
+> ## ⚠️ REVISION BANNER (2026-06-26): Managed Markets is ON
+>
+> Tasks 1-10 below (the nearest-warehouse resolver, the honest-unfulfillable agent copy, and the per-signature delivery profiles) are **BUILT, DEPLOYED, and SYNCED LIVE** (master @ 074e163). They STAND for the **UK merchant-managed market**, which our profiles own (verified at checkout: CN->UK GBP 3.41, GB->UK GBP 0). **What changed:** this store has **Managed Markets ON**, which **backfills carrier rates for any international destination a custom profile does not cover** - so the "omit a zone => checkout blocked there" assumption (Architecture paragraph, Task 2 linchpin, Tasks 7-10 fulfillability) is **FALSE for international destinations.** Unfulfillable-international orders are now prevented at the **per-market product-availability** layer (market catalogs), added as **Phase C: Tasks 11-12** below. See the design doc's "Managed Markets reality + per-market product-availability reframe" section. The `gbFreeUkLive` agent free-UK-claim flag stays OFF until a live GBP-0 GB->UK checkout is confirmed.
 
-**Architecture:** One pure `resolveNearestRoute` ranks the candidate `cj_logistics` rows (origin to dest) for a product's stocking warehouses and picks the nearest (domestic first, then cheapest). Both the inbox shipping agent and a nightly Shopify delivery-profile sync call it. The store is on the Basic plan, where CarrierService is unavailable, so the formula is materialized into static per-origin-signature delivery profiles (one per distinct warehouse set), refreshed nightly. A destination with no real route gets no zone, so checkout there is blocked.
+**Goal:** Make every shipping time and cost (inbox inquiries and checkout) resolve from the item's nearest warehouse to the destination, using one shared resolver over CJ's real per-route data, so quote == checkout. Unfulfillable routes are honestly stated by the agent and made unbuyable by per-market product exclusion (Phase C), since on this store zone omission no longer blocks international checkout (Managed Markets backfill).
+
+**Architecture:** One pure `resolveNearestRoute` ranks the candidate `cj_logistics` rows (origin to dest) for a product's stocking warehouses and picks the nearest (domestic first, then cheapest). Both the inbox shipping agent and a nightly Shopify delivery-profile sync call it. The store is on the Basic plan, where CarrierService is unavailable, so the formula is materialized into static per-origin-signature delivery profiles (one per distinct warehouse set), refreshed nightly. ~~A destination with no real route gets no zone, so checkout there is blocked.~~ **CORRECTION (2026-06-26): zone omission blocks checkout only for the UK merchant-managed market; for international destinations Managed Markets backfills carrier rates, so unfulfillable-order prevention moves to per-market product exclusion (Phase C, Tasks 11-12).**
 
 **Tech Stack:** TypeScript Cloudflare Worker, D1 (SQLite), Shopify Admin GraphQL (Delivery Profiles), CJ Dropshipping API, vitest, wrangler.
 
@@ -650,9 +654,47 @@ Ensure the nightly logistics sync already populates `cj_logistics` for every `(o
 
 ---
 
+## Phase C: per-market product-availability exclusion (Managed Markets reality)
+
+Prevents the sellable-but-unfulfillable international orders that delivery-profile zone omission cannot stop on this store (Managed Markets backfill). Product lists come from `listSignatureMemberships` (Task 6, built). The 4 origin-signatures (verified remote D1 2026-06-26): `CN`(49), `GB`(40), `US`(2), `CN,US`(1). The 4 active markets: UK (primary, merchant-managed), European Union (Managed, 27 regions), United States and Canada (Managed, one market for both), Australia (Managed).
+
+**Fulfillability matrix (CJ source-verified 2026-06-26):**
+- `GB`-only (40): fulfillable to **UK only** (GB warehouse is domestic-only; GB->US/DE/CA all 0 CJ options). Exclude from EU + US/CA + AU. CLEAN, no residual.
+- `US`-only (2 supplements): fulfillable to **US only** (US->US works; US->CA/GB/DE all 0). Exclude from EU + AU. RESIDUAL: the market is "United States and Canada" - cannot exclude from Canada alone, so they stay sellable-but-unfulfillable to Canada (owner decision; 2 niche products, one titled "Do Not Sell On Amazon").
+- `CN`(49) + `CN,US`(1): fulfillable to all markets via the CN hub. Stay everywhere. RESIDUAL: ~3-4 CN ingestibles/supplements have per-country EU gaps (verified: Dog Itching Relief CN->FR=0 & CN->NL=0; Dog Vitamin Supplement & Prebiotics Snacks CN->NL=0). EU is one managed market (27 regions) - cannot exclude only FR/NL (owner decision).
+
+### Task 11: Owner-admin exclusion + linchpin proof (GATED, owner-driven; NO scope/code change)
+
+This path needs no API scope add, no re-auth, no worker code. The first exclusion IS the verification of the Managed-Markets caveat. Do this BEFORE building any automation.
+
+- [ ] **Step 1 (owner): create a market catalog for each managed market.** Shopify admin > Markets (or Settings > Markets) > Catalogs > Create catalog, one for **European Union**, **United States and Canada**, and **Australia**. (If the store is on the new Markets experience, the path is Markets > [market] > manage product availability / catalog.)
+- [ ] **Step 2 (linchpin - do ONE product first):** in the **European Union** catalog, exclude ONE GB-only product (e.g. `interactive-wood-sisal-cat-turntable-scratching-post` or any from the GB-only list). Use "Exclude from catalog".
+- [ ] **Step 3 (linchpin proof - Playwright, can be agent-driven):** with that GB product, drive a real checkout to a **German** address -> it MUST be blocked / removed from cart; and a CN product to Germany -> it MUST still sell. **GATE:** if a merchant catalog cannot be created/attached to the EU managed market, or the excluded GB product still checks out to Germany, STOP - the per-market-availability approach is invalid here; return to the design doc before touching the other products.
+- [ ] **Step 4 (owner, after the linchpin passes): bulk-exclude the rest via CSV.** Markets > Catalogs > select catalog > Export > Export CSV; set `Published=FALSE` for the excluded handles; re-import. Per market:
+  - **European Union** catalog: exclude the **40 GB-only + 2 US-only** products.
+  - **Australia** catalog: exclude the **40 GB-only + 2 US-only** products.
+  - **United States and Canada** catalog: exclude the **40 GB-only** products only (keep the 2 US-only - US is their only fulfillable market).
+  - Leave the 49 CN + 1 CN+US products in every catalog (the CN hub fulfills them).
+- [ ] **Step 5 (owner decisions - the residuals, document the choice):**
+  - US-only -> Canada exposure: accept+monitor / delist the 2 supplements / split US and CA into separate markets if Managed Markets permits.
+  - CN ingestibles -> FR/NL exposure: accept+monitor / pull the ~3-4 affected CN health products from the entire EU market / defer to a CarrierService plan upgrade.
+- [ ] **Step 6 (verify):** Playwright re-checkout a sample per market (GB product -> EU/AU/CA all blocked; CN product -> EU/AU/CA all sell; US-only -> US sells, EU/AU blocked). Record results.
+
+**To make the owner's bulk edit easy (optional helper):** the worker can emit the exact GB-only / US-only handle+SKU lists via `listSignatureMemberships`, or one-shot-tag the products (e.g. `origin:gb-only`) via the Admin API (`write_products`, already granted) so the owner can filter the catalog editor by tag. This is a read/label helper, not the exclusion itself.
+
+### Task 12: Worker-automated exclusion (GATED on Task 11 proof + a scope grant)
+
+Only build this AFTER Task 11 confirms a merchant catalog can be attached to a Managed market. It automates the exclusion so newly imported products are corrected nightly (closing the import-between-syncs window).
+
+- [ ] **Step 1 (owner/config): add `read_markets` + `write_markets` to the app scopes** in `shopify.app.toml [access_scopes]` (the app already has `write_publications`/`read_publications`, which the exclusion mutation needs; it lacks markets scopes, required to discover/attach the market catalog publications). Redeploy the app version + merchant re-auth (clear `tenants.access_token_enc`, owner reopens the embedded app). Mirrors the `read_shipping`/`write_shipping` grant playbook in the 2026-06-25 plan.
+- [ ] **Step 2:** add `TenantStore`/admin helpers to (a) resolve each managed market's catalog publication id (`markets { catalogs { publication { id } } }`), creating a publication-only catalog if absent, and (b) compute the per-market exclusion set from `listSignatureMemberships` + the fulfillability matrix above.
+- [ ] **Step 3:** `excludeUnfulfillablePerMarket(admin, store)` calls `publicationUpdate(id, { publishablesToRemove })` on each market catalog publication, diffing current membership; idempotent. Handle `MANAGED_MARKETS_CATALOG_NOT_ALLOWED` explicitly (if it fires, fall back to the owner-admin path and log).
+- [ ] **Step 4:** wire into `runDailyMaintenance` (best-effort, after `syncSignatureProfiles`). TDD with a mocked admin; verify shapes against shopify.dev (mock tests validate shape against the mock, not the real schema - the 2026-06-26 `zonesToDelete`/250-variant-cap lesson).
+- [ ] **Step 5:** commit + push; live deploy + verify gated on owner go; re-run the Task 11 Step-6 checkout proofs.
+
 ## Self-review notes
 
-- **Spec coverage:** Phase 0 (Tasks 1-2), Phase A (Tasks 3-5), Phase B (Tasks 6-10). Served-countries / mixed-cart / FX are config in Task 9; mixed-cart honest block is an emergent property of per-signature profiles (no code beyond zone omission) plus the agent's unfulfillable copy (Task 5).
+- **Spec coverage:** Phase 0 (Tasks 1-2), Phase A (Tasks 3-5), Phase B (Tasks 6-10), Phase C per-market exclusion (Tasks 11-12). Served-countries / mixed-cart / FX are config in Task 9; mixed-cart honest block is an emergent property of per-signature profiles (no code beyond zone omission) plus the agent's unfulfillable copy (Task 5).
 - **Type consistency:** `LogisticsRoute` (existing) flows through `resolveNearestRoute` (Task 3) -> `resolveItemShipping` (Task 4) -> `buildSignatureZones` (Task 7) -> `syncSignatureProfiles` (Task 8). `NearestResult.fulfillable` is the single fulfillability signal used by both the agent and the sync.
 - **quote == checkout:** Tasks 4, 7, 8, 10 all route cost/time through the same `resolveNearestRoute` + `freightUsdToGbp`; Task 10's live step verifies it.
 - **Gated live actions:** Tasks 2, 9 (sync coverage), 10 contain the only production mutations; each is marked owner-go.
