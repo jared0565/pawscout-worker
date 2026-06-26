@@ -1,5 +1,5 @@
-import { describe, it, expect, vi } from 'vitest';
-import { readDeliveryConfig, ensureGbLocalProfile, syncGbProfileMembership, type DeliveryZone } from '../../src/shipping/delivery-profile';
+import { describe, it, expect, test, vi } from 'vitest';
+import { readDeliveryConfig, ensureGbLocalProfile, syncGbProfileMembership, computeNonUkZoneIds, restrictGbProfileToUk, type DeliveryZone } from '../../src/shipping/delivery-profile';
 
 // A representative live-shaped deliveryProfiles payload: one default profile with a
 // GB location group holding three zones (UK / Europe / Rest of World) each with a
@@ -243,5 +243,94 @@ describe('syncGbProfileMembership', () => {
       updateUserErrors: [{ message: 'limit exceeded' }],
     });
     await expect(syncGbProfileMembership(admin as any, storeOf(['gid://shopify/Product/1']) as any)).rejects.toThrow(/limit exceeded/);
+  });
+});
+
+test('computeNonUkZoneIds selects every zone that does not cover GB', () => {
+  const groups = [{
+    id: 'lg1',
+    zones: [
+      { id: 'z-uk', countryCodes: ['GB'], restOfWorld: false },
+      { id: 'z-eu', countryCodes: ['DE', 'FR'], restOfWorld: false },
+      { id: 'z-row', countryCodes: [], restOfWorld: true },
+    ],
+  }];
+  expect(computeNonUkZoneIds(groups)).toEqual([{ locationGroupId: 'lg1', zoneIds: ['z-eu', 'z-row'] }]);
+});
+
+test('computeNonUkZoneIds is a no-op when only a UK zone exists', () => {
+  const groups = [{ id: 'lg1', zones: [{ id: 'z-uk', countryCodes: ['GB'], restOfWorld: false }] }];
+  expect(computeNonUkZoneIds(groups)).toEqual([]);
+});
+
+describe('restrictGbProfileToUk', () => {
+  // Mock payload for the GB_LOCAL_GROUPS_QUERY: a GB Local profile with one location
+  // group containing a UK zone and an EU zone.
+  function makeGbLocalPayload(zones: { id: string; name: string; countryCodes: string[]; restOfWorld: boolean }[]) {
+    return {
+      deliveryProfiles: {
+        edges: [{
+          node: {
+            id: 'gid://shopify/DeliveryProfile/55',
+            name: 'GB Local',
+            profileLocationGroups: [{
+              locationGroup: { id: 'gid://shopify/DeliveryLocationGroup/20' },
+              locationGroupZones: {
+                edges: zones.map((z) => ({
+                  node: {
+                    zone: {
+                      id: z.id,
+                      name: z.name,
+                      countries: z.restOfWorld
+                        ? [{ code: { countryCode: null, restOfWorld: true } }]
+                        : z.countryCodes.map((c) => ({ code: { countryCode: c, restOfWorld: false } })),
+                    },
+                  },
+                })),
+              },
+            }],
+          },
+        }],
+      },
+    };
+  }
+
+  it('deletes non-UK zones and returns their ids', async () => {
+    const calls: { q: string; v: any }[] = [];
+    const payload = makeGbLocalPayload([
+      { id: 'z-uk', name: 'United Kingdom', countryCodes: ['GB'], restOfWorld: false },
+      { id: 'z-eu', name: 'Europe', countryCodes: ['DE', 'FR'], restOfWorld: false },
+    ]);
+    const admin = vi.fn().mockImplementation((q: string, v: any) => {
+      calls.push({ q, v });
+      if (q.includes('deliveryProfileUpdate')) {
+        return Promise.resolve({ deliveryProfileUpdate: { profile: { id: 'gid://shopify/DeliveryProfile/55' }, userErrors: [] } });
+      }
+      return Promise.resolve(payload);
+    });
+    const r = await restrictGbProfileToUk(admin as any);
+    expect(r.profileId).toBe('gid://shopify/DeliveryProfile/55');
+    expect(r.deletedZoneIds).toContain('z-eu');
+    expect(r.deletedZoneIds).not.toContain('z-uk');
+    const upd = calls.find((c) => c.q.includes('deliveryProfileUpdate'))!;
+    expect(upd).toBeDefined();
+    const lg = upd.v.profile.locationGroupsToUpdate[0];
+    expect(lg.zonesToDelete).toContain('z-eu');
+    expect(lg.zonesToDelete).not.toContain('z-uk');
+  });
+
+  it('is idempotent: sends no update when only a UK zone exists', async () => {
+    let mutated = false;
+    const payload = makeGbLocalPayload([
+      { id: 'z-uk', name: 'United Kingdom', countryCodes: ['GB'], restOfWorld: false },
+    ]);
+    const admin = vi.fn().mockImplementation((q: string) => {
+      if (q.includes('deliveryProfileUpdate')) { mutated = true; return Promise.resolve({}); }
+      return Promise.resolve(payload);
+    });
+    const r = await restrictGbProfileToUk(admin as any);
+    expect(r.deletedZoneIds).toEqual([]);
+    expect(r.profileId).toBe('gid://shopify/DeliveryProfile/55');
+    expect(mutated).toBe(false);
   });
 });

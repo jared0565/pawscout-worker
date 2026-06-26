@@ -234,6 +234,55 @@ async function resolveVariantIds(admin: AdminGraphql, productIds: string[]): Pro
   return out;
 }
 
+/** Zones in each location group that do NOT cover GB (EU, International, Rest-of-World).
+ *  A zone covers GB iff its countryCodes include 'GB'. restOfWorld zones never cover GB
+ *  specifically, so they are deletion candidates for a UK-only profile. Groups with no
+ *  deletable zone are omitted (so the result is empty when already UK-only). */
+export function computeNonUkZoneIds(
+  groups: { id: string; zones: { id: string; countryCodes: string[]; restOfWorld: boolean }[] }[]
+): { locationGroupId: string; zoneIds: string[] }[] {
+  const out: { locationGroupId: string; zoneIds: string[] }[] = [];
+  for (const g of groups) {
+    const zoneIds = g.zones.filter((z) => !z.countryCodes.includes('GB')).map((z) => z.id);
+    if (zoneIds.length) out.push({ locationGroupId: g.id, zoneIds });
+  }
+  return out;
+}
+
+const GB_LOCAL_GROUPS_QUERY = `query pawscoutGbLocalGroups {
+  deliveryProfiles(first: 30) {
+    edges { node { id name profileLocationGroups {
+      locationGroup { id }
+      locationGroupZones(first: 50) { edges { node { zone { id name countries { code { countryCode restOfWorld } } } } } }
+    } } }
+  }
+}`;
+
+/** Restrict the existing GB Local profile to UK-only by deleting its non-UK zones (the
+ *  wrong mirrored EU/International zones). Idempotent: a no-op when already UK-only.
+ *  This stops GB-only items being checkout-able to destinations they cannot reach. */
+export async function restrictGbProfileToUk(admin: AdminGraphql): Promise<{ deletedZoneIds: string[]; profileId: string }> {
+  const root = (await admin(GB_LOCAL_GROUPS_QUERY)) as any;
+  const node = ((root?.deliveryProfiles?.edges ?? []) as any[]).map((e) => e?.node).find((n) => n?.name === GB_LOCAL_PROFILE_NAME);
+  if (!node?.id) return { deletedZoneIds: [], profileId: '' };
+  const groups = ((node.profileLocationGroups ?? []) as any[]).map((plg) => ({
+    id: plg?.locationGroup?.id,
+    zones: ((plg?.locationGroupZones?.edges ?? []) as any[]).map((ze) => {
+      const z = ze?.node?.zone; const codes: string[] = []; let row = false;
+      for (const c of (z?.countries ?? []) as any[]) { if (c?.code?.restOfWorld) row = true; else if (c?.code?.countryCode) codes.push(c.code.countryCode); }
+      return { id: z?.id, countryCodes: codes, restOfWorld: row };
+    }).filter((z: any) => z.id),
+  })).filter((g: any) => g.id);
+
+  const dels = computeNonUkZoneIds(groups);
+  if (!dels.length) return { deletedZoneIds: [], profileId: node.id };
+  const profile = { locationGroupsToUpdate: dels.map((d) => ({ id: d.locationGroupId, zonesToDelete: d.zoneIds })) };
+  const res = (await admin(UPDATE_PROFILE_MUTATION, { id: node.id, profile })) as any;
+  const errs = (res?.deliveryProfileUpdate?.userErrors ?? []) as { message?: string }[];
+  if (errs.length) throw new Error(`restrictGbProfileToUk failed: ${errs.map((e) => e.message).join('; ')}`);
+  return { deletedZoneIds: dels.flatMap((d) => d.zoneIds), profileId: node.id };
+}
+
 /** Minimal store surface syncGbProfileMembership needs (the real TenantStore satisfies it). */
 interface GbMembershipStore {
   listGbWarehousedShopifyProductIds(): Promise<string[]>;
