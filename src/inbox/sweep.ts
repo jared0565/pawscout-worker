@@ -322,7 +322,7 @@ export async function composeDraftForThread(
 
   const draft = await draftReply(llm, store, cfg, {
     agent, grounding, subject: thread.subject ?? '', conversation, latestMessage: latestInbound,
-    customerName: contact?.name ?? null
+    customerName: contact?.name ?? null, customerEmail: thread.contact_email
   });
   if (!draft) return null; // degrade: retry next sweep
 

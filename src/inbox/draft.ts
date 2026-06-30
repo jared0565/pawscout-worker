@@ -31,23 +31,35 @@ const TITLES = new Set([
   'mr', 'mrs', 'ms', 'miss', 'mx', 'dr', 'prof', 'professor', 'sir', 'madam', 'madame', 'rev', 'reverend',
 ]);
 
-/** A safe first name for the greeting, or null if we have nothing usable. Walks the name
+/** A safe first NAME for the greeting, or null if we have nothing usable. Walks the name
  * tokens, SKIPS leading honorifics (so "Mr Dhikirullah" greets "Dhikirullah", not "Mr"),
  * rejects emails / role addresses / non-alphabetic junk, and Title-cases the result so a
- * shouty "JANE" renders "Jane". (Known limitation: surname-first display names like
- * "Adedigba Ridwan" still greet the first token; disambiguating against the email local
- * part is a follow-up.) */
-export function salutationName(rawName: string | null | undefined): string | null {
+ * shouty "JANE" renders "Jane".
+ *
+ * Surname-first display names ("Adedigba Ridwan") are disambiguated against the email
+ * local part: the given name almost always LEADS the email, so if the local part STARTS
+ * WITH a later token we greet that one ("ridwanadedigba41@" -> "Ridwan"). "starts-with"
+ * (not "contains") is deliberate so an initial+surname email ("jsmith@") never makes us
+ * greet the surname for "John Smith". No email, or no match, keeps the first token. */
+export function salutationName(rawName: string | null | undefined, email?: string | null): string | null {
   if (!rawName) return null;
+  const candidates: string[] = [];
   for (const raw of rawName.trim().split(/\s+/)) {
     const tok = raw.replace(/[.,]+$/, ''); // drop trailing punctuation ("Mr." -> "Mr")
     if (!/^[\p{L}][\p{L}'-]{1,40}$/u.test(tok)) continue; // skip emails/junk/non-alpha/1-char
     const lower = tok.toLowerCase();
     if (TITLES.has(lower)) continue;        // honorific -> try the next token
     if (ROLE_NAMES.has(lower)) return null; // a role inbox, not a person
-    return tok.charAt(0).toUpperCase() + tok.slice(1).toLowerCase();
+    candidates.push(tok);
   }
-  return null;
+  if (!candidates.length) return null;
+  let chosen = candidates[0];
+  const local = (email ?? '').split('@')[0]?.toLowerCase().replace(/[^a-z]/g, '') ?? '';
+  if (local) {
+    const starter = candidates.find((c) => c.length >= 3 && local.startsWith(c.toLowerCase()));
+    if (starter) chosen = starter; // email leads with a later token => that is the given name
+  }
+  return chosen.charAt(0).toUpperCase() + chosen.slice(1).toLowerCase();
 }
 
 // A leading greeting the model may have added despite being told not to. Comma- OR
@@ -69,8 +81,8 @@ export function sanitizeOutbound(text: string): string {
  * guess never reaches the wire); we strip any greeting it added anyway, then open with
  * the customer's real first name from the contact record, or "Hi there," as fallback.
  * Also runs sanitizeOutbound so no em/en-dash survives into a customer-facing draft. */
-export function applySalutation(bodyText: string, customerName: string | null | undefined): string {
-  const first = salutationName(customerName);
+export function applySalutation(bodyText: string, customerName: string | null | undefined, email?: string | null): string {
+  const first = salutationName(customerName, email);
   const greeting = first ? `Hi ${first},` : 'Hi there,';
   const stripped = bodyText.replace(LEADING_GREETING, '').trimStart();
   return sanitizeOutbound(`${greeting}\n\n${stripped}`);
@@ -137,7 +149,7 @@ async function reviseDraft(
  * until it passes - the worker self-corrects in production, no dev tuning needed. */
 export async function draftReply(
   llm: LlmClient, store: TenantStore, cfg: TenantConfig,
-  input: { agent: CategoryAgent; grounding: Grounding; subject: string; conversation: string; latestMessage?: string; customerName?: string | null }
+  input: { agent: CategoryAgent; grounding: Grounding; subject: string; conversation: string; latestMessage?: string; customerName?: string | null; customerEmail?: string | null }
 ): Promise<DraftResult | null> {
   if (!llm.available || !cfg.inbox.enabled) return null;
   const chain = resolveChain(cfg, 'text');
@@ -162,5 +174,5 @@ export async function draftReply(
     qctx, 2
   );
 
-  return { ...refined, bodyText: applySalutation(refined.bodyText, input.customerName) };
+  return { ...refined, bodyText: applySalutation(refined.bodyText, input.customerName, input.customerEmail) };
 }

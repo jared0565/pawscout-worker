@@ -15,6 +15,22 @@ describe('salutationName (skip honorifics, never greet a title)', () => {
     expect(salutationName('a@b.com')).toBeNull();
     expect(salutationName('')).toBeNull();
   });
+
+  it('uses the email to pick the first name when the display name is surname-first', () => {
+    // "Adedigba Ridwan" is surname-first; the email leads with the given name "ridwan"
+    expect(salutationName('Adedigba Ridwan', 'ridwanadedigba41@gmail.com')).toBe('Ridwan');
+    // normal order is unaffected
+    expect(salutationName('Mary Johnson', 'maryjohnson.hub@gmail.com')).toBe('Mary');
+  });
+
+  it('does NOT mistake an initial+surname email for a surname-first name', () => {
+    // "jsmith" starts with neither "john" nor "smith" -> keep the first token John
+    expect(salutationName('John Smith', 'jsmith@example.com')).toBe('John');
+  });
+
+  it('falls back to the first token when no email is given', () => {
+    expect(salutationName('Adedigba Ridwan')).toBe('Adedigba');
+  });
 });
 
 // Construct the dash glyphs at runtime so this test file contains NO literal em/en-dash
