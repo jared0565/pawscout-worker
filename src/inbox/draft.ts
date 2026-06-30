@@ -7,7 +7,7 @@ import { SHARED_SCAFFOLDING, STORE_FACTS, COMMERCIAL_GUARDRAILS, OUTPUT_CONTRACT
 import type { CategoryAgent, Grounding } from './agents/types';
 import { refineUntilClean, asksDoYouDeliver, type DraftQualityContext } from './draft-quality';
 
-const DRAFT_MAX_WORDS = 80; // conciseness ceiling for the runtime quality gate
+const DRAFT_MAX_WORDS = 110; // conciseness ceiling: a warm courtesy wrapper + a grounded answer
 
 function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
@@ -26,15 +26,28 @@ const ROLE_NAMES = new Set([
   'enquiries', 'inquiries', 'orders', 'noreply', 'no-reply', 'mail', 'office', 'customer',
 ]);
 
-/** A safe first name for the greeting, or null if we have nothing usable. Takes the
- * first token, rejects emails / role addresses / non-alphabetic junk, and Title-cases
- * it so a shouty "JANE" renders "Jane". */
+// Honorifics - never greet with these ("Hi Mr"); skip past to the real name token.
+const TITLES = new Set([
+  'mr', 'mrs', 'ms', 'miss', 'mx', 'dr', 'prof', 'professor', 'sir', 'madam', 'madame', 'rev', 'reverend',
+]);
+
+/** A safe first name for the greeting, or null if we have nothing usable. Walks the name
+ * tokens, SKIPS leading honorifics (so "Mr Dhikirullah" greets "Dhikirullah", not "Mr"),
+ * rejects emails / role addresses / non-alphabetic junk, and Title-cases the result so a
+ * shouty "JANE" renders "Jane". (Known limitation: surname-first display names like
+ * "Adedigba Ridwan" still greet the first token; disambiguating against the email local
+ * part is a follow-up.) */
 export function salutationName(rawName: string | null | undefined): string | null {
   if (!rawName) return null;
-  const first = rawName.trim().split(/\s+/)[0] ?? '';
-  if (!/^[\p{L}][\p{L}'-]{1,40}$/u.test(first)) return null; // letters/'/- only, ≥2 chars
-  if (ROLE_NAMES.has(first.toLowerCase())) return null;
-  return first.charAt(0).toUpperCase() + first.slice(1).toLowerCase();
+  for (const raw of rawName.trim().split(/\s+/)) {
+    const tok = raw.replace(/[.,]+$/, ''); // drop trailing punctuation ("Mr." -> "Mr")
+    if (!/^[\p{L}][\p{L}'-]{1,40}$/u.test(tok)) continue; // skip emails/junk/non-alpha/1-char
+    const lower = tok.toLowerCase();
+    if (TITLES.has(lower)) continue;        // honorific -> try the next token
+    if (ROLE_NAMES.has(lower)) return null; // a role inbox, not a person
+    return tok.charAt(0).toUpperCase() + tok.slice(1).toLowerCase();
+  }
+  return null;
 }
 
 // A leading greeting the model may have added despite being told not to. Comma- OR

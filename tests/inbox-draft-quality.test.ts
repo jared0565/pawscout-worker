@@ -1,19 +1,30 @@
 import { describe, it, expect } from 'vitest';
-import { hasFillerBookend, countWords, affirmsDelivery, statesDayRange, findDraftIssues, refineUntilClean, asksDoYouDeliver } from '../src/inbox/draft-quality';
+import { hasFillerBookend, countWords, substanceWordCount, affirmsDelivery, statesDayRange, findDraftIssues, refineUntilClean, asksDoYouDeliver } from '../src/inbox/draft-quality';
 
-describe('hasFillerBookend', () => {
-  it('flags the "do not hesitate to get in touch" boilerplate', () => {
+describe('hasFillerBookend (courtesy detector - allowed, used for substance stripping)', () => {
+  it('detects the "do not hesitate to get in touch" courtesy', () => {
     const padded = 'Yes, we ship to the US. If you have any other questions or need any further assistance, please do not hesitate to get in touch.';
     expect(hasFillerBookend(padded)).toBe(true);
   });
 
-  it('flags the generic "thank you for getting in touch" opener', () => {
+  it('detects the "thank you for getting in touch" courtesy opener', () => {
     expect(hasFillerBookend('Thank you for getting in touch! We do ship to the US.')).toBe(true);
   });
 
-  it('passes a crisp reply with no boilerplate', () => {
+  it('false for a reply with no courtesy phrase', () => {
     const crisp = "Yes, we ship to the US, including NYC. Delivery usually takes about 7-23 days, and you'll get a tracking link the moment it's on its way.";
     expect(hasFillerBookend(crisp)).toBe(false);
+  });
+});
+
+describe('substanceWordCount', () => {
+  it('counts the real answer even when wrapped in courtesy', () => {
+    // courtesy stripped, leaving "we do ship to the US" (6 words)
+    expect(substanceWordCount('Thank you for getting in touch! We do ship to the US.')).toBeGreaterThanOrEqual(6);
+  });
+  it('collapses to near zero when the reply is only courtesy + sign-off', () => {
+    const allCourtesy = 'Thank you for getting in touch. We really appreciate you. Best regards, Active Paw Customer Service.';
+    expect(substanceWordCount(allCourtesy)).toBeLessThan(6);
   });
 });
 
@@ -52,16 +63,21 @@ describe('findDraftIssues (runtime quality gate)', () => {
     expect(findDraftIssues(good, { maxWords: 70 })).toEqual([]);
   });
 
-  it('flags filler padding with actionable feedback', () => {
-    const padded = 'Thank you for getting in touch! We do ship to the US.';
-    const issues = findDraftIssues(padded, { maxWords: 70 });
-    expect(issues.some((i) => /filler|do not hesitate|getting in touch/i.test(i))).toBe(true);
+  it('ALLOWS courtesy that wraps a real answer (owner voice = warm wrapper)', () => {
+    const warm = 'Thank you for getting in touch! Yes, we do ship to the US, and a tracking link follows on dispatch.';
+    expect(findDraftIssues(warm, { maxWords: 110 })).toEqual([]);
+  });
+
+  it('flags a courtesy-only reply that carries no substance', () => {
+    const empty = 'Thank you for getting in touch. We really appreciate you. Best regards, Active Paw Customer Service.';
+    const issues = findDraftIssues(empty);
+    expect(issues.some((i) => /substance|actual answer|what the customer/i.test(i))).toBe(true);
   });
 
   it('flags an over-long reply with the word count and the target', () => {
-    const longText = Array.from({ length: 90 }, (_, i) => `word${i}`).join(' ');
-    const issues = findDraftIssues(longText, { maxWords: 70 });
-    expect(issues.some((i) => /90 words/.test(i) && /70/.test(i))).toBe(true);
+    const longText = Array.from({ length: 130 }, (_, i) => `word${i}`).join(' ');
+    const issues = findDraftIssues(longText, { maxWords: 110 });
+    expect(issues.some((i) => /130 words/.test(i) && /110/.test(i))).toBe(true);
   });
 
   it('when the customer asked if we deliver, requires an up-front affirmation', () => {
@@ -94,7 +110,8 @@ describe('asksDoYouDeliver', () => {
 
 describe('refineUntilClean (runtime self-correction loop)', () => {
   const CLEAN = { bodyText: 'Yes, we ship to the US, including NYC. Tracking follows on dispatch.' };
-  const FILLER = { bodyText: 'Thank you for getting in touch! We ship to the US.' };
+  // courtesy-only, no substance -> fails the gate (needs revision)
+  const FILLER = { bodyText: 'Thank you for getting in touch. We really appreciate you. Best regards, Active Paw Customer Service.' };
 
   it('returns the draft untouched and never revises when it already passes', async () => {
     let calls = 0;
@@ -117,7 +134,7 @@ describe('refineUntilClean (runtime self-correction loop)', () => {
   });
 
   it('keeps the best (fewest-issue) candidate when revisions never fully pass', async () => {
-    const STILL_BAD = { bodyText: 'Thank you for getting in touch, here is more padding do not hesitate.' };
+    const STILL_BAD = { bodyText: 'Thank you for getting in touch. Best regards, Active Paw Customer Service.' };
     let calls = 0;
     const revise = async () => { calls++; return STILL_BAD; };
     const out = await refineUntilClean(FILLER, revise, { maxWords: 70 }, 2);

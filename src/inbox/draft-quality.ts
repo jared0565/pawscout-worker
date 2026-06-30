@@ -1,23 +1,36 @@
 // src/inbox/draft-quality.ts
 //
-// RUNTIME draft-quality gate. Pure, deterministic scorers that encode the reply
-// bar (warm + direct, answer-first, no filler, grounded), plus findDraftIssues
-// which turns failures into actionable revision feedback. This runs INSIDE the
-// worker on every draft (and Regenerate): the system self-corrects in production
-// rather than relying on dev-time tuning. No I/O, no LLM.
+// RUNTIME draft-quality gate. Pure, deterministic scorers that encode the reply bar
+// (owner voice = a WARM, polite wrapper AROUND a grounded answer), plus findDraftIssues
+// which turns failures into actionable revision feedback. This runs INSIDE the worker
+// on every draft (and Regenerate): the system self-corrects in production rather than
+// relying on dev-time tuning. No I/O, no LLM.
+//
+// Voice policy (owner decision 2026-06-30): courtesy phrases ("thank you for getting in
+// touch", "please do not hesitate") are ALLOWED - the prior pass that banned them
+// over-corrected against the owner's actual voice. The gate now enforces the failure
+// modes the owner actually edits out: a reply with NO substance (only courtesy +
+// sign-off), an over-long reply, or a missing direct answer when one is owed.
 
-/** Banned customer-service filler bookends - the generic padding that made every
- * reply read the same regardless of category. A reply that contains any of these
- * fails the bar. */
+/** Customer-service courtesy phrases. ALLOWED (the owner's voice is a warm, polite
+ * wrapper), so they no longer fail the bar on their own. They carry no substance, so
+ * they are STRIPPED when measuring whether a reply actually answers anything. */
 const FILLER_PATTERNS: RegExp[] = [
   /\bdo not hesitate\b/i,
   /\bdon't hesitate\b/i,
   /\bthank you for getting in touch\b/i,
-  /\bif you have any (?:other |further )?questions\b/i,
-  /\bplease feel free to (?:reach out|get in touch)\b/i,
+  /\bthank you for (?:your )?(?:enquiry|inquiry|reaching out|your message|your kind (?:words|message))\b/i,
+  /\bif you have any (?:other |further )?questions[^.]*\.?/i,
+  /\bplease feel free to (?:reach out|get in touch|ask)\b/i,
+  /\bwe (?:really )?appreciate (?:you|your)[^.]*\.?/i,
 ];
 
-/** True if the reply contains any banned filler bookend. */
+/** A trailing sign-off block ("Best regards, Active Paw Customer Service") - courtesy,
+ * not substance, so it is stripped before measuring substance. */
+const SIGNOFF_PATTERN = /\b(?:best (?:regards|wishes)|kind regards|warm regards|many thanks|wishing you)\b[\s\S]*$/i;
+
+/** True if the reply contains a customer-service courtesy phrase. Retained for callers/
+ * tests; courtesy is allowed, so this is no longer a fail condition by itself. */
 export function hasFillerBookend(text: string): boolean {
   return FILLER_PATTERNS.some((re) => re.test(text));
 }
@@ -26,6 +39,19 @@ export function hasFillerBookend(text: string): boolean {
 export function countWords(text: string): number {
   const t = text.trim();
   return t ? t.split(/\s+/).length : 0;
+}
+
+/** Words of REAL substance: the reply with courtesy phrases + the sign-off block + bare
+ * greeting/brand tokens removed. A warm reply that genuinely answers something keeps
+ * plenty here; a reply that is only courtesy + sign-off collapses toward zero. (The gate
+ * sees the pre-salutation body, so the greeting line is already absent.) */
+export function substanceWordCount(text: string): number {
+  let t = ' ' + text + ' ';
+  for (const re of FILLER_PATTERNS) t = t.replace(new RegExp(re.source, 'gi'), ' ');
+  t = t.replace(SIGNOFF_PATTERN, ' ');
+  t = t.replace(/\b(?:hi|hello|hey|thanks|thank you|cheers|regards|active\s+paw|customer\s+service|team|best)\b/gi, ' ');
+  t = t.replace(/[^\p{L}\s]/gu, ' '); // drop punctuation so stray tokens never count as substance
+  return countWords(t);
 }
 
 /** The reply's first sentence (up to the first sentence-ending punctuation). */
@@ -56,25 +82,33 @@ export function asksDoYouDeliver(text: string): boolean {
 /** Context for the runtime gate: the conciseness ceiling and what the customer
  * actually asked, so the gate can demand a direct answer where one is owed. */
 export interface DraftQualityContext {
-  maxWords?: number;        // conciseness ceiling (default 80)
+  maxWords?: number;        // conciseness ceiling (default 110: warm wrapper + a grounded answer)
   askedDelivery?: boolean;  // customer asked "do you deliver/ship to X" -> require an up-front yes
 }
+
+/** Minimum words of real substance a reply must carry (a warm courtesy wrapper is fine,
+ * but it must wrap an actual answer, not replace it). Set so a genuine short answer
+ * ("we ship to the US") passes while a courtesy-only reply fails. */
+const MIN_SUBSTANCE_WORDS = 4;
 
 /**
  * Inspect a candidate reply against the bar and return a list of concrete,
  * human-readable issues (empty => the draft passes). Each string is written as
  * feedback the reviser can act on directly. PURE - the caller decides whether to
  * revise. This is the deterministic half of the runtime self-correction loop.
+ *
+ * Voice (owner decision): courtesy is welcome; the failures we flag are no-substance,
+ * over-length, and a missing direct answer when the customer asked a yes/no ship Q.
  */
 export function findDraftIssues(bodyText: string, ctx: DraftQualityContext = {}): string[] {
   const issues: string[] = [];
-  if (hasFillerBookend(bodyText)) {
-    issues.push("Remove generic filler ('thank you for getting in touch', 'do not hesitate', 'if you have any other questions'); keep only specific, useful sentences.");
+  if (substanceWordCount(bodyText) < MIN_SUBSTANCE_WORDS) {
+    issues.push("This reply is all courtesy and no substance. Lead with the specific, grounded answer to what the customer actually asked (a warm greeting and close are fine, but they must wrap a real answer, not replace it).");
   }
-  const max = ctx.maxWords ?? 80;
+  const max = ctx.maxWords ?? 110;
   const words = countWords(bodyText);
   if (words > max) {
-    issues.push(`Too long (${words} words). Be concise: under ${max} words, 2 to 3 sentences, answer first.`);
+    issues.push(`Too long (${words} words). Keep it focused and under ${max} words: a warm but concise reply that answers what they asked.`);
   }
   if (ctx.askedDelivery && !affirmsDelivery(bodyText)) {
     issues.push("The customer asked whether we deliver to their location; affirm it directly in the first sentence (e.g. 'Yes, we ship to ...').");

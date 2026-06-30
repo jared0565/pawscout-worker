@@ -1,5 +1,21 @@
 import { describe, it, expect } from 'vitest';
-import { sanitizeOutbound, applySalutation } from '../src/inbox/draft';
+import { sanitizeOutbound, applySalutation, salutationName } from '../src/inbox/draft';
+
+describe('salutationName (skip honorifics, never greet a title)', () => {
+  it('skips a leading title and greets the next name token', () => {
+    expect(salutationName('Mr DHIKIRULLAH')).toBe('Dhikirullah');
+    expect(salutationName('Dr. Jane Smith')).toBe('Jane');
+  });
+  it('greets a normal first name, title-cased', () => {
+    expect(salutationName('mary johnson')).toBe('Mary');
+    expect(salutationName('JANE')).toBe('Jane');
+  });
+  it('returns null for role inboxes and junk (falls back to "Hi there,")', () => {
+    expect(salutationName('support')).toBeNull();
+    expect(salutationName('a@b.com')).toBeNull();
+    expect(salutationName('')).toBeNull();
+  });
+});
 
 // Construct the dash glyphs at runtime so this test file contains NO literal em/en-dash
 // (the codebase-wide dash scrub would otherwise rewrite the inputs and make the test vacuous).
