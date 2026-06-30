@@ -32,9 +32,17 @@ export async function classifyEmail(
       '"intentScore": <0-100 integer: how strong the buying intent is - 0 for spam/no intent, 90+ for "I want to buy X now">, ' +
       '"summary": <one sentence, max 160 chars, no quotes from the body>, ' +
       `"labels": <array of 1-3 distinct values from ${allowed}>}. ` +
-      'Use "lead" for clear buying intent, "wholesale-b2b" for bulk/trade buyers wanting to purchase stock, ' +
-      '"affiliate" for affiliate/commission/partnership outreach - someone offering to promote or sell our products for a commission or cut (distinct from a wholesale buyer; the sender wants to earn from us, not buy from us), ' +
-      '"complaint" for dissatisfaction, "spam" for junk.',
+      'CATEGORY GUIDE (route by what the sender actually wants): ' +
+      '"shipping-returns" = a genuine customer question about delivery, shipping cost or time, an order in transit, tracking, or returns/refunds (e.g. "do you ship to the US", "how long to Texas", "can I return this"). ' +
+      '"order-status" = a customer asking about a specific order they have placed. ' +
+      '"product-question" = a question about a product (sizing, materials, suitability, stock). ' +
+      '"lead" = a shopper with clear intent to BUY from us. ' +
+      '"wholesale-b2b" = a bulk/trade buyer wanting to PURCHASE stock from us. ' +
+      '"affiliate" = a GENUINE pet-relevant creator/influencer offering to PROMOTE our products to THEIR own pet-owning audience (content, reviews) for a commission - they already have a real audience and want to earn by promoting, not sell us a service. ' +
+      '"complaint" = dissatisfaction with us. ' +
+      'CRITICAL - cold outreach SELLING US A SERVICE is NOT a customer-service category and NOT affiliate: pitches for marketing, ads, SEO, store/conversion optimisation, website or logo design, "growing your sales", "auditing your store", generating traffic or "X visitors / Y daily sales", or asking to move to WhatsApp - INCLUDING ones that call themselves a "partnership", "collaboration", or "commission" deal. If a real person wrote such a pitch, classify it "other" (we reply with a brief warm decline); if it is automated/bulk/bot junk, classify it "spam". ' +
+      'NEVER route a service pitch to shipping-returns, order-status, product-question, lead, or affiliate just because it mentions sales, shipping, or commission. ' +
+      '"automated" = auto-generated receipts/notifications. "spam" = junk/bot.',
     user: JSON.stringify({
       fromEmail: input.fromEmail,
       authSummary: `spf=${input.auth.spf} dkim=${input.auth.dkim} dmarc=${input.auth.dmarc}`,
