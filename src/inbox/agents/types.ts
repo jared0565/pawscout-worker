@@ -36,6 +36,10 @@ export interface CategoryAgent {
   description: string;     // one-line "grounds in ..." (console)
   department: Department;  // signs the deterministic footer
   commercial: boolean;     // carries a bounded commercial objective?
+  /** Optional deterministic P.S. line appended AFTER the footer on the FIRST reply of a
+   * thread only (the post-signature P.S. is the most-read line of an email after the
+   * opener; repeating it on every turn would read robotic). Fixed copy, never LLM text. */
+  postscript?: string;
   ground(ctx: AgentContext): Promise<Grounding>;
   promptFragment(g: Grounding): string;            // category-specific instructions
   deterministicAppendix(g: Grounding): string | null; // verbatim trusted line, or null

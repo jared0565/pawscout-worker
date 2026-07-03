@@ -16,4 +16,12 @@ describe('leadAgent', () => {
     const p = leadAgent.promptFragment(g);
     expect(p).toMatch(/(?:do not|don't|never)\s+(?:invent|fabricate|make up)[^.]*\b(?:history|tenure|backstory|years|how long)\b/i);
   });
+
+  it('carries the search-bar P.S. (deterministic, starts with "P.S.", one emoji, official domain)', () => {
+    const ps = leadAgent.postscript!;
+    expect(ps.startsWith('P.S. ')).toBe(true);
+    expect(ps).toContain('🔍');
+    expect(ps.toLowerCase()).toContain('search bar');
+    expect(ps).toContain('activepaw.co.uk');
+  });
 });

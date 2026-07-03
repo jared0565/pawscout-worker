@@ -188,4 +188,62 @@ describe('composeDraftForThread (agent dispatch E2E)', () => {
     expect(draft?.body_text).not.toContain('estimated');
     expect(draft?.status).toBe('pending');
   });
+
+  it('Case C: lead thread carries the search-bar P.S. after the footer on the FIRST reply only', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedShop(store);
+    await store.upsertContact({ email: 'buyer@example.com', name: 'Ann', phone: null });
+
+    const tid = await store.createThread({
+      contactEmail: 'buyer@example.com', subject: 'Interested in a bed', subjectNorm: 'interested in a bed',
+      receivedAt: '2026-07-03T09:00:00Z', initialStatus: 'new'
+    });
+    await store.insertInboundMessageIfNew({
+      threadId: tid, messageId: '<lead1@x>', inReplyTo: null, references: [],
+      from: 'buyer@example.com', to: 'support@activepaw.co.uk', subject: 'Interested in a bed',
+      bodyText: 'Do you have beds for large dogs?', bodyHtml: null,
+      headersJson: '{"authentication-results":"mx; spf=pass dkim=pass dmarc=pass"}',
+      receivedAt: '2026-07-03T09:00:00Z'
+    });
+    await store.setThreadClassification(tid, {
+      status: 'needs_reply', primaryCategory: 'lead', intentScore: 85,
+      summary: 'Buyer asking about large dog beds', classifiedAt: '2026-07-03T09:01:00Z'
+    });
+
+    const cfg = await store.getConfig();
+    const fakeFetch = (async (_url: string) =>
+      new Response(
+        JSON.stringify({
+          choices: [{ message: { content: JSON.stringify({ bodyText: 'Yes, we stock several beds suited to large dogs on the website.', confidence: 90, quotesPriceOrOrder: false }) } }],
+          usage: { cost: 0.0001 }
+        }),
+        { status: 200 }
+      )
+    ) as unknown as typeof fetch;
+
+    // FIRST reply: P.S. present, AFTER the Sales Team footer.
+    const thread1 = (await store.getThreadWithMessages(tid))!.thread;
+    const r1 = await composeDraftForThread({ ...env, OPENROUTER_API_KEY: 'k' } as any, store, cfg!, thread1, fakeFetch);
+    expect(r1).not.toBeNull();
+    const d1 = (await store.getDraft(r1!.draftId))!;
+    expect(d1.body_text).toContain('P.S. 🔍');
+    expect(d1.body_text).toContain('search bar');
+    expect(d1.body_text.indexOf('Active Paw Sales Team')).toBeLessThan(d1.body_text.indexOf('P.S.'));
+
+    // We reply (outbound recorded) and the customer writes again: NO P.S. on the follow-up.
+    await store.insertOutboundMessage({ threadId: tid, messageId: '<out1@ap>', from: 'support@activepaw.co.uk', to: 'buyer@example.com', subject: 'Re: Interested in a bed', bodyText: 'sent reply', bodyHtml: '<p>sent reply</p>', sentAt: '2026-07-03T10:00:00Z' });
+    await store.insertInboundMessageIfNew({
+      threadId: tid, messageId: '<lead2@x>', inReplyTo: '<out1@ap>', references: [],
+      from: 'buyer@example.com', to: 'support@activepaw.co.uk', subject: 'Re: Interested in a bed',
+      bodyText: 'Great, which colours do they come in?', bodyHtml: null,
+      headersJson: '{"authentication-results":"mx; spf=pass dkim=pass dmarc=pass"}',
+      receivedAt: '2026-07-03T11:00:00Z'
+    });
+    const thread2 = (await store.getThreadWithMessages(tid))!.thread;
+    const r2 = await composeDraftForThread({ ...env, OPENROUTER_API_KEY: 'k' } as any, store, cfg!, thread2, fakeFetch);
+    expect(r2).not.toBeNull();
+    const d2 = (await store.getDraft(r2!.draftId))!;
+    expect(d2.body_text).not.toContain('P.S.');
+    expect(d2.body_text).toContain('Active Paw Sales Team'); // footer still there
+  });
 });

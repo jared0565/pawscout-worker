@@ -5,7 +5,7 @@ import { resolveChain } from '../llm-resolve';
 import { defaultFetch } from '../safe-fetch';
 import { parseAuthResults } from './gates';
 import { classifyEmail, decideDisposition } from './classify';
-import { draftReply, renderReplyHtml, applyFooter, stripTrailingSignoff } from './draft';
+import { draftReply, renderReplyHtml, applyFooter, stripTrailingSignoff, sanitizeOutbound } from './draft';
 import { autoSendDecision, mentionsMoney } from './autosend';
 import { sendReply } from './send';
 import { maybePartnershipDraft } from './partnership';
@@ -327,7 +327,10 @@ export async function composeDraftForThread(
   if (!draft) return null; // degrade: retry next sweep
 
   const appendix = grounding.confident ? agent.deterministicAppendix(grounding) : null;
-  const composed = composeAgentDraft(draft, appendix, agent.department);
+  // The agent's P.S. rides only the FIRST reply of a thread (no outbound yet) so a
+  // multi-turn conversation is not stamped with the same nudge on every message.
+  const firstReply = !got.messages.some((m) => m.direction === 'outbound');
+  const composed = composeAgentDraft(draft, appendix, agent.department, firstReply ? agent.postscript ?? null : null);
 
   // Auto-send gating: per-agent opt-in behind the global Auto switch, computed on the
   // LLM body ONLY (composed.quotesPriceOrder) so a trusted appendix figure does not
@@ -370,11 +373,13 @@ async function draftOne(env: Env, store: TenantStore, cfg: TenantConfig, thread:
 export function composeAgentDraft(
   draft: { bodyText: string; quotesPriceOrOrder: boolean },
   appendix: string | null,
-  department?: Department
+  department?: Department,
+  postscript?: string | null
 ): { bodyText: string; quotesPriceOrder: boolean } {
   const quotesPriceOrder = draft.quotesPriceOrOrder || mentionsMoney(draft.bodyText);
   const base = department ? stripTrailingSignoff(draft.bodyText.trimEnd()) : draft.bodyText;
   const withAppendix = appendix ? `${base.trimEnd()}\n\n${appendix}` : base;
-  const bodyText = department ? applyFooter(withAppendix, department) : withAppendix;
+  let bodyText = department ? applyFooter(withAppendix, department) : withAppendix;
+  if (postscript) bodyText = sanitizeOutbound(`${bodyText}\n\n${postscript}`);
   return { bodyText, quotesPriceOrder };
 }

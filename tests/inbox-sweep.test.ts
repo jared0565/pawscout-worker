@@ -162,4 +162,15 @@ describe('composeAgentDraft', () => {
     const out = composeAgentDraft({ bodyText: 'Hello.', quotesPriceOrOrder: false }, null);
     expect(out.bodyText).toBe('Hello.');
   });
+
+  it('appends the agent postscript AFTER the footer (the classic post-signature P.S. slot)', () => {
+    const ps = 'P.S. 🔍 Try the search bar.';
+    const out = composeAgentDraft({ bodyText: 'Happy to help.', quotesPriceOrOrder: false }, null, 'sales', ps);
+    expect(out.bodyText).toBe(`Happy to help.\n\nBest Regards,\nActive Paw Sales Team\n\n${ps}`);
+  });
+
+  it('omits the postscript when null (follow-up replies)', () => {
+    const out = composeAgentDraft({ bodyText: 'Happy to help.', quotesPriceOrOrder: false }, null, 'sales', null);
+    expect(out.bodyText).toBe('Happy to help.\n\nBest Regards,\nActive Paw Sales Team');
+  });
 });
