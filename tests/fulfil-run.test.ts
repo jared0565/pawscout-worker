@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
-import { processDueOrders, pollTracking } from '../src/fulfil-run';
+import { processDueOrders, pollTracking, isStockoutError, type StockoutNotice } from '../src/fulfil-run';
 import { TenantStore } from '../src/tenant-store';
 import { DEFAULT_GATES, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_INBOX, type TenantConfig } from '../src/types';
 import type { CjClient, CjDetail } from '../src/cj';
@@ -167,6 +167,95 @@ describe('processDueOrders', () => {
     expect(r).toMatchObject({ submitted: 1 });
     expect(spy.create.length).toBe(0); // did NOT duplicate the CJ order
     expect(spy.pay).toEqual(['CJORD-EXISTING']);
+  });
+});
+
+describe('source-stockout handling (sold out at CJ after we sold it)', () => {
+  interface Call { query: string; variables?: Record<string, unknown> }
+  /** Admin mock that answers the inventory-zero flow (location -> variants -> set 0). */
+  function zeroAdmin(calls: Call[]): AdminGraphql {
+    return (async (query: string, variables?: Record<string, unknown>) => {
+      calls.push({ query, variables });
+      if (query.includes('pawscoutLocation')) return { location: { id: 'gid://shopify/Location/1' } };
+      if (query.includes('pawscoutVariants')) return { product: { variants: { nodes: [{ id: 'gid://v/1', sku: 'S1', price: '9.99', inventoryItem: { id: 'gid://inv/1', tracked: true } }] } } };
+      if (query.includes('inventorySetQuantities')) return { inventorySetQuantities: { userErrors: [] } };
+      return {};
+    }) as unknown as AdminGraphql;
+  }
+
+  it('pre-flight catches a sniped line: no CJ order, stockout reason, variant zeroed, owner notified', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedWarehouse(store, 'CJ1', 'S1', 'v1');
+    await store.putLink({ cjPid: 'CJ1', state: 'imported', shopifyProductId: 'gid://shopify/Product/100', handle: 'x', category: 'pet-toys' });
+    await seedOrder(store, 'O1', [{ sku: 'S1', quantity: 2, cjPid: 'CJ1' }]);
+    const spy = { create: [] as unknown[], pay: [] as string[] };
+    const cj = fakeCj(spy, { stockByPid: async () => new Map([['v1', 1]]) }); // source has 1, customer ordered 2
+    const calls: Call[] = [];
+    const notices: StockoutNotice[] = [];
+    const r = await processDueOrders(store, cj, zeroAdmin(calls), cfg('pawscout'), { notifyStockout: async (n) => { notices.push(n); } });
+
+    expect(r).toMatchObject({ submitted: 0, errored: 1 });
+    expect(spy.create.length).toBe(0); // never created the CJ order
+    const o = await store.getOrder('O1');
+    expect(o?.status).toBe('error');
+    expect(JSON.parse(o!.hold_reasons ?? '[]')[0]).toMatch(/^stockout:/);
+    const zero = calls.find((c) => c.query.includes('inventorySetQuantities'))!;
+    expect(zero).toBeDefined(); // phantom stock hidden from sale immediately
+    expect((zero.variables!.input as { quantities: { quantity: number }[] }).quantities[0].quantity).toBe(0);
+    expect(notices).toHaveLength(1);
+    expect(notices[0]).toMatchObject({ orderName: '#O1', item: 'S1', zeroed: true });
+  });
+
+  it('an unreachable stock endpoint is UNKNOWN, not zero: the order proceeds normally', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedWarehouse(store, 'CJ1', 'S1', 'v1');
+    await seedOrder(store, 'O1', [{ sku: 'S1', quantity: 1, cjPid: 'CJ1' }]);
+    const spy = { create: [] as unknown[], pay: [] as string[] };
+    const cj = fakeCj(spy, { stockByPid: async () => { throw new Error('CJ 500'); } });
+    const r = await processDueOrders(store, cj, noAdmin, cfg('pawscout'));
+    expect(r).toMatchObject({ submitted: 1, errored: 0 });
+    expect(spy.create.length).toBe(1);
+  });
+
+  it('classifies a CJ createOrder out-of-stock rejection as stockout (backstop, single-line pinpoint)', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedWarehouse(store, 'CJ1', 'S1', 'v1');
+    await store.putLink({ cjPid: 'CJ1', state: 'imported', shopifyProductId: 'gid://shopify/Product/100', handle: 'x', category: 'pet-toys' });
+    await seedOrder(store, 'O1', [{ sku: 'S1', quantity: 1, cjPid: 'CJ1' }]);
+    const spy = { create: [] as unknown[], pay: [] as string[] };
+    const cj = fakeCj(spy, {
+      stockByPid: async () => new Map([['v1', 50]]), // pre-flight passes...
+      createOrder: async () => { throw new Error('the product is out of stock'); } // ...CJ still rejects
+    });
+    const calls: Call[] = [];
+    const notices: StockoutNotice[] = [];
+    const r = await processDueOrders(store, cj, zeroAdmin(calls), cfg('pawscout'), { notifyStockout: async (n) => { notices.push(n); } });
+    expect(r).toMatchObject({ errored: 1 });
+    expect(JSON.parse((await store.getOrder('O1'))!.hold_reasons ?? '[]')[0]).toMatch(/^stockout:/);
+    expect(calls.some((c) => c.query.includes('inventorySetQuantities'))).toBe(true); // single line -> pinpointed + zeroed
+    expect(notices).toHaveLength(1);
+  });
+
+  it('a stockout with plenty of source stock never fires: normal orders are untouched', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedWarehouse(store, 'CJ1', 'S1', 'v1');
+    await seedOrder(store, 'O1', [{ sku: 'S1', quantity: 1, cjPid: 'CJ1' }]);
+    const spy = { create: [] as unknown[], pay: [] as string[] };
+    const cj = fakeCj(spy, { stockByPid: async () => new Map([['v1', 50]]) });
+    const notices: StockoutNotice[] = [];
+    const r = await processDueOrders(store, cj, noAdmin, cfg('pawscout'), { notifyStockout: async (n) => { notices.push(n); } });
+    expect(r).toMatchObject({ submitted: 1, errored: 0 });
+    expect(notices).toHaveLength(0);
+  });
+
+  it('isStockoutError matches CJ out-of-stock phrasings and not generic failures', () => {
+    expect(isStockoutError('The product is OUT OF STOCK')).toBe(true);
+    expect(isStockoutError('variant sold out')).toBe(true);
+    expect(isStockoutError('insufficient inventory for vid x')).toBe(true);
+    expect(isStockoutError('stock is not enough')).toBe(true);
+    expect(isStockoutError('CJ system error 500')).toBe(false);
+    expect(isStockoutError('no address on order')).toBe(false);
+    expect(isStockoutError('insufficient balance, please recharge')).toBe(false); // wallet, not stock
   });
 });
 

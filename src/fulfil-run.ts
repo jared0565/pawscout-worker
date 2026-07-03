@@ -2,6 +2,8 @@ import { Vault } from './vault';
 import { TenantStore, listActiveShops } from './tenant-store';
 import { makeAdminGraphql, type AdminGraphql } from './shopify-admin';
 import { CjClient, CjTokenManager, cjFetchFromEnv, chooseOrigin, type CjDetail } from './cj';
+import { getPrimaryLocationId, productInventoryItems, setInventoryQuantities } from './proxy/inventory';
+import { resyncLowStockInventory } from './jobs';
 import { sendEmail } from './email';
 import type { Env, TenantConfig } from './types';
 import type { OrderLineItem, OrderAddress } from './fulfil';
@@ -76,6 +78,26 @@ async function writeTracking(admin: AdminGraphql, orderGid: string, trackNumber:
   if (errs.length) throw new Error(errs.map((e) => e.message).join('; '));
 }
 
+/** CJ error phrasings that mean "no source stock" - the backstop classifier for
+ * createOrder failures (the deterministic pre-flight below catches most cases). */
+export function isStockoutError(msg: string): boolean {
+  return /out of stock|sold ?out|insufficient (?:stock|inventory)|not enough stock|stock (?:is )?not enough|no stock|inventory shortage|缺货|库存不足/i.test(msg);
+}
+
+/** Thrown by the pre-flight source-stock check: carries the failing line so the
+ * error branch can zero exactly the right variant. */
+class StockoutError extends Error {
+  constructor(public cjPid: string, public sku: string, msg: string) { super(msg); }
+}
+
+export interface StockoutNotice {
+  shopifyOrderId: string;
+  orderName: string;
+  item: string;    // sku or cjPid of the failing line
+  detail: string;  // what happened
+  zeroed: boolean; // whether the variant was hidden from sale
+}
+
 /** A payBalance failure that means "wallet has no/insufficient funds" - recoverable
  * by the owner topping up + paying in CJ, NOT a code/data bug. We downgrade these
  * to 'awaiting-payment' instead of 'error'. CJ phrases it a few ways. */
@@ -118,10 +140,9 @@ export async function processDueOrders(
   cj: CjClient,
   admin: AdminGraphql,
   cfg: TenantConfig,
-  opts: { now?: () => number; max?: number; notify?: (n: AwaitingPaymentNotice) => Promise<void> } = {}
+  opts: { now?: () => number; max?: number; notify?: (n: AwaitingPaymentNotice) => Promise<void>; notifyStockout?: (n: StockoutNotice) => Promise<void> } = {}
 ): Promise<{ submitted: number; awaiting: number; errored: number; skipped: boolean }> {
   if (cfg.fulfil.mode !== 'pawscout') return { submitted: 0, awaiting: 0, errored: 0, skipped: true }; // 'manual'/'cj' → PawScout doesn't pay
-  void admin; // (admin reserved for future create-side checks; tracking writeback is in pollTracking)
   const createOnly = cfg.fulfil.createOnly === true;
   const nowIso = new Date(opts.now ? opts.now() : Date.now()).toISOString();
   const due = await store.dueQueuedOrders(nowIso, opts.max ?? 10);
@@ -140,8 +161,9 @@ export async function processDueOrders(
     }
   };
   for (const o of due) {
+    let lineItems: OrderLineItem[] = [];
     try {
-      const lineItems = JSON.parse(o.line_items_json ?? '[]') as OrderLineItem[];
+      lineItems = JSON.parse(o.line_items_json ?? '[]') as OrderLineItem[];
       const address = o.address_json ? (JSON.parse(o.address_json) as OrderAddress) : null;
       if (!address) throw new Error('no address on order');
 
@@ -150,6 +172,20 @@ export async function processDueOrders(
       for (const li of lineItems) {
         const resolved = li.cjPid ? await resolveLine(store, cj, li.cjPid, li.sku ?? '', cfg.floors.stockFloor) : null;
         if (!resolved) throw new Error(`could not resolve vid for ${li.sku ?? li.cjPid}`);
+        // Pre-flight source-stock check (deterministic): CJ stock is shared across
+        // every CJ merchant, so this line may have been sniped since our last sync.
+        // Catch it BEFORE creating the CJ order. Only on first submission (a pay-retry
+        // already has a CJ order). An unreachable stock endpoint is UNKNOWN, not zero:
+        // proceed and rely on the createOrder error backstop (isStockoutError).
+        if (!o.cj_order_id) {
+          let avail: number | undefined;
+          try {
+            avail = (await cj.stockByPid(li.cjPid!)).get(resolved.vid);
+          } catch { avail = undefined; }
+          if (avail !== undefined && avail < li.quantity) {
+            throw new StockoutError(li.cjPid!, li.sku ?? '', `source stock ${avail} is below the ordered ${li.quantity} for ${li.sku ?? li.cjPid}`);
+          }
+        }
         products.push({ vid: resolved.vid, quantity: li.quantity });
         origin = resolved.origin; // last wins; CJ order ships from one origin
       }
@@ -189,9 +225,54 @@ export async function processDueOrders(
       await store.updateOrder(o.shopify_order_id, { status: 'submitted' });
       submitted++;
     } catch (e) {
-      console.warn(`fulfil failed for ${o.order_name ?? o.shopify_order_id}: ${(e as Error).message}`);
-      await store.updateOrder(o.shopify_order_id, { status: 'error', hold_reasons: JSON.stringify([`fulfil: ${(e as Error).message}`.slice(0, 200)]) });
+      const msg = (e as Error).message;
+      // Classify a stock-caused failure: the pre-flight throws a typed StockoutError
+      // (exact line known); a CJ createOrder rejection is matched by phrasing, and
+      // pinpointed only when the order has a single line.
+      let stockout: { cjPid: string | null; sku: string | null } | null = null;
+      if (e instanceof StockoutError) stockout = { cjPid: e.cjPid, sku: e.sku };
+      else if (isStockoutError(msg)) stockout = lineItems.length === 1 ? { cjPid: lineItems[0].cjPid, sku: lineItems[0].sku } : { cjPid: null, sku: null };
+
+      console.warn(`fulfil failed for ${o.order_name ?? o.shopify_order_id}: ${msg}`);
+      const reason = stockout ? `stockout: ${msg}` : `fulfil: ${msg}`;
+      await store.updateOrder(o.shopify_order_id, { status: 'error', hold_reasons: JSON.stringify([reason.slice(0, 200)]) });
       errored++;
+
+      if (stockout) {
+        // Stop the bleeding: hide the variant from sale NOW instead of leaving the
+        // phantom stock sellable until the next nightly sync. Best-effort - the
+        // order is already parked, so a failure here never blocks the batch.
+        let zeroed = false;
+        if (stockout.cjPid) {
+          try {
+            const link = await store.getLink(stockout.cjPid);
+            if (link?.shopify_product_id) {
+              const locationId = await getPrimaryLocationId(admin);
+              const items = await productInventoryItems(admin, link.shopify_product_id);
+              const targets = items.filter((v) => !stockout!.sku || v.sku === stockout!.sku);
+              if (locationId && targets.length) {
+                await setInventoryQuantities(admin, locationId, targets.map((v) => ({ inventoryItemId: v.inventoryItemId, quantity: 0 })));
+                zeroed = true;
+              }
+            }
+          } catch (ze) {
+            console.warn(`stockout inventory zero failed for ${stockout.cjPid}: ${(ze as Error).message}`);
+          }
+        }
+        if (opts.notifyStockout) {
+          try {
+            await opts.notifyStockout({
+              shopifyOrderId: o.shopify_order_id,
+              orderName: o.order_name ?? o.shopify_order_id,
+              item: stockout.sku || stockout.cjPid || 'unidentified line',
+              detail: msg,
+              zeroed
+            });
+          } catch (ne) {
+            console.warn(`stockout notify failed for ${o.order_name ?? o.shopify_order_id}: ${(ne as Error).message}`);
+          }
+        }
+      }
     }
   }
   return { submitted, awaiting, errored, skipped: false };
@@ -246,6 +327,29 @@ function makeAwaitingPaymentNotify(env: Env, alertEmail: string | undefined): ((
   };
 }
 
+/** Build the source-stockout email callback (Layer 3 playbook for the owner), or
+ * undefined when email isn't configured. */
+function makeStockoutNotify(env: Env, alertEmail: string | undefined): ((n: StockoutNotice) => Promise<void>) | undefined {
+  if (!env.RESEND_API_KEY || !alertEmail) return undefined;
+  return async (n: StockoutNotice) => {
+    const hidden = n.zeroed
+      ? 'The variant has been hidden from sale (inventory zeroed) so no further orders can be placed for it.'
+      : 'The variant could NOT be hidden automatically - check its availability on the store.';
+    const r = await sendEmail(env.RESEND_API_KEY!, {
+      to: alertEmail,
+      subject: `Active Paw - order ${n.orderName} cannot be fulfilled (out of stock at source)`,
+      text: `Order ${n.orderName} failed to submit: ${n.item} is out of stock at the source.\n\n${n.detail}\n\n${hidden}\n\nSuggested next steps:\n1. Check the item in CJ for a restock signal (CN-warehoused items often restock; local-warehouse stock may not).\n2. If a restock looks likely and soon, email the customer an honest timeframe and ask if they want to wait.\n3. Otherwise refund promptly and, if we stock a close alternative, offer it.\n\nThe order is parked in the console with reason "stockout" and will not retry until released.`,
+      html: `<p>Order <strong>${n.orderName}</strong> failed to submit: <strong>${n.item}</strong> is out of stock at the source.</p>`
+        + `<p>${n.detail}</p><p>${hidden}</p>`
+        + `<p>Suggested next steps:</p><ol><li>Check the item in CJ for a restock signal (CN-warehoused items often restock; local-warehouse stock may not).</li>`
+        + `<li>If a restock looks likely and soon, email the customer an honest timeframe and ask if they want to wait.</li>`
+        + `<li>Otherwise refund promptly and, if we stock a close alternative, offer it.</li></ol>`
+        + `<p>The order is parked in the console with reason "stockout" and will not retry until released.</p>`
+    });
+    if (!r.ok) throw new Error(r.error); // surfaced + logged by the caller's catch
+  };
+}
+
 /** Run the order pipeline (submit due orders + poll tracking) for ONE shop. Returns
  * null when the shop isn't ready (no token / no CJ). Shared by the cron and the
  * on-demand "Run fulfilment now" endpoint. */
@@ -260,8 +364,17 @@ export async function runOrderPipelineForShop(env: Env, vault: Vault, shop: stri
   const f = cjFetchFromEnv(env);
   const cj = new CjClient(() => new CjTokenManager(store, vault, f).getToken(), f);
   const notify = makeAwaitingPaymentNotify(env, cfg.fulfil.alertEmail);
-  const p = await processDueOrders(store, cj, admin, cfg, notify ? { notify } : {});
+  const notifyStockout = makeStockoutNotify(env, cfg.fulfil.alertEmail);
+  const p = await processDueOrders(store, cj, admin, cfg, { ...(notify ? { notify } : {}), ...(notifyStockout ? { notifyStockout } : {}) });
   const t = await pollTracking(store, cj, admin);
+  // Low-band fast re-sync piggybacks on this 15-minute entry (same clients): items
+  // at <=LOW_STOCK_BAND get their source stock re-checked in minutes, not tomorrow
+  // at 04:17. Best-effort - a failure never affects the order pipeline result.
+  try {
+    await resyncLowStockInventory(store, cj, admin, cfg);
+  } catch (e) {
+    console.warn(`low-stock resync failed for ${shop}: ${(e as Error).message}`);
+  }
   return { submitted: p.submitted, awaiting: p.awaiting, errored: p.errored, checked: t.checked, fulfilled: t.fulfilled };
 }
 

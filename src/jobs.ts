@@ -22,6 +22,21 @@ const LOG_RETENTION_DAYS = 90;
 const MAX_IMPORTS_PER_RUN = 30; // W2: promotions cost 1 CJ stock-check each - well within budget
 const CJ_CALL_GAP_MS = 1100; // CJ allows ~1 request/second
 
+/** Low-band sellable reserve. CJ warehouse stock is SHARED across every CJ
+ * merchant, so the last unit is the one most likely to be sniped between our
+ * syncs. In the low band we sell one unit fewer than CJ reports: an oversold
+ * order (refund + apology + trust damage) costs more than the last unit earns.
+ * Above the band the race risk is negligible and the full quantity is sellable.
+ * The PDP/cart display this same sellable number, so what the customer sees is
+ * exactly what we are willing to sell. */
+export const LOW_STOCK_BAND = 10;
+export const LOW_STOCK_RESERVE = 1;
+export function sellableQty(realStock: number): number {
+  if (realStock <= 0) return 0;
+  if (realStock <= LOW_STOCK_BAND) return Math.max(0, realStock - LOW_STOCK_RESERVE);
+  return realStock;
+}
+
 const ARCHIVE = `mutation pawscoutArchive($input: ProductInput!) {
   productUpdate(input: $input) { product { id } userErrors { field message } }
 }`;
@@ -127,7 +142,7 @@ export async function syncStoreInventory(
   cj: CjClient,
   admin: AdminGraphql,
   cfg: TenantConfig,
-  opts: { maxProducts?: number; offset?: number; pause?: (ms: number) => Promise<void>; errors?: string[] } = {}
+  opts: { maxProducts?: number; offset?: number; pause?: (ms: number) => Promise<void>; errors?: string[]; onlyCjPids?: string[] } = {}
 ): Promise<number> {
   const maxProducts = opts.maxProducts ?? 60;
   const offset = opts.offset ?? 0;
@@ -138,8 +153,13 @@ export async function syncStoreInventory(
     return 0;
   }
 
+  let links = await store.listImportedLinks();
+  if (opts.onlyCjPids) {
+    const want = new Set(opts.onlyCjPids);
+    links = links.filter((l) => want.has(l.cj_pid));
+  }
   let synced = 0;
-  for (const link of (await store.listImportedLinks()).slice(offset, offset + maxProducts)) {
+  for (const link of links.slice(offset, offset + maxProducts)) {
     if (!link.shopify_product_id) continue;
     try {
       // Fresh CJ detail: source of truth for variant costs (price sync) and,
@@ -210,7 +230,8 @@ export async function syncStoreInventory(
           locationId,
           variants.map((v) => {
             const vid = skuToVid.get(v.sku);
-            const qty = paused ? 0 : (vid !== undefined ? stockMap.get(vid) ?? maxStock : maxStock);
+            const raw = vid !== undefined ? stockMap.get(vid) ?? maxStock : maxStock;
+            const qty = paused ? 0 : sellableQty(raw); // low-band reserve: never sell the race-prone last unit
             return { inventoryItemId: v.inventoryItemId, quantity: Math.min(qty, MAX_TRACKED_QTY) };
           })
         );
@@ -280,7 +301,7 @@ export async function syncStoreInventory(
         }
         await setSupplierMetafields(admin, link.shopify_product_id, {
           status: paused ? 'out_of_stock' : maxStock < cfg.floors.stockFloor * 2 ? 'low_stock' : 'available',
-          qty: maxStock,
+          qty: paused ? maxStock : sellableQty(maxStock), // theme fallback shows/caps the SELLABLE number
           checkedAt: new Date().toISOString(),
           origin,
           deliveryDays,
@@ -297,6 +318,25 @@ export async function syncStoreInventory(
     }
   }
   return synced;
+}
+
+/**
+ * Fast re-sync for the LOW BAND only, run from the 15-minute cron. The nightly
+ * sync leaves up to a 24h staleness window; for items at or below LOW_STOCK_BAND
+ * (where a shared-warehouse race is most likely) this shrinks it to minutes. It
+ * is only ever a handful of products, so the CJ call cost is negligible; a run
+ * with no low-band items is free (no CJ or Shopify calls at all).
+ */
+export async function resyncLowStockInventory(
+  store: TenantStore,
+  cj: CjClient,
+  admin: AdminGraphql,
+  cfg: TenantConfig,
+  opts: { pause?: (ms: number) => Promise<void> } = {}
+): Promise<number> {
+  const pids = await store.lowStockImportedCjPids(LOW_STOCK_BAND);
+  if (!pids.length) return 0;
+  return syncStoreInventory(store, cj, admin, cfg, { onlyCjPids: pids, maxProducts: pids.length, pause: opts.pause });
 }
 
 // --- W1: warehouse replenishment + freshness ---

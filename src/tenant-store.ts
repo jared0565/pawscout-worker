@@ -553,6 +553,23 @@ export class TenantStore {
     return rs.results ?? [];
   }
 
+  /** Imported, unpaused products whose last-synced source stock is at or below the
+   * threshold - the low band where a shared-warehouse race is likely. Powers the
+   * fast (15-min) re-sync that shrinks the nightly sync's staleness window for
+   * exactly the risky items. */
+  async lowStockImportedCjPids(threshold: number, limit = 25): Promise<string[]> {
+    const rs = await this.db
+      .prepare(
+        `SELECT l.cj_pid FROM product_links l
+         JOIN warehouse_products w ON w.shop = l.shop AND w.cj_pid = l.cj_pid
+         WHERE l.shop = ?1 AND l.state = 'imported' AND l.stock_paused = 0 AND w.stock <= ?2
+         ORDER BY w.stock ASC LIMIT ${Math.min(Math.max(limit, 1), 100)}`
+      )
+      .bind(this.shop, threshold)
+      .all<{ cj_pid: string }>();
+    return (rs.results ?? []).map((r) => r.cj_pid);
+  }
+
   async linksByState(state: ProductLink['state']): Promise<ProductLink[]> {
     const rs = await this.db
       .prepare(`SELECT * FROM product_links WHERE shop = ?1 AND state = ?2 ORDER BY updated_at ASC`)

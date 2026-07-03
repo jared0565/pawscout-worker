@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
-import { cullStaleProducts, refillCollections, syncStoreInventory, seedSemanticLibrary } from '../src/jobs';
+import { cullStaleProducts, refillCollections, syncStoreInventory, resyncLowStockInventory, seedSemanticLibrary, sellableQty, LOW_STOCK_BAND, LOW_STOCK_RESERVE } from '../src/jobs';
 import { TenantStore } from '../src/tenant-store';
 import { DEFAULT_GATES, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, DEFAULT_INBOX, DEFAULT_SEMANTIC, type TenantConfig } from '../src/types';
 import type { CjClient, CjDetail } from '../src/cj';
@@ -205,6 +205,61 @@ describe('syncStoreInventory', () => {
 
     expect((await store.getLink('A'))?.stock_paused).toBe(1);
     expect((await store.getWarehouseProduct('A'))?.status).toBe('low_stock');
+  });
+
+  it('holds back the low-band reserve so the race-prone last unit is never sold', async () => {
+    // CJ stock is shared across every CJ merchant; in the low band we sell one
+    // fewer than CJ reports. Stock 10 (== stockFloor, so NOT paused) -> sellable 9.
+    const store = new TenantStore(env.DB, SHOP);
+    await insertLink('A', 'imported', 5);
+    await seedWarehouse(store, 'A', 'pet-toys');
+
+    const calls: Call[] = [];
+    await syncStoreInventory(store, stockCj(10), shopAdmin(calls), CFG, { pause: async () => {} });
+
+    const inv = calls.find((c) => c.query.includes('inventorySetQuantities'))!;
+    expect((inv.variables!.input as { quantities: { quantity: number }[] }).quantities[0].quantity).toBe(9);
+    const meta = calls.find((c) => c.query.includes('metafieldsSet'))!;
+    const fields = meta.variables!.metafields as { key: string; value: string }[];
+    expect(fields.find((f) => f.key === 'available_qty')?.value).toBe('9'); // theme fallback shows sellable too
+    expect((await store.getLink('A'))?.stock_paused).toBe(0); // reserve is not a pause
+  });
+
+  it('sellableQty: full above the band, minus reserve inside it, never negative', () => {
+    expect(LOW_STOCK_BAND).toBe(10);
+    expect(LOW_STOCK_RESERVE).toBe(1);
+    expect(sellableQty(0)).toBe(0);
+    expect(sellableQty(-3)).toBe(0);
+    expect(sellableQty(1)).toBe(0);  // the last unit is never sold
+    expect(sellableQty(2)).toBe(1);
+    expect(sellableQty(10)).toBe(9);
+    expect(sellableQty(11)).toBe(11); // above the band: untouched
+    expect(sellableQty(466)).toBe(466);
+  });
+
+  it('resyncLowStockInventory re-syncs ONLY the low-band items (fast 15-min path)', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await insertLink('A', 'imported', 5);
+    await insertLink('B', 'imported', 5);
+    await seedWarehouse(store, 'A', 'pet-toys', 4);  // low band -> re-synced
+    await seedWarehouse(store, 'B', 'pet-toys', 50); // healthy -> skipped
+    const calls: Call[] = [];
+    const n = await resyncLowStockInventory(store, stockCj(4), shopAdmin(calls), CFG, { pause: async () => {} });
+    expect(n).toBe(1); // only A
+    const invCalls = calls.filter((c) => c.query.includes('inventorySetQuantities'));
+    expect(invCalls).toHaveLength(1);
+    // stock 4 < stockFloor 10 -> paused -> zeroed (the normal floor rule still applies)
+    expect((invCalls[0].variables!.input as { quantities: { quantity: number }[] }).quantities[0].quantity).toBe(0);
+  });
+
+  it('resyncLowStockInventory is free when nothing is in the low band', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await insertLink('B', 'imported', 5);
+    await seedWarehouse(store, 'B', 'pet-toys', 50);
+    const calls: Call[] = [];
+    const n = await resyncLowStockInventory(store, stockCj(50), shopAdmin(calls), CFG, { pause: async () => {} });
+    expect(n).toBe(0);
+    expect(calls).toHaveLength(0); // no Shopify calls at all
   });
 
   it('restores quantities per-variant via the SKU↔vid map when stock recovers', async () => {
