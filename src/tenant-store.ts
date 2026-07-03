@@ -1126,6 +1126,99 @@ export class TenantStore {
     return rs.results ?? [];
   }
 
+  // --- Console Glance (Phase 3): read-only aggregates. Every number the Glance
+  // view shows comes from one of these real D1 facts - nothing is fabricated. ---
+
+  async pendingDraftStats(): Promise<{ n: number; oldestAt: string | null }> {
+    const row = await this.db
+      .prepare(`SELECT COUNT(*) AS n, MIN(created_at) AS oldest FROM inbox_drafts WHERE shop = ?1 AND status = 'pending'`)
+      .bind(this.shop).first<{ n: number; oldest: string | null }>();
+    return { n: row?.n ?? 0, oldestAt: row?.oldest ?? null };
+  }
+
+  async countAutoSentSince(sinceIso: string): Promise<number> {
+    const row = await this.db
+      .prepare(`SELECT COUNT(*) AS n FROM inbox_drafts WHERE shop = ?1 AND status = 'auto_sent' AND sent_at >= ?2`)
+      .bind(this.shop, sinceIso).first<{ n: number }>();
+    return row?.n ?? 0;
+  }
+
+  /** Thread ids that currently have a pending draft (for the "draft ready" list chip). */
+  async pendingDraftThreadIds(): Promise<string[]> {
+    const rs = await this.db
+      .prepare(`SELECT DISTINCT thread_id FROM inbox_drafts WHERE shop = ?1 AND status = 'pending'`)
+      .bind(this.shop).all<{ thread_id: string }>();
+    return (rs.results ?? []).map((r) => r.thread_id);
+  }
+
+  /** Recently sent replies (manual approvals + auto-sends) with their recipient. */
+  async recentSentDrafts(limit = 6): Promise<{ sent_at: string; status: string; contact_email: string }[]> {
+    const rs = await this.db
+      .prepare(
+        `SELECT d.sent_at AS sent_at, d.status AS status, t.contact_email AS contact_email
+         FROM inbox_drafts d JOIN inbox_threads t ON t.shop = d.shop AND t.id = d.thread_id
+         WHERE d.shop = ?1 AND d.status IN ('sent', 'auto_sent') AND d.sent_at IS NOT NULL
+         ORDER BY d.sent_at DESC LIMIT ${Math.min(Math.max(limit, 1), 20)}`
+      )
+      .bind(this.shop).all<{ sent_at: string; status: string; contact_email: string }>();
+    return rs.results ?? [];
+  }
+
+  async recentInboundMessages(limit = 6): Promise<{ received_at: string; from_addr: string }[]> {
+    const rs = await this.db
+      .prepare(`SELECT received_at, from_addr FROM inbox_messages WHERE shop = ?1 AND direction = 'inbound' ORDER BY received_at DESC LIMIT ${Math.min(Math.max(limit, 1), 20)}`)
+      .bind(this.shop).all<{ received_at: string; from_addr: string }>();
+    return rs.results ?? [];
+  }
+
+  async countOrdersByStatus(): Promise<Record<string, number>> {
+    const rs = await this.db
+      .prepare(`SELECT status, COUNT(*) AS n FROM orders WHERE shop = ?1 GROUP BY status`)
+      .bind(this.shop).all<{ status: string; n: number }>();
+    const out: Record<string, number> = {};
+    for (const r of rs.results ?? []) out[r.status] = r.n;
+    return out;
+  }
+
+  async countLinksByState(state: ProductLink['state']): Promise<number> {
+    const row = await this.db
+      .prepare(`SELECT COUNT(*) AS n FROM product_links WHERE shop = ?1 AND state = ?2`)
+      .bind(this.shop, state).first<{ n: number }>();
+    return row?.n ?? 0;
+  }
+
+  /** Low-band imported products WITH titles, most-at-risk first (the detail view of
+   *  lowStockImportedCjPids - same join, same threshold semantics). */
+  async lowStockImportedProducts(threshold: number, limit = 5): Promise<{ cj_pid: string; title: string; stock: number }[]> {
+    const rs = await this.db
+      .prepare(
+        `SELECT l.cj_pid AS cj_pid, w.title AS title, w.stock AS stock
+         FROM product_links l
+         JOIN warehouse_products w ON w.shop = l.shop AND w.cj_pid = l.cj_pid
+         WHERE l.shop = ?1 AND l.state = 'imported' AND l.stock_paused = 0 AND w.stock <= ?2
+         ORDER BY w.stock ASC LIMIT ${Math.min(Math.max(limit, 1), 25)}`
+      )
+      .bind(this.shop, threshold)
+      .all<{ cj_pid: string; title: string; stock: number }>();
+    return rs.results ?? [];
+  }
+
+  /** Batched contact-name lookup (email -> name; unnamed contacts are omitted). */
+  async contactNamesByEmails(emails: string[]): Promise<Map<string, string>> {
+    const out = new Map<string, string>();
+    if (!emails.length) return out;
+    for (let i = 0; i < emails.length; i += 50) {
+      const chunk = emails.slice(i, i + 50);
+      const ph = chunk.map((_, j) => `?${j + 2}`).join(',');
+      const rs = await this.db
+        .prepare(`SELECT email, name FROM inbox_contacts WHERE shop = ?1 AND email IN (${ph}) AND name IS NOT NULL`)
+        .bind(this.shop, ...chunk)
+        .all<{ email: string; name: string }>();
+      for (const r of rs.results ?? []) out.set(r.email, r.name);
+    }
+    return out;
+  }
+
   // --- Affiliate inbound gating (Phase 1) ---
   getApplicantByThread(threadId: string): Promise<ApplicantRow | null> {
     return this.db.prepare(`SELECT * FROM affiliate_applicants WHERE shop = ?1 AND thread_id = ?2`)

@@ -3,7 +3,7 @@ import { TenantStore, listActiveShops } from './tenant-store';
 import { makeAdminGraphql, type AdminGraphql } from './shopify-admin';
 import { CjClient, CjTokenManager, cjFetchFromEnv, chooseOrigin, type CjDetail } from './cj';
 import { getPrimaryLocationId, productInventoryItems, setInventoryQuantities } from './proxy/inventory';
-import { resyncLowStockInventory } from './jobs';
+import { resyncLowStockInventory, JOB_STAMP_PIPELINE, JOB_STAMP_TTL_DAYS } from './jobs';
 import { sendEmail } from './email';
 import type { Env, TenantConfig } from './types';
 import type { OrderLineItem, OrderAddress } from './fulfil';
@@ -375,6 +375,8 @@ export async function runOrderPipelineForShop(env: Env, vault: Vault, shop: stri
   } catch (e) {
     console.warn(`low-stock resync failed for ${shop}: ${(e as Error).message}`);
   }
+  // Console health stamp (Glance): record the completed run; best-effort.
+  try { await store.putSearchCache(JOB_STAMP_PIPELINE, new Date().toISOString(), JOB_STAMP_TTL_DAYS); } catch { /* never affects the pipeline result */ }
   return { submitted: p.submitted, awaiting: p.awaiting, errored: p.errored, checked: t.checked, fulfilled: t.fulfilled };
 }
 

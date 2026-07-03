@@ -9,12 +9,17 @@ import { defaultFetch } from '../safe-fetch';
 export async function listInboxThreads(db: D1Database, shop: string, status: string | null) {
   const store = new TenantStore(db, shop);
   const rows = await store.listThreads(status, 100);
+  // Phase 3: per-thread "draft ready" flag + the contact's display name, so the
+  // list pane can show a person and a state chip without extra round-trips.
+  const draftThreadIds = new Set(await store.pendingDraftThreadIds());
+  const names = await store.contactNamesByEmails([...new Set(rows.map((t) => t.contact_email))]);
   return {
     ok: true as const,
     threads: rows.map((t) => ({
-      id: t.id, contactEmail: t.contact_email, subject: t.subject, status: t.status,
+      id: t.id, contactEmail: t.contact_email, contactName: names.get(t.contact_email) ?? null,
+      subject: t.subject, status: t.status,
       category: t.primary_category, intentScore: t.intent_score, summary: t.summary,
-      lastMessageAt: t.last_message_at
+      lastMessageAt: t.last_message_at, hasDraft: draftThreadIds.has(t.id)
     }))
   };
 }
@@ -26,7 +31,8 @@ export async function getInboxThread(db: D1Database, shop: string, threadId: str
   const draft = await store.getPendingDraft(threadId);
   const invoice = await store.getOpenInvoiceForThread(threadId);
   const applicant = await store.getApplicantByThread(threadId);
-  return { ok: true as const, thread: got.thread, messages: got.messages, labels: got.labels, draft, invoice, applicant };
+  const contact = await store.getContactByEmail(got.thread.contact_email);
+  return { ok: true as const, thread: got.thread, messages: got.messages, labels: got.labels, draft, invoice, applicant, contact };
 }
 
 export async function setInboxStatus(db: D1Database, shop: string, threadId: string, status: unknown) {

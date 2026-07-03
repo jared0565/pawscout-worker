@@ -16,16 +16,19 @@
 // window.alert()/confirm() are silently blocked. ALL user feedback must be inline
 // (writing into DOM elements) - never alert(). Do not reintroduce alert() here.
 //
-// Structure note (Phase 1 shell / Phase 2 inbox): this file is the COMPOSER -
-// the shared <style> block and the single inline <script> live here, while the
-// card markup lives in ./views/*.ts fragments, the rail/router in ./shell.ts,
-// and the inbox-workspace browser JS + CSS in ./inbox-js.ts + ./views/inbox.ts
-// (composed below: inboxCss after shellCss, inboxJs before the init calls).
-// All five views exist in the DOM at once; the hash router only toggles
+// Structure note (Phase 1 shell / Phase 2 inbox / Phase 3 glance): this file is
+// the COMPOSER - the shared <style> block and the single inline <script> live
+// here, while the card markup lives in ./views/*.ts fragments, the rail/router
+// in ./shell.ts, and the view-specific browser JS + CSS in ./inbox-js.ts +
+// ./views/inbox.ts and ./glance-js.ts + ./views/glance.ts (composed below:
+// inboxCss then glanceCss after shellCss; inboxJs then glanceJs before the init
+// calls). All six views exist in the DOM at once; the hash router only toggles
 // .active, so every getElementById below works regardless of the active view.
 
 import { inboxView, inboxCss } from './views/inbox';
 import { inboxJs } from './inbox-js';
+import { glanceView, glanceCss } from './views/glance';
+import { glanceJs } from './glance-js';
 import { catalogView } from './views/catalog';
 import { opsView } from './views/ops';
 import { settingsView } from './views/settings';
@@ -133,9 +136,13 @@ export function consolePage(apiKey: string): Response {
   .agents-row:first-of-type{border-top:0}
   .agents-row.is-disabled{opacity:.5}
 ${shellCss}
-${inboxCss}</style>
+${inboxCss}
+${glanceCss}</style>
 </head><body>
 ${railHtml}
+<main class="view" id="view-glance">
+${glanceView}
+</main>
 <main class="view" id="view-inbox">
 ${inboxView}
 </main>
@@ -347,17 +354,21 @@ async function savePricing(){
     else setMsg('pricingmsg','Failed: '+(r.error||'unknown error'),'no');
   }catch(e){ setMsg('pricingmsg','Failed: '+errText(e),'no'); }
 }
+// saveLlm serves TWO buttons in different views (Catalog "Save AI" -> #llmmsg,
+// Settings "Save AI models" -> #llm-models-msg), so the confirmation is written
+// to both message slots - whichever view the merchant clicked in shows it.
+function llmMsg(t,kind){ setMsg('llmmsg',t,kind); setMsg('llm-models-msg',t,kind); }
 async function saveLlm(){
-  setMsg('llmmsg','Saving…','muted');
+  llmMsg('Saving…','muted');
   try{
     var r=await api('/llm',{
       enabled:el('llmon').value==='true',
       scoreThreshold:Number(el('llmthresh').value),
       models:{ image:(el('mdl-image')&&el('mdl-image').value)||'', text:(el('mdl-text')&&el('mdl-text').value)||'', fallback:(el('mdl-fallback')&&el('mdl-fallback').value)||'' }
     });
-    if(r.ok){ setMsg('llmmsg','Saved ✓','ok'); refresh(); }
-    else setMsg('llmmsg','Failed: '+(r.error||'unknown error'),'no');
-  }catch(e){ setMsg('llmmsg','Failed: '+errText(e),'no'); }
+    if(r.ok){ llmMsg('Saved ✓','ok'); refresh(); }
+    else llmMsg('Failed: '+(r.error||'unknown error'),'no');
+  }catch(e){ llmMsg('Failed: '+errText(e),'no'); }
 }
 function syncBar(mode,frac){
   var b=el('syncbar'); if(!b) return;
@@ -839,11 +850,16 @@ async function saveInboxSettings(){
   }catch(e){ setMsg('inboxcfgmsg','Failed: '+errText(e),'no'); return false; }
 }
 ${inboxJs}
+${glanceJs}
 refresh();
 loadInsights();
+loadGlance();
 loadInboxThreads();
 loadInboxSettings();
 ${routerJs}</script>
 </body></html>`;
-  return new Response(html, { headers: { 'Content-Type': 'text/html' } });
+  // no-store: the console is a single server-rendered page that changes every
+  // deploy - a cached copy after a release is exactly the stale-console bug the
+  // owner had to hard-refresh around (Phase 2 cutover). Nothing here is cacheable.
+  return new Response(html, { headers: { 'Content-Type': 'text/html', 'Cache-Control': 'no-store' } });
 }

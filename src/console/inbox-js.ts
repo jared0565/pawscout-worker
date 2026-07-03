@@ -48,15 +48,19 @@ function ibxHoldReasons(draft){
   if(!draft||!draft.hold_reasons) return [];
   try{ var a=JSON.parse(draft.hold_reasons); return Array.isArray(a)?a:[]; }catch(e){ return []; }
 }
-// Read-only automation pill in the Inbox header, derived from /inbox/config
-// (already loaded by loadInboxSettings, which calls this).
+// Read-only automation pills in the Inbox header AND the Glance header, derived
+// from /inbox/config (already loaded by loadInboxSettings, which calls this).
 function renderInboxAutoPill(cfg){
-  var p=el('ibx-auto-pill'); if(!p) return;
-  if(!cfg||!cfg.autosend){ p.textContent='Manual review'; p.className='ibx-pill'; return; }
-  var agents=cfg.agents||{}; var names=[];
-  for(var k in agents){ if(agents[k]&&agents[k].autosend) names.push(ibxAgentName(k)); }
-  p.textContent=names.length?('Auto: '+names.join(', ')):'Auto (no agents enabled)';
-  p.className='ibx-pill is-auto';
+  var text, cls;
+  if(!cfg||!cfg.autosend){ text='Manual review'; cls='ibx-pill'; }
+  else{
+    var agents=cfg.agents||{}; var names=[];
+    for(var k in agents){ if(agents[k]&&agents[k].autosend) names.push(ibxAgentName(k)); }
+    text=names.length?('Auto: '+names.join(', ')):'Auto (no agents enabled)';
+    cls='ibx-pill is-auto';
+  }
+  var ids=['ibx-auto-pill','gl-auto-pill'];
+  for(var i=0;i<ids.length;i++){ var p=el(ids[i]); if(p){ p.textContent=text; p.className=cls; } }
 }
 // --- Filter chips <-> status select (single source of truth: the select) ---
 function ibxSyncFilterChips(){
@@ -93,13 +97,14 @@ function renderInboxThreads(threads){
     row.type='button';
     row.className='ibx-row'+(t.id===ibxSelectedId?' is-sel':'');
     row.setAttribute('data-id',t.id);
-    // State chip = thread status (the list API carries no per-thread draft info,
-    // so "draft ready" cannot be shown here without fabricating it).
     var st=IBX_STATUS_LABELS[t.status]||t.status||'';
     var chips='';
     if(t.category) chips+='<span class="ibx-tag cat">'+esc(t.category)+'</span>';
+    // Phase 3: the list API now carries hasDraft (a real pending-draft flag).
+    if(t.hasDraft) chips+='<span class="ibx-tag draft">draft ready</span>';
     if(st) chips+='<span class="ibx-tag '+(IBX_STATUS_KIND[t.status]||'')+'">'+esc(st)+'</span>';
-    row.innerHTML='<span class="ibx-row__top"><span class="ibx-row__who">'+esc(t.contactEmail||'(unknown)')+'</span><span class="ibx-row__age">'+esc(ibxRelAge(t.lastMessageAt))+'</span></span>'
+    // Phase 3: show the person (contactName from inbox_contacts) over the bare address.
+    row.innerHTML='<span class="ibx-row__top"><span class="ibx-row__who">'+esc(t.contactName||t.contactEmail||'(unknown)')+'</span><span class="ibx-row__age">'+esc(ibxRelAge(t.lastMessageAt))+'</span></span>'
       +'<span class="ibx-row__subj">'+esc(t.subject||'(no subject)')+'</span>'
       +(chips?'<span class="ibx-row__chips">'+chips+'</span>':'');
     (function(id){ row.onclick=function(){ ibxRowClick(id); }; })(t.id);
@@ -138,10 +143,10 @@ async function openInboxThread(id){
   try{
     var r=await api('/inbox/thread',{id:id});
     if(!r.ok){ if(tl) tl.innerHTML='<div class="ibx-empty"><p class="msg no">'+esc(r.error||'Failed to load thread')+'</p></div>'; return; }
-    renderInboxThread(r.thread,r.messages||[],r.labels||[],r.draft||null,r.invoice||null,r.applicant||null);
+    renderInboxThread(r.thread,r.messages||[],r.labels||[],r.draft||null,r.invoice||null,r.applicant||null,r.contact||null);
   }catch(e){ if(tl) tl.innerHTML='<div class="ibx-empty"><p class="msg no">'+esc(errText(e))+'</p></div>'; }
 }
-function renderInboxThread(thread,messages,labels,draft,invoice,applicant){
+function renderInboxThread(thread,messages,labels,draft,invoice,applicant,contact){
   var head=el('ibx-convo-head'), tl=el('ibx-timeline');
   if(!head||!tl) return;
   inboxInvoiceItems=[];
@@ -161,7 +166,7 @@ function renderInboxThread(thread,messages,labels,draft,invoice,applicant){
     +'<span class="ibx-spacer"></span>'
     +statSel
     +'</div>'
-    +'<p class="muted" style="margin:4px 0 0;font-size:12px">'+esc(thread.contact_email||'')+'</p>';
+    +'<p class="muted" style="margin:4px 0 0;font-size:12px">'+esc((contact&&contact.name)?(contact.name+' <'+(thread.contact_email||'')+'>'):(thread.contact_email||''))+'</p>';
   var ss=el('inbox-status-sel'); if(ss) ss.onchange=function(){ saveInboxStatus(tid); };
   // Timeline: inbound left / outbound right (tinted), in received order
   var msgHtml='';
@@ -203,15 +208,19 @@ function renderInboxThread(thread,messages,labels,draft,invoice,applicant){
     var regenBtn=el('inbox-regen-btn');
     if(regenBtn) regenBtn.onclick=function(){ regenerateDraftAction(draftId,tid); };
   }
-  renderInboxContext(thread,labels,draft,invoice,applicant);
+  renderInboxContext(thread,labels,draft,invoice,applicant,contact);
 }
 // Context rail: ONLY data the thread GET actually returns (thread fields, labels,
-// draft hold reasons, applicant screening, invoice) - nothing fabricated.
-function renderInboxContext(thread,labels,draft,invoice,applicant){
+// contact row, draft hold reasons, applicant screening, invoice) - nothing fabricated.
+function renderInboxContext(thread,labels,draft,invoice,applicant,contact){
   var ctx=el('ibx-context-body'); if(!ctx) return;
   var tid=thread.id;
   var cust='<div class="ibx-ctx-block"><h4>Customer</h4>'
-    +'<p style="margin:0;font-weight:600;word-break:break-all">'+esc(thread.contact_email||'')+'</p>';
+    +((contact&&contact.name)?'<p style="margin:0 0 2px;font-weight:600">'+esc(contact.name)+'</p>':'')
+    +'<p style="margin:0;font-weight:'+((contact&&contact.name)?'400':'600')+';word-break:break-all;font-size:12.5px">'+esc(thread.contact_email||'')+'</p>';
+  if(contact&&contact.message_count!=null){
+    cust+='<p class="muted" style="margin:6px 0 0;font-size:12px">Messages on file: '+esc(String(contact.message_count))+'</p>';
+  }
   if(thread.declared_intent){
     var DMAP={order:'Order help',partnerships:'Creator / affiliate partnership',wholesale:'Wholesale / bulk order'};
     cust+='<p class="muted" style="margin:6px 0 0;font-size:12px">Declared: <strong>'+esc(DMAP[thread.declared_intent]||thread.declared_intent)+'</strong></p>';

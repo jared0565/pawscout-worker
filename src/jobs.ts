@@ -44,6 +44,15 @@ export function sellableQty(realStock: number): number {
 export const SELLING_FAST_MIN_ORDERS = 3;
 export const SELLING_FAST_WINDOW_DAYS = 7;
 
+/** Console health stamps (Glance view): search_cache keys recording when each cron
+ * last COMPLETED for a shop. Stamped only after the work succeeds, so a missing or
+ * stale stamp honestly means "did not finish recently". The markets stamp carries a
+ * JSON payload of per-market exclusion counts; the others are bare ISO timestamps. */
+export const JOB_STAMP_DAILY = 'job:daily-maintenance';
+export const JOB_STAMP_PIPELINE = 'job:order-pipeline';
+export const JOB_STAMP_MARKETS = 'job:market-exclusions';
+export const JOB_STAMP_TTL_DAYS = 30;
+
 const ARCHIVE = `mutation pawscoutArchive($input: ProductInput!) {
   productUpdate(input: $input) { product { id } userErrors { field message } }
 }`;
@@ -995,6 +1004,11 @@ export async function runDailyMaintenance(env: Env): Promise<void> {
           const mx = await syncMarketExclusions(admin, store, { stalenessHours: l.stalenessHours });
           const changed = mx.markets.filter((m) => m.removed || m.readded);
           if (changed.length) console.log(`market exclusions reconcile: ${changed.map((m) => `${m.name} -${m.removed}/+${m.readded} (excl ${m.excluded})`).join(', ')}`);
+          await store.putSearchCache(
+            JOB_STAMP_MARKETS,
+            JSON.stringify({ at: new Date().toISOString(), markets: mx.markets.map((m) => ({ name: m.name, excluded: m.excluded })) }),
+            JOB_STAMP_TTL_DAYS
+          );
         } catch (e) { console.warn(`market exclusion sync skipped: ${(e as Error).message}`); }
         await reconcileAddonVisibility(store, admin, cfg); // align hidden/visible add-ons to the toggle
         // Retention reorder reminders (1.3) - DORMANT unless explicitly enabled;
@@ -1024,6 +1038,7 @@ export async function runDailyMaintenance(env: Env): Promise<void> {
           }
         }
       }
+      await store.putSearchCache(JOB_STAMP_DAILY, new Date().toISOString(), JOB_STAMP_TTL_DAYS);
     } catch (e) {
       console.warn(`daily maintenance failed for ${shop}: ${(e as Error).message}`);
     }

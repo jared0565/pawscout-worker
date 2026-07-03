@@ -51,6 +51,29 @@ describe('inbox routes', () => {
     expect(r.threads[0].id).toBe(tid);
     expect(r.threads[0].contactEmail).toBe('jane@x.com');
   });
+  // Phase 3: the list carries the contact's display name + a real hasDraft flag.
+  it('lists threads with contactName and hasDraft', async () => {
+    const s = new TenantStore(env.DB, SHOP);
+    const tid = await seed();
+    let r = await listInboxThreads(env.DB, SHOP, null);
+    expect(r.threads[0].contactName).toBe('Jane');
+    expect(r.threads[0].hasDraft).toBe(false);
+    await s.insertDraft({ threadId: tid, bodyText: 'Hi', bodyHtml: '<p>Hi</p>', confidence: 90, quotesPriceOrder: false, holdReasons: [], model: 'm', status: 'pending' });
+    r = await listInboxThreads(env.DB, SHOP, null);
+    expect(r.threads[0].hasDraft).toBe(true);
+    // A sent draft is no longer "ready" - the flag must clear.
+    const draft = await s.getPendingDraft(tid);
+    await s.setDraftStatus(draft!.id, 'sent', { sentAt: new Date().toISOString() });
+    r = await listInboxThreads(env.DB, SHOP, null);
+    expect(r.threads[0].hasDraft).toBe(false);
+  });
+  it('returns the contact row with the thread (context-rail name)', async () => {
+    const tid = await seed();
+    const r = await getInboxThread(env.DB, SHOP, tid);
+    expect(r.ok).toBe(true);
+    expect(r.contact?.name).toBe('Jane');
+    expect(r.contact?.email).toBe('jane@x.com');
+  });
   it('reads a thread with its messages', async () => {
     const tid = await seed();
     const r = await getInboxThread(env.DB, SHOP, tid);

@@ -90,6 +90,7 @@ export const inboxCss = `
   .ibx-row__chips{display:flex;gap:6px;margin-top:5px;flex-wrap:wrap}
   .ibx-tag{display:inline-block;padding:1px 8px;border-radius:999px;font-size:11px;font-weight:600;background:var(--code-bg);color:var(--subdued);border:1px solid var(--border);white-space:nowrap}
   .ibx-tag.cat{color:#f0854b;border-color:rgba(232,89,12,.4);background:rgba(232,89,12,.10)}
+  .ibx-tag.draft{color:#d3a133;border-color:rgba(211,161,51,.4);background:rgba(211,161,51,.10)}
   .ibx-tag.ok{background:var(--ok-bg);color:var(--ok-ink);border-color:transparent}
   .ibx-tag.no{background:var(--no-bg);color:var(--no-ink);border-color:transparent}
   .ibx-convo{display:flex;flex-direction:column;min-width:0;min-height:0;overflow:hidden}

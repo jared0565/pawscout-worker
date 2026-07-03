@@ -32,6 +32,7 @@ export const shellCss = `
 
 export const railHtml = `<nav class="rail" aria-label="Console sections">
   <div class="rail__wordmark">PawScout</div>
+  <button type="button" class="rail-btn" data-route="glance" onclick="location.hash='#/glance'">Glance</button>
   <button type="button" class="rail-btn" data-route="inbox" onclick="location.hash='#/inbox'">Inbox</button>
   <button type="button" class="rail-btn" data-route="catalog" onclick="location.hash='#/catalog'">Catalog</button>
   <button type="button" class="rail-btn" data-route="ops" onclick="location.hash='#/ops'">Operations</button>
@@ -40,15 +41,16 @@ export const railHtml = `<nav class="rail" aria-label="Console sections">
 </nav>`;
 
 export const routerJs = `
-// --- Hash router (shell): #/inbox default; #/catalog, #/ops, #/settings, #/help.
-// Toggles .active on the .view containers and rail buttons on hashchange and on
-// load; a missing or unknown hash falls back to inbox. Hash-only navigation so
-// it works inside the Shopify embedded iframe.
-var ROUTES=['inbox','catalog','ops','settings','help'];
+// --- Hash router (shell): #/glance default (Phase 3 landing); #/inbox,
+// #/catalog, #/ops, #/settings, #/help. Toggles .active on the .view containers
+// and rail buttons on hashchange and on load; a missing or unknown hash falls
+// back to glance. Hash-only navigation so it works inside the Shopify embedded
+// iframe.
+var ROUTES=['glance','inbox','catalog','ops','settings','help'];
 function currentRoute(){
   var h=location.hash||'';
   if(h.indexOf('#/')===0) h=h.slice(2); else if(h.indexOf('#')===0) h=h.slice(1);
-  return ROUTES.indexOf(h)>=0?h:'inbox';
+  return ROUTES.indexOf(h)>=0?h:'glance';
 }
 function applyRoute(){
   var r=currentRoute();

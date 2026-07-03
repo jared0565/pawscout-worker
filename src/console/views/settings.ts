@@ -27,6 +27,7 @@ export const settingsView = `  <section class="card">
     <div class="row" style="margin-top:10px">
       <button onclick="saveLlm()">Save AI models</button>
     </div>
+    <p id="llm-models-msg" class="msg muted"></p>
     <p class="sub muted" style="margin:8px 0 0">Last resort: GPT-5.4 mini · OpenAI direct (system-managed, used only if OpenRouter fails).</p>
   </section>
 

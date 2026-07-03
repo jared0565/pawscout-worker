@@ -117,7 +117,7 @@ describe('consolePage', () => {
   it('renderInboxThread accepts + renders the partnership applicant panel', async () => {
     const html = await consolePage('test-api-key').text();
     const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
-    expect(scripts).toContain('function renderInboxThread(thread,messages,labels,draft,invoice,applicant)');
+    expect(scripts).toContain('function renderInboxThread(thread,messages,labels,draft,invoice,applicant,contact)');
     expect(scripts).toContain('Partnership screening');
     expect(scripts).toContain('r.applicant||null');
   });
@@ -201,18 +201,62 @@ describe('consolePage', () => {
     expect(scripts).toContain('/gb-sync'); // api() prepends /api
   });
 
-  // Phase 1 shell: left rail + five always-in-DOM views toggled by a hash router.
-  it('renders the five view containers, the rail, and the hash router', async () => {
+  // Phase 1 shell (extended in Phase 3): left rail + six always-in-DOM views
+  // toggled by a hash router; Glance is the landing view.
+  it('renders the six view containers, the rail, and the hash router', async () => {
     const html = await consolePage('test-api-key').text();
-    for (const v of ['view-inbox', 'view-catalog', 'view-ops', 'view-settings', 'view-help']) {
+    for (const v of ['view-glance', 'view-inbox', 'view-catalog', 'view-ops', 'view-settings', 'view-help']) {
       expect(html).toContain('id="' + v + '"');
     }
     expect(html).toContain('class="rail"');
+    expect(html).toContain('data-route="glance"');
     expect(html).toContain('data-route="inbox"');
     const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
     expect(scripts).toContain('function applyRoute(');
     expect(scripts).toContain("window.addEventListener('hashchange',applyRoute)");
     expect(scripts).toContain('applyRoute();'); // applied on load too
+    // Glance is the default route: unknown/missing hash falls back to it.
+    expect(scripts).toContain("var ROUTES=['glance','inbox','catalog','ops','settings','help']");
+    expect(scripts).toContain(":'glance'");
+  });
+
+  // --- Phase 3: Glance landing view + thread-list upgrades + cache header ---
+
+  it('serves /app with Cache-Control: no-store (stale-console fix)', () => {
+    expect(consolePage('test-api-key').headers.get('Cache-Control')).toBe('no-store');
+  });
+
+  it('renders the Glance skeleton and its loader', async () => {
+    const html = await consolePage('test-api-key').text();
+    for (const id of ['gl-kpis', 'gl-attn', 'gl-activity', 'gl-health', 'gl-markets', 'gl-auto-pill', 'gl-msg']) {
+      expect(html).toContain('id="' + id + '"');
+    }
+    expect(html).toContain('Shop at a Glance');
+    expect(html).toContain('Needs your attention');
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+    expect(scripts).toContain('function loadGlance(');
+    expect(scripts).toContain("'/glance'"); // api() prepends /api
+    expect(scripts).toContain('loadGlance();'); // loaded on startup
+    // Honest empty states, not fabricated numbers.
+    expect(scripts).toContain('All clear');
+    expect(scripts).toContain('no record yet');
+  });
+
+  it('thread list rows show the contact name and a real draft-ready chip', async () => {
+    const html = await consolePage('test-api-key').text();
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+    expect(scripts).toContain('t.contactName||t.contactEmail');
+    expect(scripts).toContain('t.hasDraft');
+    expect(scripts).toContain('draft ready');
+  });
+
+  it('Save AI models confirms in BOTH the Settings and Catalog message slots', async () => {
+    const html = await consolePage('test-api-key').text();
+    expect(html).toContain('id="llm-models-msg"'); // Settings AI-models card slot
+    expect(html).toContain('id="llmmsg"');         // Catalog AI-curation card slot
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+    expect(scripts).toContain('function llmMsg(');
+    expect(scripts).toContain("setMsg('llm-models-msg'");
   });
 
   it('has no duplicate id="..." attributes in the static HTML (all views share one DOM)', async () => {
