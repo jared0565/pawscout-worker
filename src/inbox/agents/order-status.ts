@@ -45,6 +45,25 @@ export const orderStatusAgent: CategoryAgent = {
       if (list.length === 0) return hedge('No order found for this email; ask for the order number or the email used at checkout.');
       const order = pick(list, ctx.latestMessage);
       if (!order) return hedge('Multiple orders found; ask which order number they mean.');
+
+      // A stockout-parked order must NEVER read as "being prepared": overlay the
+      // fulfilment pipeline's own state from D1. Best-effort - a lookup failure
+      // keeps the plain Shopify status (which is at worst vague, never false).
+      let stockout = false;
+      try {
+        const row = await ctx.store.getOrderByName(order.name);
+        const holds = row?.hold_reasons ? (JSON.parse(row.hold_reasons) as string[]) : [];
+        stockout = row?.status === 'error' && holds.some((h) => typeof h === 'string' && h.startsWith('stockout'));
+      } catch { /* keep the Shopify status */ }
+      if (stockout) {
+        return {
+          confident: true,
+          quotesFigure: false,
+          facts: `Order ${order.name} is temporarily HELD: an item is unexpectedly out of stock and the team is arranging the quickest resolution for the customer (a restock or a prompt refund, their choice). Do NOT say the order is being prepared or dispatched, do NOT give any dispatch or delivery estimate, and do NOT promise a specific outcome or date. Reassure them the team is already on it and will be in touch with their options very soon, and apologise for the delay.`,
+          data: { ...order, stockout: true }
+        };
+      }
+
       const status = FRIENDLY[order.displayFulfillmentStatus] ?? 'being processed';
       return {
         confident: true,
@@ -65,8 +84,9 @@ export const orderStatusAgent: CategoryAgent = {
 
   deterministicAppendix(g: Grounding): string | null {
     if (!g.confident) return null;
-    const o = g.data as CustomerOrder | undefined;
+    const o = g.data as (CustomerOrder & { stockout?: boolean }) | undefined;
     if (!o) return null;
+    if (o.stockout) return `Order ${o.name}: temporarily held - an item is unexpectedly out of stock. Our team is arranging the quickest resolution and will contact you with your options.`;
     if (!o.tracking) return `Order ${o.name}: ${(FRIENDLY[o.displayFulfillmentStatus] ?? 'being processed')}.`;
     const carrier = o.tracking.company ? ` (${o.tracking.company})` : '';
     const url = o.tracking.url ? `: ${o.tracking.url}` : '';

@@ -50,3 +50,39 @@ describe('orderStatusAgent.ground', () => {
     expect(orderStatusAgent.deterministicAppendix(g)).toContain('#1001');
   });
 });
+
+describe('orderStatusAgent stockout overlay (never "being prepared" for a parked order)', () => {
+  const stockoutStore = (row: unknown) => ({ getOrderByName: async () => row });
+  const withStore = (store: unknown, latest: string) => ({ ...ctx(async () => ({}), latest), store }) as any;
+  const UNFULFILLED = { name: '#1001', displayFulfillmentStatus: 'UNFULFILLED', financialStatus: 'PAID', createdAt: '2026-07-01', tracking: null };
+
+  it('overlays the D1 stockout hold: honest HELD facts + appendix, no dispatch wording', async () => {
+    vi.spyOn(orders, 'recentOrdersForEmail').mockResolvedValue([UNFULFILLED]);
+    const store = stockoutStore({ status: 'error', hold_reasons: JSON.stringify(['stockout: source stock 0 is below the ordered 1 for S1']) });
+    const g = await orderStatusAgent.ground(withStore(store, 'where is my order?'));
+    expect(g.confident).toBe(true);
+    expect(g.facts).toContain('temporarily HELD');
+    expect(g.facts).toContain('out of stock');
+    expect(g.facts).toContain('Do NOT say the order is being prepared');
+    const appendix = orderStatusAgent.deterministicAppendix(g)!;
+    expect(appendix).toContain('temporarily held');
+    expect(appendix).not.toContain('being prepared');
+    expect(appendix).not.toMatch(/estimated|\d+-\d+ days/);
+  });
+
+  it('a NON-stockout error keeps the plain Shopify status (generic failures are not customer-facing)', async () => {
+    vi.spyOn(orders, 'recentOrdersForEmail').mockResolvedValue([UNFULFILLED]);
+    const store = stockoutStore({ status: 'error', hold_reasons: JSON.stringify(['fulfil: CJ system error 500']) });
+    const g = await orderStatusAgent.ground(withStore(store, 'where is my order?'));
+    expect(g.facts).toContain('being prepared');
+    expect(orderStatusAgent.deterministicAppendix(g)).toContain('being prepared');
+  });
+
+  it('a D1 lookup failure degrades to the plain Shopify status', async () => {
+    vi.spyOn(orders, 'recentOrdersForEmail').mockResolvedValue([UNFULFILLED]);
+    const store = { getOrderByName: async () => { throw new Error('D1 down'); } };
+    const g = await orderStatusAgent.ground(withStore(store, 'where is my order?'));
+    expect(g.confident).toBe(true);
+    expect(g.facts).toContain('being prepared');
+  });
+});

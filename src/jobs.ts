@@ -37,6 +37,12 @@ export function sellableQty(realStock: number): number {
   return realStock;
 }
 
+/** "Selling fast" badge rule: at least this many REAL order events in the window.
+ * Deterministic and grounded (only genuine recent sales light it; it clears on the
+ * next sync when demand fades) - honest social proof, never an invented signal. */
+export const SELLING_FAST_MIN_ORDERS = 3;
+export const SELLING_FAST_WINDOW_DAYS = 7;
+
 const ARCHIVE = `mutation pawscoutArchive($input: ProductInput!) {
   productUpdate(input: $input) { product { id } userErrors { field message } }
 }`;
@@ -299,13 +305,22 @@ export async function syncStoreInventory(
             console.warn(`actual freight quote failed for ${link.cj_pid}: ${(e as Error).message}`);
           }
         }
+        // Real-demand flag: genuine order events in the window, nothing else. An
+        // unsellable (paused) product never claims demand.
+        let demand: 'selling_fast' | 'none' = 'none';
+        try {
+          const since = new Date(Date.now() - SELLING_FAST_WINDOW_DAYS * 86400_000).toISOString();
+          const recentOrders = await store.countRecentOrderEvents(link.cj_pid, since);
+          demand = !paused && recentOrders >= SELLING_FAST_MIN_ORDERS ? 'selling_fast' : 'none';
+        } catch { /* keep 'none' */ }
         await setSupplierMetafields(admin, link.shopify_product_id, {
           status: paused ? 'out_of_stock' : maxStock < cfg.floors.stockFloor * 2 ? 'low_stock' : 'available',
           qty: paused ? maxStock : sellableQty(maxStock), // theme fallback shows/caps the SELLABLE number
           checkedAt: new Date().toISOString(),
           origin,
           deliveryDays,
-          deliveryDaysActual
+          deliveryDaysActual,
+          demand
         });
         await store.setStockPaused(link.cj_pid, paused);
         await store.setWarehouseStock(link.cj_pid, maxStock, paused ? 'low_stock' : 'available');

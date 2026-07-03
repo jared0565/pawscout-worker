@@ -237,6 +237,36 @@ describe('syncStoreInventory', () => {
     expect(sellableQty(466)).toBe(466);
   });
 
+  it('sets the demand metafield from REAL order events only (selling_fast at 3+/7d, else none)', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await insertLink('A', 'imported', 5);
+    await seedWarehouse(store, 'A', 'pet-toys');
+    await insertEvent('A', 'order', 1);
+    await insertEvent('A', 'order', 2);
+    await insertEvent('A', 'order', 3);
+    await insertEvent('A', 'order', 20); // outside the 7-day window: ignored
+
+    const calls: Call[] = [];
+    await syncStoreInventory(store, stockCj(40), shopAdmin(calls), CFG, { pause: async () => {} });
+    const meta = calls.find((c) => c.query.includes('metafieldsSet'))!;
+    const fields = meta.variables!.metafields as { key: string; value: string }[];
+    expect(fields.find((f) => f.key === 'demand')?.value).toBe('selling_fast');
+  });
+
+  it('demand clears to none when recent orders are below the bar (and for paused products)', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await insertLink('A', 'imported', 5);
+    await seedWarehouse(store, 'A', 'pet-toys');
+    await insertEvent('A', 'order', 1);
+    await insertEvent('A', 'order', 2); // only 2 in-window: below the bar of 3
+
+    const calls: Call[] = [];
+    await syncStoreInventory(store, stockCj(40), shopAdmin(calls), CFG, { pause: async () => {} });
+    const meta = calls.find((c) => c.query.includes('metafieldsSet'))!;
+    const fields = meta.variables!.metafields as { key: string; value: string }[];
+    expect(fields.find((f) => f.key === 'demand')?.value).toBe('none');
+  });
+
   it('resyncLowStockInventory re-syncs ONLY the low-band items (fast 15-min path)', async () => {
     const store = new TenantStore(env.DB, SHOP);
     await insertLink('A', 'imported', 5);

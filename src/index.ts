@@ -764,6 +764,14 @@ app.post('/webhooks/orders-paid', async (c) => {
       fulfilAfter: holds.length ? null : fulfilAfter
     });
     if (isNew) console.log(`order ${order.orderName} ${holds.length ? 'HELD (' + holds.join(',') + ')' : 'queued'}`);
+    // Real ORDER events feed the deterministic "Selling fast" badge and the 30-day
+    // cull. Recorded only on first receipt (isNew) so webhook retries never double
+    // count; best-effort, never blocks the ack.
+    if (isNew) {
+      for (const li of lineItems) {
+        if (li.cjPid) c.executionCtx.waitUntil(store.recordEvent(li.cjPid, 'order').catch(() => undefined));
+      }
+    }
     c.executionCtx.waitUntil(attributePaidOrder(store, order).then(() => undefined));
   } catch (e) {
     console.warn(`orders-paid handler failed for ${shop}: ${(e as Error).message}`);

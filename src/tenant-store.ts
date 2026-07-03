@@ -428,6 +428,15 @@ export class TenantStore {
       .first<OrderRow>();
   }
 
+  /** Look up by the customer-visible order name ("#1001") - the only identifier the
+   * order-status agent gets back from the Shopify customer-orders query. */
+  getOrderByName(orderName: string): Promise<OrderRow | null> {
+    return this.db
+      .prepare(`SELECT * FROM orders WHERE shop = ?1 AND order_name = ?2`)
+      .bind(this.shop, orderName)
+      .first<OrderRow>();
+  }
+
   async listOrders(status: string | null, limit = 100): Promise<OrderRow[]> {
     const lim = Math.min(Math.max(limit, 1), 200);
     const rs = status
@@ -498,6 +507,16 @@ export class TenantStore {
       .prepare(`INSERT INTO product_events (shop, cj_pid, event, created_at) VALUES (?1, ?2, ?3, ?4)`)
       .bind(this.shop, cjPid, event, new Date().toISOString())
       .run();
+  }
+
+  /** Real ORDER events in the window - powers the deterministic "Selling fast" badge
+   * (only genuine recent sales can light it; it clears when demand fades). */
+  async countRecentOrderEvents(cjPid: string, sinceIso: string): Promise<number> {
+    const r = await this.db
+      .prepare(`SELECT COUNT(*) AS n FROM product_events WHERE shop = ?1 AND cj_pid = ?2 AND event = 'order' AND created_at >= ?3`)
+      .bind(this.shop, cjPid, sinceIso)
+      .first<{ n: number }>();
+    return r?.n ?? 0;
   }
 
   async logLlmUsage(task: string, model: string, promptTokens: number, completionTokens: number, costUsd: number): Promise<void> {

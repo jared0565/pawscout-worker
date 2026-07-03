@@ -135,13 +135,16 @@ export async function setInventoryQuantities(
 export async function setSupplierMetafields(
   admin: AdminGraphql,
   productId: string,
-  m: { status: 'available' | 'low_stock' | 'out_of_stock'; qty: number; checkedAt: string; origin?: string; deliveryDays?: string; deliveryDaysActual?: string }
+  m: { status: 'available' | 'low_stock' | 'out_of_stock'; qty: number; checkedAt: string; origin?: string; deliveryDays?: string; deliveryDaysActual?: string; demand?: 'selling_fast' | 'none' }
 ): Promise<void> {
   const fields = [
     { key: 'name', type: 'single_line_text_field', value: 'CJ' },
     { key: 'status', type: 'single_line_text_field', value: m.status },
     { key: 'available_qty', type: 'number_integer', value: String(Math.max(0, Math.floor(m.qty))) },
     { key: 'last_checked_at', type: 'date_time', value: m.checkedAt },
+    // Deterministic real-demand flag ('selling_fast' | 'none'): set ONLY from genuine
+    // recent order events; 'none' rather than '' so the badge always clears.
+    ...(m.demand ? [{ key: 'demand', type: 'single_line_text_field', value: m.demand }] : []),
     // Dispatch origin country code - used to pick the per-product delivery estimate (no shipping-origin claim shown to the customer).
     ...(m.origin ? [{ key: 'origin', type: 'single_line_text_field', value: m.origin }] : []),
     // REPRESENTATIVE order->door estimate (shop display: PDP) from the synced matrix,
