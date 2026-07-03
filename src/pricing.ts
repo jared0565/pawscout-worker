@@ -8,18 +8,22 @@ import type { Pricing } from './types';
  * FX ~1.5%, refunds ~3%, fixed ~2%. The floor and absolute minimum margin
  * protect low-ticket items where percentages don't cover fixed fees.
  *
- * `freightUsd` (decided 2026-06-12): freight disciplines the FLOOR, never
- * the sticker - the multiplier still applies to product cost only, but the
- * minimum-margin clause is enforced against (product + freight) so a heavy
- * cheap item can never ship underwater. Unknown freight (legacy rows)
- * degrades to the product-cost-only rule.
+ * `freightUsd` (owner decision 2026-07-03, free-UK-delivery cutover): freight
+ * is BAKED INTO the sticker - added AFTER the multiplier (pass-through, never
+ * multiplied) - so UK checkout shipping can be £0 storewide without eating
+ * margin. Domestic-warehouse items (freight $0, e.g. GB stock sold to the UK)
+ * keep their sticker unchanged. The minimum-margin clause still guarantees
+ * (product + freight + minMargin) on cheap items. This REVERSES the 2026-06-12
+ * "freight disciplines the floor, never the sticker" rule: that rule plus a
+ * separate checkout shipping charge double-charged freight on min-margin items.
+ * Unknown freight (legacy rows) degrades to the product-cost-only rule.
  */
 export function retailPriceGbp(landedUsd: number, p: Pricing, freightUsd = 0): number {
   if (!Number.isFinite(landedUsd) || landedUsd <= 0) throw new Error('landed cost must be a positive number');
   const fx = p.fxUsdToGbp * (1 + p.fxBufferPct / 100);
   const costGbp = landedUsd * fx;
   const freightGbp = Number.isFinite(freightUsd) && freightUsd > 0 ? freightUsd * fx : 0;
-  let retail = costGbp * Math.max(p.multiplier, p.floor);
+  let retail = costGbp * Math.max(p.multiplier, p.floor) + freightGbp;
   if (retail - (costGbp + freightGbp) < p.minMarginGbp) retail = costGbp + freightGbp + p.minMarginGbp;
   return round99(retail);
 }

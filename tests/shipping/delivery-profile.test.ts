@@ -355,6 +355,28 @@ test('buildSignatureZones: CN signature omits a destination with no route (FR)',
   expect(zones.map((z) => z.name)).toEqual(['DE']); // FR omitted (unfulfillable)
 });
 
+// 2026-07-03 owner decision (free-UK-delivery cutover): UK checkout shipping is £0 on
+// EVERY engineered profile - freight is baked into the sticker by the pricing rule
+// instead. Other destinations keep their engineered per-route rates.
+test('buildSignatureZones: the GB destination is always free, other destinations keep engineered rates', () => {
+  const lookup = (o: string, d: string) =>
+    o === 'CN' && d === 'GB' ? routeRow('CN', 'GB', 5.02)
+    : o === 'CN' && d === 'DE' ? routeRow('CN', 'DE', 9.83)
+    : null;
+  const zones = buildSignatureZones(['CN'], ['GB', 'DE'], lookup, 0.82, 0);
+  const rateOf = (z: any) => (z.methodDefinitionsToCreate[0] as any).rateDefinition.price.amount;
+  const gb = zones.find((z) => z.name === 'GB')!;
+  const de = zones.find((z) => z.name === 'DE')!;
+  expect(rateOf(gb)).toBe('0.00');            // free UK despite the $5.02 route cost
+  expect(rateOf(de)).toBe('8.06');            // 9.83 × 0.82 = 8.0606 -> engineered rate kept
+});
+
+test('buildSignatureZones: free UK still requires a fulfillable route (no route -> no GB zone)', () => {
+  const lookup = (o: string, d: string) => (o === 'CN' && d === 'DE' ? routeRow('CN', 'DE', 9.83) : null);
+  const zones = buildSignatureZones(['CN'], ['GB', 'DE'], lookup, 0.82, 0);
+  expect(zones.map((z) => z.name)).toEqual(['DE']); // GB omitted: unfulfillable stays blocked, never free
+});
+
 // ---------------------------------------------------------------------------
 // signatureProfileName
 // ---------------------------------------------------------------------------

@@ -25,14 +25,32 @@ describe('retailPriceGbp', () => {
     expect(retailPriceGbp(10, p)).toBe(25.99);
   });
 
-  it('freight disciplines the floor, never the multiplier sticker', () => {
-    // cheap+heavy: 2 USD cost, 10 USD freight. fx = 0.78×1.02 = 0.7956
-    // cost £1.59, ×2.5 = £3.98; floor = 1.59 + 7.96 + 6 = £15.55 → 15.99
+  // 2026-07-03 owner decision (free-UK-delivery cutover): freight is BAKED INTO the
+  // sticker (added after the multiplier) so UK checkout shipping can be £0 storewide
+  // without eating margin. Reverses the 2026-06-12 "freight disciplines the floor,
+  // never the sticker" rule - that rule plus a separate checkout charge double-charged
+  // freight on min-margin items.
+  it('bakes freight into the sticker (added after the multiplier, not multiplied)', () => {
+    // fx = 0.78×1.02 = 0.7956. 30 USD cost, 5 USD freight:
+    // cost £23.868 ×2.5 = £59.67 + freight £3.978 = £63.648 → 63.99
+    expect(retailPriceGbp(30, DEFAULT_PRICING, 5)).toBe(63.99);
+    // the same item without freight stays on the old sticker → 59.99
+    expect(retailPriceGbp(30, DEFAULT_PRICING)).toBe(59.99);
+    // typical CN mid-ticket item: 10 USD cost, 5.02 USD freight → 19.89 + 3.99 = 23.99
+    expect(retailPriceGbp(10, DEFAULT_PRICING, 5.02)).toBe(23.99);
+  });
+
+  it('domestic (zero-freight) items keep their sticker unchanged', () => {
+    expect(retailPriceGbp(30, DEFAULT_PRICING, 0)).toBe(retailPriceGbp(30, DEFAULT_PRICING));
+    expect(retailPriceGbp(10, DEFAULT_PRICING, 0)).toBe(19.99);
+  });
+
+  it('the minimum-margin clause still guarantees cost + freight + margin on cheap items', () => {
+    // cheap+heavy: 2 USD cost, 10 USD freight. sticker 1.59×2.5 + 7.96 = £11.93;
+    // margin 11.93 - (1.59 + 7.96) = £2.39 < £6 → floor = 1.59 + 7.96 + 6 = £15.55 → 15.99
     expect(retailPriceGbp(2, DEFAULT_PRICING, 10)).toBe(15.99);
-    // same item without freight knowledge degrades to the old rule → 7.99
+    // same item without freight knowledge degrades to the product-cost-only rule → 7.99
     expect(retailPriceGbp(2, DEFAULT_PRICING)).toBe(7.99);
-    // expensive item: multiplier already clears cost+freight+margin - sticker unchanged
-    expect(retailPriceGbp(30, DEFAULT_PRICING, 5)).toBe(retailPriceGbp(30, DEFAULT_PRICING));
   });
 
   it('rejects non-positive landed costs', () => {

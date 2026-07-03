@@ -134,12 +134,13 @@ export const shippingAgent: CategoryAgent = {
       if (!band) return notConfidentFacts(dest);
 
       const verifiedGb = item.verifiedGbWarehouse && dest === 'GB';
-      // Free-UK-delivery clause is gated: only when the item is GB-verified to a GB dest
-      // AND the owner has flipped gbFreeUkLive (after a live GBP-0 checkout is verified).
-      // CAVEAT (Phase 2): keyed on warehouse origin, NOT actual GB-Local profile membership,
-      // so a GB item imported between daily reconciles could claim free UK before checkout
-      // reflects it. Fix later via sync-on-import or gating the claim on membership.
-      const gbFreeUk = verifiedGb && ctx.cfg.fulfil?.gbFreeUkLive === true;
+      // Free-UK-delivery clause (widened 2026-07-03, free-UK cutover): once the owner
+      // flips gbFreeUkLive - only after a live GBP-0 checkout is verified - UK delivery
+      // is free STOREWIDE (checkout charges 0 on every shipping profile; the item's
+      // freight is baked into the sticker by the pricing rule). The claim therefore
+      // applies to ANY resolved item with a GB destination, not just GB-warehoused
+      // stock; the verify-then-flip flag remains the sole gate.
+      const gbFreeUk = dest === 'GB' && ctx.cfg.fulfil?.gbFreeUkLive === true;
       return {
         confident: true, quotesFigure: true,
         facts: `Destination ${countryLabel(dest)}. A grounded delivery estimate line is appended after your reply, so do NOT state a delivery time yourself. You MAY tell the customer the exact shipping cost for their destination is calculated and shown at checkout before payment - do NOT state a specific shipping figure. You MAY state the returns policy. Do not add a sign-off; the appended line follows your text.`,
@@ -164,13 +165,15 @@ export const shippingAgent: CategoryAgent = {
     const line = buildShippingLine(d.label, d.band); // "Delivery to X: estimated A-B days."
     if (!line) return null;
     // Per-SKU, source-verified UK fulfilment wording (never blanket, never for non-GB stock).
-    // The "free UK delivery" clause is appended ONLY when the verify-then-flip flag is live.
+    // The "free UK delivery" clause is appended ONLY when the verify-then-flip flag is live;
+    // since the 2026-07-03 cutover it covers any GB-destination item (free storewide).
     if (d.verifiedGb) {
       const loc = d.gbFreeUk
         ? 'This item is held in a UK fulfilment location with free UK delivery.'
         : 'This item is held in a UK fulfilment location.';
       return `${loc} ${line}`;
     }
+    if (d.gbFreeUk) return `UK delivery is free. ${line}`;
     return line;
   }
 };

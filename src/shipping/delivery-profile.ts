@@ -529,7 +529,12 @@ export function buildSignatureZones(
     const candidates = originCodes.map((o) => lookup(o, dest)).filter((r): r is LogisticsRoute => !!r);
     const res = resolveNearestRoute(candidates);
     if (!res.fulfillable) continue; // omit -> checkout blocked there (honest)
-    const amount = freightUsdToGbp(res.nearest.route.freight_cost_usd, fx, handlingGbp);
+    // 2026-07-03 owner decision (free-UK-delivery cutover): the UK destination ships
+    // FREE on every engineered profile - the pricing rule bakes the item's freight
+    // into the sticker instead, so this is not a subsidy. Fulfillability still gates:
+    // a signature with no route to GB gets no GB zone (blocked, never free). All other
+    // destinations keep the engineered per-route rate.
+    const amount = dest === 'GB' ? '0.00' : freightUsdToGbp(res.nearest.route.freight_cost_usd, fx, handlingGbp);
     zones.push({
       name: dest,
       countries: [{ code: dest, includeAllProvinces: true }],

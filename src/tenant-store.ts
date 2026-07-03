@@ -1203,6 +1203,26 @@ export class TenantStore {
     return rs.results ?? [];
   }
 
+  /** Imported, Shopify-linked products with NO origins-bearing warehouse row. These have
+   *  no origin signature, so they fall back to the merchant's MANUAL default shipping
+   *  profile instead of the engineered per-origin profiles - the nightly backfill
+   *  (backfillOriginSignatures) works this list off. */
+  async importedCjPidsWithoutOrigins(limit = 25): Promise<{ cj_pid: string; category: string | null }[]> {
+    const rs = await this.db
+      .prepare(
+        `SELECT l.cj_pid AS cj_pid, l.category AS category FROM product_links l
+         WHERE l.shop = ?1 AND l.state = 'imported' AND l.shopify_product_id IS NOT NULL
+           AND NOT EXISTS (
+             SELECT 1 FROM warehouse_products w, json_each(COALESCE(json_extract(w.detail, '$.origins'), '{}')) je
+             WHERE w.shop = l.shop AND w.cj_pid = l.cj_pid AND CAST(je.value AS INTEGER) > 0
+           )
+         ORDER BY l.created_at ASC LIMIT ${Math.min(Math.max(limit, 1), 100)}`
+      )
+      .bind(this.shop)
+      .all<{ cj_pid: string; category: string | null }>();
+    return rs.results ?? [];
+  }
+
   /** Batched contact-name lookup (email -> name; unnamed contacts are omitted). */
   async contactNamesByEmails(emails: string[]): Promise<Map<string, string>> {
     const out = new Map<string, string>();

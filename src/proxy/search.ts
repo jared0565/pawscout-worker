@@ -334,11 +334,15 @@ export async function searchBackfill(
     if (seen.has(r.cj_pid)) continue;
     const link = whLinks.get(r.cj_pid);
     const imported = link?.state === 'imported' && link.handle;
+    // Freight is baked into the sticker (pricing rule, 2026-07-03) - price the
+    // ghost card with the stored freight so the preview matches the eventual PDP.
+    let freightUsd = 0;
+    try { freightUsd = (JSON.parse(r.detail) as { freightUsd?: number }).freightUsd ?? 0; } catch { /* legacy row */ }
     cards.push({
       pid: r.cj_pid,
       title: r.title,
       image: firstImage(r),
-      price: retailPriceGbp(r.price_usd, cfg.pricing),
+      price: retailPriceGbp(r.price_usd, cfg.pricing, freightUsd),
       state: imported ? 'imported' : 'ghost',
       url: imported ? `/products/${link!.handle}` : null
     });

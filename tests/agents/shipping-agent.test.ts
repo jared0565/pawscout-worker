@@ -341,12 +341,25 @@ describe('free UK delivery flag (Task 6 - gbFreeUkLive verify-then-flip gate)', 
     expect(line).toMatch(/UK fulfilment location/i);
   });
 
-  it('flag ON but CN-only item -> never claims free UK or UK fulfilment (verifiedGb false)', async () => {
+  // Widened 2026-07-03 (free-UK cutover): with the flag live, UK delivery is free
+  // STOREWIDE (checkout charges 0 on every profile; freight is baked into stickers),
+  // so a CN-stocked item to a GB destination claims free delivery too - but NEVER
+  // the UK-fulfilment-location wording (that stays per-SKU source-verified).
+  it('flag ON, CN-only item to GB -> claims free UK delivery but never UK fulfilment', async () => {
     const detail = JSON.stringify({ origins: { CN: 500 }, variants: [{ vid: 'V2', stock: 500 }] });
     const cnUkRoute = { from_country: 'CN', to_country: 'GB', channel: 'CJPacket', transit_min: 5, transit_max: 11, aging_raw: '5-11', synced_at: new Date().toISOString() };
     const ctx = fakeCtx({ msg: 'how long to activepaw.co.uk/products/dog-launcher to the UK?', links: { 'dog-launcher': { cj_pid: 'P2' } }, warehouse: { P2: { detail } }, routes: { 'CN->GB': cnUkRoute }, fulfil: { gbFreeUkLive: true } });
     const line = shippingAgent.deterministicAppendix(await shippingAgent.ground(ctx))!;
-    expect(line).not.toMatch(/free UK delivery|UK fulfilment/i);
+    expect(line).toMatch(/^UK delivery is free\./);
+    expect(line).not.toMatch(/UK fulfilment/i);
+  });
+
+  it('flag OFF, CN-only item to GB -> no free-delivery claim at all', async () => {
+    const detail = JSON.stringify({ origins: { CN: 500 }, variants: [{ vid: 'V2', stock: 500 }] });
+    const cnUkRoute = { from_country: 'CN', to_country: 'GB', channel: 'CJPacket', transit_min: 5, transit_max: 11, aging_raw: '5-11', synced_at: new Date().toISOString() };
+    const ctx = fakeCtx({ msg: 'how long to activepaw.co.uk/products/dog-launcher to the UK?', links: { 'dog-launcher': { cj_pid: 'P2' } }, warehouse: { P2: { detail } }, routes: { 'CN->GB': cnUkRoute } });
+    const line = shippingAgent.deterministicAppendix(await shippingAgent.ground(ctx))!;
+    expect(line).not.toMatch(/free/i);
   });
 
   it('flag ON but GB item to a NON-GB dest (US) -> never claims free UK or UK fulfilment', async () => {

@@ -345,6 +345,69 @@ export async function syncStoreInventory(
   return synced;
 }
 
+/** Origin-signature backfill batch: paced CJ detail (+freight) calls per nightly run. */
+export const ORIGIN_BACKFILL_BATCH = 15;
+
+/**
+ * Backfill origin signatures (2026-07-03, free-UK-delivery cutover step C): imported
+ * products with no origins-bearing warehouse row (pre-warehouse imports or purged
+ * rows) have no origin signature, so they sit on the merchant's MANUAL default
+ * shipping profile instead of the engineered per-origin profiles. For each, fetch
+ * the CJ detail (which carries the per-country origins map), capture the freight
+ * estimate the pricing rule bakes into the sticker, and upsert a warehouse row -
+ * the same night's signature-profile sync then adopts the product. Products whose
+ * CJ detail shows no stocked origin are left alone (default profile = honest
+ * fallback). Paced (~1.1s/call) and capped per run; the list drains over a few
+ * nights and stays empty once healthy.
+ */
+export async function backfillOriginSignatures(
+  store: TenantStore,
+  cj: CjClient,
+  cfg: TenantConfig,
+  opts: { limit?: number; pause?: (ms: number) => Promise<void> } = {}
+): Promise<number> {
+  const rows = await store.importedCjPidsWithoutOrigins(opts.limit ?? ORIGIN_BACKFILL_BATCH);
+  if (!rows.length) return 0;
+  const pause = opts.pause ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  let done = 0;
+  for (const row of rows) {
+    try {
+      await pause(1100);
+      let detail = await cj.detail(row.cj_pid);
+      if (!detail || !detail.variants.length) continue;
+      const origins = detail.origins ?? {};
+      if (!Object.values(origins).some((n) => n > 0)) continue; // no stocked origin at CJ - stays on the default profile
+      if (detail.freightUsd === undefined) {
+        detail = { ...detail, origin: detail.origin ?? chooseOrigin(detail, cfg.floors.stockFloor) };
+        const vid = detail.variants[0]?.vid;
+        if (vid && vid !== 'default') {
+          try {
+            await pause(1100);
+            const f = await cj.freightEstimate(vid, detail.origin);
+            if (f) detail = { ...detail, freightUsd: f.priceUsd };
+          } catch (e) {
+            console.warn(`origin backfill freight estimate failed for ${row.cj_pid}: ${(e as Error).message}`);
+          }
+        }
+      }
+      await store.putWarehouseProduct({
+        cjPid: row.cj_pid,
+        category: row.category,
+        title: detail.nameEn,
+        detailJson: JSON.stringify(detail),
+        priceUsd: Math.min(...detail.variants.map((v) => v.sellPriceUsd)),
+        listedNum: detail.listedNum,
+        stock: detail.stock ?? Math.max(0, ...Object.values(origins))
+      });
+      done++;
+    } catch (e) {
+      console.warn(`origin backfill failed for ${row.cj_pid}: ${(e as Error).message}`);
+    }
+  }
+  if (done) console.log(`origin backfill: ${done} product(s) gained an origin signature`);
+  return done;
+}
+
 /**
  * Fast re-sync for the LOW BAND only, run from the 15-minute cron. The nightly
  * sync leaves up to a 24h staleness window; for items at or below LOW_STOCK_BAND
@@ -829,13 +892,17 @@ export async function seedSemanticLibrary(
   return { seeded, skipped };
 }
 
-/** Per-collection GB sourcing keywords (mirrors discover-cj-category-products.py). */
-const SEED_KEYWORDS: Record<string, string[]> = {
-  'pet-cleaning': ['pet cleaning wipes', 'paw cleaner', 'pet bath towel'],
-  'pet-grooming': ['dog grooming brush', 'pet nail clipper', 'dog comb'],
-  'pet-health': ['dog dental', 'dog supplement', 'pet probiotic'],
-  'pet-toys': ['dog chew toy', 'cat toy', 'pet puzzle toy'],
-  'pet-accessories': ['dog collar', 'dog harness', 'pet bowl', 'cat litter', 'pet carrier']
+/** Per-collection GB sourcing keywords (mirrors discover-cj-category-products.py).
+ *  Broadened 2026-07-03 (free-UK-delivery initiative step D): the 2026-06-24 seed
+ *  exhausted the original 17-keyword set at ~29 drafts; wider coverage of the
+ *  ~300-strong GB pet pool needs more search angles, not re-runs. The discovery
+ *  gate + LLM curation still filter every candidate. */
+export const SEED_KEYWORDS: Record<string, string[]> = {
+  'pet-cleaning': ['pet cleaning wipes', 'paw cleaner', 'pet bath towel', 'dog shampoo', 'pet stain remover', 'litter scoop', 'pet hair remover', 'dog poop bags'],
+  'pet-grooming': ['dog grooming brush', 'pet nail clipper', 'dog comb', 'deshedding tool', 'pet grooming glove', 'dog hair clipper', 'cat brush', 'dog nail grinder'],
+  'pet-health': ['dog dental', 'dog supplement', 'pet probiotic', 'dog toothpaste', 'joint supplement dog', 'calming dog', 'flea comb', 'pet first aid'],
+  'pet-toys': ['dog chew toy', 'cat toy', 'pet puzzle toy', 'interactive dog toy', 'cat tunnel', 'catnip toy', 'squeaky dog toy', 'cat scratcher', 'dog rope toy'],
+  'pet-accessories': ['dog collar', 'dog harness', 'pet bowl', 'cat litter', 'pet carrier', 'dog bed', 'cat bed', 'dog lead', 'pet water fountain', 'dog coat', 'cat litter box', 'pet blanket', 'dog crate', 'pet feeder']
 };
 
 /**
@@ -981,6 +1048,10 @@ export async function runDailyMaintenance(env: Env): Promise<void> {
         // Ensure the affiliate-eligible smart collection exists before the
         // inventory sync toggles per-product tags into it (best-effort).
         try { await ensureAffiliateCollection(admin); } catch (e) { console.warn(`affiliate collection ensure failed: ${(e as Error).message}`); }
+        // Origin-signature backfill BEFORE the inventory sync + profile syncs, so a
+        // backfilled product is repriced (freight-baked sticker) and adopted into its
+        // engineered shipping profile in the SAME nightly run. Best-effort.
+        try { await backfillOriginSignatures(store, cj, cfg); } catch (e) { console.warn(`origin backfill skipped: ${(e as Error).message}`); }
         await syncStoreInventory(store, cj, admin, cfg);
         await refillCollections(store, cj, admin, cfg, { curate, pickHero }); // promote-from-warehouse (floor 8, target 12)
         await reconcileDraftLinks(store, admin); // flip ACTIVE seed drafts to imported
