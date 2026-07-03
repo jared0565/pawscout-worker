@@ -138,6 +138,34 @@ export function chunk<T>(arr: T[], size: number): T[][] {
 // (lesson from applyVariantMembership: the live API rejects oversized batches).
 const PUBLISHABLES_CHUNK = 100;
 
+// publicationUpdate spawns an async background job on Shopify's side; firing the
+// next mutation while prior jobs still run trips "The limit for simultaneous
+// publication updates has been exceeded" (hit live on the 2026-07-03 first run,
+// processing 3 markets back-to-back). Retry with backoff on exactly that error.
+const PUBLICATION_THROTTLE_RE = /limit for simultaneous publication updates/i;
+const PUBLICATION_RETRY_DELAYS_MS = [5_000, 15_000, 30_000];
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+async function publicationUpdateWithRetry(
+  admin: AdminGraphql,
+  publicationId: string,
+  input: Record<string, unknown>,
+  label: string,
+  delaysMs: number[]
+): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    const data = await admin(PUBLICATION_UPDATE, { id: publicationId, input });
+    const err = firstErr(data, 'publicationUpdate');
+    if (!err) return;
+    if (PUBLICATION_THROTTLE_RE.test(err) && attempt < delaysMs.length) {
+      await sleep(delaysMs[attempt]);
+      continue;
+    }
+    throw new Error(`publicationUpdate(${label}): ${err}`);
+  }
+}
+
 export interface MarketExclusionResult {
   name: string;
   catalogId: string;
@@ -160,8 +188,9 @@ export async function syncMarketExclusions(
     listSignatureMemberships(): Promise<Map<string, string[]>>;
     getLogisticsRoute(from: string, to: string, staleness: number): Promise<LogisticsRoute | null>;
   },
-  opts: { stalenessHours: number }
+  opts: { stalenessHours: number; retryDelaysMs?: number[] }
 ): Promise<{ markets: MarketExclusionResult[] }> {
+  const retryDelaysMs = opts.retryDelaysMs ?? PUBLICATION_RETRY_DELAYS_MS;
   const live = await listLiveMarkets(admin);
   const managed = live.filter((m) => !m.primary && m.countries.length > 0);
   if (!managed.length) return { markets: [] };
@@ -212,14 +241,10 @@ export async function syncMarketExclusions(
       const toAdd = [...allProductIds].filter((id) => !desiredExcluded.has(id) && state.get(id) === false);
 
       for (const ids of chunk(toRemove, PUBLISHABLES_CHUNK)) {
-        const data = await admin(PUBLICATION_UPDATE, { id: publicationId, input: { publishablesToRemove: ids } });
-        const err = firstErr(data, 'publicationUpdate');
-        if (err) throw new Error(`publicationUpdate(remove): ${err}`);
+        await publicationUpdateWithRetry(admin, publicationId, { publishablesToRemove: ids }, 'remove', retryDelaysMs);
       }
       for (const ids of chunk(toAdd, PUBLISHABLES_CHUNK)) {
-        const data = await admin(PUBLICATION_UPDATE, { id: publicationId, input: { publishablesToAdd: ids } });
-        const err = firstErr(data, 'publicationUpdate');
-        if (err) throw new Error(`publicationUpdate(add): ${err}`);
+        await publicationUpdateWithRetry(admin, publicationId, { publishablesToAdd: ids }, 'add', retryDelaysMs);
       }
 
       results.push({ name: market.name, catalogId, excluded: desiredExcluded.size, removed: toRemove.length, readded: toAdd.length });

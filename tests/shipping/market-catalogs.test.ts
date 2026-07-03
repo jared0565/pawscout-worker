@@ -23,20 +23,30 @@ const MARKETS_RESPONSE = {
   }
 };
 
+const THROTTLE_MSG = 'The limit for simultaneous publication updates has been exceeded.';
+
 /** Admin mock: markets read, catalog/publication creation, published-state scan,
  * publication updates. Published-state: every product reports `published` unless
- * listed in `unpublished`. */
-function marketsAdmin(calls: Call[], opts: { unpublished?: string[]; products?: string[] } = {}): AdminGraphql {
+ * listed in `unpublished`. `throttleFirst` makes the first N publicationUpdate
+ * calls return the live throttle userError before succeeding. */
+function marketsAdmin(calls: Call[], opts: { unpublished?: string[]; products?: string[]; throttleFirst?: number } = {}): AdminGraphql {
   const unpublished = new Set(opts.unpublished ?? []);
   const products = opts.products ?? [];
   let catalogSeq = 0;
   let pubSeq = 0;
+  let throttlesLeft = opts.throttleFirst ?? 0;
   return (async (query: string, variables?: Record<string, unknown>) => {
     calls.push({ query, variables });
     if (query.includes('pawscoutMarketCatalogs')) return MARKETS_RESPONSE;
     if (query.includes('catalogCreate')) return { catalogCreate: { catalog: { id: `gid://shopify/MarketCatalog/new${++catalogSeq}` }, userErrors: [] } };
     if (query.includes('publicationCreate')) return { publicationCreate: { publication: { id: `gid://shopify/Publication/new${++pubSeq}` }, userErrors: [] } };
-    if (query.includes('publicationUpdate')) return { publicationUpdate: { publication: { id: String(variables?.id) }, userErrors: [] } };
+    if (query.includes('publicationUpdate')) {
+      if (throttlesLeft > 0) {
+        throttlesLeft--;
+        return { publicationUpdate: { publication: null, userErrors: [{ field: null, message: THROTTLE_MSG }] } };
+      }
+      return { publicationUpdate: { publication: { id: String(variables?.id) }, userErrors: [] } };
+    }
     if (query.includes('pawscoutPublishedState')) {
       return { products: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: products.map((id) => ({ id, publishedOnPublication: !unpublished.has(id) })) } };
     }
@@ -160,6 +170,30 @@ describe('syncMarketExclusions', () => {
     for (const u of adds) {
       expect((u.variables!.input as { publishablesToAdd: string[] }).publishablesToAdd).toEqual([CN_PRODUCT]);
     }
+  });
+
+  it('retries a throttled publicationUpdate and completes (live 2026-07-03 failure mode)', async () => {
+    const calls: Call[] = [];
+    // First 2 publicationUpdate calls hit the simultaneous-updates throttle, then succeed.
+    const admin = marketsAdmin(calls, { products: [GB_PRODUCT, CN_PRODUCT], throttleFirst: 2 });
+    const r = await syncMarketExclusions(admin, storeStub(MEMBERSHIPS), { stalenessHours: 720, retryDelaysMs: [1, 1, 1] });
+    // All three managed markets still complete; no market is dropped.
+    expect(r.markets.map((m) => m.name).sort()).toEqual(['Australia', 'European Union', 'United States and Canada']);
+    for (const m of r.markets) expect(m.removed).toBe(1);
+    // 3 successful removals + 2 throttled attempts that were retried.
+    expect(calls.filter((c) => c.query.includes('publicationUpdate'))).toHaveLength(5);
+  });
+
+  it('a persistent throttle exhausts retries and skips only that market', async () => {
+    const calls: Call[] = [];
+    // More throttles than markets x (retries+1): the first market exhausts its
+    // retries and is skipped; later markets consume the remaining throttles.
+    const admin = marketsAdmin(calls, { products: [GB_PRODUCT, CN_PRODUCT], throttleFirst: 3 });
+    const r = await syncMarketExclusions(admin, storeStub(MEMBERSHIPS), { stalenessHours: 720, retryDelaysMs: [1, 1] });
+    // First managed market (EU) burns 3 attempts (initial + 2 retries) all throttled
+    // and is skipped; US+CA and AU then succeed first try.
+    expect(r.markets.map((m) => m.name).sort()).toEqual(['Australia', 'United States and Canada']);
+    for (const m of r.markets) expect(m.removed).toBe(1);
   });
 
   it('a market with unreadable regions is skipped entirely (fail-safe, never over-excludes)', async () => {
