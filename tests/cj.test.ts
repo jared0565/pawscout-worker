@@ -75,6 +75,63 @@ describe('CjClient stock endpoints (post-rename)', () => {
   });
 });
 
+/** Full-envelope variant of clientWith: the responder returns the ENTIRE body,
+ * for CJ's 2026-07-03 {success} envelope (no `result` field at all). */
+function clientWithEnvelope(responder: (url: string) => unknown): CjClient {
+  const fakeFetch = (async (input: RequestInfo | URL) =>
+    new Response(JSON.stringify(responder(String(input))), { status: 200 })) as typeof fetch;
+  return new CjClient(async () => 'tok', fakeFetch);
+}
+
+describe('CjClient 2026-07-03 success-envelope (result field dropped)', () => {
+  // Fixture captured LIVE from getInventoryByPid on 2026-07-03 (elevated dog
+  // bed, GB warehouse) - the envelope has success/code but NO result, and data
+  // is an object, not rows.
+  const LIVE_SHAPE = {
+    success: true, code: 200, message: '',
+    data: {
+      inventories: [{ areaEn: 'Britain Warehouse', areaId: 17, countryCode: 'GB', totalInventoryNum: 35, cjInventoryNum: 35, factoryInventoryNum: 0 }],
+      variantInventories: [{ vid: '1864515923999608832', inventory: [{ countryCode: 'GB', totalInventory: 35, cjInventory: 35, factoryInventory: 0 }] }]
+    },
+    requestId: 'r1'
+  };
+
+  it('stockByPid parses the new object shape (per-variant, summed across warehouses)', async () => {
+    const client = clientWithEnvelope(() => LIVE_SHAPE);
+    const m = await client.stockByPid('P1');
+    expect(m.get('1864515923999608832')).toBe(35);
+  });
+
+  it('sums multi-warehouse variant inventory', async () => {
+    const client = clientWithEnvelope(() => ({
+      success: true, code: 200,
+      data: { variantInventories: [{ vid: 'v1', inventory: [{ countryCode: 'GB', totalInventory: 35 }, { countryCode: 'CN', totalInventory: 10 }] }] }
+    }));
+    const m = await client.stockByPid('P1');
+    expect(m.get('v1')).toBe(45);
+  });
+
+  it('falls back to a product-level * entry when only inventories rows exist', async () => {
+    const client = clientWithEnvelope(() => ({
+      success: true, code: 200,
+      data: { inventories: [{ countryCode: 'GB', totalInventoryNum: 20 }, { countryCode: 'CN', totalInventoryNum: 5 }] }
+    }));
+    const m = await client.stockByPid('P1');
+    expect(m.get('*')).toBe(25);
+  });
+
+  it('a success:false envelope still throws with the CJ code', async () => {
+    const client = clientWithEnvelope(() => ({ success: false, code: 1600100, message: 'quota exceeded' }));
+    await expect(client.stockByPid('P1')).rejects.toThrow(/quota exceeded.*1600100/);
+  });
+
+  it('the legacy result:true envelope keeps working (other endpoints unchanged)', async () => {
+    const client = clientWithEnvelope(() => ({ result: true, data: [{ vid: 'v1', storageNum: 9 }] }));
+    const m = await client.stockByPid('P1');
+    expect(m.get('v1')).toBe(9);
+  });
+});
+
 import { chooseOrigin } from '../src/cj';
 import type { CjDetail } from '../src/cj';
 

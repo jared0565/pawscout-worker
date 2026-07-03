@@ -275,8 +275,11 @@ export class CjClient {
         continue;
       }
       if (!resp.ok) throw await httpError(resp);
-      const data = (await resp.json()) as { result?: boolean; message?: string; code?: number; data?: unknown };
-      if (!data.result) {
+      // CJ is migrating endpoints from a {result} envelope to a {success} one
+      // (getInventoryByPid flipped mid-day 2026-07-03, breaking every stock
+      // check until this accepted both). Treat either flag as the ok signal.
+      const data = (await resp.json()) as { result?: boolean; success?: boolean; message?: string; code?: number; data?: unknown };
+      if (!(data.result ?? data.success)) {
         // Keep CJ's numeric code - messages like "Interface not found" are
         // useless without it when debugging endpoint deprecations.
         throw new Error(`${data.message || 'CJ request failed'}${data.code != null ? ` (CJ code ${data.code}, ${path})` : ''}`);
@@ -383,8 +386,9 @@ export class CjClient {
         continue;
       }
       if (!resp.ok) throw await httpError(resp);
-      const data = (await resp.json()) as { result?: boolean; message?: string; code?: number; data?: unknown };
-      if (!data.result) {
+      // Same dual-envelope acceptance as get() - see the note there.
+      const data = (await resp.json()) as { result?: boolean; success?: boolean; message?: string; code?: number; data?: unknown };
+      if (!(data.result ?? data.success)) {
         throw new Error(`${data.message || 'CJ request failed'}${data.code != null ? ` (CJ code ${data.code}, ${path})` : ''}`);
       }
       return data.data;
@@ -457,18 +461,38 @@ export class CjClient {
   }
 
   /**
-   * Per-variant stock totals from CJ's inventory endpoint.
-   * NB: CJ RENAMED this endpoint (the old /product/stock/queryByPid now
-   * answers "Interface not found"). The new shape returns per-warehouse rows
-   * (areaEn/countryCode/totalInventoryNum) which may or may not carry a vid -
-   * vid rows sum per variant; vid-less rows fold into a product-level '*'
-   * entry (callers take max(values) for product stock; per-vid lookups
-   * simply miss '*' and fall back).
+   * Per-variant stock totals from CJ's inventory endpoint. CJ keeps reshaping
+   * it: /product/stock/queryByPid died ("Interface not found"), its successor
+   * returned flat per-warehouse rows, and on 2026-07-03 it flipped again to an
+   * OBJECT {inventories: per-warehouse product rows, variantInventories:
+   * [{vid, inventory: per-warehouse rows}]} under a {success} envelope. All
+   * shapes are handled: vid stock sums across warehouses per variant; product-
+   * level rows fold into a '*' entry only when no variant carries stock
+   * (callers take max(values) for product stock; per-vid lookups simply miss
+   * '*' and fall back).
    */
   async stockByPid(pid: string): Promise<Map<string, number>> {
     const data = await this.get('/product/stock/getInventoryByPid', { pid });
     const map = new Map<string, number>();
     let productLevel = 0;
+    if (data && !Array.isArray(data) && typeof data === 'object') {
+      const obj = data as {
+        variantInventories?: { vid?: string; inventory?: { totalInventory?: number }[] }[];
+        inventories?: { totalInventoryNum?: number; totalInventory?: number }[];
+      };
+      for (const v of obj.variantInventories ?? []) {
+        const vid = String(v.vid ?? '');
+        if (!vid) continue;
+        const n = (v.inventory ?? []).reduce((s, w) => s + (Number(w.totalInventory ?? 0) || 0), 0);
+        if (n > 0) map.set(vid, (map.get(vid) ?? 0) + n);
+      }
+      for (const w of obj.inventories ?? []) {
+        const n = Number(w.totalInventoryNum ?? w.totalInventory ?? 0);
+        if (Number.isFinite(n) && n > 0) productLevel += n;
+      }
+      if (!map.size && productLevel > 0) map.set('*', productLevel);
+      return map;
+    }
     for (const row of Array.isArray(data) ? data : []) {
       const r = row as Record<string, unknown>;
       const vid = String(r.vid ?? '');
