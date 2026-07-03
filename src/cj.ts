@@ -355,7 +355,11 @@ export class CjClient {
     if (!images.length && p.productImage) images = [String(p.productImage)];
     const variants = (Array.isArray(p.variants) ? p.variants : []).map((v: Record<string, unknown>) => ({
       vid: String(v.vid ?? ''),
-      name: String(v.variantNameEn ?? v.variantName ?? 'Default'),
+      // || not ??: some CJ products carry variantNameEn as an EMPTY STRING with
+      // the real label in variantKey (e.g. 'Green') - an empty name reaches
+      // Shopify as an option value and productSet rejects the whole import
+      // with "The name provided is not valid".
+      name: String(v.variantNameEn || v.variantName || v.variantKey || 'Default'),
       sellPriceUsd: parseCjPrice(v.variantSellPrice ?? v.sellPrice),
       sku: String(v.variantSku ?? ''),
       stock: parseVariantStock(v)

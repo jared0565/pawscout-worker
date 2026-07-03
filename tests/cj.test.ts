@@ -53,6 +53,19 @@ describe('CjClient stock endpoints (post-rename)', () => {
     expect(d?.stock).toBe(120);
   });
 
+  it('detail falls back to variantKey when variantNameEn is an EMPTY string (live 2026-07-03: slip-on water bottle)', async () => {
+    const { client } = clientWith(() => ({
+      pid: 'P2', productNameEn: 'Bottle', productImage: 'https://i/2.jpg',
+      variants: [
+        { vid: 'v1', variantNameEn: '', variantKey: 'Green', variantSellPrice: 2, variantSku: 's1' },
+        { vid: 'v2', variantNameEn: '', variantKey: 'Pink', variantSellPrice: 2, variantSku: 's2' },
+        { vid: 'v3', variantSellPrice: 2, variantSku: 's3' } // nothing at all -> Default
+      ]
+    }));
+    const d = await client.detail('P2');
+    expect(d?.variants.map((v) => v.name)).toEqual(['Green', 'Pink', 'Default']);
+  });
+
   it('stockByPid calls getInventoryByPid (queryByPid is dead) and folds vid-less warehouse rows', async () => {
     const { client, urls } = clientWith(() => ([
       { areaEn: 'CN warehouse', countryCode: 'CN', totalInventoryNum: 80 },
