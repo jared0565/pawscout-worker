@@ -169,6 +169,31 @@ describe('consolePage', () => {
     expect(scripts).toContain('/gb-sync'); // api() prepends /api
   });
 
+  // Phase 1 shell: left rail + five always-in-DOM views toggled by a hash router.
+  it('renders the five view containers, the rail, and the hash router', async () => {
+    const html = await consolePage('test-api-key').text();
+    for (const v of ['view-inbox', 'view-catalog', 'view-ops', 'view-settings', 'view-help']) {
+      expect(html).toContain('id="' + v + '"');
+    }
+    expect(html).toContain('class="rail"');
+    expect(html).toContain('data-route="inbox"');
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+    expect(scripts).toContain('function applyRoute(');
+    expect(scripts).toContain("window.addEventListener('hashchange',applyRoute)");
+    expect(scripts).toContain('applyRoute();'); // applied on load too
+  });
+
+  it('has no duplicate id="..." attributes in the static HTML (all views share one DOM)', async () => {
+    const html = await consolePage('test-api-key').text();
+    // Strip script blocks first: ids inside JS-built strings (thread modal internals)
+    // are injected at runtime into #inbox-thread, never duplicated in the static DOM.
+    const staticHtml = html.replace(/<script[\s\S]*?<\/script>/g, '');
+    const ids = [...staticHtml.matchAll(/\sid="([^"]+)"/g)].map((m) => m[1]);
+    expect(ids.length).toBeGreaterThan(80); // sanity: the relocation dropped nothing
+    const dupes = ids.filter((id, i) => ids.indexOf(id) !== i);
+    expect(dupes).toEqual([]);
+  });
+
   it('wraps every invoice field in esc() in the client render code', async () => {
     const html = await consolePage('test-api-key').text();
     // Verify that the renderInboxThread / invoice-card code wraps dynamic values in esc()

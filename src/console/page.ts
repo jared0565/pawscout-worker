@@ -15,7 +15,19 @@
 // Feedback note: this app renders inside Shopify admin's cross-origin iframe, where
 // window.alert()/confirm() are silently blocked. ALL user feedback must be inline
 // (writing into DOM elements) - never alert(). Do not reintroduce alert() here.
+//
+// Structure note (Phase 1 shell): this file is now the COMPOSER - the shared
+// <style> block and the whole browser-JS <script> live here, while the card
+// markup lives in ./views/*.ts fragments and the rail/router in ./shell.ts.
+// All five views exist in the DOM at once; the hash router only toggles
+// .active, so every getElementById below works regardless of the active view.
 
+import { inboxView } from './views/inbox';
+import { catalogView } from './views/catalog';
+import { opsView } from './views/ops';
+import { settingsView } from './views/settings';
+import { helpView } from './views/help';
+import { railHtml, routerJs, shellCss } from './shell';
 export function consolePage(apiKey: string): Response {
   const html = `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -143,336 +155,24 @@ export function consolePage(apiKey: string): Response {
   .agents-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:6px 0;border-top:1px solid var(--border)}
   .agents-row:first-of-type{border-top:0}
   .agents-row.is-disabled{opacity:.5}
-</style>
+${shellCss}</style>
 </head><body>
-<div class="wrap">
-  <header>
-    <h1>PawScout</h1>
-    <p class="sub">Supplier intelligence &amp; inventory population for your store.</p>
-  </header>
-
-  <section class="card">
-    <h2><span class="step">1</span> Connect CJ</h2>
-    <div class="row">
-      <div class="grow">
-        <label for="cj">CJ API key</label>
-        <input id="cj" type="text" placeholder="CJ&lt;email&gt;@api@&lt;token&gt;" autocomplete="off" spellcheck="false">
-      </div>
-      <button id="cjbtn" onclick="connectCj()">Connect</button>
-    </div>
-    <p id="cjstatus" class="msg muted">Checking…</p>
-  </section>
-
-  <section class="card">
-    <h2><span class="step">2</span> Quality gates</h2>
-    <div class="row">
-      <div class="grow">
-        <label for="pf">Popularity floor</label>
-        <input id="pf" type="number" value="1" min="0">
-      </div>
-      <div class="grow">
-        <label for="pmin">Price min ($)</label>
-        <input id="pmin" type="number" value="5" min="0" step="0.01">
-      </div>
-      <div class="grow">
-        <label for="pmax">Price max ($)</label>
-        <input id="pmax" type="number" value="80" min="0" step="0.01">
-      </div>
-    </div>
-    <div class="row">
-      <div class="grow">
-        <label for="rel">Relevance</label>
-        <select id="rel">
-          <option value="loose">Loose - any keyword match</option>
-          <option value="title" selected>Title - keyword in title</option>
-          <option value="strict">Strict - all keywords in title</option>
-        </select>
-      </div>
-      <div class="grow">
-        <label for="tgt">Target per collection</label>
-        <input id="tgt" type="number" value="12" min="1" max="200" step="1">
-      </div>
-      <button onclick="saveGates()">Save gates</button>
-    </div>
-    <p id="gatesmsg" class="msg muted"></p>
-  </section>
-
-  <section class="card">
-    <h2><span class="step">3</span> Collection map</h2>
-    <p class="sub" style="margin:0 0 12px">Map each storefront collection handle to the supplier tag that fills it. Lowercase letters, digits and hyphens only.</p>
-    <div id="maprows"></div>
-    <div class="row">
-      <button class="ghost" type="button" onclick="addMapRow('','')">Add mapping</button>
-      <button type="button" onclick="saveCollections()">Save collections</button>
-    </div>
-    <p id="mapmsg" class="msg muted"></p>
-  </section>
-
-  <section class="card">
-    <h2><span class="step">4</span> Pricing rule</h2>
-    <p class="sub" style="margin:0 0 12px">Landed USD supplier cost → GBP retail. Default 2.5× targets ~17% net after ads, fees and refunds.</p>
-    <div class="row">
-      <div class="grow">
-        <label for="pmult">Multiplier</label>
-        <input id="pmult" type="number" value="2.5" min="1" max="10" step="0.1">
-      </div>
-      <div class="grow">
-        <label for="pfloor">Floor</label>
-        <input id="pfloor" type="number" value="2.2" min="1" max="10" step="0.1">
-      </div>
-      <div class="grow">
-        <label for="pmm">Min margin (£)</label>
-        <input id="pmm" type="number" value="6" min="0" max="100" step="0.5">
-      </div>
-    </div>
-    <div class="row">
-      <div class="grow">
-        <label for="pfx">USD→GBP rate</label>
-        <input id="pfx" type="number" value="0.78" min="0.1" max="10" step="0.01">
-      </div>
-      <div class="grow">
-        <label for="pfxb">FX buffer (%)</label>
-        <input id="pfxb" type="number" value="2" min="0" max="20" step="0.5">
-      </div>
-      <button onclick="savePricing()">Save pricing</button>
-    </div>
-    <p id="pricingmsg" class="msg muted"></p>
-  </section>
-
-  <section class="card">
-    <h2><span class="step">5</span> AI curation</h2>
-    <p class="sub" style="margin:0 0 12px">Scores supplier candidates and rewrites titles/descriptions at warehouse admission (via OpenRouter). Off = mechanical gates only.</p>
-    <div class="row">
-      <div class="grow"><label for="mdl-image">Image (vision) model</label><select id="mdl-image"></select></div>
-      <div class="grow"><label for="mdl-text">Text model</label><select id="mdl-text"></select></div>
-      <div class="grow"><label for="mdl-fallback">Fallback model</label><select id="mdl-fallback"></select></div>
-    </div>
-    <div class="row" style="margin-top:10px">
-      <div class="grow" style="flex:0 1 140px"><label for="llmthresh">Min score</label><input id="llmthresh" type="number" value="60" min="0" max="100" step="5"></div>
-      <div class="grow" style="flex:0 1 120px"><label for="llmon">Enabled</label><select id="llmon"><option value="true" selected>On</option><option value="false">Off</option></select></div>
-      <button onclick="saveLlm()">Save AI</button>
-    </div>
-    <p class="sub muted" style="margin:8px 0 0">Last resort: GPT-5.4 mini · OpenAI direct (system-managed, used only if OpenRouter fails).</p>
-    <p id="llmmsg" class="msg muted"></p>
-  </section>
-
-  <section class="card">
-    <h2><span class="step">6</span> Add-on / filler products</h2>
-    <p class="sub" style="margin:0 0 12px">A hidden pool of cheap, curated items that never appear in browsing or search - they surface only as "Complete the kit" picks on product pages and in the cart's free-delivery nudge. Set the supplier cost band below your main price range.</p>
-    <div class="row">
-      <div class="grow" style="flex:0 1 120px">
-        <label for="addmin">Cost min ($)</label>
-        <input id="addmin" type="number" value="0.5" min="0" step="0.1">
-      </div>
-      <div class="grow" style="flex:0 1 120px">
-        <label for="addmax">Cost max ($)</label>
-        <input id="addmax" type="number" value="5" min="0" max="50" step="0.1">
-      </div>
-      <div class="grow" style="flex:0 1 110px">
-        <label for="addpool">Pool size</label>
-        <input id="addpool" type="number" value="12" min="1" max="50" step="1">
-      </div>
-      <div class="grow" style="flex:0 1 110px">
-        <label for="addon">Enabled</label>
-        <select id="addon"><option value="true" selected>On</option><option value="false">Off</option></select>
-      </div>
-    </div>
-    <div class="row">
-      <div class="grow">
-        <label for="addvis">Visibility in storefront</label>
-        <select id="addvis">
-          <option value="true" selected>Hidden - add-on slots only (default)</option>
-          <option value="false">Visible - also in browsing &amp; search</option>
-        </select>
-      </div>
-      <button onclick="saveAddons()">Save add-ons</button>
-    </div>
-    <p id="addmsg" class="msg muted"></p>
-  </section>
-
-  <section class="card">
-    <h2>Fulfilment</h2>
-    <p class="sub" style="margin:0 0 10px">Paid orders flow here. Guardrails (unmapped item, incomplete address, high fraud risk, over £100) put an order on <strong>hold</strong> for you; clean ones queue.</p>
-    <p class="sub" style="margin:0 0 6px">Fulfilment mode: <strong id="modelabel">…</strong></p>
-    <div class="row">
-      <button class="ghost" onclick="setMode('manual')">Manual</button>
-      <button class="ghost" onclick="setMode('cj')">CJ app</button>
-      <button class="ghost" onclick="setMode('pawscout')">PawScout auto</button>
-      <button class="ghost" id="createonlybtn" onclick="toggleCreateOnly()">Create-only: …</button>
-      <button class="ghost" id="cjdiagbtn" onclick="verifyCjOrders()">Verify CJ order API</button>
-      <button class="ghost" id="runbtn" onclick="runFulfilNow()">Run fulfilment now</button>
-      <button class="ghost" id="ordbtn" onclick="loadOrders()">Refresh</button>
-    </div>
-    <div class="row" style="margin-top:6px">
-      <input id="alertemail" type="email" placeholder="alerts@example.com" value="fbm2k11@gmail.com" style="flex:1;min-width:200px">
-      <button class="ghost" id="savealertbtn" onclick="saveAlertEmail()">Save alert email</button>
-      <button class="ghost" id="testemailbtn" onclick="sendTestEmail()">Send test email</button>
-    </div>
-    <p class="sub" style="margin:6px 0 0">PawScout emails this address whenever it creates an order in CJ that is awaiting your payment, so you can pay it ASAP.</p>
-    <p class="sub" style="margin:0 0 8px"><strong>Manual</strong>: orders just queue - you pay in CJ by hand. <strong>CJ app</strong>: CJ's own Shopify app fulfils; PawScout stays out. <strong>PawScout auto</strong>: PawScout creates + pays + tracks automatically - only after the CJ wallet is funded AND CJ's native order-import is OFF (else duplicate orders). <strong>Create-only</strong> (PawScout mode only): PawScout creates the CJ order but does NOT pay it - it shows below as <em>awaiting-payment</em> with the CJ order id, you pay it in CJ, and tracking still flows back automatically. Use this until the wallet is funded.</p>
-    <div id="awaitbanner" class="msg" style="display:none"></div>
-    <div id="ordlist"></div>
-    <p id="ordmsg" class="msg muted"></p>
-  </section>
-
-  <section class="card">
-    <h2>Maintenance - run now</h2>
-    <p class="sub" style="margin:0 0 12px">These run automatically every night. Use them here to apply changes on demand - after a bulk import, before launch, or to backfill the catalog without waiting for the nightly job.</p>
-    <div class="row">
-      <button id="syncbtn" onclick="syncNow()">Sync now</button>
-      <button class="ghost" id="herobtn" onclick="heroImagesNow()">Fix default images</button>
-      <button class="ghost" id="descbtn" onclick="rewriteDescsNow()">Rewrite legacy descriptions</button>
-      <button class="ghost" id="catbtn" onclick="fixCategoriesNow()">Re-file categories</button>
-    </div>
-    <div class="bar" id="syncbar"><i></i></div>
-    <p id="syncmsg" class="msg muted"></p>
-    <p id="heromsg" class="msg muted"></p>
-    <p id="descmsg" class="msg muted"></p>
-    <p id="catmsg" class="msg muted"></p>
-  </section>
-
-  <section class="card">
-    <h2>Search source diagnostic</h2>
-    <p class="sub" style="margin:0 0 12px">Compares what our CJ <code>listV2</code> search returns vs CJ's own website (via Firecrawl) for a query - to verify relevance.</p>
-    <div class="row">
-      <div class="grow"><label for="diagq">Query</label><input id="diagq" type="text" value="dog toy" spellcheck="false"></div>
-      <button id="diagbtn" onclick="runDiag()">Compare</button>
-    </div>
-    <div id="diagout" class="msg muted"></div>
-  </section>
-
-  <section class="card">
-    <h2>Shipping quote (CJ)</h2>
-    <p class="sub" style="margin:0 0 12px">What CJ actually charges to ship a given <strong>quantity</strong> to a destination, cheapest line first - the real freight behind a flat checkout rate. Read-only; creates nothing.</p>
-    <div class="row">
-      <div class="grow"><label for="fqpid">CJ product id</label><input id="fqpid" type="text" placeholder="from the product's cj-pid-… tag" spellcheck="false"></div>
-      <div class="grow" style="flex:0 1 220px"><label for="fqcountry">Country</label>
-        <div class="combo">
-          <input id="fqcountry" type="text" autocomplete="off" spellcheck="false" placeholder="Type to search…" data-code="ES" value="Spain" oninput="fqCountryFilter()" onfocus="fqCountryOpen()" onblur="fqCountryBlur()" onkeydown="fqCountryKey(event)">
-          <div id="fqcountrymenu" class="combo-menu" onmousedown="fqCountryMenuClick(event)"></div>
-        </div>
-      </div>
-      <div><label for="fqqty">Qty</label><input id="fqqty" type="number" min="1" max="100" value="1" style="width:78px"></div>
-      <button id="fqbtn" onclick="freightQuote()">Quote</button>
-    </div>
-    <div id="fqout" class="msg muted"></div>
-  </section>
-
-  <section class="card">
-    <h2>Search demand - last 30 days</h2>
-    <div id="insights"><p class="muted">Loading…</p></div>
-  </section>
-
-  <section class="card">
-    <h2>Current configuration</h2>
-    <div id="status"><p class="muted">Loading…</p></div>
-  </section>
-
-  <section class="card" data-panel="inbox">
-    <h2 data-tab="inbox">Inbox</h2>
-    <p class="sub" style="margin:0 0 12px">Customer emails routed through PawScout. Change status or labels below each thread.</p>
-    <div id="reply-mode" class="reply-mode">
-      <div class="reply-mode__text">
-        <div>Reply mode: <span class="reply-mode__state" id="reply-mode-state">Manual review</span></div>
-        <p class="sub" id="reply-mode-desc" style="margin:4px 0 0">Drafts wait here for you to approve and send - nothing is emailed to customers automatically.</p>
-      </div>
-      <label class="reply-mode__sw">
-        <input type="checkbox" id="inbox-autosend-chk" data-inbox-autosend onchange="onReplyModeToggle()">
-        <span style="font-weight:600">Reply automatically</span>
-      </label>
-    </div>
-    <div id="agents-panel" class="agents-panel">
-      <div class="agents-panel__head">Per-agent auto-send <span class="sub">(each agent stays on manual review until you switch it to Auto)</span></div>
-      <div id="agents-list"></div>
-    </div>
-    <div id="gb-shipping-panel" class="agents-panel" style="margin-top:14px">
-      <div class="agents-panel__head">Shipping profiles <span class="sub">(free UK delivery on GB-warehoused items)</span></div>
-      <p id="gb-profile-status" class="sub" style="margin:6px 0">Loading&hellip;</p>
-      <div class="toggle-wrap" style="margin-top:8px">
-        <input type="checkbox" id="gb-free-uk-chk" data-gb-free-uk onchange="saveGbFreeUk()">
-        <label for="gb-free-uk-chk" style="display:inline;font-weight:550">State &ldquo;free UK delivery&rdquo; in replies. Flip this ON only after a live GB-item-to-UK checkout shows GBP 0.</label>
-      </div>
-      <p class="sub" style="margin:8px 0 0">Tradeoff: free UK shipping on a GB item gives up about GBP 4.99 per GB UK order; the item margin absorbs it as a conversion lever.</p>
-      <div style="margin-top:10px">
-        <button type="button" id="gb-sync-btn" onclick="syncGbLocal()">Sync shipping profiles now</button>
-        <span id="gb-sync-msg" class="sub"></span>
-      </div>
-      <pre id="gb-sync-result" class="sub" style="white-space:pre-wrap;margin:6px 0 0"></pre>
-    </div>
-    <div class="row" style="margin-bottom:12px">
-      <div class="grow">
-        <label for="inbox-status-filter">Filter by status</label>
-        <select id="inbox-status-filter" onchange="loadInboxThreads()">
-          <option value="open" selected>Open (unprocessed)</option>
-          <option value="">All</option>
-          <option value="new">New</option>
-          <option value="needs_reply">Needs reply</option>
-          <option value="awaiting_customer">Awaiting customer</option>
-          <option value="converted">Converted</option>
-          <option value="closed">Closed</option>
-          <option value="spam">Spam</option>
-        </select>
-      </div>
-      <button class="ghost" onclick="loadInboxThreads()">Refresh</button>
-    </div>
-    <div id="inbox-threads"><p class="muted">Loading…</p></div>
-    <p id="inboxmsg" class="msg muted"></p>
-    <div id="inbox-modal" class="inbox-modal-overlay" hidden>
-      <div class="inbox-modal__panel" role="dialog" aria-modal="true" aria-label="Email thread">
-        <button type="button" id="inbox-modal-close" class="inbox-modal__close" aria-label="Close">✕</button>
-        <div id="inbox-thread"></div>
-        <p id="inbox-modal-msg" class="msg muted"></p>
-      </div>
-    </div>
-  </section>
-
-  <section class="card inbox-settings">
-    <h2>Inbox settings</h2>
-    <p class="sub" style="margin:0 0 12px">Controls how PawScout handles incoming emails and drafts replies. The <strong>Reply mode</strong> switch (manual vs. automatic) is at the top of the Inbox panel above.</p>
-    <div class="row" style="margin-top:8px">
-      <div class="grow">
-        <label for="inbox-auto-thresh">Auto-confidence threshold (0-100)</label>
-        <input id="inbox-auto-thresh" type="number" min="0" max="100" step="1" value="80">
-      </div>
-      <div class="grow">
-        <label for="inbox-intent-thresh">Intent threshold (0-100)</label>
-        <input id="inbox-intent-thresh" type="number" min="0" max="100" step="1" value="70">
-      </div>
-    </div>
-    <div style="margin-top:10px">
-      <label for="inbox-alert-email">Alert email</label>
-      <input id="inbox-alert-email" type="text" spellcheck="false" autocomplete="off" placeholder="alerts@example.com">
-    </div>
-    <div style="margin-top:10px">
-      <label for="inbox-guidance-ta">Reply guidance (voice &amp; standing instructions for every draft)</label>
-      <textarea id="inbox-guidance-ta" data-inbox-guidance placeholder="e.g. Always be warm and concise. (A department signature is added to every draft automatically.)"></textarea>
-    </div>
-    <hr style="margin:14px 0">
-    <p class="sub" style="margin:0 0 10px;font-weight:600;color:var(--ink)">Invoice settings</p>
-    <div class="toggle-wrap">
-      <input type="checkbox" id="inbox-autoinvoice-chk" data-inbox-autoinvoice>
-      <label for="inbox-autoinvoice-chk" style="display:inline;font-weight:550">Auto-invoice - create and send invoices automatically when confidence &ge; threshold (HITL off)</label>
-    </div>
-    <div class="row" style="margin-top:8px">
-      <div class="grow">
-        <label for="inbox-invoice-conf-thresh">Invoice confidence threshold (0-100)</label>
-        <input id="inbox-invoice-conf-thresh" type="number" min="0" max="100" step="1" value="95">
-      </div>
-      <div class="grow">
-        <label for="inbox-invoice-value-ceiling">Value ceiling (GBP)</label>
-        <input id="inbox-invoice-value-ceiling" type="number" min="0" step="1" value="250">
-      </div>
-      <div class="grow">
-        <label for="inbox-invoice-rate-limit">Rate limit (invoices / 24h per contact)</label>
-        <input id="inbox-invoice-rate-limit" type="number" min="1" step="1" value="2">
-      </div>
-    </div>
-    <div class="row" style="margin-top:10px">
-      <button id="inbox-settings-save">Save inbox settings</button>
-    </div>
-    <p id="inboxcfgmsg" class="msg muted"></p>
-  </section>
-</div>
+${railHtml}
+<main class="view" id="view-inbox">
+${inboxView}
+</main>
+<main class="view" id="view-catalog">
+${catalogView}
+</main>
+<main class="view" id="view-ops">
+${opsView}
+</main>
+<main class="view" id="view-settings">
+${settingsView}
+</main>
+<main class="view" id="view-help">
+${helpView}
+</main>
 
 <script>
 function el(id){ return document.getElementById(id); }
@@ -1520,7 +1220,7 @@ loadInsights();
 wireInboxModal();
 loadInboxThreads();
 loadInboxSettings();
-</script>
+${routerJs}</script>
 </body></html>`;
   return new Response(html, { headers: { 'Content-Type': 'text/html' } });
 }
