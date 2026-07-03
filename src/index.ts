@@ -30,7 +30,7 @@ import { makeAdminGraphql } from './shopify-admin';
 import { readDeliveryConfig, syncSignatureProfiles } from './shipping/delivery-profile';
 import { resolveShipConfig } from './shipping/ship-config';
 import { resolveLogistics } from './logistics';
-import { runDailyMaintenance, syncStoreInventory, refillCollections, seedOriginAssortment, SEED_KEYWORDS } from './jobs';
+import { runDailyMaintenance, syncStoreInventory, refillCollections } from './jobs';
 import { runOrderPipeline, runOrderPipelineForShop } from './fulfil-run';
 import { parseOrderWebhook, validateOrder, FULFIL_GRACE_MINUTES } from './fulfil';
 import { attributePaidOrder } from './inbox/attribution';
@@ -50,137 +50,6 @@ app.get('/auth/callback', async (c) => {
 });
 
 app.get('/app', (c) => consolePage(c.env.SHOPIFY_API_KEY));
-
-// TEMPORARY admin route (free-UK-delivery initiative step D; remove after the GB
-// seed completes): per-KEYWORD batched GB draft seeding, so each call stays inside
-// gateway limits (the 2026-06-24 whole-run route outlived curl). Fail-closed: 401
-// unless the MAINT_TOKEN secret is set AND matches - with the secret deleted the
-// route is inert. Creates DRAFT products only (publish:false) for owner review.
-app.post('/api/admin/seed-gb', async (c) => {
-  const token = c.req.header('X-Maint-Token') ?? '';
-  if (!c.env.MAINT_TOKEN || token !== c.env.MAINT_TOKEN) return c.text('unauthorized', 401);
-  let body: { category?: string; kw?: number } = {};
-  try { body = await c.req.json(); } catch { return c.json({ ok: false, error: 'Invalid JSON body' }, 400); }
-  const category = body.category ?? '';
-  const kws = SEED_KEYWORDS[category];
-  const kwIndex = Math.floor(Number(body.kw ?? -1));
-  if (!kws || kwIndex < 0 || kwIndex >= kws.length) return c.json({ ok: false, error: 'unknown category/kw' }, 400);
-  const shops = await listActiveShops(c.env.DB);
-  const shop = shops[0];
-  if (!shop) return c.json({ ok: false, error: 'no shop' });
-  const store = new TenantStore(c.env.DB, shop);
-  const tenant = await store.getTenant();
-  const cfg = await store.getConfig();
-  if (!tenant?.access_token_enc || !cfg) return c.json({ ok: false, error: 'not configured' });
-  const vault = await Vault.fromMasterKey(c.env.PAWSCOUT_MASTER_KEY);
-  const accessToken = await vault.open(tenant.dek_wrapped, tenant.access_token_enc);
-  const admin = makeAdminGraphql(shop, accessToken);
-  const f = cjFetchFromEnv(c.env);
-  const cj = new CjClient(() => new CjTokenManager(store, vault, f).getToken(), f);
-  const llm = new LlmClient({ openrouter: c.env.OPENROUTER_API_KEY, openai: c.env.OPENAI_API_KEY });
-  const curate = llm.available && cfg.llm.enabled
-    ? (d: Parameters<typeof curateProduct>[3], ctx: string) => curateProduct(llm, store, cfg, d, ctx)
-    : undefined;
-  const pickHero = llm.available && cfg.llm.enabled
-    ? (title: string, urls: string[]) => pickHeroImage(llm, store, cfg, title, urls)
-    : undefined;
-  try {
-    const r = await seedOriginAssortment(store, cj, admin, cfg, { countryCode: 'GB', curate, pickHero, keywords: { [category]: [kws[kwIndex]] } });
-    return c.json({ ok: true, category, keyword: kws[kwIndex], ...r });
-  } catch (e) {
-    return c.json({ ok: false, category, keyword: kws[kwIndex], error: (e as Error).message });
-  }
-});
-
-// TEMPORARY admin route (free-UK-delivery cutover; remove after cutover): token-gated
-// runner for the three ordered cutover steps, so the change lands as one coordinated
-// sequence instead of waiting for tonight's cron. Fail-closed like /api/admin/seed-gb.
-//   phase 'default-uk-free': one-time fix of the merchant DEFAULT profile's UK zone -
-//     replaces the manual GBP 4.99 flat + free-over-50 conditional with a single free
-//     Standard rate, so unsigned products are free-UK too (claim == checkout day one).
-//   phase 'reprice' {offset}: batched syncStoreInventory (freight-baked stickers).
-//   phase 'profiles': syncSignatureProfiles once (writes the GB-free engineered zones).
-app.post('/api/admin/free-uk-cutover', async (c) => {
-  const token = c.req.header('X-Maint-Token') ?? '';
-  if (!c.env.MAINT_TOKEN || token !== c.env.MAINT_TOKEN) return c.text('unauthorized', 401);
-  let body: { phase?: string; offset?: number } = {};
-  try { body = await c.req.json(); } catch { return c.json({ ok: false, error: 'Invalid JSON body' }, 400); }
-  if (!['default-uk-free', 'reprice', 'profiles'].includes(body.phase ?? '')) return c.json({ ok: false, error: 'unknown phase' }, 400);
-  const shops = await listActiveShops(c.env.DB);
-  const shop = shops[0];
-  if (!shop) return c.json({ ok: false, error: 'no shop' });
-  const store = new TenantStore(c.env.DB, shop);
-  const tenant = await store.getTenant();
-  const cfg = await store.getConfig();
-  if (!tenant?.access_token_enc || !cfg) return c.json({ ok: false, error: 'not configured' });
-  const vault = await Vault.fromMasterKey(c.env.PAWSCOUT_MASTER_KEY);
-  const accessToken = await vault.open(tenant.dek_wrapped, tenant.access_token_enc);
-  const admin = makeAdminGraphql(shop, accessToken);
-  try {
-    if (body.phase === 'default-uk-free') {
-      const q = `{ deliveryProfiles(first: 10) { edges { node { id default profileLocationGroups {
-        locationGroup { id }
-        locationGroupZones(first: 20) { edges { node {
-          zone { id name countries { code { countryCode restOfWorld } } }
-          methodDefinitions(first: 10) { edges { node { id name rateProvider { ... on DeliveryRateDefinition { price { amount } } } } } }
-        } } }
-      } } } } }`;
-      const root = (await admin(q)) as any;
-      const def = ((root?.deliveryProfiles?.edges ?? []) as any[]).map((e) => e?.node).find((n) => n?.default === true);
-      if (!def?.id) return c.json({ ok: false, error: 'no default profile' });
-      for (const plg of (def.profileLocationGroups ?? []) as any[]) {
-        const lgId = plg?.locationGroup?.id;
-        for (const ze of (plg?.locationGroupZones?.edges ?? []) as any[]) {
-          const z = ze?.node?.zone;
-          const codes = ((z?.countries ?? []) as any[]).map((cc) => cc?.code?.countryCode).filter(Boolean);
-          if (!codes.includes('GB')) continue;
-          const oldMethods = ((ze?.node?.methodDefinitions?.edges ?? []) as any[]).map((me) => me?.node).filter(Boolean);
-          const res = (await admin(
-            `mutation pawscoutFreeUkDefault($id: ID!, $profile: DeliveryProfileInput!) {
-               deliveryProfileUpdate(id: $id, profile: $profile) { profile { id } userErrors { field message } }
-             }`,
-            {
-              id: def.id,
-              profile: {
-                methodDefinitionsToDelete: oldMethods.map((m) => m.id),
-                locationGroupsToUpdate: [{
-                  id: lgId,
-                  zonesToUpdate: [{
-                    id: z.id,
-                    methodDefinitionsToCreate: [{ name: 'Standard', rateDefinition: { price: { amount: '0.00', currencyCode: 'GBP' } } }]
-                  }]
-                }]
-              }
-            }
-          )) as any;
-          const errs = (res?.deliveryProfileUpdate?.userErrors ?? []) as { message?: string }[];
-          if (errs.length) return c.json({ ok: false, error: errs.map((e) => e.message).join('; ') });
-          return c.json({ ok: true, phase: 'default-uk-free', zone: z.name, replaced: oldMethods.map((m) => ({ name: m.name, amount: m.rateProvider?.price?.amount ?? null })) });
-        }
-      }
-      return c.json({ ok: false, error: 'no GB zone on the default profile' });
-    }
-    if (body.phase === 'reprice') {
-      const f = cjFetchFromEnv(c.env);
-      const cj = new CjClient(() => new CjTokenManager(store, vault, f).getToken(), f);
-      const offset = Math.max(0, Math.floor(Number(body.offset) || 0));
-      const total = (await store.listImportedLinks()).length;
-      const errors: string[] = [];
-      const synced = await syncStoreInventory(store, cj, admin, cfg, { maxProducts: SYNC_BATCH, offset, errors });
-      const next = offset + SYNC_BATCH;
-      return c.json({ ok: true, phase: 'reprice', synced, total, errors: errors.slice(0, 3), next: next < total ? next : null });
-    }
-    if (body.phase === 'profiles') {
-      const sc = resolveShipConfig(cfg.fulfil);
-      const l = resolveLogistics(cfg.fulfil);
-      const result = await syncSignatureProfiles(admin, store, { servedCountries: sc.servedCountries, fx: sc.fx, handlingGbp: sc.handlingGbp, stalenessHours: l.stalenessHours });
-      return c.json({ ok: true, phase: 'profiles', result });
-    }
-    return c.json({ ok: false, error: 'unknown phase' }, 400);
-  } catch (e) {
-    return c.json({ ok: false, error: (e as Error).message });
-  }
-});
 
 // Public one-click unsubscribe for retention reminders (affiliate 1.3). The
 // token is an HMAC over (shop, email) - unforgeable without SHOPIFY_API_SECRET.

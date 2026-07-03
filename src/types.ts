@@ -34,8 +34,6 @@ export interface Env {
   // a separate explicit go, and only after checkout marketing-consent capture
   // is confirmed (we send only to emailMarketingConsent SUBSCRIBED regardless).
   RETENTION_REORDER_ENABLED?: string;
-  // TEMPORARY: throwaway secret gating the one-off GB-warehouse seed route; remove with the route.
-  MAINT_TOKEN?: string;
 }
 
 export interface TenantRow {
