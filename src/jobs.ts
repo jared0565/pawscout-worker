@@ -11,6 +11,7 @@ import { enableTracking, getPrimaryLocationId, productInventoryItems, setInvento
 import { retailPriceGbp, landedCostGbp } from './pricing';
 import { parseDaysRange, resolveLogistics, doorToDoorBand, formatBand, bandFromQuote } from './logistics';
 import { syncSignatureProfiles } from './shipping/delivery-profile';
+import { syncMarketExclusions } from './shipping/market-catalogs';
 import { resolveShipConfig } from './shipping/ship-config';
 import { LOGISTICS_DESTINATIONS } from './inbox/freight';
 import type { CjDetail } from './cj';
@@ -984,6 +985,17 @@ export async function runDailyMaintenance(env: Env): Promise<void> {
           const moved = r.profiles.filter((p) => p.added || p.removed);
           if (moved.length) console.log(`signature profiles reconcile: ${moved.map((p) => `${p.sig} +${p.added}/-${p.removed}`).join(', ')}`);
         } catch (e) { console.warn(`signature profile sync skipped: ${(e as Error).message}`); }
+        // Per-market product availability (Task 12): remove unfulfillable products from
+        // each managed market's catalog publication (checkout-level enforcement Managed
+        // Markets backfill cannot re-introduce); re-add when fulfillable again. Same
+        // resolveNearestRoute truth as the agent + profiles. Best-effort - needs
+        // read_markets/write_markets (granted 2026-07-03).
+        try {
+          const l = resolveLogistics(cfg.fulfil);
+          const mx = await syncMarketExclusions(admin, store, { stalenessHours: l.stalenessHours });
+          const changed = mx.markets.filter((m) => m.removed || m.readded);
+          if (changed.length) console.log(`market exclusions reconcile: ${changed.map((m) => `${m.name} -${m.removed}/+${m.readded} (excl ${m.excluded})`).join(', ')}`);
+        } catch (e) { console.warn(`market exclusion sync skipped: ${(e as Error).message}`); }
         await reconcileAddonVisibility(store, admin, cfg); // align hidden/visible add-ons to the toggle
         // Retention reorder reminders (1.3) - DORMANT unless explicitly enabled;
         // even then only emails marketing-SUBSCRIBED customers. Best-effort.
