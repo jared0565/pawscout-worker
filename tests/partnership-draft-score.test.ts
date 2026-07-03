@@ -2,9 +2,13 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
 import { TenantStore } from '../src/tenant-store';
-import { composeDraftForThread } from '../src/inbox/sweep';
+import { maybePartnershipDraft } from '../src/inbox/partnership';
 import { DEFAULT_INBOX } from '../src/inbox/types';
 import { DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, type TenantConfig } from '../src/types';
+
+// The scoring branch is FUNNEL machinery, preserved for re-enable while the live
+// default is decline_all (owner policy 2026-07-03). These tests exercise it by
+// passing mode 'funnel' explicitly; the decline_all default is pinned at the end.
 
 beforeEach(async () => { await applyD1Migrations(env.DB, env.TEST_MIGRATIONS); });
 const CFG: TenantConfig = { collectionMap: {}, gates: { popularityFloor: 1, priceMin: 1, priceMax: 9, relevance: 'title' }, pricing: DEFAULT_PRICING, floors: DEFAULT_FLOORS, llm: DEFAULT_LLM, addons: DEFAULT_ADDONS, fulfil: DEFAULT_FULFIL, inbox: DEFAULT_INBOX, target: 12 };
@@ -31,11 +35,15 @@ async function seedAnswered(shop: string) {
   return { s, tid };
 }
 
-describe('partnership scoring branch', () => {
+async function runFunnel(s: TenantStore, tid: string, fetchImpl: typeof fetch) {
+  const got = (await s.getThreadWithMessages(tid))!;
+  return maybePartnershipDraft({ ...env, OPENROUTER_API_KEY: 'k' } as any, s, CFG, got.thread, got, fetchImpl, 'funnel');
+}
+
+describe('partnership scoring branch (funnel mode)', () => {
   it('clear pass → form-invite draft, applicant passed_to_form', async () => {
     const { s, tid } = await seedAnswered('a.myshopify.com');
-    const thread = (await s.getThreadWithMessages(tid))!.thread;
-    const r = await composeDraftForThread({ ...env, OPENROUTER_API_KEY: 'k' } as any, s, CFG, thread, llmReturning(factsJson({})));
+    const r = await runFunnel(s, tid, llmReturning(factsJson({})));
     expect(r!.send).toBe(false);
     expect((await s.getPendingDraft(tid))!.body_text).toMatch(/partner application/i);
     const app = await s.getApplicantByThread(tid);
@@ -45,17 +53,15 @@ describe('partnership scoring branch', () => {
 
   it('hard gate → respectful decline draft, applicant declined', async () => {
     const { s, tid } = await seedAnswered('b.myshopify.com');
-    const thread = (await s.getThreadWithMessages(tid))!.thread;
-    const r = await composeDraftForThread({ ...env, OPENROUTER_API_KEY: 'k' } as any, s, CFG, thread, llmReturning(factsJson({ channelUrls: [] })));
-    expect((await s.getPendingDraft(tid))!.body_text).toMatch(/right fit right now/i);
+    const r = await runFunnel(s, tid, llmReturning(factsJson({ channelUrls: [] })));
+    expect((await s.getPendingDraft(tid))!.body_text).toMatch(/not taking on new partnerships/i);
     expect((await s.getApplicantByThread(tid))!.stage).toBe('declined');
     expect(r!.send).toBe(false);
   });
 
   it('extraction failure → escalate (holding ack), applicant escalated', async () => {
     const { s, tid } = await seedAnswered('c.myshopify.com');
-    const thread = (await s.getThreadWithMessages(tid))!.thread;
-    const r = await composeDraftForThread({ ...env, OPENROUTER_API_KEY: 'k' } as any, s, CFG, thread, llmReturning('not json'));
+    const r = await runFunnel(s, tid, llmReturning('not json'));
     expect((await s.getPendingDraft(tid))!.body_text).toMatch(/reviewing|taking a look/i);
     expect((await s.getApplicantByThread(tid))!.stage).toBe('escalated');
     expect(r!.send).toBe(false);
@@ -73,12 +79,23 @@ describe('partnership scoring branch', () => {
     await s.upsertApplicant({ threadId: tid, contactEmail: 'kasim@x.com', stage: 'screen_sent' }); // drafted, NOT sent
     await s.insertInboundMessageIfNew({ threadId: tid, messageId: '<race2@x>', inReplyTo: null, references: [], from: 'kasim@x.com', to: 'sales@activepaw.co.uk', subject: 'Partnership', bodyText: 'are you there?', bodyHtml: null, headersJson: '{}', receivedAt: '2026-06-22T10:05:00Z' });
 
-    const thread = (await s.getThreadWithMessages(tid))!.thread;
-    const r = await composeDraftForThread({ ...env, OPENROUTER_API_KEY: 'k' } as any, s, CFG, thread, llmReturning(factsJson({ channelUrls: [] })));
+    const r = await runFunnel(s, tid, llmReturning(factsJson({ channelUrls: [] })));
     expect(r!.send).toBe(false);
     const draft = await s.getPendingDraft(tid);
     expect(draft!.body_text).toMatch(/where would you promote/i); // re-issued questions
-    expect(draft!.body_text).not.toMatch(/right fit right now/i);  // NOT a decline
+    expect(draft!.body_text).not.toMatch(/not taking on new partnerships/i); // NOT a decline
     expect((await s.getApplicantByThread(tid))!.stage).toBe('screen_sent'); // unchanged
+  });
+});
+
+describe('decline_all default intercepts in-flight applicants too', () => {
+  it('an answered screen under the LIVE default gets the decline, applicant declined', async () => {
+    const { s, tid } = await seedAnswered('live.myshopify.com');
+    const got = (await s.getThreadWithMessages(tid))!;
+    // default mode (no override) = AFFILIATE_MODE = decline_all
+    const r = await maybePartnershipDraft({ ...env, OPENROUTER_API_KEY: 'k' } as any, s, CFG, got.thread, got, llmReturning(factsJson({})));
+    expect(r!.send).toBe(false);
+    expect((await s.getPendingDraft(tid))!.body_text).toMatch(/not taking on new partnerships/i);
+    expect((await s.getApplicantByThread(tid))!.stage).toBe('declined');
   });
 });

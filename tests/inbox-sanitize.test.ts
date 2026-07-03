@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { sanitizeOutbound, applySalutation, salutationName } from '../src/inbox/draft';
+import { sanitizeOutbound, applySalutation, salutationName, applyFooter, stripTrailingSignoff } from '../src/inbox/draft';
 
 describe('salutationName (skip honorifics, never greet a title)', () => {
   it('skips a leading title and greets the next name token', () => {
@@ -64,5 +64,39 @@ describe('applySalutation strips dashes from the composed body', () => {
     expect(body.startsWith('Hi Mary,\n\n')).toBe(true);
     expect(body).not.toMatch(DASH_RE);
     expect(body).toContain("Thanks for reaching out - we'd love to help, in 5-7 days.");
+  });
+});
+
+describe('stripTrailingSignoff (no doubled sign-offs under the deterministic footer)', () => {
+  it('removes a trailing "Best regards" block with a team line', () => {
+    expect(stripTrailingSignoff('Yes, we ship to France.\n\nBest regards,\nActive Paw Customer Service'))
+      .toBe('Yes, we ship to France.');
+  });
+  it('removes a bare trailing "Kind regards" line', () => {
+    expect(stripTrailingSignoff('Happy to help.\n\nKind regards')).toBe('Happy to help.');
+  });
+  it('never eats a real sentence that merely contains a courtesy phrase', () => {
+    const s = 'Many thanks for your patience while we sorted this. The refund is on its way.';
+    expect(stripTrailingSignoff(s)).toBe(s);
+    const inline = 'We wish you all the best with your new puppy.';
+    expect(stripTrailingSignoff(inline)).toBe(inline);
+  });
+});
+
+describe('applyFooter (deterministic department signature, lives IN the draft)', () => {
+  it('appends the Customer Service footer in the owner format', () => {
+    expect(applyFooter('Your order is on its way.', 'service'))
+      .toBe('Your order is on its way.\n\nBest Regards,\nActive Paw Customer Service');
+  });
+  it('appends the Sales Team footer in the owner format', () => {
+    expect(applyFooter('Yes, that bed comes in large.', 'sales'))
+      .toBe('Yes, that bed comes in large.\n\nBest Regards,\nActive Paw Sales Team');
+  });
+  it('replaces an LLM sign-off instead of doubling it', () => {
+    const out = applyFooter('Happy to help.\n\nBest regards,\nActive Paw', 'service');
+    expect(out).toBe('Happy to help.\n\nBest Regards,\nActive Paw Customer Service');
+  });
+  it('sanitizes dashes so the footer path is also em-dash-safe', () => {
+    expect(applyFooter(`See you soon ${EM} team`, 'sales')).not.toMatch(DASH_RE);
   });
 });

@@ -24,11 +24,17 @@ export interface Grounding {
   data?: unknown;          // structured payload for the appendix (audit/repro)
 }
 
+/** Which team signs the reply. Drives the deterministic footer appended to every
+ * draft ("Best Regards, / Active Paw Sales Team|Customer Service") so the owner
+ * reviews exactly what will be sent - the LLM never writes its own sign-off. */
+export type Department = 'sales' | 'service';
+
 /** One dedicated agent per category. A small handler object, not an autonomous loop. */
 export interface CategoryAgent {
   category: InboxLabel;
   displayName: string;     // e.g. "Shipping & Returns" (console)
   description: string;     // one-line "grounds in ..." (console)
+  department: Department;  // signs the deterministic footer
   commercial: boolean;     // carries a bounded commercial objective?
   ground(ctx: AgentContext): Promise<Grounding>;
   promptFragment(g: Grounding): string;            // category-specific instructions

@@ -11,6 +11,11 @@ export const PARTNERSHIP_FROM = 'Active Paw Partnerships <sales@activepaw.co.uk>
 export const PASS_THRESHOLD = 8;       // score >= → send the application form (spec §6.4)
 export const AUTO_DECLINE_LOW = false; // dial: auto-decline score <= 3 (spec §6.4, default OFF)
 
+/** Owner policy dial (2026-07-03): 'decline_all' = every partnership approach gets the
+ * warm decline; the qualifying/scoring funnel below stays intact and re-arms by
+ * flipping this back to 'funnel'. */
+export const AFFILIATE_MODE: 'decline_all' | 'funnel' = 'decline_all';
+
 // Lane = affiliate creators ONLY. wholesale-b2b is deliberately excluded: a bulk/trade
 // buyer ("wants to buy FROM us") is a different conversation from an affiliate ("wants to
 // earn FROM us") and must NOT receive the creator qualifying email (audience/engagement/
@@ -94,17 +99,17 @@ const QUALIFYING_BODY =
 
 No rush - whenever you've got a few minutes. We read every reply.
 
-Best regards,
+Best Regards,
 Active Paw Partnerships`;
 
 const DECLINE_BODY =
-`Thank you for taking the time to share that with us - we really do appreciate the interest in Active Paw.
+`Thank you for taking the time to reach out - we really do appreciate the interest in Active Paw.
 
-At the moment we're keeping our partnerships limited to creators whose audience and approach line up closely with what we're focused on, and it isn't quite the right fit right now. That's no reflection on your work - just where we are.
+We're not taking on new partnerships or promotional collaborations at the moment, so we'll have to pass for now. That's no reflection on your work - just where we are as a store.
 
-If things change on your side - a growing pet-focused audience, a campaign you're proud of - we'd be glad to hear from you again.
+If that changes down the line, we'd be glad to hear from you again. Wishing you every success in the meantime.
 
-Wishing you the best with it,
+Best Regards,
 Active Paw Partnerships`;
 
 const FORM_INVITE_BODY =
@@ -120,7 +125,7 @@ const HOLDING_ACK_BODY =
 
 We're taking a look and reviewing the fit, and we'll be in touch shortly with the next step.
 
-Best regards,
+Best Regards,
 Active Paw Partnerships`;
 
 export function buildQualifyingEmail(name: string | null): string { return applySalutation(QUALIFYING_BODY, name); }
@@ -198,7 +203,8 @@ export async function extractScreenFacts(
 export async function maybePartnershipDraft(
   env: Env, store: TenantStore, cfg: TenantConfig, thread: ThreadRow,
   got: { thread: ThreadRow; messages: MessageRow[]; labels: string[] },
-  _fetchImpl: typeof fetch
+  _fetchImpl: typeof fetch,
+  mode: 'decline_all' | 'funnel' = AFFILIATE_MODE
 ): Promise<{ draftId: string; send: boolean } | null> {
   const inboundToAddrs = got.messages.filter((m) => m.direction === 'inbound').map((m) => m.to_addr ?? '');
   // Phase 2: declared intent lives at THREAD level (set from the contact-form Reason
@@ -213,6 +219,24 @@ export async function maybePartnershipDraft(
 
   const contact = await store.getContactByEmail(thread.contact_email);
   const name = contact?.name ?? null;
+
+  // Owner policy (2026-07-03): decline ALL partnership approaches politely. Applies at
+  // every stage (first touch AND in-flight applicants) so no path can still qualify or
+  // invite. Drafts stay HITL (send:false); the applicant record is marked declined. A
+  // reply that arrives AFTER we declined falls through to the generic drafter, whose
+  // affiliate agent also declines but responds to what they actually said (no template
+  // ping-pong). Flip AFFILIATE_MODE to 'funnel' to re-arm the qualifying flow below.
+  if (mode === 'decline_all') {
+    if (applicant?.stage === 'declined') return null;
+    const body = buildPartnershipDecline(name);
+    const draftId = await store.insertDraft({
+      threadId: thread.id, bodyText: body, bodyHtml: renderReplyHtml(body),
+      confidence: null, quotesPriceOrder: false, holdReasons: [], model: 'partnership-screen', status: 'pending',
+    });
+    if (!applicant) await store.upsertApplicant({ threadId: thread.id, contactEmail: thread.contact_email, stage: 'declined' });
+    else await store.setApplicantStage(thread.id, 'declined', null);
+    return { draftId, send: false };
+  }
 
   // First touch: send the qualifying email, record the applicant.
   if (!applicant) {

@@ -445,7 +445,7 @@ export function consolePage(apiKey: string): Response {
     </div>
     <div style="margin-top:10px">
       <label for="inbox-guidance-ta">Reply guidance (voice &amp; standing instructions for every draft)</label>
-      <textarea id="inbox-guidance-ta" data-inbox-guidance placeholder="e.g. Always be warm and concise. Sign off as the PawScout team."></textarea>
+      <textarea id="inbox-guidance-ta" data-inbox-guidance placeholder="e.g. Always be warm and concise. (A department signature is added to every draft automatically.)"></textarea>
     </div>
     <hr style="margin:14px 0">
     <p class="sub" style="margin:0 0 10px;font-weight:600;color:var(--ink)">Invoice settings</p>

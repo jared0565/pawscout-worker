@@ -4,6 +4,7 @@ export const complaintAgent: CategoryAgent = {
   category: 'complaint',
   displayName: 'Complaints',
   description: 'Empathetic resolution; no commercial objective',
+  department: 'service',
   commercial: false,
   async ground(): Promise<Grounding> { return { confident: true, facts: '', quotesFigure: false }; },
   promptFragment(): string {

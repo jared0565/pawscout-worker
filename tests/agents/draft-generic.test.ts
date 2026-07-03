@@ -18,7 +18,7 @@ const fakeStore = { async logLlmUsage() {} } as any;
 const cfg = { inbox: { enabled: true, replyGuidance: '' }, llm: {} } as any;
 
 const stubAgent: CategoryAgent = {
-  category: 'product-question', displayName: 'X', description: '', commercial: true,
+  category: 'product-question', displayName: 'X', description: '', department: 'sales', commercial: true,
   async ground() { return { confident: true, facts: 'FACT-TOKEN', quotesFigure: false }; },
   promptFragment() { return 'FRAGMENT-TOKEN'; },
   deterministicAppendix() { return null; }

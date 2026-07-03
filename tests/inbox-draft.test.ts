@@ -15,7 +15,7 @@ const CFG: TenantConfig = { collectionMap: {}, gates: { popularityFloor: 1, pric
 // generic-drafter behaviour (fragment + facts injection, commercialIntent) is covered
 // by tests/agents/draft-generic.test.ts; here we exercise the validate/log/salutation path.
 const stubAgent: CategoryAgent = {
-  category: 'other', displayName: 'X', description: '', commercial: false,
+  category: 'other', displayName: 'X', description: '', department: 'sales', commercial: false,
   async ground() { return { confident: false, facts: '', quotesFigure: false }; },
   promptFragment() { return 'STUB-FRAGMENT'; },
   deterministicAppendix() { return null; }

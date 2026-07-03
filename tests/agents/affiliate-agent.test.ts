@@ -9,4 +9,13 @@ describe('affiliateAgent', () => {
     expect(affiliateAgent.promptFragment(g).toLowerCase()).toContain('commission');
     expect(affiliateAgent.commercial).toBe(false);
   });
+
+  it('declines ALL partnerships (owner policy 2026-07-03): no qualifying, no invites', async () => {
+    const g = await affiliateAgent.ground({} as any);
+    const p = affiliateAgent.promptFragment(g).toLowerCase();
+    expect(p).toContain('not taking on');
+    expect(p).toContain('decline');
+    expect(p).toContain('do not ask qualifying questions');
+    expect(affiliateAgent.department).toBe('sales');
+  });
 });

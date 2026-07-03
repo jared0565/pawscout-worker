@@ -5,7 +5,7 @@ import { resolveChain } from '../llm-resolve';
 import { defaultFetch } from '../safe-fetch';
 import { parseAuthResults } from './gates';
 import { classifyEmail, decideDisposition } from './classify';
-import { draftReply, renderReplyHtml } from './draft';
+import { draftReply, renderReplyHtml, applyFooter, stripTrailingSignoff } from './draft';
 import { autoSendDecision, mentionsMoney } from './autosend';
 import { sendReply } from './send';
 import { maybePartnershipDraft } from './partnership';
@@ -20,7 +20,7 @@ import { hasScope } from './scopes';
 import { stripQuotedReply } from './quote';
 import { agentFor } from './agents/registry';
 import { resolveAgents } from './agents/config';
-import type { AgentContext } from './agents/types';
+import type { AgentContext, Department } from './agents/types';
 import type { ThreadRow, InvoiceLineItem } from './types';
 import { CjClient, CjTokenManager, cjFetchFromEnv } from '../cj';
 import { Vault } from '../vault';
@@ -327,7 +327,7 @@ export async function composeDraftForThread(
   if (!draft) return null; // degrade: retry next sweep
 
   const appendix = grounding.confident ? agent.deterministicAppendix(grounding) : null;
-  const composed = composeAgentDraft(draft, appendix);
+  const composed = composeAgentDraft(draft, appendix, agent.department);
 
   // Auto-send gating: per-agent opt-in behind the global Auto switch, computed on the
   // LLM body ONLY (composed.quotesPriceOrder) so a trusted appendix figure does not
@@ -360,14 +360,21 @@ async function draftOne(env: Env, store: TenantStore, cfg: TenantConfig, thread:
   }
 }
 
-/** Combine the LLM body with an optional TRUSTED appendix. PURE. The money flag is
- * computed on the LLM body ONLY, so a trusted appendix figure (freight/tracking) is
- * exempt and does not by itself force HITL. */
+/** Combine the LLM body with an optional TRUSTED appendix and the deterministic
+ * department footer. PURE. The money flag is computed on the LLM body ONLY, so a
+ * trusted appendix figure (freight/tracking) is exempt and does not by itself force
+ * HITL. Ordering matters: any LLM sign-off is stripped from the BODY before the
+ * appendix attaches (so a stray sign-off can never sit above the appendix), then the
+ * footer closes the draft. The footer lives IN the stored draft body - nothing is
+ * appended at send time - so HITL review is exactly what the customer receives. */
 export function composeAgentDraft(
   draft: { bodyText: string; quotesPriceOrOrder: boolean },
-  appendix: string | null
+  appendix: string | null,
+  department?: Department
 ): { bodyText: string; quotesPriceOrder: boolean } {
   const quotesPriceOrder = draft.quotesPriceOrOrder || mentionsMoney(draft.bodyText);
-  if (!appendix) return { bodyText: draft.bodyText, quotesPriceOrder };
-  return { bodyText: `${draft.bodyText.trimEnd()}\n\n${appendix}`, quotesPriceOrder };
+  const base = department ? stripTrailingSignoff(draft.bodyText.trimEnd()) : draft.bodyText;
+  const withAppendix = appendix ? `${base.trimEnd()}\n\n${appendix}` : base;
+  const bodyText = department ? applyFooter(withAppendix, department) : withAppendix;
+  return { bodyText, quotesPriceOrder };
 }

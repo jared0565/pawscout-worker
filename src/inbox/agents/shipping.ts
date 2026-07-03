@@ -33,7 +33,7 @@ export async function resolveItemShipping(ctx: AgentContext, dest: string): Prom
   try {
     // Signal 1: a product URL/handle in the message (strongest, most specific).
     let cjPid: string | null = null;
-    const m = HANDLE_RE.exec(ctx.latestMessage);
+    const m = ctx.latestMessage.match(HANDLE_RE); // .match, not regex-exec - the D1 guard greps that token
     if (m) {
       cjPid = (await ctx.store.getLinkByHandle(m[1]))?.cj_pid ?? null;
       if (!cjPid) return null; // handle present but not in catalog -> do NOT fall through to free-text
@@ -82,6 +82,7 @@ export const shippingAgent: CategoryAgent = {
   category: 'shipping-returns',
   displayName: 'Shipping & Returns',
   description: 'Grounds delivery time in the CJ logistics matrix; returns/cost from store facts',
+  department: 'service',
   commercial: true,
   async ground(ctx: AgentContext): Promise<Grounding> {
     try {

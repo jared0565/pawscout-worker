@@ -18,7 +18,7 @@ const CFG: TenantConfig = {
 
 /** Minimal stub agent for testing scaffolding composition. */
 const stubAgent = (commercial: boolean): CategoryAgent => ({
-  category: 'other', displayName: 'Test', description: 'test agent',
+  category: 'other', displayName: 'Test', description: 'test agent', department: 'sales',
   commercial,
   async ground() { return { confident: true, facts: '', quotesFigure: false }; },
   promptFragment() { return 'TEST-FRAGMENT'; },

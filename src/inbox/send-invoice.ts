@@ -19,8 +19,9 @@ export async function sendInvoice(
   const items: InvoiceLineItem[] = JSON.parse(invoice.line_items_json);
   const lines = items.map((i) => `${i.qty} × ${i.title} - £${i.priceGbp.toFixed(2)}`).join('\n');
   const cover = (invoice.cover_text ?? '').trim();
-  const text = `${cover ? cover + '\n\n' : ''}${lines}\n\nTotal: £${invoice.total.toFixed(2)}\n\nComplete your order securely here:\n${invoice.invoice_url}`;
-  const html = `${cover ? `<p>${esc(cover)}</p>` : ''}<ul>${items.map((i) => `<li>${esc(`${i.qty} × ${i.title}`)} - £${i.priceGbp.toFixed(2)}</li>`).join('')}</ul><p><strong>Total: £${invoice.total.toFixed(2)}</strong></p><p><a href="${esc(invoice.invoice_url)}">Complete your order →</a></p>`;
+  // Department footer matches the drafts (invoices are a sales touch).
+  const text = `${cover ? cover + '\n\n' : ''}${lines}\n\nTotal: £${invoice.total.toFixed(2)}\n\nComplete your order securely here:\n${invoice.invoice_url}\n\nBest Regards,\nActive Paw Sales Team`;
+  const html = `${cover ? `<p>${esc(cover)}</p>` : ''}<ul>${items.map((i) => `<li>${esc(`${i.qty} × ${i.title}`)} - £${i.priceGbp.toFixed(2)}</li>`).join('')}</ul><p><strong>Total: £${invoice.total.toFixed(2)}</strong></p><p><a href="${esc(invoice.invoice_url)}">Complete your order →</a></p><p>Best Regards,<br>Active Paw Sales Team</p>`;
 
   // Thread to the customer's latest inbound message.
   const got = await store.getThreadWithMessages(thread.id);

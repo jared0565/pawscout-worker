@@ -4,6 +4,7 @@ export const wholesaleAgent: CategoryAgent = {
   category: 'wholesale-b2b',
   displayName: 'Wholesale / Trade',
   description: 'Policy: not offering trade terms; capture + owner-alert only',
+  department: 'sales',
   commercial: false,
   async ground(): Promise<Grounding> { return { confident: true, facts: '', quotesFigure: false }; },
   promptFragment(): string {

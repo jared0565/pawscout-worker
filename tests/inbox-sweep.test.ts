@@ -143,4 +143,23 @@ describe('composeAgentDraft', () => {
     const out = composeAgentDraft({ bodyText: 'Yes, we ship internationally.', quotesPriceOrOrder: false }, line);
     expect(out.quotesPriceOrder).toBe(false);
   });
+
+  it('appends the department footer LAST (body, then appendix, then footer) so HITL sees the exact outbound', () => {
+    const line = 'Delivery to the UK: estimated 4-12 days.';
+    const out = composeAgentDraft({ bodyText: 'Yes, we ship to the UK.', quotesPriceOrOrder: false }, line, 'service');
+    expect(out.bodyText).toBe(`Yes, we ship to the UK.\n\n${line}\n\nBest Regards,\nActive Paw Customer Service`);
+  });
+
+  it('strips a stray LLM sign-off from the body BEFORE the appendix so it cannot sit mid-draft', () => {
+    const line = 'Delivery to the UK: estimated 4-12 days.';
+    const out = composeAgentDraft(
+      { bodyText: 'Yes, we ship to the UK.\n\nBest regards,\nActive Paw', quotesPriceOrOrder: false }, line, 'sales'
+    );
+    expect(out.bodyText).toBe(`Yes, we ship to the UK.\n\n${line}\n\nBest Regards,\nActive Paw Sales Team`);
+  });
+
+  it('keeps the legacy 2-arg behavior (no footer) for callers that do not pass a department', () => {
+    const out = composeAgentDraft({ bodyText: 'Hello.', quotesPriceOrOrder: false }, null);
+    expect(out.bodyText).toBe('Hello.');
+  });
 });

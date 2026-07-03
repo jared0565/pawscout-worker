@@ -6,6 +6,7 @@ export const productAgent: CategoryAgent = {
   category: 'product-question',
   displayName: 'Product Questions',
   description: 'Resolves the asked-about product from the live catalog (availability, price, variants)',
+  department: 'sales',
   commercial: true,
   async ground(ctx: AgentContext): Promise<Grounding> {
     try {

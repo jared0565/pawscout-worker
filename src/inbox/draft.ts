@@ -88,6 +88,32 @@ export function applySalutation(bodyText: string, customerName: string | null | 
   return sanitizeOutbound(`${greeting}\n\n${stripped}`);
 }
 
+/** Department signature lines for the deterministic footer (the owner's exact format). */
+export const DEPARTMENT_SIGNATURES: Record<import('./agents/types').Department, string> = {
+  sales: 'Active Paw Sales Team',
+  service: 'Active Paw Customer Service',
+};
+
+// A trailing sign-off block the model may have added despite being told not to
+// ("Best regards,\nActive Paw" / "Kind regards"). Anchored to the END: the phrase
+// must start its own line and be essentially the whole line, followed by at most
+// two short lines (team/sender name). A real sentence that merely contains
+// "many thanks" mid-line is never eaten.
+const TRAILING_SIGNOFF =
+  /\n\s*(?:best regards|kind regards|warm regards|warmest regards|best wishes|many thanks|with thanks|sincerely|cheers|all the best)[,.!]?\s*(?:\n[^\n]{0,60}){0,2}\s*$/i;
+
+/** Remove a trailing LLM sign-off so the deterministic footer is never doubled. */
+export function stripTrailingSignoff(text: string): string {
+  return text.replace(TRAILING_SIGNOFF, '').trimEnd();
+}
+
+/** Append the deterministic department footer. The footer lives IN the draft body
+ * (never added at send time), so HITL review sees exactly what the customer gets. */
+export function applyFooter(bodyText: string, department: import('./agents/types').Department): string {
+  const body = stripTrailingSignoff(bodyText.trimEnd());
+  return sanitizeOutbound(`${body}\n\nBest Regards,\n${DEPARTMENT_SIGNATURES[department]}`);
+}
+
 /** Shared JSON validator for a drafter response (initial draft AND revision). */
 function validateDraft(v: unknown): DraftResult | null {
   const o = v as Record<string, unknown>;
@@ -117,7 +143,7 @@ function buildDraftSystem(
     (opts.hasLatest
       ? 'Reply to the customer\'s MOST RECENT message specifically (provided as latestMessage); earlier conversation is background. If the latest message has no new question (only a quote, thank-you, or acknowledgement), reply with a short warm acknowledgement, do not re-answer a previous turn. '
       : '') +
-    (opts.guidance ? `Owner guidance - follow exactly; it OVERRIDES defaults including tone and sign-off: ${opts.guidance} ` : '') +
+    (opts.guidance ? `Owner guidance - follow exactly; it OVERRIDES defaults including tone: ${opts.guidance} ` : '') +
     (opts.revisionIssues?.length
       ? `REVISION REQUIRED: your previous reply (provided as previousReply) was rejected by a quality reviewer. Rewrite it from scratch to fix EVERY issue below while staying accurate and grounded in the facts. Issues: ${opts.revisionIssues.join(' ')} `
       : '') +

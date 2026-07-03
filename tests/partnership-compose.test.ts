@@ -20,9 +20,9 @@ describe('partnership composers', () => {
     const body = buildPartnershipDecline('Sam');
     expect(body.startsWith('Hi Sam,')).toBe(true);
     expect(body).toMatch(/appreciate/i);
-    expect(body).toMatch(/right fit right now/i);
+    expect(body).toMatch(/not taking on new partnerships/i);
     expect(body).toMatch(/hear from you again/i);
-    expect(body).toContain('Active Paw Partnerships');
+    expect(body).toContain('Best Regards,\nActive Paw Partnerships');
   });
   it('form-invite and holding-ack greet by name and sign off', () => {
     expect(buildFormInvite('Jo')).toContain('Active Paw Partnerships');

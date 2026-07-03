@@ -35,6 +35,7 @@ export const orderStatusAgent: CategoryAgent = {
   category: 'order-status',
   displayName: 'Order Status',
   description: 'Looks up the customer\'s order + tracking from Shopify',
+  department: 'service',
   commercial: true,
 
   async ground(ctx: AgentContext): Promise<Grounding> {
