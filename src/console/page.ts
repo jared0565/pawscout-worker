@@ -32,7 +32,7 @@ import { glanceJs } from './glance-js';
 import { catalogView } from './views/catalog';
 import { opsView } from './views/ops';
 import { settingsView } from './views/settings';
-import { helpView } from './views/help';
+import { helpView, helpCss } from './views/help';
 import { railHtml, routerJs, shellCss } from './shell';
 export function consolePage(apiKey: string): Response {
   const html = `<!doctype html><html lang="en"><head><meta charset="utf-8">
@@ -137,7 +137,8 @@ export function consolePage(apiKey: string): Response {
   .agents-row.is-disabled{opacity:.5}
 ${shellCss}
 ${inboxCss}
-${glanceCss}</style>
+${glanceCss}
+${helpCss}</style>
 </head><body>
 ${railHtml}
 <main class="view" id="view-glance">

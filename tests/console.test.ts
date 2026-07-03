@@ -293,6 +293,46 @@ describe('consolePage', () => {
     expect(scripts).toContain('>drafted ');
   });
 
+  // --- Phase 5: Help knowledge base ---
+
+  it('renders the Help knowledge base: every console area covered as collapsible topics', async () => {
+    const html = await consolePage('test-api-key').text();
+    for (const section of [
+      'PawScout guide', 'Getting started', 'Shop at a Glance', 'Inbox and customer replies',
+      'Catalog and pricing', 'Operations and orders', 'Shipping, markets and stock safety',
+      'Settings and automation', 'Keyboard shortcuts'
+    ]) {
+      expect(html).toContain('<h2>' + section + '</h2>');
+    }
+    const topics = html.match(/<details class="hlp-topic">/g) ?? [];
+    expect(topics.length).toBeGreaterThanOrEqual(30);
+    // Spot-check that the guide states the REAL bounds (grounded, not generic prose).
+    expect(html).toContain('80 out of 100 by default');       // auto-confidence threshold
+    expect(html).toContain('95 out of 100');                  // invoice confidence
+    expect(html).toContain('250 pounds');                     // invoice value ceiling
+    expect(html).toContain('one hundred pounds');             // order review threshold
+    expect(html).toContain('sixty minute grace window');      // fulfil grace
+    expect(html).toContain('one unit back in reserve');       // low-stock reserve
+  });
+
+  it('help diagrams are accessible inline SVG using theme tokens, with no element ids', async () => {
+    const html = await consolePage('test-api-key').text();
+    const svgs = [...html.matchAll(/<svg class="hlp-diagram"[\s\S]*?<\/svg>/g)].map((m) => m[0]);
+    expect(svgs.length).toBe(4);
+    for (const svg of svgs) {
+      expect(svg).toContain('role="img"');
+      expect(svg).toContain('<title>');
+      expect(svg).toContain('var(--');   // themes with the console palette
+      expect(svg).not.toMatch(/\sid="/); // keeps the duplicate-id test meaningful
+    }
+  });
+
+  it('the entire served console contains no em or en dash (house style, enforced)', async () => {
+    const html = await consolePage('test-api-key').text();
+    expect(html.includes('—')).toBe(false);
+    expect(html.includes('–')).toBe(false);
+  });
+
   it('has no duplicate id="..." attributes in the static HTML (all views share one DOM)', async () => {
     const html = await consolePage('test-api-key').text();
     // Strip script blocks first: ids inside JS-built strings (thread modal internals)
