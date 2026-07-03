@@ -1425,6 +1425,12 @@ function renderAgents(cfg){
     var lbl=document.createElement('span'); lbl.textContent=name;
     var sw=document.createElement('input'); sw.type='checkbox'; sw.checked=on; sw.disabled=!master;
     sw.setAttribute('data-agent',key);
+    sw.onchange=function(){
+      saveInboxSettings().then(function(ok){
+        setMsg('inboxmsg', ok?(name+' auto-reply '+(sw.checked?'ON.':'OFF.')):'Could not save '+name+' - try again.', ok?'ok':'no');
+        if(!ok){ sw.checked=!sw.checked; }
+      });
+    };
     row.appendChild(lbl); row.appendChild(sw); list.appendChild(row);
   });
 }
