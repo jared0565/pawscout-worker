@@ -21,29 +21,61 @@ describe('consolePage', () => {
     expect(html).toContain('id="inbox-threads"');
   });
 
-  it('opens the inbox thread detail in a focused modal overlay (not an inline accordion)', async () => {
+  // Phase 2: the modal is replaced by a full-height THREE-PANE mail workspace.
+  it('renders the three-pane inbox workspace and the modal is fully removed', async () => {
     const html = await consolePage('test-api-key').text();
     const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
-    // The detail node lives inside a modal overlay (#inbox-modal) that opens on row
-    // click and closes (reloading the list) so a processed thread drops off the view.
-    expect(html).toContain('id="inbox-modal"');
-    expect(html).toContain('id="inbox-thread"');
-    expect(html).toContain('id="inbox-modal-close"');
-    expect(scripts).toContain('function openInboxModal(');
-    expect(scripts).toContain('function closeInboxModal(');
-    expect(scripts).toContain('closeInboxModal(true)');     // approve+send force-closes (reloads list)
-    expect(scripts).toContain('loadInboxThreads()');        // close reloads so processed thread drops off
-    // The old inline-accordion plumbing is gone.
-    expect(scripts).not.toContain('function homeInboxDetail(');
-    expect(scripts).not.toContain("row.insertAdjacentElement('afterend',detail)");
-    // Close TRIGGERS are wired at init - critical: awaiting_customer/no-draft threads
-    // have no Approve & Send button, so x/backdrop/Esc is their ONLY exit. Without
-    // this wiring the merchant would be trapped in the modal on exactly those threads.
-    expect(scripts).toContain('function wireInboxModal(');
-    expect(scripts).toContain('wireInboxModal()');          // invoked at init
-    expect(scripts).toContain("el('inbox-modal-close')");   // x button
-    expect(scripts).toContain('e.target===ov');             // backdrop click
-    expect(scripts).toContain("e.key==='Escape'");          // Esc key
+    // Static skeleton: grid + list pane + conversation pane + context rail.
+    expect(html).toContain('class="ibx-grid"');
+    expect(html).toContain('id="inbox-threads"');       // pane 1: thread list mount
+    expect(html).toContain('id="ibx-convo-head"');      // pane 2: conversation header
+    expect(html).toContain('id="ibx-timeline"');        // pane 2: message timeline
+    expect(html).toContain('id="ibx-context-body"');    // pane 3: context rail mount
+    expect(html).toContain('id="ibx-auto-pill"');       // header automation pill
+    expect(html).toContain('id="inbox-reconnect-banner"');
+    // Filter chips + the full status select coexist (chips are shortcuts).
+    expect(html).toContain('id="inbox-status-filter"');
+    expect(html).toContain('data-filter="open"');
+    expect(html).toContain('data-filter="needs_reply"');
+    expect(scripts).toContain('function ibxSetFilter(');
+    // Empty states: no selection / inbox zero / no pending draft.
+    expect(html).toContain('Select a conversation');
+    expect(scripts).toContain('Inbox zero');
+    expect(scripts).toContain('No draft pending');
+    // Row click loads the conversation in-pane (no modal), and processing a
+    // thread reloads the list so it drops off the Open filter.
+    expect(scripts).toContain('function openInboxThread(');
+    expect(scripts).toContain('loadInboxThreads()');
+    // The Phase-1 modal markup + JS are gone.
+    expect(html).not.toContain('id="inbox-modal"');
+    expect(html).not.toContain('id="inbox-modal-close"');
+    expect(html).not.toContain('inbox-modal-msg');
+    expect(scripts).not.toContain('function openInboxModal(');
+    expect(scripts).not.toContain('function closeInboxModal(');
+    expect(scripts).not.toContain('function wireInboxModal(');
+    // Automation pill derives from the /inbox/config payload on load AND save.
+    expect(scripts).toContain('function renderInboxAutoPill(');
+    expect(scripts).toContain('renderInboxAutoPill(cfg)');
+    expect(scripts).toContain('renderInboxAutoPill(payload)');
+    expect(scripts).toContain('Manual review');
+  });
+
+  it('renders the pending draft as a dashed editable card and approves with the edited text', async () => {
+    const html = await consolePage('test-api-key').text();
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+    // Draft card: distinct header + confidence chip + hold-reason chips from
+    // hold_reasons JSON + contenteditable body at the END of the timeline.
+    expect(scripts).toContain('DRAFT - not sent');
+    expect(scripts).toContain('contenteditable="true"');
+    expect(scripts).toContain('id="inbox-draft"');
+    expect(scripts).toContain('hold_reasons');
+    expect(scripts).toContain('% confident');
+    // Approve must send the CURRENT edited text: the contenteditable innerText
+    // is read and passed as the `body` override of POST /api/inbox/approve
+    // (approveDraft(db, shop, env, draftId, editedBody) uses it when non-empty).
+    expect(scripts).toContain('.innerText');
+    expect(scripts).toContain("'/inbox/approve'");
+    expect(scripts).toContain('body:body');
   });
 
   it('uses Regenerate (LLM re-draft) and the old draft-Discard is fully removed', async () => {

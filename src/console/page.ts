@@ -16,13 +16,16 @@
 // window.alert()/confirm() are silently blocked. ALL user feedback must be inline
 // (writing into DOM elements) - never alert(). Do not reintroduce alert() here.
 //
-// Structure note (Phase 1 shell): this file is now the COMPOSER - the shared
-// <style> block and the whole browser-JS <script> live here, while the card
-// markup lives in ./views/*.ts fragments and the rail/router in ./shell.ts.
+// Structure note (Phase 1 shell / Phase 2 inbox): this file is the COMPOSER -
+// the shared <style> block and the single inline <script> live here, while the
+// card markup lives in ./views/*.ts fragments, the rail/router in ./shell.ts,
+// and the inbox-workspace browser JS + CSS in ./inbox-js.ts + ./views/inbox.ts
+// (composed below: inboxCss after shellCss, inboxJs before the init calls).
 // All five views exist in the DOM at once; the hash router only toggles
 // .active, so every getElementById below works regardless of the active view.
 
-import { inboxView } from './views/inbox';
+import { inboxView, inboxCss } from './views/inbox';
+import { inboxJs } from './inbox-js';
 import { catalogView } from './views/catalog';
 import { opsView } from './views/ops';
 import { settingsView } from './views/settings';
@@ -114,32 +117,6 @@ export function consolePage(apiKey: string): Response {
   .muted{color:var(--subdued)}
   code{background:var(--code-bg);padding:1px 6px;border-radius:5px;font-size:12px;color:var(--ink)}
   hr{border:0;border-top:1px solid var(--border);margin:16px 0}
-  .inbox-row{display:flex;flex-direction:column;gap:2px;width:100%;text-align:left;background:transparent;border:0;border-bottom:1px solid var(--border);border-radius:0;padding:10px 0;color:var(--ink);font-weight:400;cursor:pointer}
-  .inbox-row:last-child{border-bottom:0}
-  .inbox-row:hover{background:var(--code-bg);filter:none}
-  .inbox-row__who{font-weight:600;font-size:13px}
-  .inbox-row__subj{font-size:13px}
-  .inbox-row__meta{font-size:12px;color:var(--subdued)}
-  #inbox-thread{margin-top:0}
-  #inbox-thread>hr:first-child{display:none}
-  .inbox-modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.62);z-index:1000;display:flex;align-items:flex-start;justify-content:center;padding:28px 16px;overflow-y:auto}
-  .inbox-modal-overlay[hidden]{display:none}
-  .inbox-modal__panel{position:relative;width:100%;max-width:680px;margin:auto;background:var(--surface);border:1px solid var(--border);border-radius:12px;box-shadow:0 16px 48px rgba(0,0,0,.5);padding:24px 24px 18px}
-  .inbox-modal__close{position:absolute;top:10px;right:12px;width:32px;height:32px;display:flex;align-items:center;justify-content:center;background:transparent;border:0;border-radius:8px;color:var(--subdued);font-size:18px;line-height:1;cursor:pointer}
-  .inbox-modal__close:hover{background:var(--code-bg);color:var(--ink)}
-  @media(max-width:620px){.inbox-modal-overlay{padding:0}.inbox-modal__panel{max-width:none;min-height:100vh;border-radius:0;border:0}}
-  .inbox-msg{padding:10px 0;border-top:1px solid var(--border)}
-  .inbox-msg:first-child{border-top:0}
-  .inbox-msg__hdr{font-size:12px;color:var(--subdued);margin-bottom:4px}
-  .inbox-msg__body{font-size:13px;white-space:pre-wrap;word-break:break-word}
-  .inbox-controls{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-top:12px}
-  .inbox-controls .grow{flex:1 1 160px}
-  .inbox-msg.outbound{background:var(--code-bg);border-radius:8px;padding:10px;border-top:0;margin-top:8px}
-  .inbox-msg.outbound .inbox-msg__hdr{color:var(--ok-ink)}
-  .inbox-draft-section{margin-top:14px;border-top:1px solid var(--border);padding-top:14px}
-  .inbox-draft-section textarea{width:100%;min-height:120px;padding:9px 11px;border:1px solid var(--field-border);border-radius:8px;background:var(--field);color:var(--ink);font-size:13px;font-family:inherit;resize:vertical}
-  .inbox-draft-section textarea:focus{outline:2px solid var(--accent);outline-offset:1px;border-color:var(--accent)}
-  .inbox-hold{font-size:12px;color:var(--no-ink);margin:4px 0 8px}
   .inbox-settings textarea{width:100%;min-height:80px;padding:9px 11px;border:1px solid var(--field-border);border-radius:8px;background:var(--field);color:var(--ink);font-size:13px;font-family:inherit;resize:vertical}
   .inbox-settings textarea:focus{outline:2px solid var(--accent);outline-offset:1px;border-color:var(--accent)}
   .toggle-wrap{display:flex;align-items:center;gap:8px;padding:8px 0}
@@ -155,7 +132,8 @@ export function consolePage(apiKey: string): Response {
   .agents-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:6px 0;border-top:1px solid var(--border)}
   .agents-row:first-of-type{border-top:0}
   .agents-row.is-disabled{opacity:.5}
-${shellCss}</style>
+${shellCss}
+${inboxCss}</style>
 </head><body>
 ${railHtml}
 <main class="view" id="view-inbox">
@@ -758,356 +736,6 @@ async function saveCollections(){
     else setMsg('mapmsg','Failed: '+(r.error||'unknown error'),'no');
   }catch(e){ setMsg('mapmsg','Failed: '+errText(e),'no'); }
 }
-// Thread detail opens in a focused MODAL overlay (#inbox-modal) so the merchant
-// works one thread at a time instead of scrolling a long accordion list. The detail
-// node (#inbox-thread) lives permanently inside the modal panel, so a list re-render
-// (innerHTML='') can never destroy it. Closing the modal reloads the list - so a
-// thread just processed (flipped to awaiting_customer on send) drops off the default
-// "Open (unprocessed)" view automatically.
-var inboxDraftOriginal=''; // draft body as rendered - used to warn on unsent edits before close
-function openInboxModal(){
-  var ov=el('inbox-modal'); if(!ov) return;
-  ov.hidden=false;
-  document.body.style.overflow='hidden';
-  var c=el('inbox-modal-close'); if(c) c.focus();
-}
-function closeInboxModal(force){
-  var ov=el('inbox-modal'); if(!ov||ov.hidden) return;
-  if(!force){
-    var ta=el('inbox-draft');
-    if(ta&&ta.value!==inboxDraftOriginal&&!confirm('Discard your unsent edits to this reply?')) return;
-  }
-  ov.hidden=true;
-  document.body.style.overflow='';
-  var d=el('inbox-thread'); if(d) d.innerHTML='';
-  setMsg('inbox-modal-msg','','muted');
-  inboxDraftOriginal='';
-  loadInboxThreads(); // refresh so a just-processed thread drops off the list
-}
-async function loadInboxThreads(){
-  var status=(el('inbox-status-filter')&&el('inbox-status-filter').value)||'';
-  var list=el('inbox-threads');
-  if(list) list.innerHTML='<p class="muted">Loading…</p>';
-  setMsg('inboxmsg','','muted');
-  try{
-    var body=status?{status:status}:{};
-    var r=await api('/inbox/threads',body);
-    if(!r.ok){ if(list) list.innerHTML='<p class="msg no">'+esc(r.error||'Failed to load threads')+'</p>'; return; }
-    renderInboxThreads(r.threads||[]);
-  }catch(e){ if(list) list.innerHTML='<p class="msg no">'+esc(errText(e))+'</p>'; }
-}
-function renderInboxThreads(threads){
-  var list=el('inbox-threads');
-  if(!list) return;
-  if(!threads.length){ list.innerHTML='<p class="muted">No messages yet.</p>'; return; }
-  list.innerHTML='';
-  for(var i=0;i<threads.length;i++){
-    var t=threads[i];
-    var row=document.createElement('button');
-    row.className='inbox-row';
-    row.setAttribute('data-id',t.id);
-    var meta=esc(t.status||'')+(t.intentScore!=null?' · intent '+esc(t.intentScore):'')+(t.category?' · '+esc(t.category):'')+(t.lastMessageAt?' · '+esc(t.lastMessageAt.slice(0,16).replace('T',' ')):'');
-    row.innerHTML='<span class="inbox-row__who">'+esc(t.contactEmail||'(unknown)')+'</span>'
-      +'<span class="inbox-row__subj">'+esc(t.subject||'(no subject)')+'</span>'
-      +'<span class="inbox-row__meta">'+meta+'</span>';
-    (function(id){ row.onclick=function(){ openInboxThread(id); }; })(t.id);
-    list.appendChild(row);
-  }
-}
-async function openInboxThread(id){
-  var detail=el('inbox-thread');
-  openInboxModal();
-  if(detail) detail.innerHTML='<p class="muted">Loading thread…</p>';
-  setMsg('inbox-modal-msg','','muted');
-  try{
-    var r=await api('/inbox/thread',{id:id});
-    if(!r.ok){ if(detail) detail.innerHTML='<p class="msg no">'+esc(r.error||'Failed to load thread')+'</p>'; return; }
-    renderInboxThread(r.thread,r.messages||[],r.labels||[],r.draft||null,r.invoice||null,r.applicant||null);
-  }catch(e){ if(detail) detail.innerHTML='<p class="msg no">'+esc(errText(e))+'</p>'; }
-}
-function renderInboxThread(thread,messages,labels,draft,invoice,applicant){
-  var detail=el('inbox-thread');
-  if(!detail) return;
-  inboxInvoiceItems=[];
-  inboxDraftOriginal=(draft&&draft.body_text)||''; // baseline for the unsent-edits guard on close
-  var partnerHtml='';
-  if(applicant&&applicant.stage){
-    var v=null; try{ v=applicant.verdict_json?JSON.parse(applicant.verdict_json):null; }catch(e0){}
-    var reasons=(v&&v.reasons&&v.reasons.length)?esc(v.reasons.join(' · ')):'';
-    var sc=(applicant.score!=null)?(' · score '+esc(applicant.score)+'/12'):'';
-    partnerHtml='<div class="inbox-draft-section"><label style="font-weight:600;margin-bottom:6px">Partnership screening</label>'
-      +'<p style="font-size:13px;margin:0">Stage: <strong>'+esc(applicant.stage)+'</strong>'+sc+'</p>'
-      +(reasons?'<p class="muted" style="font-size:12px;margin:4px 0 0">'+reasons+'</p>':'')
-      +'</div>';
-  }
-  var declaredHtml='';
-  if(thread.declared_intent){
-    var DMAP={order:'Order help',partnerships:'Creator / affiliate partnership',wholesale:'Wholesale / bulk order'};
-    var dlabel=DMAP[thread.declared_intent]||thread.declared_intent;
-    declaredHtml='<p class="muted" style="margin:6px 0 0;font-size:12px">Declared: <strong>'+esc(dlabel)+'</strong></p>';
-  }
-  var msgHtml='<hr>';
-  for(var i=0;i<messages.length;i++){
-    var m=messages[i];
-    var isOut=m.direction==='outbound';
-    var dir=isOut?'You → '+esc(m.to_addr||''):'From: '+esc(m.from_addr||'');
-    var ts=m.received_at?esc(m.received_at.slice(0,16).replace('T',' ')):'';
-    msgHtml+='<div class="inbox-msg'+(isOut?' outbound':'')+'">'
-      +'<div class="inbox-msg__hdr">'+dir+(ts?' · '+ts:'')+'</div>'
-      +'<div class="inbox-msg__body">'+esc(m.body_text||'(no body)')+'</div>'
-      +'</div>';
-  }
-  var draftHtml='';
-  if(draft&&draft.id){
-    var holdNote='';
-    if(draft.hold_reasons){
-      try{
-        var reasons=JSON.parse(draft.hold_reasons);
-        if(reasons&&reasons.length) holdNote='<p class="inbox-hold">Hold: '+esc(reasons.join(', '))+'</p>';
-      }catch(e2){}
-    }
-    draftHtml='<div class="inbox-draft-section">'
-      +'<label style="font-weight:600;margin-bottom:6px">Draft reply</label>'
-      +holdNote
-      +'<textarea id="inbox-draft">'+esc(draft.body_text||'')+'</textarea>'
-      +'<div class="row" style="margin-top:8px">'
-      +'<button id="inbox-approve-btn">Approve &amp; Send</button>'
-      +'<button id="inbox-regen-btn" class="ghost">Regenerate</button>'
-      +'</div>'
-      +'</div>';
-  }
-  // Invoice card - only when thread has an open invoice
-  var invoiceHtml='';
-  if(invoice&&invoice.id){
-    var invItems=[];
-    try{ invItems=JSON.parse(invoice.line_items_json||'[]'); }catch(e2){}
-    var invRows=invItems.map(function(li){
-      return '<tr><td>'+esc(li.title||'')+'</td><td style="text-align:right">'+esc(String(li.qty||1))+'</td><td style="text-align:right">£'+esc(Number(li.priceGbp||0).toFixed(2))+'</td></tr>';
-    }).join('');
-    var invUrlHtml='';
-    if(invoice.status==='sent'&&invoice.invoice_url){
-      invUrlHtml='<p style="margin:8px 0 0"><a href="'+esc(invoice.invoice_url)+'" target="_blank" rel="noopener noreferrer" style="color:var(--ok-ink)">Open invoice link ↗</a></p>';
-    }
-    invoiceHtml='<div class="inbox-draft-section">'
-      +'<label style="font-weight:600;margin-bottom:6px">Invoice <span class="badge '+(invoice.status==='sent'?'ok':'no')+'">'+esc(invoice.status)+'</span></label>'
-      +'<table style="width:100%;border-collapse:collapse;font-size:13px;margin-top:6px"><thead><tr><th style="text-align:left">Item</th><th style="text-align:right">Qty</th><th style="text-align:right">Price</th></tr></thead><tbody>'+invRows+'</tbody></table>'
-      +'<p style="margin:8px 0 0;font-weight:600">Total: £'+esc(Number(invoice.total||0).toFixed(2))+'</p>'
-      +invUrlHtml
-      +'<div class="row" style="margin-top:8px">'
-      +'<button id="inbox-invoice-discard-btn" class="ghost">Discard invoice</button>'
-      +'</div>'
-      +'</div>';
-  }
-  // Catalog search + new invoice builder (shown when no open invoice)
-  var catalogHtml='';
-  if(!invoice||!invoice.id){
-    catalogHtml='<div class="inbox-draft-section">'
-      +'<label style="font-weight:600;margin-bottom:6px">Build invoice</label>'
-      +'<div class="row" style="margin-bottom:6px">'
-      +'<div class="grow"><label for="inbox-catalog-q">Search catalog</label><input id="inbox-catalog-q" type="text" placeholder="e.g. harness" autocomplete="off" spellcheck="false"></div>'
-      +'<button id="inbox-catalog-search-btn" class="ghost">Search</button>'
-      +'</div>'
-      +'<div id="inbox-catalog-results" style="margin-bottom:8px;font-size:13px;color:var(--subdued)"></div>'
-      +'<div id="inbox-invoice-items" style="font-size:13px;margin-bottom:8px"></div>'
-      +'<div style="margin-bottom:6px"><label for="inbox-invoice-cover">Cover note (optional)</label><textarea id="inbox-invoice-cover" style="width:100%;min-height:60px;padding:9px 11px;border:1px solid var(--field-border);border-radius:8px;background:var(--field);color:var(--ink);font-size:13px;font-family:inherit;resize:vertical" placeholder="e.g. Here is the invoice for the items we discussed."></textarea></div>'
-      +'<div class="row" style="margin-top:8px">'
-      +'<button id="inbox-invoice-build-btn">Approve &amp; Send invoice</button>'
-      +'</div>'
-      +'<p id="inbox-invoice-msg" class="msg muted"></p>'
-      +'</div>';
-  }
-  var labOpts=['lead','product-question','order-status','shipping-returns','wholesale-b2b','affiliate','complaint','spam','automated','other'];
-  var labSel='<select id="inbox-label-sel" multiple size="4" style="width:100%;font-size:13px">';
-  for(var j=0;j<labOpts.length;j++){
-    var isSel=labels.indexOf(labOpts[j])>=0?' selected':'';
-    labSel+='<option value="'+esc(labOpts[j])+'"'+isSel+'>'+esc(labOpts[j])+'</option>';
-  }
-  labSel+='</select>';
-  var statOpts=['new','needs_reply','awaiting_customer','converted','closed','spam'];
-  var statSel='<select id="inbox-status-sel" style="width:100%;font-size:13px">';
-  for(var k=0;k<statOpts.length;k++){
-    var isCur=thread.status===statOpts[k]?' selected':'';
-    statSel+='<option value="'+esc(statOpts[k])+'"'+isCur+'>'+esc(statOpts[k])+'</option>';
-  }
-  statSel+='</select>';
-  detail.innerHTML='<hr><div id="inbox-reconnect-banner" style="display:none;margin-bottom:8px;padding:8px 12px;background:var(--no-bg);color:var(--no-ink);border-radius:8px;font-size:13px"></div>'
-    +'<strong>'+esc(thread.contact_email||'')+'</strong>'
-    +' - <span class="muted">'+esc(thread.subject||'(no subject)')+'</span>'
-    +(thread.summary?'<p class="muted" style="margin:6px 0 0;font-size:12px">'+esc(thread.summary)+'</p>':'')
-    +declaredHtml
-    +msgHtml
-    +partnerHtml
-    +draftHtml
-    +invoiceHtml
-    +catalogHtml
-    +'<div class="inbox-controls">'
-    +'<div class="grow"><label>Status</label>'+statSel+'</div>'
-    +'<div class="grow"><label>Labels (multi-select)</label>'+labSel+'</div>'
-    +'<button id="inbox-save-status" class="ghost">Save status</button>'
-    +'<button id="inbox-save-labels" class="ghost">Save labels</button>'
-    +'</div>';
-  var tid=thread.id;
-  var ssb=el('inbox-save-status'); if(ssb) ssb.onclick=function(){ saveInboxStatus(tid); };
-  var slb=el('inbox-save-labels'); if(slb) slb.onclick=function(){ saveInboxLabels(tid); };
-  if(draft&&draft.id){
-    var draftId=draft.id;
-    var appBtn=el('inbox-approve-btn');
-    if(appBtn) appBtn.onclick=function(){
-      var ta=el('inbox-draft');
-      var body=ta?ta.value:'';
-      approveDraftAction(draftId,body,tid);
-    };
-    var regenBtn=el('inbox-regen-btn');
-    if(regenBtn) regenBtn.onclick=function(){ regenerateDraftAction(draftId,tid); };
-  }
-  // Invoice card: wire discard button
-  if(invoice&&invoice.id){
-    var invDiscBtn=el('inbox-invoice-discard-btn');
-    if(invDiscBtn){ (function(invId,tId){ invDiscBtn.onclick=function(){ discardInvoiceAction(invId,tId); }; })(invoice.id,tid); }
-  }
-  // Catalog search + invoice builder: wire search and build buttons
-  if(!invoice||!invoice.id){
-    var invItems2=[];
-    var catalogSearchBtn=el('inbox-catalog-search-btn');
-    if(catalogSearchBtn){ (function(tId){ catalogSearchBtn.onclick=function(){ runCatalogSearch(tId); }; })(tid); }
-    var invBuildBtn=el('inbox-invoice-build-btn');
-    if(invBuildBtn){ (function(tId){ invBuildBtn.onclick=function(){ buildInvoiceAction(tId); }; })(tid); }
-  }
-}
-async function approveDraftAction(draftId,body,threadId){
-  setMsg('inbox-modal-msg','Sending…','muted');
-  var appBtn=el('inbox-approve-btn'); if(appBtn) appBtn.disabled=true;
-  try{
-    var r=await api('/inbox/approve',{id:draftId,body:body});
-    // On success: close the modal (force - the edits we just sent aren't "unsent"),
-    // which reloads the list so this now-processed thread drops off the Open view.
-    if(r.ok){ closeInboxModal(true); setMsg('inboxmsg','Sent ✓ - moved to Awaiting customer.','ok'); }
-    else { setMsg('inbox-modal-msg','Failed: '+esc(r.error||'unknown error'),'no'); if(appBtn) appBtn.disabled=false; }
-  }catch(e){ setMsg('inbox-modal-msg','Failed: '+errText(e),'no'); if(appBtn&&el('inbox-approve-btn')) el('inbox-approve-btn').disabled=false; }
-}
-async function regenerateDraftAction(draftId,threadId){
-  setMsg('inbox-modal-msg','Regenerating…','muted');
-  var regenBtn=el('inbox-regen-btn'); if(regenBtn) regenBtn.disabled=true; // disabled BEFORE the await - guards double-click
-  try{
-    var r=await api('/inbox/regenerate',{id:draftId});
-    if(r.ok){ openInboxThread(threadId); setMsg('inbox-modal-msg','Regenerated ✓','ok'); } // re-render in place; modal stays open
-    else { setMsg('inbox-modal-msg','Failed: '+esc(r.error||'unknown error'),'no'); if(regenBtn) regenBtn.disabled=false; }
-  }catch(e){ setMsg('inbox-modal-msg','Failed: '+errText(e),'no'); if(regenBtn&&el('inbox-regen-btn')) el('inbox-regen-btn').disabled=false; }
-}
-// --- Invoice catalog search ---
-// Uses POST (consistent with api()) - the route is /api/inbox/catalog, POST {q}.
-var inboxInvoiceItems=[]; // [{variantId, title, qty, priceGbp}]
-function renderInvoiceItems(){
-  var box=el('inbox-invoice-items');
-  if(!box) return;
-  if(!inboxInvoiceItems.length){ box.innerHTML='<span class="muted">No items added yet.</span>'; return; }
-  var rows=inboxInvoiceItems.map(function(item,idx){
-    return '<div class="row" style="margin-bottom:4px">'
-      +'<span class="grow">'+esc(item.title)+'</span>'
-      +'<input type="number" min="1" max="99" value="'+esc(String(item.qty))+'" style="width:64px" data-inv-qty="'+idx+'">'
-      +'<span style="width:70px;text-align:right">£'+esc(Number(item.priceGbp||0).toFixed(2))+'</span>'
-      +'<button class="ghost" style="padding:4px 8px" data-inv-rm="'+idx+'">✕</button>'
-      +'</div>';
-  }).join('');
-  box.innerHTML=rows;
-  var qtyInputs=box.querySelectorAll('input[data-inv-qty]');
-  for(var qi=0;qi<qtyInputs.length;qi++){
-    (function(inp,i){ inp.onchange=function(){ var v=Math.max(1,parseInt(inp.value,10)||1); inboxInvoiceItems[i].qty=v; inp.value=v; }; })(qtyInputs[qi],Number(qtyInputs[qi].getAttribute('data-inv-qty')));
-  }
-  var rmBtns=box.querySelectorAll('button[data-inv-rm]');
-  for(var ri=0;ri<rmBtns.length;ri++){
-    (function(btn){ btn.onclick=function(){ inboxInvoiceItems.splice(Number(btn.getAttribute('data-inv-rm')),1); renderInvoiceItems(); }; })(rmBtns[ri]);
-  }
-}
-async function runCatalogSearch(threadId){
-  var qEl=el('inbox-catalog-q'); var q=(qEl&&qEl.value.trim())||'';
-  if(!q) return;
-  var resEl=el('inbox-catalog-results');
-  if(resEl) resEl.textContent='Searching…';
-  try{
-    var r=await api('/inbox/catalog',{q:q});
-    if(r.ok===false&&r.error==='reconnect_required'){
-      showReconnectBanner(); if(resEl) resEl.textContent=''; return;
-    }
-    if(!r.ok){ if(resEl) resEl.textContent='Search failed: '+(r.error||'unknown'); return; }
-    var variants=r.variants||[];
-    if(!variants.length){ if(resEl) resEl.textContent='No products found.'; return; }
-    if(resEl){
-      resEl.innerHTML='';
-      variants.slice(0,12).forEach(function(v){
-        var btn=document.createElement('button');
-        btn.className='ghost'; btn.style.cssText='display:block;width:100%;text-align:left;margin-bottom:4px;font-size:13px';
-        btn.textContent='+ '+v.title+(v.variantTitle&&v.variantTitle!==v.title?' / '+v.variantTitle:'')+(v.priceGbp?' · £'+Number(v.priceGbp).toFixed(2):'');
-        btn.onclick=function(){
-          inboxInvoiceItems.push({variantId:v.variantId,title:(v.title+(v.variantTitle&&v.variantTitle!==v.title?' / '+v.variantTitle:'')),qty:1,priceGbp:v.priceGbp||0});
-          renderInvoiceItems();
-        };
-        resEl.appendChild(btn);
-      });
-    }
-  }catch(e){ if(resEl) resEl.textContent='Search failed: '+errText(e); }
-}
-async function buildInvoiceAction(threadId){
-  var msgEl=el('inbox-invoice-msg');
-  if(!inboxInvoiceItems.length){ if(msgEl) setMsg('inbox-invoice-msg','Add at least one item.','no'); return; }
-  var coverEl=el('inbox-invoice-cover');
-  var coverText=(coverEl&&coverEl.value.trim())||'';
-  var btn=el('inbox-invoice-build-btn'); if(btn) btn.disabled=true;
-  if(msgEl) setMsg('inbox-invoice-msg','Building invoice…','muted');
-  try{
-    var items=inboxInvoiceItems.map(function(it){ return {variantId:it.variantId,qty:it.qty}; });
-    var r=await api('/inbox/invoice/build',{threadId:threadId,items:items,coverText:coverText});
-    if(r.ok===false&&r.error==='reconnect_required'){
-      showReconnectBanner(); if(msgEl) setMsg('inbox-invoice-msg','Re-authorise required - see banner above.','no');
-      if(btn) btn.disabled=false; return;
-    }
-    if(!r.ok){ if(msgEl) setMsg('inbox-invoice-msg','Failed: '+esc(r.error||'unknown error'),'no'); if(btn) btn.disabled=false; return; }
-    inboxInvoiceItems=[];
-    openInboxThread(threadId);
-    setMsg('inbox-modal-msg','Invoice sent ✓','ok');
-  }catch(e){ if(msgEl) setMsg('inbox-invoice-msg','Failed: '+errText(e),'no'); if(btn) btn.disabled=false; }
-}
-async function discardInvoiceAction(invoiceId,threadId){
-  setMsg('inbox-modal-msg','Discarding invoice…','muted');
-  var btn=el('inbox-invoice-discard-btn'); if(btn) btn.disabled=true;
-  try{
-    var r=await api('/inbox/invoice/discard',{invoiceId:invoiceId});
-    if(!r.ok){ setMsg('inbox-modal-msg','Failed: '+esc(r.error||'unknown error'),'no'); if(btn) btn.disabled=false; return; }
-    openInboxThread(threadId);
-    setMsg('inbox-modal-msg','Invoice discarded.','muted');
-  }catch(e){ setMsg('inbox-modal-msg','Failed: '+errText(e),'no'); if(btn) btn.disabled=false; }
-}
-function showReconnectBanner(){
-  var banner=el('inbox-reconnect-banner');
-  if(!banner) return;
-  var shop=(new URL(location.href)).searchParams.get('shop')||'';
-  var href='/auth'+(shop?'?shop='+encodeURIComponent(shop):'');
-  banner.style.display='';
-  banner.innerHTML='Re-authorisation required. <a href="'+esc(href)+'" style="color:var(--no-ink);font-weight:600">Click here to reconnect ↗</a>';
-}
-async function saveInboxStatus(id){
-  var sel=el('inbox-status-sel');
-  if(!sel){ setMsg('inbox-modal-msg','Status selector not found.','no'); return; }
-  var status=sel.value;
-  setMsg('inbox-modal-msg','Saving status…','muted');
-  try{
-    var r=await api('/inbox/status',{id:id,status:status});
-    if(r.ok){ setMsg('inbox-modal-msg','Status updated to '+esc(status)+'.','ok'); }
-    else { setMsg('inbox-modal-msg','Failed: '+esc(r.error||'unknown error'),'no'); }
-  }catch(e){ setMsg('inbox-modal-msg','Failed: '+errText(e),'no'); }
-}
-async function saveInboxLabels(id){
-  var sel=el('inbox-label-sel');
-  if(!sel){ setMsg('inbox-modal-msg','Label selector not found.','no'); return; }
-  var chosen=[];
-  for(var i=0;i<sel.options.length;i++){ if(sel.options[i].selected) chosen.push(sel.options[i].value); }
-  setMsg('inbox-modal-msg','Saving labels…','muted');
-  try{
-    var r=await api('/inbox/labels',{id:id,labels:chosen});
-    if(r.ok){ setMsg('inbox-modal-msg','Labels saved.','ok'); }
-    else { setMsg('inbox-modal-msg','Failed: '+esc(r.error||'unknown error'),'no'); }
-  }catch(e){ setMsg('inbox-modal-msg','Failed: '+errText(e),'no'); }
-}
 var currentInboxCfg={enabled:true,labels:[]};
 var INBOX_AGENTS=[
   ['shipping-returns','Shipping & Returns'],['order-status','Order Status'],
@@ -1166,6 +794,7 @@ async function loadInboxSettings(){
     var chk=el('inbox-autosend-chk'); if(chk) chk.checked=!!cfg.autosend;
     setReplyModeUI(!!cfg.autosend);
     renderAgents(cfg);
+    renderInboxAutoPill(cfg); // read-only automation pill in the Inbox workspace header
     var at=el('inbox-auto-thresh'); if(at&&cfg.autoConfidenceThreshold!=null) at.value=cfg.autoConfidenceThreshold;
     var it=el('inbox-intent-thresh'); if(it&&cfg.intentThreshold!=null) it.value=cfg.intentThreshold;
     var ae=el('inbox-alert-email'); if(ae&&cfg.alertEmail) ae.value=cfg.alertEmail;
@@ -1205,19 +834,13 @@ async function saveInboxSettings(){
       agents:collectAgents()
     };
     var r=await api('/inbox/config',payload);
-    if(r.ok){ setMsg('inboxcfgmsg','Saved ✓','ok'); return true; }
+    if(r.ok){ setMsg('inboxcfgmsg','Saved ✓','ok'); renderInboxAutoPill(payload); return true; }
     setMsg('inboxcfgmsg','Failed: '+esc(r.error||'unknown error'),'no'); return false;
   }catch(e){ setMsg('inboxcfgmsg','Failed: '+errText(e),'no'); return false; }
 }
-function wireInboxModal(){
-  var ov=el('inbox-modal');
-  if(ov) ov.addEventListener('click',function(e){ if(e.target===ov) closeInboxModal(); }); // backdrop click closes
-  var c=el('inbox-modal-close'); if(c) c.onclick=function(){ closeInboxModal(); };
-  document.addEventListener('keydown',function(e){ if(e.key==='Escape'){ var o=el('inbox-modal'); if(o&&!o.hidden) closeInboxModal(); } });
-}
+${inboxJs}
 refresh();
 loadInsights();
-wireInboxModal();
 loadInboxThreads();
 loadInboxSettings();
 ${routerJs}</script>
