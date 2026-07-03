@@ -39,7 +39,16 @@ function glKpi(label,num,sub,flag){
     +'</div>';
 }
 var GL_ORDER_STATUS={received:'received',queued:'queued',submitted:'sent to CJ','awaiting-payment':'awaiting CJ payment',fulfilled:'fulfilled',cancelled:'cancelled',error:'error'};
+// Rail badge (Phase 4): the Inbox nav item carries the REAL pending-draft count
+// from /api/glance - hidden entirely at zero, never a made-up number.
+function updateRailBadge(n){
+  var b=el('rail-inbox-badge'); if(!b) return;
+  n=Number(n)||0;
+  b.hidden=n<=0;
+  b.textContent=n>99?'99+':String(n);
+}
 function renderGlanceKpis(k){
+  updateRailBadge(k.pendingDrafts);
   var box=el('gl-kpis'); if(!box) return;
   var pipeParts=[];
   for(var st in k.pipeline){ pipeParts.push(k.pipeline[st]+' '+(GL_ORDER_STATUS[st]||st)); }

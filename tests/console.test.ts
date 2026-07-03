@@ -259,6 +259,40 @@ describe('consolePage', () => {
     expect(scripts).toContain("setMsg('llm-models-msg'");
   });
 
+  // --- Phase 4: rail badge + keyboard shortcuts + timeline polish ---
+
+  it('rail Inbox badge exists and is driven by the real pending-draft count', async () => {
+    const html = await consolePage('test-api-key').text();
+    expect(html).toContain('id="rail-inbox-badge"');
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+    expect(scripts).toContain('function updateRailBadge(');
+    expect(scripts).toContain('updateRailBadge(k.pendingDrafts)');
+    // Approving a draft changes the count, so approve refreshes the glance data.
+    expect(scripts).toMatch(/function approveDraftAction[\s\S]{0,900}loadGlance\(\)/);
+  });
+
+  it('keyboard shortcuts: digits switch views, j/k walk the inbox, editable targets are ignored, nothing sends', async () => {
+    const html = await consolePage('test-api-key').text();
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+    expect(scripts).toContain('function keyEditable(');
+    expect(scripts).toContain("window.addEventListener('keydown'");
+    expect(scripts).toContain('d>=1&&d<=ROUTES.length');
+    expect(scripts).toContain("e.key==='j'");
+    // The shortcut handler must never reference the approve/send path.
+    const keyBlock = scripts.slice(scripts.indexOf('function keyEditable('));
+    expect(keyBlock.slice(0, keyBlock.indexOf('});'))).not.toContain('approve');
+    // Discoverability: shortcuts documented in Help.
+    expect(html).toContain('Keyboard shortcuts');
+  });
+
+  it('timeline renders day dividers and the draft card shows its drafted age', async () => {
+    const html = await consolePage('test-api-key').text();
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+    expect(scripts).toContain('function ibxDayLabel(');
+    expect(scripts).toContain('ibx-day');
+    expect(scripts).toContain('>drafted ');
+  });
+
   it('has no duplicate id="..." attributes in the static HTML (all views share one DOM)', async () => {
     const html = await consolePage('test-api-key').text();
     // Strip script blocks first: ids inside JS-built strings (thread modal internals)

@@ -114,6 +114,8 @@ export const inboxCss = `
   .ibx-draft-body:focus{outline:2px solid #e8590c;outline-offset:1px}
   .ibx-draft__actions{display:flex;gap:8px;margin-top:10px}
   .ibx-note{font-size:12px;color:var(--subdued);text-align:center;padding:8px 0;flex:0 0 auto}
+  .ibx-day{display:flex;align-items:center;gap:12px;color:var(--subdued);font-size:11px;font-weight:600;letter-spacing:.03em}
+  .ibx-day::before,.ibx-day::after{content:"";flex:1;height:1px;background:var(--border)}
   .ibx-empty{margin:auto;text-align:center;padding:40px 20px}
   .ibx-empty p{margin:0 0 4px;font-weight:600}
   .ibx-empty p.muted{font-weight:400;font-size:13px}

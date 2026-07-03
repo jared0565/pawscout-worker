@@ -48,6 +48,14 @@ function ibxHoldReasons(draft){
   if(!draft||!draft.hold_reasons) return [];
   try{ var a=JSON.parse(draft.hold_reasons); return Array.isArray(a)?a:[]; }catch(e){ return []; }
 }
+function ibxDayLabel(iso){
+  var s=String(iso||'');
+  if(s.indexOf('T')<0) s=s.replace(' ','T');
+  if(s.indexOf('Z')<0&&s.indexOf('+')<0) s+='Z'; // D1 timestamps are UTC without a zone
+  var t=Date.parse(s);
+  if(isNaN(t)) return String(iso||'').slice(0,10);
+  return new Date(t).toLocaleDateString([], {weekday:'short',day:'numeric',month:'short'});
+}
 // Read-only automation pills in the Inbox header AND the Glance header, derived
 // from /inbox/config (already loaded by loadInboxSettings, which calls this).
 function renderInboxAutoPill(cfg){
@@ -168,10 +176,13 @@ function renderInboxThread(thread,messages,labels,draft,invoice,applicant,contac
     +'</div>'
     +'<p class="muted" style="margin:4px 0 0;font-size:12px">'+esc((contact&&contact.name)?(contact.name+' <'+(thread.contact_email||'')+'>'):(thread.contact_email||''))+'</p>';
   var ss=el('inbox-status-sel'); if(ss) ss.onchange=function(){ saveInboxStatus(tid); };
-  // Timeline: inbound left / outbound right (tinted), in received order
-  var msgHtml='';
+  // Timeline: inbound left / outbound right (tinted), in received order, with a
+  // day divider whenever the (UTC) calendar date changes (Phase 4 polish).
+  var msgHtml='', lastDay='';
   for(var i=0;i<messages.length;i++){
     var m=messages[i];
+    var day=(m.received_at||'').slice(0,10);
+    if(day&&day!==lastDay){ msgHtml+='<div class="ibx-day">'+esc(ibxDayLabel(m.received_at))+'</div>'; lastDay=day; }
     var isOut=m.direction==='outbound';
     var dir=isOut?'You → '+esc(m.to_addr||''):esc(m.from_addr||'');
     var ts=m.received_at?esc(m.received_at.slice(0,16).replace('T',' ')):'';
@@ -184,12 +195,13 @@ function renderInboxThread(thread,messages,labels,draft,invoice,applicant,contac
   var draftHtml='';
   if(draft&&draft.id){
     var confChip=(draft.confidence!=null)?'<span class="ibx-tag">'+esc(String(draft.confidence))+'% confident</span>':'';
+    var draftedChip=draft.created_at?'<span class="ibx-tag">drafted '+esc(ibxRelAge(draft.created_at))+' ago</span>':'';
     var dept=thread.primary_category?'<span class="ibx-tag">'+esc(ibxAgentName(thread.primary_category))+'</span>':'';
     var holdChips='';
     var holds=ibxHoldReasons(draft);
     for(var h=0;h<holds.length;h++) holdChips+='<span class="ibx-tag no">'+esc(holds[h])+'</span>';
     draftHtml='<div class="ibx-draft" id="ibx-draft-card">'
-      +'<div class="ibx-draft__hdr"><span class="ibx-draft__title">DRAFT - not sent</span>'+confChip+dept+holdChips+'</div>'
+      +'<div class="ibx-draft__hdr"><span class="ibx-draft__title">DRAFT - not sent</span>'+confChip+draftedChip+dept+holdChips+'</div>'
       +'<div id="inbox-draft" class="ibx-draft-body" contenteditable="true" spellcheck="true">'+esc(draft.body_text||'')+'</div>'
       +'<div class="ibx-draft__actions">'
       +'<button id="inbox-approve-btn" type="button">Approve &amp; send</button>'
@@ -308,6 +320,7 @@ async function approveDraftAction(draftId,threadId){
       inboxDraftOriginal='';
       openInboxThread(threadId);  // re-render: the sent reply joins the timeline
       loadInboxThreads();         // processed thread drops off the Open filter
+      loadGlance();               // pending-draft count changed: refresh KPIs + rail badge
       setMsg('ibx-msg','Sent ✓ - moved to Awaiting customer.','ok');
     } else { setMsg('ibx-msg','Failed: '+(r.error||'unknown error'),'no'); if(appBtn) appBtn.disabled=false; }
   }catch(e){ setMsg('ibx-msg','Failed: '+errText(e),'no'); if(el('inbox-approve-btn')) el('inbox-approve-btn').disabled=false; }
