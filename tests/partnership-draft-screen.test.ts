@@ -54,6 +54,51 @@ describe('partnership first-touch, LIVE default (decline_all, owner policy 2026-
   });
 });
 
+describe('decline template auto-send (owner opt-in 2026-07-03)', () => {
+  const AUTO_CFG: TenantConfig = { ...CFG, inbox: { ...DEFAULT_INBOX, autosend: true, agents: { affiliate: { autosend: true } } } };
+
+  it('auto-sends when the global switch AND the affiliate toggle are both on', async () => {
+    const { s, tid } = await seedFirstTouch('g.myshopify.com');
+    const thread = (await s.getThreadWithMessages(tid))!.thread;
+    const r = await composeDraftForThread({ ...env } as any, s, AUTO_CFG, thread, noFetch);
+    expect(r!.send).toBe(true);
+    const draft = await s.getPendingDraft(tid);
+    expect(JSON.parse(draft!.hold_reasons ?? '[]')).toEqual([]);
+    expect((await s.getApplicantByThread(tid))!.stage).toBe('declined');
+  });
+
+  it('holds (autosend_off) when the global switch is on but the affiliate toggle is off', async () => {
+    const { s, tid } = await seedFirstTouch('h.myshopify.com');
+    const thread = (await s.getThreadWithMessages(tid))!.thread;
+    const cfg: TenantConfig = { ...CFG, inbox: { ...DEFAULT_INBOX, autosend: true } }; // no per-agent opt-in
+    const r = await composeDraftForThread({ ...env } as any, s, cfg, thread, noFetch);
+    expect(r!.send).toBe(false);
+    const draft = await s.getPendingDraft(tid);
+    expect(JSON.parse(draft!.hold_reasons ?? '[]')).toContain('autosend_off');
+  });
+
+  it('holds (autosend_off) when only the affiliate toggle is on but the global switch is off', async () => {
+    const { s, tid } = await seedFirstTouch('i.myshopify.com');
+    const thread = (await s.getThreadWithMessages(tid))!.thread;
+    const cfg: TenantConfig = { ...CFG, inbox: { ...DEFAULT_INBOX, autosend: false, agents: { affiliate: { autosend: true } } } };
+    const r = await composeDraftForThread({ ...env } as any, s, cfg, thread, noFetch);
+    expect(r!.send).toBe(false);
+  });
+
+  it('holds (rate_limited) after 3 outbound messages to the same sender in 24h', async () => {
+    const { s, tid } = await seedFirstTouch('j.myshopify.com');
+    const now = Date.now();
+    for (let i = 0; i < 3; i++) {
+      await s.insertOutboundMessage({ threadId: tid, messageId: `<out${i}@j>`, from: 'sales@activepaw.co.uk', to: 'kasim@x.com', subject: 're', bodyText: 'x', bodyHtml: 'x', sentAt: new Date(now - i * 3600_000).toISOString() });
+    }
+    const thread = (await s.getThreadWithMessages(tid))!.thread;
+    const r = await composeDraftForThread({ ...env } as any, s, AUTO_CFG, thread, noFetch);
+    expect(r!.send).toBe(false);
+    const draft = await s.getPendingDraft(tid);
+    expect(JSON.parse(draft!.hold_reasons ?? '[]')).toContain('rate_limited');
+  });
+});
+
 describe('partnership first-touch, funnel mode (machinery preserved for re-enable)', () => {
   it('drafts the qualifying email and records the applicant at screen_sent', async () => {
     const { s, tid } = await seedFirstTouch('f.myshopify.com');

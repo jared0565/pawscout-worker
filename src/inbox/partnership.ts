@@ -5,6 +5,8 @@ import type { Env, TenantConfig } from '../types';
 import { LlmClient } from '../llm';
 import { resolveChain } from '../llm-resolve';
 import { maybeAlertOwner } from './alert';
+import { resolveAgents } from './agents/config';
+import { AUTO_RATELIMIT_PER_SENDER_DAY } from './autosend';
 
 export const PARTNERSHIP_ADDRESS = 'sales@activepaw.co.uk';
 export const PARTNERSHIP_FROM = 'Active Paw Partnerships <sales@activepaw.co.uk>';
@@ -222,20 +224,30 @@ export async function maybePartnershipDraft(
 
   // Owner policy (2026-07-03): decline ALL partnership approaches politely. Applies at
   // every stage (first touch AND in-flight applicants) so no path can still qualify or
-  // invite. Drafts stay HITL (send:false); the applicant record is marked declined. A
-  // reply that arrives AFTER we declined falls through to the generic drafter, whose
-  // affiliate agent also declines but responds to what they actually said (no template
-  // ping-pong). Flip AFFILIATE_MODE to 'funnel' to re-arm the qualifying flow below.
+  // invite. The applicant record is marked declined. A reply that arrives AFTER we
+  // declined falls through to the generic drafter, whose affiliate agent also declines
+  // but responds to what they actually said (no template ping-pong). Flip
+  // AFFILIATE_MODE to 'funnel' to re-arm the qualifying flow below.
+  //
+  // Auto-send (owner validated the template in HITL, 2026-07-03): the decline is a
+  // fixed owner-authored template - no LLM body, no prices, no grounding - so the
+  // confidence/money floors do not apply. It sends automatically iff the global Auto
+  // switch AND the affiliate agent's own toggle are both on, capped by the same
+  // per-sender daily rate limit as LLM drafts (bounds auto-responder ping-pong).
   if (mode === 'decline_all') {
     if (applicant?.stage === 'declined') return null;
     const body = buildPartnershipDecline(name);
+    const holdReasons: string[] = [];
+    if (!(cfg.inbox.autosend && resolveAgents(cfg.inbox).affiliate.autosend)) holdReasons.push('autosend_off');
+    const sinceIso = new Date(Date.now() - 86400_000).toISOString();
+    if ((await store.recentAutoSendCount(thread.contact_email, sinceIso)) >= AUTO_RATELIMIT_PER_SENDER_DAY) holdReasons.push('rate_limited');
     const draftId = await store.insertDraft({
       threadId: thread.id, bodyText: body, bodyHtml: renderReplyHtml(body),
-      confidence: null, quotesPriceOrder: false, holdReasons: [], model: 'partnership-screen', status: 'pending',
+      confidence: null, quotesPriceOrder: false, holdReasons, model: 'partnership-screen', status: 'pending',
     });
     if (!applicant) await store.upsertApplicant({ threadId: thread.id, contactEmail: thread.contact_email, stage: 'declined' });
     else await store.setApplicantStage(thread.id, 'declined', null);
-    return { draftId, send: false };
+    return { draftId, send: holdReasons.length === 0 };
   }
 
   // First touch: send the qualifying email, record the applicant.
