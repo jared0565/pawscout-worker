@@ -1056,6 +1056,31 @@ export class TenantStore {
     return rs.results ?? [];
   }
 
+  /** Open classified threads whose sender has written again since classification
+   *  (an inbound row was inserted after classified_at - insert-time comparison, so
+   *  a spoofed Date header cannot hide a follow-up). The bait-opener pattern: an
+   *  innocuous first message earns a benign category, then the real pitch arrives;
+   *  one-shot classification would route the thread to the wrong agent forever. */
+  async reclassifyCandidates(limit = 20): Promise<ThreadRow[]> {
+    const rs = await this.db
+      .prepare(`SELECT t.* FROM inbox_threads t WHERE t.shop = ?1 AND t.classified_at IS NOT NULL
+                AND t.status IN ('new', 'needs_reply')
+                AND EXISTS (SELECT 1 FROM inbox_messages m WHERE m.shop = t.shop AND m.thread_id = t.id
+                            AND m.direction = 'inbound' AND m.created_at > t.classified_at)
+                ORDER BY t.last_message_at ASC LIMIT ${Math.min(Math.max(limit, 1), 50)}`)
+      .bind(this.shop)
+      .all<ThreadRow>();
+    return rs.results ?? [];
+  }
+
+  /** Bump classified_at without touching the verdict - used when a follow-up gave
+   *  nothing new to judge (all-quote) or confirmed the existing lane, so the thread
+   *  stops qualifying as a reclassify candidate until the sender writes again. */
+  async touchClassifiedAt(threadId: string): Promise<void> {
+    const now = new Date().toISOString();
+    await this.db.prepare(`UPDATE inbox_threads SET classified_at = ?3, updated_at = ?3 WHERE shop = ?1 AND id = ?2`).bind(this.shop, threadId, now).run();
+  }
+
   async setThreadClassification(threadId: string, c: { status: ThreadStatus; primaryCategory: string | null; intentScore: number | null; summary: string | null; classifiedAt: string }): Promise<void> {
     await this.db
       .prepare(

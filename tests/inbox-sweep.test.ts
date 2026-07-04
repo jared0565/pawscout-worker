@@ -99,6 +99,95 @@ describe('runInboxClassifySweep', () => {
     expect(d?.status).toBe('pending');                // held (autosend off by default)
   });
 
+  // 2026-07-04 bait-opener fix: classification was one-shot on the FIRST message,
+  // so an innocuous opener ("is this Active Paw?" -> other) locked a thread out of
+  // the affiliate lane when the real pitch arrived in a follow-up. The sweep now
+  // re-classifies the sender's LATEST new text when an inbound postdates the stamp.
+  it('re-classifies on a follow-up inbound and reroutes the thread to the new lane', async () => {
+    const tid = await seedShopWithThread();
+    const store = new TenantStore(env.DB, SHOP);
+    await store.setThreadClassification(tid, { status: 'needs_reply', primaryCategory: 'shipping-returns', intentScore: 30, summary: 'Shipping question', classifiedAt: '2026-06-18T10:05:00Z' });
+    await store.setThreadLabels(tid, ['shipping-returns']);
+    const staleId = await store.insertDraft({ threadId: tid, bodyText: 'Yes, we ship to Europe.', bodyHtml: '<p>x</p>', confidence: 90, quotesPriceOrder: false, holdReasons: ['autosend_off'], model: 'm', status: 'pending' });
+    await store.insertInboundMessageIfNew({ threadId: tid, messageId: '<m2@x>', inReplyTo: null, references: [], from: 'jane@x.com', to: 'support@activepaw.co.uk', subject: 'Re: Buy a bed', bodyText: 'What commission would I get if I drive 30 orders a day?', bodyHtml: null, headersJson: '{"authentication-results":"mx; spf=pass dkim=pass dmarc=pass"}', receivedAt: '2026-06-18T12:00:00Z' });
+
+    let alerted = false;
+    const fetchImpl = (async (url: string) => {
+      if (String(url).includes('openrouter')) {
+        return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ isHuman: true, category: 'affiliate', intentScore: 20, summary: 'Asks about affiliate commission', labels: ['affiliate'] }) } }], usage: { cost: 0.0001 } }), { status: 200 });
+      }
+      alerted = true;
+      return new Response(JSON.stringify({ id: 'em_1' }), { status: 200 });
+    }) as unknown as typeof fetch;
+    await runInboxClassifySweep({ ...env, OPENROUTER_API_KEY: 'k', RESEND_API_KEY: 'rk' } as any, fetchImpl);
+
+    const got = await store.getThreadWithMessages(tid);
+    expect(got?.thread.primary_category).toBe('affiliate');
+    expect(got?.labels).toContain('affiliate');
+    // the stale shipping-agent draft is retired and the SAME sweep re-drafts via
+    // the partnership lane (decline template), held because autosend is off here
+    expect((await store.getDraft(staleId))?.status).toBe('superseded');
+    const fresh = await store.getPendingDraft(tid);
+    expect(fresh).not.toBeNull();
+    expect(fresh!.body_text).toContain('Active Paw Partnerships');
+    expect(alerted).toBe(true); // affiliate approaches alert the owner regardless of intent
+  });
+
+  it('a same-lane follow-up refreshes the stamp and keeps the pending draft', async () => {
+    const tid = await seedShopWithThread();
+    const store = new TenantStore(env.DB, SHOP);
+    await store.setThreadClassification(tid, { status: 'needs_reply', primaryCategory: 'product-question', intentScore: 40, summary: 's', classifiedAt: '2026-06-18T10:05:00Z' });
+    await store.setThreadLabels(tid, ['product-question']);
+    const staleId = await store.insertDraft({ threadId: tid, bodyText: 'It fits large dogs.', bodyHtml: '<p>x</p>', confidence: 90, quotesPriceOrder: false, holdReasons: ['autosend_off'], model: 'm', status: 'pending' });
+    await store.insertInboundMessageIfNew({ threadId: tid, messageId: '<m3@x>', inReplyTo: null, references: [], from: 'jane@x.com', to: 'support@activepaw.co.uk', subject: 'Re: Buy a bed', bodyText: 'And does it come in grey?', bodyHtml: null, headersJson: '{"authentication-results":"mx; spf=pass dkim=pass dmarc=pass"}', receivedAt: '2026-06-18T12:00:00Z' });
+    const fetchImpl = (async (url: string) => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ isHuman: true, category: 'product-question', intentScore: 45, summary: 'Colour question', labels: ['product-question'] }) } }], usage: { cost: 0.0001 } }), { status: 200 })) as unknown as typeof fetch;
+    await runInboxClassifySweep({ ...env, OPENROUTER_API_KEY: 'k' } as any, fetchImpl);
+
+    const got = await store.getThreadWithMessages(tid);
+    expect(got?.thread.primary_category).toBe('product-question');
+    expect(got!.thread.classified_at! > '2026-06-18T10:05:00Z').toBe(true); // stamped: not re-judged every sweep
+    expect((await store.getPendingDraft(tid))?.id).toBe(staleId); // draft untouched
+  });
+
+  it('an all-quote follow-up skips the LLM and just refreshes the stamp', async () => {
+    const tid = await seedShopWithThread();
+    const store = new TenantStore(env.DB, SHOP);
+    await store.setThreadClassification(tid, { status: 'needs_reply', primaryCategory: 'product-question', intentScore: 40, summary: 's', classifiedAt: '2026-06-18T10:05:00Z' });
+    await store.insertDraft({ threadId: tid, bodyText: 'It fits large dogs.', bodyHtml: '<p>x</p>', confidence: 90, quotesPriceOrder: false, holdReasons: ['autosend_off'], model: 'm', status: 'pending' });
+    await store.insertInboundMessageIfNew({ threadId: tid, messageId: '<m4@x>', inReplyTo: null, references: [], from: 'jane@x.com', to: 'support@activepaw.co.uk', subject: 'Re: Buy a bed', bodyText: 'On Thu, Jun 18, 2026, Active Paw <support@activepaw.co.uk> wrote:\n> It fits large dogs.\n> Best regards', bodyHtml: null, headersJson: '{}', receivedAt: '2026-06-18T12:00:00Z' });
+    const llmUrls: string[] = [];
+    const fetchImpl = (async (url: string) => {
+      llmUrls.push(String(url));
+      return new Response(JSON.stringify({ choices: [{ message: { content: '{}' } }], usage: { cost: 0.0001 } }), { status: 200 });
+    }) as unknown as typeof fetch;
+    await runInboxClassifySweep({ ...env, OPENROUTER_API_KEY: 'k' } as any, fetchImpl);
+
+    expect(llmUrls.filter((u) => u.includes('openrouter'))).toHaveLength(0); // nothing new to judge
+    const got = await store.getThreadWithMessages(tid);
+    expect(got!.thread.classified_at! > '2026-06-18T10:05:00Z').toBe(true); // stamped so it will not re-qualify
+    expect(got?.thread.primary_category).toBe('product-question');
+  });
+
+  it('reclassifyCandidates selects only open classified threads with a newer inbound', async () => {
+    const tid = await seedShopWithThread();
+    const store = new TenantStore(env.DB, SHOP);
+    // A: classified in the past, follow-up arrives after -> candidate
+    await store.setThreadClassification(tid, { status: 'needs_reply', primaryCategory: 'other', intentScore: 5, summary: 's', classifiedAt: '2026-06-18T10:05:00Z' });
+    // B: classified AFTER its only message (stamp in the future) -> not a candidate
+    const tidB = await store.createThread({ contactEmail: 'jane@x.com', subject: 'Other q', subjectNorm: 'other q', receivedAt: '2026-06-18T10:00:00Z', initialStatus: 'new' });
+    await store.insertInboundMessageIfNew({ threadId: tidB, messageId: '<b1@x>', inReplyTo: null, references: [], from: 'jane@x.com', to: 'support@activepaw.co.uk', subject: 'Other q', bodyText: 'hi', bodyHtml: null, headersJson: '{}', receivedAt: '2026-06-18T10:00:00Z' });
+    await store.setThreadClassification(tidB, { status: 'needs_reply', primaryCategory: 'other', intentScore: 5, summary: 's', classifiedAt: new Date(Date.now() + 60_000).toISOString() });
+    // C: same shape as A but dismissed -> not a candidate
+    const tidC = await store.createThread({ contactEmail: 'jane@x.com', subject: 'Closed q', subjectNorm: 'closed q', receivedAt: '2026-06-18T10:00:00Z', initialStatus: 'new' });
+    await store.insertInboundMessageIfNew({ threadId: tidC, messageId: '<c1@x>', inReplyTo: null, references: [], from: 'jane@x.com', to: 'support@activepaw.co.uk', subject: 'Closed q', bodyText: 'hi', bodyHtml: null, headersJson: '{}', receivedAt: '2026-06-18T10:00:00Z' });
+    await store.setThreadClassification(tidC, { status: 'closed', primaryCategory: 'other', intentScore: 5, summary: 's', classifiedAt: '2026-06-18T10:05:00Z' });
+
+    const ids = (await store.reclassifyCandidates()).map((t) => t.id);
+    expect(ids).toContain(tid);
+    expect(ids).not.toContain(tidB);
+    expect(ids).not.toContain(tidC);
+  });
+
   it('auto-sends a confident safe draft when autosend is on', async () => {
     const tid = await seedShopWithThread();
     const store = new TenantStore(env.DB, SHOP);

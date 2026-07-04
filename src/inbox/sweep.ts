@@ -49,6 +49,11 @@ export async function runInboxClassifySweep(env: Env, fetchImpl: typeof fetch = 
       for (const thread of await store.unclassifiedThreads(SWEEP_BATCH)) {
         await classifyOne(env, store, cfg, shop, thread, fetchImpl);
       }
+      // Re-classification runs BEFORE the drafting pass, so a thread that changed
+      // lanes gets its corrected agent in this same sweep, not the next one.
+      for (const thread of await store.reclassifyCandidates(SWEEP_BATCH)) {
+        await reclassifyOne(env, store, cfg, shop, thread, fetchImpl);
+      }
       for (const thread of await store.threadsNeedingDraft(SWEEP_BATCH)) {
         const handled = await proposeInvoiceOne(env, store, cfg, thread, fetchImpl);
         if (!handled) await draftOne(env, store, cfg, thread, fetchImpl);
@@ -77,6 +82,44 @@ async function classifyOne(env: Env, store: TenantStore, cfg: TenantConfig, shop
     summary: c.summary, classifiedAt: new Date().toISOString()
   });
   await store.setThreadLabels(thread.id, d.labels);
+  if (d.alert) await maybeAlertOwner(env, cfg, shop, thread, c.summary, d.primaryCategory, fetchImpl);
+}
+
+/**
+ * Re-run classification when the sender has written again since the thread was
+ * classified. Classification is one-shot on the FIRST message, so a bait opener
+ * ("is this Active Paw?" -> other) locked threads out of the affiliate lane when
+ * the real pitch arrived in a follow-up (2026-07-04, two live cases). Judges the
+ * sender's LATEST new text only (quote-stripped - the quoted copy of our own
+ * reply must not colour the verdict). On a lane change it adopts the fresh
+ * disposition and retires the stale agent's pending draft so this same sweep's
+ * drafting pass re-routes through the right agent; a same-lane or all-quote
+ * follow-up just refreshes the stamp so the thread stops re-qualifying.
+ */
+async function reclassifyOne(env: Env, store: TenantStore, cfg: TenantConfig, shop: string, thread: ThreadRow, fetchImpl: typeof fetch): Promise<void> {
+  const got = await store.getThreadWithMessages(thread.id);
+  const inbound = (got?.messages ?? []).filter((m) => m.direction === 'inbound');
+  const latest = inbound[inbound.length - 1];
+  if (!latest) return;
+  const newText = stripQuotedReply(latest.body_text ?? '').trim();
+  if (!newText) { await store.touchClassifiedAt(thread.id); return; } // all-quote: nothing new to judge
+  const auth = parseAuthResults(safeHeaders(latest.headers_json));
+  const llm = new LlmClient({ openrouter: env.OPENROUTER_API_KEY, openai: env.OPENAI_API_KEY }, fetchImpl);
+  const c = await classifyEmail(llm, store, cfg, {
+    subject: thread.subject ?? '', body: newText, fromEmail: thread.contact_email, auth
+  });
+  if (!c) return; // degrade: leave the candidate for the next run
+  const d = decideDisposition(c, cfg.inbox.intentThreshold);
+  if (d.primaryCategory === (thread.primary_category ?? 'other')) {
+    await store.touchClassifiedAt(thread.id); // lane confirmed - keep verdict and draft
+    return;
+  }
+  await store.setThreadClassification(thread.id, {
+    status: d.status, primaryCategory: d.primaryCategory, intentScore: c.intentScore,
+    summary: c.summary, classifiedAt: new Date().toISOString()
+  });
+  await store.setThreadLabels(thread.id, d.labels);
+  await store.supersedePendingDrafts(thread.id); // the old lane's draft answers the wrong question
   if (d.alert) await maybeAlertOwner(env, cfg, shop, thread, c.summary, d.primaryCategory, fetchImpl);
 }
 
