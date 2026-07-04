@@ -20,11 +20,15 @@ async function seedFirstTouch(shop: string, opts?: { declaredIntent?: string; ca
   return { s, tid };
 }
 
-describe('partnership first-touch, LIVE default (decline_all, owner policy 2026-07-03)', () => {
+// decline_all is the 2026-07-03 policy, kept behind the Settings toggle since
+// 2026-07-04 (default is now the voucher funnel). These tests pin the toggle path.
+const DECLINE_CFG: TenantConfig = { ...CFG, inbox: { ...DEFAULT_INBOX, affiliateMode: 'decline_all' } };
+
+describe('partnership first-touch, decline_all toggle (2026-07-03 policy, config-driven)', () => {
   it('drafts the warm decline (not the qualifying email) and records the applicant declined', async () => {
     const { s, tid } = await seedFirstTouch('a.myshopify.com');
     const thread = (await s.getThreadWithMessages(tid))!.thread;
-    const r = await composeDraftForThread({ ...env } as any, s, CFG, thread, noFetch);
+    const r = await composeDraftForThread({ ...env } as any, s, DECLINE_CFG, thread, noFetch);
     expect(r).not.toBeNull();
     expect(r!.send).toBe(false); // HITL - owner approves
     const draft = await s.getPendingDraft(tid);
@@ -38,7 +42,7 @@ describe('partnership first-touch, LIVE default (decline_all, owner policy 2026-
     const { s, tid } = await seedFirstTouch('c.myshopify.com', { declaredIntent: 'partnerships', category: 'other', to: 'support@activepaw.co.uk' });
     const thread = (await s.getThreadWithMessages(tid))!.thread;
     expect(await s.getApplicantByThread(tid)).toBeNull(); // genuinely first touch
-    const r = await composeDraftForThread({ ...env } as any, s, CFG, thread, noFetch);
+    const r = await composeDraftForThread({ ...env } as any, s, DECLINE_CFG, thread, noFetch);
     expect(r).not.toBeNull();
     const draft = await s.getPendingDraft(tid);
     expect(draft!.body_text).toMatch(/not taking on new partnerships/i);
@@ -54,8 +58,38 @@ describe('partnership first-touch, LIVE default (decline_all, owner policy 2026-
   });
 });
 
-describe('decline template auto-send (owner opt-in 2026-07-03)', () => {
-  const AUTO_CFG: TenantConfig = { ...CFG, inbox: { ...DEFAULT_INBOX, autosend: true, agents: { affiliate: { autosend: true } } } };
+describe('partnership first-touch, LIVE default (funnel_voucher, owner policy 2026-07-04)', () => {
+  it('drafts the VOUCHER qualifying email (code terms + posting-date question), applicant screen_sent', async () => {
+    const { s, tid } = await seedFirstTouch('vd.myshopify.com');
+    const thread = (await s.getThreadWithMessages(tid))!.thread;
+    const r = await composeDraftForThread({ ...env } as any, s, CFG, thread, noFetch); // plain DEFAULT_INBOX = the live default
+    expect(r).not.toBeNull();
+    expect(r!.send).toBe(false); // qualifying emails are ALWAYS HITL
+    const draft = await s.getPendingDraft(tid);
+    expect(draft!.body_text).toMatch(/where would you promote/i);
+    expect(draft!.body_text).toContain('your own discount code');
+    expect(draft!.body_text).toContain('when would your first post go live');
+    expect(draft!.body_text).toContain('coupon or deal sites');
+    expect(draft!.body_text).not.toMatch(/tracked with your own link/i); // link wording stays in the link variant
+    expect(draft!.body_text).not.toMatch(/not taking on new partnerships/i);
+    expect((await s.getApplicantByThread(tid))!.stage).toBe('screen_sent');
+  });
+
+  it('a PASSED applicant\'s follow-up gets a holding ack, never the affiliate agent\'s decline', async () => {
+    const { s, tid } = await seedFirstTouch('vp.myshopify.com');
+    await s.upsertApplicant({ threadId: tid, contactEmail: 'kasim@x.com', stage: 'passed_to_form' });
+    const got = (await s.getThreadWithMessages(tid))!;
+    const r = await maybePartnershipDraft({ ...env } as any, s, CFG, got.thread, got, noFetch);
+    expect(r).not.toBeNull(); // must NOT fall through to the generic decline agent
+    expect(r!.send).toBe(false);
+    const draft = await s.getPendingDraft(tid);
+    expect(draft!.body_text).toMatch(/reviewing|taking a look/i);
+    expect(draft!.body_text).not.toMatch(/not taking on new partnerships/i);
+  });
+});
+
+describe('decline template auto-send (owner opt-in 2026-07-03; decline_all toggle on)', () => {
+  const AUTO_CFG: TenantConfig = { ...CFG, inbox: { ...DEFAULT_INBOX, affiliateMode: 'decline_all', autosend: true, agents: { affiliate: { autosend: true } } } };
 
   it('auto-sends when the global switch AND the affiliate toggle are both on', async () => {
     const { s, tid } = await seedFirstTouch('g.myshopify.com');
@@ -70,7 +104,7 @@ describe('decline template auto-send (owner opt-in 2026-07-03)', () => {
   it('holds (autosend_off) when the global switch is on but the affiliate toggle is off', async () => {
     const { s, tid } = await seedFirstTouch('h.myshopify.com');
     const thread = (await s.getThreadWithMessages(tid))!.thread;
-    const cfg: TenantConfig = { ...CFG, inbox: { ...DEFAULT_INBOX, autosend: true } }; // no per-agent opt-in
+    const cfg: TenantConfig = { ...CFG, inbox: { ...DEFAULT_INBOX, affiliateMode: 'decline_all', autosend: true } }; // no per-agent opt-in
     const r = await composeDraftForThread({ ...env } as any, s, cfg, thread, noFetch);
     expect(r!.send).toBe(false);
     const draft = await s.getPendingDraft(tid);
@@ -80,7 +114,7 @@ describe('decline template auto-send (owner opt-in 2026-07-03)', () => {
   it('holds (autosend_off) when only the affiliate toggle is on but the global switch is off', async () => {
     const { s, tid } = await seedFirstTouch('i.myshopify.com');
     const thread = (await s.getThreadWithMessages(tid))!.thread;
-    const cfg: TenantConfig = { ...CFG, inbox: { ...DEFAULT_INBOX, autosend: false, agents: { affiliate: { autosend: true } } } };
+    const cfg: TenantConfig = { ...CFG, inbox: { ...DEFAULT_INBOX, affiliateMode: 'decline_all', autosend: false, agents: { affiliate: { autosend: true } } } };
     const r = await composeDraftForThread({ ...env } as any, s, cfg, thread, noFetch);
     expect(r!.send).toBe(false);
   });
@@ -99,15 +133,17 @@ describe('decline template auto-send (owner opt-in 2026-07-03)', () => {
   });
 });
 
-describe('partnership first-touch, funnel mode (machinery preserved for re-enable)', () => {
-  it('drafts the qualifying email and records the applicant at screen_sent', async () => {
+describe('partnership first-touch, funnel_link mode (link programme preserved verbatim)', () => {
+  it('drafts the LINK qualifying email and records the applicant at screen_sent', async () => {
     const { s, tid } = await seedFirstTouch('f.myshopify.com');
     const got = (await s.getThreadWithMessages(tid))!;
-    const r = await maybePartnershipDraft({ ...env } as any, s, CFG, got.thread, got, noFetch, 'funnel');
+    const r = await maybePartnershipDraft({ ...env } as any, s, CFG, got.thread, got, noFetch, 'funnel_link');
     expect(r).not.toBeNull();
     expect(r!.send).toBe(false);
     const draft = await s.getPendingDraft(tid);
     expect(draft!.body_text).toMatch(/where would you promote/i);
+    expect(draft!.body_text).toContain('tracked with your own link'); // the original link terms, unchanged
+    expect(draft!.body_text).not.toContain('voucher trial');
     expect(draft!.body_text).toContain('Active Paw Partnerships');
     expect((await s.getApplicantByThread(tid))!.stage).toBe('screen_sent');
   });

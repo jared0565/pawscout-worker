@@ -1,4 +1,4 @@
-import type { ScreenFacts, ScreenVerdict, ThreadRow, MessageRow } from './types';
+import type { AffiliateMode, ScreenFacts, ScreenVerdict, ThreadRow, MessageRow } from './types';
 import { applySalutation, renderReplyHtml } from './draft';
 import type { TenantStore } from '../tenant-store';
 import type { Env, TenantConfig } from '../types';
@@ -13,10 +13,14 @@ export const PARTNERSHIP_FROM = 'Active Paw Partnerships <sales@activepaw.co.uk>
 export const PASS_THRESHOLD = 8;       // score >= → send the application form (spec §6.4)
 export const AUTO_DECLINE_LOW = false; // dial: auto-decline score <= 3 (spec §6.4, default OFF)
 
-/** Owner policy dial (2026-07-03): 'decline_all' = every partnership approach gets the
- * warm decline; the qualifying/scoring funnel below stays intact and re-arms by
- * flipping this back to 'funnel'. */
-export const AFFILIATE_MODE: 'decline_all' | 'funnel' = 'decline_all';
+/** Mode comes from cfg.inbox.affiliateMode (owner-set in Settings, 2026-07-04):
+ *  'funnel_voucher' (default) screens candidates for a discount-code trial and
+ *  flags strong ones for the owner to issue a code in the Partners view;
+ *  'funnel_link' is the original link-partnership funnel, preserved verbatim
+ *  for the future full programme; 'decline_all' is the 2026-07-03 policy kept
+ *  behind the toggle. The two funnel variants share the gates and scorer -
+ *  they differ only in the qualifying/invite wording and the METHOD weights. */
+export type FunnelVariant = 'link' | 'voucher';
 
 // Lane = affiliate creators ONLY. wholesale-b2b is deliberately excluded: a bulk/trade
 // buyer ("wants to buy FROM us") is a different conversation from an affiliate ("wants to
@@ -52,17 +56,24 @@ const RELEVANCE: Record<ScreenFacts['audienceRelevance'], number> = { pet_uk: 2,
 const ENGAGEMENT: Record<ScreenFacts['engagement'], number> = { plausible: 2, unclear: 1, implausible: 0 };
 const EVIDENCE: Record<ScreenFacts['evidence'], number> = { concrete: 2, vague: 1, none: 0 };
 const EXPERIENCE: Record<ScreenFacts['experience'], number> = { strong: 2, some: 1, none: 0 };
-const METHOD: Record<ScreenFacts['method'], number> = { content: 2, mixed: 1, unknown: 1, discount: 0 };
+// METHOD weights differ by funnel variant. Under the LINK programme a
+// discount-code push was the low-value pattern (0). Under the VOUCHER trial a
+// code shared with their own audience IS the mechanic, so it scores (1), with
+// audience-led content still preferred (2); coupon/deal SITES remain the hard
+// G2 gate in both variants.
+const METHOD_LINK: Record<ScreenFacts['method'], number> = { content: 2, mixed: 1, unknown: 1, discount: 0 };
+const METHOD_VOUCHER: Record<ScreenFacts['method'], number> = { content: 2, mixed: 2, unknown: 1, discount: 1 };
 const SPECIFICITY: Record<ScreenFacts['specificity'], number> = { specific: 2, partial: 1, vague: 0 };
 
 /** Hard gates → decline. Otherwise a 0-12 score sorts form vs. escalate. The score
  * NEVER causes a decline unless the (default-OFF) auto-decline-low dial is on. */
 export function scoreScreen(
   facts: ScreenFacts,
-  opts?: { passThreshold?: number; autoDeclineLow?: boolean }
+  opts?: { passThreshold?: number; autoDeclineLow?: boolean; variant?: FunnelVariant }
 ): ScreenVerdict {
   const passThreshold = opts?.passThreshold ?? PASS_THRESHOLD;
   const autoDeclineLow = opts?.autoDeclineLow ?? AUTO_DECLINE_LOW;
+  const METHOD = (opts?.variant ?? 'link') === 'voucher' ? METHOD_VOUCHER : METHOD_LINK;
 
   if (!facts.channelUrls || facts.channelUrls.length === 0)
     return gateDecline('G1', 'No channel/URL provided - no basis to evaluate.');
@@ -90,7 +101,9 @@ export function scoreScreen(
 }
 
 // Bodies are written WITHOUT a greeting; applySalutation() prepends "Hi <name>,".
-const QUALIFYING_BODY =
+// LINK variant: the original programme's wording, preserved verbatim for when
+// the owner pursues the full link-tracked partnership programme.
+const QUALIFYING_BODY_LINK =
 `Thanks for reaching out about working together - we'd genuinely like to learn more. We partner with a small number of creators, so we ask everyone the same few questions first. If it looks like a fit, we'll send you our partner application.
 
 1. Where would you promote Active Paw? Please share the link(s) to the channel(s) or site where you'd feature us.
@@ -98,6 +111,23 @@ const QUALIFYING_BODY =
 3. How would you plan to promote our products? For example a review or video, a "best for dogs" feature, everyday content, a discount-code post, paid ads - whatever you actually have in mind.
 4. Have you partnered with brands before? If so, a couple of examples or links we can look at (pet-related especially welcome). If you've mentioned specific results, a past campaign we could see helps a lot.
 5. How we work, briefly: partnerships are performance-based (commission on sales from new customers, tracked with your own link), we ask for a clear #ad label, and we don't allow bidding on our brand name or posting codes to coupon sites. Does that suit how you operate?
+
+No rush - whenever you've got a few minutes. We read every reply.
+
+Best Regards,
+Active Paw Partnerships`;
+
+// VOUCHER variant (2026-07-04): terms describe the code trial, and question 3
+// asks WHEN the first post would go live - the trial window starts at the
+// post, not the handshake, so timing decides when the owner issues the code.
+const QUALIFYING_BODY_VOUCHER =
+`Thanks for reaching out about working together - we'd genuinely like to learn more. We partner with a small number of creators, so we ask everyone the same few questions first. If it looks like a fit, we'll set you up with your own discount code for a trial.
+
+1. Where would you promote Active Paw? Please share the link(s) to the channel(s) or site where you'd feature us.
+2. Tell us about your audience - roughly how many followers/visitors, your typical engagement (likes/comments/views on a recent post), and which country most of them are in.
+3. How would you plan to promote our products - for example a review or video, a "best for dogs" feature, or everyday content? And roughly when would your first post go live if we went ahead?
+4. Have you partnered with brands before? If so, a couple of examples or links we can look at (pet-related especially welcome).
+5. How we work, briefly: partnerships start with a voucher trial - you get your own discount code to share with your audience, and you earn commission on the face value of every paid order placed with it, paid monthly. We ask for a clear #ad label, no bidding on our brand name, and no posting the code to coupon or deal sites. Does that suit how you operate?
 
 No rush - whenever you've got a few minutes. We read every reply.
 
@@ -122,6 +152,14 @@ The next step is our short partner application, where we'll gather a few details
 Looking forward to working with you,
 Active Paw Partnerships`;
 
+const VOUCHER_INVITE_BODY =
+`Thank you - this looks like a great fit, and we'd love to take it further.
+
+The next step is your own trial discount code to share with your audience. We're setting that up now and will send it over shortly, together with the exact terms.
+
+Looking forward to working with you,
+Active Paw Partnerships`;
+
 const HOLDING_ACK_BODY =
 `Thank you for those details - much appreciated.
 
@@ -130,9 +168,12 @@ We're taking a look and reviewing the fit, and we'll be in touch shortly with th
 Best Regards,
 Active Paw Partnerships`;
 
-export function buildQualifyingEmail(name: string | null): string { return applySalutation(QUALIFYING_BODY, name); }
+export function buildQualifyingEmail(name: string | null, variant: FunnelVariant = 'link'): string {
+  return applySalutation(variant === 'voucher' ? QUALIFYING_BODY_VOUCHER : QUALIFYING_BODY_LINK, name);
+}
 export function buildPartnershipDecline(name: string | null): string { return applySalutation(DECLINE_BODY, name); }
 export function buildFormInvite(name: string | null): string { return applySalutation(FORM_INVITE_BODY, name); }
+export function buildVoucherInvite(name: string | null): string { return applySalutation(VOUCHER_INVITE_BODY, name); }
 export function buildHoldingAck(name: string | null): string { return applySalutation(HOLDING_ACK_BODY, name); }
 
 const ENUMS = {
@@ -201,13 +242,15 @@ export async function extractScreenFacts(
 
 /** Partnership-funnel intercept. Returns a draft result when it handles the thread,
  * or null when the thread is NOT a partnership lane (caller runs the generic drafter).
- * Phase-1: first-touch → qualifying email. (Scoring branch added in Task 8.) */
+ * Mode comes from cfg.inbox.affiliateMode; the param is a test override only. */
 export async function maybePartnershipDraft(
   env: Env, store: TenantStore, cfg: TenantConfig, thread: ThreadRow,
   got: { thread: ThreadRow; messages: MessageRow[]; labels: string[] },
   _fetchImpl: typeof fetch,
-  mode: 'decline_all' | 'funnel' = AFFILIATE_MODE
+  modeOverride?: AffiliateMode
 ): Promise<{ draftId: string; send: boolean } | null> {
+  const mode: AffiliateMode = modeOverride ?? cfg.inbox.affiliateMode ?? 'funnel_voucher';
+  const variant: FunnelVariant = mode === 'funnel_link' ? 'link' : 'voucher';
   const inboundToAddrs = got.messages.filter((m) => m.direction === 'inbound').map((m) => m.to_addr ?? '');
   // Phase 2: declared intent lives at THREAD level (set from the contact-form Reason
   // dropdown at ingest), so the funnel fires on FIRST touch - before any applicant row
@@ -222,12 +265,12 @@ export async function maybePartnershipDraft(
   const contact = await store.getContactByEmail(thread.contact_email);
   const name = contact?.name ?? null;
 
-  // Owner policy (2026-07-03): decline ALL partnership approaches politely. Applies at
-  // every stage (first touch AND in-flight applicants) so no path can still qualify or
-  // invite. The applicant record is marked declined. A reply that arrives AFTER we
-  // declined falls through to the generic drafter, whose affiliate agent also declines
-  // but responds to what they actually said (no template ping-pong). Flip
-  // AFFILIATE_MODE to 'funnel' to re-arm the qualifying flow below.
+  // decline_all (2026-07-03 policy, now a Settings toggle): decline ALL partnership
+  // approaches politely. Applies at every stage (first touch AND in-flight
+  // applicants) so no path can still qualify or invite. The applicant record is
+  // marked declined. A reply that arrives AFTER we declined falls through to the
+  // generic drafter, whose affiliate agent also declines but responds to what they
+  // actually said (no template ping-pong).
   //
   // Auto-send (owner validated the template in HITL, 2026-07-03): the decline is a
   // fixed owner-authored template - no LLM body, no prices, no grounding - so the
@@ -252,7 +295,7 @@ export async function maybePartnershipDraft(
 
   // First touch: send the qualifying email, record the applicant.
   if (!applicant) {
-    const body = buildQualifyingEmail(name);
+    const body = buildQualifyingEmail(name, variant);
     const draftId = await store.insertDraft({
       threadId: thread.id, bodyText: body, bodyHtml: renderReplyHtml(body),
       confidence: null, quotesPriceOrder: false, holdReasons: [], model: 'partnership-screen', status: 'pending',
@@ -271,7 +314,7 @@ export async function maybePartnershipDraft(
     // the qualifying email genuinely went out (an outbound exists); otherwise re-issue it.
     const askedAlready = got.messages.some((m) => m.direction === 'outbound');
     if (!askedAlready) {
-      const body = buildQualifyingEmail(name);
+      const body = buildQualifyingEmail(name, variant);
       const draftId = await store.insertDraft({
         threadId: thread.id, bodyText: body, bodyHtml: renderReplyHtml(body),
         confidence: null, quotesPriceOrder: false, holdReasons: [], model: 'partnership-screen', status: 'pending',
@@ -289,14 +332,18 @@ export async function maybePartnershipDraft(
       await store.setApplicantStage(thread.id, 'escalated', null);
       await maybeAlertOwner(env, cfg, thread.shop, thread, 'Partnership applicant replied; auto-screen unavailable - please review.', 'affiliate', _fetchImpl);
     } else {
-      const verdict = scoreScreen(facts, { passThreshold: PASS_THRESHOLD, autoDeclineLow: AUTO_DECLINE_LOW });
+      const verdict = scoreScreen(facts, { passThreshold: PASS_THRESHOLD, autoDeclineLow: AUTO_DECLINE_LOW, variant });
       if (verdict.decision === 'decline') {
         body = buildPartnershipDecline(name);
         await store.setApplicantStage(thread.id, 'declined', verdict);
       } else if (verdict.decision === 'form') {
-        body = buildFormInvite(name);
+        body = variant === 'voucher' ? buildVoucherInvite(name) : buildFormInvite(name);
         await store.setApplicantStage(thread.id, 'passed_to_form', verdict);
-        await maybeAlertOwner(env, cfg, thread.shop, thread, `Strong partnership candidate (score ${verdict.score}/12) - passed screening.`, 'affiliate', _fetchImpl);
+        await maybeAlertOwner(env, cfg, thread.shop, thread,
+          variant === 'voucher'
+            ? `Strong voucher-trial candidate (score ${verdict.score}/12) - review their answers and issue a code in the Partners view.`
+            : `Strong partnership candidate (score ${verdict.score}/12) - passed screening.`,
+          'affiliate', _fetchImpl);
       } else {
         body = buildHoldingAck(name);
         await store.setApplicantStage(thread.id, 'escalated', verdict);
@@ -310,6 +357,24 @@ export async function maybePartnershipDraft(
     return { draftId, send: false };
   }
 
-  // Any later stage → generic drafter (owner already steering).
+  // Later stages: 'declined' falls through to the generic drafter (the affiliate
+  // agent's warm decline matches that state, and it answers what they actually
+  // said). But an applicant we PASSED or ESCALATED must never fall through - in
+  // funnel mode the generic affiliate agent would decline someone we just
+  // accepted. Deterministic holding ack + owner alert instead (HITL; the owner
+  // is steering from here, e.g. issuing the voucher in Partners).
+  if (applicant.stage === 'passed_to_form' || applicant.stage === 'escalated') {
+    const body = buildHoldingAck(name);
+    const draftId = await store.insertDraft({
+      threadId: thread.id, bodyText: body, bodyHtml: renderReplyHtml(body),
+      confidence: null, quotesPriceOrder: false, holdReasons: [], model: 'partnership-screen', status: 'pending',
+    });
+    await maybeAlertOwner(env, cfg, thread.shop, thread,
+      variant === 'voucher'
+        ? 'A screened partnership applicant replied - review the thread and issue their code in the Partners view if you have not yet.'
+        : 'A screened partnership applicant replied - review the thread.',
+      'affiliate', _fetchImpl);
+    return { draftId, send: false };
+  }
   return null;
 }

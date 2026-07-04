@@ -1,6 +1,6 @@
 import type { Addons, Gates, LlmConfig, Pricing, TenantConfig } from './types';
 import { DEFAULT_SEMANTIC, type SemanticConfig } from './types';
-import { DEFAULT_INBOX, INBOX_LABELS, type InboxConfig, type ThreadStatus } from './inbox/types';
+import { DEFAULT_INBOX, INBOX_LABELS, AFFILIATE_MODES, type AffiliateMode, type InboxConfig, type ThreadStatus } from './inbox/types';
 
 export type Validation<T> = { ok: true; value: T } | { ok: false; error: string };
 
@@ -218,6 +218,9 @@ export function validateInboxPayload(body: unknown): Validation<InboxConfig> {
   if (b.invoiceConfidenceThreshold !== undefined && (typeof b.invoiceConfidenceThreshold !== 'number' || !Number.isFinite(b.invoiceConfidenceThreshold) || b.invoiceConfidenceThreshold < 0 || b.invoiceConfidenceThreshold > 100)) return { ok: false, error: 'invoiceConfidenceThreshold must be 0-100' };
   if (b.invoiceValueCeiling !== undefined && (typeof b.invoiceValueCeiling !== 'number' || !Number.isFinite(b.invoiceValueCeiling) || b.invoiceValueCeiling <= 0)) return { ok: false, error: 'invoiceValueCeiling must be a positive number' };
   if (b.invoiceRateLimit !== undefined && (typeof b.invoiceRateLimit !== 'number' || !Number.isInteger(b.invoiceRateLimit) || b.invoiceRateLimit < 1)) return { ok: false, error: 'invoiceRateLimit must be a positive integer' };
+  if (b.affiliateMode !== undefined && !(AFFILIATE_MODES as readonly string[]).includes(b.affiliateMode as string)) {
+    return { ok: false, error: 'affiliateMode must be funnel_voucher, funnel_link or decline_all' };
+  }
   const labelsRes = validateLabels(b.labels ?? []);
   if (!labelsRes.ok) return labelsRes;
   // Per-agent auto toggle map: optional; keep only known labels with a boolean autosend.
@@ -245,6 +248,7 @@ export function validateInboxPayload(body: unknown): Validation<InboxConfig> {
       invoiceConfidenceThreshold: typeof b.invoiceConfidenceThreshold === 'number' ? b.invoiceConfidenceThreshold : DEFAULT_INBOX.invoiceConfidenceThreshold,
       invoiceValueCeiling: typeof b.invoiceValueCeiling === 'number' ? b.invoiceValueCeiling : DEFAULT_INBOX.invoiceValueCeiling,
       invoiceRateLimit: typeof b.invoiceRateLimit === 'number' ? b.invoiceRateLimit : DEFAULT_INBOX.invoiceRateLimit,
+      affiliateMode: typeof b.affiliateMode === 'string' ? (b.affiliateMode as AffiliateMode) : DEFAULT_INBOX.affiliateMode,
       ...(alertEmail ? { alertEmail } : {}),
       ...(agents ? { agents } : {})
     }

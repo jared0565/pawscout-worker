@@ -47,6 +47,15 @@ export const settingsView = `  <section class="card">
       <div class="agents-panel__head">Per-agent auto-send <span class="sub">(each agent stays on manual review until you switch it to Auto)</span></div>
       <div id="agents-list"></div>
     </div>
+    <div class="agents-panel" id="affiliate-mode-panel">
+      <div class="agents-panel__head">Partnership approaches <span class="sub">(affiliate and collaboration pitches)</span></div>
+      <select id="affiliate-mode" aria-label="Partnership handling" onchange="saveInboxSettings()">
+        <option value="funnel_voucher">Qualify for a voucher trial - send the screening questions (default)</option>
+        <option value="funnel_link">Qualify for a link partnership - future programme</option>
+        <option value="decline_all">Politely decline every approach</option>
+      </select>
+      <p class="sub" style="margin:8px 0 0">In the qualifying modes, screening questions and results always wait for your approval before sending. Strong voucher-trial candidates are flagged so you can issue their discount code in Partners.</p>
+    </div>
   </section>
 
   <section class="card inbox-settings">

@@ -61,3 +61,31 @@ describe('scoreScreen - bands (no hard gate)', () => {
     expect(v.score).toBe(8); expect(v.decision).toBe('form');
   });
 });
+
+// Voucher variant (2026-07-04): a discount-code push on the applicant's OWN
+// channel is the trial's mechanic, so METHOD weights soften (discount 0→1,
+// mixed 1→2); every hard gate is variant-independent.
+describe('scoreScreen - voucher variant METHOD weights', () => {
+  it('scores method=discount 1 under voucher (vs 0 under the default link variant)', () => {
+    const link = scoreScreen(f({ method: 'discount' }));
+    const voucher = scoreScreen(f({ method: 'discount' }), { variant: 'voucher' });
+    expect(voucher.score! - link.score!).toBe(1);
+    expect(voucher.signals.S5_method).toBe(1);
+  });
+
+  it('scores method=mixed 2 under voucher (vs 1 under link)', () => {
+    const voucher = scoreScreen(f({ method: 'mixed' }), { variant: 'voucher' });
+    expect(voucher.signals.S5_method).toBe(2);
+  });
+
+  it('keeps the coupon/deal-site hard gate in both variants', () => {
+    expect(scoreScreen(f({ disqualifier: 'coupon_cashback' }), { variant: 'voucher' }).gate).toBe('G2');
+    expect(scoreScreen(f({ disqualifier: 'coupon_cashback' }), { variant: 'link' }).gate).toBe('G2');
+  });
+
+  it('explicit variant "link" matches the default weights exactly', () => {
+    for (const method of ['content', 'mixed', 'discount', 'unknown'] as const) {
+      expect(scoreScreen(f({ method }), { variant: 'link' }).score).toBe(scoreScreen(f({ method })).score);
+    }
+  });
+});

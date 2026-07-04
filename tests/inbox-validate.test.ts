@@ -48,3 +48,27 @@ describe('inbox validators', () => {
     if (r.ok) { expect('replyModel' in r.value).toBe(false); expect('classifyModel' in r.value).toBe(false); }
   });
 });
+
+// Partnership handling mode (2026-07-04): optional; absent = the funnel_voucher default.
+describe('validateInboxPayload affiliateMode', () => {
+  const BASE = { enabled: true, intentThreshold: 70, autosend: false, autoConfidenceThreshold: 80, labels: [] };
+
+  it('defaults to funnel_voucher when absent', () => {
+    const r = validateInboxPayload(BASE);
+    if (!r.ok) throw new Error(r.error);
+    expect(r.value.affiliateMode).toBe('funnel_voucher');
+  });
+
+  it('accepts each known mode', () => {
+    for (const mode of ['funnel_voucher', 'funnel_link', 'decline_all']) {
+      const r = validateInboxPayload({ ...BASE, affiliateMode: mode });
+      if (!r.ok) throw new Error(r.error);
+      expect(r.value.affiliateMode).toBe(mode);
+    }
+  });
+
+  it('rejects unknown modes', () => {
+    expect(validateInboxPayload({ ...BASE, affiliateMode: 'auto_accept' }).ok).toBe(false);
+    expect(validateInboxPayload({ ...BASE, affiliateMode: 42 }).ok).toBe(false);
+  });
+});

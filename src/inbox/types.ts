@@ -7,6 +7,14 @@ export type InboxLabel = (typeof INBOX_LABELS)[number];
 export type ThreadStatus =
   | 'new' | 'needs_reply' | 'awaiting_customer' | 'converted' | 'closed' | 'spam';
 
+/** How affiliate/partnership approaches are handled (owner-set, 2026-07-04):
+ *  'funnel_voucher' (default) screens candidates for a discount-code trial;
+ *  'funnel_link' is the preserved link-partnership funnel for the future full
+ *  programme; 'decline_all' politely declines everything (the 2026-07-03
+ *  policy, kept behind this toggle). All funnel emails stay HITL. */
+export type AffiliateMode = 'funnel_voucher' | 'funnel_link' | 'decline_all';
+export const AFFILIATE_MODES: readonly AffiliateMode[] = ['funnel_voucher', 'funnel_link', 'decline_all'];
+
 export interface InboxConfig {
   enabled: boolean;
   alertEmail?: string;      // owner address for high-signal alerts; falls back to fulfil.alertEmail
@@ -20,6 +28,7 @@ export interface InboxConfig {
   invoiceConfidenceThreshold: number; // 0-100; Auto-invoice floor (separate from replies)
   invoiceValueCeiling: number;        // GBP; total above this → HITL
   invoiceRateLimit: number;           // max invoices per contact per 24h
+  affiliateMode: AffiliateMode;       // partnership handling; see AffiliateMode
 }
 
 export const DEFAULT_INBOX: InboxConfig = {
@@ -32,7 +41,8 @@ export const DEFAULT_INBOX: InboxConfig = {
   autoInvoice: false,
   invoiceConfidenceThreshold: 95,
   invoiceValueCeiling: 250,
-  invoiceRateLimit: 2
+  invoiceRateLimit: 2,
+  affiliateMode: 'funnel_voucher'
 };
 
 export interface ParsedEmail {

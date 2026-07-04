@@ -6,9 +6,10 @@ import { maybePartnershipDraft } from '../src/inbox/partnership';
 import { DEFAULT_INBOX } from '../src/inbox/types';
 import { DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, type TenantConfig } from '../src/types';
 
-// The scoring branch is FUNNEL machinery, preserved for re-enable while the live
-// default is decline_all (owner policy 2026-07-03). These tests exercise it by
-// passing mode 'funnel' explicitly; the decline_all default is pinned at the end.
+// The scoring branch serves both funnel variants (2026-07-04): 'funnel_voucher'
+// is the live default (screens for a discount-code trial); 'funnel_link' is the
+// original link programme preserved verbatim. decline_all is pinned at the end
+// as the config-driven toggle.
 
 beforeEach(async () => { await applyD1Migrations(env.DB, env.TEST_MIGRATIONS); });
 const CFG: TenantConfig = { collectionMap: {}, gates: { popularityFloor: 1, priceMin: 1, priceMax: 9, relevance: 'title' }, pricing: DEFAULT_PRICING, floors: DEFAULT_FLOORS, llm: DEFAULT_LLM, addons: DEFAULT_ADDONS, fulfil: DEFAULT_FULFIL, inbox: DEFAULT_INBOX, target: 12 };
@@ -35,12 +36,12 @@ async function seedAnswered(shop: string) {
   return { s, tid };
 }
 
-async function runFunnel(s: TenantStore, tid: string, fetchImpl: typeof fetch) {
+async function runFunnel(s: TenantStore, tid: string, fetchImpl: typeof fetch, mode: 'funnel_link' | 'funnel_voucher' = 'funnel_link') {
   const got = (await s.getThreadWithMessages(tid))!;
-  return maybePartnershipDraft({ ...env, OPENROUTER_API_KEY: 'k' } as any, s, CFG, got.thread, got, fetchImpl, 'funnel');
+  return maybePartnershipDraft({ ...env, OPENROUTER_API_KEY: 'k' } as any, s, CFG, got.thread, got, fetchImpl, mode);
 }
 
-describe('partnership scoring branch (funnel mode)', () => {
+describe('partnership scoring branch (funnel_link mode, preserved programme)', () => {
   it('clear pass → form-invite draft, applicant passed_to_form', async () => {
     const { s, tid } = await seedAnswered('a.myshopify.com');
     const r = await runFunnel(s, tid, llmReturning(factsJson({})));
@@ -88,12 +89,49 @@ describe('partnership scoring branch (funnel mode)', () => {
   });
 });
 
-describe('decline_all default intercepts in-flight applicants too', () => {
-  it('an answered screen under the LIVE default gets the decline, applicant declined', async () => {
+describe('partnership scoring branch (funnel_voucher mode, live default)', () => {
+  it('clear pass → VOUCHER invite draft (trial code, not the partner application), owner alerted to Partners', async () => {
+    const { s, tid } = await seedAnswered('va.myshopify.com');
+    const r = await runFunnel(s, tid, llmReturning(factsJson({})), 'funnel_voucher');
+    expect(r!.send).toBe(false);
+    const draft = await s.getPendingDraft(tid);
+    expect(draft!.body_text).toContain('trial discount code');
+    expect(draft!.body_text).not.toMatch(/partner application/i);
+    const app = await s.getApplicantByThread(tid);
+    expect(app!.stage).toBe('passed_to_form');
+    expect(app!.score).toBeGreaterThanOrEqual(8);
+  });
+
+  it('a discount-code-led candidate passes under voucher weights where the link programme escalates', async () => {
+    // relevance 2 + engagement 2 + evidence(vague) 1 + experience(none) 0 +
+    // method(discount: link 0 / voucher 1) + specificity 2 = 7 vs 8.
+    const borderline = { evidence: 'vague', experience: 'none', method: 'discount' };
+    const linkCase = await seedAnswered('vb.myshopify.com');
+    await runFunnel(linkCase.s, linkCase.tid, llmReturning(factsJson(borderline)), 'funnel_link');
+    expect((await linkCase.s.getApplicantByThread(linkCase.tid))!.stage).toBe('escalated');
+
+    const voucherCase = await seedAnswered('vc.myshopify.com');
+    await runFunnel(voucherCase.s, voucherCase.tid, llmReturning(factsJson(borderline)), 'funnel_voucher');
+    const app = await voucherCase.s.getApplicantByThread(voucherCase.tid);
+    expect(app!.stage).toBe('passed_to_form');
+    expect(app!.score).toBe(8);
+  });
+
+  it('coupon/deal sites stay a hard decline in voucher mode (the code is for THEIR audience)', async () => {
+    const { s, tid } = await seedAnswered('vg.myshopify.com');
+    await runFunnel(s, tid, llmReturning(factsJson({ disqualifier: 'coupon_cashback' })), 'funnel_voucher');
+    expect((await s.getApplicantByThread(tid))!.stage).toBe('declined');
+    expect((await s.getPendingDraft(tid))!.body_text).toMatch(/not taking on new partnerships/i);
+  });
+});
+
+describe('decline_all toggle (config-driven) intercepts in-flight applicants too', () => {
+  it('an answered screen under decline_all gets the decline, applicant declined', async () => {
     const { s, tid } = await seedAnswered('live.myshopify.com');
     const got = (await s.getThreadWithMessages(tid))!;
-    // default mode (no override) = AFFILIATE_MODE = decline_all
-    const r = await maybePartnershipDraft({ ...env, OPENROUTER_API_KEY: 'k' } as any, s, CFG, got.thread, got, llmReturning(factsJson({})));
+    // no override: the mode comes from cfg.inbox.affiliateMode
+    const cfg: TenantConfig = { ...CFG, inbox: { ...DEFAULT_INBOX, affiliateMode: 'decline_all' } };
+    const r = await maybePartnershipDraft({ ...env, OPENROUTER_API_KEY: 'k' } as any, s, cfg, got.thread, got, llmReturning(factsJson({})));
     expect(r!.send).toBe(false);
     expect((await s.getPendingDraft(tid))!.body_text).toMatch(/not taking on new partnerships/i);
     expect((await s.getApplicantByThread(tid))!.stage).toBe('declined');

@@ -176,6 +176,19 @@ describe('consolePage', () => {
     expect(scripts).toContain('Creator / affiliate partnership');
   });
 
+  // 2026-07-04: partnership handling is a Settings mode (voucher funnel default,
+  // link funnel preserved, decline-all kept as a toggle) saved with inbox config.
+  it('includes the partnership-approaches mode select and saves it with inbox settings', async () => {
+    const html = await consolePage('test-api-key').text();
+    expect(html).toContain('id="affiliate-mode"');
+    expect(html).toContain('<option value="funnel_voucher">');
+    expect(html).toContain('<option value="funnel_link">');
+    expect(html).toContain('<option value="decline_all">');
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+    expect(scripts).toContain('affiliateMode:');
+    expect(scripts).toContain('cfg.affiliateMode');
+  });
+
   it('includes the per-agent auto-send toggle panel', async () => {
     const html = await consolePage('test-api-key').text();
     const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
