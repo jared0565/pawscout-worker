@@ -48,6 +48,27 @@ describe('validatePricingPayload', () => {
   ] as [unknown, string][])('rejects %j (%s)', (body: unknown) => {
     expect(validatePricingPayload(body).ok).toBe(false);
   });
+
+  // Optional margin cap (2026-07-04): absent/null = no cap; when present it must
+  // sit strictly above the minimum margin or the two clauses would fight.
+  it('accepts an optional maxMarginGbp and carries it through', () => {
+    expect(validatePricingPayload({ ...GOOD, maxMarginGbp: 30 }))
+      .toEqual({ ok: true, value: { ...GOOD, maxMarginGbp: 30 } });
+  });
+
+  it('treats a null maxMarginGbp as "no cap" (console blank input)', () => {
+    expect(validatePricingPayload({ ...GOOD, maxMarginGbp: null })).toEqual({ ok: true, value: GOOD });
+  });
+
+  it.each([
+    [{ ...GOOD, maxMarginGbp: 'lots' }, 'non-numeric cap'],
+    [{ ...GOOD, maxMarginGbp: 6 }, 'cap equal to the min margin'],
+    [{ ...GOOD, maxMarginGbp: 3 }, 'cap below the min margin'],
+    [{ ...GOOD, maxMarginGbp: -10 }, 'negative cap'],
+    [{ ...GOOD, maxMarginGbp: 99999 }, 'absurd cap above 10000']
+  ] as [unknown, string][])('rejects %j (%s)', (body: unknown) => {
+    expect(validatePricingPayload(body).ok).toBe(false);
+  });
 });
 
 describe('validateLlmPayload', () => {

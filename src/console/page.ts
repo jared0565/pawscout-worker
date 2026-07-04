@@ -218,7 +218,7 @@ function renderStatus(s){
     +'<dt>Price range</dt><dd>$'+esc(g.priceMin)+' - $'+esc(g.priceMax)+'</dd>'
     +'<dt>Relevance</dt><dd>'+esc(g.relevance)+'</dd>'
     +'<dt>Target count</dt><dd>'+esc(s.target)+'</dd>'
-    +'<dt>Pricing</dt><dd>'+esc(p.multiplier)+'× (floor '+esc(p.floor)+'×, min £'+esc(p.minMarginGbp)+')</dd>'
+    +'<dt>Pricing</dt><dd>'+esc(p.multiplier)+'× (floor '+esc(p.floor)+'×, min £'+esc(p.minMarginGbp)+(p.maxMarginGbp!=null?', cap £'+esc(p.maxMarginGbp):'')+')</dd>'
     +(function(){ var a=s.addons||{}; return '<dt>Add-on lane</dt><dd>'+(a.enabled?('$'+esc(a.priceMinUsd)+' - $'+esc(a.priceMaxUsd)+' · pool '+esc(a.poolSize)+' · '+(a.suppressFromBrowse?'hidden':'visible')):'Off')+'</dd>'; })();
   var cm=s.collectionMap||{}; var keys=Object.keys(cm);
   var cols = keys.length
@@ -241,6 +241,7 @@ function populateForms(s){
   if(p.multiplier!=null) el('pmult').value=p.multiplier;
   if(p.floor!=null) el('pfloor').value=p.floor;
   if(p.minMarginGbp!=null) el('pmm').value=p.minMarginGbp;
+  if(p.maxMarginGbp!=null) el('pmaxm').value=p.maxMarginGbp;
   if(p.fxUsdToGbp!=null) el('pfx').value=p.fxUsdToGbp;
   if(p.fxBufferPct!=null) el('pfxb').value=p.fxBufferPct;
   var l=s.llm||{};
@@ -344,13 +345,18 @@ async function saveGates(){
 async function savePricing(){
   setMsg('pricingmsg','Saving…','muted');
   try{
-    var r=await api('/pricing',{
+    var body={
       multiplier:Number(el('pmult').value),
       floor:Number(el('pfloor').value),
       minMarginGbp:Number(el('pmm').value),
       fxUsdToGbp:Number(el('pfx').value),
       fxBufferPct:Number(el('pfxb').value)
-    });
+    };
+    // Optional margin cap: blank input = no cap (the field is omitted, and the
+    // server clears any stored cap because the payload replaces pricing wholesale).
+    var mx=el('pmaxm').value;
+    if(mx!=='') body.maxMarginGbp=Number(mx);
+    var r=await api('/pricing',body);
     if(r.ok){ setMsg('pricingmsg','Saved ✓','ok'); refresh(); }
     else setMsg('pricingmsg','Failed: '+(r.error||'unknown error'),'no');
   }catch(e){ setMsg('pricingmsg','Failed: '+errText(e),'no'); }

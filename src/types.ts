@@ -64,6 +64,13 @@ export interface Pricing {
   minMarginGbp: number; // absolute margin floor per unit
   fxUsdToGbp: number;   // configured conversion rate
   fxBufferPct: number;  // safety buffer on conversion, in percent
+  // Optional absolute margin CAP per unit - the mirror of minMarginGbp. Above the
+  // crossover cost (cap / (multiplier - 1)) the effective multiplier glides down
+  // hyperbolically (1 + cap/cost): a smooth high-end taper with no band edges, so
+  // big-ticket items are not priced far above their visible street price. Absent
+  // or null = no cap (exact legacy behaviour). Validation requires it to sit
+  // strictly above minMarginGbp so the two clauses can never fight.
+  maxMarginGbp?: number;
 }
 
 /** Inventory floors. Goals the crons work toward - never bypass gates to hit them. */

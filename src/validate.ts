@@ -76,6 +76,19 @@ export function validatePricingPayload(body: unknown): Validation<Pricing> {
       return { ok: false, error: `${field} must be a number between ${min} and ${max}` };
     }
   }
+  // Optional margin cap: absent/null = no cap. When present it must sit strictly
+  // above the minimum margin, or the floor and cap clauses would fight.
+  let maxMargin: number | undefined;
+  if (b.maxMarginGbp != null) {
+    const v = b.maxMarginGbp;
+    if (!finite(v) || v > 10000) {
+      return { ok: false, error: 'maxMarginGbp must be a number up to 10000, or blank for no cap' };
+    }
+    if (v <= (b.minMarginGbp as number)) {
+      return { ok: false, error: 'maxMarginGbp must be greater than minMarginGbp' };
+    }
+    maxMargin = v;
+  }
   return {
     ok: true,
     value: {
@@ -83,7 +96,8 @@ export function validatePricingPayload(body: unknown): Validation<Pricing> {
       floor: b.floor as number,
       minMarginGbp: b.minMarginGbp as number,
       fxUsdToGbp: b.fxUsdToGbp as number,
-      fxBufferPct: b.fxBufferPct as number
+      fxBufferPct: b.fxBufferPct as number,
+      ...(maxMargin !== undefined ? { maxMarginGbp: maxMargin } : {})
     }
   };
 }

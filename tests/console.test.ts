@@ -21,6 +21,19 @@ describe('consolePage', () => {
     expect(html).toContain('id="inbox-threads"');
   });
 
+  // 2026-07-04: optional margin cap (smooth high-end taper) in the pricing card.
+  it('pricing card exposes the optional margin cap and only sends it when set', async () => {
+    const html = await consolePage('test-api-key').text();
+    expect(html).toContain('id="pmaxm"');
+    expect(html).toContain('Max margin');
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+    // save path includes the field conditionally (blank input = no cap sent)
+    expect(scripts).toContain('maxMarginGbp');
+    expect(scripts).toMatch(/if\s*\(\s*mx\s*!==\s*''\s*\)/);
+    // status summary renders the cap only when configured
+    expect(scripts).toContain('cap £');
+  });
+
   // Phase 2: the modal is replaced by a full-height THREE-PANE mail workspace.
   it('renders the three-pane inbox workspace and the modal is fully removed', async () => {
     const html = await consolePage('test-api-key').text();

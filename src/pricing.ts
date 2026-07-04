@@ -17,6 +17,13 @@ import type { Pricing } from './types';
  * "freight disciplines the floor, never the sticker" rule: that rule plus a
  * separate checkout shipping charge double-charged freight on min-margin items.
  * Unknown freight (legacy rows) degrades to the product-cost-only rule.
+ *
+ * `maxMarginGbp` (owner decision 2026-07-04): optional absolute margin cap, the
+ * mirror of the minimum. Above the crossover cost the effective multiplier
+ * declines smoothly as 1 + cap/cost - a high-end taper with no band-edge price
+ * cliffs - keeping big-ticket items near their market price instead of
+ * multiplier-inflated far above it. Freight still passes through on top.
+ * Absent/zero/invalid = no cap.
  */
 export function retailPriceGbp(landedUsd: number, p: Pricing, freightUsd = 0): number {
   if (!Number.isFinite(landedUsd) || landedUsd <= 0) throw new Error('landed cost must be a positive number');
@@ -25,6 +32,10 @@ export function retailPriceGbp(landedUsd: number, p: Pricing, freightUsd = 0): n
   const freightGbp = Number.isFinite(freightUsd) && freightUsd > 0 ? freightUsd * fx : 0;
   let retail = costGbp * Math.max(p.multiplier, p.floor) + freightGbp;
   if (retail - (costGbp + freightGbp) < p.minMarginGbp) retail = costGbp + freightGbp + p.minMarginGbp;
+  const cap = p.maxMarginGbp;
+  if (typeof cap === 'number' && Number.isFinite(cap) && cap > 0 && retail - (costGbp + freightGbp) > cap) {
+    retail = costGbp + freightGbp + cap;
+  }
   return round99(retail);
 }
 

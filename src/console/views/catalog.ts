@@ -65,6 +65,10 @@ export const catalogView = `  <section class="card">
         <label for="pmm">Min margin (£)</label>
         <input id="pmm" type="number" value="6" min="0" max="100" step="0.5">
       </div>
+      <div class="grow">
+        <label for="pmaxm">Max margin (£, blank = off)</label>
+        <input id="pmaxm" type="number" placeholder="no cap" min="1" max="10000" step="1">
+      </div>
     </div>
     <div class="row">
       <div class="grow">

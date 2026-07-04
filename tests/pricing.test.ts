@@ -57,6 +57,51 @@ describe('retailPriceGbp', () => {
     expect(() => retailPriceGbp(0, DEFAULT_PRICING)).toThrow();
     expect(() => retailPriceGbp(NaN, DEFAULT_PRICING)).toThrow();
   });
+
+  // 2026-07-04 owner decision: optional margin CAP (maxMarginGbp) - the mirror of
+  // the £6 minimum. Above the crossover cost the effective multiplier glides down
+  // hyperbolically (1 + cap/cost): a smooth taper with no band edges. Absent = off
+  // (exact pre-cap behaviour). Motivation: 2.5x prices big-ticket branded items
+  // far above their visible street price (180cm PawHut tree: cost £49 -> £122.99
+  // vs the brand's own £52.99).
+  describe('margin cap (maxMarginGbp smooth taper)', () => {
+    const CAPPED = { ...DEFAULT_PRICING, maxMarginGbp: 30 };
+
+    it('caps the margin on high-cost items', () => {
+      // 62 USD -> cost £49.3272, x2.5 = £123.318 (margin £73.99 > £30)
+      // -> capped at 49.3272 + 30 = £79.3272 -> 79.99 (was 123.99 uncapped)
+      expect(retailPriceGbp(62, CAPPED)).toBe(79.99);
+      expect(retailPriceGbp(62, DEFAULT_PRICING)).toBe(123.99);
+    });
+
+    it('leaves items below the crossover untouched', () => {
+      // 10 USD: margin £11.93 < £30 -> identical to the uncapped sticker
+      expect(retailPriceGbp(10, CAPPED)).toBe(retailPriceGbp(10, DEFAULT_PRICING));
+    });
+
+    it('freight still passes through on top of the capped margin', () => {
+      // 62 USD + 5 USD freight: capped = cost 49.3272 + freight 3.978 + 30 = £83.3052 -> 83.99
+      expect(retailPriceGbp(62, CAPPED, 5)).toBe(83.99);
+    });
+
+    it('does not interfere with the minimum-margin clause on cheap items', () => {
+      expect(retailPriceGbp(1, CAPPED)).toBe(retailPriceGbp(1, DEFAULT_PRICING));
+    });
+
+    it('is continuous at the crossover and keeps retail monotone in cost', () => {
+      // clean numbers: fx 1, no buffer, no min margin. crossover at cost $20
+      // (20 x 1.5 = 30): formula 20x2.5 = 50 == cap 20+30 = 50 -> same sticker.
+      const p = { multiplier: 2.5, floor: 1, minMarginGbp: 0, fxUsdToGbp: 1, fxBufferPct: 0, maxMarginGbp: 30 };
+      expect(retailPriceGbp(20, p)).toBe(retailPriceGbp(20, { ...p, maxMarginGbp: undefined }));
+      const retails = [10, 15, 20, 25, 30, 40, 80].map((c) => retailPriceGbp(c, p));
+      for (let i = 1; i < retails.length; i++) expect(retails[i]).toBeGreaterThanOrEqual(retails[i - 1]);
+    });
+
+    it('ignores a nonsense stored cap (zero/negative) instead of inverting the rule', () => {
+      expect(retailPriceGbp(62, { ...DEFAULT_PRICING, maxMarginGbp: 0 })).toBe(123.99);
+      expect(retailPriceGbp(62, { ...DEFAULT_PRICING, maxMarginGbp: -5 })).toBe(123.99);
+    });
+  });
 });
 
 describe('landedCostGbp (honest COGS, raw FX)', () => {
