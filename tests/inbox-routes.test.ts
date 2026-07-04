@@ -94,6 +94,28 @@ describe('inbox routes', () => {
     const r = await getInboxThread(env.DB, SHOP, 'no-such-id');
     expect(r.ok).toBe(false);
   });
+  // 2026-07-04 stale-draft fix: dismissing a thread retires its pending draft.
+  // Phase 2 removed the standalone draft-Discard button, so without this the
+  // draft would stay 'pending' forever and inflate the rail badge.
+  it('dismissing a thread (closed/spam/converted) also discards its pending draft', async () => {
+    const s = new TenantStore(env.DB, SHOP);
+    for (const dismissal of ['closed', 'spam', 'converted'] as const) {
+      const tid = await seed();
+      const did = await s.insertDraft({ threadId: tid, bodyText: 'Hi', bodyHtml: '<p>Hi</p>', confidence: 90, quotesPriceOrder: false, holdReasons: [], model: 'm', status: 'pending' });
+      expect((await setInboxStatus(env.DB, SHOP, tid, dismissal)).ok).toBe(true);
+      expect(await s.getPendingDraft(tid)).toBeNull();
+      // retired as discarded (audit trail kept), never deleted
+      expect((await s.getDraft(did))?.status).toBe('discarded');
+    }
+  });
+  it('a non-dismissal status change leaves the pending draft alone', async () => {
+    const s = new TenantStore(env.DB, SHOP);
+    const tid = await seed();
+    await s.insertDraft({ threadId: tid, bodyText: 'Hi', bodyHtml: '<p>Hi</p>', confidence: 90, quotesPriceOrder: false, holdReasons: [], model: 'm', status: 'pending' });
+    expect((await setInboxStatus(env.DB, SHOP, tid, 'needs_reply')).ok).toBe(true);
+    expect((await setInboxStatus(env.DB, SHOP, tid, 'awaiting_customer')).ok).toBe(true);
+    expect(await s.getPendingDraft(tid)).not.toBeNull();
+  });
   it('returns the pending draft with the thread', async () => {
     const s = new TenantStore(env.DB, SHOP); const tid = await seed();
     await s.insertDraft({ threadId: tid, bodyText: 'Hi', bodyHtml: '<p>Hi</p>', confidence: 90, quotesPriceOrder: false, holdReasons: [], model: 'm', status: 'pending' });

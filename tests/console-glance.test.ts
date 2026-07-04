@@ -111,6 +111,25 @@ describe('getGlance', () => {
     expect(g.markets?.markets).toEqual([{ name: 'European Union', excluded: 42 }, { name: 'Australia', excluded: 42 }]);
   });
 
+  // 2026-07-04 stale-draft fix: pending drafts on dismissed threads (closed/spam/
+  // converted/awaiting_customer) are not actionable - the rail badge and the
+  // "Drafts awaiting you" KPI must count only drafts the merchant can act on,
+  // matching what the Open (unprocessed) list shows.
+  it('excludes pending drafts on dismissed threads from the draft count', async () => {
+    const s = await seedTenant();
+    await s.upsertContact({ email: 'jane@x.com', name: 'Jane', phone: null });
+    const closed = await s.createThread({ contactEmail: 'jane@x.com', subject: 'Old pitch', subjectNorm: 'old pitch', receivedAt: '2026-06-20T10:00:00Z', initialStatus: 'needs_reply' });
+    await s.insertDraft({ threadId: closed, bodyText: 'Stale', bodyHtml: '<p>Stale</p>', confidence: 80, quotesPriceOrder: false, holdReasons: [], model: 'm', status: 'pending' });
+    await s.setThreadStatus(closed, 'closed');
+    const open = await s.createThread({ contactEmail: 'jane@x.com', subject: 'Hi', subjectNorm: 'hi', receivedAt: '2026-07-04T00:00:00Z', initialStatus: 'needs_reply' });
+    await s.insertDraft({ threadId: open, bodyText: 'Fresh', bodyHtml: '<p>Fresh</p>', confidence: 80, quotesPriceOrder: false, holdReasons: [], model: 'm', status: 'pending' });
+
+    const g = await getGlance(env.DB, SHOP);
+    expect(g.kpis.pendingDrafts).toBe(1);
+    // oldest must be the actionable draft, not the dead one on the closed thread
+    expect(g.kpis.oldestPendingAt).toBe((await s.getPendingDraft(open))!.created_at);
+  });
+
   it('degrades a corrupt markets stamp to null instead of throwing', async () => {
     const s = await seedTenant();
     await s.putSearchCache(JOB_STAMP_MARKETS, 'not-json{', 30);

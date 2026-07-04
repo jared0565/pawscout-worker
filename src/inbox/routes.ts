@@ -40,6 +40,12 @@ export async function setInboxStatus(db: D1Database, shop: string, threadId: str
   const store = new TenantStore(db, shop);
   if (!(await store.getThreadWithMessages(threadId))) return { ok: false as const, error: 'Thread not found' };
   await store.setThreadStatus(threadId, status as ThreadStatus);
+  // Dismissing a thread retires its pending draft too: Phase 2 removed the
+  // standalone draft-Discard control, so a draft left 'pending' here could never
+  // be acted on again and would inflate the pending-draft badge forever.
+  if (status === 'closed' || status === 'spam' || status === 'converted') {
+    await store.discardPendingDrafts(threadId);
+  }
   return { ok: true as const, status };
 }
 

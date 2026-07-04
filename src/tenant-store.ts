@@ -1097,6 +1097,13 @@ export class TenantStore {
     await this.db.prepare(`UPDATE inbox_drafts SET status = 'superseded' WHERE shop = ?1 AND thread_id = ?2 AND status = 'pending'`).bind(this.shop, threadId).run();
   }
 
+  /** Retire a thread's pending drafts when the merchant dismisses the thread
+   *  (closed/spam/converted). An unapproved draft on a dismissed thread can never
+   *  be acted on and would inflate the pending-draft badge forever. */
+  async discardPendingDrafts(threadId: string): Promise<void> {
+    await this.db.prepare(`UPDATE inbox_drafts SET status = 'discarded' WHERE shop = ?1 AND thread_id = ?2 AND status = 'pending'`).bind(this.shop, threadId).run();
+  }
+
   async recentAutoSendCount(contactEmail: string, sinceIso: string): Promise<number> {
     const row = await this.db
       .prepare(`SELECT COUNT(*) AS n FROM inbox_messages WHERE shop = ?1 AND direction = 'outbound' AND to_addr = ?2 AND received_at >= ?3`)
@@ -1130,8 +1137,16 @@ export class TenantStore {
   // view shows comes from one of these real D1 facts - nothing is fabricated. ---
 
   async pendingDraftStats(): Promise<{ n: number; oldestAt: string | null }> {
+    // Count only drafts the merchant can act on: the parent thread must still be
+    // in the Open (unprocessed) set. Drafts on dismissed threads (closed/spam/
+    // converted) or replied ones (awaiting_customer) are dead weight - counting
+    // them made the rail badge read 11 while the Open list showed 3 (2026-07-04).
     const row = await this.db
-      .prepare(`SELECT COUNT(*) AS n, MIN(created_at) AS oldest FROM inbox_drafts WHERE shop = ?1 AND status = 'pending'`)
+      .prepare(`SELECT COUNT(*) AS n, MIN(d.created_at) AS oldest
+                FROM inbox_drafts d
+                JOIN inbox_threads t ON t.shop = d.shop AND t.id = d.thread_id
+                WHERE d.shop = ?1 AND d.status = 'pending'
+                  AND t.status NOT IN ('awaiting_customer', 'converted', 'closed', 'spam')`)
       .bind(this.shop).first<{ n: number; oldest: string | null }>();
     return { n: row?.n ?? 0, oldestAt: row?.oldest ?? null };
   }
