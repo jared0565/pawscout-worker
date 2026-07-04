@@ -222,6 +222,89 @@ export async function getAuditConversation(db: D1Database, shop: string, email: 
   };
 }
 
+// --- Affiliate voucher trials (2026-07-04): Partners view API ---
+
+/** Derived voucher state for display: owner revocation wins, then expiry. */
+function voucherEffectiveStatus(status: string, endsAt: string, now: number): 'live' | 'revoked' | 'expired' {
+  if (status === 'revoked') return 'revoked';
+  const end = Date.parse(endsAt);
+  if (!Number.isNaN(end) && end <= now) return 'expired';
+  return 'live';
+}
+
+/** Partners list: one entry per voucher (newest first) with its ledger roll-up. */
+export async function getPartners(db: D1Database, shop: string) {
+  const store = new TenantStore(db, shop);
+  const rows = await store.listAffiliateVouchers();
+  const now = Date.now();
+  return {
+    ok: true as const,
+    partners: rows.map((r) => ({
+      partnerId: r.partner_id, voucherId: r.voucher_id,
+      email: r.contact_email, name: r.name ?? null, channel: r.channel_url ?? null, notes: r.notes ?? null,
+      code: r.code, pctOff: r.pct_off, commissionPct: r.commission_pct,
+      startsAt: r.starts_at, endsAt: r.ends_at,
+      status: voucherEffectiveStatus(r.status, r.ends_at, now),
+      uses: r.uses, gross: r.gross, discount: r.discount, owed: r.owed, paid: r.paid,
+      lastOrderAt: r.last_order_at ?? null
+    }))
+  };
+}
+
+/** Register a collaborator + the voucher the owner issued them in Shopify
+ *  admin. The payload is validated upstream (validatePartnerPayload); the
+ *  unique code index turns a duplicate registration into a friendly error. */
+export async function createPartner(db: D1Database, shop: string, reg: import('../validate').PartnerRegistration) {
+  const store = new TenantStore(db, shop);
+  const partnerId = await store.upsertAffiliatePartner({
+    contactEmail: reg.contactEmail, name: reg.name, channelUrl: reg.channelUrl, notes: reg.notes
+  });
+  try {
+    const voucherId = await store.createAffiliateVoucher({
+      partnerId, code: reg.code, pctOff: reg.pctOff, commissionPct: reg.commissionPct,
+      endsAt: reg.endsAt, usageLimit: reg.usageLimit
+    });
+    return { ok: true as const, partnerId, voucherId };
+  } catch (e) {
+    const msg = (e as Error).message ?? '';
+    if (/UNIQUE|constraint/i.test(msg)) return { ok: false as const, error: `Code ${reg.code} is already registered` };
+    throw e;
+  }
+}
+
+/** Owner actions on one voucher: revoke (stop honouring it here; the code must
+ *  ALSO be disabled in Shopify admin, which the console reminds them to do) or
+ *  mark the outstanding commission as paid out. */
+export async function partnerVoucherAction(db: D1Database, shop: string, voucherId: unknown, action: unknown) {
+  if (typeof voucherId !== 'string' || !voucherId.trim()) return { ok: false as const, error: 'voucherId required' };
+  const store = new TenantStore(db, shop);
+  if (action === 'revoke') {
+    await store.setAffiliateVoucherStatus(voucherId, 'revoked');
+    return { ok: true as const };
+  }
+  if (action === 'mark_paid') {
+    const n = await store.markVoucherCommissionPaid(voucherId);
+    return { ok: true as const, ordersCovered: n };
+  }
+  return { ok: false as const, error: 'action must be revoke or mark_paid' };
+}
+
+/** Ledger drill-down: the attributed orders behind one voucher's numbers. */
+export async function getPartnerOrders(db: D1Database, shop: string, voucherId: unknown) {
+  if (typeof voucherId !== 'string' || !voucherId.trim()) return { ok: false as const, error: 'voucherId required' };
+  const store = new TenantStore(db, shop);
+  const rows = await store.affiliateOrdersForVoucher(voucherId);
+  return {
+    ok: true as const,
+    orders: rows.map((o) => ({
+      id: o.shopify_order_id, name: o.order_name ?? null,
+      gross: o.gross_gbp, discount: o.discount_gbp, commission: o.commission_gbp,
+      financialStatus: o.financial_status ?? null, eligible: o.eligible === 1,
+      placedAt: o.placed_at ?? null, paidOutAt: o.paid_out_at ?? null
+    }))
+  };
+}
+
 export async function getGlance(db: D1Database, shop: string): Promise<Glance> {
   const store = new TenantStore(db, shop);
   const since24h = new Date(Date.now() - 86400_000).toISOString();

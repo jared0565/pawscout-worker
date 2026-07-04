@@ -280,3 +280,85 @@ export function validateCollectionMap(body: unknown): Validation<TenantConfig['c
   }
   return { ok: true, value: clean };
 }
+
+// --- Affiliate voucher trials (2026-07-04) ---
+
+// Shopify accepts a wider charset for discount codes, but keeping registrations
+// to A-Z, 0-9 and hyphens means the code survives copy/paste, email quoting and
+// case-folding everywhere it travels.
+const VOUCHER_CODE = /^[A-Za-z0-9-]{4,40}$/;
+const EMAIL_SHAPE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+export interface PartnerRegistration {
+  contactEmail: string;
+  name: string | null;
+  channelUrl: string | null;
+  notes: string | null;
+  code: string;           // normalised UPPERCASE
+  pctOff: number;
+  commissionPct: number;
+  endsAt: string;         // ISO; a bare YYYY-MM-DD means end of that day (UTC)
+  usageLimit: number | null;
+}
+
+function optionalText(v: unknown, max: number): string | null | undefined {
+  if (v === undefined || v === null) return null;
+  if (typeof v !== 'string') return undefined; // signal invalid
+  const t = v.trim();
+  if (t.length > max) return undefined;
+  return t || null;
+}
+
+/** Validate the /api/partners/create body: register a collaborator + the
+ *  voucher the owner issued them. Returns a clean, normalised object. */
+export function validatePartnerPayload(body: unknown, now: () => number = Date.now): Validation<PartnerRegistration> {
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+    return { ok: false, error: 'Body must be a JSON object' };
+  }
+  const b = body as Record<string, unknown>;
+  if (typeof b.email !== 'string' || !EMAIL_SHAPE.test(b.email.trim())) {
+    return { ok: false, error: 'email must be a valid email address' };
+  }
+  const name = optionalText(b.name, 80);
+  if (name === undefined) return { ok: false, error: 'name must be text up to 80 characters' };
+  const channelUrl = optionalText(b.channel, 200);
+  if (channelUrl === undefined) return { ok: false, error: 'channel must be text up to 200 characters' };
+  const notes = optionalText(b.notes, 500);
+  if (notes === undefined) return { ok: false, error: 'notes must be text up to 500 characters' };
+  if (typeof b.code !== 'string' || !VOUCHER_CODE.test(b.code.trim())) {
+    return { ok: false, error: 'code must be 4-40 letters, digits or hyphens' };
+  }
+  if (!finite(b.pctOff) || b.pctOff < 1 || b.pctOff > 50) {
+    return { ok: false, error: 'pctOff must be a number between 1 and 50' };
+  }
+  if (!finite(b.commissionPct) || b.commissionPct < 0 || b.commissionPct > 20) {
+    return { ok: false, error: 'commissionPct must be a number between 0 and 20' };
+  }
+  if (typeof b.endsAt !== 'string' || !b.endsAt.trim()) {
+    return { ok: false, error: 'endsAt is required (when the voucher expires)' };
+  }
+  // A bare date from the form's date picker means "valid through that day".
+  const endsAt = /^\d{4}-\d{2}-\d{2}$/.test(b.endsAt.trim()) ? `${b.endsAt.trim()}T23:59:59Z` : b.endsAt.trim();
+  const endMs = Date.parse(endsAt);
+  if (Number.isNaN(endMs)) return { ok: false, error: 'endsAt must be a valid date' };
+  if (endMs <= now()) return { ok: false, error: 'endsAt must be in the future' };
+  let usageLimit: number | null = null;
+  if (b.usageLimit !== undefined && b.usageLimit !== null && b.usageLimit !== '') {
+    if (!finite(b.usageLimit) || !Number.isInteger(b.usageLimit) || b.usageLimit < 1 || b.usageLimit > 10000) {
+      return { ok: false, error: 'usageLimit must be a whole number between 1 and 10000' };
+    }
+    usageLimit = b.usageLimit;
+  }
+  return {
+    ok: true,
+    value: {
+      contactEmail: b.email.trim().toLowerCase(),
+      name, channelUrl, notes,
+      code: b.code.trim().toUpperCase(),
+      pctOff: b.pctOff,
+      commissionPct: b.commissionPct,
+      endsAt: new Date(endMs).toISOString(),
+      usageLimit
+    }
+  };
+}

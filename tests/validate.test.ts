@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { validateGatesPayload, validatePricingPayload, validateLlmPayload, validateAddonsPayload, validateCollectionMap, MAX_COLLECTIONS } from '../src/validate';
+import { validateGatesPayload, validatePricingPayload, validateLlmPayload, validateAddonsPayload, validateCollectionMap, validatePartnerPayload, MAX_COLLECTIONS } from '../src/validate';
 
 const GOOD_GATES = { popularityFloor: 50, priceMin: 5, priceMax: 80, relevance: 'title' };
 
@@ -139,5 +139,48 @@ describe('validateCollectionMap', () => {
     const big: Record<string, { handle: string; tag: string }> = {};
     for (let i = 0; i <= MAX_COLLECTIONS; i++) big[`c${i}`] = { handle: `c${i}`, tag: `t${i}` };
     expect(validateCollectionMap(big).ok).toBe(false);
+  });
+});
+
+// Affiliate voucher trials (2026-07-04): registration payload for /api/partners/create.
+describe('validatePartnerPayload', () => {
+  const NOW = () => Date.parse('2026-07-04T12:00:00Z');
+  const GOOD = {
+    email: 'Jane@Example.com', name: ' Jane ', channel: 'https://example.com/jane',
+    code: 'activepaw-jane5', pctOff: 5, commissionPct: 2, endsAt: '2026-08-03'
+  };
+
+  it('normalises: email lowercased, code UPPERCASED, bare date means end of that day', () => {
+    const r = validatePartnerPayload(GOOD, NOW);
+    if (!r.ok) throw new Error(r.error);
+    expect(r.value.contactEmail).toBe('jane@example.com');
+    expect(r.value.code).toBe('ACTIVEPAW-JANE5');
+    expect(r.value.name).toBe('Jane');
+    expect(r.value.endsAt).toBe('2026-08-03T23:59:59.000Z');
+    expect(r.value.usageLimit).toBeNull();
+  });
+
+  it('accepts an optional integer usage limit and a full ISO endsAt', () => {
+    const r = validatePartnerPayload({ ...GOOD, usageLimit: 100, endsAt: '2026-08-03T10:00:00Z' }, NOW);
+    if (!r.ok) throw new Error(r.error);
+    expect(r.value.usageLimit).toBe(100);
+    expect(r.value.endsAt).toBe('2026-08-03T10:00:00.000Z');
+  });
+
+  it.each([
+    [null, 'not an object'],
+    [{ ...GOOD, email: 'not-an-email' }, 'bad email'],
+    [{ ...GOOD, code: 'ab' }, 'code too short'],
+    [{ ...GOOD, code: 'SPACES IN CODE' }, 'code with spaces'],
+    [{ ...GOOD, pctOff: 0 }, 'pctOff below 1'],
+    [{ ...GOOD, pctOff: 90 }, 'pctOff above 50'],
+    [{ ...GOOD, commissionPct: -1 }, 'negative commission'],
+    [{ ...GOOD, commissionPct: 50 }, 'commission above 20'],
+    [{ ...GOOD, endsAt: '2026-07-01' }, 'endsAt in the past'],
+    [{ ...GOOD, endsAt: 'soon' }, 'unparseable endsAt'],
+    [{ ...GOOD, usageLimit: 2.5 }, 'fractional usage limit'],
+    [{ ...GOOD, name: 'x'.repeat(81) }, 'name too long']
+  ] as [unknown, string][])('rejects %j (%s)', (body: unknown) => {
+    expect(validatePartnerPayload(body, NOW).ok).toBe(false);
   });
 });

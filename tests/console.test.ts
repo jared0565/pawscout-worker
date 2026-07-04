@@ -214,24 +214,61 @@ describe('consolePage', () => {
     expect(scripts).toContain('/gb-sync'); // api() prepends /api
   });
 
-  // Phase 1 shell (extended in Phase 3): left rail + six always-in-DOM views
+  // Phase 1 shell (extended in Phase 3): left rail + always-in-DOM views
   // toggled by a hash router; Glance is the landing view.
-  it('renders the seven view containers, the rail, and the hash router', async () => {
+  it('renders the eight view containers, the rail, and the hash router', async () => {
     const html = await consolePage('test-api-key').text();
-    for (const v of ['view-glance', 'view-inbox', 'view-catalog', 'view-ops', 'view-audit', 'view-settings', 'view-help']) {
+    for (const v of ['view-glance', 'view-inbox', 'view-catalog', 'view-ops', 'view-audit', 'view-partners', 'view-settings', 'view-help']) {
       expect(html).toContain('id="' + v + '"');
     }
     expect(html).toContain('class="rail"');
     expect(html).toContain('data-route="glance"');
     expect(html).toContain('data-route="inbox"');
     expect(html).toContain('data-route="audit"');
+    expect(html).toContain('data-route="partners"');
     const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
     expect(scripts).toContain('function applyRoute(');
     expect(scripts).toContain("window.addEventListener('hashchange',applyRoute)");
     expect(scripts).toContain('applyRoute();'); // applied on load too
     // Glance is the default route: unknown/missing hash falls back to it.
-    expect(scripts).toContain("var ROUTES=['glance','inbox','catalog','ops','audit','settings','help']");
+    expect(scripts).toContain("var ROUTES=['glance','inbox','catalog','ops','audit','partners','settings','help']");
     expect(scripts).toContain(":'glance'");
+  });
+
+  // --- Partners view (2026-07-04): affiliate voucher trials ---
+
+  it('renders the Partners view: list, register form, orders modal, armed actions', async () => {
+    const html = await consolePage('test-api-key').text();
+    for (const id of ['prt-list', 'prt-msg', 'prt-email', 'prt-name', 'prt-channel', 'prt-code',
+      'prt-pct', 'prt-comm', 'prt-ends', 'prt-notes', 'prt-reg-msg',
+      'prt-overlay', 'prt-orders', 'prt-orders-title']) {
+      expect(html).toContain('id="' + id + '"');
+    }
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+    expect(scripts).toContain('function loadPartners(');
+    expect(scripts).toContain("'/partners'");          // api() prepends /api
+    expect(scripts).toContain("'/partners/create'");
+    expect(scripts).toContain("'/partners/voucher'");
+    expect(scripts).toContain("'/partners/orders'");
+    expect(scripts).toContain('loadPartners();');      // loaded on startup
+    // Ids ride in ESCAPED data attributes resolved by delegation, never
+    // string-built into inline onclick JS (same discipline as Audit).
+    expect(scripts).toContain('data-prt-orders="\'+esc(');
+    expect(scripts).not.toContain("openPartnerOrders('\"+");
+    // Money-adjacent actions are two-click armed, not window.confirm (the
+    // embedded admin iframe can swallow confirm dialogs). Scoped to the
+    // partners block: other, older view JS still uses confirm elsewhere.
+    expect(scripts).toContain('function prtArm(');
+    const prtBlock = scripts.slice(scripts.indexOf('function prtMoney('), scripts.indexOf('function closePartnerOrders('));
+    expect(prtBlock.length).toBeGreaterThan(0);
+    expect(prtBlock).not.toContain('window.confirm');
+    expect(scripts).toContain('Click again to revoke');
+    expect(scripts).toContain('Click again to confirm payout');
+    // Revoking here is on-record only: the code must also be disabled in
+    // Shopify admin, and the success message says so.
+    expect(scripts).toContain('disable the code itself in Shopify admin');
+    // The modal suppresses the digit view-switch shortcuts while open.
+    expect(scripts).toContain('__modalOpen');
   });
 
   // --- Audit view v2 (2026-07-04 owner redesign): contact list + conversation modal ---
@@ -348,7 +385,7 @@ describe('consolePage', () => {
     for (const section of [
       'PawScout guide', 'Getting started', 'Shop at a Glance', 'Inbox and customer replies',
       'Catalog and pricing', 'Operations and orders', 'Shipping, markets and stock safety',
-      'Settings and automation', 'Keyboard shortcuts'
+      'Settings and automation', 'Partners and vouchers', 'Keyboard shortcuts'
     ]) {
       expect(html).toContain('<h2>' + section + '</h2>');
     }

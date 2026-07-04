@@ -4,6 +4,7 @@ import { makeAdminGraphql, type AdminGraphql } from './shopify-admin';
 import { CjClient, CjTokenManager, cjFetchFromEnv, chooseOrigin, type CjDetail } from './cj';
 import { getPrimaryLocationId, productInventoryItems, setInventoryQuantities } from './proxy/inventory';
 import { resyncLowStockInventory, JOB_STAMP_PIPELINE, JOB_STAMP_TTL_DAYS } from './jobs';
+import { attributeAffiliateOrders } from './affiliate-attribution';
 import { sendEmail } from './email';
 import type { Env, TenantConfig } from './types';
 import type { OrderLineItem, OrderAddress } from './fulfil';
@@ -374,6 +375,15 @@ export async function runOrderPipelineForShop(env: Env, vault: Vault, shop: stri
     await resyncLowStockInventory(store, cj, admin, cfg);
   } catch (e) {
     console.warn(`low-stock resync failed for ${shop}: ${(e as Error).message}`);
+  }
+  // Affiliate voucher ledger also rides this entry (same admin client). It
+  // early-exits without a Shopify call when no vouchers are registered, and a
+  // failure never affects the order pipeline result.
+  try {
+    const a = await attributeAffiliateOrders(store, admin);
+    if (a.matched) console.log(`affiliate attribution for ${shop}: ${a.matched} matched of ${a.scanned} scanned`);
+  } catch (e) {
+    console.warn(`affiliate attribution failed for ${shop}: ${(e as Error).message}`);
   }
   // Console health stamp (Glance): record the completed run; best-effort.
   try { await store.putSearchCache(JOB_STAMP_PIPELINE, new Date().toISOString(), JOB_STAMP_TTL_DAYS); } catch { /* never affects the pipeline result */ }

@@ -30,9 +30,11 @@ import { inboxJs } from './inbox-js';
 import { glanceView, glanceCss } from './views/glance';
 import { glanceJs } from './glance-js';
 import { auditJs } from './audit-js';
+import { partnersJs } from './partners-js';
 import { catalogView } from './views/catalog';
 import { opsView } from './views/ops';
 import { auditView, auditCss } from './views/audit';
+import { partnersView, partnersCss } from './views/partners';
 import { settingsView } from './views/settings';
 import { helpView, helpCss } from './views/help';
 import { railHtml, routerJs, shellCss } from './shell';
@@ -141,6 +143,7 @@ ${shellCss}
 ${inboxCss}
 ${glanceCss}
 ${auditCss}
+${partnersCss}
 ${helpCss}</style>
 </head><body>
 ${railHtml}
@@ -158,6 +161,9 @@ ${opsView}
 </main>
 <main class="view" id="view-audit">
 ${auditView}
+</main>
+<main class="view" id="view-partners">
+${partnersView}
 </main>
 <main class="view" id="view-settings">
 ${settingsView}
@@ -865,12 +871,14 @@ async function saveInboxSettings(){
 ${inboxJs}
 ${glanceJs}
 ${auditJs}
+${partnersJs}
 refresh();
 loadInsights();
 loadGlance();
 loadInboxThreads();
 loadInboxSettings();
 loadAudit();
+loadPartners();
 ${routerJs}</script>
 </body></html>`;
   // no-store: the console is a single server-rendered page that changes every

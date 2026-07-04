@@ -13,13 +13,13 @@ import { handleCallback } from './auth/callback';
 import { ensureInstalled } from './auth/ensure-installed';
 import { handleUninstall } from './auth/uninstall';
 import { resolveShopFromToken } from './console/session';
-import { connectCj, saveGates, savePricing, saveLlm, saveAddons, saveCollectionMap, getStatus, getInsights, getGlance, getAudit, getAuditConversation, saveGbFreeUk } from './console/routes';
+import { connectCj, saveGates, savePricing, saveLlm, saveAddons, saveCollectionMap, getStatus, getInsights, getGlance, getAudit, getAuditConversation, saveGbFreeUk, getPartners, createPartner, partnerVoucherAction, getPartnerOrders } from './console/routes';
 import { listInboxThreads, getInboxThread, setInboxStatus, setInboxLabels, getInboxConfig, saveInboxConfig, approveDraft, regenerateDraft } from './inbox/routes';
 import { buildInvoiceForThread, discardInvoice, searchCatalog } from './inbox/invoice-routes';
 import { consolePage } from './console/page';
 import { validateCjKey, CjClient, CjTokenManager, cjFetchFromEnv, chooseOrigin } from './cj';
 import { registerWebhooks, type RegisterWebhook } from './webhooks';
-import { validateGatesPayload, validatePricingPayload, validateLlmPayload, validateAddonsPayload, validateCollectionMap } from './validate';
+import { validateGatesPayload, validatePricingPayload, validateLlmPayload, validateAddonsPayload, validateCollectionMap, validatePartnerPayload } from './validate';
 import { sendEmail } from './email';
 import { verifyAppProxy } from './proxy/verify';
 import { verifyUnsubToken } from './retention';
@@ -121,6 +121,29 @@ app.post('/api/audit/conversation', async (c) => {
   let body: { email?: string } = {};
   try { body = await c.req.json(); } catch {}
   return c.json(await getAuditConversation(c.env.DB, s, body.email));
+});
+// Partners (2026-07-04): affiliate voucher trials - register a collaborator's
+// code, watch its attributed sales/commission, revoke it, stamp payouts.
+app.post('/api/partners', async (c) => { const s = await shopOf(c); if (typeof s !== 'string') return s; return c.json(await getPartners(c.env.DB, s)); });
+app.post('/api/partners/create', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: unknown;
+  try { body = await c.req.json(); } catch { return c.json({ ok: false, error: 'Invalid JSON body' }, 400); }
+  const v = validatePartnerPayload(body);
+  if (!v.ok) return c.json({ ok: false, error: v.error }, 400);
+  return c.json(await createPartner(c.env.DB, s, v.value));
+});
+app.post('/api/partners/voucher', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: { voucherId?: string; action?: string } = {};
+  try { body = await c.req.json(); } catch {}
+  return c.json(await partnerVoucherAction(c.env.DB, s, body.voucherId, body.action));
+});
+app.post('/api/partners/orders', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: { voucherId?: string } = {};
+  try { body = await c.req.json(); } catch {}
+  return c.json(await getPartnerOrders(c.env.DB, s, body.voucherId));
 });
 app.post('/api/gb-free-uk', async (c) => {
   const s = await shopOf(c); if (typeof s !== 'string') return s;

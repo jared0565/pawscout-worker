@@ -77,6 +77,31 @@ export interface AuditMessageRow {
   draft_status: string | null; draft_model: string | null;
 }
 
+/** One row of the Partners view: a voucher joined to its partner plus the
+ *  ledger roll-up (uses/gross/discount over ELIGIBLE orders; owed/paid split
+ *  by the payout stamp). Expiry is derived from ends_at at read time. */
+export interface AffiliateVoucherListRow {
+  voucher_id: string; code: string; pct_off: number; commission_pct: number;
+  starts_at: string; ends_at: string; status: string; created_at: string;
+  partner_id: string; contact_email: string; name: string | null;
+  channel_url: string | null; notes: string | null;
+  uses: number; gross: number; discount: number; owed: number; paid: number;
+  last_order_at: string | null;
+}
+
+/** One attributed order of a voucher's ledger drill-down. */
+export interface AffiliateOrderRow {
+  shopify_order_id: string; order_name: string | null;
+  gross_gbp: number; discount_gbp: number; commission_gbp: number;
+  financial_status: string | null; eligible: number;
+  placed_at: string | null; paid_out_at: string | null;
+}
+
+/** Voucher fields the attribution sweep needs for code matching. */
+export interface AttributionVoucherRow {
+  id: string; code: string; commission_pct: number; status: string; created_at: string;
+}
+
 export class TenantStore {
   constructor(private readonly db: D1Database, readonly shop: string) {}
 
@@ -1367,6 +1392,137 @@ export class TenantStore {
     await this.db
       .prepare(`UPDATE affiliate_applicants SET stage = ?3, verdict_json = ?4, score = ?5, updated_at = ?6 WHERE shop = ?1 AND thread_id = ?2`)
       .bind(this.shop, threadId, stage, verdict ? JSON.stringify(verdict) : null, verdict?.score ?? null, new Date().toISOString())
+      .run();
+  }
+
+  // --- Affiliate voucher trials (2026-07-04): partners, vouchers, order ledger ---
+
+  /** Create (or reuse by email) the partner record. Re-registering an email
+   *  attaches the new voucher to the SAME partner, refreshing any details given. */
+  async upsertAffiliatePartner(p: { contactEmail: string; name?: string | null; channelUrl?: string | null; notes?: string | null }): Promise<string> {
+    const email = p.contactEmail.trim().toLowerCase();
+    const now = new Date().toISOString();
+    const existing = await this.db
+      .prepare(`SELECT id FROM affiliate_partners WHERE shop = ?1 AND contact_email = ?2 LIMIT 1`)
+      .bind(this.shop, email).first<{ id: string }>();
+    if (existing) {
+      await this.db
+        .prepare(`UPDATE affiliate_partners SET name = COALESCE(?3, name), channel_url = COALESCE(?4, channel_url),
+                    notes = COALESCE(?5, notes), status = 'active', updated_at = ?6 WHERE shop = ?1 AND id = ?2`)
+        .bind(this.shop, existing.id, p.name ?? null, p.channelUrl ?? null, p.notes ?? null, now)
+        .run();
+      return existing.id;
+    }
+    const id = crypto.randomUUID();
+    await this.db
+      .prepare(`INSERT INTO affiliate_partners (shop, id, contact_email, name, channel_url, status, notes, created_at, updated_at)
+                VALUES (?1, ?2, ?3, ?4, ?5, 'active', ?6, ?7, ?7)`)
+      .bind(this.shop, id, email, p.name ?? null, p.channelUrl ?? null, p.notes ?? null, now)
+      .run();
+    return id;
+  }
+
+  /** Register an issued code. Codes are stored UPPERCASE; the unique index on
+   *  (shop, code) makes a duplicate registration throw - callers surface it. */
+  async createAffiliateVoucher(v: { partnerId: string; code: string; pctOff: number; commissionPct: number; startsAt?: string; endsAt: string; usageLimit?: number | null }): Promise<string> {
+    const id = crypto.randomUUID();
+    const now = new Date().toISOString();
+    await this.db
+      .prepare(`INSERT INTO affiliate_vouchers (shop, id, partner_id, code, pct_off, commission_pct, starts_at, ends_at, usage_limit, status, created_at, updated_at)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'live', ?10, ?10)`)
+      .bind(this.shop, id, v.partnerId, v.code.trim().toUpperCase(), v.pctOff, v.commissionPct, v.startsAt ?? now, v.endsAt, v.usageLimit ?? null, now)
+      .run();
+    return id;
+  }
+
+  /** Partners view list: one row per voucher (newest first) with its partner and
+   *  ledger roll-up. Uses/gross/discount count ELIGIBLE (paid, uncancelled)
+   *  orders; owed/paid split commission by the payout stamp. */
+  async listAffiliateVouchers(): Promise<AffiliateVoucherListRow[]> {
+    const rs = await this.db
+      .prepare(
+        `SELECT v.id AS voucher_id, v.code, v.pct_off, v.commission_pct, v.starts_at, v.ends_at, v.status, v.created_at,
+                p.id AS partner_id, p.contact_email, p.name, p.channel_url, p.notes,
+                COALESCE(o.uses, 0) AS uses, COALESCE(o.gross, 0) AS gross, COALESCE(o.discount, 0) AS discount,
+                COALESCE(o.owed, 0) AS owed, COALESCE(o.paid, 0) AS paid, o.last_order_at
+         FROM affiliate_vouchers v
+         JOIN affiliate_partners p ON p.shop = v.shop AND p.id = v.partner_id
+         LEFT JOIN (
+           SELECT voucher_id,
+                  SUM(CASE WHEN eligible = 1 THEN 1 ELSE 0 END) AS uses,
+                  SUM(CASE WHEN eligible = 1 THEN gross_gbp ELSE 0 END) AS gross,
+                  SUM(CASE WHEN eligible = 1 THEN discount_gbp ELSE 0 END) AS discount,
+                  SUM(CASE WHEN paid_out_at IS NULL THEN commission_gbp ELSE 0 END) AS owed,
+                  SUM(CASE WHEN paid_out_at IS NOT NULL THEN commission_gbp ELSE 0 END) AS paid,
+                  MAX(placed_at) AS last_order_at
+           FROM affiliate_orders WHERE shop = ?1 GROUP BY voucher_id
+         ) o ON o.voucher_id = v.id
+         WHERE v.shop = ?1
+         ORDER BY v.created_at DESC`
+      )
+      .bind(this.shop)
+      .all<AffiliateVoucherListRow>();
+    return rs.results ?? [];
+  }
+
+  /** All registered vouchers (any status) for the attribution sweep's code map.
+   *  Revoked/expired codes still record matches: if Shopify honoured the code,
+   *  the discount was really given and the ledger reflects reality. */
+  async attributionVouchers(): Promise<AttributionVoucherRow[]> {
+    const rs = await this.db
+      .prepare(`SELECT id, code, commission_pct, status, created_at FROM affiliate_vouchers WHERE shop = ?1`)
+      .bind(this.shop)
+      .all<AttributionVoucherRow>();
+    return rs.results ?? [];
+  }
+
+  /** Upsert one attributed order. Re-upserts on later order updates (refunds,
+   *  edits) refresh the money columns but NEVER touch paid_out_at, so payouts
+   *  already made stay stamped. */
+  async upsertAffiliateOrder(o: { shopifyOrderId: string; voucherId: string; orderName: string | null; grossGbp: number; discountGbp: number; commissionGbp: number; financialStatus: string | null; eligible: boolean; placedAt: string | null }): Promise<void> {
+    const now = new Date().toISOString();
+    await this.db
+      .prepare(
+        `INSERT INTO affiliate_orders (shop, shopify_order_id, voucher_id, order_name, gross_gbp, discount_gbp, commission_gbp, financial_status, eligible, placed_at, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)
+         ON CONFLICT(shop, shopify_order_id, voucher_id) DO UPDATE SET
+           order_name = ?4, gross_gbp = ?5, discount_gbp = ?6, commission_gbp = ?7,
+           financial_status = ?8, eligible = ?9, placed_at = ?10, updated_at = ?11`
+      )
+      .bind(this.shop, o.shopifyOrderId, o.voucherId, o.orderName, o.grossGbp, o.discountGbp, o.commissionGbp, o.financialStatus, o.eligible ? 1 : 0, o.placedAt, now)
+      .run();
+  }
+
+  /** Ledger drill-down for one voucher, newest order first. */
+  async affiliateOrdersForVoucher(voucherId: string, limit = 100): Promise<AffiliateOrderRow[]> {
+    const rs = await this.db
+      .prepare(
+        `SELECT shopify_order_id, order_name, gross_gbp, discount_gbp, commission_gbp, financial_status, eligible, placed_at, paid_out_at
+         FROM affiliate_orders WHERE shop = ?1 AND voucher_id = ?2
+         ORDER BY placed_at DESC LIMIT ?3`
+      )
+      .bind(this.shop, voucherId, limit)
+      .all<AffiliateOrderRow>();
+    return rs.results ?? [];
+  }
+
+  /** Stamp every eligible unpaid commission row for the voucher as paid out.
+   *  Returns how many orders the payout covered. */
+  async markVoucherCommissionPaid(voucherId: string): Promise<number> {
+    const r = await this.db
+      .prepare(
+        `UPDATE affiliate_orders SET paid_out_at = ?3
+         WHERE shop = ?1 AND voucher_id = ?2 AND paid_out_at IS NULL AND eligible = 1 AND commission_gbp > 0`
+      )
+      .bind(this.shop, voucherId, new Date().toISOString())
+      .run();
+    return r.meta.changes ?? 0;
+  }
+
+  async setAffiliateVoucherStatus(voucherId: string, status: 'live' | 'revoked'): Promise<void> {
+    await this.db
+      .prepare(`UPDATE affiliate_vouchers SET status = ?3, updated_at = ?4 WHERE shop = ?1 AND id = ?2`)
+      .bind(this.shop, voucherId, status, new Date().toISOString())
       .run();
   }
 

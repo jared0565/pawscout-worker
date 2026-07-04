@@ -43,17 +43,18 @@ export const railHtml = `<nav class="rail" aria-label="Console sections">
   <button type="button" class="rail-btn" data-route="catalog" onclick="location.hash='#/catalog'">Catalog</button>
   <button type="button" class="rail-btn" data-route="ops" onclick="location.hash='#/ops'">Operations</button>
   <button type="button" class="rail-btn" data-route="audit" onclick="location.hash='#/audit'">Audit</button>
+  <button type="button" class="rail-btn" data-route="partners" onclick="location.hash='#/partners'">Partners</button>
   <button type="button" class="rail-btn" data-route="settings" onclick="location.hash='#/settings'">Settings</button>
   <button type="button" class="rail-btn" data-route="help" onclick="location.hash='#/help'">Help</button>
 </nav>`;
 
 export const routerJs = `
 // --- Hash router (shell): #/glance default (Phase 3 landing); #/inbox,
-// #/catalog, #/ops, #/audit, #/settings, #/help. Toggles .active on the .view
-// containers and rail buttons on hashchange and on load; a missing or unknown
-// hash falls back to glance. Hash-only navigation so it works inside the
-// Shopify embedded iframe.
-var ROUTES=['glance','inbox','catalog','ops','audit','settings','help'];
+// #/catalog, #/ops, #/audit, #/partners, #/settings, #/help. Toggles .active
+// on the .view containers and rail buttons on hashchange and on load; a
+// missing or unknown hash falls back to glance. Hash-only navigation so it
+// works inside the Shopify embedded iframe.
+var ROUTES=['glance','inbox','catalog','ops','audit','partners','settings','help'];
 function currentRoute(){
   var h=location.hash||'';
   if(h.indexOf('#/')===0) h=h.slice(2); else if(h.indexOf('#')===0) h=h.slice(1);
