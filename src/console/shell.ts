@@ -82,6 +82,7 @@ function keyEditable(t){
 window.addEventListener('keydown',function(e){
   if(e.ctrlKey||e.metaKey||e.altKey||e.defaultPrevented) return;
   if(keyEditable(e.target)) return;
+  if(window.__modalOpen) return; // a modal (e.g. the Audit conversation) owns the keyboard
   var d=parseInt(e.key,10);
   if(d>=1&&d<=ROUTES.length){ location.hash='#/'+ROUTES[d-1]; e.preventDefault(); return; }
   if((e.key==='j'||e.key==='k')&&currentRoute()==='inbox'){

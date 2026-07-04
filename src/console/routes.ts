@@ -171,22 +171,45 @@ function parseHoldReasons(json: string | null): string[] {
 }
 
 const AUDIT_PAGE = 50;
+// Category filter values must look like our label slugs; anything else (junk,
+// injection-shaped strings) degrades to "all" rather than failing the view.
+const AUDIT_CATEGORY_RE = /^[a-z][a-z-]{0,40}$/;
 
 /**
- * Audit view (2026-07-04): a read-only, paged trail of every email received and
- * sent. Each outbound message carries its provenance so the owner can audit the
- * automation: 'auto' = the machine sent it under the reply toggles, 'approved' =
- * the owner approved the draft in HITL, 'other' = system mail with no linked
- * draft (e.g. an invoice email). Unknown filter values degrade to "all".
+ * Audit view v2 (2026-07-04 owner redesign): the landing list is CONTACTS -
+ * email + stored name + latest-contact date + the classifications seen across
+ * their threads - optionally scoped to one classification. Read-only.
  */
-export async function getAudit(db: D1Database, shop: string, opts: { direction?: string; before?: string; limit?: number } = {}) {
+export async function getAudit(db: D1Database, shop: string, opts: { category?: string; before?: string; limit?: number } = {}) {
   const store = new TenantStore(db, shop);
-  const direction = opts.direction === 'inbound' || opts.direction === 'outbound' ? opts.direction : undefined;
+  const category = typeof opts.category === 'string' && AUDIT_CATEGORY_RE.test(opts.category) ? opts.category : undefined;
   const before = typeof opts.before === 'string' && opts.before ? opts.before : undefined;
   const limit = Math.min(Math.max(Math.floor(Number(opts.limit) || AUDIT_PAGE), 1), 100);
-  const rows = await store.auditMessages({ direction, before, limit });
+  const rows = await store.auditContacts({ category, before, limit });
   return {
     ok: true as const,
+    contacts: rows.map((r) => ({
+      email: r.email, name: r.name ?? null, lastAt: r.last_at, messages: r.n,
+      categories: (r.categories ?? '').split(',').filter(Boolean)
+    })),
+    more: rows.length === limit
+  };
+}
+
+/**
+ * Audit conversation modal: every message exchanged with one contact across all
+ * their threads, newest first, each send carrying its provenance ('auto' = the
+ * machine sent it under the reply toggles, 'approved' = owner-approved HITL,
+ * 'other' = system mail with no linked draft, e.g. an invoice email).
+ */
+export async function getAuditConversation(db: D1Database, shop: string, email: unknown) {
+  if (typeof email !== 'string' || !email.trim()) return { ok: false as const, error: 'email required' };
+  const store = new TenantStore(db, shop);
+  const contact = await store.getContactByEmail(email);
+  const rows = await store.auditConversation(email);
+  return {
+    ok: true as const,
+    contact: { email, name: contact?.name ?? null },
     messages: rows.map((m) => ({
       id: m.id, threadId: m.thread_id, direction: m.direction,
       from: m.from_addr, to: m.to_addr, subject: m.subject,
@@ -195,8 +218,7 @@ export async function getAudit(db: D1Database, shop: string, opts: { direction?:
         ? (m.draft_status === 'auto_sent' ? 'auto' : m.draft_status === 'sent' ? 'approved' : 'other')
         : null,
       model: m.draft_model ?? null
-    })),
-    more: rows.length === limit
+    }))
   };
 }
 

@@ -59,7 +59,15 @@ export interface OrderRow {
   updated_at: string;
 }
 
-/** One row of the Audit view's mail trail: a message joined to its thread's
+/** One row of the Audit view's landing list: a contact rolled up across all
+ *  their threads - display name, latest activity and the categories seen. */
+export interface AuditContactRow {
+  email: string; name: string | null;
+  last_at: string; n: number;
+  categories: string | null; // GROUP_CONCAT of DISTINCT thread categories
+}
+
+/** One message of the Audit conversation modal: joined to its thread's
  *  category and (outbound only) the draft that produced it. */
 export interface AuditMessageRow {
   id: string; thread_id: string; direction: 'inbound' | 'outbound';
@@ -1172,17 +1180,41 @@ export class TenantStore {
   // view shows comes from one of these real D1 facts - nothing is fabricated. ---
 
   /**
-   * Paged audit trail (Audit view): every inbound + outbound message, newest
-   * first, each outbound LEFT-joined to the draft that produced it via
-   * sent_message_id - draft status auto_sent = machine-sent under the reply
-   * toggles, sent = owner-approved HITL, no row = system mail (e.g. invoice).
+   * Audit landing list: contacts rolled up across their threads, latest
+   * activity first. `category` scopes the roll-up to threads of that
+   * classification (so the shown date is the latest matching activity);
+   * `before` keyset-pages on the aggregate.
    */
-  async auditMessages(opts: { direction?: 'inbound' | 'outbound'; before?: string; limit?: number } = {}): Promise<AuditMessageRow[]> {
+  async auditContacts(opts: { category?: string; before?: string; limit?: number } = {}): Promise<AuditContactRow[]> {
     const lim = Math.min(Math.max(opts.limit ?? 50, 1), 100);
-    const conds = ['m.shop = ?1'];
+    const conds = ['t.shop = ?1'];
     const binds: unknown[] = [this.shop];
-    if (opts.direction) { binds.push(opts.direction); conds.push(`m.direction = ?${binds.length}`); }
-    if (opts.before) { binds.push(opts.before); conds.push(`m.received_at < ?${binds.length}`); }
+    if (opts.category) { binds.push(opts.category); conds.push(`t.primary_category = ?${binds.length}`); }
+    let having = '';
+    if (opts.before) { binds.push(opts.before); having = `HAVING MAX(m.received_at) < ?${binds.length}`; }
+    const rs = await this.db.prepare(
+      `SELECT t.contact_email AS email, c.name AS name,
+              MAX(m.received_at) AS last_at, COUNT(m.id) AS n,
+              GROUP_CONCAT(DISTINCT t.primary_category) AS categories
+       FROM inbox_threads t
+       JOIN inbox_messages m ON m.shop = t.shop AND m.thread_id = t.id
+       LEFT JOIN inbox_contacts c ON c.shop = t.shop AND c.email = t.contact_email
+       WHERE ${conds.join(' AND ')}
+       GROUP BY t.contact_email ${having}
+       ORDER BY last_at DESC LIMIT ${lim}`
+    ).bind(...binds).all<AuditContactRow>();
+    return rs.results ?? [];
+  }
+
+  /**
+   * Audit conversation: EVERY message exchanged with one contact, across all
+   * their threads, newest first - so a bait-opener chain reads as one story.
+   * Outbound rows LEFT-join the draft that produced them via sent_message_id
+   * (auto_sent = machine under the reply toggles, sent = owner-approved HITL,
+   * no row = system mail such as an invoice).
+   */
+  async auditConversation(contactEmail: string, limit = 200): Promise<AuditMessageRow[]> {
+    const lim = Math.min(Math.max(limit, 1), 500);
     const rs = await this.db.prepare(
       `SELECT m.id, m.thread_id, m.direction, m.from_addr, m.to_addr, m.subject,
               substr(m.body_text, 1, 8000) AS body_text, m.received_at,
@@ -1190,9 +1222,9 @@ export class TenantStore {
        FROM inbox_messages m
        JOIN inbox_threads t ON t.shop = m.shop AND t.id = m.thread_id
        LEFT JOIN inbox_drafts d ON d.shop = m.shop AND m.direction = 'outbound' AND d.sent_message_id = m.message_id
-       WHERE ${conds.join(' AND ')}
+       WHERE m.shop = ?1 AND t.contact_email = ?2
        ORDER BY m.received_at DESC LIMIT ${lim}`
-    ).bind(...binds).all<AuditMessageRow>();
+    ).bind(this.shop, contactEmail).all<AuditMessageRow>();
     return rs.results ?? [];
   }
 

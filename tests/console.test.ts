@@ -234,25 +234,38 @@ describe('consolePage', () => {
     expect(scripts).toContain(":'glance'");
   });
 
-  // --- Audit view (2026-07-04): reviewable trail of every email in and out ---
+  // --- Audit view v2 (2026-07-04 owner redesign): contact list + conversation modal ---
 
-  it('renders the Audit view: mail log with provenance chips, filter and pager', async () => {
+  it('renders the Audit view: contact list, category filter, conversation modal', async () => {
     const html = await consolePage('test-api-key').text();
     expect(html).toContain('Audit log');
-    for (const id of ['aud-list', 'aud-direction', 'aud-more', 'aud-msg']) {
+    for (const id of ['aud-list', 'aud-category', 'aud-more', 'aud-msg', 'aud-overlay', 'aud-convo', 'aud-convo-title']) {
       expect(html).toContain('id="' + id + '"');
     }
+    // The classification dropdown is generated from the REAL label taxonomy.
+    expect(html).toContain('<option value="affiliate">');
+    expect(html).toContain('<option value="lead">');
+    expect(html).toContain('<option value="product-question">');
     const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
     expect(scripts).toContain('function loadAudit(');
-    expect(scripts).toContain("'/audit'");        // api() prepends /api
-    expect(scripts).toContain('loadAudit();');    // loaded on startup
-    // Provenance is spelled out for the owner, and every value is escaped.
+    expect(scripts).toContain("'/audit'");                // api() prepends /api
+    expect(scripts).toContain("'/audit/conversation'");   // modal fetch
+    expect(scripts).toContain('loadAudit();');            // loaded on startup
+    expect(scripts).toContain('function openAuditConvo(');
+    expect(scripts).toContain('function closeAuditConvo(');
+    // Contact emails are attacker-controlled: rows carry them in an ESCAPED data
+    // attribute read back via delegation - never string-built into onclick JS.
+    expect(scripts).toContain("data-aud-email=\"'+esc(");
+    expect(scripts).not.toContain("openAuditConvo('\"+");
+    // Provenance is spelled out for the owner, and message bodies are escaped.
     expect(scripts).toContain('sent automatically');
     expect(scripts).toContain('approved by you');
-    expect(scripts).toMatch(/aud-full" hidden>'\+esc\(/);
+    expect(scripts).toMatch(/aud-body">'\+esc\(/);
     // Read-only view: no send/approve path is reachable from audit code.
-    const audBlock = scripts.slice(scripts.indexOf('function audRowHtml('), scripts.indexOf('async function loadOlderAudit'));
+    const audBlock = scripts.slice(scripts.indexOf('var audOldest'), scripts.indexOf('async function loadOlderAudit'));
     expect(audBlock).not.toContain('approveDraft');
+    // The modal suppresses the digit view-switch shortcuts while open.
+    expect(scripts).toContain('__modalOpen');
   });
 
   // --- Phase 3: Glance landing view + thread-list upgrades + cache header ---
