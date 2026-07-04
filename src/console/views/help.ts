@@ -83,9 +83,14 @@ export const helpView = `  <section class="card">
   </section>
 
   <section class="card">
+    <h2>Audit log</h2>
+    <details class="hlp-topic"><summary>Reviewing every email sent and received</summary><div class="hlp-body"><p>The Audit view is a read-only record of every email that has passed through your shop's inbox, newest first, received and sent alike. Each sent message shows exactly how it went out: <strong>sent automatically</strong> means PawScout sent it on its own under your reply settings, <strong>approved by you</strong> means you reviewed the draft and approved it before it went, and <strong>system message</strong> covers automatic mail with no reviewed draft behind it, such as an invoice email.</p><p>Use the filter to see only received or only sent messages, click any row to read the full message text, and use <em>Load older</em> to page back through the history. Nothing in this view can send or change anything, it exists purely so you can check what was said, to whom, and on whose authority.</p></div></details>
+  </section>
+
+  <section class="card">
     <h2>Keyboard shortcuts</h2>
     <ul class="cols">
-      <li><code>1</code> - <code>6</code> <span class="muted">switch view (Glance, Inbox, Catalog, Operations, Settings, Help)</span></li>
+      <li><code>1</code> - <code>7</code> <span class="muted">switch view (Glance, Inbox, Catalog, Operations, Audit, Settings, Help)</span></li>
       <li><code>j</code> / <code>k</code> <span class="muted">next / previous conversation in the Inbox list</span></li>
     </ul>
     <p class="sub muted" style="margin:10px 0 0">Shortcuts are ignored while you are typing, and none of them can send anything - approving a reply is always a click.</p>

@@ -170,6 +170,36 @@ function parseHoldReasons(json: string | null): string[] {
   try { const a = JSON.parse(json); return Array.isArray(a) ? a.map(String) : []; } catch { return []; }
 }
 
+const AUDIT_PAGE = 50;
+
+/**
+ * Audit view (2026-07-04): a read-only, paged trail of every email received and
+ * sent. Each outbound message carries its provenance so the owner can audit the
+ * automation: 'auto' = the machine sent it under the reply toggles, 'approved' =
+ * the owner approved the draft in HITL, 'other' = system mail with no linked
+ * draft (e.g. an invoice email). Unknown filter values degrade to "all".
+ */
+export async function getAudit(db: D1Database, shop: string, opts: { direction?: string; before?: string; limit?: number } = {}) {
+  const store = new TenantStore(db, shop);
+  const direction = opts.direction === 'inbound' || opts.direction === 'outbound' ? opts.direction : undefined;
+  const before = typeof opts.before === 'string' && opts.before ? opts.before : undefined;
+  const limit = Math.min(Math.max(Math.floor(Number(opts.limit) || AUDIT_PAGE), 1), 100);
+  const rows = await store.auditMessages({ direction, before, limit });
+  return {
+    ok: true as const,
+    messages: rows.map((m) => ({
+      id: m.id, threadId: m.thread_id, direction: m.direction,
+      from: m.from_addr, to: m.to_addr, subject: m.subject,
+      body: m.body_text, at: m.received_at, category: m.primary_category,
+      sentVia: m.direction === 'outbound'
+        ? (m.draft_status === 'auto_sent' ? 'auto' : m.draft_status === 'sent' ? 'approved' : 'other')
+        : null,
+      model: m.draft_model ?? null
+    })),
+    more: rows.length === limit
+  };
+}
+
 export async function getGlance(db: D1Database, shop: string): Promise<Glance> {
   const store = new TenantStore(db, shop);
   const since24h = new Date(Date.now() - 86400_000).toISOString();

@@ -59,6 +59,16 @@ export interface OrderRow {
   updated_at: string;
 }
 
+/** One row of the Audit view's mail trail: a message joined to its thread's
+ *  category and (outbound only) the draft that produced it. */
+export interface AuditMessageRow {
+  id: string; thread_id: string; direction: 'inbound' | 'outbound';
+  from_addr: string | null; to_addr: string | null; subject: string | null;
+  body_text: string | null; received_at: string;
+  primary_category: string | null;
+  draft_status: string | null; draft_model: string | null;
+}
+
 export class TenantStore {
   constructor(private readonly db: D1Database, readonly shop: string) {}
 
@@ -1160,6 +1170,31 @@ export class TenantStore {
 
   // --- Console Glance (Phase 3): read-only aggregates. Every number the Glance
   // view shows comes from one of these real D1 facts - nothing is fabricated. ---
+
+  /**
+   * Paged audit trail (Audit view): every inbound + outbound message, newest
+   * first, each outbound LEFT-joined to the draft that produced it via
+   * sent_message_id - draft status auto_sent = machine-sent under the reply
+   * toggles, sent = owner-approved HITL, no row = system mail (e.g. invoice).
+   */
+  async auditMessages(opts: { direction?: 'inbound' | 'outbound'; before?: string; limit?: number } = {}): Promise<AuditMessageRow[]> {
+    const lim = Math.min(Math.max(opts.limit ?? 50, 1), 100);
+    const conds = ['m.shop = ?1'];
+    const binds: unknown[] = [this.shop];
+    if (opts.direction) { binds.push(opts.direction); conds.push(`m.direction = ?${binds.length}`); }
+    if (opts.before) { binds.push(opts.before); conds.push(`m.received_at < ?${binds.length}`); }
+    const rs = await this.db.prepare(
+      `SELECT m.id, m.thread_id, m.direction, m.from_addr, m.to_addr, m.subject,
+              substr(m.body_text, 1, 8000) AS body_text, m.received_at,
+              t.primary_category, d.status AS draft_status, d.model AS draft_model
+       FROM inbox_messages m
+       JOIN inbox_threads t ON t.shop = m.shop AND t.id = m.thread_id
+       LEFT JOIN inbox_drafts d ON d.shop = m.shop AND m.direction = 'outbound' AND d.sent_message_id = m.message_id
+       WHERE ${conds.join(' AND ')}
+       ORDER BY m.received_at DESC LIMIT ${lim}`
+    ).bind(...binds).all<AuditMessageRow>();
+    return rs.results ?? [];
+  }
 
   async pendingDraftStats(): Promise<{ n: number; oldestAt: string | null }> {
     // Count only drafts the merchant can act on: the parent thread must still be

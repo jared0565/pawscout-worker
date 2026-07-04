@@ -216,21 +216,43 @@ describe('consolePage', () => {
 
   // Phase 1 shell (extended in Phase 3): left rail + six always-in-DOM views
   // toggled by a hash router; Glance is the landing view.
-  it('renders the six view containers, the rail, and the hash router', async () => {
+  it('renders the seven view containers, the rail, and the hash router', async () => {
     const html = await consolePage('test-api-key').text();
-    for (const v of ['view-glance', 'view-inbox', 'view-catalog', 'view-ops', 'view-settings', 'view-help']) {
+    for (const v of ['view-glance', 'view-inbox', 'view-catalog', 'view-ops', 'view-audit', 'view-settings', 'view-help']) {
       expect(html).toContain('id="' + v + '"');
     }
     expect(html).toContain('class="rail"');
     expect(html).toContain('data-route="glance"');
     expect(html).toContain('data-route="inbox"');
+    expect(html).toContain('data-route="audit"');
     const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
     expect(scripts).toContain('function applyRoute(');
     expect(scripts).toContain("window.addEventListener('hashchange',applyRoute)");
     expect(scripts).toContain('applyRoute();'); // applied on load too
     // Glance is the default route: unknown/missing hash falls back to it.
-    expect(scripts).toContain("var ROUTES=['glance','inbox','catalog','ops','settings','help']");
+    expect(scripts).toContain("var ROUTES=['glance','inbox','catalog','ops','audit','settings','help']");
     expect(scripts).toContain(":'glance'");
+  });
+
+  // --- Audit view (2026-07-04): reviewable trail of every email in and out ---
+
+  it('renders the Audit view: mail log with provenance chips, filter and pager', async () => {
+    const html = await consolePage('test-api-key').text();
+    expect(html).toContain('Audit log');
+    for (const id of ['aud-list', 'aud-direction', 'aud-more', 'aud-msg']) {
+      expect(html).toContain('id="' + id + '"');
+    }
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+    expect(scripts).toContain('function loadAudit(');
+    expect(scripts).toContain("'/audit'");        // api() prepends /api
+    expect(scripts).toContain('loadAudit();');    // loaded on startup
+    // Provenance is spelled out for the owner, and every value is escaped.
+    expect(scripts).toContain('sent automatically');
+    expect(scripts).toContain('approved by you');
+    expect(scripts).toMatch(/aud-full" hidden>'\+esc\(/);
+    // Read-only view: no send/approve path is reachable from audit code.
+    const audBlock = scripts.slice(scripts.indexOf('function audRowHtml('), scripts.indexOf('async function loadOlderAudit'));
+    expect(audBlock).not.toContain('approveDraft');
   });
 
   // --- Phase 3: Glance landing view + thread-list upgrades + cache header ---

@@ -29,8 +29,10 @@ import { inboxView, inboxCss } from './views/inbox';
 import { inboxJs } from './inbox-js';
 import { glanceView, glanceCss } from './views/glance';
 import { glanceJs } from './glance-js';
+import { auditJs } from './audit-js';
 import { catalogView } from './views/catalog';
 import { opsView } from './views/ops';
+import { auditView, auditCss } from './views/audit';
 import { settingsView } from './views/settings';
 import { helpView, helpCss } from './views/help';
 import { railHtml, routerJs, shellCss } from './shell';
@@ -138,6 +140,7 @@ export function consolePage(apiKey: string): Response {
 ${shellCss}
 ${inboxCss}
 ${glanceCss}
+${auditCss}
 ${helpCss}</style>
 </head><body>
 ${railHtml}
@@ -152,6 +155,9 @@ ${catalogView}
 </main>
 <main class="view" id="view-ops">
 ${opsView}
+</main>
+<main class="view" id="view-audit">
+${auditView}
 </main>
 <main class="view" id="view-settings">
 ${settingsView}
@@ -858,11 +864,13 @@ async function saveInboxSettings(){
 }
 ${inboxJs}
 ${glanceJs}
+${auditJs}
 refresh();
 loadInsights();
 loadGlance();
 loadInboxThreads();
 loadInboxSettings();
+loadAudit();
 ${routerJs}</script>
 </body></html>`;
   // no-store: the console is a single server-rendered page that changes every

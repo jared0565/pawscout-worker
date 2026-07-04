@@ -13,7 +13,7 @@ import { handleCallback } from './auth/callback';
 import { ensureInstalled } from './auth/ensure-installed';
 import { handleUninstall } from './auth/uninstall';
 import { resolveShopFromToken } from './console/session';
-import { connectCj, saveGates, savePricing, saveLlm, saveAddons, saveCollectionMap, getStatus, getInsights, getGlance, saveGbFreeUk } from './console/routes';
+import { connectCj, saveGates, savePricing, saveLlm, saveAddons, saveCollectionMap, getStatus, getInsights, getGlance, getAudit, saveGbFreeUk } from './console/routes';
 import { listInboxThreads, getInboxThread, setInboxStatus, setInboxLabels, getInboxConfig, saveInboxConfig, approveDraft, regenerateDraft } from './inbox/routes';
 import { buildInvoiceForThread, discardInvoice, searchCatalog } from './inbox/invoice-routes';
 import { consolePage } from './console/page';
@@ -109,6 +109,13 @@ app.post('/api/insights', async (c) => { const s = await shopOf(c); if (typeof s
 // Glance (Phase 3): the landing view's aggregate - counts, attention queue,
 // activity and cron-health stamps in one call. Read-only.
 app.post('/api/glance', async (c) => { const s = await shopOf(c); if (typeof s !== 'string') return s; return c.json(await getGlance(c.env.DB, s)); });
+// Audit (2026-07-04): read-only paged mail trail with send provenance.
+app.post('/api/audit', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: { direction?: string; before?: string } = {};
+  try { body = await c.req.json(); } catch {}
+  return c.json(await getAudit(c.env.DB, s, { direction: body.direction, before: body.before }));
+});
 app.post('/api/gb-free-uk', async (c) => {
   const s = await shopOf(c); if (typeof s !== 'string') return s;
   let body: { on?: boolean } = {};
