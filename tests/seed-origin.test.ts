@@ -86,6 +86,77 @@ describe('seedOriginAssortment', () => {
   });
 });
 
+// --- Market fill lanes (owner's local-for-local model, 2026-07-05) ---
+
+describe('seedOriginAssortment - US market lane', () => {
+  beforeEach(async () => { await applyD1Migrations(env.DB, env.TEST_MIGRATIONS); });
+
+  // US-warehoused, NOT GB-warehoused: the exact profile of a US-market candidate.
+  function usCj(searchedCountries: string[] = []): CjClient {
+    return {
+      searchByWarehouse: async (_kw: string, cc: string): Promise<CjSearchItem[]> => {
+        searchedCountries.push(cc);
+        return [{ pid: 'US1', nameEn: 'Dog Chew Toy', image: '', sellPriceUsd: 6, listedNum: 20, categoryName: 'pet-toys' }];
+      },
+      detail: async (pid: string): Promise<CjDetail> => ({ pid, nameEn: 'Dog Chew Toy', images: ['https://img/x.jpg'], descriptionHtml: 'x', variants: [{ vid: `v-${pid}`, name: 'Default', sellPriceUsd: 6, sku: pid, stock: 50 }], listedNum: 20, categoryName: 'pet-toys', stock: 50, origins: { CN: 100, US: 230 } }),
+      stockByPid: async () => new Map([['v-US1', 50]]),
+      freightEstimate: async () => ({ priceUsd: 0, days: '2-5', name: 'USPS' })
+    } as unknown as CjClient;
+  }
+
+  function taggingAdmin(tagSink: string[][]): AdminGraphql {
+    return (async (q: string, vars: any) => {
+      if (q.includes('productSet')) {
+        tagSink.push((vars.input as { tags: string[] }).tags);
+        return { productSet: { product: { id: 'gid://shopify/Product/1', handle: 'h' }, userErrors: [] } };
+      }
+      if (q.includes('locations') || q.includes('location')) return { locations: { nodes: [{ id: 'loc1' }] } };
+      return {};
+    }) as unknown as AdminGraphql;
+  }
+
+  it('drafts a US-warehoused product through the US lane gate, tagged market-us', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const searched: string[] = [];
+    const tags: string[][] = [];
+    const summary = await seedOriginAssortment(store, usCj(searched), taggingAdmin(tags), CFG,
+      { countryCode: 'US', perCollection: 12, pause: async () => {}, keywords: { 'pet-toys': ['dog chew toy'] } });
+
+    expect(searched).toEqual(['US']);                       // discovery hits the US warehouse
+    expect(summary.drafted).toBe(1);
+    expect((await store.getLink('US1'))?.state).toBe('draft');
+    expect(tags[0]).toContain('market-us');                 // owner can filter US drafts in admin
+    const wh = await store.getWarehouseProduct('US1');
+    expect(JSON.parse(wh!.detail).origins.US).toBe(230);    // per-buyer search filters read this
+  });
+
+  it('the SAME product is blocked by the default home (GB) lane - lanes never leak', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const summary = await seedOriginAssortment(store, usCj(), fakeAdmin(), CFG,
+      { countryCode: 'GB', perCollection: 12, pause: async () => {}, keywords: { 'pet-toys': ['dog chew toy'] } });
+    expect(summary.drafted).toBe(0);
+    expect(summary.rejected).toBe(1);
+    expect((await store.getLink('US1'))?.state).toBe('failed'); // gate fails closed: no GB stock
+  });
+
+  it('maxDrafts paces a nightly lane', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    // Distinct title signatures (the seed dedupes near-twins by design).
+    const names: Record<string, string> = { USA: 'Dog Chew Toy Rope Braided Large', USB: 'Dog Chew Toy Ball Squeaky Rubber', USC: 'Dog Chew Toy Bone Nylon Tough' };
+    const cj = {
+      searchByWarehouse: async (): Promise<CjSearchItem[]> => (
+        Object.keys(names).map((pid) => ({ pid, nameEn: names[pid], image: '', sellPriceUsd: 6, listedNum: 20, categoryName: 'pet-toys' }))
+      ),
+      detail: async (pid: string): Promise<CjDetail> => ({ pid, nameEn: names[pid], images: ['https://img/x.jpg'], descriptionHtml: 'x', variants: [{ vid: `v-${pid}`, name: 'Default', sellPriceUsd: 6, sku: pid, stock: 50 }], listedNum: 20, categoryName: 'pet-toys', stock: 50, origins: { US: 90 } }),
+      stockByPid: async () => new Map([['v', 50]]),
+      freightEstimate: async () => null
+    } as unknown as CjClient;
+    const summary = await seedOriginAssortment(store, cj, fakeAdmin(), CFG,
+      { countryCode: 'US', maxDrafts: 2, pause: async () => {}, keywords: { 'pet-toys': ['dog chew toy'] } });
+    expect(summary.drafted).toBe(2); // stopped by the nightly cap, not supply
+  });
+});
+
 describe('reconcileDraftLinks', () => {
   beforeEach(async () => { await applyD1Migrations(env.DB, env.TEST_MIGRATIONS); });
 

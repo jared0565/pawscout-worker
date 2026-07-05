@@ -158,7 +158,7 @@ export async function confirmAndImport(
   category?: string | null,
   curate?: (detail: CjDetail, context: string) => Promise<Curation | null>,
   pickHero?: (title: string, imageUrls: string[]) => Promise<HeroPick>,
-  opts: { publish?: boolean } = {}
+  opts: { publish?: boolean; localWarehouses?: string[]; marketTag?: string } = {}
 ): Promise<void> {
   // Ghost-click curation gate (added 2026-06-12 after a "pet food" search
   // imported a kitchen vacuum sealer): clicked ghosts must pass the SAME
@@ -225,12 +225,15 @@ export async function confirmAndImport(
     }
   }
   // Local-for-local gate (the owner's governing model, locked 2026-07-05):
-  // the home market is served ONLY from its local warehouses (GB today).
-  // This is THE choke point - refill promotions, keyword replenishment and
-  // ghost-click imports all pass through here, so nothing non-local can enter
-  // the catalog by any path. Fails CLOSED when the origin cannot be verified:
-  // "probably shippable from somewhere" is exactly the CN-era ambiguity this
-  // gate exists to end.
+  // every import lane is bound to a set of LOCAL warehouses - the home
+  // market's GB by default, or the target market's warehouses when a market
+  // seed lane passes localWarehouses (e.g. ['US'] for the US+CA fill). This
+  // is THE choke point - refill promotions, keyword replenishment, market
+  // seeds and ghost-click imports all pass through here, so nothing
+  // non-local can enter the catalog by any path. Fails CLOSED when the
+  // origin cannot be verified: "probably shippable from somewhere" is
+  // exactly the CN-era ambiguity this gate exists to end.
+  const locals = opts.localWarehouses ?? HOME_MARKET_WAREHOUSES;
   let origins = detail.origins;
   if (!origins) {
     try {
@@ -239,12 +242,15 @@ export async function confirmAndImport(
       console.warn(`origins lookup failed for ${detail.pid}: ${(e as Error).message}`);
     }
   }
-  const localQty = bestLocalQty(origins, HOME_MARKET_WAREHOUSES);
+  const localQty = bestLocalQty(origins, locals);
   if (localQty < cfg.floors.stockFloor) {
-    console.warn(`import blocked (no local-warehouse stock for the home market) for ${detail.pid}: ${detail.nameEn}`);
+    console.warn(`import blocked (no local-warehouse stock for lane ${locals.join('/')}) for ${detail.pid}: ${detail.nameEn}`);
     await store.putLink({ cjPid: detail.pid, state: 'failed', category: category ?? null });
     return;
   }
+  // Origin evidence rides the detail into importProduct and the warehouse
+  // cache so downstream gates and per-buyer search filters can read it.
+  detail = { ...detail, origins };
   let live: number | null = null;
   try {
     const m = await cj.stockByPid(detail.pid);
@@ -295,7 +301,7 @@ export async function importProduct(
   cfg: TenantConfig,
   detail: CjDetail,
   category?: string | null,
-  opts: { publish?: boolean } = {}
+  opts: { publish?: boolean; localWarehouses?: string[]; marketTag?: string } = {}
 ): Promise<void> {
   const publish = opts.publish ?? true;
   const cat = category !== undefined ? category : resolveCategory(cfg, detail);
@@ -334,7 +340,7 @@ export async function importProduct(
       title: detail.nameEn,
       descriptionHtml: detail.descriptionHtml,
       status: publish ? 'ACTIVE' : 'DRAFT',
-      tags: [IMPORT_TAG, `cj-pid-${detail.pid}`, ...(isAddon ? [ADDON_TAG] : []), ...(detail.petClass ? [`cj-species-${detail.petClass}`] : []), ...(browseCat && cfg.collectionMap[browseCat] ? [cfg.collectionMap[browseCat].tag] : []), ...(!isAddon && productAffiliateEligible(variants, cfg.pricing, detail.freightUsd) ? [AFFILIATE_ELIGIBLE_TAG] : [])],
+      tags: [IMPORT_TAG, `cj-pid-${detail.pid}`, ...(opts.marketTag ? [opts.marketTag] : []), ...(isAddon ? [ADDON_TAG] : []), ...(detail.petClass ? [`cj-species-${detail.petClass}`] : []), ...(browseCat && cfg.collectionMap[browseCat] ? [cfg.collectionMap[browseCat].tag] : []), ...(!isAddon && productAffiliateEligible(variants, cfg.pricing, detail.freightUsd) ? [AFFILIATE_ELIGIBLE_TAG] : [])],
       files: detail.images.slice(0, MAX_IMAGES).map((src) => ({ originalSource: src, contentType: 'IMAGE' })),
       productOptions: [{ name: optionName, values: multi ? variants.map((v) => ({ name: v.name })) : [{ name: 'Default Title' }] }],
       variants: variants.map((v) => ({

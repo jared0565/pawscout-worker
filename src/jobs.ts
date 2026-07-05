@@ -3,7 +3,17 @@ import { chooseOrigin, CjClient, CjTokenManager, cjFetchFromEnv, type CjSearchIt
 import { makeAdminGraphql, type AdminGraphql } from './shopify-admin';
 import { TenantStore, listActiveShops, purgeExpiredSearchCache, purgeUnusedWarehouse, trimOldLogs } from './tenant-store';
 import { liveCjPasses, normalizeKeyword, CACHE_TTL_DAYS, isLikelyPetProduct, titleSignature } from './proxy/search';
-import { bestLocalQty, HOME_MARKET_WAREHOUSES } from './local-markets';
+import { bestLocalQty, localWarehousesFor, HOME_MARKET_WAREHOUSES } from './local-markets';
+
+/** Nightly market-fill lanes (owner's local-for-local model, 2026-07-05):
+ *  each lane discovers products the TARGET market's local warehouse really
+ *  stocks and imports them as DRAFTS (tagged market-<cc>) for owner review.
+ *  Publishing stays gated on the per-market visibility phase - drafts are
+ *  invisible everywhere, so the lanes are safe to run every night. US first
+ *  (deepest CJ supply); EU (DE) and AU lanes join once US validates. */
+export const MARKET_SEED_LANES: { countryCode: string; maxDraftsPerNight: number }[] = [
+  { countryCode: 'US', maxDraftsPerNight: 15 },
+];
 import { getExpansions, seedTerm } from './semantic/library';
 import { confirmAndImport, getCachedDetail, resolveCategory, reconcileAddonVisibility, reconcileHeroImages, reconcileDescriptions, reconcileCategories, setProductTags, ADDON_CATEGORY } from './proxy/import';
 import { AFFILIATE_ELIGIBLE_TAG, productAffiliateEligible, ensureAffiliateCollection } from './affiliate';
@@ -933,6 +943,7 @@ export async function seedOriginAssortment(
   opts: {
     countryCode?: string;
     perCollection?: number;
+    maxDrafts?: number;
     curate?: (detail: CjDetail, context: string) => Promise<Curation | null>;
     pickHero?: (title: string, imageUrls: string[]) => Promise<HeroPick>;
     pause?: (ms: number) => Promise<void>;
@@ -941,8 +952,14 @@ export async function seedOriginAssortment(
 ): Promise<{ discovered: number; drafted: number; rejected: number }> {
   const cc = opts.countryCode ?? 'GB';
   const cap = opts.perCollection ?? 12;
+  const maxDrafts = opts.maxDrafts ?? Infinity; // nightly lanes pace themselves
   const pause = opts.pause ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const keywords = opts.keywords ?? SEED_KEYWORDS;
+  // Local-for-local: the seed lane's gate is the TARGET market's warehouses,
+  // and non-home seeds carry a market tag (e.g. market-us) so the owner can
+  // filter drafts in admin and the visibility phase can scope publishing.
+  const laneWarehouses = localWarehousesFor(cc);
+  const marketTag = cc === 'GB' ? undefined : `market-${cc.toLowerCase()}`;
   const seenTitleSigs = new Set((await store.warehouseTitles()).map(titleSignature));
   const seenPids = new Set<string>();
   let discovered = 0, drafted = 0, rejected = 0;
@@ -950,7 +967,7 @@ export async function seedOriginAssortment(
   for (const [category, kws] of Object.entries(keywords)) {
     let perCat = 0;
     for (const kw of kws) {
-      if (perCat >= cap) break;
+      if (perCat >= cap || drafted >= maxDrafts) break;
       // Apply the same discovery gate the storefront feed + replenishWarehouse use
       // (price band + popularity + species + keyword relevance). /product/list is a
       // loose keyword endpoint, so without this an off-target or out-of-band product
@@ -961,7 +978,7 @@ export async function seedOriginAssortment(
         .filter((i) => liveCjPasses(i, cfg.gates, normalizeKeyword(kw)));
       await pause(CJ_CALL_GAP_MS);
       for (const item of items) {
-        if (perCat >= cap) break;
+        if (perCat >= cap || drafted >= maxDrafts) break;
         if (seenPids.has(item.pid)) continue;
         seenPids.add(item.pid);
         const link = await store.getLink(item.pid);
@@ -972,7 +989,9 @@ export async function seedOriginAssortment(
         if (!detail) { rejected++; continue; }
         const sig = titleSignature(detail.nameEn);
         if (seenTitleSigs.has(sig)) { rejected++; continue; }
-        await confirmAndImport(store, cj, admin, cfg, detail, category, opts.curate, opts.pickHero, { publish: false });
+        await confirmAndImport(store, cj, admin, cfg, detail, category, opts.curate, opts.pickHero, {
+          publish: false, localWarehouses: laneWarehouses, ...(marketTag ? { marketTag } : {})
+        });
         await pause(CJ_CALL_GAP_MS);
         if ((await store.getLink(detail.pid))?.state === 'draft') {
           // Cache the detail (with per-country origins) only for candidates that
@@ -1065,6 +1084,14 @@ export async function runDailyMaintenance(env: Env): Promise<void> {
         // backfilled product is repriced (freight-baked sticker) and adopted into its
         // engineered shipping profile in the SAME nightly run. Best-effort.
         try { await backfillOriginSignatures(store, cj, cfg); } catch (e) { console.warn(`origin backfill skipped: ${(e as Error).message}`); }
+        // Market fill lanes: paced nightly discovery of each target market's
+        // local-warehouse stock, drafted (never published) for owner review.
+        for (const lane of MARKET_SEED_LANES) {
+          try {
+            const r = await seedOriginAssortment(store, cj, admin, cfg, { countryCode: lane.countryCode, maxDrafts: lane.maxDraftsPerNight, curate, pickHero });
+            if (r.drafted || r.discovered) console.log(`market seed ${lane.countryCode}: +${r.drafted} drafts (${r.discovered} discovered, ${r.rejected} rejected)`);
+          } catch (e) { console.warn(`market seed ${lane.countryCode} failed: ${(e as Error).message}`); }
+        }
         await syncStoreInventory(store, cj, admin, cfg);
         await refillCollections(store, cj, admin, cfg, { curate, pickHero }); // promote-from-warehouse (floor 8, target 12)
         await reconcileDraftLinks(store, admin); // flip ACTIVE seed drafts to imported
