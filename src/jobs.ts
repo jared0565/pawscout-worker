@@ -1042,6 +1042,43 @@ export async function reconcileDraftLinks(store: TenantStore, admin: AdminGraphq
   return flipped;
 }
 
+/** One market-visibility reconcile for one shop: sync every market's catalog
+ * publication to the local-for-local rule and stamp the Glance payload.
+ * Best-effort: a failure is logged and never blocks the caller. */
+async function reconcileMarketVisibility(admin: AdminGraphql, store: TenantStore, cfg: TenantConfig): Promise<void> {
+  try {
+    const l = resolveLogistics(cfg.fulfil);
+    const mx = await syncMarketExclusions(admin, store, { stalenessHours: l.stalenessHours });
+    const changed = mx.markets.filter((m) => m.removed || m.readded);
+    if (changed.length) console.log(`market visibility reconcile: ${changed.map((m) => `${m.name} -${m.removed}/+${m.readded} (excl ${m.excluded})`).join(', ')}`);
+    await store.putSearchCache(
+      JOB_STAMP_MARKETS,
+      JSON.stringify({ at: new Date().toISOString(), markets: mx.markets.map((m) => ({ name: m.name, excluded: m.excluded })) }),
+      JOB_STAMP_TTL_DAYS
+    );
+  } catch (e) { console.warn(`market visibility sync skipped: ${(e as Error).message}`); }
+}
+
+/** 15-min cron lane for market visibility. The nightly run also reconciles, but
+ * publishing happens at owner speed: the moment a market-us draft goes ACTIVE,
+ * autoPublish drops it into EVERY market's catalog, and only this sweep takes it
+ * back out of the UK/EU/AU within minutes instead of at 04:17. Converged runs
+ * issue no mutations, so the steady-state cost is a handful of reads. */
+export async function runMarketVisibilityReconcile(env: Env): Promise<void> {
+  const vault = await Vault.fromMasterKey(env.PAWSCOUT_MASTER_KEY);
+  for (const shop of await listActiveShops(env.DB)) {
+    try {
+      const store = new TenantStore(env.DB, shop);
+      const tenant = await store.getTenant();
+      const cfg = await store.getConfig();
+      if (!tenant?.access_token_enc || !cfg) continue;
+      const accessToken = await vault.open(tenant.dek_wrapped, tenant.access_token_enc);
+      const admin = makeAdminGraphql(shop, accessToken);
+      await reconcileMarketVisibility(admin, store, cfg);
+    } catch (e) { console.warn(`market visibility reconcile failed for ${shop}: ${(e as Error).message}`); }
+  }
+}
+
 /** Daily cron entry point: retention purges, then per-tenant cull + refill. */
 export async function runDailyMaintenance(env: Env): Promise<void> {
   await purgeExpiredSearchCache(env.DB);
@@ -1105,22 +1142,13 @@ export async function runDailyMaintenance(env: Env): Promise<void> {
           const moved = r.profiles.filter((p) => p.added || p.removed);
           if (moved.length) console.log(`signature profiles reconcile: ${moved.map((p) => `${p.sig} +${p.added}/-${p.removed}`).join(', ')}`);
         } catch (e) { console.warn(`signature profile sync skipped: ${(e as Error).message}`); }
-        // Per-market product availability (Task 12): remove unfulfillable products from
-        // each managed market's catalog publication (checkout-level enforcement Managed
-        // Markets backfill cannot re-introduce); re-add when fulfillable again. Same
-        // resolveNearestRoute truth as the agent + profiles. Best-effort - needs
-        // read_markets/write_markets (granted 2026-07-03).
-        try {
-          const l = resolveLogistics(cfg.fulfil);
-          const mx = await syncMarketExclusions(admin, store, { stalenessHours: l.stalenessHours });
-          const changed = mx.markets.filter((m) => m.removed || m.readded);
-          if (changed.length) console.log(`market exclusions reconcile: ${changed.map((m) => `${m.name} -${m.removed}/+${m.readded} (excl ${m.excluded})`).join(', ')}`);
-          await store.putSearchCache(
-            JOB_STAMP_MARKETS,
-            JSON.stringify({ at: new Date().toISOString(), markets: mx.markets.map((m) => ({ name: m.name, excluded: m.excluded })) }),
-            JOB_STAMP_TTL_DAYS
-          );
-        } catch (e) { console.warn(`market exclusion sync skipped: ${(e as Error).message}`); }
+        // Per-market visibility (Task 12 + local-for-local): reconcile every
+        // market's catalog publication - local-lane products plus transitional
+        // CN scaffolding; cross-lane stock removed (checkout-level enforcement
+        // Managed Markets backfill cannot re-introduce). Same resolveNearestRoute
+        // truth as the agent + profiles. Best-effort - needs read_markets/
+        // write_markets (granted 2026-07-03). Also runs on the 15-min cron.
+        await reconcileMarketVisibility(admin, store, cfg);
         await reconcileAddonVisibility(store, admin, cfg); // align hidden/visible add-ons to the toggle
         // Retention reorder reminders (1.3) - DORMANT unless explicitly enabled;
         // even then only emails marketing-SUBSCRIBED customers. Best-effort.

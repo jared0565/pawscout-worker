@@ -90,16 +90,16 @@ export const pricingChainSvg = `<svg class="hlp-diagram" role="img" viewBox="0 0
   <text x="8" y="106" ${CAP}>Defaults shown; every number is adjustable in Catalog. The 2.5 multiplier targets roughly 17% net after advertising, fees and refunds.</text>
 </svg>`;
 
-/** Nightly per-market deliverability check -> shown or hidden. */
+/** Per-market local-for-local check -> shown or hidden. */
 export const marketsSvg = `<svg class="hlp-diagram" role="img" viewBox="0 0 720 190" xmlns="http://www.w3.org/2000/svg">
-  <title>Market availability: every night each product is checked per market. Deliverable products are shown and sellable there; undeliverable ones are hidden and checkout will not accept them.</title>
+  <title>Market availability: each product is checked per market every fifteen minutes. A product belongs in a market when a warehouse local to that market stocks it, or, while the local range is still growing, when it is part of the China-warehouse range and genuinely deliverable there. Everything else is hidden and checkout will not accept it.</title>
   <rect x="8" y="64" width="140" height="48" rx="8" ${BOX}/>
   <text x="78" y="85" ${MAIN}>Every product</text>
-  <text x="78" y="101" ${SUB}>checked nightly</text>
+  <text x="78" y="101" ${SUB}>checked every 15 min</text>
   <line x1="148" y1="88" x2="188" y2="88" ${LINE}/><polygon points="196,88 188,84 188,92" ${ARR}/>
   <rect x="196" y="64" width="180" height="48" rx="8" ${BOX}/>
-  <text x="286" y="85" ${MAIN}>Deliverable to</text>
-  <text x="286" y="101" ${SUB}>that market?</text>
+  <text x="286" y="85" ${MAIN}>Stocked near that</text>
+  <text x="286" y="101" ${SUB}>market's buyers?</text>
   <path d="M376 88 L420 88 L420 44 L454 44" fill="none" ${LINE}/>
   <polygon points="462,44 454,40 454,48" ${ARR}/>
   <text x="426" y="36" font-size="10" fill="var(--ok-ink)">yes</text>
@@ -112,7 +112,7 @@ export const marketsSvg = `<svg class="hlp-diagram" role="img" viewBox="0 0 720 
   <rect x="462" y="118" width="250" height="44" rx="8" fill="var(--code-bg)" stroke="var(--no-ink)"/>
   <text x="587" y="137" ${MAIN}>Hidden from that market</text>
   <text x="587" y="153" ${SUB}>checkout will not accept it either</text>
-  <text x="8" y="182" ${CAP}>Markets: United Kingdom (primary), European Union, US and Canada, Australia. Current excluded counts appear on the Glance screen.</text>
+  <text x="8" y="182" ${CAP}>Markets: United Kingdom (primary), European Union, US and Canada, Australia. "Near" means a local warehouse stocks it, or the China range still covering that market while its local range grows.</text>
 </svg>`;
 
 export const helpDiagramCss = `

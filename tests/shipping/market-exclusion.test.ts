@@ -93,3 +93,68 @@ describe('computeMarketExclusions', () => {
     ]);
   });
 });
+
+describe('local-for-local lane isolation (deterministic, route matrix cannot override)', () => {
+  // An oracle that claims EVERY cross-lane route exists. Under the old
+  // fulfillability-only rule this would leak US stock into the UK storefront -
+  // the exact case the owner flagged. The lane rule must exclude it anyway.
+  const everythingShips = () => true;
+  const out = computeMarketExclusions([UK, US_CA, EU, AU], memberships, everythingShips);
+
+  test('US-warehoused product stays OUT of the UK market even when a US->GB route exists', () => {
+    expect(exclFor(out, 'United Kingdom')).toContain('gid://shopify/Product/us1');
+  });
+
+  test('GB-warehoused product stays OUT of the US/CA, EU and AU markets even with routes', () => {
+    for (const m of ['United States and Canada', 'European Union', 'Australia']) {
+      expect(exclFor(out, m)).toEqual(expect.arrayContaining([
+        'gid://shopify/Product/gb1',
+        'gid://shopify/Product/gb2',
+      ]));
+    }
+  });
+
+  test('local products stay IN their own lane even when the route matrix is stale/empty', () => {
+    // Oracle finds no routes at all (stale cj_logistics): local stock must
+    // never be hidden from its own market by a matrix outage.
+    const nothingShips = () => false;
+    const stale = computeMarketExclusions([UK, US_CA], memberships, nothingShips);
+    expect(exclFor(stale, 'United Kingdom')).not.toContain('gid://shopify/Product/gb1');
+    expect(exclFor(stale, 'United States and Canada')).not.toContain('gid://shopify/Product/us1');
+    // ...but the CN scaffolding DOES drop out when nothing ships (quote==checkout).
+    expect(exclFor(stale, 'United Kingdom')).toContain('gid://shopify/Product/cn1');
+  });
+
+  test('the UK/GB origin alias counts as local to the UK market', () => {
+    const aliased = new Map<string, string[]>([['UK', ['gid://shopify/Product/ukalias1']]]);
+    const r = computeMarketExclusions([UK, US_CA], aliased, everythingShips);
+    expect(exclFor(r, 'United Kingdom')).not.toContain('gid://shopify/Product/ukalias1');
+    expect(exclFor(r, 'United States and Canada')).toContain('gid://shopify/Product/ukalias1');
+  });
+
+  test('EU-warehoused product is local to the EU market and cross-lane everywhere else', () => {
+    const withDe = new Map<string, string[]>([['DE', ['gid://shopify/Product/de1']]]);
+    const r = computeMarketExclusions([UK, US_CA, EU, AU], withDe, everythingShips);
+    expect(exclFor(r, 'European Union')).not.toContain('gid://shopify/Product/de1');
+    for (const m of ['United Kingdom', 'United States and Canada', 'Australia']) {
+      expect(exclFor(r, m)).toContain('gid://shopify/Product/de1');
+    }
+  });
+});
+
+describe('visibility modes', () => {
+  test('local_only drops the CN scaffolding but keeps the local lane', () => {
+    const usLaunched: MarketDef = { ...US_CA, mode: 'local_only' };
+    const out = computeMarketExclusions([usLaunched], memberships, isFulfillable);
+    const excl = exclFor(out, 'United States and Canada');
+    expect(excl).toContain('gid://shopify/Product/cn1');       // scaffolding retired
+    expect(excl).not.toContain('gid://shopify/Product/us1');   // local stays
+    expect(excl).not.toContain('gid://shopify/Product/cnus1'); // local via its US origin
+    expect(excl).toEqual(expect.arrayContaining(['gid://shopify/Product/gb1'])); // cross-lane still out
+  });
+
+  test('transitional is the default when mode is absent', () => {
+    const out = computeMarketExclusions([UK], memberships, isFulfillable);
+    expect(exclFor(out, 'United Kingdom')).not.toContain('gid://shopify/Product/cn1');
+  });
+});

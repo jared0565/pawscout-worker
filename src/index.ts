@@ -30,7 +30,7 @@ import { makeAdminGraphql } from './shopify-admin';
 import { readDeliveryConfig, syncSignatureProfiles } from './shipping/delivery-profile';
 import { resolveShipConfig } from './shipping/ship-config';
 import { resolveLogistics } from './logistics';
-import { runDailyMaintenance, syncStoreInventory, refillCollections } from './jobs';
+import { runDailyMaintenance, runMarketVisibilityReconcile, syncStoreInventory, refillCollections } from './jobs';
 import { runOrderPipeline, runOrderPipelineForShop } from './fulfil-run';
 import { parseOrderWebhook, validateOrder, FULFIL_GRACE_MINUTES } from './fulfil';
 import { attributePaidOrder } from './inbox/attribution';
@@ -889,11 +889,13 @@ const DAILY_CRON = '17 4 * * *';
 const worker: ExportedHandler<Env> = {
   fetch: (req, env, ctx) => app.fetch(req, env, ctx),
   scheduled: (controller, env, ctx) => {
-    // Daily cron → full maintenance; the 15-min cron → order pipeline + inbox classify sweep.
+    // Daily cron → full maintenance; the 15-min cron → order pipeline + inbox
+    // classify sweep + market-visibility reconcile (pulls a freshly published
+    // cross-lane product out of the wrong markets within one sweep).
     ctx.waitUntil(
       controller.cron === DAILY_CRON
         ? runDailyMaintenance(env)
-        : Promise.all([runOrderPipeline(env), runInboxClassifySweep(env)]).then(() => undefined)
+        : Promise.all([runOrderPipeline(env), runInboxClassifySweep(env), runMarketVisibilityReconcile(env)]).then(() => undefined)
     );
   },
   email: (message, env, ctx) => handleInboundEmail(message, env, ctx)

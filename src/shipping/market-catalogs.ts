@@ -1,10 +1,12 @@
 // src/shipping/market-catalogs.ts
 //
-// Admin wiring for the per-market product-availability fix (Task 12). For every
-// NON-PRIMARY market it adopts (or creates) the market's catalog + ALL_PRODUCTS
-// publication, computes which products are unfulfillable to every country in the
-// market via the pure computeMarketExclusions engine, and reconciles the
-// publication with minimal publishablesToRemove / publishablesToAdd diffs.
+// Admin wiring for per-market product visibility (Task 12, extended by the
+// visibility phase of local-for-local). For EVERY market with resolvable
+// countries - the UK primary included - it adopts (or creates) the market's
+// catalog + ALL_PRODUCTS publication, computes each market's exclusion set via
+// the pure computeMarketExclusions engine (local-lane products + transitional
+// CN scaffolding; cross-lane stock always out), and reconciles the publication
+// with minimal publishablesToRemove / publishablesToAdd diffs.
 //
 // Mutation input shapes (catalogCreate context.marketIds, publicationCreate
 // defaultState/autoPublish, publicationUpdate publishablesTo*) were verified
@@ -12,13 +14,16 @@
 // catalog gid://shopify/MarketCatalog/194716467538 + publication
 // gid://shopify/Publication/355273867602 exist and enforce at checkout.
 //
-// The UK primary (merchant-managed) market is deliberately untouched: GB and CN
-// products are UK-fulfillable, and the two US-only products are an owner-level
-// decision (recommended archive), not an automated exclusion from the primary
-// storefront market.
+// The UK primary market joins the sync so cross-lane stock (e.g. published
+// market-us products) can be excluded from the UK storefront. Shopify's docs
+// state no primary-market restriction on catalogs, and an ALL_PRODUCTS
+// auto-publish attach is behavior-neutral by construction; if the live API
+// nevertheless refuses, the per-market isolation below degrades to exactly the
+// old behavior (warn + skip) and nothing else is affected.
 
 import type { AdminGraphql } from '../shopify-admin';
 import type { LogisticsRoute } from '../logistics';
+import { visibilityModeFor } from '../local-markets';
 import { computeMarketExclusions, type MarketDef } from './market-exclusion';
 import { resolveNearestRoute } from './nearest-route';
 
@@ -108,19 +113,23 @@ export async function ensureMarketCatalog(
 const PUBLISHED_STATE_QUERY = `query pawscoutPublishedState($pid: ID!, $cursor: String) {
   products(first: 250, after: $cursor) {
     pageInfo { hasNextPage endCursor }
-    nodes { id publishedOnPublication(publicationId: $pid) }
+    nodes { id status publishedOnPublication(publicationId: $pid) }
   }
 }`;
 
-/** productId -> currently published on this publication? (paged, defensive) */
-async function publishedState(admin: AdminGraphql, publicationId: string): Promise<Map<string, boolean>> {
-  const state = new Map<string, boolean>();
+/** productId -> publication membership + product status (paged, defensive).
+ * Status matters for the re-add side of the diff: DRAFT products (the market
+ * seed lanes park up to 15 a night) read publishedOnPublication=false, and
+ * re-adding them every run would fire a pointless mutation per market per
+ * sweep - autoPublish already includes them the moment they go ACTIVE. */
+async function publishedState(admin: AdminGraphql, publicationId: string): Promise<Map<string, { on: boolean; active: boolean }>> {
+  const state = new Map<string, { on: boolean; active: boolean }>();
   let cursor: string | null = null;
   for (let page = 0; page < 20; page++) {
     const data = await admin(PUBLISHED_STATE_QUERY, { pid: publicationId, cursor });
-    const conn = data.products as { pageInfo?: { hasNextPage?: boolean; endCursor?: string }; nodes?: { id?: string; publishedOnPublication?: boolean }[] };
+    const conn = data.products as { pageInfo?: { hasNextPage?: boolean; endCursor?: string }; nodes?: { id?: string; status?: string; publishedOnPublication?: boolean }[] };
     for (const n of conn?.nodes ?? []) {
-      if (n.id) state.set(n.id, n.publishedOnPublication === true);
+      if (n.id) state.set(n.id, { on: n.publishedOnPublication === true, active: n.status === 'ACTIVE' });
     }
     if (!conn?.pageInfo?.hasNextPage || !conn.pageInfo.endCursor) break;
     cursor = conn.pageInfo.endCursor;
@@ -175,12 +184,15 @@ export interface MarketExclusionResult {
 }
 
 /**
- * Daily reconcile: quote==checkout for market availability. Products a market
- * cannot be fulfilled to are removed from its catalog publication (checkout-level
- * enforcement that Managed Markets backfill cannot re-introduce); products that
- * become fulfillable again are re-added. Uses the SAME resolveNearestRoute +
- * cj_logistics data as the inbox agent and the delivery-profile sync, so what we
- * sell, quote, and ship stays one consistent truth.
+ * Reconcile (nightly + every 15-min sweep): local-for-local market visibility.
+ * Each market's catalog publication converges on its local-lane products plus,
+ * while the market is transitional, the CN scaffolding it can genuinely be
+ * fulfilled from (quote==checkout enforcement that Managed Markets backfill
+ * cannot re-introduce). Cross-lane stock - a published market-us product in the
+ * UK storefront above all - is removed within one sweep. Uses the SAME
+ * resolveNearestRoute + cj_logistics data as the inbox agent and the
+ * delivery-profile sync, so what we sell, quote, and ship stays one consistent
+ * truth. Converged runs issue no mutations (read-only, cheap at 15-min cadence).
  */
 export async function syncMarketExclusions(
   admin: AdminGraphql,
@@ -192,8 +204,10 @@ export async function syncMarketExclusions(
 ): Promise<{ markets: MarketExclusionResult[] }> {
   const retryDelaysMs = opts.retryDelaysMs ?? PUBLICATION_RETRY_DELAYS_MS;
   const live = await listLiveMarkets(admin);
-  const managed = live.filter((m) => !m.primary && m.countries.length > 0);
-  if (!managed.length) return { markets: [] };
+  const scoped = live
+    .filter((m) => m.countries.length > 0)
+    .map((m) => ({ ...m, mode: visibilityModeFor(m.countries) }));
+  if (!scoped.length) return { markets: [] };
 
   const memberships = await store.listSignatureMemberships();
   const allProductIds = new Set([...memberships.values()].flat());
@@ -204,7 +218,7 @@ export async function syncMarketExclusions(
   const origins = new Set<string>();
   for (const sig of memberships.keys()) for (const o of sig.split(',')) origins.add(o);
   const dests = new Set<string>();
-  for (const m of managed) for (const c of m.countries) dests.add(c);
+  for (const m of scoped) for (const c of m.countries) dests.add(c);
   const routes = new Map<string, LogisticsRoute | null>();
   for (const o of origins) {
     for (const d of dests) {
@@ -215,11 +229,11 @@ export async function syncMarketExclusions(
     resolveNearestRoute(sig.split(',').map((o) => routes.get(`${o}|${dest}`)).filter((r): r is LogisticsRoute => !!r)).fulfillable;
 
   const exclusions = new Map(
-    computeMarketExclusions(managed, memberships, isFulfillable).map((e) => [e.market.id, e.excludeProductIds])
+    computeMarketExclusions(scoped, memberships, isFulfillable).map((e) => [e.market.id, e.excludeProductIds])
   );
 
   const results: MarketExclusionResult[] = [];
-  for (const market of managed) {
+  for (const market of scoped) {
     // Per-market isolation: one market's failure (e.g. a rejected mutation) must
     // not block the others; the nightly cron retries tomorrow.
     try {
@@ -229,16 +243,21 @@ export async function syncMarketExclusions(
 
       // Minimal diff, scoped to OUR catalog products: remove currently-published
       // products that must be excluded; re-add previously-excluded products that
-      // are fulfillable again. Unknown products (not in the state scan) are left
+      // belong again. Unknown products (not in the state scan) are left
       // alone - never a blind write. Live-verified semantics (2026-07-03):
       // ALL_PRODUCTS-included ACTIVE products read publishedOnPublication=true,
       // an excluded product reads false, ARCHIVED products read false (and are
-      // never in memberships, so they are never blindly re-added). A freshly
-      // created publication may briefly read false everywhere while ALL_PRODUCTS
-      // populates - the diff then no-ops or re-adds fulfillable products and
-      // CONVERGES on the next nightly run; it can never over-exclude.
-      const toRemove = [...desiredExcluded].filter((id) => state.get(id) === true);
-      const toAdd = [...allProductIds].filter((id) => !desiredExcluded.has(id) && state.get(id) === false);
+      // never in memberships, so they are never blindly re-added). Re-adds are
+      // limited to ACTIVE products: DRAFT seed-lane products read false and
+      // autoPublish includes them on activation anyway. A freshly created
+      // publication may briefly read false everywhere while ALL_PRODUCTS
+      // populates - the diff then no-ops or re-adds eligible products and
+      // CONVERGES on the next run; it can never over-exclude.
+      const toRemove = [...desiredExcluded].filter((id) => state.get(id)?.on === true);
+      const toAdd = [...allProductIds].filter((id) => {
+        const s = state.get(id);
+        return !desiredExcluded.has(id) && s?.on === false && s.active;
+      });
 
       for (const ids of chunk(toRemove, PUBLISHABLES_CHUNK)) {
         await publicationUpdateWithRetry(admin, publicationId, { publishablesToRemove: ids }, 'remove', retryDelaysMs);

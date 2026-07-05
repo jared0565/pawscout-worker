@@ -33,6 +33,31 @@ export function localWarehousesFor(buyerCountry: string | null | undefined): str
  *  when those seed runs land. */
 export const HOME_MARKET_WAREHOUSES = localWarehousesFor('GB');
 
+/** Markets that have LAUNCHED as local-only (ISO country codes; a market
+ *  qualifies when any of its countries is listed). Until a market is listed
+ *  here it runs 'transitional': its local-warehouse products PLUS the CN
+ *  scaffolding catalog, which keeps shelves stocked while the local range
+ *  fills. Flip a market to local-only at its launch, when its local range can
+ *  stand alone; CN items then drop from that market's catalog overnight.
+ *  Empty today: every market (UK included) still leans on CN scaffolding. */
+export const LOCAL_ONLY_MARKETS: string[] = [];
+
+export type MarketVisibilityMode = 'transitional' | 'local_only';
+
+/** Visibility mode for a market given its member countries. */
+export function visibilityModeFor(countries: string[], launched: string[] = LOCAL_ONLY_MARKETS): MarketVisibilityMode {
+  return countries.some((c) => launched.includes(c.trim().toUpperCase()))
+    ? 'local_only' : 'transitional';
+}
+
+/** Union of local warehouses across a market's member countries (e.g. the
+ *  US+CA market -> {US}; the EU market -> the EU warehouse set). */
+export function marketLocalWarehouses(countries: string[]): Set<string> {
+  const locals = new Set<string>();
+  for (const c of countries) for (const w of localWarehousesFor(c)) locals.add(w);
+  return locals;
+}
+
 /** Best available quantity across the given local warehouses. Tolerates CJ's
  *  GB/UK aliasing; absent/undefined origins count as zero (fail closed - an
  *  unverified origin is exactly the CN-era ambiguity this model ends). */

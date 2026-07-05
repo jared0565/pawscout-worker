@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { localWarehousesFor, bestLocalQty, HOME_MARKET_WAREHOUSES, EU_COUNTRIES } from '../src/local-markets';
+import { localWarehousesFor, bestLocalQty, marketLocalWarehouses, visibilityModeFor, HOME_MARKET_WAREHOUSES, LOCAL_ONLY_MARKETS, EU_COUNTRIES } from '../src/local-markets';
 
 // Local-for-local (owner's governing model, 2026-07-05): every market's buyers
 // are served ONLY from warehouses local to them. These mappings drive the
@@ -32,6 +32,31 @@ describe('localWarehousesFor', () => {
 
   it('the home market constant is GB', () => {
     expect(HOME_MARKET_WAREHOUSES).toEqual(['GB']);
+  });
+});
+
+describe('marketLocalWarehouses', () => {
+  it('unions locals across a market\'s member countries', () => {
+    expect([...marketLocalWarehouses(['US', 'CA'])]).toEqual(['US']);
+    expect([...marketLocalWarehouses(['GB'])]).toEqual(['GB']);
+    expect(marketLocalWarehouses(['DE', 'FR']).has('DE')).toBe(true);
+    expect([...marketLocalWarehouses([])]).toEqual([]);
+    expect([...marketLocalWarehouses(['JP'])]).toEqual([]); // unserved country -> no locals
+  });
+});
+
+describe('visibilityModeFor', () => {
+  it('every market is transitional until its launch flips it (LOCAL_ONLY_MARKETS empty today)', () => {
+    expect(LOCAL_ONLY_MARKETS).toEqual([]);
+    expect(visibilityModeFor(['GB'])).toBe('transitional');
+    expect(visibilityModeFor(['US', 'CA'])).toBe('transitional');
+    expect(visibilityModeFor([])).toBe('transitional');
+  });
+
+  it('a launched country flips its whole market to local-only', () => {
+    expect(visibilityModeFor(['US', 'CA'], ['US'])).toBe('local_only');
+    expect(visibilityModeFor(['GB'], ['US'])).toBe('transitional'); // other markets untouched
+    expect(visibilityModeFor(['DE', 'FR'], ['DE'])).toBe('local_only');
   });
 });
 
