@@ -1,5 +1,6 @@
 import type { AffiliateMode, ScreenFacts, ScreenVerdict, ThreadRow, MessageRow } from './types';
 import { applySalutation, renderReplyHtml } from './draft';
+import { stripQuotedReply } from './quote';
 import type { TenantStore } from '../tenant-store';
 import type { Env, TenantConfig } from '../types';
 import { LlmClient } from '../llm';
@@ -58,29 +59,33 @@ export function resolveFromAddress(opts: { partnershipLane: boolean; toAddr: str
 }
 
 /** Commission-for-volume pitch ("give me X% and I will sell Y units"): needs two
- * of the three signals - commission language, a percentage, a volume promise - so
- * a plain "what commission do you offer?" still gets the normal funnel. Pure and
+ * of four signals - commission language (incl. "pay me"), a percentage, a volume
+ * promise, or method-pitch phrasing ("my marketing method", "work with me
+ * long-term") - so a plain "what commission do you offer?" still gets the normal
+ * funnel. Signal shapes come from live pitches (2026-07-05: the 3%-for-40-orders,
+ * 15-sales-per-week-pay-me, and 5-7-orders-a-day-GSE-method threads). Pure and
  * deterministic; grounded in the message TEXT only (standing rule). */
 export function detectVolumePitch(text: string): boolean {
   const t = text.toLowerCase();
-  const commission = /\b(commission|rev(?:enue)? ?share|per sale|payout|my cut)\b/.test(t);
+  const commission = /\b(commission|rev(?:enue)? ?share|per sale|payout|my cut|pay(?:ing)? (?:me|us))\b/.test(t);
   const percent = /\b\d{1,2}(?:\.\d)?\s*(?:%|percent)/.test(t);
   const volume =
-    /\b(?:sell|shift|move|guarantee[ds]?|deliver)\b[^.!?\n]{0,60}?\b\d[\d,]*\+?\s*(?:units?|pieces?|products?|items?|orders?|sales?)\b/.test(t)
+    /\b(?:sell|shift|move|guarantee[ds]?|deliver|generate)\b[^.!?\n]{0,60}?\b\d[\d,]*\+?\s*(?:units?|pieces?|products?|items?|orders?|sales?)\b/.test(t)
     || /\b\d[\d,]*\+?\s*(?:units?|pieces?|orders?|sales?)\s*(?:a|per|every)\s*(?:day|week|month)\b/.test(t);
-  return [commission, percent, volume].filter(Boolean).length >= 2;
+  const methodPitch = /\b(marketing (?:method|strategy|system|campaign)|my (?:method|strategy|system)|long[- ]term partnership|work with (?:me|us) long[- ]term)\b/.test(t);
+  return [commission, percent, volume, methodPitch].filter(Boolean).length >= 2;
 }
 
-/** Pure service pitch (site-speed/SEO/listing/design vendors): offer-phrasing plus
- * a service keyword, and it STANDS DOWN on any creator signal - a creator who also
- * mentions SEO still gets the funnel. When in doubt, the funnel; never a wrong
- * decline. Pure and deterministic; message TEXT only. */
+/** Pure service pitch (site-speed/SEO/listing/design/marketing vendors):
+ * offer-phrasing plus a service keyword, and it STANDS DOWN on any creator
+ * signal - a creator who also mentions SEO still gets the funnel. When in doubt,
+ * the funnel; never a wrong decline. Pure and deterministic; message TEXT only. */
 export function detectServicePitch(text: string): boolean {
   const t = text.toLowerCase();
   const creator = /\b(followers?|subscribers?|audience|my (?:blog|channel|page|instagram|tiktok|youtube)|influencer|creator|promote your|feature your|review your)\b/.test(t);
   if (creator) return false;
-  const offer = /\b(we (?:offer|provide|speciali[sz]e|deliver|can (?:help|improve|boost|fix|increase|optimi[sz]e|redesign|rebuild|build))|our (?:agency|team|company|service|studio|developers?)|i (?:offer|provide)|i(?:'| a)m a (?:freelance|web|shopify|seo))\b/.test(t);
-  const service = /\b(page speed|site speed|loading speed|load(?:ing)? times?|speed optimi[sz]ation|seo|search engine (?:optimi[sz]ation|rankings?)|product listings? (?:service|optimi[sz]ation)|listing services?|store (?:audit|redesign|design|development)|web(?:site)? (?:design|development|audit)|app development|virtual assistant|social media (?:management|marketing)|conversion rate|cro audit)\b/.test(t);
+  const offer = /\b(we (?:offer|provide|speciali[sz]e|deliver|can (?:help|improve|boost|fix|increase|optimi[sz]e|redesign|rebuild|build))|our (?:agency|team|company|service|studio|developers?)|i (?:offer|provide)|i(?:'| a)m a (?:freelance|web|shopify|seo)|my \d+\+? ?years'? (?:of )?experience|i know i can)\b/.test(t);
+  const service = /\b(page speed|site speed|loading speed|load(?:ing)? times?|speed optimi[sz]ation|seo|search engine (?:optimi[sz]ation|rankings?)|product listings? (?:service|optimi[sz]ation)|listing services?|store (?:audit|redesign|design|development)|web(?:site)? (?:design|development|audit)|app development|virtual assistant|social media (?:management|marketing)|conversion rate|cro audit|revenue (?:structure|trajectory|growth)|scale your (?:store|brand|business)|grow your (?:store|brand|sales|business)|marketing and optimi[sz]ation|store optimi[sz]ation|e-?commerce (?:consultant|expert|specialist|ecosystem))\b/.test(t);
   return offer && service;
 }
 
@@ -322,11 +327,26 @@ export async function maybePartnershipDraft(
   // untouched, and isPartnershipLane only ORs the partnerships on-ramp in.
   const declaredIntent = got.thread.declared_intent;
   const applicant = await store.getApplicantByThread(thread.id);
-  if (!isPartnershipLane({ inboundToAddrs, declaredIntent, primaryCategory: thread.primary_category })) return null;
+
+  // Pitch on-ramp (2026-07-05): the owner-observed pitch patterns arrive at
+  // contact@ classified 'other', usually AFTER a bait opener ("do you ship to
+  // the UK?") that we answered - so the address/category lane alone misses
+  // them. The LATEST inbound's own words (quote-stripped) can pull a thread
+  // into this funnel: a fresh volume or service pitch is a partnership
+  // conversation wherever it landed. Latest-text-only on purpose: an old pitch
+  // deeper in the thread must never re-open a conversation we already settled
+  // (a bare "Okay" after our decline stays with the generic drafter). Once an
+  // applicant record exists the thread stays in the funnel regardless.
+  const latestInbound = [...got.messages].reverse().find((m) => m.direction === 'inbound');
+  const latestNewText = stripQuotedReply(latestInbound?.body_text ?? '').trim();
+  const servicePitch = detectServicePitch(latestNewText);
+  const volumePitchNow = detectVolumePitch(latestNewText);
+  if (!applicant && !servicePitch && !volumePitchNow
+      && !isPartnershipLane({ inboundToAddrs, declaredIntent, primaryCategory: thread.primary_category })) return null;
 
   const contact = await store.getContactByEmail(thread.contact_email);
   const name = contact?.name ?? null;
-  const inboundText = got.messages.filter((m) => m.direction === 'inbound').map((m) => m.body_text ?? '').join('\n\n');
+  const inboundText = got.messages.filter((m) => m.direction === 'inbound').map((m) => stripQuotedReply(m.body_text ?? '')).join('\n\n');
 
   // decline_all (2026-07-03 policy, now a Settings toggle): decline ALL partnership
   // approaches politely. Applies at every stage (first touch AND in-flight
@@ -365,7 +385,7 @@ export async function maybePartnershipDraft(
   // touch only; replies after the decline fall through to the generic drafter
   // like every declined thread. Always HITL for now: flip to the decline_all
   // switch logic once the owner has validated this template on live traffic.
-  if (!applicant && detectServicePitch(inboundText)) {
+  if (!applicant && servicePitch) {
     const body = buildServiceDecline(name);
     const draftId = await store.insertDraft({
       threadId: thread.id, bodyText: body, bodyHtml: renderReplyHtml(body),
@@ -377,8 +397,10 @@ export async function maybePartnershipDraft(
 
   // Commission-for-volume pitches get the SAME funnel, plus the earned-tier
   // terms appended: the negotiation ends at first touch because tiers are
-  // earned through the attribution ledger, never promised.
-  const volumePitch = detectVolumePitch(inboundText);
+  // earned through the attribution ledger, never promised. The whole stripped
+  // thread is checked here (not just the latest message) so the ladder still
+  // rides the qualifying email when the pitch preceded a nudge.
+  const volumePitch = volumePitchNow || detectVolumePitch(inboundText);
 
   // First touch: send the qualifying email, record the applicant.
   if (!applicant) {

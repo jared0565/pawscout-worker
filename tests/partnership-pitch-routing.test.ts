@@ -16,6 +16,7 @@ import {
   detectVolumePitch, detectServicePitch, buildQualifyingEmail, maybePartnershipDraft,
   STANDARD_COMMISSION_PCT, TIER_REVIEW_ORDERS, TIER_MAX_PCT
 } from '../src/inbox/partnership';
+// (the on-ramp tests below exercise maybePartnershipDraft with category 'other')
 import { DEFAULT_INBOX } from '../src/inbox/types';
 import { DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, type TenantConfig } from '../src/types';
 
@@ -31,6 +32,25 @@ async function seedFirstTouch(shop: string, bodyText: string) {
   await s.insertInboundMessageIfNew({ threadId: tid, messageId: `<p1@${shop}>`, inReplyTo: null, references: [], from: 'p@x.com', to: 'sales@activepaw.co.uk', subject: 'Partnership', bodyText, bodyHtml: null, headersJson: '{}', receivedAt: '2026-07-05T10:00:00Z' });
   return { s, tid };
 }
+
+/** Bait-opener shape from the live threads (2026-07-05): innocent question at
+ * contact@ classified 'other', our answer, then the real pitch in a follow-up. */
+async function seedBaitOpener(shop: string, opener: string, pitch: string) {
+  const s = new TenantStore(env.DB, shop);
+  await s.upsertContact({ email: 'p@x.com', name: 'Sam', phone: null });
+  const tid = await s.createThread({ contactEmail: 'p@x.com', subject: '', subjectNorm: '', receivedAt: '2026-07-04T10:00:00Z', initialStatus: 'needs_reply' });
+  await s.setThreadClassification(tid, { status: 'needs_reply', primaryCategory: 'other', intentScore: 20, summary: null, classifiedAt: '2026-07-04T10:00:01Z' });
+  await s.insertInboundMessageIfNew({ threadId: tid, messageId: `<o1@${shop}>`, inReplyTo: null, references: [], from: 'p@x.com', to: 'contact@activepaw.co.uk', subject: '', bodyText: opener, bodyHtml: null, headersJson: '{}', receivedAt: '2026-07-04T10:00:00Z' });
+  await s.insertOutboundMessage({ threadId: tid, messageId: `<r1@${shop}>`, from: 'contact@activepaw.co.uk', to: 'p@x.com', subject: '', bodyText: 'Hi Sam,\n\nYes, we ship there.\n\nBest Regards,\nActive Paw Customer Service', bodyHtml: '<p>Yes</p>', sentAt: '2026-07-04T11:00:00Z' });
+  await s.insertInboundMessageIfNew({ threadId: tid, messageId: `<o2@${shop}>`, inReplyTo: `<r1@${shop}>`, references: [], from: 'p@x.com', to: 'contact@activepaw.co.uk', subject: '', bodyText: pitch, bodyHtml: null, headersJson: '{}', receivedAt: '2026-07-05T09:00:00Z' });
+  return { s, tid };
+}
+
+// Condensed from the live pending threads (2026-07-05 realignment).
+const OLATUNJI_PITCH = 'How are you doing? I have a strategy that can position your store to generate consistently 40 fulfilled orders and you only pay me 3% commissions.';
+const AMJAD_PITCH = 'I would love the opportunity to demonstrate what I can bring to your store. If I can consistently generate 5-7 orders per day using my GSE marketing method, would you be willing to work with me long-term?';
+const SALMAN_PITCH = 'I am reaching out as a freelancer because I see the vision behind what you are building. With my 3+ years experience in the e-commerce ecosystem, I know I can change the current trajectory of your brands revenue structure in under 3 months of consistent marketing and optimization. Let me know your availability for a meeting.';
+const SAMLARRY_PITCH = 'Your store caught my attention because it can generate at least 25 sales per week. If I am able to consistently generate 15 sales per week for your store, would you be open to paying me a commission?';
 
 describe('detectVolumePitch', () => {
   it('fires on commission negotiated against promised volume', () => {
@@ -131,5 +151,69 @@ describe('maybePartnershipDraft pitch routing (live default funnel_voucher)', ()
     const draft = await s.getPendingDraft(tid);
     expect(draft!.body_text).toMatch(/where would you promote/i);
     expect((await s.getApplicantByThread(tid))!.stage).toBe('screen_sent');
+  });
+});
+
+describe('live pitch shapes (condensed from the 2026-07-05 pending threads)', () => {
+  it('detectVolumePitch catches the 3%-commission, pay-me-per-week, and marketing-method shapes', () => {
+    expect(detectVolumePitch(OLATUNJI_PITCH)).toBe(true);   // percent + commission
+    expect(detectVolumePitch(SAMLARRY_PITCH)).toBe(true);   // volume + paying me
+    expect(detectVolumePitch(AMJAD_PITCH)).toBe(true);      // volume + marketing method
+  });
+
+  it('detectServicePitch catches the freelancer revenue-trajectory shape', () => {
+    expect(detectServicePitch(SALMAN_PITCH)).toBe(true);
+    expect(detectVolumePitch('Okay')).toBe(false);
+    expect(detectServicePitch('Okay')).toBe(false);
+  });
+});
+
+describe('pitch on-ramp (contact@ + category other, after a bait opener)', () => {
+  it('a volume pitch in the follow-up pulls the thread into the funnel with the earned ladder', async () => {
+    const { s, tid } = await seedBaitOpener('ola.myshopify.com', 'Do you ship to the UK?', OLATUNJI_PITCH);
+    const got = (await s.getThreadWithMessages(tid))!;
+    const r = await maybePartnershipDraft({ ...env } as any, s, CFG, got.thread, got, noFetch);
+    expect(r).not.toBeNull(); // category 'other' + contact@ no longer hides the pitch
+    expect(r!.send).toBe(false);
+    const draft = await s.getPendingDraft(tid);
+    expect(draft!.body_text).toMatch(/where would you promote/i);
+    expect(draft!.body_text).toContain(`${TIER_REVIEW_ORDERS} tracked orders`);
+    expect((await s.getApplicantByThread(tid))!.stage).toBe('screen_sent');
+  });
+
+  it('a service pitch in the follow-up gets the dedicated decline', async () => {
+    const { s, tid } = await seedBaitOpener('sal.myshopify.com', 'Can I speak with the owner of this brand?', SALMAN_PITCH);
+    const got = (await s.getThreadWithMessages(tid))!;
+    const r = await maybePartnershipDraft({ ...env } as any, s, CFG, got.thread, got, noFetch);
+    expect(r).not.toBeNull();
+    expect(r!.send).toBe(false); // HITL
+    const draft = await s.getPendingDraft(tid);
+    expect(draft!.body_text).toMatch(/in-house/i);
+    expect(draft!.body_text).not.toMatch(/where would you promote/i);
+    expect((await s.getApplicantByThread(tid))!.stage).toBe('declined');
+  });
+
+  it('a bare "Okay" after our decline does NOT re-open the thread (latest-text grounding)', async () => {
+    // Samlarry shape: the pitch is DEEPER in the thread, we declined, they said Okay.
+    const { s, tid } = await seedBaitOpener('sml.myshopify.com', SAMLARRY_PITCH, 'Okay');
+    const got = (await s.getThreadWithMessages(tid))!;
+    expect(await maybePartnershipDraft({ ...env } as any, s, CFG, got.thread, got, noFetch)).toBeNull();
+    expect(await s.getApplicantByThread(tid)).toBeNull(); // never entered the funnel
+  });
+
+  it('an ordinary customer follow-up never trips the on-ramp', async () => {
+    const { s, tid } = await seedBaitOpener('cus.myshopify.com', 'Do you ship to the UK?', 'Great, thanks! How long does delivery usually take?');
+    const got = (await s.getThreadWithMessages(tid))!;
+    expect(await maybePartnershipDraft({ ...env } as any, s, CFG, got.thread, got, noFetch)).toBeNull();
+  });
+
+  it('an existing applicant keeps the thread in the funnel even when classified other', async () => {
+    const { s, tid } = await seedBaitOpener('app.myshopify.com', 'Do you ship to the UK?', 'Here are my answers to your questions.');
+    await s.upsertApplicant({ threadId: tid, contactEmail: 'p@x.com', stage: 'passed_to_form' });
+    const got = (await s.getThreadWithMessages(tid))!;
+    const r = await maybePartnershipDraft({ ...env } as any, s, CFG, got.thread, got, noFetch);
+    expect(r).not.toBeNull(); // holding ack, never the generic drafter
+    const draft = await s.getPendingDraft(tid);
+    expect(draft!.body_text).toMatch(/reviewing|taking a look/i);
   });
 });
