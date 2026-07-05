@@ -1079,107 +1079,322 @@ export async function runMarketVisibilityReconcile(env: Env): Promise<void> {
   }
 }
 
-/** Daily cron entry point: retention purges, then per-tenant cull + refill. */
-export async function runDailyMaintenance(env: Env): Promise<void> {
-  await purgeExpiredSearchCache(env.DB);
-  await purgeUnusedWarehouse(env.DB, new Date(Date.now() - 30 * 86400_000).toISOString());
-  await trimOldLogs(env.DB, new Date(Date.now() - LOG_RETENTION_DAYS * 86400_000).toISOString());
+// ---------------------------------------------------------------------------
+// Resumable daily maintenance - stage-cursor continuation.
+//
+// A Cloudflare cron invocation gets ~15 minutes of wall clock; the full nightly
+// outgrew it (proven live 2026-07-05: the run died at 04:32 mid-seeding, and
+// everything sequenced after the seed lanes silently never ran - the completion
+// stamp had NEVER been written). The nightly is therefore a CHAIN of named,
+// individually re-runnable stages driven by a persisted cursor: the 04:17 cron
+// seeds the cursor and drives as many stages as fit before the next
+// quarter-hour, and every 15-min tick resumes the chain until it completes.
+// JOB_STAMP_DAILY is stamped per shop only when that shop's LAST stage
+// finishes, so Glance's dailyLastRunAt now means "the whole nightly ran".
+//
+// Guarantees:
+//  - at-least-once per stage: a killed invocation leaves the cursor ON the
+//    stage it was running; the next tick re-runs it. Every stage is nightly-
+//    idempotent by construction (re-running refreshes, never duplicates).
+//  - mutual exclusion: a lease (stage maxMs + slack) is taken before each
+//    stage, so an overshooting invocation and the next tick never drive the
+//    same stage concurrently.
+//  - bounded invocations: a stage is only STARTED when its declared maxMs fits
+//    before the quarter-hour deadline (90s safety margin); the catalog-walking
+//    sweeps additionally checkpoint their offset mid-stage.
+//  - stage failures warn and advance (best-effort, the same philosophy as the
+//    old inline try/catches) - one broken stage no longer kills the night.
 
-  // Refresh the CJ delivery-time matrix ONCE (fetch-once-fan-out), in the idle
-  // relay window before any per-shop work - so it's fresh before any PDP metafield
-  // write. Best-effort: a failure here must never block the rest of maintenance.
-  try { await syncCjLogistics(env); } catch (e) { console.warn(`cj logistics sync failed: ${(e as Error).message}`); }
+const MIN_MS = 60_000;
+const QUARTER_MS = 15 * MIN_MS;
+const DAILY_CURSOR_SHOP = '__jobs__'; // sentinel row in search_cache (not a real tenant)
+export const DAILY_CURSOR_KEY = 'job:daily-cursor';
+
+export interface DailyCursor {
+  date: string;          // YYYY-MM-DD the chain belongs to
+  shops: string[];       // frozen at chain start so mid-day tenant changes cannot shift indices
+  g: number;             // next global stage index
+  si: number;            // current shop index
+  ss: number;            // next shop-stage index
+  ssName: string | null; // stage name at ss (re-resolves the index if a deploy reshapes the list)
+  off: number | null;    // mid-stage offset for the catalog-walking sweeps
+  leaseUntil: number;    // epoch ms; a live lease means another invocation is mid-stage
+}
+
+export async function readDailyCursor(db: D1Database): Promise<DailyCursor | null> {
+  const row = await db.prepare(
+    `SELECT payload FROM search_cache WHERE shop = ?1 AND cache_key = ?2`
+  ).bind(DAILY_CURSOR_SHOP, DAILY_CURSOR_KEY).first<{ payload: string }>();
+  if (!row) return null;
+  try { return JSON.parse(row.payload) as DailyCursor; } catch { return null; }
+}
+
+/** Exported for tests. expires_at is 2 days out: an abandoned cursor self-purges. */
+export async function writeDailyCursor(db: D1Database, cur: DailyCursor | null): Promise<void> {
+  if (!cur) {
+    await db.prepare(`DELETE FROM search_cache WHERE shop = ?1 AND cache_key = ?2`)
+      .bind(DAILY_CURSOR_SHOP, DAILY_CURSOR_KEY).run();
+    return;
+  }
+  const now = new Date();
+  await db.prepare(
+    `INSERT INTO search_cache (shop, cache_key, payload, created_at, expires_at) VALUES (?1, ?2, ?3, ?4, ?5)
+     ON CONFLICT(shop, cache_key) DO UPDATE SET payload = ?3, expires_at = ?5`
+  ).bind(
+    DAILY_CURSOR_SHOP, DAILY_CURSOR_KEY, JSON.stringify(cur),
+    now.toISOString(), new Date(now.getTime() + 2 * 86400_000).toISOString()
+  ).run();
+}
+
+/** Stages only start when they fit before the next quarter-hour boundary (90s
+ * safety), so a driver never runs into the next tick's invocation. Invoked too
+ * close to a boundary, it uses the following window instead. */
+export function chainDeadline(now: number): number {
+  let d = Math.ceil((now + 1) / QUARTER_MS) * QUARTER_MS - 90_000;
+  if (d <= now + 30_000) d += QUARTER_MS;
+  return d;
+}
+
+export interface DailyShopCtx {
+  env: Env;
+  shop: string;
+  store: TenantStore;
+  admin: AdminGraphql;
+  cfg: TenantConfig;
+  cj: CjClient | null; // null when the shop has no CJ credential
+  llm: LlmClient;
+  curate?: (detail: CjDetail, context: string) => ReturnType<typeof curateProduct>;
+  pickHero?: (title: string, urls: string[]) => ReturnType<typeof pickHeroImage>;
+}
+
+export interface DailyGlobalStage {
+  name: string;
+  maxMs: number;
+  run(env: Env, deadline: number): Promise<void>;
+}
+
+export interface DailyStage {
+  name: string;
+  maxMs: number;
+  /** Default true: skipped for shops without a CJ credential (only cull runs, as before). */
+  needsCj?: boolean;
+  /** Return a number to checkpoint a mid-stage offset (deadline reached); return
+   * nothing when the stage is complete. */
+  run(ctx: DailyShopCtx, offset: number, deadline: number): Promise<number | void>;
+}
+
+export const DAILY_GLOBAL_STAGES: DailyGlobalStage[] = [
+  {
+    name: 'purge', maxMs: 2 * MIN_MS,
+    async run(env) {
+      await purgeExpiredSearchCache(env.DB);
+      await purgeUnusedWarehouse(env.DB, new Date(Date.now() - 30 * 86400_000).toISOString());
+      await trimOldLogs(env.DB, new Date(Date.now() - LOG_RETENTION_DAYS * 86400_000).toISOString());
+    }
+  },
+  // Refresh the CJ delivery-time matrix ONCE (fetch-once-fan-out) before any
+  // per-shop work, so it's fresh before any PDP metafield write.
+  { name: 'cj-logistics', maxMs: 10 * MIN_MS, run: async (env) => { await syncCjLogistics(env); } },
+];
+
+export const DAILY_SHOP_STAGES: DailyStage[] = [
+  { name: 'cull', maxMs: 3 * MIN_MS, needsCj: false, run: (ctx) => cullStaleProducts(ctx.store, ctx.admin).then(() => undefined) },
+  { name: 'warehouse-stock', maxMs: 10 * MIN_MS, run: async (ctx) => { await refreshWarehouseStock(ctx.store, ctx.cj!, ctx.cfg); } },
+  { name: 'replenish', maxMs: 8 * MIN_MS, run: async (ctx) => { await replenishWarehouse(ctx.store, ctx.cj!, ctx.cfg, { curate: ctx.curate }); } },
+  // Warm the term-library cores (hybrid cron half).
+  { name: 'semantic-library', maxMs: 3 * MIN_MS, run: async (ctx) => { await seedSemanticLibrary(ctx.store, ctx.llm, ctx.cfg); } },
+  // Ensure the affiliate-eligible smart collection exists before the inventory
+  // sync toggles per-product tags into it.
+  { name: 'affiliate-collection', maxMs: 2 * MIN_MS, run: async (ctx) => { await ensureAffiliateCollection(ctx.admin); } },
+  // Origin-signature backfill BEFORE the inventory sync + profile syncs, so a
+  // backfilled product is repriced (freight-baked sticker) and adopted into its
+  // engineered shipping profile in the SAME nightly chain.
+  { name: 'origin-backfill', maxMs: 8 * MIN_MS, run: async (ctx) => { await backfillOriginSignatures(ctx.store, ctx.cj!, ctx.cfg); } },
+  // Market fill lanes: paced nightly discovery of each target market's
+  // local-warehouse stock, drafted (never published) for owner review. One
+  // stage per lane so the budget check runs between lanes.
+  ...MARKET_SEED_LANES.map((lane): DailyStage => ({
+    name: `seed-${lane.countryCode.toLowerCase()}`, maxMs: 9 * MIN_MS,
+    async run(ctx) {
+      const r = await seedOriginAssortment(ctx.store, ctx.cj!, ctx.admin, ctx.cfg, { countryCode: lane.countryCode, maxDrafts: lane.maxDraftsPerNight, curate: ctx.curate, pickHero: ctx.pickHero });
+      if (r.drafted || r.discovered) console.log(`market seed ${lane.countryCode}: +${r.drafted} drafts (${r.discovered} discovered, ${r.rejected} rejected)`);
+    }
+  })),
+  { name: 'store-inventory', maxMs: 10 * MIN_MS, run: async (ctx) => { await syncStoreInventory(ctx.store, ctx.cj!, ctx.admin, ctx.cfg); } },
+  // Promote-from-warehouse (floor 8, target 12).
+  { name: 'refill', maxMs: 8 * MIN_MS, run: async (ctx) => { await refillCollections(ctx.store, ctx.cj!, ctx.admin, ctx.cfg, { curate: ctx.curate, pickHero: ctx.pickHero }); } },
+  // Flip ACTIVE seed drafts to imported.
+  { name: 'draft-links', maxMs: 3 * MIN_MS, run: async (ctx) => { await reconcileDraftLinks(ctx.store, ctx.admin); } },
+  // Unified nearest-warehouse shipping: per-origin-signature delivery profiles
+  // (free UK on GB items; per-route nearest-warehouse pricing elsewhere).
+  {
+    name: 'signature-profiles', maxMs: 4 * MIN_MS,
+    async run(ctx) {
+      const sc = resolveShipConfig(ctx.cfg.fulfil);
+      const l = resolveLogistics(ctx.cfg.fulfil);
+      const r = await syncSignatureProfiles(ctx.admin, ctx.store, { servedCountries: sc.servedCountries, fx: sc.fx, handlingGbp: sc.handlingGbp, stalenessHours: l.stalenessHours });
+      const moved = r.profiles.filter((p) => p.added || p.removed);
+      if (moved.length) console.log(`signature profiles reconcile: ${moved.map((p) => `${p.sig} +${p.added}/-${p.removed}`).join(', ')}`);
+    }
+  },
+  // Per-market visibility (Task 12 + local-for-local); also runs on the 15-min cron.
+  { name: 'market-visibility', maxMs: 4 * MIN_MS, run: (ctx) => reconcileMarketVisibility(ctx.admin, ctx.store, ctx.cfg) },
+  // Align hidden/visible add-ons to the toggle.
+  { name: 'addon-visibility', maxMs: 3 * MIN_MS, run: async (ctx) => { await reconcileAddonVisibility(ctx.store, ctx.admin, ctx.cfg); } },
+  // Retention reorder reminders (1.3) - DORMANT unless explicitly enabled; even
+  // then only emails marketing-SUBSCRIBED customers.
+  {
+    name: 'retention', maxMs: 3 * MIN_MS,
+    async run(ctx) {
+      if (ctx.env.RETENTION_REORDER_ENABLED === '1' || ctx.env.RETENTION_REORDER_ENABLED === 'true') {
+        await sendReorderReminders(ctx.store, ctx.admin, ctx.cfg, ctx.env);
+      }
+    }
+  },
+  // The catalog-walking sweeps checkpoint their offset against the deadline, so
+  // a long walk spans ticks instead of blowing the window.
+  {
+    name: 'categories', maxMs: 4 * MIN_MS,
+    async run(ctx, offset, deadline) {
+      let off: number | null = offset;
+      for (let i = 0; off !== null && i < 30; i++) {
+        if (Date.now() >= deadline) return off;
+        const r = await reconcileCategories(ctx.store, ctx.admin, ctx.cfg, { offset: off, limit: 25 });
+        off = r.next;
+      }
+    }
+  },
+  {
+    name: 'hero-images', maxMs: 5 * MIN_MS,
+    async run(ctx, offset, deadline) {
+      if (!ctx.pickHero) return;
+      let off: number | null = offset;
+      for (let i = 0; off !== null && i < 30; i++) {
+        if (Date.now() >= deadline) return off;
+        const r = await reconcileHeroImages(ctx.store, ctx.admin, ctx.cfg, ctx.pickHero, { offset: off, limit: 8 });
+        off = r.next;
+      }
+    }
+  },
+  {
+    name: 'descriptions', maxMs: 5 * MIN_MS,
+    async run(ctx, offset, deadline) {
+      if (!ctx.llm.available || !ctx.cfg.llm.enabled) return;
+      const rewrite = (title: string, raw: string) => rewriteDescription(ctx.llm, ctx.store, ctx.cfg, title, raw);
+      let off: number | null = offset;
+      for (let i = 0; off !== null && i < 30; i++) {
+        if (Date.now() >= deadline) return off;
+        const r = await reconcileDescriptions(ctx.store, ctx.admin, ctx.cfg, rewrite, { offset: off, limit: 8 });
+        off = r.next;
+      }
+    }
+  },
+];
+
+async function buildDailyShopCtx(env: Env, vault: Vault, shop: string): Promise<DailyShopCtx | null> {
+  const store = new TenantStore(env.DB, shop);
+  const tenant = await store.getTenant();
+  const cfg = await store.getConfig();
+  if (!tenant?.access_token_enc || !cfg) return null;
+  const accessToken = await vault.open(tenant.dek_wrapped, tenant.access_token_enc);
+  const admin = makeAdminGraphql(shop, accessToken);
+  let cj: CjClient | null = null;
+  if (await store.getSupplierCredential('cj')) {
+    const f = cjFetchFromEnv(env);
+    const tokens = new CjTokenManager(store, vault, f);
+    cj = new CjClient(() => tokens.getToken(), f);
+  }
+  const llm = new LlmClient({ openrouter: env.OPENROUTER_API_KEY, openai: env.OPENAI_API_KEY });
+  const curate = llm.available && cfg.llm.enabled
+    ? (detail: CjDetail, context: string) => curateProduct(llm, store, cfg, detail, context)
+    : undefined;
+  const pickHero = llm.available && cfg.llm.enabled
+    ? (title: string, urls: string[]) => pickHeroImage(llm, store, cfg, title, urls)
+    : undefined;
+  return { env, shop, store, admin, cfg, cj, llm, curate, pickHero };
+}
+
+/** Test injection points; production callers pass nothing. */
+export interface DailyDriveOpts {
+  globalStages?: DailyGlobalStage[];
+  shopStages?: DailyStage[];
+  buildCtx?: (env: Env, vault: Vault, shop: string) => Promise<DailyShopCtx | null>;
+  deadlineMs?: number;
+}
+
+/** Drive the persisted daily chain until it completes or the window closes. */
+export async function driveDailyChain(env: Env, opts: DailyDriveOpts = {}): Promise<void> {
+  const globalStages = opts.globalStages ?? DAILY_GLOBAL_STAGES;
+  const shopStages = opts.shopStages ?? DAILY_SHOP_STAGES;
+  const buildCtx = opts.buildCtx ?? buildDailyShopCtx;
+  const deadline = opts.deadlineMs ?? chainDeadline(Date.now());
+
+  const cur = await readDailyCursor(env.DB);
+  if (!cur) return;
+  if (cur.leaseUntil > Date.now()) return; // another invocation is mid-stage
+  const persist = () => writeDailyCursor(env.DB, cur);
+
+  while (cur.g < globalStages.length) {
+    const stage = globalStages[cur.g];
+    if (Date.now() + stage.maxMs > deadline) { await persist(); return; }
+    cur.leaseUntil = Date.now() + stage.maxMs + 30_000;
+    await persist();
+    try { await stage.run(env, deadline); }
+    catch (e) { console.warn(`daily global stage ${stage.name} failed: ${(e as Error).message}`); }
+    cur.g++; cur.leaseUntil = 0;
+    await persist();
+  }
 
   const vault = await Vault.fromMasterKey(env.PAWSCOUT_MASTER_KEY);
-  for (const shop of await listActiveShops(env.DB)) {
-    const store = new TenantStore(env.DB, shop);
-    try {
-      const tenant = await store.getTenant();
-      const cfg = await store.getConfig();
-      if (!tenant?.access_token_enc || !cfg) continue;
-      const accessToken = await vault.open(tenant.dek_wrapped, tenant.access_token_enc);
-      const admin = makeAdminGraphql(shop, accessToken);
-      await cullStaleProducts(store, admin);
-      if (await store.getSupplierCredential('cj')) {
-        const f = cjFetchFromEnv(env);
-        const tokens = new CjTokenManager(store, vault, f);
-        const cj = new CjClient(() => tokens.getToken(), f);
-        await refreshWarehouseStock(store, cj, cfg);
-        const llm = new LlmClient({ openrouter: env.OPENROUTER_API_KEY, openai: env.OPENAI_API_KEY });
-        const curate = llm.available && cfg.llm.enabled
-          ? (detail: CjDetail, context: string) => curateProduct(llm, store, cfg, detail, context)
-          : undefined;
-        const pickHero = llm.available && cfg.llm.enabled
-          ? (title: string, urls: string[]) => pickHeroImage(llm, store, cfg, title, urls)
-          : undefined;
-        await replenishWarehouse(store, cj, cfg, { curate });
-        await seedSemanticLibrary(store, llm, cfg); // warm the term-library cores (hybrid cron half)
-        // Ensure the affiliate-eligible smart collection exists before the
-        // inventory sync toggles per-product tags into it (best-effort).
-        try { await ensureAffiliateCollection(admin); } catch (e) { console.warn(`affiliate collection ensure failed: ${(e as Error).message}`); }
-        // Origin-signature backfill BEFORE the inventory sync + profile syncs, so a
-        // backfilled product is repriced (freight-baked sticker) and adopted into its
-        // engineered shipping profile in the SAME nightly run. Best-effort.
-        try { await backfillOriginSignatures(store, cj, cfg); } catch (e) { console.warn(`origin backfill skipped: ${(e as Error).message}`); }
-        // Market fill lanes: paced nightly discovery of each target market's
-        // local-warehouse stock, drafted (never published) for owner review.
-        for (const lane of MARKET_SEED_LANES) {
-          try {
-            const r = await seedOriginAssortment(store, cj, admin, cfg, { countryCode: lane.countryCode, maxDrafts: lane.maxDraftsPerNight, curate, pickHero });
-            if (r.drafted || r.discovered) console.log(`market seed ${lane.countryCode}: +${r.drafted} drafts (${r.discovered} discovered, ${r.rejected} rejected)`);
-          } catch (e) { console.warn(`market seed ${lane.countryCode} failed: ${(e as Error).message}`); }
-        }
-        await syncStoreInventory(store, cj, admin, cfg);
-        await refillCollections(store, cj, admin, cfg, { curate, pickHero }); // promote-from-warehouse (floor 8, target 12)
-        await reconcileDraftLinks(store, admin); // flip ACTIVE seed drafts to imported
-        // Unified nearest-warehouse shipping: reconcile per-origin-signature delivery profiles
-        // (free UK on GB items; per-route nearest-warehouse pricing elsewhere). Best-effort -
-        // needs read_shipping/write_shipping on the worker token.
-        try {
-          const sc = resolveShipConfig(cfg.fulfil);
-          const l = resolveLogistics(cfg.fulfil);
-          const r = await syncSignatureProfiles(admin, store, { servedCountries: sc.servedCountries, fx: sc.fx, handlingGbp: sc.handlingGbp, stalenessHours: l.stalenessHours });
-          const moved = r.profiles.filter((p) => p.added || p.removed);
-          if (moved.length) console.log(`signature profiles reconcile: ${moved.map((p) => `${p.sig} +${p.added}/-${p.removed}`).join(', ')}`);
-        } catch (e) { console.warn(`signature profile sync skipped: ${(e as Error).message}`); }
-        // Per-market visibility (Task 12 + local-for-local): reconcile every
-        // market's catalog publication - local-lane products plus transitional
-        // CN scaffolding; cross-lane stock removed (checkout-level enforcement
-        // Managed Markets backfill cannot re-introduce). Same resolveNearestRoute
-        // truth as the agent + profiles. Best-effort - needs read_markets/
-        // write_markets (granted 2026-07-03). Also runs on the 15-min cron.
-        await reconcileMarketVisibility(admin, store, cfg);
-        await reconcileAddonVisibility(store, admin, cfg); // align hidden/visible add-ons to the toggle
-        // Retention reorder reminders (1.3) - DORMANT unless explicitly enabled;
-        // even then only emails marketing-SUBSCRIBED customers. Best-effort.
-        if (env.RETENTION_REORDER_ENABLED === '1' || env.RETENTION_REORDER_ENABLED === 'true') {
-          try { await sendReorderReminders(store, admin, cfg, env); }
-          catch (e) { console.warn(`reorder reminders failed: ${(e as Error).message}`); }
-        }
-        for (let off: number | null = 0, i = 0; off !== null && i < 30; i++) {
-          const r = await reconcileCategories(store, admin, cfg, { offset: off, limit: 25 }); // re-file unambiguous mis-categorised products
-          off = r.next;
-        }
-        // Drain the batched vision/description sweeps over multiple iterations
-        // (each batch finishes well inside the request budget; the loop walks
-        // the whole catalog). Safety cap stops a runaway if `next` never clears.
-        if (pickHero) {
-          for (let off: number | null = 0, i = 0; off !== null && i < 30; i++) {
-            const r = await reconcileHeroImages(store, admin, cfg, pickHero, { offset: off, limit: 8 });
-            off = r.next;
-          }
-        }
-        if (llm.available && cfg.llm.enabled) {
-          const rewrite = (title: string, raw: string) => rewriteDescription(llm, store, cfg, title, raw);
-          for (let off: number | null = 0, i = 0; off !== null && i < 30; i++) {
-            const r = await reconcileDescriptions(store, admin, cfg, rewrite, { offset: off, limit: 8 });
-            off = r.next;
-          }
-        }
-      }
-      await store.putSearchCache(JOB_STAMP_DAILY, new Date().toISOString(), JOB_STAMP_TTL_DAYS);
-    } catch (e) {
-      console.warn(`daily maintenance failed for ${shop}: ${(e as Error).message}`);
+  while (cur.si < cur.shops.length) {
+    const shop = cur.shops[cur.si];
+    // Re-resolve the stage index by name if a deploy reshaped the list mid-day.
+    if (cur.ssName && shopStages[cur.ss]?.name !== cur.ssName) {
+      const byName = shopStages.findIndex((s) => s.name === cur.ssName);
+      if (byName >= 0) cur.ss = byName;
     }
+    let ctx: DailyShopCtx | null = null;
+    try { ctx = await buildCtx(env, vault, shop); }
+    catch (e) { console.warn(`daily maintenance skipped for ${shop}: ${(e as Error).message}`); }
+    if (ctx) {
+      while (cur.ss < shopStages.length) {
+        const stage = shopStages[cur.ss];
+        if ((stage.needsCj ?? true) && !ctx.cj) { cur.ss++; cur.ssName = null; cur.off = null; continue; }
+        if (Date.now() + stage.maxMs > deadline) { await persist(); return; }
+        cur.ssName = stage.name;
+        cur.leaseUntil = Date.now() + stage.maxMs + 30_000;
+        await persist();
+        let paused: number | void;
+        try { paused = await stage.run(ctx, cur.off ?? 0, deadline); }
+        catch (e) { console.warn(`daily stage ${stage.name} failed for ${shop}: ${(e as Error).message}`); paused = undefined; }
+        cur.leaseUntil = 0;
+        if (typeof paused === 'number') { cur.off = paused; await persist(); return; }
+        cur.ss++; cur.ssName = null; cur.off = null;
+        await persist();
+      }
+      // Shop chain complete -> completion stamp (Glance dailyLastRunAt).
+      try { await ctx.store.putSearchCache(JOB_STAMP_DAILY, new Date().toISOString(), JOB_STAMP_TTL_DAYS); } catch { /* stamp only */ }
+    }
+    cur.si++; cur.ss = 0; cur.ssName = null; cur.off = null;
+    await persist();
   }
+  await writeDailyCursor(env.DB, null);
+  console.log(`daily maintenance chain complete (${cur.date}, ${cur.shops.length} shop(s))`);
+}
+
+/** Daily cron entry point: seeds the stage cursor for a fresh chain and drives
+ * as many stages as fit this invocation; the 15-min cron resumes the rest. An
+ * unfinished chain from yesterday is dropped (freshness beats completeness). */
+export async function runDailyMaintenance(env: Env, opts: DailyDriveOpts = {}): Promise<void> {
+  const prior = await readDailyCursor(env.DB);
+  if (prior) console.warn(`daily chain ${prior.date} was incomplete (shop ${prior.si + 1}/${prior.shops.length}, stage ${prior.ssName ?? `g${prior.g}`}); starting fresh`);
+  const shops = await listActiveShops(env.DB);
+  await writeDailyCursor(env.DB, { date: new Date().toISOString().slice(0, 10), shops, g: 0, si: 0, ss: 0, ssName: null, off: null, leaseUntil: 0 });
+  await driveDailyChain(env, opts);
+}
+
+/** 15-min cron hook: continue an in-flight daily chain, else no-op (one read). */
+export async function resumeDailyMaintenance(env: Env, opts: DailyDriveOpts = {}): Promise<void> {
+  if (!(await readDailyCursor(env.DB))) return;
+  await driveDailyChain(env, opts);
 }
