@@ -79,6 +79,36 @@ export function asksDoYouDeliver(text: string): boolean {
   return /\b(?:do|does|did|can|could|will|would)\s+you\b[^.?!]{0,40}\b(?:ship|deliver|send|post|shipping|delivery)\b/i.test(text);
 }
 
+// Business-biography fabrication (2026-07-05, the Azan draft): no grounded fact
+// covers the business's age, scale or customer base, so ANY such claim in a
+// draft is invented. Sentence-scoped: the sentence must be ABOUT the business
+// (we/our/Active Paw/the store) AND make a longevity or scale claim - so a
+// product line like "this toy lasts for years" and the compliant privacy
+// decline ("how long we have been trading is not something we share") pass.
+const BIZ_SUBJECT = /\b(?:we|our|active\s+paw|the (?:store|shop|business))\b/i;
+const BIZ_LONGEVITY: RegExp[] = [
+  /\bbeen (?:running|trading|operating|open|established|going|around)\b[^.!?]{0,40}\b(?:for|since|over|more than|nearly|almost|years? now)\b/i,
+  /\b(?:established|founded|trading|operating|running|in business) (?:since|in) (?:19|20)\d{2}\b/i,
+  /\b(?:for|over|more than|nearly|almost) (?:a )?(?:good |couple of |few |several |many |number of )*years\b/i,
+  /\byears of (?:experience|trading|business|serving)\b/i,
+];
+const BIZ_SCALE: RegExp[] = [
+  /\bloyal customer(?:s| base)\b/i,
+  /\bcustomer base\b/i,
+  /\b(?:hundreds|thousands|millions) of (?:happy |satisfied |loyal )?(?:customers|orders|pet owners)\b/i,
+  /\b\d[\d,]*\+? (?:happy |satisfied |loyal )?customers\b/i,
+];
+
+/** True when a sentence about the business claims longevity or scale - facts no
+ * agent is ever given, so their presence means the model invented them. */
+export function claimsBusinessBiography(text: string): boolean {
+  for (const sentence of text.split(/(?<=[.!?])\s+|\n+/)) {
+    if (!BIZ_SUBJECT.test(sentence)) continue;
+    if (BIZ_LONGEVITY.some((re) => re.test(sentence)) || BIZ_SCALE.some((re) => re.test(sentence))) return true;
+  }
+  return false;
+}
+
 /** Context for the runtime gate: the conciseness ceiling and what the customer
  * actually asked, so the gate can demand a direct answer where one is owed. */
 export interface DraftQualityContext {
@@ -112,6 +142,9 @@ export function findDraftIssues(bodyText: string, ctx: DraftQualityContext = {})
   }
   if (ctx.askedDelivery && !affirmsDelivery(bodyText)) {
     issues.push("The customer asked whether we deliver to their location; affirm it directly in the first sentence (e.g. 'Yes, we ship to ...').");
+  }
+  if (claimsBusinessBiography(bodyText)) {
+    issues.push("This reply states facts about the business itself (how long it has been trading, its size, or its customer base). No such fact exists in the grounded store facts, so it is invented. Remove the claim entirely: say warmly that details about the business are something we keep private, and offer help with products or orders instead.");
   }
   return issues;
 }

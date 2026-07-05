@@ -1,5 +1,46 @@
 import { describe, it, expect } from 'vitest';
-import { hasFillerBookend, countWords, substanceWordCount, affirmsDelivery, statesDayRange, findDraftIssues, refineUntilClean, asksDoYouDeliver } from '../src/inbox/draft-quality';
+import { hasFillerBookend, countWords, substanceWordCount, affirmsDelivery, statesDayRange, findDraftIssues, refineUntilClean, asksDoYouDeliver, claimsBusinessBiography } from '../src/inbox/draft-quality';
+import { SHARED_SCAFFOLDING } from '../src/inbox/agents/scaffolding';
+
+// The live fabrication this gate exists to catch (Azan's thread, 2026-07-05):
+// asked "how long have you been running your store", the drafter invented both
+// the store's age and a customer base. Verbatim from the superseded draft.
+const AZAN_FABRICATION =
+  "Thank you for your kind words, we really appreciate it. We've been running Active Paw for a good number of years now and we're proud to have built a loyal customer base across the UK and internationally. If you have any other questions about our store or products, please do not hesitate to get in touch.";
+// The compliant correction that replaced it - a privacy decline that NAMES the
+// question without answering it. Must never be flagged.
+const AZAN_CORRECTION =
+  'Thank you for the kind words, that is genuinely appreciated. Much like our shipping arrangements, details about the business itself are something we keep private, so how long we have been trading is not something we share. If there is anything you would like to know about our products or an order, we are always happy to help.';
+
+describe('claimsBusinessBiography (fabricated business history/scale)', () => {
+  it('flags the live Azan fabrication (store age + customer base)', () => {
+    expect(claimsBusinessBiography(AZAN_FABRICATION)).toBe(true);
+  });
+  it('flags founding-year and customer-count inventions', () => {
+    expect(claimsBusinessBiography('We were established in 2019 and have grown ever since.')).toBe(true);
+    expect(claimsBusinessBiography('Active Paw has served thousands of happy customers.')).toBe(true);
+    expect(claimsBusinessBiography('Our store has been operating for over five years.')).toBe(true);
+  });
+  it('passes the compliant privacy decline (mentions trading without claiming a duration)', () => {
+    expect(claimsBusinessBiography(AZAN_CORRECTION)).toBe(false);
+  });
+  it('passes real grounded replies and product-longevity lines', () => {
+    expect(claimsBusinessBiography('Yes, we are open and taking orders. You can browse our full range of dog and cat products on the website.')).toBe(false);
+    expect(claimsBusinessBiography('Delivery to the USA typically takes around 5-12 days with our fastest options.')).toBe(false);
+    expect(claimsBusinessBiography('This rope toy is bite resistant and typically lasts for years of daily chewing.')).toBe(false);
+  });
+});
+
+describe('business-biography wiring (gate + prompt)', () => {
+  it('findDraftIssues raises the invented-facts issue on the Azan draft and none on the correction', () => {
+    expect(findDraftIssues(AZAN_FABRICATION).some((i) => i.includes('facts about the business itself'))).toBe(true);
+    expect(findDraftIssues(AZAN_CORRECTION)).toEqual([]);
+  });
+  it('the shared scaffolding forbids business-self facts and prescribes the privacy decline', () => {
+    expect(SHARED_SCAFFOLDING).toContain('BUSINESS ITSELF');
+    expect(SHARED_SCAFFOLDING).toContain('details about the business are something we keep private');
+  });
+});
 
 describe('hasFillerBookend (courtesy detector - allowed, used for substance stripping)', () => {
   it('detects the "do not hesitate to get in touch" courtesy', () => {
