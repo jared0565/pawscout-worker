@@ -245,7 +245,7 @@ describe('consolePage', () => {
     expect(scripts).toContain("window.addEventListener('hashchange',applyRoute)");
     expect(scripts).toContain('applyRoute();'); // applied on load too
     // Glance is the default route: unknown/missing hash falls back to it.
-    expect(scripts).toContain("var ROUTES=['glance','inbox','catalog','ops','audit','partners','campaigns','settings','help']");
+    expect(scripts).toContain("var ROUTES=['glance','inbox','catalog','ops','audit','partners','campaigns','traffic','settings','help']");
     expect(scripts).toContain(":'glance'");
   });
 
@@ -273,6 +273,28 @@ describe('consolePage', () => {
     const cmpBlock = scripts.slice(scripts.indexOf('var cmpState'), scripts.indexOf('async function cmpSavePostal('));
     expect(cmpBlock.length).toBeGreaterThan(0);
     expect(cmpBlock).not.toContain('window.confirm');
+  });
+
+  // --- Traffic view (2026-07-05): acquisition strategy board ---
+
+  it('renders the Traffic view: rail entry, board, editor wired to /traffic endpoints', async () => {
+    const html = await consolePage('test-api-key').text();
+    expect(html).toContain('data-route="traffic"');
+    expect(html).toContain('id="view-traffic"');
+    for (const id of ['trf-list', 'trf-msg', 'trf-editor-card', 'trf-name', 'trf-status',
+      'trf-priority', 'trf-rationale', 'trf-next', 'trf-notes']) {
+      expect(html).toContain('id="' + id + '"');
+    }
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+    expect(scripts).toContain('function loadTraffic(');
+    expect(scripts).toContain("'/traffic'");
+    expect(scripts).toContain("'/traffic/save'");
+    expect(scripts).toContain("'/traffic/delete'");
+    expect(scripts).toContain('loadTraffic();'); // loaded on startup
+    // Ids ride in ESCAPED data attributes resolved by delegation (XSS discipline).
+    expect(scripts).toContain('data-trf-id="\'+esc(');
+    // Deleting a channel is two-click armed like the other consequential actions.
+    expect(scripts).toContain('Click again to delete');
   });
 
   // --- Privacy policy keeper (2026-07-05): check + one-click apply ---
@@ -483,6 +505,8 @@ describe('consolePage', () => {
     expect(scripts).toContain('function keyEditable(');
     expect(scripts).toContain("window.addEventListener('keydown'");
     expect(scripts).toContain('d>=1&&d<=ROUTES.length');
+    // Ten routes, nine digits: 0 reaches the tenth view (Help).
+    expect(scripts).toContain("e.key==='0'&&ROUTES.length>=10");
     expect(scripts).toContain("e.key==='j'");
     // The shortcut handler must never reference the approve/send path.
     const keyBlock = scripts.slice(scripts.indexOf('function keyEditable('));
@@ -506,7 +530,7 @@ describe('consolePage', () => {
     for (const section of [
       'PawScout guide', 'Getting started', 'Shop at a Glance', 'Inbox and customer replies',
       'Catalog and pricing', 'Operations and orders', 'Shipping, markets and stock safety',
-      'Settings and automation', 'Partners and vouchers', 'Campaigns and marketing email', 'Keyboard shortcuts'
+      'Settings and automation', 'Partners and vouchers', 'Campaigns and marketing email', 'Traffic and growth', 'Keyboard shortcuts'
     ]) {
       expect(html).toContain('<h2>' + section + '</h2>');
     }

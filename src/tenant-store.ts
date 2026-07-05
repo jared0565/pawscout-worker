@@ -104,6 +104,13 @@ export interface CampaignRow {
   created_at: string; updated_at: string; sent_at: string | null;
 }
 
+/** One acquisition channel on the Traffic strategy board. */
+export interface TrafficChannelRow {
+  shop: string; id: string; name: string; status: string; priority: number;
+  rationale: string; next_action: string; notes: string;
+  created_at: string; updated_at: string;
+}
+
 /** One attributed order of a voucher's ledger drill-down. */
 export interface AffiliateOrderRow {
   shopify_order_id: string; order_name: string | null;
@@ -1728,6 +1735,35 @@ export class TenantStore {
       .prepare(`SELECT DISTINCT contact_email FROM affiliate_partners WHERE shop = ?1 AND status = 'active' AND marketing_consent = 1`)
       .bind(this.shop).all<{ contact_email: string }>();
     return (rs.results ?? []).map((r) => r.contact_email);
+  }
+
+  // --- Traffic strategy board (2026-07-05): acquisition channels + next actions ---
+
+  async listTrafficChannels(): Promise<TrafficChannelRow[]> {
+    const rs = await this.db
+      .prepare(`SELECT * FROM traffic_channels WHERE shop = ?1 ORDER BY priority ASC, name ASC`)
+      .bind(this.shop).all<TrafficChannelRow>();
+    return rs.results ?? [];
+  }
+
+  /** Insert or update one channel; omitted id = new row. Returns the id. */
+  async upsertTrafficChannel(c: { id?: string; name: string; status: string; priority: number; rationale: string; nextAction: string; notes: string }): Promise<string> {
+    const id = c.id ?? crypto.randomUUID();
+    const now = new Date().toISOString();
+    await this.db
+      .prepare(`INSERT INTO traffic_channels (shop, id, name, status, priority, rationale, next_action, notes, created_at, updated_at)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)
+                ON CONFLICT(shop, id) DO UPDATE SET name = ?3, status = ?4, priority = ?5, rationale = ?6, next_action = ?7, notes = ?8, updated_at = ?9`)
+      .bind(this.shop, id, c.name, c.status, c.priority, c.rationale, c.nextAction, c.notes, now)
+      .run();
+    return id;
+  }
+
+  async deleteTrafficChannel(id: string): Promise<boolean> {
+    const r = await this.db
+      .prepare(`DELETE FROM traffic_channels WHERE shop = ?1 AND id = ?2`)
+      .bind(this.shop, id).run();
+    return (r.meta?.changes ?? 0) > 0;
   }
 
   /** Owner-flipped marketing opt-in for a partner (records when consent was given). */

@@ -27,6 +27,7 @@ import { validateGatesPayload, validatePricingPayload, validateLlmPayload, valid
 import { sendEmail, SENDING_DOMAIN } from './email';
 import { verifySvixSignature, parseResendEvent, applyResendEvent, getTrackingStatus, enableTracking, ensureEventsWebhook } from './resend-events';
 import { checkPrivacyPolicy, applyPrivacyPolicy } from './legal-policy';
+import { listTrafficBoard, validateTrafficPayload, trafficChannelForUi } from './traffic';
 import { verifyAppProxy } from './proxy/verify';
 import { verifyUnsubToken } from './retention';
 import { searchBackfill, normalizeKeyword } from './proxy/search';
@@ -256,6 +257,31 @@ app.post('/api/email-tracking', async (c) => {
   if (!r.ok) return c.json({ ok: true, available: true, secretStored, openTracking: false, clickTracking: false, error: r.error });
   return c.json({ ok: true, available: true, secretStored, openTracking: r.status.openTracking, clickTracking: r.status.clickTracking });
 });
+// --- Traffic strategy board (2026-07-05): acquisition channels, owner-edited.
+// First read seeds the starter strategy; everything after is the owner's board.
+app.post('/api/traffic', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  const rows = await listTrafficBoard(new TenantStore(c.env.DB, s));
+  return c.json({ ok: true, channels: rows.map(trafficChannelForUi) });
+});
+app.post('/api/traffic/save', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: unknown;
+  try { body = await c.req.json(); } catch { return c.json({ ok: false, error: 'Invalid JSON body' }, 400); }
+  const v = validateTrafficPayload(body);
+  if (!v.ok) return c.json({ ok: false, error: v.error }, 400);
+  const id = await new TenantStore(c.env.DB, s).upsertTrafficChannel(v.value);
+  return c.json({ ok: true, id });
+});
+app.post('/api/traffic/delete', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: { id?: unknown } = {};
+  try { body = await c.req.json(); } catch {}
+  if (typeof body.id !== 'string' || !body.id) return c.json({ ok: false, error: 'id required' }, 400);
+  const gone = await new TenantStore(c.env.DB, s).deleteTrafficChannel(body.id);
+  return c.json(gone ? { ok: true } : { ok: false, error: 'Channel not found' });
+});
+
 // --- Privacy-policy wording keeper (2026-07-05): check + one-click apply ---
 // PawScout sends consented marketing email and measures engagement; the store
 // policy must disclose that. check reads the live policy and reports which of

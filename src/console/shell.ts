@@ -45,17 +45,18 @@ export const railHtml = `<nav class="rail" aria-label="Console sections">
   <button type="button" class="rail-btn" data-route="audit" onclick="location.hash='#/audit'">Audit</button>
   <button type="button" class="rail-btn" data-route="partners" onclick="location.hash='#/partners'">Partners</button>
   <button type="button" class="rail-btn" data-route="campaigns" onclick="location.hash='#/campaigns'">Campaigns</button>
+  <button type="button" class="rail-btn" data-route="traffic" onclick="location.hash='#/traffic'">Traffic</button>
   <button type="button" class="rail-btn" data-route="settings" onclick="location.hash='#/settings'">Settings</button>
   <button type="button" class="rail-btn" data-route="help" onclick="location.hash='#/help'">Help</button>
 </nav>`;
 
 export const routerJs = `
 // --- Hash router (shell): #/glance default (Phase 3 landing); #/inbox,
-// #/catalog, #/ops, #/audit, #/partners, #/campaigns, #/settings, #/help.
-// Toggles .active on the .view containers and rail buttons on hashchange and
-// on load; a missing or unknown hash falls back to glance. Hash-only
-// navigation so it works inside the Shopify embedded iframe.
-var ROUTES=['glance','inbox','catalog','ops','audit','partners','campaigns','settings','help'];
+// #/catalog, #/ops, #/audit, #/partners, #/campaigns, #/traffic, #/settings,
+// #/help. Toggles .active on the .view containers and rail buttons on
+// hashchange and on load; a missing or unknown hash falls back to glance.
+// Hash-only navigation so it works inside the Shopify embedded iframe.
+var ROUTES=['glance','inbox','catalog','ops','audit','partners','campaigns','traffic','settings','help'];
 function currentRoute(){
   var h=location.hash||'';
   if(h.indexOf('#/')===0) h=h.slice(2); else if(h.indexOf('#')===0) h=h.slice(1);
@@ -87,6 +88,8 @@ window.addEventListener('keydown',function(e){
   if(window.__modalOpen) return; // a modal (e.g. the Audit conversation) owns the keyboard
   var d=parseInt(e.key,10);
   if(d>=1&&d<=ROUTES.length){ location.hash='#/'+ROUTES[d-1]; e.preventDefault(); return; }
+  // Ten routes but nine digits: 0 is the tenth view (Help).
+  if(e.key==='0'&&ROUTES.length>=10){ location.hash='#/'+ROUTES[9]; e.preventDefault(); return; }
   if((e.key==='j'||e.key==='k')&&currentRoute()==='inbox'){
     var rows=document.querySelectorAll('#inbox-threads .ibx-row');
     if(!rows.length) return;

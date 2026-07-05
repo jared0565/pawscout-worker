@@ -37,6 +37,8 @@ import { auditView, auditCss } from './views/audit';
 import { partnersView, partnersCss } from './views/partners';
 import { campaignsJs } from './campaigns-js';
 import { campaignsView, campaignsCss } from './views/campaigns';
+import { trafficJs } from './traffic-js';
+import { trafficView, trafficCss } from './views/traffic';
 import { settingsView } from './views/settings';
 import { helpView, helpCss } from './views/help';
 import { railHtml, routerJs, shellCss } from './shell';
@@ -147,6 +149,7 @@ ${glanceCss}
 ${auditCss}
 ${partnersCss}
 ${campaignsCss}
+${trafficCss}
 ${helpCss}</style>
 </head><body>
 ${railHtml}
@@ -170,6 +173,9 @@ ${partnersView}
 </main>
 <main class="view" id="view-campaigns">
 ${campaignsView}
+</main>
+<main class="view" id="view-traffic">
+${trafficView}
 </main>
 <main class="view" id="view-settings">
 ${settingsView}
@@ -883,6 +889,7 @@ ${glanceJs}
 ${auditJs}
 ${partnersJs}
 ${campaignsJs}
+${trafficJs}
 refresh();
 loadInsights();
 loadGlance();
@@ -891,6 +898,7 @@ loadInboxSettings();
 loadAudit();
 loadPartners();
 loadCampaigns();
+loadTraffic();
 ${routerJs}</script>
 </body></html>`;
   // no-store: the console is a single server-rendered page that changes every
