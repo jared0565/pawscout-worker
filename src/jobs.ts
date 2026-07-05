@@ -1,7 +1,7 @@
 import { Vault } from './vault';
 import { chooseOrigin, CjClient, CjTokenManager, cjFetchFromEnv, type CjSearchItem } from './cj';
 import { makeAdminGraphql, type AdminGraphql } from './shopify-admin';
-import { TenantStore, listActiveShops, purgeExpiredSearchCache, purgeUnusedWarehouse, trimOldLogs } from './tenant-store';
+import { TenantStore, listActiveShops, purgeExpiredSearchCache, purgeUnusedWarehouse, trimOldLogs, readJobCheckpoint, writeJobCheckpoint } from './tenant-store';
 import { liveCjPasses, normalizeKeyword, CACHE_TTL_DAYS, isLikelyPetProduct, titleSignature } from './proxy/search';
 import { bestLocalQty, localWarehousesFor, HOME_MARKET_WAREHOUSES } from './local-markets';
 
@@ -1122,28 +1122,14 @@ export interface DailyCursor {
 }
 
 export async function readDailyCursor(db: D1Database): Promise<DailyCursor | null> {
-  const row = await db.prepare(
-    `SELECT payload FROM search_cache WHERE shop = ?1 AND cache_key = ?2`
-  ).bind(DAILY_CURSOR_SHOP, DAILY_CURSOR_KEY).first<{ payload: string }>();
-  if (!row) return null;
-  try { return JSON.parse(row.payload) as DailyCursor; } catch { return null; }
+  const payload = await readJobCheckpoint(db, DAILY_CURSOR_SHOP, DAILY_CURSOR_KEY);
+  if (!payload) return null;
+  try { return JSON.parse(payload) as DailyCursor; } catch { return null; }
 }
 
 /** Exported for tests. expires_at is 2 days out: an abandoned cursor self-purges. */
 export async function writeDailyCursor(db: D1Database, cur: DailyCursor | null): Promise<void> {
-  if (!cur) {
-    await db.prepare(`DELETE FROM search_cache WHERE shop = ?1 AND cache_key = ?2`)
-      .bind(DAILY_CURSOR_SHOP, DAILY_CURSOR_KEY).run();
-    return;
-  }
-  const now = new Date();
-  await db.prepare(
-    `INSERT INTO search_cache (shop, cache_key, payload, created_at, expires_at) VALUES (?1, ?2, ?3, ?4, ?5)
-     ON CONFLICT(shop, cache_key) DO UPDATE SET payload = ?3, expires_at = ?5`
-  ).bind(
-    DAILY_CURSOR_SHOP, DAILY_CURSOR_KEY, JSON.stringify(cur),
-    now.toISOString(), new Date(now.getTime() + 2 * 86400_000).toISOString()
-  ).run();
+  await writeJobCheckpoint(db, DAILY_CURSOR_SHOP, DAILY_CURSOR_KEY, cur ? JSON.stringify(cur) : null, 2 * 86400_000);
 }
 
 /** Stages only start when they fit before the next quarter-hour boundary (90s

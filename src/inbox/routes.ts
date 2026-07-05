@@ -66,7 +66,16 @@ export async function getInboxConfig(db: D1Database, shop: string): Promise<Inbo
 export async function saveInboxConfig(db: D1Database, shop: string, body: unknown) {
   const v = validateInboxPayload(body);
   if (!v.ok) return { ok: false as const, error: v.error };
-  await new TenantStore(db, shop).saveInbox(v.value);
+  const store = new TenantStore(db, shop);
+  // postalAddress is edited from the Campaigns view, not the Settings form, so a
+  // Settings save that OMITS the key must not wipe it: omitted → preserve current;
+  // explicit '' → clear; a non-empty string → the validator already set it.
+  const raw = (typeof body === 'object' && body !== null ? body : {}) as Record<string, unknown>;
+  if (v.value.postalAddress === undefined && raw.postalAddress === undefined) {
+    const cur = (await store.getConfig())?.inbox.postalAddress;
+    if (cur) v.value.postalAddress = cur;
+  }
+  await store.saveInbox(v.value);
   return { ok: true as const };
 }
 

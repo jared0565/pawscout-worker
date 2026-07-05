@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildQualifyingEmail, buildPartnershipDecline, buildFormInvite, buildHoldingAck } from '../src/inbox/partnership';
+import { buildQualifyingEmail, buildPartnershipDecline, buildFormInvite, buildVoucherInvite, buildHoldingAck } from '../src/inbox/partnership';
 
 describe('partnership composers', () => {
   it('qualifying email greets by name and asks the six screening questions', () => {
@@ -27,5 +27,14 @@ describe('partnership composers', () => {
   it('form-invite and holding-ack greet by name and sign off', () => {
     expect(buildFormInvite('Jo')).toContain('Active Paw Partnerships');
     expect(buildHoldingAck('Jo')).toMatch(/taking a look|reviewing/i);
+  });
+  // 2026-07-05: both invites ASK for marketing opt-in (PECR: pitching us is not
+  // consent to a mailing list). Consent itself is recorded by the owner in the
+  // Partners view; silence means no.
+  it('both invites carry the optional marketing opt-in ask', () => {
+    for (const body of [buildFormInvite('Jo'), buildVoucherInvite('Jo')]) {
+      expect(body).toMatch(/occasional partner updates/i);
+      expect(body).toMatch(/leaving it unanswered simply means no/i);
+    }
   });
 });

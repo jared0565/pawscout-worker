@@ -91,8 +91,17 @@ export interface AffiliateVoucherListRow {
   starts_at: string; ends_at: string; status: string; created_at: string;
   partner_id: string; contact_email: string; name: string | null;
   channel_url: string | null; notes: string | null;
+  marketing_consent: number;
   uses: number; gross: number; discount: number; owed: number; paid: number;
   last_order_at: string | null;
+}
+
+/** One marketing broadcast (Campaigns view). body_text is the owner's plain
+ * text; HTML + compliance footer are rendered at send time. */
+export interface CampaignRow {
+  shop: string; id: string; audience: string; subject: string; body_text: string;
+  status: string; recipient_count: number | null; sent_count: number;
+  created_at: string; updated_at: string; sent_at: string | null;
 }
 
 /** One attributed order of a voucher's ledger drill-down. */
@@ -1459,7 +1468,7 @@ export class TenantStore {
     const rs = await this.db
       .prepare(
         `SELECT v.id AS voucher_id, v.code, v.pct_off, v.commission_pct, v.starts_at, v.ends_at, v.status, v.created_at,
-                p.id AS partner_id, p.contact_email, p.name, p.channel_url, p.notes,
+                p.id AS partner_id, p.contact_email, p.name, p.channel_url, p.notes, p.marketing_consent,
                 COALESCE(o.uses, 0) AS uses, COALESCE(o.gross, 0) AS gross, COALESCE(o.discount, 0) AS discount,
                 COALESCE(o.owed, 0) AS owed, COALESCE(o.paid, 0) AS paid, o.last_order_at
          FROM affiliate_vouchers v
@@ -1605,7 +1614,7 @@ export class TenantStore {
     await this.db.prepare(`INSERT OR IGNORE INTO reorder_reminders (shop, order_id, email, sent_at) VALUES (?1, ?2, ?3, ?4)`)
       .bind(this.shop, orderId, email.toLowerCase(), sentAt).run();
   }
-  /** True if this email has opted out of reminder mail (PECR/GDPR suppression). */
+  /** True if this email has opted out of marketing mail (PECR/GDPR suppression). */
   async isEmailUnsubscribed(email: string): Promise<boolean> {
     const row = await this.db.prepare(`SELECT 1 FROM email_unsubscribes WHERE shop = ?1 AND email = ?2 LIMIT 1`).bind(this.shop, email.toLowerCase()).first();
     return row !== null;
@@ -1614,6 +1623,79 @@ export class TenantStore {
     await this.db.prepare(`INSERT OR IGNORE INTO email_unsubscribes (shop, email, unsubscribed_at) VALUES (?1, ?2, ?3)`)
       .bind(this.shop, email.toLowerCase(), at).run();
   }
+
+  // --- Campaigns (2026-07-05): marketing broadcasts + per-campaign send ledger ---
+
+  async insertCampaign(c: { audience: string; subject: string; bodyText: string }): Promise<string> {
+    const id = crypto.randomUUID();
+    const now = new Date().toISOString();
+    await this.db
+      .prepare(`INSERT INTO campaigns (shop, id, audience, subject, body_text, status, created_at, updated_at)
+                VALUES (?1, ?2, ?3, ?4, ?5, 'draft', ?6, ?6)`)
+      .bind(this.shop, id, c.audience, c.subject, c.bodyText, now)
+      .run();
+    return id;
+  }
+
+  getCampaign(id: string): Promise<CampaignRow | null> {
+    return this.db.prepare(`SELECT * FROM campaigns WHERE shop = ?1 AND id = ?2`).bind(this.shop, id).first<CampaignRow>();
+  }
+
+  async listCampaigns(limit = 20): Promise<CampaignRow[]> {
+    const rs = await this.db
+      .prepare(`SELECT * FROM campaigns WHERE shop = ?1 ORDER BY created_at DESC LIMIT ${Math.min(Math.max(limit, 1), 50)}`)
+      .bind(this.shop).all<CampaignRow>();
+    return rs.results ?? [];
+  }
+
+  /** Delete an unsent draft campaign. Sent/sending history is never deleted. */
+  async discardCampaign(id: string): Promise<boolean> {
+    const r = await this.db
+      .prepare(`DELETE FROM campaigns WHERE shop = ?1 AND id = ?2 AND status = 'draft'`)
+      .bind(this.shop, id).run();
+    return (r.meta?.changes ?? 0) > 0;
+  }
+
+  /** Batch bookkeeping: recipientCount is idempotent (audience size at send
+   * time), sent_count accumulates across batches, sent_at stamps completion. */
+  async updateCampaignProgress(id: string, p: { recipientCount: number; sentDelta: number; status: string; sentAt: string | null }): Promise<void> {
+    await this.db
+      .prepare(`UPDATE campaigns SET recipient_count = ?3, sent_count = sent_count + ?4, status = ?5,
+                  sent_at = COALESCE(?6, sent_at), updated_at = ?7 WHERE shop = ?1 AND id = ?2`)
+      .bind(this.shop, id, p.recipientCount, p.sentDelta, p.status, p.sentAt, new Date().toISOString())
+      .run();
+  }
+
+  async hasCampaignSend(campaignId: string, email: string): Promise<boolean> {
+    const row = await this.db
+      .prepare(`SELECT 1 FROM campaign_sends WHERE shop = ?1 AND campaign_id = ?2 AND email = ?3 LIMIT 1`)
+      .bind(this.shop, campaignId, email.toLowerCase()).first();
+    return row !== null;
+  }
+
+  async recordCampaignSend(campaignId: string, email: string, sentAt: string): Promise<void> {
+    await this.db
+      .prepare(`INSERT OR IGNORE INTO campaign_sends (shop, campaign_id, email, sent_at) VALUES (?1, ?2, ?3, ?4)`)
+      .bind(this.shop, campaignId, email.toLowerCase(), sentAt).run();
+  }
+
+  /** Partner-audience recipients: ACTIVE partners who explicitly opted in. */
+  async listConsentingPartnerEmails(): Promise<string[]> {
+    const rs = await this.db
+      .prepare(`SELECT DISTINCT contact_email FROM affiliate_partners WHERE shop = ?1 AND status = 'active' AND marketing_consent = 1`)
+      .bind(this.shop).all<{ contact_email: string }>();
+    return (rs.results ?? []).map((r) => r.contact_email);
+  }
+
+  /** Owner-flipped marketing opt-in for a partner (records when consent was given). */
+  async setPartnerMarketingConsent(partnerId: string, on: boolean): Promise<boolean> {
+    const now = new Date().toISOString();
+    const r = await this.db
+      .prepare(`UPDATE affiliate_partners SET marketing_consent = ?3, marketing_consent_at = ?4, updated_at = ?5 WHERE shop = ?1 AND id = ?2`)
+      .bind(this.shop, partnerId, on ? 1 : 0, on ? now : null, now)
+      .run();
+    return (r.meta?.changes ?? 0) > 0;
+  }
 }
 
 // --- cross-tenant maintenance (cron jobs) - keep all raw D1 in this file ---
@@ -1621,6 +1703,29 @@ export class TenantStore {
 export async function listActiveShops(db: D1Database): Promise<string[]> {
   const rs = await db.prepare(`SELECT shop FROM tenants WHERE status = 'active' AND access_token_enc != ''`).all<{ shop: string }>();
   return (rs.results ?? []).map((r) => r.shop);
+}
+
+/** Cross-tenant job checkpoint (the daily chain's cursor) stored in
+ * search_cache under a sentinel shop. The raw D1 lives HERE per the tenant-
+ * isolation guard; jobs.ts owns the semantics and JSON shape. */
+export async function readJobCheckpoint(db: D1Database, shop: string, key: string): Promise<string | null> {
+  const row = await db.prepare(`SELECT payload FROM search_cache WHERE shop = ?1 AND cache_key = ?2`)
+    .bind(shop, key).first<{ payload: string }>();
+  return row?.payload ?? null;
+}
+
+/** Upsert (payload) or delete (null). expires_at = now + ttlMs so an abandoned
+ * checkpoint self-purges with the cache sweep. */
+export async function writeJobCheckpoint(db: D1Database, shop: string, key: string, payload: string | null, ttlMs: number): Promise<void> {
+  if (payload === null) {
+    await db.prepare(`DELETE FROM search_cache WHERE shop = ?1 AND cache_key = ?2`).bind(shop, key).run();
+    return;
+  }
+  const now = new Date();
+  await db.prepare(
+    `INSERT INTO search_cache (shop, cache_key, payload, created_at, expires_at) VALUES (?1, ?2, ?3, ?4, ?5)
+     ON CONFLICT(shop, cache_key) DO UPDATE SET payload = ?3, expires_at = ?5`
+  ).bind(shop, key, payload, now.toISOString(), new Date(now.getTime() + ttlMs).toISOString()).run();
 }
 
 /** Enforce the 30-day retention promise on cached supplier data. */

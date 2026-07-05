@@ -221,6 +221,12 @@ export function validateInboxPayload(body: unknown): Validation<InboxConfig> {
   if (b.affiliateMode !== undefined && !(AFFILIATE_MODES as readonly string[]).includes(b.affiliateMode as string)) {
     return { ok: false, error: 'affiliateMode must be funnel_voucher, funnel_link or decline_all' };
   }
+  // Marketing-footer postal address: omitted → preserved by saveInboxConfig;
+  // '' → cleared; a string → set (bounded so it stays a footer line, not a letter).
+  if (b.postalAddress !== undefined && (typeof b.postalAddress !== 'string' || b.postalAddress.length > 240)) {
+    return { ok: false, error: 'postalAddress must be a string up to 240 chars' };
+  }
+  const postalAddress = typeof b.postalAddress === 'string' ? b.postalAddress.trim() : undefined;
   const labelsRes = validateLabels(b.labels ?? []);
   if (!labelsRes.ok) return labelsRes;
   // Per-agent auto toggle map: optional; keep only known labels with a boolean autosend.
@@ -250,7 +256,8 @@ export function validateInboxPayload(body: unknown): Validation<InboxConfig> {
       invoiceRateLimit: typeof b.invoiceRateLimit === 'number' ? b.invoiceRateLimit : DEFAULT_INBOX.invoiceRateLimit,
       affiliateMode: typeof b.affiliateMode === 'string' ? (b.affiliateMode as AffiliateMode) : DEFAULT_INBOX.affiliateMode,
       ...(alertEmail ? { alertEmail } : {}),
-      ...(agents ? { agents } : {})
+      ...(agents ? { agents } : {}),
+      ...(postalAddress ? { postalAddress } : {})
     }
   };
 }

@@ -29,6 +29,7 @@ export interface InboxConfig {
   invoiceValueCeiling: number;        // GBP; total above this → HITL
   invoiceRateLimit: number;           // max invoices per contact per 24h
   affiliateMode: AffiliateMode;       // partnership handling; see AffiliateMode
+  postalAddress?: string;             // business postal address for marketing-email footers (CAN-SPAM); campaigns refuse to send without it
 }
 
 export const DEFAULT_INBOX: InboxConfig = {

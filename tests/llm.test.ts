@@ -39,7 +39,10 @@ const DETAIL: CjDetail = {
   variants: [{ vid: 'v1', name: 'Red', sellPriceUsd: 10, sku: 'S1', stock: 50 }],
   listedNum: 10,
   categoryName: 'Pet Toys',
-  stock: 50
+  stock: 50,
+  // Local-for-local (2026-07-05): pool admission and storefront suggestions
+  // require PROVEN home-local (GB) origin evidence - originless rows fail closed.
+  origins: { GB: 50 }
 };
 
 const GOOD_CURATION = {
@@ -164,6 +167,7 @@ describe('replenishWarehouse with curation', () => {
   const cjFake = (): CjClient =>
     ({
       search: async () => items(4),
+      searchByWarehouse: async () => items(4), // replenish sources via the home-warehouse filter (local-for-local)
       detail: async (pid: string): Promise<CjDetail> => ({ ...DETAIL, pid, nameEn: `Pet Dog Toys ${pid}` }),
       stockByPid: async () => new Map([['v1', 50]])
     } as unknown as CjClient);
@@ -186,11 +190,13 @@ describe('replenishWarehouse with curation', () => {
 
   it('mechanical fallback rejects non-pet items but keeps pet ones (LLM down)', async () => {
     const store = new TenantStore(env.DB, SHOP);
+    const mixed = [
+      { pid: 'pet', nameEn: 'Dog Chew Toy', image: 'https://i/x.jpg', sellPriceUsd: 10, listedNum: 30, categoryName: 'Pet Toys' },
+      { pid: 'junk', nameEn: 'Kitchen Knife Sharpener', image: 'https://i/x.jpg', sellPriceUsd: 10, listedNum: 20, categoryName: 'Home' }
+    ] as CjSearchItem[];
     const cj = {
-      search: async () => [
-        { pid: 'pet', nameEn: 'Dog Chew Toy', image: 'https://i/x.jpg', sellPriceUsd: 10, listedNum: 30, categoryName: 'Pet Toys' },
-        { pid: 'junk', nameEn: 'Kitchen Knife Sharpener', image: 'https://i/x.jpg', sellPriceUsd: 10, listedNum: 20, categoryName: 'Home' }
-      ] as CjSearchItem[],
+      search: async () => mixed,
+      searchByWarehouse: async () => mixed,
       detail: async (pid: string): Promise<CjDetail> => ({ ...DETAIL, pid, nameEn: pid === 'junk' ? 'Kitchen Knife Sharpener' : 'Dog Chew Toy', categoryName: pid === 'junk' ? 'Home Kitchen' : 'Pet Toys' }),
       stockByPid: async () => new Map([['v1', 50]])
     } as unknown as CjClient;
@@ -206,8 +212,10 @@ describe('replenishWarehouse with curation', () => {
       cjPid: 'existing', category: 'pet-toys', title: 'Pet Teeth Cleaning Powder 100g',
       detailJson: JSON.stringify({ ...DETAIL, pid: 'existing' }), priceUsd: 10, listedNum: 5, stock: 50
     });
+    const dupItems = [{ pid: 'dup', nameEn: 'Teeth Cleaning Powder 100g for Pets', image: 'https://i/x.jpg', sellPriceUsd: 10, listedNum: 40, categoryName: 'Pet Health' }] as CjSearchItem[];
     const cj = {
-      search: async () => [{ pid: 'dup', nameEn: 'Teeth Cleaning Powder 100g for Pets', image: 'https://i/x.jpg', sellPriceUsd: 10, listedNum: 40, categoryName: 'Pet Health' }] as CjSearchItem[],
+      search: async () => dupItems,
+      searchByWarehouse: async () => dupItems,
       detail: async (pid: string): Promise<CjDetail> => ({ ...DETAIL, pid, nameEn: 'Teeth Cleaning Powder 100g for Pets' }),
       stockByPid: async () => new Map([['v1', 50]])
     } as unknown as CjClient;
@@ -356,7 +364,7 @@ describe('keyword classification + synonym search', () => {
     });
     await store.putSearchCache('kw-meta:puppy chew', JSON.stringify({ category: 'pet-toys', synonyms: ['dog toy'] }), 30);
 
-    const cj = { search: async () => [] } as unknown as CjClient;
+    const cj = { search: async () => [], searchByWarehouse: async () => [] } as unknown as CjClient;
     const cards = await searchBackfill(store, cj, CFG, 'puppy chew', 0, 12);
     expect(cards.map((c) => c.pid)).toEqual(['A']); // matched via synonym, not the literal query
   });
@@ -370,7 +378,7 @@ describe('keyword classification + synonym search', () => {
     });
     await store.putSearchCache('kw-meta:puppy chew', JSON.stringify({ category: 'pet-toys', synonyms: ['dog toy'] }), 30);
 
-    const cj = { search: async () => [] } as unknown as CjClient;
+    const cj = { search: async () => [], searchByWarehouse: async () => [] } as unknown as CjClient;
     const strictCfg = { ...CFG, gates: { ...CFG.gates, relevance: 'strict' as const } };
     const cards = await searchBackfill(store, cj, strictCfg, 'puppy chew', 0, 12);
     expect(cards).toEqual([]);

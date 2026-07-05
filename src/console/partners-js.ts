@@ -24,11 +24,17 @@ function prtRowHtml(p){
   var actions='<button class="ghost" type="button" data-prt-orders="'+esc(p.voucherId)+'" data-prt-title="'+esc(title)+'">Orders</button>';
   if(p.owed>0) actions+='<button class="ghost" type="button" data-prt-paid="'+esc(p.voucherId)+'">Mark commission paid ('+prtMoney(p.owed)+')</button>';
   if(p.status==='live') actions+='<button class="ghost" type="button" data-prt-revoke="'+esc(p.voucherId)+'">Revoke</button>';
+  // Marketing opt-in (Campaigns audience): flip ONLY on the partner's own yes -
+  // partnership correspondence alone never puts anyone on the campaign list.
+  actions+=p.marketingConsent
+    ?'<button class="ghost" type="button" data-prt-consent="'+esc(p.partnerId)+'" data-prt-consent-on="0">Remove updates opt-in</button>'
+    :'<button class="ghost" type="button" data-prt-consent="'+esc(p.partnerId)+'" data-prt-consent-on="1">Mark updates opt-in</button>';
   return '<div class="prt-row">'
     +'<div class="prt-head"><span class="prt-who">'+esc(p.name||p.email)+'</span>'
     +(p.name?'<span class="prt-mail">'+esc(p.email)+'</span>':'')
     +'<span class="prt-code">'+esc(p.code)+'</span>'
     +prtStatusChip(p.status)
+    +(p.marketingConsent?prtChipHtml('updates: opted in','prt-live'):'')
     +'<span class="muted" style="font-size:12px">'+esc(p.pctOff)+'% off, '+esc(p.commissionPct)+'% commission</span>'
     +'<span class="prt-time">'+(p.status==='live'?'ends ':'ended ')+prtWhen(p.endsAt)+'</span></div>'
     +'<div class="prt-stats">'
@@ -96,6 +102,14 @@ async function runVoucherAction(voucherId,action,okText){
     loadPartners();
   }catch(e){ setMsg('prt-msg','Action failed.','no'); }
 }
+async function setPartnerConsent(partnerId,on){
+  try{
+    var r=await api('/partners/consent',{partnerId:partnerId,on:on});
+    if(!r.ok){ setMsg('prt-msg','Failed: '+(r.error||'unknown error'),'no'); return; }
+    setMsg('prt-msg',on?'Marked as opted in to partner updates. They are now in the Campaigns partner audience.':'Opt-in removed. They will not receive partner campaigns.','ok');
+    loadPartners();
+  }catch(e){ setMsg('prt-msg','Action failed.','no'); }
+}
 // --- Orders modal ---
 function prtOrderRowHtml(o){
   var chips=o.eligible?prtChipHtml('counted','prt-live'):prtChipHtml((o.financialStatus||'not counted').toLowerCase(),'prt-expired');
@@ -136,6 +150,8 @@ function closePartnerOrders(){
     vid=t.getAttribute('data-prt-revoke');
     if(vid&&prtArm(t,'Click again to revoke')) runVoucherAction(vid,'revoke','Revoked on record. Now disable the code itself in Shopify admin under Discounts.');
     if(vid) return;
+    vid=t.getAttribute('data-prt-consent');
+    if(vid){ setPartnerConsent(vid,t.getAttribute('data-prt-consent-on')==='1'); return; }
     vid=t.getAttribute('data-prt-paid');
     if(vid&&prtArm(t,'Click again to confirm payout')) runVoucherAction(vid,'mark_paid','Commission marked as paid out.');
   });

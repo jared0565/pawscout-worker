@@ -246,6 +246,7 @@ export async function getPartners(db: D1Database, shop: string) {
       code: r.code, pctOff: r.pct_off, commissionPct: r.commission_pct,
       startsAt: r.starts_at, endsAt: r.ends_at,
       status: voucherEffectiveStatus(r.status, r.ends_at, now),
+      marketingConsent: r.marketing_consent === 1,
       uses: r.uses, gross: r.gross, discount: r.discount, owed: r.owed, paid: r.paid,
       lastOrderAt: r.last_order_at ?? null
     }))

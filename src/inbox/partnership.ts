@@ -204,10 +204,19 @@ If that changes down the line, we'd be glad to hear from you again. Wishing you 
 Best Regards,
 Active Paw Partnerships`;
 
+// Both invites carry the marketing opt-in ASK (PECR: writing to us about a
+// partnership is not consent to a mailing list). The partner's yes is recorded
+// by the owner in the Partners view ("Mark updates opt-in"), which is what
+// gates the Campaigns partner audience.
+const MARKETING_OPTIN_ASK =
+`One optional thing: would you like occasional partner updates from us - new products, promotions we are running, things worth featuring? Just say yes in your reply and we'll add you; leaving it unanswered simply means no.`;
+
 const FORM_INVITE_BODY =
 `Thank you - this looks like a great potential fit, and we'd love to take it further.
 
 The next step is our short partner application, where we'll gather a few details to set things up properly. We'll send that over shortly.
+
+${MARKETING_OPTIN_ASK}
 
 Looking forward to working with you,
 Active Paw Partnerships`;
@@ -216,6 +225,8 @@ const VOUCHER_INVITE_BODY =
 `Thank you - this looks like a great fit, and we'd love to take it further.
 
 The next step is your own trial discount code to share with your audience. We're setting that up now and will send it over shortly, together with the exact terms.
+
+${MARKETING_OPTIN_ASK}
 
 Looking forward to working with you,
 Active Paw Partnerships`;

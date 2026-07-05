@@ -229,9 +229,9 @@ describe('consolePage', () => {
 
   // Phase 1 shell (extended in Phase 3): left rail + always-in-DOM views
   // toggled by a hash router; Glance is the landing view.
-  it('renders the eight view containers, the rail, and the hash router', async () => {
+  it('renders the nine view containers, the rail, and the hash router', async () => {
     const html = await consolePage('test-api-key').text();
-    for (const v of ['view-glance', 'view-inbox', 'view-catalog', 'view-ops', 'view-audit', 'view-partners', 'view-settings', 'view-help']) {
+    for (const v of ['view-glance', 'view-inbox', 'view-catalog', 'view-ops', 'view-audit', 'view-partners', 'view-campaigns', 'view-settings', 'view-help']) {
       expect(html).toContain('id="' + v + '"');
     }
     expect(html).toContain('class="rail"');
@@ -239,13 +239,49 @@ describe('consolePage', () => {
     expect(html).toContain('data-route="inbox"');
     expect(html).toContain('data-route="audit"');
     expect(html).toContain('data-route="partners"');
+    expect(html).toContain('data-route="campaigns"');
     const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
     expect(scripts).toContain('function applyRoute(');
     expect(scripts).toContain("window.addEventListener('hashchange',applyRoute)");
     expect(scripts).toContain('applyRoute();'); // applied on load too
     // Glance is the default route: unknown/missing hash falls back to it.
-    expect(scripts).toContain("var ROUTES=['glance','inbox','catalog','ops','audit','partners','settings','help']");
+    expect(scripts).toContain("var ROUTES=['glance','inbox','catalog','ops','audit','partners','campaigns','settings','help']");
     expect(scripts).toContain(":'glance'");
+  });
+
+  // --- Campaigns view (2026-07-05): consented marketing broadcasts ---
+
+  it('renders the Campaigns view: compose, audiences, sender details, armed send', async () => {
+    const html = await consolePage('test-api-key').text();
+    for (const id of ['cmp-list', 'cmp-msg', 'cmp-audiences', 'cmp-audience', 'cmp-subject',
+      'cmp-body', 'cmp-preview', 'cmp-new-msg', 'cmp-postal', 'cmp-postal-msg']) {
+      expect(html).toContain('id="' + id + '"');
+    }
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+    expect(scripts).toContain('function loadCampaigns(');
+    expect(scripts).toContain("'/campaigns'");
+    expect(scripts).toContain("'/campaigns/create'");
+    expect(scripts).toContain("'/campaigns/audiences'");
+    expect(scripts).toContain("'/campaigns/test'");
+    expect(scripts).toContain("'/campaigns/send'");
+    expect(scripts).toContain("'/campaigns/discard'");
+    expect(scripts).toContain('loadCampaigns();');      // loaded on startup
+    // Ids ride in ESCAPED data attributes resolved by delegation (XSS discipline).
+    expect(scripts).toContain('data-cmp-send="\'+esc(');
+    // Broadcasting is two-click armed like the other consequential actions.
+    expect(scripts).toContain('Click again to send to everyone');
+    const cmpBlock = scripts.slice(scripts.indexOf('var cmpState'), scripts.indexOf('async function cmpSavePostal('));
+    expect(cmpBlock.length).toBeGreaterThan(0);
+    expect(cmpBlock).not.toContain('window.confirm');
+  });
+
+  it('Partners view carries the marketing opt-in toggle wired to /partners/consent', async () => {
+    const html = await consolePage('test-api-key').text();
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+    expect(scripts).toContain("'/partners/consent'");
+    expect(scripts).toContain('data-prt-consent="\'+esc(');
+    expect(scripts).toContain('Mark updates opt-in');
+    expect(scripts).toContain('Remove updates opt-in');
   });
 
   // --- Partners view (2026-07-04): affiliate voucher trials ---
@@ -401,7 +437,7 @@ describe('consolePage', () => {
     for (const section of [
       'PawScout guide', 'Getting started', 'Shop at a Glance', 'Inbox and customer replies',
       'Catalog and pricing', 'Operations and orders', 'Shipping, markets and stock safety',
-      'Settings and automation', 'Partners and vouchers', 'Keyboard shortcuts'
+      'Settings and automation', 'Partners and vouchers', 'Campaigns and marketing email', 'Keyboard shortcuts'
     ]) {
       expect(html).toContain('<h2>' + section + '</h2>');
     }

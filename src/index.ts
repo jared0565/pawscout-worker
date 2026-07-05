@@ -15,7 +15,8 @@ import { handleUninstall } from './auth/uninstall';
 import { resolveShopFromToken } from './console/session';
 import { connectCj, saveGates, savePricing, saveLlm, saveAddons, saveCollectionMap, getStatus, getInsights, getGlance, getAudit, getAuditConversation, saveGbFreeUk, getPartners, createPartner, partnerVoucherAction, getPartnerOrders } from './console/routes';
 import { listInboxThreads, getInboxThread, setInboxStatus, setInboxLabels, getInboxConfig, saveInboxConfig, approveDraft, regenerateDraft } from './inbox/routes';
-import { buildInvoiceForThread, discardInvoice, searchCatalog } from './inbox/invoice-routes';
+import { buildInvoiceForThread, discardInvoice, searchCatalog, adminForShop } from './inbox/invoice-routes';
+import { validateCampaignPayload, resolveCampaignAudience, sendCampaignBatch, sendCampaignTest, campaignForUi, ownerTestAddress, type CampaignAudience } from './campaigns';
 import { consolePage } from './console/page';
 import { validateCjKey, CjClient, CjTokenManager, cjFetchFromEnv, chooseOrigin } from './cj';
 import { registerWebhooks, type RegisterWebhook } from './webhooks';
@@ -51,7 +52,8 @@ app.get('/auth/callback', async (c) => {
 
 app.get('/app', (c) => consolePage(c.env.SHOPIFY_API_KEY));
 
-// Public one-click unsubscribe for retention reminders (affiliate 1.3). The
+// Public one-click unsubscribe for ALL marketing email (reorder reminders and
+// campaigns share one suppression list - opting out once covers both). The
 // token is an HMAC over (shop, email) - unforgeable without SHOPIFY_API_SECRET.
 // Handles GET (link click) and POST (RFC 8058 List-Unsubscribe-Post one-click).
 const handleUnsubscribe = async (c: Context<{ Bindings: Env }>) => {
@@ -63,7 +65,7 @@ const handleUnsubscribe = async (c: Context<{ Bindings: Env }>) => {
     return c.html('<p>This unsubscribe link is invalid.</p>', 400);
   }
   await new TenantStore(c.env.DB, shop).recordUnsubscribe(email, new Date().toISOString());
-  return c.html('<p>You have been unsubscribed from Active Paw reminder emails. Sorry to see you go!</p>');
+  return c.html('<p>You have been unsubscribed from Active Paw marketing emails (reminders, news and offers). Sorry to see you go! Emails about orders you place are not affected.</p>');
 };
 app.get('/unsubscribe', handleUnsubscribe);
 app.post('/unsubscribe', handleUnsubscribe);
@@ -144,6 +146,98 @@ app.post('/api/partners/orders', async (c) => {
   let body: { voucherId?: string } = {};
   try { body = await c.req.json(); } catch {}
   return c.json(await getPartnerOrders(c.env.DB, s, body.voucherId));
+});
+// Marketing opt-in for one partner (owner flips it when the partner says yes -
+// partnership correspondence alone never puts anyone on the campaign list).
+app.post('/api/partners/consent', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: { partnerId?: unknown; on?: unknown } = {};
+  try { body = await c.req.json(); } catch {}
+  if (typeof body.partnerId !== 'string' || !body.partnerId) return c.json({ ok: false, error: 'partnerId required' }, 400);
+  const changed = await new TenantStore(c.env.DB, s).setPartnerMarketingConsent(body.partnerId, body.on === true);
+  return c.json(changed ? { ok: true } : { ok: false, error: 'Partner not found' });
+});
+
+// --- Campaigns (2026-07-05): owner-composed marketing broadcasts. HITL only -
+// nothing here runs from a cron; every send is an owner click. Consent gates
+// live in the engine (src/campaigns.ts): buyers = Shopify SUBSCRIBED at send
+// time, partners = explicit opt-in, suppression list + send ledger per email.
+app.post('/api/campaigns', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  const store = new TenantStore(c.env.DB, s);
+  const cfg = await store.getConfig();
+  return c.json({
+    ok: true,
+    campaigns: (await store.listCampaigns()).map(campaignForUi),
+    postalAddress: cfg?.inbox.postalAddress ?? '',
+    testAddress: cfg ? ownerTestAddress(cfg) : null
+  });
+});
+app.post('/api/campaigns/create', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: unknown;
+  try { body = await c.req.json(); } catch { return c.json({ ok: false, error: 'Invalid JSON body' }, 400); }
+  const v = validateCampaignPayload(body);
+  if (!v.ok) return c.json({ ok: false, error: v.error }, 400);
+  const id = await new TenantStore(c.env.DB, s).insertCampaign(v.value);
+  return c.json({ ok: true, id });
+});
+app.post('/api/campaigns/discard', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: { id?: unknown } = {};
+  try { body = await c.req.json(); } catch {}
+  if (typeof body.id !== 'string' || !body.id) return c.json({ ok: false, error: 'id required' }, 400);
+  const gone = await new TenantStore(c.env.DB, s).discardCampaign(body.id);
+  return c.json(gone ? { ok: true } : { ok: false, error: 'Only unsent drafts can be discarded' });
+});
+// Live audience sizes so the owner sees who a campaign would reach BEFORE
+// sending. Buyer consent is read from Shopify at this moment, never cached.
+app.post('/api/campaigns/audiences', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  const store = new TenantStore(c.env.DB, s);
+  const partners = (await store.listConsentingPartnerEmails()).length;
+  let buyers: number | null = null;
+  let buyersError: string | undefined;
+  try {
+    const admin = await adminForShop(c.env, store);
+    const aud = await resolveCampaignAudience(store, admin, 'buyers');
+    if (aud.ok) buyers = aud.emails.length; else buyersError = aud.error;
+  } catch (e) { buyersError = (e as Error).message; }
+  return c.json({ ok: true, buyers, partners, ...(buyersError ? { buyersError } : {}) });
+});
+app.post('/api/campaigns/test', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: { id?: unknown; to?: unknown } = {};
+  try { body = await c.req.json(); } catch {}
+  if (typeof body.id !== 'string' || !body.id) return c.json({ ok: false, error: 'id required' }, 400);
+  const store = new TenantStore(c.env.DB, s);
+  const cfg = await store.getConfig();
+  if (!cfg) return c.json({ ok: false, error: 'Config unavailable' }, 400);
+  const to = typeof body.to === 'string' && body.to.includes('@') ? body.to.trim() : ownerTestAddress(cfg);
+  if (!to) return c.json({ ok: false, error: 'Provide a test recipient (or set an alert email in Settings)' });
+  const campaign = await store.getCampaign(body.id);
+  if (!campaign) return c.json({ ok: false, error: 'Campaign not found' });
+  const r = await sendCampaignTest(c.env, store, campaign, to, cfg.inbox.postalAddress ?? '');
+  return c.json(r.ok ? { ok: true, to } : r);
+});
+app.post('/api/campaigns/send', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: { id?: unknown } = {};
+  try { body = await c.req.json(); } catch {}
+  if (typeof body.id !== 'string' || !body.id) return c.json({ ok: false, error: 'id required' }, 400);
+  const store = new TenantStore(c.env.DB, s);
+  const cfg = await store.getConfig();
+  if (!cfg) return c.json({ ok: false, error: 'Config unavailable' }, 400);
+  const postal = (cfg.inbox.postalAddress ?? '').trim();
+  if (!postal) return c.json({ ok: false, error: 'Add your business postal address under Sender details first - marketing email must carry it' });
+  const campaign = await store.getCampaign(body.id);
+  if (!campaign) return c.json({ ok: false, error: 'Campaign not found' });
+  if (campaign.status === 'sent') return c.json({ ok: false, error: 'This campaign has already been sent' });
+  const admin = campaign.audience === 'buyers' ? await adminForShop(c.env, store) : null;
+  const aud = await resolveCampaignAudience(store, admin, campaign.audience as CampaignAudience);
+  if (!aud.ok) return c.json({ ok: false, error: aud.error });
+  if (!aud.emails.length) return c.json({ ok: false, error: 'No eligible recipients in this audience yet' });
+  return c.json(await sendCampaignBatch(c.env, store, campaign, aud.emails, postal));
 });
 app.post('/api/gb-free-uk', async (c) => {
   const s = await shopOf(c); if (typeof s !== 'string') return s;
