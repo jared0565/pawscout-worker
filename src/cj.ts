@@ -509,6 +509,30 @@ export class CjClient {
     return map;
   }
 
+  /**
+   * Per-WAREHOUSE stock for a product (countryCode → best qty). The same
+   * endpoint stockByPid flattens per-variant; this reads the countryCode
+   * dimension instead - the authority for the local-for-local gates when a
+   * cached detail predates enable_inventory and carries no origins map.
+   */
+  async originsByPid(pid: string): Promise<Record<string, number>> {
+    const data = await this.get('/product/stock/getInventoryByPid', { pid });
+    const origins: Record<string, number> = {};
+    const take = (r: Record<string, unknown>) => {
+      const cc = String(r.countryCode ?? '').toUpperCase();
+      const n = Number(r.totalInventoryNum ?? r.totalInventory ?? r.storageNum ?? 0);
+      if (cc && Number.isFinite(n) && n > 0) origins[cc] = Math.max(origins[cc] ?? 0, n);
+    };
+    if (data && !Array.isArray(data) && typeof data === 'object') {
+      const obj = data as { variantInventories?: { inventory?: Record<string, unknown>[] }[]; inventories?: Record<string, unknown>[] };
+      for (const v of obj.variantInventories ?? []) for (const w of v.inventory ?? []) take(w);
+      for (const w of obj.inventories ?? []) take(w);
+    } else {
+      for (const row of Array.isArray(data) ? data : []) take(row as Record<string, unknown>);
+    }
+    return origins;
+  }
+
   // --- order API (W-FULFIL Stage B) ---
 
   /**

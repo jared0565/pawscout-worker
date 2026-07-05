@@ -197,6 +197,9 @@ describe('importProduct', () => {
 describe('hero-image QA (vision)', () => {
   const cjStub = () => ({
     stockByPid: async () => new Map([['v1', 50]]),
+    // local-for-local (2026-07-05): confirmAndImport verifies a home-local
+    // warehouse really stocks the item; the fixture is GB-stocked.
+    originsByPid: async () => ({ GB: 50 }),
     freightEstimate: async () => null
   } as unknown as CjClient);
 
@@ -207,6 +210,38 @@ describe('hero-image QA (vision)', () => {
     await confirmAndImport(store, cjStub(), fakeAdmin(calls), CFG, DETAIL, 'pet-toys', undefined, async () => ({ ok: true, index: 1 }));
     const files = (calls.find((c) => c.query.includes('productSet'))!.variables!.input as { files: { originalSource: string }[] }).files;
     expect(files.map((f) => f.originalSource)).toEqual(['https://i/2.jpg', 'https://i/1.jpg']);
+  });
+
+  // --- Local-for-local gate (owner's governing model, 2026-07-05) ---
+
+  it('confirmAndImport blocks a CN-only product: no home-local warehouse, no import', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const calls: Call[] = [];
+    const cnOnly = { ...DETAIL, pid: 'CNONLY', origins: { CN: 900 } };
+    await confirmAndImport(store, cjStub(), fakeAdmin(calls), CFG, cnOnly, 'pet-toys');
+    expect(calls.some((c) => c.query.includes('productSet'))).toBe(false);
+    expect((await store.getLink('CNONLY'))?.state).toBe('failed');
+  });
+
+  it('confirmAndImport fails CLOSED when the origin cannot be verified at all', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const calls: Call[] = [];
+    const cj = {
+      stockByPid: async () => new Map([['v1', 50]]),
+      originsByPid: async () => { throw new Error('CJ inventory endpoint down'); },
+      freightEstimate: async () => null
+    } as unknown as CjClient;
+    await confirmAndImport(store, cj, fakeAdmin(calls), CFG, { ...DETAIL, pid: 'UNKNOWN' }, 'pet-toys');
+    expect(calls.some((c) => c.query.includes('productSet'))).toBe(false);
+    expect((await store.getLink('UNKNOWN'))?.state).toBe('failed');
+  });
+
+  it('confirmAndImport verifies origins live when the detail lacks them (GB stock admits)', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const calls: Call[] = [];
+    // DETAIL has no origins map; the cjStub answers { GB: 50 } → import proceeds.
+    await confirmAndImport(store, cjStub(), fakeAdmin(calls), CFG, { ...DETAIL, pid: 'LIVEGB' }, 'pet-toys');
+    expect(calls.some((c) => c.query.includes('productSet'))).toBe(true);
   });
 
   it('confirmAndImport blocks a non-pet item on the mechanical fallback (no curation)', async () => {

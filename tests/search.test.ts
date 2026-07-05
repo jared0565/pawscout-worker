@@ -21,8 +21,14 @@ function item(over: Partial<CjSearchItem>): CjSearchItem {
   return { pid: 'P1', nameEn: 'Dog Toy Rope', image: 'https://i/1.jpg', sellPriceUsd: 10, listedNum: 100, categoryName: 'Pet Toys', ...over };
 }
 
+// Local-for-local (2026-07-05): the live fallback fetches via searchByWarehouse
+// (buyer's local warehouse country), never the global search. Calls record
+// "kw@cc" so tests can pin both the keyword and the warehouse.
 function fakeCj(items: CjSearchItem[], calls: string[] = []): CjClient {
-  return { search: async (kw: string) => { calls.push(kw); return items; } } as unknown as CjClient;
+  return {
+    search: async (kw: string) => { calls.push(`${kw}@GLOBAL`); return items; },
+    searchByWarehouse: async (kw: string, cc: string) => { calls.push(`${kw}@${cc}`); return items; }
+  } as unknown as CjClient;
 }
 
 describe('isLikelyPetProduct (mechanical floor)', () => {
@@ -209,7 +215,7 @@ describe('searchBackfill', () => {
     const cj = fakeCj([item({})], calls);
     await searchBackfill(store, cj, CFG, 'Dog Toy', 0, 12);
     await searchBackfill(store, cj, CFG, 'dog   toy', 0, 12); // same after normalization
-    expect(calls).toEqual(['dog toy']);
+    expect(calls).toEqual(['dog toy@GB']);
   });
 
   it('marks already-imported products with their real PDP url', async () => {
@@ -266,15 +272,44 @@ describe('searchBackfill', () => {
     expect(pids).not.toContain('NECK');
   });
 
-  it('reads and writes the live-CJ cache under the kw2: namespace (locks the shared key)', async () => {
+  it('reads and writes the live-CJ cache under the warehouse-keyed kw3: namespace (locks the shared key)', async () => {
     const store = new TenantStore(env.DB, 'a.myshopify.com');
     const calls: string[] = [];
     const cj = fakeCj([item({ pid: 'fresh' })], calls);
     await searchBackfill(store, cj, CFG, 'dog toy', 0, 12); // miss → fetch → write
-    expect(calls).toEqual(['dog toy']);
-    expect(await store.getSearchCache('kw2:dog toy')).not.toBeNull();
-    expect(await store.getSearchCache('kw:dog toy')).toBeNull(); // not on the old namespace
-    await searchBackfill(store, cj, CFG, 'dog toy', 0, 12); // hit → served from kw2:, no 2nd CJ call
-    expect(calls).toEqual(['dog toy']);
+    expect(calls).toEqual(['dog toy@GB']);
+    expect(await store.getSearchCache('kw3:GB:dog toy')).not.toBeNull();
+    expect(await store.getSearchCache('kw2:dog toy')).toBeNull(); // not on the CN-era namespace
+    await searchBackfill(store, cj, CFG, 'dog toy', 0, 12); // hit → served from kw3:, no 2nd CJ call
+    expect(calls).toEqual(['dog toy@GB']);
+  });
+
+  // --- Local-for-local (owner's governing model, 2026-07-05) ---
+
+  it('searches the BUYER\'S local warehouse: a US shopper gets US-warehouse results', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const calls: string[] = [];
+    const cj = fakeCj([item({ pid: 'us1' })], calls);
+    const cards = await searchBackfill(store, cj, CFG, 'dog toy', 0, 12, { buyerCountry: 'US' });
+    expect(calls).toEqual(['dog toy@US']);
+    expect(cards.map((c) => c.pid)).toEqual(['us1']);
+    // and the cache is per-warehouse: the US fetch never bleeds into GB results
+    expect(await store.getSearchCache('kw3:US:dog toy')).not.toBeNull();
+    expect(await store.getSearchCache('kw3:GB:dog toy')).toBeNull();
+  });
+
+  it('a buyer with NO local warehouse gets no supplier suggestions at all', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const calls: string[] = [];
+    const cards = await searchBackfill(store, fakeCj([item({})], calls), CFG, 'dog toy', 0, 12, { buyerCountry: 'JP' });
+    expect(cards).toEqual([]);
+    expect(calls).toEqual([]); // no CJ call is even attempted
+  });
+
+  it('never calls the global (warehouse-less) CJ search', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const calls: string[] = [];
+    await searchBackfill(store, fakeCj([item({})], calls), CFG, 'dog toy', 0, 12);
+    expect(calls.every((c) => !c.endsWith('@GLOBAL'))).toBe(true);
   });
 });

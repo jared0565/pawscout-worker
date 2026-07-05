@@ -7,6 +7,7 @@ import { retailPriceGbp, landedCostGbp } from '../pricing';
 import { AFFILIATE_ELIGIBLE_TAG, productAffiliateEligible } from '../affiliate';
 import { isLikelyPetProduct, signaledCategory } from './search';
 import { getPrimaryLocationId, setSupplierMetafields, MAX_TRACKED_QTY } from './inventory';
+import { bestLocalQty, HOME_MARKET_WAREHOUSES } from '../local-markets';
 
 export const IMPORT_TAG = 'cj-import';
 /** W-ADDON: hidden basket-fillers - buyable, but never browsable/searchable. */
@@ -223,12 +224,33 @@ export async function confirmAndImport(
       }
     }
   }
+  // Local-for-local gate (the owner's governing model, locked 2026-07-05):
+  // the home market is served ONLY from its local warehouses (GB today).
+  // This is THE choke point - refill promotions, keyword replenishment and
+  // ghost-click imports all pass through here, so nothing non-local can enter
+  // the catalog by any path. Fails CLOSED when the origin cannot be verified:
+  // "probably shippable from somewhere" is exactly the CN-era ambiguity this
+  // gate exists to end.
+  let origins = detail.origins;
+  if (!origins) {
+    try {
+      origins = await cj.originsByPid(detail.pid);
+    } catch (e) {
+      console.warn(`origins lookup failed for ${detail.pid}: ${(e as Error).message}`);
+    }
+  }
+  const localQty = bestLocalQty(origins, HOME_MARKET_WAREHOUSES);
+  if (localQty < cfg.floors.stockFloor) {
+    console.warn(`import blocked (no local-warehouse stock for the home market) for ${detail.pid}: ${detail.nameEn}`);
+    await store.putLink({ cjPid: detail.pid, state: 'failed', category: category ?? null });
+    return;
+  }
   let live: number | null = null;
   try {
     const m = await cj.stockByPid(detail.pid);
     live = m.size ? Math.max(...m.values()) : 0;
   } catch {
-    live = null; // unknown - don't block the sale path on a flaky stock endpoint
+    live = null; // unknown - the local gate above already verified real stock
   }
   if (live !== null) {
     await store.setWarehouseStock(detail.pid, live, live >= cfg.floors.stockFloor ? 'available' : 'low_stock');

@@ -37,7 +37,10 @@ function detailOf(pid: string, stock = 50, costUsd = 10): CjDetail {
     variants: [{ vid: `v-${pid}`, name: 'Default', sellPriceUsd: costUsd, sku: `sku-${pid}`, stock }],
     listedNum: 10,
     categoryName: 'Pet Toys',
-    stock
+    stock,
+    // local-for-local (2026-07-05): promotion/import requires proven
+    // home-local warehouse stock; the fixture is GB-stocked.
+    origins: stock > 0 ? { GB: stock } : undefined
   };
 }
 
@@ -78,7 +81,9 @@ function shopAdmin(calls: Call[], currentPrice = '99.99', tracked = true): Admin
 function stockCj(stock: number, counters = { search: 0, stock: 0 }): CjClient {
   return {
     search: async () => { counters.search++; return []; },
-    stockByPid: async (pid: string) => { counters.stock++; return new Map([[`v-${pid}`, stock]]); }
+    searchByWarehouse: async () => { counters.search++; return []; },
+    stockByPid: async (pid: string) => { counters.stock++; return new Map([[`v-${pid}`, stock]]); },
+    originsByPid: async () => (stock > 0 ? { GB: stock } : {})
   } as unknown as CjClient;
 }
 

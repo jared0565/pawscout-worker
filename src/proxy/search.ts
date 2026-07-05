@@ -4,6 +4,7 @@ import type { Gates, TenantConfig } from '../types';
 import { retailPriceGbp } from '../pricing';
 import { getKeywordMeta, type LlmClient } from '../llm';
 import { getExpansions } from '../semantic/library';
+import { bestLocalQty, localWarehousesFor } from '../local-markets';
 
 export const CACHE_TTL_DAYS = 30; // PS retention promise: cached supplier data lives 30 days
 
@@ -296,10 +297,19 @@ export async function searchBackfill(
   query: string,
   storeHits: number,
   limit: number,
-  opts: { liveFallback?: boolean; exclude?: string[]; llm?: LlmClient; fetchImpl?: typeof fetch; ctx?: { waitUntil(p: Promise<unknown>): void } } = {}
+  opts: { liveFallback?: boolean; exclude?: string[]; llm?: LlmClient; fetchImpl?: typeof fetch; ctx?: { waitUntil(p: Promise<unknown>): void }; buyerCountry?: string } = {}
 ): Promise<GhostCard[]> {
   const kw = normalizeKeyword(query);
   if (!kw) return [];
+
+  // Local-for-local (2026-07-05): suggestions are drawn ONLY from warehouses
+  // local to the buyer - a US shopper searching "dog food" is shown
+  // US-warehoused dog food, a GB shopper GB stock. The theme passes the
+  // storefront localization country; absent (older cached theme JS), the home
+  // market's GB is assumed. A buyer with no local warehouse gets no supplier
+  // suggestions at all - never a slow-boat ghost card.
+  const locals = localWarehousesFor(opts.buyerCountry ?? 'GB');
+  if (!locals.length) return [];
 
   // Query expansion (skipped entirely in strict mode - expansion must never
   // loosen an explicitly strict gate). Two sources, unioned:
@@ -322,9 +332,16 @@ export async function searchBackfill(
   const seen = new Set<string>(opts.exclude ?? []);
 
   // --- 1) warehouse ---
+  // Origin evidence is required, not optional: a pool row without a proven
+  // local warehouse for THIS buyer never becomes a suggestion (CN-era rows
+  // carry no local origins and drop out here).
   const rows = await store.searchWarehouse(tokens, limit * 3);
   const ranked = rows
     .filter((r) => warehousePasses(r, cfg, expanded))
+    .filter((r) => {
+      try { return bestLocalQty((JSON.parse(r.detail) as { origins?: Record<string, number> }).origins, locals) > 0; }
+      catch { return false; }
+    })
     .map((r) => ({ r, hits: tokens.filter((t) => r.search_text.includes(t)).length }))
     .sort((a, b) => b.hits - a.hits || b.r.listed_num - a.r.listed_num);
 
@@ -352,15 +369,17 @@ export async function searchBackfill(
   // --- 2) live CJ fallback (cached per keyword for 30 days) ---
   if (cards.length < limit && (opts.liveFallback ?? true)) {
     let items: CjSearchItem[];
-    // kw2: cache namespace - bumped from kw: when topCategory was added so the
-    // category gate takes effect on already-cached hot keywords instead of
-    // waiting up to CACHE_TTL_DAYS for stale (category-less) entries to expire.
-    const cached = await store.getSearchCache(`kw2:${kw}`);
+    // kw3: cache namespace, keyed by the buyer's local warehouse - bumped from
+    // kw2: (unfiltered global results) so the local-for-local filter takes
+    // effect immediately instead of serving stale CN-era entries for up to
+    // CACHE_TTL_DAYS. CJ does the warehouse filtering server-side.
+    const home = locals[0];
+    const cached = await store.getSearchCache(`kw3:${home}:${kw}`);
     if (cached) {
       items = JSON.parse(cached);
     } else {
-      items = await cj.search(kw);
-      await store.putSearchCache(`kw2:${kw}`, JSON.stringify(items), CACHE_TTL_DAYS);
+      items = await cj.searchByWarehouse(kw, home);
+      await store.putSearchCache(`kw3:${home}:${kw}`, JSON.stringify(items), CACHE_TTL_DAYS);
     }
     // Live-CJ PET FLOOR: CJ keyword search returns human/baby/car products too (a bare
     // "shampoo" surfaces human shampoo). Require an explicit pet signal on the raw CJ

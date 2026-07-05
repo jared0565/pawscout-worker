@@ -3,6 +3,7 @@ import { chooseOrigin, CjClient, CjTokenManager, cjFetchFromEnv, type CjSearchIt
 import { makeAdminGraphql, type AdminGraphql } from './shopify-admin';
 import { TenantStore, listActiveShops, purgeExpiredSearchCache, purgeUnusedWarehouse, trimOldLogs } from './tenant-store';
 import { liveCjPasses, normalizeKeyword, CACHE_TTL_DAYS, isLikelyPetProduct, titleSignature } from './proxy/search';
+import { bestLocalQty, HOME_MARKET_WAREHOUSES } from './local-markets';
 import { getExpansions, seedTerm } from './semantic/library';
 import { confirmAndImport, getCachedDetail, resolveCategory, reconcileAddonVisibility, reconcileHeroImages, reconcileDescriptions, reconcileCategories, setProductTags, ADDON_CATEGORY } from './proxy/import';
 import { AFFILIATE_ELIGIBLE_TAG, productAffiliateEligible, ensureAffiliateCollection } from './affiliate';
@@ -109,6 +110,10 @@ export async function refillCollections(
     if (link && (link.state === 'imported' || link.state === 'importing' || link.state === 'draft')) return false;
     let detail: CjDetail;
     try { detail = JSON.parse(row.detail) as CjDetail; } catch { return false; }
+    // Local-for-local pre-filter: a row whose origins map PROVES it has no
+    // home-local warehouse never spends a CJ call. Rows without an origins map
+    // proceed - confirmAndImport verifies live and fails closed either way.
+    if (detail.origins && bestLocalQty(detail.origins, HOME_MARKET_WAREHOUSES) < cfg.floors.stockFloor) return false;
     await pause(CJ_CALL_GAP_MS); // confirmAndImport makes one CJ stock call
     await confirmAndImport(store, cj, admin, cfg, detail, category, opts.curate, opts.pickHero);
     return (await store.getLink(row.cj_pid))?.state === 'imported';
@@ -468,20 +473,21 @@ export async function replenishWarehouse(
 
   const search = async (keyword: string, gates = cfg.gates): Promise<CjSearchItem[]> => {
     const kw = normalizeKeyword(keyword);
-    // Shares the kw2: live-CJ cache namespace with proxy/search.ts (bumped from
-    // kw: when topCategory was added) so sourcing and the storefront feed reuse
-    // the same category-bearing CJ results instead of double-fetching a
-    // rate-limited supplier. Sourcing ignores topCategory; the storefront gate
-    // reads it.
-    const cached = await store.getSearchCache(`kw2:${kw}`);
+    // Local-for-local (2026-07-05): sourcing discovers ONLY home-local
+    // warehouse stock, so the pool never fills with products the home market
+    // is not allowed to sell. Shares the kw3: cache namespace with
+    // proxy/search.ts (bumped from kw2: which held unfiltered global results)
+    // so sourcing and the storefront feed still reuse one CJ fetch.
+    const home = HOME_MARKET_WAREHOUSES[0];
+    const cached = await store.getSearchCache(`kw3:${home}:${kw}`);
     let items: CjSearchItem[];
     if (cached) {
       items = JSON.parse(cached);
     } else {
       if (cjCalls >= maxCjCalls) return [];
       await spend();
-      items = await cj.search(kw);
-      await store.putSearchCache(`kw2:${kw}`, JSON.stringify(items), CACHE_TTL_DAYS);
+      items = await cj.searchByWarehouse(kw, home);
+      await store.putSearchCache(`kw3:${home}:${kw}`, JSON.stringify(items), CACHE_TTL_DAYS);
     }
     // Trust listV2 relevance + enforce species/price (then the LLM curates):
     // the same gate the storefront uses, so the warehouse stocks what searches
@@ -500,23 +506,30 @@ export async function replenishWarehouse(
     const detail = await getCachedDetail(store, cj, item.pid);
     if (!detail) return false;
 
-    let stock = detail.stock ?? 0;
-    if (!stock) {
+    // Local-for-local pool admission (2026-07-05): the warehouse pool feeds
+    // refill promotions AND storefront suggestions, so only products a
+    // home-local warehouse really stocks may enter it. Fails closed on an
+    // unverifiable origin. Local stock doubles as the stock-floor figure -
+    // total-across-all-warehouses no longer means anything here.
+    let origins = detail.origins;
+    if (!origins) {
       if (cjCalls >= maxCjCalls) return false;
       await spend();
       try {
-        const m = await cj.stockByPid(item.pid);
-        stock = m.size ? Math.max(...m.values()) : 0;
+        origins = await cj.originsByPid(item.pid);
       } catch {
-        stock = 0;
+        return false; // unknown origin = not admissible
       }
     }
+    const stock = bestLocalQty(origins, HOME_MARKET_WAREHOUSES);
     if (stock < cfg.floors.stockFloor) return false;
 
     // W3: LLM curation - quality score + rewritten copy. A failed/absent LLM
     // degrades to mechanical gates; a low score is a hard reject.
     let title = detail.nameEn;
-    let admittedDetail: CjDetail = { ...detail, stock };
+    // origins ride along so the refill pre-filter and the storefront search
+    // can read the local-warehouse evidence without re-probing CJ.
+    let admittedDetail: CjDetail = { ...detail, stock, origins };
     let resolvedCategory = category ?? resolveCategory(cfg, detail);
     let llmAdmitted = false;
     if (opts.curate) {

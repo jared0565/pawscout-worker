@@ -666,11 +666,15 @@ app.get('/proxy/search', async (c) => {
   // CJ pids already rendered on the search page - excluded so a ghost never
   // duplicates a card the visitor can already see.
   const exclude = (c.req.query('exclude') ?? '').split(',').map((x) => x.trim()).filter(Boolean).slice(0, 50);
+  // Buyer's storefront country (theme passes localization.country) - drives
+  // the local-for-local suggestion filter. Malformed values fall back to GB.
+  const ccRaw = (c.req.query('country') ?? '').trim().toUpperCase();
+  const buyerCountry = /^[A-Z]{2}$/.test(ccRaw) ? ccRaw : 'GB';
   try {
     // LLM + execution ctx let searchBackfill lazy-fill a semantic-library miss
     // in the background (never the hot path); the same client classifies the keyword.
     const llm = new LlmClient({ openrouter: c.env.OPENROUTER_API_KEY, openai: c.env.OPENAI_API_KEY });
-    const products = await searchBackfill(p.store, cjFor(c.env, p), p.cfg, q, have, limit, { exclude, llm, ctx: c.executionCtx });
+    const products = await searchBackfill(p.store, cjFor(c.env, p), p.cfg, q, have, limit, { exclude, llm, ctx: c.executionCtx, buyerCountry });
     // W3: classify new keywords in the background (cached 30d) - the NEXT
     // search for this term benefits from category + synonyms. Never hot-path.
     if (llm.available && p.cfg.llm.enabled) {

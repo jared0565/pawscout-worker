@@ -30,7 +30,10 @@ function detailOf(pid: string, stock = 50): CjDetail {
     variants: [{ vid: `v-${pid}`, name: 'Default', sellPriceUsd: 10, sku: pid, stock }],
     listedNum: 10,
     categoryName: 'Pet Toys',
-    stock
+    stock,
+    // local-for-local (2026-07-05): admission/import requires proven
+    // home-local warehouse stock; fixtures are GB-stocked.
+    origins: stock > 0 ? { GB: stock } : undefined
   };
 }
 
@@ -38,12 +41,14 @@ interface CjFakeOpts { stock?: number; stockMap?: Map<string, number>; freightUs
 function fakeCj(items: CjSearchItem[], counters: { search: number; detail: number; stock: number }, opts: CjFakeOpts = {}): CjClient {
   return {
     search: async () => { counters.search++; return items; },
+    searchByWarehouse: async () => { counters.search++; return items; },
     detail: async (pid: string) => { counters.detail++; return detailOf(pid, opts.stock ?? 50); },
     stockByPid: async (pid: string) => {
       counters.stock++;
       if (opts.stockMap) return opts.stockMap;
       return new Map([[`v-${pid}`, opts.stock ?? 50]]);
     },
+    originsByPid: async () => ((opts.stock ?? 50) > 0 ? { GB: opts.stock ?? 50 } : {}),
     freightEstimate: async () => (opts.freightUsd ? { priceUsd: opts.freightUsd, days: '8-12', name: 'CJPacket' } : null)
   } as unknown as CjClient;
 }
@@ -113,6 +118,7 @@ describe('replenishWarehouse - addon lane', () => {
     const cheap = items(1, { sellPriceUsd: 2 });
     const cj = {
       search: async () => { counters.search++; return cheap; },
+      searchByWarehouse: async () => { counters.search++; return cheap; },
       detail: async (pid: string) => ({ ...detailOf(pid, 50), variants: [{ vid: `v-${pid}`, name: 'Default', sellPriceUsd: 2, sku: pid, stock: 50 }] }),
       stockByPid: async (pid: string) => new Map([[`v-${pid}`, 50]]),
       freightEstimate: async () => null
@@ -128,6 +134,7 @@ describe('replenishWarehouse - addon lane', () => {
     const cheap = items(3, { sellPriceUsd: 2 });
     const cj = {
       search: async () => cheap,
+      searchByWarehouse: async () => cheap,
       detail: async (pid: string) => ({ ...detailOf(pid, 50), variants: [{ vid: `v-${pid}`, name: 'Default', sellPriceUsd: 2, sku: pid, stock: 50 }] }),
       stockByPid: async (pid: string) => new Map([[`v-${pid}`, 50]]),
       freightEstimate: async () => null
@@ -147,7 +154,8 @@ describe('replenishWarehouse', () => {
     const row = await store.getWarehouseProduct('p0');
     expect(row).not.toBeNull();
     const stored = JSON.parse(row!.detail);
-    expect(stored.origin).toBe('CN'); // no per-country data in fixture → CN default
+    expect(stored.origin).toBe('GB'); // GB-stocked fixture → the local warehouse IS the origin (local-for-local)
+    expect(stored.origins).toEqual({ GB: 50 }); // origin evidence rides the stored detail for downstream gates
     expect(stored.freightUsd).toBe(3.4); // delivery TIME now lives in cj_logistics, not detail.freightDays
   });
 
@@ -194,6 +202,7 @@ describe('replenishWarehouse', () => {
     const searched: string[] = [];
     const cj = {
       search: async (kw: string) => { searched.push(kw); return items(2); },
+      searchByWarehouse: async (kw: string) => { searched.push(kw); return items(2); },
       detail: async (pid: string) => detailOf(pid, 50),
       stockByPid: async (pid: string) => new Map([[`v-${pid}`, 50]]),
       freightEstimate: async () => null
@@ -209,6 +218,7 @@ describe('replenishWarehouse', () => {
     const searched: string[] = [];
     const cj = {
       search: async (kw: string) => { searched.push(kw); return items(2); },
+      searchByWarehouse: async (kw: string) => { searched.push(kw); return items(2); },
       detail: async (pid: string) => detailOf(pid, 50),
       stockByPid: async (pid: string) => new Map([[`v-${pid}`, 50]]),
       freightEstimate: async () => null
