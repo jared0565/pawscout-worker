@@ -71,6 +71,13 @@ describe('checkPrivacyPolicy / applyPrivacyPolicy', () => {
     const r = await checkPrivacyPolicy(fakeAdmin(done));
     expect(r.ok && r.upToDate).toBe(true);
   });
+  it('an empty or unrecognized body is NOT up to date - it is unjudgeable', async () => {
+    for (const body of ['', '<p>Totally custom policy.</p>']) {
+      const r = await checkPrivacyPolicy(fakeAdmin(body));
+      expect(r.ok && r.upToDate).toBe(false);
+      expect(r.ok && r.templateRecognized).toBe(false);
+    }
+  });
   it('apply writes the transformed body via shopPolicyUpdate', async () => {
     const capture = { mutations: [] as unknown[] };
     const r = await applyPrivacyPolicy(fakeAdmin(STOCK_BODY, capture));

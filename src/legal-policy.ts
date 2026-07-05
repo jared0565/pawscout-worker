@@ -78,12 +78,16 @@ export async function readPrivacyPolicy(admin: AdminGraphql): Promise<{ ok: true
   }
 }
 
-/** Check the live policy against the recommended wording (no writes). */
-export async function checkPrivacyPolicy(admin: AdminGraphql): Promise<{ ok: true; upToDate: boolean; changes: string[] } | { ok: false; error: string }> {
+/** Check the live policy against the recommended wording (no writes).
+ * templateRecognized=false means the body carries NEITHER the stock anchor nor
+ * our marker (empty body, or a rewrite we have no transform for) - "no changes"
+ * then means "cannot judge", not "up to date", and the UI must say so. */
+export async function checkPrivacyPolicy(admin: AdminGraphql): Promise<{ ok: true; upToDate: boolean; templateRecognized: boolean; changes: string[] } | { ok: false; error: string }> {
   const r = await readPrivacyPolicy(admin);
   if (!r.ok) return r;
   const t = transformPrivacyPolicy(r.body);
-  return { ok: true, upToDate: t.changes.length === 0, changes: t.changes };
+  const templateRecognized = r.body.includes(MARKETING_MARKER) || r.body.includes(MARKETING_ANCHOR);
+  return { ok: true, upToDate: templateRecognized && t.changes.length === 0, templateRecognized, changes: t.changes };
 }
 
 /** Apply the recommended wording. Idempotent; refuses to write if the result

@@ -80,6 +80,11 @@ async function lglCheck(){
       if(acts) acts.hidden=true;
       return;
     }
+    if(r.templateRecognized===false){
+      box.textContent='The policy text does not look like the standard template, so no automatic update is offered. If you just turned automatic management off and the policy came back empty, restore it from the template in Settings, then reopen this page.';
+      if(acts) acts.hidden=true;
+      return;
+    }
     var h='The live policy is missing:<ul style="margin:8px 0 0 18px">';
     for(var i=0;i<r.changes.length;i++) h+='<li>'+esc(r.changes[i])+'</li>';
     box.innerHTML=h+'</ul>';
