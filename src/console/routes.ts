@@ -144,6 +144,7 @@ export interface GlanceActivity {
 export interface Glance {
   ok: true;
   kpis: {
+    openThreads: number;   // the Open (unprocessed) queue - SAME query as the Inbox list; drives the rail badge
     pendingDrafts: number;
     oldestPendingAt: string | null;
     autoSent24h: number;
@@ -310,6 +311,7 @@ export async function getGlance(db: D1Database, shop: string): Promise<Glance> {
   const since24h = new Date(Date.now() - 86400_000).toISOString();
 
   const drafts = await store.pendingDraftStats();
+  const openThreads = await store.openThreadCount();
   const autoSent24h = await store.countAutoSentSince(since24h);
   const byStatus = await store.countOrdersByStatus();
   const held = byStatus['held'] ?? 0;
@@ -376,6 +378,7 @@ export async function getGlance(db: D1Database, shop: string): Promise<Glance> {
   return {
     ok: true,
     kpis: {
+      openThreads,
       pendingDrafts: drafts.n,
       oldestPendingAt: drafts.oldestAt,
       autoSent24h,

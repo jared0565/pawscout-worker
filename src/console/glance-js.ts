@@ -39,21 +39,30 @@ function glKpi(label,num,sub,flag){
     +'</div>';
 }
 var GL_ORDER_STATUS={received:'received',queued:'queued',submitted:'sent to CJ','awaiting-payment':'awaiting CJ payment',fulfilled:'fulfilled',cancelled:'cancelled',error:'error'};
-// Rail badge (Phase 4): the Inbox nav item carries the REAL pending-draft count
-// from /api/glance - hidden entirely at zero, never a made-up number.
+// Rail badge (Phase 4): the Inbox nav item carries the Open (unprocessed) queue
+// size from /api/glance - the SAME query the Inbox default list runs, so the
+// badge always equals what opening the Inbox shows (a thread counts whether or
+// not its draft is generated yet). Hidden entirely at zero.
 function updateRailBadge(n){
   var b=el('rail-inbox-badge'); if(!b) return;
   n=Number(n)||0;
   b.hidden=n<=0;
   b.textContent=n>99?'99+':String(n);
 }
+function glInboxSub(k){
+  if(!k.openThreads) return 'nothing waiting';
+  if(!k.pendingDrafts) return 'drafts being prepared';
+  var s=k.pendingDrafts+' draft'+(k.pendingDrafts===1?'':'s')+' ready';
+  if(k.oldestPendingAt) s+=' · oldest '+ibxRelAge(k.oldestPendingAt);
+  return s;
+}
 function renderGlanceKpis(k){
-  updateRailBadge(k.pendingDrafts);
+  updateRailBadge(k.openThreads);
   var box=el('gl-kpis'); if(!box) return;
   var pipeParts=[];
   for(var st in k.pipeline){ pipeParts.push(k.pipeline[st]+' '+(GL_ORDER_STATUS[st]||st)); }
   box.innerHTML=''
-    +glKpi('Drafts awaiting you',k.pendingDrafts,k.pendingDrafts?('oldest '+ibxRelAge(k.oldestPendingAt)):'nothing waiting',k.pendingDrafts?'warn':'')
+    +glKpi('Inbox to process',k.openThreads,glInboxSub(k),k.openThreads?'warn':'')
     +glKpi('Auto-sent, 24 h',k.autoSent24h,k.autoSent24h?'sent without review':'no automatic sends',k.autoSent24h?'ok':'')
     +glKpi('Orders held',k.ordersHeld,k.ordersHeld?'need your decision':'none held',k.ordersHeld?'crit':'')
     +glKpi('Orders in pipeline',k.ordersInPipeline,pipeParts.length?pipeParts.join(' · '):'none active','')

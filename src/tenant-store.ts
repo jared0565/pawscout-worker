@@ -4,6 +4,12 @@ import { deriveModels } from './llm-migrate';
 import { DEFAULT_INBOX, type InboxConfig } from './inbox/types';
 import type { ContactRow, ThreadRow, MessageRow, ThreadStatus, DraftRow, DraftStatus, InvoiceRow, InvoiceLineItem, InvoiceStatus, ApplicantRow, PartnershipStage, ScreenVerdict } from './inbox/types';
 
+/** The Open (unprocessed) status set - ONE definition shared by the Inbox
+ * default list, the open-queue count behind the rail badge, and the
+ * pending-draft KPI, so they can never drift apart (owner invariant
+ * 2026-07-05: the badge always equals what opening the Inbox shows). */
+const OPEN_THREAD_STATUSES_SQL = `NOT IN ('awaiting_customer', 'converted', 'closed', 'spam')`;
+
 interface SupplierCredRow {
   shop: string; supplier: string; api_key_enc: string; label: string | null; validated_at: string | null; created_at: string;
 }
@@ -1044,7 +1050,7 @@ export class TenantStore {
       // converted/closed/spam left replied threads lingering here, which read as
       // "still unprocessed". The merchant can still see them via the dedicated
       // "Awaiting customer" filter.
-      rs = await this.db.prepare(`SELECT * FROM inbox_threads WHERE shop = ?1 AND status NOT IN ('awaiting_customer', 'converted', 'closed', 'spam') ORDER BY last_message_at DESC LIMIT ${lim}`).bind(this.shop).all<ThreadRow>();
+      rs = await this.db.prepare(`SELECT * FROM inbox_threads WHERE shop = ?1 AND status ${OPEN_THREAD_STATUSES_SQL} ORDER BY last_message_at DESC LIMIT ${lim}`).bind(this.shop).all<ThreadRow>();
     } else if (status) {
       rs = await this.db.prepare(`SELECT * FROM inbox_threads WHERE shop = ?1 AND status = ?2 ORDER BY last_message_at DESC LIMIT ${lim}`).bind(this.shop, status).all<ThreadRow>();
     } else {
@@ -1263,9 +1269,20 @@ export class TenantStore {
                 FROM inbox_drafts d
                 JOIN inbox_threads t ON t.shop = d.shop AND t.id = d.thread_id
                 WHERE d.shop = ?1 AND d.status = 'pending'
-                  AND t.status NOT IN ('awaiting_customer', 'converted', 'closed', 'spam')`)
+                  AND t.status ${OPEN_THREAD_STATUSES_SQL}`)
       .bind(this.shop).first<{ n: number; oldest: string | null }>();
     return { n: row?.n ?? 0, oldestAt: row?.oldest ?? null };
+  }
+
+  /** Size of the Open (unprocessed) queue - the SAME definition the Inbox
+   * default list uses, so the rail badge can never disagree with what opening
+   * the Inbox shows (owner invariant, 2026-07-05: a thread awaiting attention
+   * counts whether or not its draft has been generated yet). */
+  async openThreadCount(): Promise<number> {
+    const row = await this.db
+      .prepare(`SELECT COUNT(*) AS n FROM inbox_threads WHERE shop = ?1 AND status ${OPEN_THREAD_STATUSES_SQL}`)
+      .bind(this.shop).first<{ n: number }>();
+    return row?.n ?? 0;
   }
 
   async countAutoSentSince(sinceIso: string): Promise<number> {

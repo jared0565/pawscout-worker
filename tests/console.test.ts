@@ -359,12 +359,15 @@ describe('consolePage', () => {
 
   // --- Phase 4: rail badge + keyboard shortcuts + timeline polish ---
 
-  it('rail Inbox badge exists and is driven by the real pending-draft count', async () => {
+  it('rail Inbox badge is driven by the Open-queue size (badge == Inbox list, 2026-07-05 invariant)', async () => {
     const html = await consolePage('test-api-key').text();
     expect(html).toContain('id="rail-inbox-badge"');
     const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
     expect(scripts).toContain('function updateRailBadge(');
-    expect(scripts).toContain('updateRailBadge(k.pendingDrafts)');
+    // The badge counts open THREADS (same query as the Inbox default list), never
+    // pending drafts - a superseded/regenerating draft must not shrink the badge.
+    expect(scripts).toContain('updateRailBadge(k.openThreads)');
+    expect(scripts).not.toContain('updateRailBadge(k.pendingDrafts)');
     // Approving a draft changes the count, so approve refreshes the glance data.
     expect(scripts).toMatch(/function approveDraftAction[\s\S]{0,900}loadGlance\(\)/);
   });

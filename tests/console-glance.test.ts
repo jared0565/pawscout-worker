@@ -22,7 +22,7 @@ describe('getGlance', () => {
     const g = await getGlance(env.DB, SHOP);
     expect(g.ok).toBe(true);
     expect(g.kpis).toEqual({
-      pendingDrafts: 0, oldestPendingAt: null, autoSent24h: 0,
+      openThreads: 0, pendingDrafts: 0, oldestPendingAt: null, autoSent24h: 0,
       ordersHeld: 0, ordersInPipeline: 0, pipeline: {}, liveProducts: 0, lowStock: 0
     });
     // The only attention item on a fresh shop is the real "CJ not connected" fact.
@@ -69,6 +69,7 @@ describe('getGlance', () => {
     await s.putSearchCache(JOB_STAMP_MARKETS, JSON.stringify({ at: '2026-07-03T04:25:00Z', markets: [{ name: 'European Union', excluded: 42 }, { name: 'Australia', excluded: 42 }] }), 30);
 
     const g = await getGlance(env.DB, SHOP);
+    expect(g.kpis.openThreads).toBe(1); // tid only - tid2 is awaiting_customer (processed)
     expect(g.kpis.pendingDrafts).toBe(1);
     expect(g.kpis.oldestPendingAt).not.toBeNull();
     expect(g.kpis.autoSent24h).toBe(1);
@@ -128,6 +129,30 @@ describe('getGlance', () => {
     expect(g.kpis.pendingDrafts).toBe(1);
     // oldest must be the actionable draft, not the dead one on the closed thread
     expect(g.kpis.oldestPendingAt).toBe((await s.getPendingDraft(open))!.created_at);
+  });
+
+  // 2026-07-05 badge invariant: the rail badge shows the Open-queue size - the
+  // SAME query the Inbox default list runs - so an open thread whose draft was
+  // superseded (regeneration in flight) still counts. The badge said "1" while
+  // the Inbox showed 6 exactly because it counted drafts, not threads.
+  it('openThreads counts open threads with NO pending draft (badge == Inbox list, always)', async () => {
+    const s = await seedTenant();
+    await s.upsertContact({ email: 'jane@x.com', name: 'Jane', phone: null });
+    // Three open threads: one with a pending draft, one whose draft was
+    // superseded, one never drafted. One closed thread that must not count.
+    const withDraft = await s.createThread({ contactEmail: 'jane@x.com', subject: 'A', subjectNorm: 'a', receivedAt: '2026-07-05T08:00:00Z', initialStatus: 'needs_reply' });
+    await s.insertDraft({ threadId: withDraft, bodyText: 'D', bodyHtml: '<p>D</p>', confidence: 80, quotesPriceOrder: false, holdReasons: [], model: 'm', status: 'pending' });
+    const superseded = await s.createThread({ contactEmail: 'jane@x.com', subject: 'B', subjectNorm: 'b', receivedAt: '2026-07-05T08:05:00Z', initialStatus: 'needs_reply' });
+    await s.insertDraft({ threadId: superseded, bodyText: 'S', bodyHtml: '<p>S</p>', confidence: 80, quotesPriceOrder: false, holdReasons: [], model: 'm', status: 'pending' });
+    await s.supersedePendingDrafts(superseded);
+    await s.createThread({ contactEmail: 'jane@x.com', subject: 'C', subjectNorm: 'c', receivedAt: '2026-07-05T08:10:00Z', initialStatus: 'needs_reply' });
+    const closed = await s.createThread({ contactEmail: 'jane@x.com', subject: 'X', subjectNorm: 'x', receivedAt: '2026-07-05T08:15:00Z', initialStatus: 'needs_reply' });
+    await s.setThreadStatus(closed, 'closed');
+
+    const g = await getGlance(env.DB, SHOP);
+    expect(g.kpis.openThreads).toBe(3);          // what the Inbox list shows
+    expect(g.kpis.pendingDrafts).toBe(1);        // what is actually ready to review
+    expect((await s.listThreads('open')).length).toBe(g.kpis.openThreads); // the invariant itself
   });
 
   it('degrades a corrupt markets stamp to null instead of throwing', async () => {
