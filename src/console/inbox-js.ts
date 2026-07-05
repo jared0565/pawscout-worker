@@ -91,6 +91,9 @@ async function loadInboxThreads(){
     var body=status?{status:status}:{};
     var r=await api('/inbox/threads',body);
     if(!r.ok){ if(list) list.innerHTML='<p class="msg no" style="padding:12px">'+esc(r.error||'Failed to load threads')+'</p>'; return; }
+    // Every list load carries the fresh Open-queue size: keep the rail badge in
+    // lockstep (updateRailBadge is hoisted from the glance block of this script).
+    if(typeof r.openCount==='number') updateRailBadge(r.openCount);
     renderInboxThreads(r.threads||[]);
   }catch(e){ if(list) list.innerHTML='<p class="msg no" style="padding:12px">'+esc(errText(e))+'</p>'; }
 }

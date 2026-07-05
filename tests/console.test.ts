@@ -299,6 +299,12 @@ describe('consolePage', () => {
     expect(scripts).toContain('approve the updated permissions');
   });
 
+  it('the rail badge re-syncs from every inbox list load (stale-badge fix)', async () => {
+    const html = await consolePage('test-api-key').text();
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+    expect(scripts).toContain('updateRailBadge(r.openCount)');
+  });
+
   it('Settings carries the auto-issue voucher switch, loaded and saved with inbox config', async () => {
     const html = await consolePage('test-api-key').text();
     expect(html).toContain('id="inbox-autoissue-chk"');

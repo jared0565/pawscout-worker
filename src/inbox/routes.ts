@@ -15,6 +15,10 @@ export async function listInboxThreads(db: D1Database, shop: string, status: str
   const names = await store.contactNamesByEmails([...new Set(rows.map((t) => t.contact_email))]);
   return {
     ok: true as const,
+    // Fresh Open-queue size on EVERY list load (whatever the filter), so the
+    // rail badge re-syncs each time the Inbox fetches instead of only at page
+    // load - threads created/recalled mid-session no longer leave a stale badge.
+    openCount: await store.openThreadCount(),
     threads: rows.map((t) => ({
       id: t.id, contactEmail: t.contact_email, contactName: names.get(t.contact_email) ?? null,
       subject: t.subject, status: t.status,

@@ -51,6 +51,18 @@ describe('inbox routes', () => {
     expect(r.threads[0].id).toBe(tid);
     expect(r.threads[0].contactEmail).toBe('jane@x.com');
   });
+  // 2026-07-05 stale-badge fix: EVERY list response carries the fresh Open-queue
+  // size so the rail badge re-syncs on each Inbox fetch, whatever the filter.
+  it('every list response carries openCount (the Open-queue size)', async () => {
+    const s = new TenantStore(env.DB, SHOP);
+    await seed();
+    const r = await listInboxThreads(env.DB, SHOP, null);
+    expect(r.openCount).toBe(1); // the seeded open thread
+    const tid2 = await s.createThread({ contactEmail: 'jane@x.com', subject: 'Closed one', subjectNorm: 'closed one', receivedAt: '2026-06-18T10:00:00Z', initialStatus: 'new' });
+    await s.setThreadStatus(tid2, 'closed');
+    const r2 = await listInboxThreads(env.DB, SHOP, 'closed'); // non-open filter still reports the OPEN count
+    expect(r2.openCount).toBe(1);
+  });
   // Phase 3: the list carries the contact's display name + a real hasDraft flag.
   it('lists threads with contactName and hasDraft', async () => {
     const s = new TenantStore(env.DB, SHOP);
