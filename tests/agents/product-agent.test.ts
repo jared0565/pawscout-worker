@@ -114,3 +114,62 @@ describe('productAgent.ground', () => {
     expect(g.facts).toContain('12.00');
   });
 });
+
+describe('productAgent local-for-local availability (inquiry side of the market catalogs)', () => {
+  const ctxWith = (latest: string, origins: Record<string, number> | null) => ({
+    store: {
+      getLinkByShopifyProductId: async (_id: string) => ({ cj_pid: 'cj-p1' }),
+      getWarehouseProduct: async (_pid: string) => origins === null ? null : ({
+        stock: 40, status: 'available',
+        detail: JSON.stringify({ origins })
+      })
+    },
+    cfg: {} as any, admin: singleProductAdmin,
+    thread: { subject: '' }, conversation: latest,
+    latestMessage: latest, contactEmail: 'a@b.com', customerName: null
+  }) as any;
+
+  it('cross-lane item + confident destination -> honest not-available, no price, no purchase push', async () => {
+    // A UK sender asking about a US-warehoused item: the UK market does not sell it.
+    const g = await productAgent.ground(ctxWith('does the blue harness ship to the UK?', { US: 60 }));
+    expect(g.confident).toBe(true);
+    expect(g.quotesFigure).toBe(false);
+    expect(g.facts).toMatch(/not available for delivery to the UK/);
+    expect(g.facts).not.toContain('12.00');
+    expect(g.facts).not.toMatch(/in stock/i);
+  });
+
+  it('destination we have no market for -> plain no-delivery instruction', async () => {
+    const g = await productAgent.ground(ctxWith('can I get the blue harness in Japan?', { CN: 900 }));
+    expect(g.confident).toBe(true);
+    expect(g.facts).toMatch(/appears to be in Japan/);
+    expect(g.facts).toMatch(/do not currently deliver/);
+    expect(g.facts).not.toContain('12.00');
+  });
+
+  it('CN scaffolding item + EU destination stays a normal answer (transitional lane)', async () => {
+    const g = await productAgent.ground(ctxWith('does the blue harness ship to Germany?', { CN: 900 }));
+    expect(g.confident).toBe(true);
+    expect(g.facts).toContain('Blue Harness');
+    expect(g.facts).toContain('12.00');
+  });
+
+  it('lane-local item + its own destination stays a normal answer', async () => {
+    const g = await productAgent.ground(ctxWith('is the blue harness available in the UK?', { GB: 12 }));
+    expect(g.confident).toBe(true);
+    expect(g.facts).toContain('12.00');
+    expect(g.facts).not.toMatch(/not available/);
+  });
+
+  it('no destination signal -> unchanged behavior even for cross-lane stock', async () => {
+    const g = await productAgent.ground(ctxWith('is the blue harness machine washable?', { US: 60 }));
+    expect(g.confident).toBe(true);
+    expect(g.facts).toContain('12.00');
+  });
+
+  it('unverified origins -> cannot determine, keeps the normal grounded answer', async () => {
+    const g = await productAgent.ground(ctxWith('does the blue harness ship to the UK?', null));
+    expect(g.confident).toBe(true);
+    expect(g.facts).toContain('12.00');
+  });
+});

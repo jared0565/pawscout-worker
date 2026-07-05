@@ -23,7 +23,7 @@
 // is verified against the live schema, because mock tests validate shape
 // against the mock, not the real Shopify schema.
 
-import { marketLocalWarehouses, type MarketVisibilityMode } from '../local-markets';
+import { marketLocalWarehouses, normalizeOriginCode, type MarketVisibilityMode } from '../local-markets';
 
 export interface MarketDef {
   /** Shopify Market gid. */
@@ -43,12 +43,6 @@ export interface MarketExclusion {
   /** Shopify product ids to exclude from this market's catalog. */
   excludeProductIds: string[];
 }
-
-/** Origin codes come from CJ warehouse data, which aliases GB as UK. */
-const normalizeOrigin = (o: string): string => {
-  const cc = o.trim().toUpperCase();
-  return cc === 'UK' ? 'GB' : cc;
-};
 
 /**
  * For each market, the products to exclude from that market's catalog. A product is
@@ -84,7 +78,7 @@ export function computeMarketExclusions(
       const locals = marketLocalWarehouses(market.countries);
       const mode = market.mode ?? 'transitional';
       for (const [signature, productIds] of memberships) {
-        const origins = signature.split(',').map(normalizeOrigin);
+        const origins = signature.split(',').map(normalizeOriginCode);
         const visible = origins.some((o) => locals.has(o)) || (
           mode === 'transitional'
           && origins.includes('CN')

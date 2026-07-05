@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { localWarehousesFor, bestLocalQty, marketLocalWarehouses, visibilityModeFor, HOME_MARKET_WAREHOUSES, LOCAL_ONLY_MARKETS, EU_COUNTRIES } from '../src/local-markets';
+import { localWarehousesFor, bestLocalQty, marketLocalWarehouses, visibilityModeFor, laneVisibilityModeFor, normalizeOriginCode, sellableToBuyer, HOME_MARKET_WAREHOUSES, LOCAL_ONLY_MARKETS, EU_COUNTRIES } from '../src/local-markets';
 
 // Local-for-local (owner's governing model, 2026-07-05): every market's buyers
 // are served ONLY from warehouses local to them. These mappings drive the
@@ -57,6 +57,63 @@ describe('visibilityModeFor', () => {
     expect(visibilityModeFor(['US', 'CA'], ['US'])).toBe('local_only');
     expect(visibilityModeFor(['GB'], ['US'])).toBe('transitional'); // other markets untouched
     expect(visibilityModeFor(['DE', 'FR'], ['DE'])).toBe('local_only');
+  });
+});
+
+describe('laneVisibilityModeFor (per buyer country, lane-consistent with the market flip)', () => {
+  it('flipping US flips every country the US lane serves, and only that lane', () => {
+    expect(laneVisibilityModeFor('CA', ['US'])).toBe('local_only'); // same lane as US
+    expect(laneVisibilityModeFor('US', ['US'])).toBe('local_only');
+    expect(laneVisibilityModeFor('GB', ['US'])).toBe('transitional');
+    expect(laneVisibilityModeFor('FR', ['US'])).toBe('transitional');
+  });
+
+  it('flipping one EU country flips the whole EU lane', () => {
+    expect(laneVisibilityModeFor('FR', ['DE'])).toBe('local_only');
+    expect(laneVisibilityModeFor('PL', ['DE'])).toBe('local_only');
+    expect(laneVisibilityModeFor('AU', ['DE'])).toBe('transitional');
+  });
+
+  it('a country with no lane reads local_only (nothing sellable, scaffolding included)', () => {
+    expect(laneVisibilityModeFor('JP', [])).toBe('local_only');
+    expect(laneVisibilityModeFor('BR', ['US'])).toBe('local_only');
+  });
+});
+
+describe('normalizeOriginCode', () => {
+  it('maps the UK alias to GB and uppercases', () => {
+    expect(normalizeOriginCode('UK')).toBe('GB');
+    expect(normalizeOriginCode('uk ')).toBe('GB');
+    expect(normalizeOriginCode('gb')).toBe('GB');
+    expect(normalizeOriginCode('CN')).toBe('CN');
+  });
+});
+
+describe('sellableToBuyer (the per-inquiry local-for-local sale test)', () => {
+  it('local-lane stock is sellable to its own lane, never cross-lane', () => {
+    expect(sellableToBuyer({ GB: 10 }, 'GB')).toBe(true);
+    expect(sellableToBuyer({ US: 10 }, 'GB')).toBe(false); // the owner-flagged leak
+    expect(sellableToBuyer({ GB: 10 }, 'US')).toBe(false);
+    expect(sellableToBuyer({ US: 10 }, 'CA')).toBe(true);  // CA rides the US lane
+    expect(sellableToBuyer({ DE: 5 }, 'FR')).toBe(true);   // EU lane
+  });
+
+  it('CN scaffolding sells only while the lane is transitional and only when deliverable', () => {
+    expect(sellableToBuyer({ CN: 900 }, 'GB')).toBe(true);
+    expect(sellableToBuyer({ CN: 900 }, 'GB', { cnDeliverable: false })).toBe(false);
+    expect(sellableToBuyer({ CN: 900 }, 'US', { launched: ['US'] })).toBe(false); // local_only drops CN
+    expect(sellableToBuyer({ US: 10, CN: 900 }, 'US', { launched: ['US'] })).toBe(true); // local stays
+  });
+
+  it('fails closed: no lane, no origins, zero stock', () => {
+    expect(sellableToBuyer({ CN: 900 }, 'JP')).toBe(false); // no lane -> no market
+    expect(sellableToBuyer(undefined, 'GB')).toBe(false);
+    expect(sellableToBuyer(null, 'GB')).toBe(false);
+    expect(sellableToBuyer({ GB: 0 }, 'GB')).toBe(false);
+  });
+
+  it('tolerates the UK origin alias', () => {
+    expect(sellableToBuyer({ UK: 7 }, 'GB')).toBe(true);
   });
 });
 

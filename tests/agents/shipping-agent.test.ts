@@ -321,6 +321,106 @@ describe('resolveItemShipping - nearest-warehouse resolver', () => {
   });
 });
 
+describe('local-for-local lane isolation (inquiry side of the market catalogs)', () => {
+  const fresh = new Date().toISOString();
+
+  // The owner-flagged leak, closed deterministically: a US-warehoused item asked
+  // about by a UK buyer must be unfulfillable EVEN WHEN the matrix has a US->GB
+  // row - the UK market does not sell that item, so the draft must not promise it.
+  it('US-only item + UK dest + a US->GB matrix row -> unfulfillable, route cannot override', async () => {
+    const detail = JSON.stringify({ origins: { US: 60 }, variants: [{ vid: 'VU', stock: 60 }] });
+    const ctx = fakeCtx({
+      msg: 'how long to activepaw.co.uk/products/us-cooling-mat to the UK?',
+      links: { 'us-cooling-mat': { cj_pid: 'PUS' } },
+      warehouse: { PUS: { detail } },
+      routes: { 'US->GB': { from_country: 'US', to_country: 'GB', channel: 'c', transit_min: 3, transit_max: 6, aging_raw: '3-6', synced_at: fresh } },
+    });
+    const g = await shippingAgent.ground(ctx);
+    expect((g.data as any)?.unfulfillable).toBe(true);
+    expect(shippingAgent.deterministicAppendix(g)).not.toMatch(/\d+-\d+ days/);
+  });
+
+  // Mirror image: GB stock never answers for a US buyer, whatever routes exist.
+  it('GB-only item + US dest + a GB->US matrix row -> unfulfillable', async () => {
+    const detail = JSON.stringify({ origins: { GB: 40 }, variants: [{ vid: 'VG', stock: 40 }] });
+    const ctx = fakeCtx({
+      msg: 'how long to activepaw.co.uk/products/gb-scratcher to the US?',
+      links: { 'gb-scratcher': { cj_pid: 'PGB2' } },
+      warehouse: { PGB2: { detail } },
+      routes: { 'GB->US': { from_country: 'GB', to_country: 'US', channel: 'c', transit_min: 4, transit_max: 8, aging_raw: '4-8', synced_at: fresh } },
+    });
+    const r = await resolveItemShipping(ctx, 'US');
+    expect(r).toMatchObject({ kind: 'unfulfillable', dest: 'US' });
+  });
+
+  // A CN+US item for a UK buyer quotes the CN leg (what the UK market sells it
+  // through), never the cross-lane US route - even when US->GB looks faster/cheaper.
+  it('CN+US item + UK dest -> resolved via CN, never the faster cross-lane US route', async () => {
+    const detail = JSON.stringify({ origins: { CN: 500, US: 60 }, variants: [{ vid: 'VM', stock: 500 }] });
+    const ctx = fakeCtx({
+      msg: 'how long to activepaw.co.uk/products/mixed-toy to the UK?',
+      links: { 'mixed-toy': { cj_pid: 'PMX' } },
+      warehouse: { PMX: { detail } },
+      routes: {
+        'US->GB': { from_country: 'US', to_country: 'GB', channel: 'c', transit_min: 2, transit_max: 4, aging_raw: '2-4', freight_cost_usd: 3, synced_at: fresh },
+        'CN->GB': { from_country: 'CN', to_country: 'GB', channel: 'c', transit_min: 8, transit_max: 15, aging_raw: '8-15', freight_cost_usd: 9, synced_at: fresh },
+      },
+    });
+    const r = await resolveItemShipping(ctx, 'GB');
+    expect(r).toMatchObject({ kind: 'resolved', chosenOrigin: 'CN' });
+  });
+
+  // CJ aliases GB as UK in origins maps: the alias must count as lane-local AND
+  // still hit the GB-keyed matrix rows.
+  it('UK-alias origins + GB dest -> resolved via the GB->GB row, verified GB warehouse', async () => {
+    const detail = JSON.stringify({ origins: { UK: 7 }, variants: [{ vid: 'VK', stock: 7 }] });
+    const ctx = fakeCtx({
+      msg: 'how long to activepaw.co.uk/products/alias-bed to the UK?',
+      links: { 'alias-bed': { cj_pid: 'PUK' } },
+      warehouse: { PUK: { detail } },
+      routes: { 'GB->GB': { from_country: 'GB', to_country: 'GB', channel: 'Domestic', transit_min: 2, transit_max: 5, aging_raw: '2-5', synced_at: fresh } },
+    });
+    const r = await resolveItemShipping(ctx, 'GB');
+    expect(r).toMatchObject({ kind: 'resolved', chosenOrigin: 'GB', verifiedGbWarehouse: true });
+  });
+
+  // A destination with no lane has no market: honest no-delivery, never a band -
+  // even though the matrix genuinely holds a CN->JP row (CJ ships there; we do not).
+  it('Japan inquiry -> unserved: plain no-delivery sentence, no day band', async () => {
+    const detail = JSON.stringify({ origins: { CN: 500 }, variants: [{ vid: 'VJ', stock: 500 }] });
+    const ctx = fakeCtx({
+      msg: 'how long to activepaw.co.uk/products/dog-launcher to Japan?',
+      links: { 'dog-launcher': { cj_pid: 'PJ' } },
+      warehouse: { PJ: { detail } },
+      routes: { 'CN->JP': { from_country: 'CN', to_country: 'JP', channel: 'c', transit_min: 6, transit_max: 12, aging_raw: '6-12', synced_at: fresh } },
+    });
+    const g = await shippingAgent.ground(ctx);
+    expect(g.confident).toBe(true);
+    expect((g.data as any)?.unserved).toBe(true);
+    const line = shippingAgent.deterministicAppendix(g)!;
+    expect(line).toBe('We do not currently deliver to Japan.');
+    expect(line).not.toMatch(/\d+-\d+ days/);
+    expect(g.facts).toMatch(/do not currently deliver/i);
+  });
+
+  // A Canadian buyer with no item named anchors on the lane route (US->CA), not
+  // the CA->CA row the old code looked for (and never found) nor the CN worst-case.
+  it('no item, Canadian buyer -> soft anchor from the US lane route, not CN', async () => {
+    const ctx = fakeCtx({
+      msg: 'do you ship to Canada and how long does it take?',
+      routes: {
+        'US->CA': { from_country: 'US', to_country: 'CA', channel: 'c', transit_min: 4, transit_max: 7, aging_raw: '4-7', synced_at: fresh },
+        'CN->CA': { from_country: 'CN', to_country: 'CA', channel: 'c', transit_min: 8, transit_max: 15, aging_raw: '8-15', synced_at: fresh },
+      },
+    });
+    const g = await shippingAgent.ground(ctx);
+    expect((g.data as any).askForItem).toBe(true);
+    // US->CA door-to-door = {2+4 .. 5+7+5+2} = 6-19; CN->CA would be 10-27.
+    expect(g.facts).toMatch(/6-19 days/);
+    expect(g.facts).not.toMatch(/10-27/);
+  });
+});
+
 describe('free UK delivery flag (Task 6 - gbFreeUkLive verify-then-flip gate)', () => {
   const GB_DETAIL = JSON.stringify({ origins: { GB: 40, CN: 500 }, variants: [{ vid: 'V1', stock: 40 }] });
   // Routes used across tests (candidates come from D1 only - no live-CJ fallback).

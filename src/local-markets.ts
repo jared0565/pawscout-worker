@@ -50,6 +50,47 @@ export function visibilityModeFor(countries: string[], launched: string[] = LOCA
     ? 'local_only' : 'transitional';
 }
 
+/** Visibility mode governing a single buyer COUNTRY, resolved by LANE so it can
+ *  never disagree with the market-level flip: listing 'US' in
+ *  LOCAL_ONLY_MARKETS flips the whole US+CA market on the catalog side, so a
+ *  Canadian buyer (same US lane) must read local_only here too. A country with
+ *  no lane reads local_only - nothing is sellable to it, scaffolding included. */
+export function laneVisibilityModeFor(buyerCountry: string, launched: string[] = LOCAL_ONLY_MARKETS): MarketVisibilityMode {
+  const lane = localWarehousesFor(buyerCountry);
+  if (!lane.length) return 'local_only';
+  const sig = [...lane].sort().join(',');
+  return launched.some((c) => [...localWarehousesFor(c)].sort().join(',') === sig)
+    ? 'local_only' : 'transitional';
+}
+
+/** Origin codes come from CJ warehouse data, which aliases GB as UK. */
+export function normalizeOriginCode(origin: string): string {
+  const cc = origin.trim().toUpperCase();
+  return cc === 'UK' ? 'GB' : cc;
+}
+
+/** The local-for-local sale test for ONE product against ONE buyer country -
+ *  the same rule computeMarketExclusions applies to whole catalogs, packaged
+ *  for per-inquiry use (inbox agents). A product is sellable to the buyer when
+ *  a lane warehouse stocks it, or - while the buyer's lane is transitional -
+ *  when the CN scaffolding stocks it. `cnDeliverable` lets the caller add the
+ *  route-matrix truth for the CN leg (pass false when no CN route exists);
+ *  local-lane stock never needs a route check to be sellable.
+ *  Fail-closed: no origins, or a buyer with no lane, is never sellable. */
+export function sellableToBuyer(
+  origins: Record<string, number> | undefined | null,
+  buyerCountry: string,
+  opts: { cnDeliverable?: boolean; launched?: string[] } = {}
+): boolean {
+  const lane = localWarehousesFor(buyerCountry);
+  if (!lane.length || !origins) return false;
+  const stocked = Object.keys(origins).filter((o) => (origins[o] ?? 0) > 0).map(normalizeOriginCode);
+  if (stocked.some((o) => lane.includes(o))) return true;
+  return laneVisibilityModeFor(buyerCountry, opts.launched) === 'transitional'
+    && stocked.includes('CN')
+    && (opts.cnDeliverable ?? true);
+}
+
 /** Union of local warehouses across a market's member countries (e.g. the
  *  US+CA market -> {US}; the EU market -> the EU warehouse set). */
 export function marketLocalWarehouses(countries: string[]): Set<string> {

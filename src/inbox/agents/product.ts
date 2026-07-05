@@ -1,6 +1,37 @@
 import type { CategoryAgent, AgentContext, Grounding } from './types';
 import { resolveLineRequest } from '../../shopify-catalog';
+import { deriveDestinationCountry, countryLabel } from '../freight';
+import { localWarehousesFor, sellableToBuyer } from '../../local-markets';
 import type { CjDetail } from '../../cj';
+
+/**
+ * Local-for-local availability check for a product question. When the sender's
+ * destination is confidently derived AND the resolved product's verified origins
+ * show it is not sold to that buyer's market (cross-lane stock, or a country we
+ * have no market for), returns replacement facts that answer honestly instead of
+ * presenting the item as purchasable. Returns null when there is no destination
+ * signal, the product is sellable there, or origins are unverified (cannot
+ * determine -> keep the normal answer; the drafter never invents availability).
+ */
+async function destAvailabilityOverride(ctx: AgentContext, title: string, productId: string | null | undefined): Promise<string | null> {
+  try {
+    const dest = deriveDestinationCountry(ctx.conversation, ctx.thread.subject ?? '', ctx.contactEmail);
+    if (!dest) return null;
+    const label = countryLabel(dest);
+    if (!localWarehousesFor(dest).length) {
+      return `Resolved product "${title}", but the sender appears to be in ${label}, which we do not currently deliver to. Say so plainly and apologise briefly; do not present the item as purchasable for them and do not state a price.`;
+    }
+    if (!productId) return null;
+    const link = await ctx.store.getLinkByShopifyProductId(productId);
+    if (!link?.cj_pid) return null;
+    const row = await ctx.store.getWarehouseProduct(link.cj_pid);
+    if (!row?.detail) return null;
+    const detail = JSON.parse(row.detail) as CjDetail;
+    if (!detail.origins) return null;
+    if (sellableToBuyer(detail.origins, dest)) return null;
+    return `Resolved product "${title}", but it is not available for delivery to ${label} (the sender's destination) - it is stocked for a different region. Say so plainly, do not present it as purchasable for them and do not state a price; offer to suggest similar items available in their country.`;
+  } catch { return null; }
+}
 
 export const productAgent: CategoryAgent = {
   category: 'product-question',
@@ -16,6 +47,10 @@ export const productAgent: CategoryAgent = {
       const r = await resolveLineRequest(ctx.admin, query);
       if (r.status === 'resolved' && r.variant) {
         const v = r.variant;
+        // Local-for-local: a sender whose destination cannot buy this item gets an
+        // honest not-available answer, never an in-stock + price + purchase push.
+        const override = await destAvailabilityOverride(ctx, v.title, v.productId);
+        if (override) return { confident: true, quotesFigure: false, facts: override };
         const stock = v.availableQty > 0 ? 'in stock' : 'availability shown at checkout';
         let baseFacts = `Resolved product "${v.title}${v.variantTitle ? ' - ' + v.variantTitle : ''}", price GBP ${v.priceGbp.toFixed(2)}, ${stock}. You MAY state these. Suggest one concrete next step (view the product page or reply with the variant they want).`;
 
@@ -51,8 +86,11 @@ export const productAgent: CategoryAgent = {
         const candidates = r.candidates ?? [];
         const productIds = new Set(candidates.map((c) => c.productId));
         if (productIds.size === 1) {
-          // All candidates are variants of the same product -- answer confidently.
+          // All candidates are variants of the same product -- answer confidently
+          // (after the same local-for-local availability check as the resolved path).
           const first = candidates[0];
+          const override = await destAvailabilityOverride(ctx, first.title, first.productId);
+          if (override) return { confident: true, quotesFigure: false, facts: override };
           const prices = candidates.map((c) => c.priceGbp);
           const minPrice = Math.min(...prices);
           const maxPrice = Math.max(...prices);

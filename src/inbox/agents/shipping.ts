@@ -4,9 +4,10 @@ import { isShippingIntent, deriveDestinationCountry, countryLabel, buildShipping
 import { resolveLogistics, doorToDoorBand, formatBand, type DayRange, type LogisticsRoute } from '../../logistics';
 import { resolveLineRequest } from '../../shopify-catalog';
 import { resolveNearestRoute } from '../../shipping/nearest-route';
+import { localWarehousesFor, laneVisibilityModeFor, normalizeOriginCode } from '../../local-markets';
 import type { CjDetail } from '../../cj';
 
-const SHIP_DEFAULT_ORIGIN = 'CN'; // Used for the ask-for-item fallback band only; per-item routing uses resolveNearestRoute
+const SHIP_DEFAULT_ORIGIN = 'CN'; // Used for the ask-for-item fallback band only (transitional lanes); per-item routing uses resolveNearestRoute
 
 export type ItemShippingResult =
   | { kind: 'resolved'; chosenOrigin: string; route: LogisticsRoute; cjPid: string; repVid: string | null; verifiedGbWarehouse: boolean }
@@ -16,9 +17,11 @@ const HANDLE_RE = /(?:activepaw\.co\.uk)?\/products\/([a-z0-9][a-z0-9-]{2,})/i;
 
 /**
  * Resolve the inquiry's product (high-confidence only) plus its nearest in-stock
- * warehouse route for `dest` via the nearest-warehouse resolver.
+ * warehouse route for `dest` via the nearest-warehouse resolver, restricted to
+ * the destination's local-for-local lane (+ CN scaffolding while transitional).
  * Returns null when no confident product is identified (ask-for-item path unchanged).
- * Returns unfulfillable when a product IS identified but no real route to dest exists.
+ * Returns unfulfillable when a product IS identified but the buyer's market does
+ * not sell it (cross-lane stock) or no real route to dest exists.
  * Returns resolved with the chosen origin and route when a real route is found.
  *
  * Signal priority:
@@ -54,18 +57,32 @@ export async function resolveItemShipping(ctx: AgentContext, dest: string): Prom
     const origins = detail.origins;
     if (!origins || Object.keys(origins).length === 0) return null;
 
-    const verifiedGbWarehouse = (origins.GB ?? 0) > 0;
+    const verifiedGbWarehouse = (origins.GB ?? origins.UK ?? 0) > 0; // CJ aliases GB as UK
     const originCodes = Object.keys(origins).filter((c) => (origins[c] ?? 0) > 0);
     const variants = detail.variants ?? [];
     const repVid = (variants.find((v) => (v.stock ?? 0) > 0) ?? variants[0])?.vid ?? null;
     const l = resolveLogistics(ctx.cfg.fulfil);
 
-    // Candidate routes: the matrix row for each stocking warehouse to dest.
+    // Local-for-local: the ONLY origins that may answer for this buyer are the
+    // destination's own lane warehouses plus, while the lane is transitional,
+    // the CN scaffolding - the SAME rule that builds the market catalogs. A
+    // cross-lane warehouse (e.g. US stock for a UK buyer) is never a candidate
+    // even when the route matrix has a row for it: the storefront will not
+    // sell that item to this buyer, so the draft must not promise delivery.
+    // Normalized (UK -> GB) so alias-keyed origins hit the matrix rows.
+    const lane = localWarehousesFor(dest);
+    const mode = laneVisibilityModeFor(dest);
+    const allowedOrigins = [...new Set(originCodes.map(normalizeOriginCode))].filter(
+      (cc) => lane.includes(cc) || (mode === 'transitional' && cc === 'CN')
+    );
+    if (!allowedOrigins.length) return { kind: 'unfulfillable', dest, cjPid, verifiedGbWarehouse };
+
+    // Candidate routes: the matrix row for each ALLOWED warehouse to dest.
     // Candidates come ONLY from D1 (ctx.store.getLogisticsRoute). No live-CJ fallback:
     // the live freight API can return routes the static delivery-profile sync never emits
     // (sync reads D1 only), so a live fallback breaks the quote==checkout invariant.
     const candidates: LogisticsRoute[] = [];
-    for (const oc of originCodes) {
+    for (const oc of allowedOrigins) {
       const r = await ctx.store.getLogisticsRoute(oc, dest, l.stalenessHours);
       if (r) candidates.push(r);
     }
@@ -92,20 +109,42 @@ export const shippingAgent: CategoryAgent = {
       if (!relevant) return notConfident();
       const dest = deriveDestinationCountry(ctx.conversation, subject, ctx.contactEmail);
       if (!dest) return notConfident();
+
+      // Local-for-local: a destination with NO lane is a destination the store
+      // has no market for - checkout cannot take that address, so the draft
+      // must say so plainly instead of quoting a courier route that exists at
+      // CJ but not for our buyers (a Japan inquiry used to get a delivery band).
+      const lane = localWarehousesFor(dest);
+      if (!lane.length) {
+        const label = countryLabel(dest);
+        return {
+          confident: true, quotesFigure: false,
+          facts: `We do not currently deliver to ${label}. Say so plainly and apologise briefly. Do NOT state a delivery time or suggest checkout will accept the order.`,
+          data: { unserved: true, label }
+        };
+      }
       const l = resolveLogistics(ctx.cfg.fulfil);
       const item = await resolveItemShipping(ctx, dest);
 
       // No confident item -> ask which item, but DEFAULT the soft anchor to the NEAREST
-      // (in-market/local) warehouse for this destination, not the slowest CN route. A
-      // no-item question is often a buying signal; leading with the worst case works
-      // against the sale. We prefer the dest-local route (fast, e.g. GB->GB / US->US) and
-      // fall back to CN only when there is no local route. The exact time still depends on
-      // the specific product's warehouse, which is exactly why we ask for the item. Time
-      // only, never an origin.
+      // LANE warehouse for this destination, not the slowest CN route. A no-item
+      // question is often a buying signal; leading with the worst case works against
+      // the sale. The lane is what the buyer's market actually sells from (a Canadian
+      // buyer anchors on US->CA, a French buyer on the EU warehouses), and CN is the
+      // fallback only while the lane is still transitional. The exact time still
+      // depends on the specific product's warehouse, which is exactly why we ask for
+      // the item. Time only, never an origin.
       if (!item) {
-        const localRoute = await ctx.store.getLogisticsRoute(dest, dest, l.stalenessHours);
-        const fallbackRoute = await ctx.store.getLogisticsRoute(SHIP_DEFAULT_ORIGIN, dest, l.stalenessHours);
-        const generic = doorToDoorBand(localRoute ?? fallbackRoute, l);
+        const laneRoutes: LogisticsRoute[] = [];
+        for (const w of lane) {
+          const r = await ctx.store.getLogisticsRoute(w, dest, l.stalenessHours);
+          if (r) laneRoutes.push(r);
+        }
+        const nearestLane = resolveNearestRoute(laneRoutes);
+        const fallbackRoute = laneVisibilityModeFor(dest) === 'transitional'
+          ? await ctx.store.getLogisticsRoute(SHIP_DEFAULT_ORIGIN, dest, l.stalenessHours)
+          : null;
+        const generic = doorToDoorBand(nearestLane.fulfillable ? nearestLane.nearest.route : fallbackRoute, l);
         const genericBand = formatBand(generic);
         // Only include the soft-anchor clause when we actually have a band; an empty band
         // would otherwise produce a dangling fragment.
@@ -155,8 +194,12 @@ export const shippingAgent: CategoryAgent = {
     return 'You are the shipping and returns specialist. If they ask whether we deliver to a place, the FIRST word is Yes (or No) followed by the place. If a grounded delivery line is appended, do not state a time yourself, just confirm delivery and that a tracking link follows on dispatch. If they ask about cost, tell the customer the exact shipping cost for their destination is calculated and shown at checkout before payment - do NOT state a specific shipping figure yourself. Keep returns answers to the relevant policy only. Any reassurance comes after the answer, never softening it. Never name the dispatch country. Example: "Yes, we deliver to the US, including NYC. You will get a tracking link the moment it is on its way."';
   },
   deterministicAppendix(g: Grounding): string | null {
-    const d = g.data as { label: string; band?: DayRange; verifiedGb?: boolean; gbFreeUk?: boolean; unfulfillable?: boolean } | undefined;
+    const d = g.data as { label: string; band?: DayRange; verifiedGb?: boolean; gbFreeUk?: boolean; unfulfillable?: boolean; unserved?: boolean } | undefined;
     if (!g.confident || !d) return null;
+    // Unserved destination (no market/lane): honest no-delivery sentence.
+    if (d.unserved) {
+      return `We do not currently deliver to ${d.label}.`;
+    }
     // Unfulfillable: honest no-ship sentence, never a day band.
     if (d.unfulfillable) {
       return `We are not able to ship this item to ${d.label} at the moment.`;
