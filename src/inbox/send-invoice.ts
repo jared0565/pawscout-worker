@@ -32,7 +32,8 @@ export async function sendInvoice(
 
   const r = await sendEmail(env.RESEND_API_KEY, {
     from: FROM, to: thread.contact_email, subject: `Re: ${subject}`.slice(0, 200),
-    text, html, headers
+    text, html, headers,
+    tags: [{ name: 'kind', value: 'invoice' }, { name: 'thread_id', value: thread.id }]
   }, fetchImpl);
   if (!r.ok) return { ok: false, error: r.error };
 

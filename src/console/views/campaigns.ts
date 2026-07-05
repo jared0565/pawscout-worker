@@ -52,6 +52,16 @@ export const campaignsView = `  <section class="card">
       <button type="button" onclick="cmpSavePostal()">Save address</button>
     </div>
     <p id="cmp-postal-msg" class="msg muted"></p>
+  </section>
+
+  <section class="card">
+    <h2>Email analytics</h2>
+    <p class="sub" style="margin:0 0 10px">When tracking is on, every email reports back what happened to it: delivered, opened, clicked, bounced or marked as spam. Campaign rows above show the numbers per campaign. Addresses that hard-bounce or complain are suppressed automatically so they are never mailed again. Opens are approximate (some mail apps block or pre-load them); clicks are the reliable signal.</p>
+    <div id="cmp-tracking" class="muted">Checking tracking status…</div>
+    <div class="row" id="cmp-tracking-actions" hidden style="margin-top:10px">
+      <button type="button" onclick="cmpEnableTracking()">Turn on tracking</button>
+    </div>
+    <p id="cmp-tracking-msg" class="msg muted"></p>
   </section>`;
 
 // Namespaced (.cmp-*) styles, composed alongside the other view CSS in page.ts.

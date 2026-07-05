@@ -9,7 +9,8 @@ const RESEND_ENDPOINT = 'https://api.resend.com/emails';
 
 // Verified sending domain - all outbound mail uses @activepaw.co.uk.
 // Set up DKIM + SPF in Resend before deploying (see docs/INBOX_OPS.md).
-const DEFAULT_FROM = 'Active Paw <support@activepaw.co.uk>';
+export const SENDING_DOMAIN = 'activepaw.co.uk';
+const DEFAULT_FROM = `Active Paw <support@${SENDING_DOMAIN}>`;
 
 export interface EmailMessage {
   to: string | string[];
@@ -20,6 +21,15 @@ export interface EmailMessage {
   replyTo?: string;
   messageId?: string;
   headers?: Record<string, string>;
+  /** Send-time labels echoed back inside every Resend webhook event - how an
+   * opened/clicked event finds its campaign or inbox thread again. */
+  tags?: { name: string; value: string }[];
+}
+
+/** Resend tags allow only ASCII letters, digits, underscores and dashes (both
+ * name and value); anything else fails the whole send. Coerce instead. */
+export function sanitizeTag(s: string): string {
+  return s.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 256);
 }
 
 export type EmailResult = { ok: true; id: string; messageId: string } | { ok: false; error: string };
@@ -40,6 +50,7 @@ export async function sendEmail(apiKey: string, msg: EmailMessage, fetchImpl: ty
         ...(msg.html ? { html: msg.html } : {}),
         ...(msg.text ? { text: msg.text } : {}),
         ...(msg.replyTo ? { reply_to: msg.replyTo } : {}),
+        ...(msg.tags?.length ? { tags: msg.tags.map((t) => ({ name: sanitizeTag(t.name), value: sanitizeTag(t.value) })) } : {}),
         headers: { 'Message-ID': messageId, ...(msg.headers ?? {}) }
       })
     });

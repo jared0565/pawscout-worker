@@ -158,9 +158,13 @@ export async function sendCampaignBatch(
       to: email, subject: campaign.subject, bodyText: campaign.body_text,
       unsubUrl: await unsubUrlFor(env, store.shop, email), postalAddress, audience
     });
-    const r = await sendEmail(env.RESEND_API_KEY, msg, fetchImpl);
+    // Tags round-trip inside every Resend webhook event, so an open/click/bounce
+    // finds its campaign again without us storing anything per-recipient extra.
+    const r = await sendEmail(env.RESEND_API_KEY, {
+      ...msg, tags: [{ name: 'kind', value: 'campaign' }, { name: 'campaign_id', value: campaign.id }]
+    }, fetchImpl);
     if (r.ok) {
-      await store.recordCampaignSend(campaign.id, email, nowIso);
+      await store.recordCampaignSend(campaign.id, email, nowIso, r.id);
       sent++;
     } else {
       console.warn(`campaign ${campaign.id} send failed for ${email}: ${r.error}`);
@@ -193,7 +197,10 @@ export async function sendCampaignTest(
     unsubUrl: await unsubUrlFor(env, store.shop, to.toLowerCase()),
     postalAddress, audience: campaign.audience as CampaignAudience, testTag: true
   });
-  const r = await sendEmail(env.RESEND_API_KEY, msg, fetchImpl);
+  // kind=campaign_test keeps owner previews OUT of the campaign's engagement stats.
+  const r = await sendEmail(env.RESEND_API_KEY, {
+    ...msg, tags: [{ name: 'kind', value: 'campaign_test' }, { name: 'campaign_id', value: campaign.id }]
+  }, fetchImpl);
   return r.ok ? { ok: true } : { ok: false, error: r.error };
 }
 

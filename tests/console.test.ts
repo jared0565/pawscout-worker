@@ -275,6 +275,27 @@ describe('consolePage', () => {
     expect(cmpBlock).not.toContain('window.confirm');
   });
 
+  // --- Email analytics (2026-07-05): tracking setup + per-campaign metrics ---
+
+  it('Campaigns view carries the Email analytics panel: status probe, one-click setup, per-campaign metrics', async () => {
+    const html = await consolePage('test-api-key').text();
+    expect(html).toContain('Email analytics');
+    for (const id of ['cmp-tracking', 'cmp-tracking-actions', 'cmp-tracking-msg']) {
+      expect(html).toContain('id="' + id + '"');
+    }
+    expect(html).toContain('Turn on tracking');
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+    expect(scripts).toContain('function cmpLoadTracking(');
+    expect(scripts).toContain('function cmpEnableTracking(');
+    expect(scripts).toContain("'/email-tracking'");
+    expect(scripts).toContain("'/email-tracking/setup'");
+    // Metrics render per campaign row when the rollup is present.
+    expect(scripts).toContain('if(cp.metrics){');
+    expect(scripts).toContain('Delivered <strong>');
+    expect(scripts).toContain('Opened <strong>');
+    expect(scripts).toContain('Clicked <strong>');
+  });
+
   it('Partners view carries the marketing opt-in toggle wired to /partners/consent', async () => {
     const html = await consolePage('test-api-key').text();
     const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');

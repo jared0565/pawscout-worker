@@ -1680,10 +1680,46 @@ export class TenantStore {
     return row !== null;
   }
 
-  async recordCampaignSend(campaignId: string, email: string, sentAt: string): Promise<void> {
+  async recordCampaignSend(campaignId: string, email: string, sentAt: string, resendId: string | null = null): Promise<void> {
     await this.db
-      .prepare(`INSERT OR IGNORE INTO campaign_sends (shop, campaign_id, email, sent_at) VALUES (?1, ?2, ?3, ?4)`)
-      .bind(this.shop, campaignId, email.toLowerCase(), sentAt).run();
+      .prepare(`INSERT OR IGNORE INTO campaign_sends (shop, campaign_id, email, sent_at, resend_id) VALUES (?1, ?2, ?3, ?4, ?5)`)
+      .bind(this.shop, campaignId, email.toLowerCase(), sentAt, resendId).run();
+  }
+
+  // --- Email engagement events (2026-07-05): Resend webhook rows + rollups ---
+
+  /** Store one webhook event; svix_id is the dedup key across Resend's
+   * redeliveries. Returns false when the event was already stored. */
+  async insertEmailEvent(e: {
+    svixId: string; resendId: string; email: string; eventType: string;
+    kind: string | null; campaignId: string | null; threadId: string | null;
+    link: string | null; occurredAt: string;
+  }, nowIso = new Date().toISOString()): Promise<boolean> {
+    const r = await this.db
+      .prepare(`INSERT OR IGNORE INTO email_events (shop, svix_id, resend_id, email, event_type, kind, campaign_id, thread_id, link, occurred_at, created_at)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)`)
+      .bind(this.shop, e.svixId, e.resendId, e.email.toLowerCase(), e.eventType, e.kind, e.campaignId, e.threadId, e.link, e.occurredAt, nowIso)
+      .run();
+    return (r.meta?.changes ?? 0) > 0;
+  }
+
+  /** Per-campaign engagement rollup: UNIQUE RECIPIENTS per event type (one
+   * person opening five times counts once), keyed by campaign id. Only real
+   * campaign sends count - [Test] sends carry kind=campaign_test and are
+   * excluded so a preview to the owner never inflates the numbers. */
+  async campaignEventStats(): Promise<Map<string, Record<string, number>>> {
+    const rs = await this.db
+      .prepare(`SELECT campaign_id, event_type, COUNT(DISTINCT email) AS n FROM email_events
+                WHERE shop = ?1 AND kind = 'campaign' AND campaign_id IS NOT NULL
+                GROUP BY campaign_id, event_type`)
+      .bind(this.shop).all<{ campaign_id: string; event_type: string; n: number }>();
+    const out = new Map<string, Record<string, number>>();
+    for (const row of rs.results ?? []) {
+      const cur = out.get(row.campaign_id) ?? {};
+      cur[row.event_type] = row.n;
+      out.set(row.campaign_id, cur);
+    }
+    return out;
   }
 
   /** Partner-audience recipients: ACTIVE partners who explicitly opted in. */

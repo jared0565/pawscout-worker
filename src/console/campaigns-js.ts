@@ -29,6 +29,14 @@ function cmpRowHtml(cp){
   if(cp.status==='draft') actions+='<button class="ghost" type="button" data-cmp-discard="'+esc(cp.id)+'">Discard</button>';
   var stats='<span>Audience '+esc(cmpAudienceLabel(cp.audience))+'</span>';
   if(cp.recipientCount!=null) stats+='<span>Sent <strong>'+esc(cp.sentCount||0)+'</strong> of <strong>'+esc(cp.recipientCount)+'</strong></span>';
+  if(cp.metrics){
+    var m=cp.metrics;
+    stats+='<span>Delivered <strong>'+esc(m.delivered||0)+'</strong></span>'
+      +'<span>Opened <strong>'+esc(m.opened||0)+'</strong></span>'
+      +'<span>Clicked <strong>'+esc(m.clicked||0)+'</strong></span>';
+    if(m.bounced) stats+='<span>Bounced <strong>'+esc(m.bounced)+'</strong></span>';
+    if(m.complained) stats+='<span>Spam complaints <strong>'+esc(m.complained)+'</strong></span>';
+  }
   stats+='<span>Created '+prtWhen(cp.createdAt)+'</span>';
   if(cp.sentAt) stats+='<span>Completed '+prtWhen(cp.sentAt)+'</span>';
   return '<div class="cmp-row">'
@@ -50,7 +58,37 @@ async function loadCampaigns(){
     for(var i=0;i<r.campaigns.length;i++) h+=cmpRowHtml(r.campaigns[i]);
     box.innerHTML=h||'<p class="muted">No campaigns yet. Compose one below - it saves as a draft and nothing sends until you click send.</p>';
     cmpLoadAudiences();
+    cmpLoadTracking();
   }catch(e){ setMsg('cmp-msg','Could not load campaigns.','no'); }
+}
+// --- Email analytics: tracking status + one-click worker-side setup ---
+async function cmpLoadTracking(){
+  var box=el('cmp-tracking'); if(!box) return;
+  try{
+    var r=await api('/email-tracking',{});
+    if(!r.ok){ box.textContent='Tracking status unavailable.'; return; }
+    if(!r.available){ box.textContent='Email sending is not configured on the worker yet.'; return; }
+    var acts=el('cmp-tracking-actions');
+    if(r.openTracking&&r.clickTracking&&r.secretStored){
+      box.innerHTML='Tracking is <strong>on</strong>. Deliveries, opens, clicks and bounces are recorded for every email sent from now on.';
+      if(acts) acts.hidden=true;
+      return;
+    }
+    box.textContent='Open/click tracking: '+((r.openTracking&&r.clickTracking)?'on':'off')
+      +' · Event feed: '+(r.secretStored?'connected':'not connected')
+      +(r.error?' ('+r.error+')':'');
+    if(acts) acts.hidden=false;
+  }catch(e){ box.textContent='Tracking status unavailable.'; }
+}
+async function cmpEnableTracking(){
+  setMsg('cmp-tracking-msg','Setting up tracking…','muted');
+  try{
+    var r=await api('/email-tracking/setup',{});
+    if(!r.ok){ setMsg('cmp-tracking-msg','Setup failed: '+(r.error||'unknown error'),'no'); return; }
+    if(!r.secretStored){ setMsg('cmp-tracking-msg','Tracking is on, but an event webhook already exists in Resend and its secret is not stored here. Delete that webhook in the Resend dashboard, then click again.','no'); }
+    else{ setMsg('cmp-tracking-msg','Done. Every email from now on reports delivery, opens and clicks back to this page.','ok'); }
+    cmpLoadTracking();
+  }catch(e){ setMsg('cmp-tracking-msg','Setup failed.','no'); }
 }
 async function cmpLoadAudiences(){
   var box=el('cmp-audiences'); if(!box) return;

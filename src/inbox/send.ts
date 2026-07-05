@@ -33,7 +33,8 @@ export async function sendReply(
 
   const r = await sendEmail(env.RESEND_API_KEY, {
     from, to: thread.contact_email, subject: `Re: ${subject}`.slice(0, 200),
-    text: bodyText, html: bodyHtml, headers
+    text: bodyText, html: bodyHtml, headers,
+    tags: [{ name: 'kind', value: 'reply' }, { name: 'thread_id', value: thread.id }]
   }, fetchImpl);
   if (!r.ok) return { ok: false, error: r.error };
 

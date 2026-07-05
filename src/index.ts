@@ -24,7 +24,8 @@ import { consolePage } from './console/page';
 import { validateCjKey, CjClient, CjTokenManager, cjFetchFromEnv, chooseOrigin } from './cj';
 import { registerWebhooks, type RegisterWebhook } from './webhooks';
 import { validateGatesPayload, validatePricingPayload, validateLlmPayload, validateAddonsPayload, validateCollectionMap, validatePartnerPayload } from './validate';
-import { sendEmail } from './email';
+import { sendEmail, SENDING_DOMAIN } from './email';
+import { verifySvixSignature, parseResendEvent, applyResendEvent, getTrackingStatus, enableTracking, ensureEventsWebhook } from './resend-events';
 import { verifyAppProxy } from './proxy/verify';
 import { verifyUnsubToken } from './retention';
 import { searchBackfill, normalizeKeyword } from './proxy/search';
@@ -232,12 +233,55 @@ app.post('/api/campaigns', async (c) => {
   const s = await shopOf(c); if (typeof s !== 'string') return s;
   const store = new TenantStore(c.env.DB, s);
   const cfg = await store.getConfig();
+  // Engagement rollup (unique recipients per event type) rides along so the
+  // list shows delivered/opened/clicked without a second round-trip.
+  const stats = await store.campaignEventStats();
   return c.json({
     ok: true,
-    campaigns: (await store.listCampaigns()).map(campaignForUi),
+    campaigns: (await store.listCampaigns()).map((r) => ({ ...campaignForUi(r), metrics: stats.get(r.id) ?? null })),
     postalAddress: cfg?.inbox.postalAddress ?? '',
     testAddress: cfg ? ownerTestAddress(cfg) : null
   });
+});
+// --- Email engagement tracking (2026-07-05): Resend opens/clicks/bounces ---
+// Status probe: is tracking on for the sending domain, and is the webhook
+// signing secret stored (i.e. are events actually flowing to us)?
+app.post('/api/email-tracking', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  const store = new TenantStore(c.env.DB, s);
+  const secretStored = !!(await store.getSupplierCredential('resend-webhook'));
+  if (!c.env.RESEND_API_KEY) return c.json({ ok: true, available: false, secretStored, openTracking: false, clickTracking: false });
+  const r = await getTrackingStatus(c.env.RESEND_API_KEY, SENDING_DOMAIN);
+  if (!r.ok) return c.json({ ok: true, available: true, secretStored, openTracking: false, clickTracking: false, error: r.error });
+  return c.json({ ok: true, available: true, secretStored, openTracking: r.status.openTracking, clickTracking: r.status.clickTracking });
+});
+// One-click setup, fully worker-side (the Resend key never leaves the worker):
+// flip open+click tracking on the sending domain, create the events webhook
+// pointing back at /webhooks/resend, and seal its signing secret into the
+// credential vault. Idempotent - safe to click again.
+app.post('/api/email-tracking/setup', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  if (!c.env.RESEND_API_KEY) return c.json({ ok: false, error: 'RESEND_API_KEY secret not set on the Worker' });
+  const store = new TenantStore(c.env.DB, s);
+  const status = await getTrackingStatus(c.env.RESEND_API_KEY, SENDING_DOMAIN);
+  if (!status.ok) return c.json(status);
+  if (!status.status.domainId) return c.json({ ok: false, error: `Domain ${SENDING_DOMAIN} not found in Resend` });
+  if (!status.status.openTracking || !status.status.clickTracking) {
+    const en = await enableTracking(c.env.RESEND_API_KEY, status.status.domainId);
+    if (!en.ok) return c.json(en);
+  }
+  const endpoint = `${c.env.SHOPIFY_APP_URL}/webhooks/resend`;
+  const wh = await ensureEventsWebhook(c.env.RESEND_API_KEY, endpoint);
+  if (!wh.ok) return c.json(wh);
+  let secretStored = !!(await store.getSupplierCredential('resend-webhook'));
+  if (wh.created && wh.signingSecret) {
+    const tenant = await store.getTenant();
+    if (!tenant) return c.json({ ok: false, error: 'Tenant unavailable' });
+    const vault = await Vault.fromMasterKey(c.env.PAWSCOUT_MASTER_KEY);
+    await store.putSupplierCredential('resend-webhook', await vault.seal(tenant.dek_wrapped, wh.signingSecret), 'resend-webhook');
+    secretStored = true;
+  }
+  return c.json({ ok: true, tracking: true, webhookCreated: wh.created, secretStored, endpoint });
 });
 app.post('/api/campaigns/create', async (c) => {
   const s = await shopOf(c); if (typeof s !== 'string') return s;
@@ -1022,6 +1066,36 @@ app.post('/webhooks/shop-redact', (c) =>
     await store.redactShop();
     console.log('shop/redact: shop data purged');
   }));
+
+// --- Email engagement events: Resend webhook (svix-signed) ---
+// Stores delivered/opened/clicked/bounced/complained events against the active
+// shop; spam complaints and permanent bounces feed the suppression list. The
+// signing secret lives sealed in the credential vault (stored by
+// /api/email-tracking/setup); unconfigured or bad-signature requests get 401.
+app.post('/webhooks/resend', async (c) => {
+  const raw = await c.req.text();
+  const shops = await listActiveShops(c.env.DB);
+  const shop = shops[0];
+  if (!shop) return c.json({ ok: false, error: 'no active shop' });
+  const store = new TenantStore(c.env.DB, shop);
+  const cred = await store.getSupplierCredential('resend-webhook');
+  const tenant = await store.getTenant();
+  if (!cred || !tenant) return c.json({ ok: false, error: 'not configured' }, 401);
+  const vault = await Vault.fromMasterKey(c.env.PAWSCOUT_MASTER_KEY);
+  const secret = await vault.open(tenant.dek_wrapped, cred.api_key_enc);
+  const svixId = c.req.header('svix-id');
+  const valid = await verifySvixSignature(secret, {
+    id: svixId, timestamp: c.req.header('svix-timestamp'), signature: c.req.header('svix-signature')
+  }, raw);
+  if (!valid || !svixId) return c.json({ ok: false, error: 'invalid signature' }, 401);
+  let payload: unknown;
+  try { payload = JSON.parse(raw); } catch { return c.json({ ok: false, error: 'invalid JSON' }, 400); }
+  const event = parseResendEvent(payload);
+  // Non-email or malformed events are acknowledged (200) so svix stops retrying.
+  if (!event) return c.json({ ok: true, ignored: true });
+  const r = await applyResendEvent(store, svixId, event);
+  return c.json({ ok: true, ...r });
+});
 
 // --- W-INBOX: inbound email handler (Cloudflare Email Routing → Worker) ---
 // Reads the raw message, parses + stores it against the (first-party) active

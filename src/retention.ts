@@ -183,7 +183,7 @@ export async function sendReorderReminders(
     const token = await signUnsubToken(store.shop, email, env.SHOPIFY_API_SECRET);
     const unsubUrl = `${env.SHOPIFY_APP_URL}/unsubscribe?shop=${encodeURIComponent(store.shop)}&email=${encodeURIComponent(email)}&token=${token}`;
     const msg = buildReorderEmail(email, o.reorderableTitles, unsubUrl);
-    const r = await sendEmail(env.RESEND_API_KEY, msg, fetchImpl);
+    const r = await sendEmail(env.RESEND_API_KEY, { ...msg, tags: [{ name: 'kind', value: 'retention' }] }, fetchImpl);
     if (r.ok) {
       await store.recordReorderReminder(o.id, email, new Date(now).toISOString());
       sent++;
