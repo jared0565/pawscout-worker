@@ -284,6 +284,29 @@ describe('consolePage', () => {
     expect(scripts).toContain('Remove updates opt-in');
   });
 
+  // --- Voucher issuance automation (2026-07-05): one-click issue + promo status ---
+
+  it('Partners view issues vouchers with one click and shows event-aware promo status', async () => {
+    const html = await consolePage('test-api-key').text();
+    expect(html).toContain('id="prt-promos"');
+    expect(html).toContain('Issue automatically');
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+    expect(scripts).toContain('function issuePartnerVoucher(');
+    expect(scripts).toContain("'/partners/issue'");
+    expect(scripts).toContain("'/partners/discount-status'");
+    expect(scripts).toContain('loadDiscountStatus();'); // probe runs on startup
+    // A missing write_discounts grant explains the fix, not a stack trace.
+    expect(scripts).toContain('approve the updated permissions');
+  });
+
+  it('Settings carries the auto-issue voucher switch, loaded and saved with inbox config', async () => {
+    const html = await consolePage('test-api-key').text();
+    expect(html).toContain('id="inbox-autoissue-chk"');
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+    expect(scripts).toContain("autoIssueVoucher:!!(el('inbox-autoissue-chk')");
+    expect(scripts).toContain('aiv.checked=!!cfg.autoIssueVoucher');
+  });
+
   // --- Partners view (2026-07-04): affiliate voucher trials ---
 
   it('renders the Partners view: list, register form, orders modal, armed actions', async () => {

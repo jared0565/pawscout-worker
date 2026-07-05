@@ -836,6 +836,7 @@ async function loadInboxSettings(){
     var ae=el('inbox-alert-email'); if(ae&&cfg.alertEmail) ae.value=cfg.alertEmail;
     var gt=el('inbox-guidance-ta'); if(gt) gt.value=cfg.replyGuidance||'';
     var am=el('affiliate-mode'); if(am&&cfg.affiliateMode) am.value=cfg.affiliateMode;
+    var aiv=el('inbox-autoissue-chk'); if(aiv) aiv.checked=!!cfg.autoIssueVoucher;
     // Invoice settings
     var aichk=el('inbox-autoinvoice-chk'); if(aichk) aichk.checked=!!cfg.autoInvoice;
     var ict=el('inbox-invoice-conf-thresh'); if(ict&&cfg.invoiceConfidenceThreshold!=null) ict.value=cfg.invoiceConfidenceThreshold;
@@ -869,6 +870,7 @@ async function saveInboxSettings(){
       invoiceValueCeiling:Number(ivc&&ivc.value||250),
       invoiceRateLimit:Math.max(1,parseInt((irl&&irl.value)||'2',10)||2),
       affiliateMode:(el('affiliate-mode')&&el('affiliate-mode').value)||'funnel_voucher',
+      autoIssueVoucher:!!(el('inbox-autoissue-chk')&&el('inbox-autoissue-chk').checked),
       agents:collectAgents()
     };
     var r=await api('/inbox/config',payload);

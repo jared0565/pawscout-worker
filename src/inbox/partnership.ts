@@ -8,6 +8,8 @@ import { resolveChain } from '../llm-resolve';
 import { maybeAlertOwner } from './alert';
 import { resolveAgents } from './agents/config';
 import { AUTO_RATELIMIT_PER_SENDER_DAY } from './autosend';
+import { adminForShop } from './invoice-routes';
+import { issueVoucher, voucherDateLabel } from '../affiliate-discounts';
 
 export const PARTNERSHIP_ADDRESS = 'sales@activepaw.co.uk';
 export const PARTNERSHIP_FROM = 'Active Paw Partnerships <sales@activepaw.co.uk>';
@@ -22,6 +24,9 @@ export const AUTO_DECLINE_LOW = false; // dial: auto-decline score <= 3 (spec §
 export const STANDARD_COMMISSION_PCT = 2;
 export const TIER_REVIEW_ORDERS = 25;
 export const TIER_MAX_PCT = 5;
+/** Customer-facing discount on an auto-issued trial code (the owner's manual
+ * register form stays free-form; auto-issue uses this default). */
+export const TRIAL_PCT_OFF_DEFAULT = 5;
 
 /** Mode comes from cfg.inbox.affiliateMode (owner-set in Settings, 2026-07-04):
  *  'funnel_voucher' (default) screens candidates for a discount-code trial and
@@ -107,22 +112,35 @@ const METHOD_VOUCHER: Record<ScreenFacts['method'], number> = { content: 2, mixe
 const SPECIFICITY: Record<ScreenFacts['specificity'], number> = { specific: 2, partial: 1, vague: 0 };
 
 /** Hard gates → decline. Otherwise a 0-12 score sorts form vs. escalate. The score
- * NEVER causes a decline unless the (default-OFF) auto-decline-low dial is on. */
+ * NEVER causes a decline unless the (default-OFF) auto-decline-low dial is on.
+ *
+ * VOUCHER variant = TRIAL-ENTRY mode (owner policy 2026-07-05: "whatever they
+ * are claiming does not matter if they cannot pass the performance test").
+ * Claim-quality gates and the score no longer decide entry - the tracked trial
+ * does. Only the ABUSE gates still decline, because there the code itself is
+ * the weapon: coupon/cashback channels (G2), brand-term bidding (G2),
+ * prohibited tactics (G5), and refusing the basic terms (G4). No channel (G1)
+ * and off-audience (G3) pass through to the trial; the score is still computed
+ * and recorded for the owner's context. The LINK variant keeps the full
+ * original gates for the future programme. */
 export function scoreScreen(
   facts: ScreenFacts,
   opts?: { passThreshold?: number; autoDeclineLow?: boolean; variant?: FunnelVariant }
 ): ScreenVerdict {
   const passThreshold = opts?.passThreshold ?? PASS_THRESHOLD;
   const autoDeclineLow = opts?.autoDeclineLow ?? AUTO_DECLINE_LOW;
-  const METHOD = (opts?.variant ?? 'link') === 'voucher' ? METHOD_VOUCHER : METHOD_LINK;
+  const trialEntry = (opts?.variant ?? 'link') === 'voucher';
+  const METHOD = trialEntry ? METHOD_VOUCHER : METHOD_LINK;
 
-  if (!facts.channelUrls || facts.channelUrls.length === 0)
-    return gateDecline('G1', 'No channel/URL provided - no basis to evaluate.');
   if (facts.disqualifier === 'coupon_cashback') return gateDecline('G2', 'Coupon/cashback/deal-type channel.');
   if (facts.disqualifier === 'brand_bidding') return gateDecline('G2', 'Plans brand-term bidding / interception.');
-  if (facts.audienceRelevance === 'off') return gateDecline('G3', 'Audience not pet- or UK-relevant.');
   if (facts.acceptsTerms === 'no') return gateDecline('G4', 'Rejects performance basis or #ad disclosure.');
   if (facts.disqualifier === 'prohibited_tactics') return gateDecline('G5', 'States prohibited tactics.');
+  if (!trialEntry) {
+    if (!facts.channelUrls || facts.channelUrls.length === 0)
+      return gateDecline('G1', 'No channel/URL provided - no basis to evaluate.');
+    if (facts.audienceRelevance === 'off') return gateDecline('G3', 'Audience not pet- or UK-relevant.');
+  }
 
   const signals: Record<string, number> = {
     S1_relevance: RELEVANCE[facts.audienceRelevance],
@@ -134,6 +152,8 @@ export function scoreScreen(
   };
   const score = Object.values(signals).reduce((a, b) => a + b, 0);
 
+  if (trialEntry)
+    return { decision: 'form', score, gate: null, signals, reasons: [`Trial entry: score ${score}/12 recorded for context; the tracked trial decides.`] };
   if (score >= passThreshold)
     return { decision: 'form', score, gate: null, signals, reasons: [`Score ${score}/12 ≥ ${passThreshold}.`] };
   if (autoDeclineLow && score <= 3)
@@ -238,6 +258,37 @@ We're taking a look and reviewing the fit, and we'll be in touch shortly with th
 
 Best Regards,
 Active Paw Partnerships`;
+
+// One-line tier reminder for the code invite (full ladder already went out in
+// the qualifying email; numbers interpolate from the same constants).
+const EARNED_TIERS_SHORT =
+  `After your first ${TIER_REVIEW_ORDERS} tracked orders in a 30-day window we review your tier, up to ${TIER_MAX_PCT}%.`;
+
+/** The invite that carries a real minted code (auto-issue or owner one-click).
+ * Deterministic, no LLM. Timing line adapts when the code was scheduled behind
+ * a running storewide event so the partner knows exactly when it works. */
+export function buildVoucherInviteWithCode(
+  name: string | null,
+  v: { code: string; pctOff: number; commissionPct: number; startsAtLabel: string; endsAtLabel: string; deferred: boolean }
+): string {
+  const liveLine = v.deferred
+    ? `It goes live on ${v.startsAtLabel}, as soon as our current storewide promotion ends (so your code is never competing with a bigger discount), and runs until ${v.endsAtLabel}.`
+    : `It is live now and runs until ${v.endsAtLabel}.`;
+  const body =
+`Great news - your trial is set up.
+
+Your personal discount code is ${v.code}. It gives your audience ${v.pctOff}% off everything at activepaw.co.uk, once per customer. ${liveLine}
+
+You earn ${v.commissionPct}% of the face value of every paid order placed with your code, paid monthly. ${EARNED_TIERS_SHORT}
+
+A few ground rules we ask every partner to keep: a clear #ad disclosure when you post, no bidding on our brand name, and never post the code to coupon or deal sites (that ends the trial immediately).
+
+From here your tracked results do the talking. Good luck, we are genuinely excited to see what you do.
+
+Best Regards,
+Active Paw Partnerships`;
+  return applySalutation(body, name);
+}
 
 export function buildQualifyingEmail(
   name: string | null, variant: FunnelVariant = 'link', opts: { volumePitch?: boolean } = {}
@@ -446,6 +497,7 @@ export async function maybePartnershipDraft(
     const facts = await extractScreenFacts(llm, store, cfg, conversation);
 
     let body: string;
+    let send = false;
     if (!facts) {
       // Degrade: never guess. Escalate for owner review.
       body = buildHoldingAck(name);
@@ -457,13 +509,56 @@ export async function maybePartnershipDraft(
         body = buildPartnershipDecline(name);
         await store.setApplicantStage(thread.id, 'declined', verdict);
       } else if (verdict.decision === 'form') {
-        body = variant === 'voucher' ? buildVoucherInvite(name) : buildFormInvite(name);
-        await store.setApplicantStage(thread.id, 'passed_to_form', verdict);
-        await maybeAlertOwner(env, cfg, thread.shop, thread,
-          variant === 'voucher'
-            ? `Strong voucher-trial candidate (score ${verdict.score}/12) - review their answers and issue a code in the Partners view.`
-            : `Strong partnership candidate (score ${verdict.score}/12) - passed screening.`,
-          'affiliate', _fetchImpl);
+        // Auto-issue (owner switch, 2026-07-05): a passing voucher screen can
+        // mint the real code and send the invite in one move. The code is only
+        // ever minted when its invite is actually going out, so all the ways
+        // this can fail to send (switch off, global Auto off, rate-limited,
+        // scheduling blocked by an open-ended promotion, Shopify refusal)
+        // fall back to the codeless invite + owner alert WITHOUT creating a
+        // discount. Timing is event-aware inside issueVoucher: a code never
+        // launches into a running storewide promotion.
+        let issued: import('../affiliate-discounts').IssueResult | null = null;
+        let issueNote: string | null = null;
+        if (variant === 'voucher' && cfg.inbox.autoIssueVoucher && cfg.inbox.autosend) {
+          const sinceIso = new Date(Date.now() - 86400_000).toISOString();
+          if ((await store.recentAutoSendCount(thread.contact_email, sinceIso)) >= AUTO_RATELIMIT_PER_SENDER_DAY) {
+            issueNote = 'auto-issue skipped: sender rate limit';
+          } else {
+            const admin = await adminForShop(env, store, _fetchImpl).catch(() => null);
+            if (!admin) {
+              issueNote = 'auto-issue skipped: Shopify connection unavailable';
+            } else {
+              const r = await issueVoucher(store, admin, {
+                email: thread.contact_email, name,
+                pctOff: TRIAL_PCT_OFF_DEFAULT, commissionPct: STANDARD_COMMISSION_PCT
+              });
+              if (r.ok) issued = r;
+              else issueNote = `auto-issue failed: ${r.error}`;
+            }
+          }
+        }
+        if (issued) {
+          body = buildVoucherInviteWithCode(name, {
+            code: issued.code, pctOff: issued.pctOff, commissionPct: issued.commissionPct,
+            startsAtLabel: voucherDateLabel(issued.startsAt), endsAtLabel: voucherDateLabel(issued.endsAt),
+            deferred: issued.deferredBehind !== null
+          });
+          send = true;
+          await store.setApplicantStage(thread.id, 'passed_to_form', verdict);
+          await maybeAlertOwner(env, cfg, thread.shop, thread,
+            `Voucher trial auto-issued: code ${issued.code} (${issued.pctOff}% off, ${issued.commissionPct}% commission)` +
+            (issued.deferredBehind ? ` scheduled after "${issued.deferredBehind}" ends, live ${voucherDateLabel(issued.startsAt)}` : ', live now') +
+            ` - track it in Partners.`,
+            'affiliate', _fetchImpl);
+        } else {
+          body = variant === 'voucher' ? buildVoucherInvite(name) : buildFormInvite(name);
+          await store.setApplicantStage(thread.id, 'passed_to_form', verdict);
+          await maybeAlertOwner(env, cfg, thread.shop, thread,
+            variant === 'voucher'
+              ? `Voucher-trial candidate (score ${verdict.score}/12)${issueNote ? ` (${issueNote})` : ''} - issue their code in the Partners view.`
+              : `Strong partnership candidate (score ${verdict.score}/12) - passed screening.`,
+            'affiliate', _fetchImpl);
+        }
       } else {
         body = buildHoldingAck(name);
         await store.setApplicantStage(thread.id, 'escalated', verdict);
@@ -474,7 +569,7 @@ export async function maybePartnershipDraft(
       threadId: thread.id, bodyText: body, bodyHtml: renderReplyHtml(body),
       confidence: null, quotesPriceOrder: false, holdReasons: [], model: 'partnership-screen', status: 'pending',
     });
-    return { draftId, send: false };
+    return { draftId, send };
   }
 
   // Later stages: 'declined' falls through to the generic drafter (the affiliate

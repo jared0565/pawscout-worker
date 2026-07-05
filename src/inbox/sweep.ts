@@ -97,6 +97,12 @@ async function classifyOne(env: Env, store: TenantStore, cfg: TenantConfig, shop
  * follow-up just refreshes the stamp so the thread stops re-qualifying.
  */
 async function reclassifyOne(env: Env, store: TenantStore, cfg: TenantConfig, shop: string, thread: ThreadRow, fetchImpl: typeof fetch): Promise<void> {
+  // In-funnel applicant threads belong to the partnership funnel: their replies
+  // are answers WE asked for, so the classifier must never re-file them (the
+  // 2026-07-05 Samlarry incident: screening answers full of marketing jargon
+  // were reclassified to spam, silently pulling the thread out of the funnel
+  // and the Open queue). Stamp and stand down; the funnel owns the thread.
+  if (await store.getApplicantByThread(thread.id)) { await store.touchClassifiedAt(thread.id); return; }
   const got = await store.getThreadWithMessages(thread.id);
   const inbound = (got?.messages ?? []).filter((m) => m.direction === 'inbound');
   const latest = inbound[inbound.length - 1];

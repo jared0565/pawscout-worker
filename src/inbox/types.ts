@@ -29,6 +29,7 @@ export interface InboxConfig {
   invoiceValueCeiling: number;        // GBP; total above this → HITL
   invoiceRateLimit: number;           // max invoices per contact per 24h
   affiliateMode: AffiliateMode;       // partnership handling; see AffiliateMode
+  autoIssueVoucher?: boolean;         // owner switch (default false): a passing voucher screen mints the code + sends the invite automatically (also requires the global autosend master)
   postalAddress?: string;             // business postal address for marketing-email footers (CAN-SPAM); campaigns refuse to send without it
 }
 

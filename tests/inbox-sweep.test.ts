@@ -133,6 +133,33 @@ describe('runInboxClassifySweep', () => {
     expect(alerted).toBe(true); // affiliate approaches alert the owner regardless of intent
   });
 
+  // 2026-07-05 Samlarry incident: an in-funnel applicant's screening ANSWERS
+  // (marketing jargon, no links) were reclassified to spam, silently pulling
+  // the thread out of the Open queue and the funnel. Applicant threads belong
+  // to the partnership funnel: reclassification must stamp and stand down.
+  it('never re-files a thread that has an applicant record (Samlarry guard)', async () => {
+    const tid = await seedShopWithThread();
+    const store = new TenantStore(env.DB, SHOP);
+    await store.setThreadClassification(tid, { status: 'needs_reply', primaryCategory: 'affiliate', intentScore: 20, summary: 'pitch', classifiedAt: '2026-06-18T10:05:00Z' });
+    await store.upsertApplicant({ threadId: tid, contactEmail: 'jane@x.com', stage: 'screen_sent' });
+    // Their screening answers arrive AFTER the classification stamp - the exact
+    // shape that qualified for reclassification and got spam-bucketed.
+    await store.insertInboundMessageIfNew({ threadId: tid, messageId: '<ans@x>', inReplyTo: null, references: [], from: 'jane@x.com', to: 'support@activepaw.co.uk', subject: 'Re: questions', bodyText: 'I generate qualified traffic through SEO, content marketing and conversion optimization.', bodyHtml: null, headersJson: '{"authentication-results":"mx; spf=pass dkim=pass dmarc=pass"}', receivedAt: '2026-06-18T12:00:00Z' });
+    // If the guard failed, this classifier verdict would re-file the thread as spam.
+    const fetchImpl = (async (url: string) => {
+      if (String(url).includes('openrouter')) {
+        return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ isHuman: false, category: 'spam', intentScore: 0, summary: 'spam', labels: ['spam'] }) } }], usage: { cost: 0.0001 } }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ id: 'em_1' }), { status: 200 });
+    }) as unknown as typeof fetch;
+    await runInboxClassifySweep({ ...env, OPENROUTER_API_KEY: 'k', RESEND_API_KEY: 'rk' } as any, fetchImpl);
+
+    const got = await store.getThreadWithMessages(tid);
+    expect(got?.thread.primary_category).toBe('affiliate'); // lane untouched
+    expect(got?.thread.status).not.toBe('spam');            // still in the Open queue
+    expect(got!.thread.classified_at! > '2026-06-18T10:05:00Z').toBe(true); // stamped: stops re-qualifying
+  });
+
   it('a same-lane follow-up refreshes the stamp and keeps the pending draft', async () => {
     const tid = await seedShopWithThread();
     const store = new TenantStore(env.DB, SHOP);

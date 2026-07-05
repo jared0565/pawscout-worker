@@ -58,6 +58,56 @@ async function loadPartners(){
     box.innerHTML=h||'<p class="muted">No partners yet. Create a discount code in Shopify admin, then register it below to start a trial.</p>';
   }catch(e){ setMsg('prt-msg','Could not load partners.','no'); }
 }
+// Promo/scope status line: shows what voucher timing will schedule around, and
+// doubles as the write_discounts grant check after the scope change.
+async function loadDiscountStatus(){
+  var box=el('prt-promos'); if(!box) return;
+  try{
+    var r=await api('/partners/discount-status',{});
+    if(!r.ok){ box.textContent='Store promotion check unavailable.'; return; }
+    if(!r.scope){
+      box.textContent=(r.note==='reconnect_required')
+        ?'Shopify has not granted discount access to PawScout yet. Open the app fresh from Shopify admin (Apps, then PawScout) and approve the updated permissions, then reload this page.'
+        :'Store promotion check unavailable: '+(r.note||'unknown');
+      return;
+    }
+    if(!r.promos.length){ box.textContent='No storewide promotion is running or scheduled: new voucher codes go live immediately.'; return; }
+    var parts=[];
+    for(var i=0;i<r.promos.length;i++){
+      var p=r.promos[i];
+      parts.push('"'+p.title+'" ('+(p.status==='ACTIVE'?'running':'scheduled')+(p.endsAt?(', ends '+prtWhen(p.endsAt)):', no end date')+')');
+    }
+    box.innerHTML='Storewide promotions: '+esc(parts.join(' · '))+'. New voucher codes are automatically scheduled to start after the last one ends.';
+  }catch(e){ box.textContent='Store promotion check unavailable.'; }
+}
+async function issuePartnerVoucher(){
+  var email=el('prt-email').value.trim();
+  if(!email){ setMsg('prt-reg-msg','Enter the partner email first.','no'); return; }
+  var body={
+    email:email,
+    pctOff:Number(el('prt-pct').value),
+    commissionPct:Number(el('prt-comm').value)
+  };
+  var nm=el('prt-name').value.trim(); if(nm) body.name=nm;
+  var ends=el('prt-ends').value;
+  if(ends){
+    var days=Math.round((new Date(ends+'T23:59:59Z').getTime()-Date.now())/86400000);
+    if(days>=7&&days<=90) body.trialDays=days;
+  }
+  setMsg('prt-reg-msg','Creating the code in Shopify…','muted');
+  try{
+    var r=await api('/partners/issue',body);
+    if(!r.ok){ setMsg('prt-reg-msg','Failed: '+(r.error||'unknown error'),'no'); return; }
+    var when=r.deferredBehind
+      ?('It starts after "'+r.deferredBehind+'" ends ('+prtWhen(r.startsAt)+') and runs until '+prtWhen(r.endsAt)+'.')
+      :('It is live now and runs until '+prtWhen(r.endsAt)+'.');
+    var where=r.invitedThreadId
+      ?' The invite email carrying the code is waiting in the Inbox for your approval.'
+      :' No inbox conversation exists for this email, so share the code with them yourself.';
+    setMsg('prt-reg-msg','Issued '+r.code+' ('+r.pctOff+'% off, '+r.commissionPct+'% commission). '+when+where,'ok');
+    loadPartners();
+  }catch(e){ setMsg('prt-reg-msg','Could not issue the voucher.','no'); }
+}
 async function registerPartner(){
   var body={
     email:el('prt-email').value.trim(),
@@ -162,5 +212,6 @@ function closePartnerOrders(){
   window.addEventListener('keydown',function(e){ var o=el('prt-overlay'); if(e.key==='Escape'&&o&&!o.hidden) closePartnerOrders(); });
   var ends=el('prt-ends');
   if(ends&&!ends.value){ var d=new Date(Date.now()+30*86400000); ends.value=d.toISOString().slice(0,10); }
+  loadDiscountStatus();
 })();
 `;

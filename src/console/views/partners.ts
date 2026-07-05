@@ -15,8 +15,9 @@ export const partnersView = `  <section class="card">
   </section>
 
   <section class="card">
-    <h2>Register a voucher</h2>
-    <p class="sub" style="margin:0 0 12px">Create the discount code in Shopify admin first (Discounts, then Create discount: percentage off, set an end date, once per customer, no combining). Then register it here so PawScout can track it. The commission percentage is what you agreed to pay the partner on the face value of each paid order.</p>
+    <h2>Issue or register a voucher</h2>
+    <p class="sub" style="margin:0 0 8px"><strong>Issue automatically</strong> creates the discount code in Shopify for you (percentage off, once per customer, no combining, a usage cap and an end date), registers it here, and, if this person has an inbox conversation, stages the invite email carrying the code for your approval. Timing is event-aware: if a storewide promotion is running, the code is scheduled to start right after it ends. Leave the code field blank to auto-generate one. <strong>Register voucher</strong> is the manual path for a code you already created in Shopify admin yourself.</p>
+    <p id="prt-promos" class="sub muted" style="margin:0 0 12px">Checking store promotions…</p>
     <div class="row">
       <div class="grow">
         <label for="prt-email">Partner email</label>
@@ -54,7 +55,8 @@ export const partnersView = `  <section class="card">
         <label for="prt-notes">Notes (optional)</label>
         <input id="prt-notes" type="text" maxlength="500" placeholder="Agreed terms, where they will share it...">
       </div>
-      <button type="button" onclick="registerPartner()">Register voucher</button>
+      <button type="button" onclick="issuePartnerVoucher()">Issue automatically</button>
+      <button type="button" class="ghost" onclick="registerPartner()">Register voucher</button>
     </div>
     <p id="prt-reg-msg" class="msg muted"></p>
   </section>

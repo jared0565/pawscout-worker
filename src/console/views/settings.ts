@@ -54,7 +54,11 @@ export const settingsView = `  <section class="card">
         <option value="funnel_link">Qualify for a link partnership - future programme</option>
         <option value="decline_all">Politely decline every approach</option>
       </select>
-      <p class="sub" style="margin:8px 0 0">In the qualifying modes, screening questions and results always wait for your approval before sending. Strong voucher-trial candidates are flagged so you can issue their discount code in Partners.</p>
+      <p class="sub" style="margin:8px 0 0">In the qualifying modes, screening questions and results always wait for your approval before sending. Passing voucher-trial candidates are flagged so you can issue their discount code in Partners with one click.</p>
+      <label class="toggle-wrap" style="margin-top:6px">
+        <input type="checkbox" id="inbox-autoissue-chk" onchange="saveInboxSettings()">
+        <span>Auto-issue voucher trials: when a candidate passes screening, create their discount code in Shopify and send the invite automatically. Codes are scheduled around running storewide promotions and capped (uses, end date). Also requires the Reply mode master switch above to be on Automatic.</span>
+      </label>
     </div>
   </section>
 

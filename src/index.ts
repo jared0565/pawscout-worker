@@ -17,6 +17,9 @@ import { connectCj, saveGates, savePricing, saveLlm, saveAddons, saveCollectionM
 import { listInboxThreads, getInboxThread, setInboxStatus, setInboxLabels, getInboxConfig, saveInboxConfig, approveDraft, regenerateDraft } from './inbox/routes';
 import { buildInvoiceForThread, discardInvoice, searchCatalog, adminForShop } from './inbox/invoice-routes';
 import { validateCampaignPayload, resolveCampaignAudience, sendCampaignBatch, sendCampaignTest, campaignForUi, ownerTestAddress, type CampaignAudience } from './campaigns';
+import { issueVoucher, fetchActiveOrderPromos, voucherDateLabel } from './affiliate-discounts';
+import { buildVoucherInviteWithCode } from './inbox/partnership';
+import { renderReplyHtml } from './inbox/draft';
 import { consolePage } from './console/page';
 import { validateCjKey, CjClient, CjTokenManager, cjFetchFromEnv, chooseOrigin } from './cj';
 import { registerWebhooks, type RegisterWebhook } from './webhooks';
@@ -146,6 +149,58 @@ app.post('/api/partners/orders', async (c) => {
   let body: { voucherId?: string } = {};
   try { body = await c.req.json(); } catch {}
   return c.json(await getPartnerOrders(c.env.DB, s, body.voucherId));
+});
+// One-click voucher issue (2026-07-05, performance-test policy): conflict-aware
+// window (never launches into a running storewide event) -> Shopify code ->
+// ledger row -> if the email has an applicant thread, the code invite is staged
+// there as a pending draft for the owner to approve (HITL send).
+app.post('/api/partners/issue', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: { email?: unknown; name?: unknown; pctOff?: unknown; commissionPct?: unknown; trialDays?: unknown; usageLimit?: unknown } = {};
+  try { body = await c.req.json(); } catch { return c.json({ ok: false, error: 'Invalid JSON body' }, 400); }
+  const email = typeof body.email === 'string' && body.email.includes('@') ? body.email.trim().toLowerCase() : '';
+  if (!email) return c.json({ ok: false, error: 'email required' }, 400);
+  const pctOff = typeof body.pctOff === 'number' && body.pctOff >= 1 && body.pctOff <= 50 ? body.pctOff : NaN;
+  const commissionPct = typeof body.commissionPct === 'number' && body.commissionPct >= 0 && body.commissionPct <= 20 ? body.commissionPct : NaN;
+  if (!Number.isFinite(pctOff) || !Number.isFinite(commissionPct)) return c.json({ ok: false, error: 'pctOff must be 1-50 and commissionPct 0-20' }, 400);
+  const trialDays = typeof body.trialDays === 'number' && body.trialDays >= 7 && body.trialDays <= 90 ? Math.round(body.trialDays) : undefined;
+  const usageLimit = typeof body.usageLimit === 'number' && body.usageLimit >= 1 && body.usageLimit <= 1000 ? Math.round(body.usageLimit) : undefined;
+  const store = new TenantStore(c.env.DB, s);
+  const admin = await adminForShop(c.env, store);
+  if (!admin) return c.json({ ok: false, error: 'Shopify connection unavailable' });
+  const name = typeof body.name === 'string' && body.name.trim() ? body.name.trim() : null;
+  const r = await issueVoucher(store, admin, { email, name, pctOff, commissionPct, trialDays, usageLimit });
+  if (!r.ok) return c.json(r);
+  let invitedThreadId: string | null = null;
+  const appl = await store.getApplicantByEmail(email);
+  if (appl) {
+    const bodyText = buildVoucherInviteWithCode(name, {
+      code: r.code, pctOff: r.pctOff, commissionPct: r.commissionPct,
+      startsAtLabel: voucherDateLabel(r.startsAt), endsAtLabel: voucherDateLabel(r.endsAt),
+      deferred: r.deferredBehind !== null
+    });
+    await store.supersedePendingDrafts(appl.thread_id);
+    await store.insertDraft({
+      threadId: appl.thread_id, bodyText, bodyHtml: renderReplyHtml(bodyText),
+      confidence: null, quotesPriceOrder: false, holdReasons: [], model: 'partnership-screen', status: 'pending'
+    });
+    await store.setThreadStatus(appl.thread_id, 'needs_reply');
+    await store.setApplicantStage(appl.thread_id, 'passed_to_form', null);
+    invitedThreadId = appl.thread_id;
+  }
+  return c.json({ ...r, invitedThreadId });
+});
+// Promo/scope probe for the Partners view: lists running + scheduled storewide
+// promotions (what voucher timing schedules around) and doubles as the
+// write_discounts grant check.
+app.post('/api/partners/discount-status', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  const store = new TenantStore(c.env.DB, s);
+  const admin = await adminForShop(c.env, store);
+  if (!admin) return c.json({ ok: true, scope: false, promos: [], note: 'Shopify connection unavailable' });
+  const r = await fetchActiveOrderPromos(admin);
+  if (!r.ok) return c.json({ ok: true, scope: false, promos: [], note: r.reconnectRequired ? 'reconnect_required' : r.error });
+  return c.json({ ok: true, scope: true, promos: r.promos });
 });
 // Marketing opt-in for one partner (owner flips it when the partner says yes -
 // partnership correspondence alone never puts anyone on the campaign list).

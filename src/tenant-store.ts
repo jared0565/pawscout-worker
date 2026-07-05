@@ -1403,6 +1403,13 @@ export class TenantStore {
       .bind(this.shop, threadId).first<ApplicantRow>();
   }
 
+  /** Latest applicant record for an email - lets a one-click voucher issue land
+   *  its code invite back in the applicant's own inbox thread. */
+  getApplicantByEmail(email: string): Promise<ApplicantRow | null> {
+    return this.db.prepare(`SELECT * FROM affiliate_applicants WHERE shop = ?1 AND contact_email = ?2 ORDER BY updated_at DESC LIMIT 1`)
+      .bind(this.shop, email.toLowerCase()).first<ApplicantRow>();
+  }
+
   async upsertApplicant(a: { threadId: string; contactEmail: string; stage: PartnershipStage; declaredIntent?: string | null }): Promise<void> {
     const now = new Date().toISOString();
     await this.db
