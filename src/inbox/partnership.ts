@@ -13,6 +13,15 @@ export const PARTNERSHIP_FROM = 'Active Paw Partnerships <sales@activepaw.co.uk>
 export const PASS_THRESHOLD = 8;       // score >= → send the application form (spec §6.4)
 export const AUTO_DECLINE_LOW = false; // dial: auto-decline score <= 3 (spec §6.4, default OFF)
 
+// Earned commission ladder (owner-approved 2026-07-05): rates are never
+// negotiated against PROMISED volume - the attribution ledger tracks every
+// order, so tiers are earned on DELIVERED volume instead. Everyone starts at
+// the standard rate; the first review comes after the order threshold inside
+// a 30-day window; the cap is what consistent performers can reach.
+export const STANDARD_COMMISSION_PCT = 2;
+export const TIER_REVIEW_ORDERS = 25;
+export const TIER_MAX_PCT = 5;
+
 /** Mode comes from cfg.inbox.affiliateMode (owner-set in Settings, 2026-07-04):
  *  'funnel_voucher' (default) screens candidates for a discount-code trial and
  *  flags strong ones for the owner to issue a code in the Partners view;
@@ -46,6 +55,33 @@ export function resolveFromAddress(opts: { partnershipLane: boolean; toAddr: str
   const to = (opts.toAddr ?? '').toLowerCase().trim();
   if (to.endsWith('@activepaw.co.uk')) return `Active Paw <${to}>`;
   return 'Active Paw <support@activepaw.co.uk>';
+}
+
+/** Commission-for-volume pitch ("give me X% and I will sell Y units"): needs two
+ * of the three signals - commission language, a percentage, a volume promise - so
+ * a plain "what commission do you offer?" still gets the normal funnel. Pure and
+ * deterministic; grounded in the message TEXT only (standing rule). */
+export function detectVolumePitch(text: string): boolean {
+  const t = text.toLowerCase();
+  const commission = /\b(commission|rev(?:enue)? ?share|per sale|payout|my cut)\b/.test(t);
+  const percent = /\b\d{1,2}(?:\.\d)?\s*(?:%|percent)/.test(t);
+  const volume =
+    /\b(?:sell|shift|move|guarantee[ds]?|deliver)\b[^.!?\n]{0,60}?\b\d[\d,]*\+?\s*(?:units?|pieces?|products?|items?|orders?|sales?)\b/.test(t)
+    || /\b\d[\d,]*\+?\s*(?:units?|pieces?|orders?|sales?)\s*(?:a|per|every)\s*(?:day|week|month)\b/.test(t);
+  return [commission, percent, volume].filter(Boolean).length >= 2;
+}
+
+/** Pure service pitch (site-speed/SEO/listing/design vendors): offer-phrasing plus
+ * a service keyword, and it STANDS DOWN on any creator signal - a creator who also
+ * mentions SEO still gets the funnel. When in doubt, the funnel; never a wrong
+ * decline. Pure and deterministic; message TEXT only. */
+export function detectServicePitch(text: string): boolean {
+  const t = text.toLowerCase();
+  const creator = /\b(followers?|subscribers?|audience|my (?:blog|channel|page|instagram|tiktok|youtube)|influencer|creator|promote your|feature your|review your)\b/.test(t);
+  if (creator) return false;
+  const offer = /\b(we (?:offer|provide|speciali[sz]e|deliver|can (?:help|improve|boost|fix|increase|optimi[sz]e|redesign|rebuild|build))|our (?:agency|team|company|service|studio|developers?)|i (?:offer|provide)|i(?:'| a)m a (?:freelance|web|shopify|seo))\b/.test(t);
+  const service = /\b(page speed|site speed|loading speed|load(?:ing)? times?|speed optimi[sz]ation|seo|search engine (?:optimi[sz]ation|rankings?)|product listings? (?:service|optimi[sz]ation)|listing services?|store (?:audit|redesign|design|development)|web(?:site)? (?:design|development|audit)|app development|virtual assistant|social media (?:management|marketing)|conversion rate|cro audit)\b/.test(t);
+  return offer && service;
 }
 
 function gateDecline(gate: string, reason: string): ScreenVerdict {
@@ -134,6 +170,25 @@ No rush - whenever you've got a few minutes. We read every reply.
 Best Regards,
 Active Paw Partnerships`;
 
+// Appended to the qualifying email when the pitch NEGOTIATED commission against
+// promised volume: it ends the negotiation at first touch by making tiers earned
+// through the attribution ledger, never promised. Numbers interpolate from the
+// exported constants so copy and code cannot drift.
+const EARNED_TIERS_PARAGRAPH =
+`One thing worth being clear on, since you raised commission terms: every partnership starts at our standard rate - ${STANDARD_COMMISSION_PCT}% of the face value of each paid order tracked to you, on top of the discount your audience gets. We do not negotiate rates against promised volume, but rates are earned on delivered volume: after your first ${TIER_REVIEW_ORDERS} tracked orders in a 30-day window we review your tier, and consistent performers earn up to ${TIER_MAX_PCT}%. Your tracked results do the negotiating for you.`;
+
+// Vendors (site-speed/SEO/listing services) are not partnership candidates:
+// polite, final, and does not invite a budget follow-up.
+const SERVICE_DECLINE_BODY =
+`Thank you for reaching out, and for the offer - we appreciate you taking the time to write.
+
+We keep our store's development, product listings and marketing in-house as a matter of policy, so we will not be taking up the service. It is a settled decision rather than a budget or timing question, so we would rather be straight with you than leave it open.
+
+Wishing you and your work every success.
+
+Best Regards,
+Active Paw Partnerships`;
+
 const DECLINE_BODY =
 `Thank you for taking the time to reach out - we really do appreciate the interest in Active Paw.
 
@@ -168,10 +223,17 @@ We're taking a look and reviewing the fit, and we'll be in touch shortly with th
 Best Regards,
 Active Paw Partnerships`;
 
-export function buildQualifyingEmail(name: string | null, variant: FunnelVariant = 'link'): string {
-  return applySalutation(variant === 'voucher' ? QUALIFYING_BODY_VOUCHER : QUALIFYING_BODY_LINK, name);
+export function buildQualifyingEmail(
+  name: string | null, variant: FunnelVariant = 'link', opts: { volumePitch?: boolean } = {}
+): string {
+  const base = variant === 'voucher' ? QUALIFYING_BODY_VOUCHER : QUALIFYING_BODY_LINK;
+  const body = opts.volumePitch
+    ? base.replace('\n\nNo rush', `\n\n${EARNED_TIERS_PARAGRAPH}\n\nNo rush`)
+    : base;
+  return applySalutation(body, name);
 }
 export function buildPartnershipDecline(name: string | null): string { return applySalutation(DECLINE_BODY, name); }
+export function buildServiceDecline(name: string | null): string { return applySalutation(SERVICE_DECLINE_BODY, name); }
 export function buildFormInvite(name: string | null): string { return applySalutation(FORM_INVITE_BODY, name); }
 export function buildVoucherInvite(name: string | null): string { return applySalutation(VOUCHER_INVITE_BODY, name); }
 export function buildHoldingAck(name: string | null): string { return applySalutation(HOLDING_ACK_BODY, name); }
@@ -264,6 +326,7 @@ export async function maybePartnershipDraft(
 
   const contact = await store.getContactByEmail(thread.contact_email);
   const name = contact?.name ?? null;
+  const inboundText = got.messages.filter((m) => m.direction === 'inbound').map((m) => m.body_text ?? '').join('\n\n');
 
   // decline_all (2026-07-03 policy, now a Settings toggle): decline ALL partnership
   // approaches politely. Applies at every stage (first touch AND in-flight
@@ -293,9 +356,33 @@ export async function maybePartnershipDraft(
     return { draftId, send: holdReasons.length === 0 };
   }
 
+  // Pure service pitches (site-speed/SEO/listing vendors) are not partnership
+  // candidates: inviting a vendor to apply for a discount code is noise, and
+  // outside vendors are a settled no (development/listings/marketing stay
+  // in-house; collaborator access is never granted from cold outreach). The
+  // detector is grounded in the MESSAGE TEXT only and stands down on any
+  // creator signal - when in doubt, the funnel; never a wrong decline. First
+  // touch only; replies after the decline fall through to the generic drafter
+  // like every declined thread. Always HITL for now: flip to the decline_all
+  // switch logic once the owner has validated this template on live traffic.
+  if (!applicant && detectServicePitch(inboundText)) {
+    const body = buildServiceDecline(name);
+    const draftId = await store.insertDraft({
+      threadId: thread.id, bodyText: body, bodyHtml: renderReplyHtml(body),
+      confidence: null, quotesPriceOrder: false, holdReasons: [], model: 'partnership-screen', status: 'pending',
+    });
+    await store.upsertApplicant({ threadId: thread.id, contactEmail: thread.contact_email, stage: 'declined' });
+    return { draftId, send: false };
+  }
+
+  // Commission-for-volume pitches get the SAME funnel, plus the earned-tier
+  // terms appended: the negotiation ends at first touch because tiers are
+  // earned through the attribution ledger, never promised.
+  const volumePitch = detectVolumePitch(inboundText);
+
   // First touch: send the qualifying email, record the applicant.
   if (!applicant) {
-    const body = buildQualifyingEmail(name, variant);
+    const body = buildQualifyingEmail(name, variant, { volumePitch });
     const draftId = await store.insertDraft({
       threadId: thread.id, bodyText: body, bodyHtml: renderReplyHtml(body),
       confidence: null, quotesPriceOrder: false, holdReasons: [], model: 'partnership-screen', status: 'pending',
@@ -314,7 +401,7 @@ export async function maybePartnershipDraft(
     // the qualifying email genuinely went out (an outbound exists); otherwise re-issue it.
     const askedAlready = got.messages.some((m) => m.direction === 'outbound');
     if (!askedAlready) {
-      const body = buildQualifyingEmail(name, variant);
+      const body = buildQualifyingEmail(name, variant, { volumePitch });
       const draftId = await store.insertDraft({
         threadId: thread.id, bodyText: body, bodyHtml: renderReplyHtml(body),
         confidence: null, quotesPriceOrder: false, holdReasons: [], model: 'partnership-screen', status: 'pending',
