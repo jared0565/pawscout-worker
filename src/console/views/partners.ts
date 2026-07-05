@@ -9,7 +9,7 @@
 // iframe can silently swallow.
 export const partnersView = `  <section class="card">
     <h2>Partners</h2>
-    <p class="sub" style="margin:0 0 10px">Each row is one voucher you issued to a collaborator. Sales figures come from real Shopify orders placed with the code, refreshed about every 15 minutes. Gross is the face value of the goods before the discount, excluding shipping; commission is calculated on that gross for paid orders only, and refunded orders drop out automatically. Revoking here stops the trial on record: remember to also disable the code itself under Discounts in Shopify admin. "Mark updates opt-in" adds a partner to the Campaigns audience: only flip it after they have themselves said yes to receiving partner updates, never just because they wrote to us.</p>
+    <p class="sub" style="margin:0 0 10px">Each row is one voucher you issued to a collaborator. Sales figures come from real Shopify orders placed with the code, refreshed about every 15 minutes. Gross is the face value of the goods before the discount, excluding shipping; commission is calculated on that gross for paid orders only, and refunded orders drop out automatically. Revoking a voucher also deactivates the code in Shopify, so it stops working at checkout immediately; if Shopify cannot be reached the message will tell you to disable it by hand. "Mark updates opt-in" adds a partner to the Campaigns audience: only flip it after they have themselves said yes to receiving partner updates, never just because they wrote to us.</p>
     <div id="prt-list"></div>
     <p id="prt-msg" class="msg muted"></p>
   </section>

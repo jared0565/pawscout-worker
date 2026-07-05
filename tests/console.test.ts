@@ -336,9 +336,10 @@ describe('consolePage', () => {
     expect(prtBlock).not.toContain('window.confirm');
     expect(scripts).toContain('Click again to revoke');
     expect(scripts).toContain('Click again to confirm payout');
-    // Revoking here is on-record only: the code must also be disabled in
-    // Shopify admin, and the success message says so.
-    expect(scripts).toContain('disable the code itself in Shopify admin');
+    // Revoke really deactivates the code in Shopify (write_discounts); when
+    // Shopify does not confirm, the message tells the owner the manual step.
+    expect(scripts).toContain('deactivated in Shopify too');
+    expect(scripts).toContain('disable the code under Discounts in Shopify admin');
     // The modal suppresses the digit view-switch shortcuts while open.
     expect(scripts).toContain('__modalOpen');
   });

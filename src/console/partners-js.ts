@@ -148,7 +148,11 @@ async function runVoucherAction(voucherId,action,okText){
   try{
     var r=await api('/partners/voucher',{voucherId:voucherId,action:action});
     if(!r.ok){ setMsg('prt-msg','Failed: '+(r.error||'unknown error'),'no'); return; }
-    setMsg('prt-msg',okText,'ok');
+    var msg=okText;
+    if(action==='revoke') msg=r.shopifyDeactivated
+      ?'Revoked, and the code has been deactivated in Shopify too - it no longer works at checkout.'
+      :'Revoked on record, but Shopify did not confirm the deactivation ('+(r.shopifyNote||'unknown')+') - disable the code under Discounts in Shopify admin.';
+    setMsg('prt-msg',msg,'ok');
     loadPartners();
   }catch(e){ setMsg('prt-msg','Action failed.','no'); }
 }
@@ -198,7 +202,7 @@ function closePartnerOrders(){
     var vid=t.getAttribute('data-prt-orders');
     if(vid){ openPartnerOrders(vid,t.getAttribute('data-prt-title')||''); return; }
     vid=t.getAttribute('data-prt-revoke');
-    if(vid&&prtArm(t,'Click again to revoke')) runVoucherAction(vid,'revoke','Revoked on record. Now disable the code itself in Shopify admin under Discounts.');
+    if(vid&&prtArm(t,'Click again to revoke')) runVoucherAction(vid,'revoke','Revoked.');
     if(vid) return;
     vid=t.getAttribute('data-prt-consent');
     if(vid){ setPartnerConsent(vid,t.getAttribute('data-prt-consent-on')==='1'); return; }

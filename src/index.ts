@@ -17,7 +17,7 @@ import { connectCj, saveGates, savePricing, saveLlm, saveAddons, saveCollectionM
 import { listInboxThreads, getInboxThread, setInboxStatus, setInboxLabels, getInboxConfig, saveInboxConfig, approveDraft, regenerateDraft } from './inbox/routes';
 import { buildInvoiceForThread, discardInvoice, searchCatalog, adminForShop } from './inbox/invoice-routes';
 import { validateCampaignPayload, resolveCampaignAudience, sendCampaignBatch, sendCampaignTest, campaignForUi, ownerTestAddress, type CampaignAudience } from './campaigns';
-import { issueVoucher, fetchActiveOrderPromos, voucherDateLabel } from './affiliate-discounts';
+import { issueVoucher, fetchActiveOrderPromos, voucherDateLabel, deactivateVoucherDiscount } from './affiliate-discounts';
 import { buildVoucherInviteWithCode } from './inbox/partnership';
 import { renderReplyHtml } from './inbox/draft';
 import { consolePage } from './console/page';
@@ -142,7 +142,18 @@ app.post('/api/partners/voucher', async (c) => {
   const s = await shopOf(c); if (typeof s !== 'string') return s;
   let body: { voucherId?: string; action?: string } = {};
   try { body = await c.req.json(); } catch {}
-  return c.json(await partnerVoucherAction(c.env.DB, s, body.voucherId, body.action));
+  const r = await partnerVoucherAction(c.env.DB, s, body.voucherId, body.action);
+  // Revoke now really turns the code off in Shopify too (write_discounts,
+  // 2026-07-05). Best-effort: the ledger revocation above already succeeded;
+  // a Shopify failure is reported so the owner knows to disable it by hand.
+  if (r.ok && body.action === 'revoke') {
+    const store = new TenantStore(c.env.DB, s);
+    const code = (await store.listAffiliateVouchers()).find((v) => v.voucher_id === body.voucherId)?.code;
+    const admin = code ? await adminForShop(c.env, store).catch(() => null) : null;
+    const d = admin && code ? await deactivateVoucherDiscount(admin, code) : { ok: false as const, error: 'Shopify connection unavailable' };
+    return c.json({ ...r, shopifyDeactivated: d.ok, ...(d.ok ? {} : { shopifyNote: d.error }) });
+  }
+  return c.json(r);
 });
 app.post('/api/partners/orders', async (c) => {
   const s = await shopOf(c); if (typeof s !== 'string') return s;

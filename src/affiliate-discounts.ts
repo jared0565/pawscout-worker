@@ -18,50 +18,82 @@ import type { TenantStore } from './tenant-store';
 export const TRIAL_DAYS_DEFAULT = 30;
 export const TRIAL_USAGE_LIMIT_DEFAULT = 100; // hard ceiling per code: bounds a leak the same way revoke does, but automatically
 const DEFER_GAP_MS = 5 * 60_000; // start a deferred voucher a beat after the event ends, never at the same instant
+const TRIAL_PCT_OFF_FALLBACK = 5; // window sizing when the caller gives no pct (mirrors partnership.TRIAL_PCT_OFF_DEFAULT without a circular import)
 
 export interface PromoWindow {
   title: string;
   kind: string;              // Basic | Bxgy (order-level money promos; free shipping is ignored - it does not compete with a percentage code)
+  source: 'automatic' | 'code'; // storewide events can be EITHER (WELCOME10 is a code discount - the 2026-07-05 gap)
+  percentage: number | null; // 0-100 for percentage discounts; null = fixed-amount/unknown (treated conservatively)
   status: string;            // ACTIVE | SCHEDULED
   startsAt: string | null;
   endsAt: string | null;     // null = open-ended
 }
+
+/** Our own minted trials carry this title prefix - they are never conflicts. */
+export const PARTNER_TRIAL_TITLE_PREFIX = 'Partner trial ';
 
 const PROMOS_QUERY = `query pawscoutActivePromos {
   automaticDiscountNodes(first: 25) {
     nodes {
       automaticDiscount {
         __typename
-        ... on DiscountAutomaticBasic { title status startsAt endsAt }
+        ... on DiscountAutomaticBasic { title status startsAt endsAt customerGets { value { __typename ... on DiscountPercentage { percentage } } } }
         ... on DiscountAutomaticBxgy { title status startsAt endsAt }
+      }
+    }
+  }
+  codeDiscountNodes(first: 50, query: "status:active OR status:scheduled") {
+    nodes {
+      codeDiscount {
+        __typename
+        ... on DiscountCodeBasic { title status startsAt endsAt customerGets { value { __typename ... on DiscountPercentage { percentage } } } }
+        ... on DiscountCodeBxgy { title status startsAt endsAt }
       }
     }
   }
 }`;
 
-interface RawPromo { __typename?: string; title?: string; status?: string; startsAt?: string | null; endsAt?: string | null }
+interface RawPromo {
+  __typename?: string; title?: string; status?: string; startsAt?: string | null; endsAt?: string | null;
+  customerGets?: { value?: { __typename?: string; percentage?: number } | null } | null;
+}
 
-/** Storewide order-level promotions that are running or scheduled. The probe
- * doubles as the write_discounts scope check: ACCESS_DENIED surfaces as
- * reconnectRequired so the console can tell the owner to re-approve the app. */
+function toPromo(d: RawPromo, source: 'automatic' | 'code'): PromoWindow | null {
+  if (!d.__typename || !/(Basic|Bxgy)$/.test(d.__typename)) return null;
+  if (d.status !== 'ACTIVE' && d.status !== 'SCHEDULED') return null;
+  const title = d.title ?? '(untitled promotion)';
+  if (title.startsWith(PARTNER_TRIAL_TITLE_PREFIX)) return null; // our own trials never conflict with each other
+  const pct = d.customerGets?.value?.__typename === 'DiscountPercentage' && typeof d.customerGets.value.percentage === 'number'
+    ? d.customerGets.value.percentage * 100
+    : null;
+  return {
+    title, source,
+    kind: d.__typename.replace(/^DiscountAutomatic|^DiscountCode/, ''),
+    percentage: pct,
+    status: d.status,
+    startsAt: d.startsAt ?? null,
+    endsAt: d.endsAt ?? null
+  };
+}
+
+/** Storewide order-level promotions that are running or scheduled - AUTOMATIC
+ * discounts and CODE discounts both (the live 10% event is a code, WELCOME10).
+ * The probe doubles as the write_discounts scope check: ACCESS_DENIED surfaces
+ * as reconnectRequired so the console can tell the owner to re-approve the app. */
 export async function fetchActiveOrderPromos(
   admin: AdminGraphql
 ): Promise<{ ok: true; promos: PromoWindow[] } | { ok: false; error: string; reconnectRequired: boolean }> {
   try {
     const data = await admin(PROMOS_QUERY);
-    const nodes = (data.automaticDiscountNodes as { nodes?: { automaticDiscount?: RawPromo }[] } | undefined)?.nodes ?? [];
     const promos: PromoWindow[] = [];
-    for (const n of nodes) {
-      const d = n.automaticDiscount;
-      if (!d?.__typename || !/^DiscountAutomatic(Basic|Bxgy)$/.test(d.__typename)) continue;
-      if (d.status !== 'ACTIVE' && d.status !== 'SCHEDULED') continue;
-      promos.push({
-        title: d.title ?? '(untitled promotion)',
-        kind: d.__typename.replace('DiscountAutomatic', ''),
-        status: d.status,
-        startsAt: d.startsAt ?? null,
-        endsAt: d.endsAt ?? null
-      });
+    for (const n of (data.automaticDiscountNodes as { nodes?: { automaticDiscount?: RawPromo }[] } | undefined)?.nodes ?? []) {
+      const p = n.automaticDiscount && toPromo(n.automaticDiscount, 'automatic');
+      if (p) promos.push(p);
+    }
+    for (const n of (data.codeDiscountNodes as { nodes?: { codeDiscount?: RawPromo }[] } | undefined)?.nodes ?? []) {
+      const p = n.codeDiscount && toPromo(n.codeDiscount, 'code');
+      if (p) promos.push(p);
     }
     return { ok: true, promos };
   } catch (e) {
@@ -77,6 +109,17 @@ function overlaps(promo: PromoWindow, startMs: number, endMs: number): boolean {
   return pStart < endMs && pEnd > startMs;
 }
 
+/** Does this promotion outcompete a pctOff voucher? Automatic discounts always
+ * do (they apply without a code, so the voucher adds nothing while they run).
+ * Code events conflict when they give MORE than the voucher (a customer with
+ * WELCOME10 at 10% loses money entering a 5% partner code) or when their value
+ * is unknown/fixed-amount (conservative). A smaller or equal code promo leaves
+ * the voucher meaningful, so it does not defer it. */
+function outcompetes(promo: PromoWindow, pctOff: number): boolean {
+  if (promo.source === 'automatic') return true;
+  return promo.percentage === null || promo.percentage > pctOff;
+}
+
 export type VoucherWindow =
   | { ok: true; startsAt: string; endsAt: string; deferredBehind: string | null }
   | { ok: false; blockedBy: string };
@@ -90,14 +133,16 @@ export type VoucherWindow =
  */
 export function resolveVoucherWindow(
   promos: PromoWindow[],
-  opts: { now: number; trialDays?: number }
+  opts: { now: number; trialDays?: number; pctOff?: number }
 ): VoucherWindow {
   const trialMs = (opts.trialDays ?? TRIAL_DAYS_DEFAULT) * 86_400_000;
+  const pctOff = opts.pctOff ?? TRIAL_PCT_OFF_FALLBACK;
+  const rivals = promos.filter((p) => outcompetes(p, pctOff));
   let startMs = opts.now;
   let deferredBehind: string | null = null;
   // Iterate to a fixed point: deferring past one event can land inside the next.
-  for (let pass = 0; pass < promos.length + 1; pass++) {
-    const hit = promos.find((p) => overlaps(p, startMs, startMs + trialMs));
+  for (let pass = 0; pass < rivals.length + 1; pass++) {
+    const hit = rivals.find((p) => overlaps(p, startMs, startMs + trialMs));
     if (!hit) break;
     if (!hit.endsAt) return { ok: false, blockedBy: hit.title };
     startMs = Date.parse(hit.endsAt) + DEFER_GAP_MS;
@@ -182,7 +227,7 @@ export async function issueVoucher(
   const now = req.now ?? Date.now();
   const probe = await fetchActiveOrderPromos(admin);
   if (!probe.ok) return { ok: false, error: probe.error, reconnectRequired: probe.reconnectRequired };
-  const win = resolveVoucherWindow(probe.promos, { now, trialDays: req.trialDays });
+  const win = resolveVoucherWindow(probe.promos, { now, trialDays: req.trialDays, pctOff: req.pctOff });
   if (!win.ok) return { ok: false, error: `Cannot schedule around "${win.blockedBy}" - it has no end date. End or date-limit that promotion first.` };
 
   const usageLimit = req.usageLimit ?? TRIAL_USAGE_LIMIT_DEFAULT;
@@ -204,6 +249,32 @@ export async function issueVoucher(
     startsAt: win.startsAt, endsAt: win.endsAt, deferredBehind: win.deferredBehind,
     partnerId, voucherId
   };
+}
+
+/** Deactivate a code discount in Shopify by its code (used when the owner
+ * revokes a trial - now that write_discounts is granted, revoke really turns
+ * the code off instead of reminding the owner to do it by hand). Best-effort:
+ * a lookup/mutation failure is reported, never thrown. */
+export async function deactivateVoucherDiscount(
+  admin: AdminGraphql, code: string
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  try {
+    const found = await admin(
+      `query pawscoutVoucherByCode($code: String!) { codeDiscountNodeByCode(code: $code) { id } }`,
+      { code }
+    );
+    const id = (found.codeDiscountNodeByCode as { id?: string } | null)?.id;
+    if (!id) return { ok: false, error: `No Shopify discount found for code ${code}` };
+    const res = await admin(
+      `mutation pawscoutVoucherDeactivate($id: ID!) { discountCodeDeactivate(id: $id) { userErrors { message } } }`,
+      { id }
+    );
+    const errs = (res.discountCodeDeactivate as { userErrors?: { message?: string }[] } | undefined)?.userErrors ?? [];
+    if (errs.length) return { ok: false, error: errs.map((u) => u.message).join('; ') };
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: (e as Error).message };
+  }
 }
 
 /** '8 August 2026' - deterministic UTC date for customer-facing copy. */
