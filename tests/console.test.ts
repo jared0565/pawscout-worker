@@ -297,6 +297,17 @@ describe('consolePage', () => {
     expect(scripts).toContain('Click again to delete');
   });
 
+  it('Help covers Traffic as a full KB section: board, starter strategy, methodology, evidence', async () => {
+    const html = await consolePage('test-api-key').text();
+    for (const topic of ['The Traffic strategy board', 'The starter strategy, channel by channel',
+      'Working a channel: idea to active', 'Where the evidence lives']) {
+      expect(html).toContain('<summary>' + topic + '</summary>');
+    }
+    // The methodology states the honest-status rule, grounded not generic.
+    expect(html).toContain('statuses describe evidence, not enthusiasm');
+    expect(html).toContain('demonstrably brings visitors or orders');
+  });
+
   // --- Privacy policy keeper (2026-07-05): check + one-click apply ---
 
   it('Campaigns view carries the privacy-policy keeper wired to /legal/check and /legal/apply', async () => {
