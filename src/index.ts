@@ -26,6 +26,7 @@ import { registerWebhooks, type RegisterWebhook } from './webhooks';
 import { validateGatesPayload, validatePricingPayload, validateLlmPayload, validateAddonsPayload, validateCollectionMap, validatePartnerPayload } from './validate';
 import { sendEmail, SENDING_DOMAIN } from './email';
 import { verifySvixSignature, parseResendEvent, applyResendEvent, getTrackingStatus, enableTracking, ensureEventsWebhook } from './resend-events';
+import { checkPrivacyPolicy, applyPrivacyPolicy } from './legal-policy';
 import { verifyAppProxy } from './proxy/verify';
 import { verifyUnsubToken } from './retention';
 import { searchBackfill, normalizeKeyword } from './proxy/search';
@@ -254,6 +255,22 @@ app.post('/api/email-tracking', async (c) => {
   const r = await getTrackingStatus(c.env.RESEND_API_KEY, SENDING_DOMAIN);
   if (!r.ok) return c.json({ ok: true, available: true, secretStored, openTracking: false, clickTracking: false, error: r.error });
   return c.json({ ok: true, available: true, secretStored, openTracking: r.status.openTracking, clickTracking: r.status.clickTracking });
+});
+// --- Privacy-policy wording keeper (2026-07-05): check + one-click apply ---
+// PawScout sends consented marketing email and measures engagement; the store
+// policy must disclose that. check reads the live policy and reports which of
+// the recommended edits are missing; apply writes them (owner click, HITL).
+app.post('/api/legal/check', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  const admin = await adminForShop(c.env, new TenantStore(c.env.DB, s));
+  if (!admin) return c.json({ ok: false, error: 'Shopify connection unavailable' });
+  return c.json(await checkPrivacyPolicy(admin));
+});
+app.post('/api/legal/apply', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  const admin = await adminForShop(c.env, new TenantStore(c.env.DB, s));
+  if (!admin) return c.json({ ok: false, error: 'Shopify connection unavailable' });
+  return c.json(await applyPrivacyPolicy(admin));
 });
 // One-click setup, fully worker-side (the Resend key never leaves the worker):
 // flip open+click tracking on the sending domain, create the events webhook

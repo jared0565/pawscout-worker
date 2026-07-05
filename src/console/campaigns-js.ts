@@ -59,7 +59,42 @@ async function loadCampaigns(){
     box.innerHTML=h||'<p class="muted">No campaigns yet. Compose one below - it saves as a draft and nothing sends until you click send.</p>';
     cmpLoadAudiences();
     cmpLoadTracking();
+    lglCheck();
   }catch(e){ setMsg('cmp-msg','Could not load campaigns.','no'); }
+}
+// --- Privacy policy wording keeper: check live policy + one-click apply ---
+async function lglCheck(){
+  var box=el('lgl-status'); if(!box) return;
+  try{
+    var r=await api('/legal/check',{});
+    var acts=el('lgl-actions');
+    if(!r.ok){
+      box.textContent=(r.error==='reconnect_required')
+        ?'PawScout does not have policy access yet. Add the legal policies scopes in the app settings, then reopen this page.'
+        :'Could not read the policy: '+(r.error||'unknown error');
+      if(acts) acts.hidden=true;
+      return;
+    }
+    if(r.upToDate){
+      box.innerHTML='Your privacy policy already carries the recommended wording. Nothing to do.';
+      if(acts) acts.hidden=true;
+      return;
+    }
+    var h='The live policy is missing:<ul style="margin:8px 0 0 18px">';
+    for(var i=0;i<r.changes.length;i++) h+='<li>'+esc(r.changes[i])+'</li>';
+    box.innerHTML=h+'</ul>';
+    if(acts) acts.hidden=false;
+  }catch(e){ box.textContent='Could not check the policy.'; }
+}
+async function lglApply(btn){
+  if(!prtArm(btn,'Click again to update the live policy')) return;
+  setMsg('lgl-msg','Updating the policy…','muted');
+  try{
+    var r=await api('/legal/apply',{});
+    if(!r.ok){ setMsg('lgl-msg','Update failed: '+(r.error||'unknown error'),'no'); return; }
+    setMsg('lgl-msg',(r.applied&&r.applied.length)?'Policy updated ('+r.applied.length+' edits). Check it at /policies/privacy-policy.':'Nothing to change - the policy was already up to date.','ok');
+    lglCheck();
+  }catch(e){ setMsg('lgl-msg','Update failed.','no'); }
 }
 // --- Email analytics: tracking status + one-click worker-side setup ---
 async function cmpLoadTracking(){

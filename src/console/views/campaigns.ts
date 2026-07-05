@@ -55,6 +55,16 @@ export const campaignsView = `  <section class="card">
   </section>
 
   <section class="card">
+    <h2>Privacy policy wording</h2>
+    <p class="sub" style="margin:0 0 10px">Because the store sends marketing email and measures opens and clicks, the privacy policy should say so. This checks your live policy against the recommended wording (marketing is opt-in only, one-click unsubscribe, engagement measurement, and the correct business address) and can apply the missing pieces in one click. Nothing else in the policy is touched.</p>
+    <div id="lgl-status" class="muted">Checking the live policy…</div>
+    <div class="row" id="lgl-actions" hidden style="margin-top:10px">
+      <button type="button" id="lgl-apply-btn" onclick="lglApply(this)">Apply recommended update</button>
+    </div>
+    <p id="lgl-msg" class="msg muted"></p>
+  </section>
+
+  <section class="card">
     <h2>Email analytics</h2>
     <p class="sub" style="margin:0 0 10px">When tracking is on, every email reports back what happened to it: delivered, opened, clicked, bounced or marked as spam. Campaign rows above show the numbers per campaign. Addresses that hard-bounce or complain are suppressed automatically so they are never mailed again. Opens are approximate (some mail apps block or pre-load them); clicks are the reliable signal.</p>
     <div id="cmp-tracking" class="muted">Checking tracking status…</div>

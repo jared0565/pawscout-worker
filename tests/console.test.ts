@@ -275,6 +275,24 @@ describe('consolePage', () => {
     expect(cmpBlock).not.toContain('window.confirm');
   });
 
+  // --- Privacy policy keeper (2026-07-05): check + one-click apply ---
+
+  it('Campaigns view carries the privacy-policy keeper wired to /legal/check and /legal/apply', async () => {
+    const html = await consolePage('test-api-key').text();
+    expect(html).toContain('Privacy policy wording');
+    for (const id of ['lgl-status', 'lgl-actions', 'lgl-msg']) {
+      expect(html).toContain('id="' + id + '"');
+    }
+    expect(html).toContain('Apply recommended update');
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+    expect(scripts).toContain('function lglCheck(');
+    expect(scripts).toContain('function lglApply(');
+    expect(scripts).toContain("'/legal/check'");
+    expect(scripts).toContain("'/legal/apply'");
+    // Updating a legal page is two-click armed like the other consequential actions.
+    expect(scripts).toContain('Click again to update the live policy');
+  });
+
   // --- Email analytics (2026-07-05): tracking setup + per-campaign metrics ---
 
   it('Campaigns view carries the Email analytics panel: status probe, one-click setup, per-campaign metrics', async () => {
