@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { consolePage } from '../src/console/page';
+import { DRAFT_TEMPLATES } from '../src/inbox/routes';
 
 describe('consolePage', () => {
   it('emits inline <script> that is syntactically valid JS', async () => {
@@ -384,6 +385,24 @@ describe('consolePage', () => {
     expect(scripts).toContain('loadDiscountStatus();'); // probe runs on startup
     // A missing write_discounts grant explains the fix, not a stack trace.
     expect(scripts).toContain('approve the updated permissions');
+  });
+
+  // --- Draft templates (2026-07-06): swap the pending draft from a dropdown ---
+
+  it('Inbox carries the template picker wired to /inbox/template', async () => {
+    const html = await consolePage('test-api-key').text();
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+    expect(scripts).toContain('id="inbox-tpl-sel"');
+    expect(scripts).toContain("'/inbox/template'");
+    expect(scripts).toContain('function applyTemplateAction(');
+    // The dropdown's options mirror the server registry EXACTLY - a key or
+    // label changed on one side without the other fails here.
+    for (const t of DRAFT_TEMPLATES) {
+      expect(scripts).toContain('value="' + t.key + '"');
+      expect(scripts).toContain('>' + t.label + '<');
+    }
+    // The picker also renders on threads with no pending draft (it creates one).
+    expect(scripts).toContain("No draft pending '+tplSel");
   });
 
   // --- Per-row reissue (2026-07-06): finished rows restart the same partner ---

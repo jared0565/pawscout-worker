@@ -14,7 +14,7 @@ import { ensureInstalled } from './auth/ensure-installed';
 import { handleUninstall } from './auth/uninstall';
 import { resolveShopFromToken } from './console/session';
 import { connectCj, saveGates, savePricing, saveLlm, saveAddons, saveCollectionMap, getStatus, getInsights, getGlance, getAudit, getAuditConversation, saveGbFreeUk, getPartners, createPartner, partnerVoucherAction, getPartnerOrders } from './console/routes';
-import { listInboxThreads, getInboxThread, setInboxStatus, setInboxLabels, getInboxConfig, saveInboxConfig, approveDraft, regenerateDraft } from './inbox/routes';
+import { listInboxThreads, getInboxThread, setInboxStatus, setInboxLabels, getInboxConfig, saveInboxConfig, approveDraft, regenerateDraft, applyDraftTemplate } from './inbox/routes';
 import { buildInvoiceForThread, discardInvoice, searchCatalog, adminForShop } from './inbox/invoice-routes';
 import { validateCampaignPayload, resolveCampaignAudience, sendCampaignBatch, sendCampaignTest, campaignForUi, ownerTestAddress, campaignSendBlock, type CampaignAudience } from './campaigns';
 import { issueVoucher, fetchActiveOrderPromos, voucherDateLabel, deactivateVoucherDiscount } from './affiliate-discounts';
@@ -891,6 +891,15 @@ app.post('/api/inbox/regenerate', async (c) => {
   try { body = await c.req.json(); } catch { return c.json({ ok: false, error: 'Invalid JSON body' }, 400); }
   if (!body.id) return c.json({ ok: false, error: 'id required' }, 400);
   return c.json(await regenerateDraft(c.env.DB, c.env, s, body.id));
+});
+// Template picker (2026-07-06): replace the thread's pending draft with a
+// canonical, server-rendered template (partnership screening, declines, etc.)
+// so the owner never has to paste copy in from outside the Inbox. Never sends.
+app.post('/api/inbox/template', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: { threadId?: unknown; template?: unknown } = {};
+  try { body = await c.req.json(); } catch { return c.json({ ok: false, error: 'Invalid JSON body' }, 400); }
+  return c.json(await applyDraftTemplate(c.env.DB, s, body.threadId, body.template));
 });
 // W-INBOX-3: invoice build - creates draft order + sends invoice email
 app.post('/api/inbox/invoice/build', async (c) => {

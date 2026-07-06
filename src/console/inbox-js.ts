@@ -194,6 +194,18 @@ function renderInboxThread(thread,messages,labels,draft,invoice,applicant,contac
       +'<div class="ibx-bubble__body">'+esc(m.body_text||'(no body)')+'</div>'
       +'</div>';
   }
+  // Template picker: swaps the pending draft for a canonical server-rendered
+  // template (partnership screening questions, declines, holding note) without
+  // leaving the Inbox. Keys/labels mirror DRAFT_TEMPLATES on the server -
+  // console.test.ts pins the two lists together. Applying never sends.
+  var tplSel='<select id="inbox-tpl-sel" class="ibx-tpl-sel" aria-label="Replace draft with a template">'
+    +'<option value="">Use a template…</option>'
+    +'<option value="qualifying">Partnership screening questions</option>'
+    +'<option value="voucher_invite">Trial invite (code on its way)</option>'
+    +'<option value="partnership_decline">Partnership decline</option>'
+    +'<option value="service_decline">Service pitch decline</option>'
+    +'<option value="holding_ack">Holding note (we are reviewing)</option>'
+    +'</select>';
   // Pending draft: distinct dashed card at the END of the timeline
   var draftHtml='';
   if(draft&&draft.id){
@@ -209,10 +221,14 @@ function renderInboxThread(thread,messages,labels,draft,invoice,applicant,contac
       +'<div class="ibx-draft__actions">'
       +'<button id="inbox-approve-btn" type="button">Approve &amp; send</button>'
       +'<button id="inbox-regen-btn" class="ghost" type="button">Regenerate</button>'
+      +tplSel
       +'</div>'
       +'</div>';
   } else {
-    draftHtml='<div class="ibx-note">No draft pending</div>';
+    // No pending draft: the picker still works - it CREATES a pending draft
+    // from the template, so a processed thread can be reopened with the right
+    // canned reply instead of pasting copy in from outside.
+    draftHtml='<div class="ibx-note">No draft pending '+tplSel+'</div>';
   }
   tl.innerHTML=msgHtml+draftHtml;
   tl.scrollTop=tl.scrollHeight;
@@ -223,6 +239,8 @@ function renderInboxThread(thread,messages,labels,draft,invoice,applicant,contac
     var regenBtn=el('inbox-regen-btn');
     if(regenBtn) regenBtn.onclick=function(){ regenerateDraftAction(draftId,tid); };
   }
+  var tplEl=el('inbox-tpl-sel');
+  if(tplEl) tplEl.onchange=function(){ if(tplEl.value) applyTemplateAction(tplEl.value,tid); };
   renderInboxContext(thread,labels,draft,invoice,applicant,contact);
 }
 // Context rail: ONLY data the thread GET actually returns (thread fields, labels,
@@ -337,6 +355,31 @@ async function regenerateDraftAction(draftId,threadId){
     if(r.ok){ inboxDraftOriginal=''; openInboxThread(threadId); setMsg('ibx-msg','Regenerated ✓','ok'); }
     else { setMsg('ibx-msg','Failed: '+(r.error||'unknown error'),'no'); if(regenBtn) regenBtn.disabled=false; if(appBtn) appBtn.disabled=false; }
   }catch(e){ setMsg('ibx-msg','Failed: '+errText(e),'no'); if(el('inbox-regen-btn')) el('inbox-regen-btn').disabled=false; if(el('inbox-approve-btn')) el('inbox-approve-btn').disabled=false; }
+}
+// Replace (or create) the pending draft from a canonical template. The server
+// renders the body (salutation, funnel marker, applicant bookkeeping), so the
+// result behaves exactly as if the funnel had drafted it. Never sends: the
+// thread re-renders with the template as an editable pending draft.
+async function applyTemplateAction(key,threadId){
+  var sel=el('inbox-tpl-sel'); if(sel) sel.disabled=true;
+  var appBtn=el('inbox-approve-btn'); if(appBtn) appBtn.disabled=true;
+  var regenBtn=el('inbox-regen-btn'); if(regenBtn) regenBtn.disabled=true;
+  setMsg('ibx-msg','Applying the template…','muted');
+  try{
+    var r=await api('/inbox/template',{threadId:threadId,template:key});
+    if(r.ok){ inboxDraftOriginal=''; openInboxThread(threadId); setMsg('ibx-msg','Template applied - review, edit if needed, then Approve to send.','ok'); }
+    else {
+      setMsg('ibx-msg','Failed: '+(r.error||'unknown error'),'no');
+      if(sel){ sel.disabled=false; sel.value=''; }
+      if(appBtn) appBtn.disabled=false;
+      if(regenBtn) regenBtn.disabled=false;
+    }
+  }catch(e){
+    setMsg('ibx-msg','Failed: '+errText(e),'no');
+    var s2=el('inbox-tpl-sel'); if(s2){ s2.disabled=false; s2.value=''; }
+    if(el('inbox-approve-btn')) el('inbox-approve-btn').disabled=false;
+    if(el('inbox-regen-btn')) el('inbox-regen-btn').disabled=false;
+  }
 }
 // --- Thread controls ---
 async function saveInboxStatus(id){

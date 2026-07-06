@@ -2,7 +2,8 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
 import { TenantStore } from '../src/tenant-store';
-import { listInboxThreads, getInboxThread, setInboxStatus, setInboxLabels, regenerateDraft } from '../src/inbox/routes';
+import { listInboxThreads, getInboxThread, setInboxStatus, setInboxLabels, regenerateDraft, applyDraftTemplate, DRAFT_TEMPLATES } from '../src/inbox/routes';
+import { QUALIFYING_MARKER } from '../src/inbox/partnership';
 import { DEFAULT_INBOX } from '../src/inbox/types';
 import { ACTIVE_PAW_COLLECTION_MAP, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, type Env } from '../src/types';
 
@@ -196,6 +197,81 @@ describe('regenerateDraft', () => {
     expect((await s.getDraft(did))?.status).toBe('discarded');       // old decline retired
     expect((await s.getApplicantByThread(tid))?.stage).toBe('screen_sent');
     expect(urls.some((u) => u.includes('resend'))).toBe(false);      // regenerate never sends
+  });
+});
+
+// Template picker (2026-07-06, Paul Joseph case): the owner swaps the pending
+// draft for a canonical template without leaving the Inbox. Must mirror the
+// funnel's own bookkeeping so a templated thread behaves identically after.
+describe('applyDraftTemplate', () => {
+  it('rejects an unknown template key and an unknown thread', async () => {
+    const { tid } = await seedWithConfig();
+    expect((await applyDraftTemplate(env.DB, SHOP, tid, 'bogus')).ok).toBe(false);
+    expect((await applyDraftTemplate(env.DB, SHOP, 'no-such-thread', 'qualifying')).ok).toBe(false);
+    expect((await applyDraftTemplate(env.DB, SHOP, null, 'qualifying')).ok).toBe(false);
+  });
+
+  it('replaces the pending draft with the qualifying email and stamps the applicant at screen_sent', async () => {
+    const { s, tid } = await seedWithConfig();
+    // The Paul Joseph shape: a commission consultant whose FOLLOW-UP carries no
+    // pitch vocabulary, so the funnel's on-ramp cannot claim it by itself.
+    await s.insertInboundMessageIfNew({
+      threadId: tid, messageId: '<pj@x>', inReplyTo: null, references: [],
+      from: 'jane@x.com', to: 'support@activepaw.co.uk', subject: 'Re: Hi',
+      bodyText: 'Okay, can I know what you are actually looking into at the moment?',
+      bodyHtml: null, headersJson: '{}', receivedAt: '2026-06-19T10:00:00Z'
+    });
+    const did = await s.insertDraft({ threadId: tid, bodyText: 'generic LLM reply', bodyHtml: '<p>x</p>', confidence: 80, quotesPriceOrder: false, holdReasons: [], model: 'm', status: 'pending' });
+    const r = await applyDraftTemplate(env.DB, SHOP, tid, 'qualifying');
+    expect(r.ok).toBe(true);
+    const draft = (r as { draft?: { body_text?: string } }).draft;
+    expect(draft?.body_text).toContain(QUALIFYING_MARKER);   // replies will be scored, never re-asked
+    expect(draft?.body_text).toContain('Hi Jane,');          // salutation from the contact row
+    expect((await s.getDraft(did))?.status).toBe('superseded');
+    expect((await s.getApplicantByThread(tid))?.stage).toBe('screen_sent');
+  });
+
+  it('includes the earned-tiers terms when any inbound negotiated commission against volume', async () => {
+    const { s, tid } = await seedWithConfig();
+    await s.insertInboundMessageIfNew({
+      threadId: tid, messageId: '<vol@x>', inReplyTo: null, references: [],
+      from: 'jane@x.com', to: 'support@activepaw.co.uk', subject: 'Re: Hi',
+      bodyText: 'Give me 10% commission and I will guarantee 500 units in sales every month.',
+      bodyHtml: null, headersJson: '{}', receivedAt: '2026-06-19T10:00:00Z'
+    });
+    const r = await applyDraftTemplate(env.DB, SHOP, tid, 'qualifying');
+    expect(r.ok).toBe(true);
+    expect((r as { draft?: { body_text?: string } }).draft?.body_text).toContain('rates are earned on delivered volume');
+  });
+
+  it('decline templates stamp the applicant declined and reopen a closed thread', async () => {
+    const { s, tid } = await seedWithConfig();
+    await s.setThreadStatus(tid, 'closed');
+    const r = await applyDraftTemplate(env.DB, SHOP, tid, 'service_decline');
+    expect(r.ok).toBe(true);
+    expect((r as { draft?: { body_text?: string } }).draft?.body_text).toContain('in-house');
+    expect((await s.getApplicantByThread(tid))?.stage).toBe('declined');
+    expect((await s.getThreadWithMessages(tid))?.thread.status).toBe('needs_reply');
+  });
+
+  it('creates a draft when none is pending; the holding note leaves the funnel untouched', async () => {
+    const { s, tid } = await seedWithConfig();
+    expect(await s.getPendingDraft(tid)).toBeNull();
+    const r = await applyDraftTemplate(env.DB, SHOP, tid, 'holding_ack');
+    expect(r.ok).toBe(true);
+    expect((await s.getPendingDraft(tid))?.body_text).toContain('reviewing the fit');
+    expect(await s.getApplicantByThread(tid)).toBeNull();
+  });
+
+  it('every registry template renders a pending draft (no key without a body)', async () => {
+    for (const t of DRAFT_TEMPLATES) {
+      const { s, tid } = await seedWithConfig();
+      const r = await applyDraftTemplate(env.DB, SHOP, tid, t.key);
+      expect(r.ok, t.key).toBe(true);
+      const d = await s.getPendingDraft(tid);
+      expect((d?.body_text ?? '').length, t.key).toBeGreaterThan(50);
+      expect(d?.model, t.key).toBe('template');
+    }
   });
 });
 

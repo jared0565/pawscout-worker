@@ -112,8 +112,10 @@ export const inboxCss = `
   .ibx-draft__title{font-size:12px;font-weight:700;letter-spacing:.04em;color:#f0854b;margin-right:2px}
   .ibx-draft-body{min-height:90px;padding:9px 11px;border:1px solid var(--field-border);border-radius:8px;background:var(--field);color:var(--ink);font-size:13px;white-space:pre-wrap;word-break:break-word}
   .ibx-draft-body:focus{outline:2px solid #e8590c;outline-offset:1px}
-  .ibx-draft__actions{display:flex;gap:8px;margin-top:10px}
+  .ibx-draft__actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;align-items:center}
+  .ibx-tpl-sel{width:auto;font-size:12.5px;padding:5px 8px;margin-left:auto}
   .ibx-note{font-size:12px;color:var(--subdued);text-align:center;padding:8px 0;flex:0 0 auto}
+  .ibx-note .ibx-tpl-sel{margin-left:10px}
   .ibx-day{display:flex;align-items:center;gap:12px;color:var(--subdued);font-size:11px;font-weight:600;letter-spacing:.03em}
   .ibx-day::before,.ibx-day::after{content:"";flex:1;height:1px;background:var(--border)}
   .ibx-empty{margin:auto;text-align:center;padding:40px 20px}
