@@ -19,11 +19,16 @@ function prtStatusChip(s){
   if(s==='revoked') return prtChipHtml('revoked','prt-revoked');
   return prtChipHtml('expired','prt-expired');
 }
-function prtRowHtml(p){
+function prtRowHtml(p,live){
   var title=(p.name||p.email)+' · '+p.code;
   var actions='<button class="ghost" type="button" data-prt-orders="'+esc(p.voucherId)+'" data-prt-title="'+esc(title)+'">Orders</button>';
   if(p.owed>0) actions+='<button class="ghost" type="button" data-prt-paid="'+esc(p.voucherId)+'">Mark commission paid ('+prtMoney(p.owed)+')</button>';
   if(p.status==='live') actions+='<button class="ghost" type="button" data-prt-revoke="'+esc(p.voucherId)+'">Revoke</button>';
+  // One-click reissue on a finished row: same partner, same terms, fresh code
+  // through the normal issue flow (promo-aware timing, invite staged in the
+  // Inbox when a conversation exists). Hidden while the partner has ANY live
+  // code, so reissuing can never mint a duplicate active discount.
+  if(p.status!=='live'&&!live[p.partnerId]) actions+='<button class="ghost" type="button" data-prt-reissue="'+esc(p.email)+'" data-prt-rename="'+esc(p.name||'')+'" data-prt-repct="'+esc(p.pctOff)+'" data-prt-recomm="'+esc(p.commissionPct)+'">Reissue</button>';
   // Marketing opt-in (Campaigns audience): flip ONLY on the partner's own yes -
   // partnership correspondence alone never puts anyone on the campaign list.
   actions+=p.marketingConsent
@@ -53,8 +58,10 @@ async function loadPartners(){
     var r=await api('/partners',{});
     if(!r.ok){ setMsg('prt-msg','Failed: '+(r.error||'unknown error'),'no'); return; }
     var box=el('prt-list'); if(!box) return;
+    var live={};
+    for(var i=0;i<r.partners.length;i++){ if(r.partners[i].status==='live') live[r.partners[i].partnerId]=1; }
     var h='';
-    for(var i=0;i<r.partners.length;i++) h+=prtRowHtml(r.partners[i]);
+    for(var i=0;i<r.partners.length;i++) h+=prtRowHtml(r.partners[i],live);
     box.innerHTML=h||'<p class="muted">No partners yet. Create a discount code in Shopify admin, then register it below to start a trial.</p>';
   }catch(e){ setMsg('prt-msg','Could not load partners.','no'); }
 }
@@ -80,6 +87,17 @@ async function loadDiscountStatus(){
     box.innerHTML='Storewide promotions: '+esc(parts.join(' · '))+'. New voucher codes are automatically scheduled to start after the last one ends.';
   }catch(e){ box.textContent='Store promotion check unavailable.'; }
 }
+// Success copy shared by the form issue and the per-row reissue: what the code
+// is, when it runs (promo-deferred or immediate), and where the invite went.
+function prtIssuedText(r){
+  var when=r.deferredBehind
+    ?('It starts after "'+r.deferredBehind+'" ends ('+prtWhen(r.startsAt)+') and runs until '+prtWhen(r.endsAt)+'.')
+    :('It is live now and runs until '+prtWhen(r.endsAt)+'.');
+  var where=r.invitedThreadId
+    ?' The invite email carrying the code is waiting in the Inbox for your approval.'
+    :' No inbox conversation exists for this email, so share the code with them yourself.';
+  return 'Issued '+r.code+' ('+r.pctOff+'% off, '+r.commissionPct+'% commission). '+when+where;
+}
 async function issuePartnerVoucher(){
   var email=el('prt-email').value.trim();
   if(!email){ setMsg('prt-reg-msg','Enter the partner email first.','no'); return; }
@@ -98,15 +116,27 @@ async function issuePartnerVoucher(){
   try{
     var r=await api('/partners/issue',body);
     if(!r.ok){ setMsg('prt-reg-msg','Failed: '+(r.error||'unknown error'),'no'); return; }
-    var when=r.deferredBehind
-      ?('It starts after "'+r.deferredBehind+'" ends ('+prtWhen(r.startsAt)+') and runs until '+prtWhen(r.endsAt)+'.')
-      :('It is live now and runs until '+prtWhen(r.endsAt)+'.');
-    var where=r.invitedThreadId
-      ?' The invite email carrying the code is waiting in the Inbox for your approval.'
-      :' No inbox conversation exists for this email, so share the code with them yourself.';
-    setMsg('prt-reg-msg','Issued '+r.code+' ('+r.pctOff+'% off, '+r.commissionPct+'% commission). '+when+where,'ok');
+    setMsg('prt-reg-msg',prtIssuedText(r),'ok');
     loadPartners();
   }catch(e){ setMsg('prt-reg-msg','Could not issue the voucher.','no'); }
+}
+// Per-row reissue: the finished row already knows the partner and their terms,
+// so this is the Issue-automatically flow with the form pre-answered. Armed
+// like every consequential button (it creates a real Shopify discount).
+async function reissuePartnerVoucher(btn){
+  var body={
+    email:btn.getAttribute('data-prt-reissue'),
+    pctOff:Number(btn.getAttribute('data-prt-repct')),
+    commissionPct:Number(btn.getAttribute('data-prt-recomm'))
+  };
+  var nm=btn.getAttribute('data-prt-rename'); if(nm) body.name=nm;
+  setMsg('prt-msg','Creating the new code in Shopify…','muted');
+  try{
+    var r=await api('/partners/issue',body);
+    if(!r.ok){ setMsg('prt-msg','Failed: '+(r.error||'unknown error'),'no'); return; }
+    setMsg('prt-msg',prtIssuedText(r),'ok');
+    loadPartners();
+  }catch(e){ setMsg('prt-msg','Could not reissue the voucher.','no'); }
 }
 async function registerPartner(){
   var body={
@@ -203,6 +233,9 @@ function closePartnerOrders(){
     if(vid){ openPartnerOrders(vid,t.getAttribute('data-prt-title')||''); return; }
     vid=t.getAttribute('data-prt-revoke');
     if(vid&&prtArm(t,'Click again to revoke')) runVoucherAction(vid,'revoke','Revoked.');
+    if(vid) return;
+    vid=t.getAttribute('data-prt-reissue');
+    if(vid&&prtArm(t,'Click again to reissue')) reissuePartnerVoucher(t);
     if(vid) return;
     vid=t.getAttribute('data-prt-consent');
     if(vid){ setPartnerConsent(vid,t.getAttribute('data-prt-consent-on')==='1'); return; }

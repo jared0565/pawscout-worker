@@ -386,6 +386,22 @@ describe('consolePage', () => {
     expect(scripts).toContain('approve the updated permissions');
   });
 
+  // --- Per-row reissue (2026-07-06): finished rows restart the same partner ---
+
+  it('revoked/expired rows offer one-click Reissue through /partners/issue', async () => {
+    const html = await consolePage('test-api-key').text();
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+    expect(scripts).toContain('function reissuePartnerVoucher(');
+    expect(scripts).toContain('data-prt-reissue="\'+esc(');
+    // Only when the partner has no live code anywhere - reissue can never
+    // mint a duplicate active discount for the same person.
+    expect(scripts).toContain("p.status!=='live'&&!live[p.partnerId]");
+    // Armed like every other consequential button (it creates a real code).
+    expect(scripts).toContain('Click again to reissue');
+    // The actions row wraps on narrow screens instead of clipping buttons.
+    expect(html).toContain('.prt-actions{display:flex;flex-wrap:wrap');
+  });
+
   it('the rail badge re-syncs from every inbox list load (stale-badge fix)', async () => {
     const html = await consolePage('test-api-key').text();
     const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');

@@ -9,7 +9,7 @@
 // iframe can silently swallow.
 export const partnersView = `  <section class="card">
     <h2>Partners</h2>
-    <p class="sub" style="margin:0 0 10px">Each row is one voucher you issued to a collaborator. Sales figures come from real Shopify orders placed with the code, refreshed about every 15 minutes. Gross is the face value of the goods before the discount, excluding shipping; commission is calculated on that gross for paid orders only, and refunded orders drop out automatically. Revoking a voucher also deactivates the code in Shopify, so it stops working at checkout immediately; if Shopify cannot be reached the message will tell you to disable it by hand. "Mark updates opt-in" adds a partner to the Campaigns audience: only flip it after they have themselves said yes to receiving partner updates, never just because they wrote to us.</p>
+    <p class="sub" style="margin:0 0 10px">Each row is one voucher you issued to a collaborator. Sales figures come from real Shopify orders placed with the code, refreshed about every 15 minutes. Gross is the face value of the goods before the discount, excluding shipping; commission is calculated on that gross for paid orders only, and refunded orders drop out automatically. Revoking a voucher also deactivates the code in Shopify, so it stops working at checkout immediately; if Shopify cannot be reached the message will tell you to disable it by hand. A revoked or expired row offers Reissue: one click starts a fresh code for the same partner on the same terms, with the invite staged in the Inbox when they have a conversation there. "Mark updates opt-in" adds a partner to the Campaigns audience: only flip it after they have themselves said yes to receiving partner updates, never just because they wrote to us.</p>
     <div id="prt-list"></div>
     <p id="prt-msg" class="msg muted"></p>
   </section>
@@ -86,7 +86,7 @@ export const partnersCss = `
   .prt-time{margin-left:auto;color:var(--subdued);font-size:12px;white-space:nowrap}
   .prt-stats{display:flex;gap:16px;flex-wrap:wrap;margin-top:8px;color:var(--subdued);font-size:13px}
   .prt-stats strong{color:var(--ink);font-variant-numeric:tabular-nums}
-  .prt-actions{display:flex;gap:8px;margin-top:8px}
+  .prt-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
   .prt-overlay{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:60;display:flex;align-items:center;justify-content:center;padding:24px}
   .prt-overlay[hidden]{display:none}
   .prt-modal{background:var(--surface);border:1px solid var(--border);border-radius:12px;width:min(720px,100%);max-height:82vh;display:flex;flex-direction:column;box-shadow:0 18px 48px rgba(0,0,0,.45)}
