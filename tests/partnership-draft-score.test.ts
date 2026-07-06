@@ -2,7 +2,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
 import { TenantStore } from '../src/tenant-store';
-import { maybePartnershipDraft } from '../src/inbox/partnership';
+import { maybePartnershipDraft, buildQualifyingEmail } from '../src/inbox/partnership';
 import { DEFAULT_INBOX } from '../src/inbox/types';
 import { DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, type TenantConfig } from '../src/types';
 
@@ -29,7 +29,7 @@ async function seedAnswered(shop: string) {
   // original pitch (inbound)
   await s.insertInboundMessageIfNew({ threadId: tid, messageId: '<a1@x>', inReplyTo: null, references: [], from: 'kasim@x.com', to: 'sales@activepaw.co.uk', subject: 'Partnership', bodyText: 'I run a dog IG, want to promote you for commission', bodyHtml: null, headersJson: '{}', receivedAt: '2026-06-22T10:00:00Z' });
   // we SENT the qualifying email (outbound) - the precondition for scoring their reply
-  await s.insertOutboundMessage({ threadId: tid, messageId: '<screen@ap>', from: 'sales@activepaw.co.uk', to: 'kasim@x.com', subject: 'Re: Partnership', bodyText: 'a few quick questions...', bodyHtml: '<p>a few quick questions...</p>', sentAt: '2026-06-22T10:30:00Z' });
+  await s.insertOutboundMessage({ threadId: tid, messageId: '<screen@ap>', from: 'sales@activepaw.co.uk', to: 'kasim@x.com', subject: 'Re: Partnership', bodyText: buildQualifyingEmail('Kasim', 'link'), bodyHtml: '<p>questions</p>', sentAt: '2026-06-22T10:30:00Z' });
   // they replied with answers (inbound)
   await s.insertInboundMessageIfNew({ threadId: tid, messageId: '<a2@x>', inReplyTo: null, references: [], from: 'kasim@x.com', to: 'sales@activepaw.co.uk', subject: 'Partnership', bodyText: 'answers: my tiktok @dogmum, 8k UK dog owners, honest review, fine with #ad', bodyHtml: null, headersJson: '{}', receivedAt: '2026-06-22T11:00:00Z' });
   await s.upsertApplicant({ threadId: tid, contactEmail: 'kasim@x.com', stage: 'screen_sent' }); // already screened

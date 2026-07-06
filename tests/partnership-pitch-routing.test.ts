@@ -13,7 +13,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
 import { TenantStore } from '../src/tenant-store';
 import {
-  detectVolumePitch, detectServicePitch, buildQualifyingEmail, maybePartnershipDraft,
+  detectVolumePitch, detectServicePitch, buildQualifyingEmail, maybePartnershipDraft, QUALIFYING_MARKER,
   STANDARD_COMMISSION_PCT, TIER_REVIEW_ORDERS, TIER_MAX_PCT
 } from '../src/inbox/partnership';
 // (the on-ramp tests below exercise maybePartnershipDraft with category 'other')
@@ -215,5 +215,50 @@ describe('pitch on-ramp (contact@ + category other, after a bait opener)', () =>
     expect(r).not.toBeNull(); // holding ack, never the generic drafter
     const draft = await s.getPendingDraft(tid);
     expect(draft!.body_text).toMatch(/reviewing|taking a look/i);
+  });
+});
+
+// --- Ishola regression (2026-07-06): the live thread that exposed two gaps -
+// Regenerate bypassing the funnel (fixed in routes.ts) and the premature-
+// scoring guard counting ANY outbound as "questions asked". ---
+
+const ISHOLA_PITCH = 'Hello. Thank you for confirming.\n\nIf I could help your business generate 20 additional orders within the next week, would you be open to a performance-based partnership where my compensation is just 3% of the additional revenue generated?\n\nIf that is something you would consider, I would be happy to explain exactly how the strategy works.';
+
+describe('Ishola-shape pitch (bait opener answered, then a 3%-for-orders pitch)', () => {
+  it('detectVolumePitch fires on the live text (percent + volume promise)', () => {
+    expect(detectVolumePitch(ISHOLA_PITCH)).toBe(true);
+  });
+
+  it('the marker sentence is present in BOTH qualifying variants (the askedAlready probe depends on it)', () => {
+    expect(buildQualifyingEmail('Sam', 'link')).toContain(QUALIFYING_MARKER);
+    expect(buildQualifyingEmail('Sam', 'voucher')).toContain(QUALIFYING_MARKER);
+  });
+
+  it('on-ramps to the qualifying email with the earned ladder, despite the earlier ordinary reply', async () => {
+    const { s, tid } = await seedBaitOpener('ish.myshopify.com', 'Am I in chat with Activepaw??', ISHOLA_PITCH);
+    const got = (await s.getThreadWithMessages(tid))!;
+    const r = await maybePartnershipDraft({ ...env } as any, s, CFG, got.thread, got, noFetch);
+    expect(r).not.toBeNull();
+    expect(r!.send).toBe(false);
+    const draft = await s.getPendingDraft(tid);
+    expect(draft!.body_text).toMatch(/where would you promote/i);
+    expect(draft!.body_text).toContain(`${TIER_REVIEW_ORDERS} tracked orders`);
+    expect((await s.getApplicantByThread(tid))!.stage).toBe('screen_sent');
+  });
+
+  it('re-running BEFORE the questions were sent re-issues them - the opener reply must not count as asked', async () => {
+    const { s, tid } = await seedBaitOpener('ish2.myshopify.com', 'Am I in chat with Activepaw??', ISHOLA_PITCH);
+    let got = (await s.getThreadWithMessages(tid))!;
+    const first = await maybePartnershipDraft({ ...env } as any, s, CFG, got.thread, got, noFetch);
+    expect(first).not.toBeNull();
+    // The qualifying draft is superseded (regenerate / a follow-up ingest) before
+    // anyone approves it: the thread has an outbound (the opener answer) but the
+    // questions were never actually sent.
+    await s.setDraftStatus(first!.draftId, 'discarded');
+    got = (await s.getThreadWithMessages(tid))!;
+    const second = await maybePartnershipDraft({ ...env } as any, s, CFG, got.thread, got, noFetch);
+    expect(second).not.toBeNull();
+    const draft = await s.getPendingDraft(tid);
+    expect(draft!.body_text).toMatch(/where would you promote/i); // re-asked, NOT scored into a decline
   });
 });

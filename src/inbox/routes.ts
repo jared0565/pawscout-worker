@@ -4,6 +4,7 @@ import { DEFAULT_INBOX, type InboxConfig, type ThreadStatus } from './types';
 import type { Env } from '../types';
 import { sendReply } from './send';
 import { composeDraftForThread } from './sweep';
+import { maybePartnershipDraft } from './partnership';
 import { defaultFetch } from '../safe-fetch';
 
 export async function listInboxThreads(db: D1Database, shop: string, status: string | null) {
@@ -98,9 +99,19 @@ export async function regenerateDraft(db: D1Database, env: Env, shop: string, dr
   if (!cfg || !old || old.status !== 'pending') return { ok: false as const, error: 'No pending draft' };
   const got = await store.getThreadWithMessages(old.thread_id);
   if (!got) return { ok: false as const, error: 'Thread not found' };
-  // Generate the replacement FIRST so an LLM failure never loses the current draft.
-  const r = await composeDraftForThread(env, store, cfg, got.thread, fetchImpl);
-  if (!r) return { ok: false as const, error: 'Could not generate a new draft - model unavailable, try again.' };
+  // Route EXACTLY like the sweep: the partnership funnel screens first (its
+  // pitch on-ramp reads the latest inbound text, wherever the thread is
+  // filed), then the generic category drafter. Before this, Regenerate re-ran
+  // only the category agent, so a commission-for-volume pitch on an 'other'
+  // thread could never reach the qualifying email - every click reproduced
+  // the same decline template (Ishola case, 2026-07-06). The funnel's send
+  // flag is ignored on purpose: Regenerate never sends.
+  const funnel = await maybePartnershipDraft(env, store, cfg, got.thread, got, fetchImpl);
+  if (!funnel) {
+    // Generate the replacement FIRST so an LLM failure never loses the current draft.
+    const r = await composeDraftForThread(env, store, cfg, got.thread, fetchImpl);
+    if (!r) return { ok: false as const, error: 'Could not generate a new draft - model unavailable, try again.' };
+  }
   // Replacement is in (pending). Retire the old draft and keep the thread OPEN
   // for review - never close it (that was the discard trap). Regenerate never sends.
   await store.setDraftStatus(draftId, 'discarded');

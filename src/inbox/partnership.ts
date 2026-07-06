@@ -64,20 +64,23 @@ export function resolveFromAddress(opts: { partnershipLane: boolean; toAddr: str
 }
 
 /** Commission-for-volume pitch ("give me X% and I will sell Y units"): needs two
- * of four signals - commission language (incl. "pay me"), a percentage, a volume
- * promise, or method-pitch phrasing ("my marketing method", "work with me
- * long-term") - so a plain "what commission do you offer?" still gets the normal
- * funnel. Signal shapes come from live pitches (2026-07-05: the 3%-for-40-orders,
- * 15-sales-per-week-pay-me, and 5-7-orders-a-day-GSE-method threads). Pure and
- * deterministic; grounded in the message TEXT only (standing rule). */
+ * of four signals - commission language (incl. "pay me" / "compensation"), a
+ * percentage, a volume promise, or method-pitch phrasing ("my marketing method",
+ * "performance-based partnership") - so a plain "what commission do you offer?"
+ * still gets the normal funnel. Signal shapes come from live pitches (2026-07-05:
+ * the 3%-for-40-orders, 15-sales-per-week-pay-me, and 5-7-orders-a-day-GSE-method
+ * threads; 2026-07-06 Ishola: "generate 20 ADDITIONAL orders ... my COMPENSATION
+ * is just 3% ... PERFORMANCE-BASED partnership" - the noun can sit a word or two
+ * after the number, and compensation/performance-based are pitch vocabulary).
+ * Pure and deterministic; grounded in the message TEXT only (standing rule). */
 export function detectVolumePitch(text: string): boolean {
   const t = text.toLowerCase();
-  const commission = /\b(commission|rev(?:enue)? ?share|per sale|payout|my cut|pay(?:ing)? (?:me|us))\b/.test(t);
+  const commission = /\b(commission|rev(?:enue)? ?share|per sale|payout|compensation|my cut|pay(?:ing)? (?:me|us))\b/.test(t);
   const percent = /\b\d{1,2}(?:\.\d)?\s*(?:%|percent)/.test(t);
   const volume =
-    /\b(?:sell|shift|move|guarantee[ds]?|deliver|generate)\b[^.!?\n]{0,60}?\b\d[\d,]*\+?\s*(?:units?|pieces?|products?|items?|orders?|sales?)\b/.test(t)
+    /\b(?:sell|shift|move|guarantee[ds]?|deliver|generate)\b[^.!?\n]{0,60}?\b\d[\d,]*\+?\s+(?:[a-z-]+\s+){0,2}?(?:units?|pieces?|products?|items?|orders?|sales?)\b/.test(t)
     || /\b\d[\d,]*\+?\s*(?:units?|pieces?|orders?|sales?)\s*(?:a|per|every)\s*(?:day|week|month)\b/.test(t);
-  const methodPitch = /\b(marketing (?:method|strategy|system|campaign)|my (?:method|strategy|system)|long[- ]term partnership|work with (?:me|us) long[- ]term)\b/.test(t);
+  const methodPitch = /\b(marketing (?:method|strategy|system|campaign)|my (?:method|strategy|system)|performance[- ]based partnership|long[- ]term partnership|work with (?:me|us) long[- ]term)\b/.test(t);
   return [commission, percent, volume, methodPitch].filter(Boolean).length >= 2;
 }
 
@@ -290,6 +293,11 @@ Active Paw Partnerships`;
   return applySalutation(body, name);
 }
 
+/** Stable sentence present in BOTH qualifying variants: the funnel's "did we
+ * actually ask the screening questions yet?" check greps outbound mail for it
+ * (a thread's earlier ordinary replies must not count as having asked). */
+export const QUALIFYING_MARKER = 'Where would you promote Active Paw';
+
 export function buildQualifyingEmail(
   name: string | null, variant: FunnelVariant = 'link', opts: { volumePitch?: boolean } = {}
 ): string {
@@ -482,8 +490,13 @@ export async function maybePartnershipDraft(
     // the owner approves it, ingest supersedes the pending draft and reopens the thread -
     // without this guard we'd score the original pitch (no answers) and likely draft a
     // decline, declining a real applicant who was never actually asked. Only score once
-    // the qualifying email genuinely went out (an outbound exists); otherwise re-issue it.
-    const askedAlready = got.messages.some((m) => m.direction === 'outbound');
+    // the qualifying email GENUINELY went out: an outbound carrying the screening
+    // questions themselves. Any-outbound was not enough - a bait-opener thread already
+    // has an ordinary reply ("is this Active Paw?" answered) long before the questions
+    // are asked (Ishola case, 2026-07-06).
+    const askedAlready = got.messages.some(
+      (m) => m.direction === 'outbound' && (m.body_text ?? '').includes(QUALIFYING_MARKER)
+    );
     if (!askedAlready) {
       const body = buildQualifyingEmail(name, variant, { volumePitch });
       const draftId = await store.insertDraft({

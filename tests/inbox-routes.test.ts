@@ -173,6 +173,30 @@ describe('regenerateDraft', () => {
     const r = await regenerateDraft(env.DB, REGEN_ENV(), SHOP, did, llmFetch({ bodyText: 'x', confidence: 80, quotesPriceOrOrder: false }));
     expect(r.ok).toBe(false);
   });
+
+  // 2026-07-06 Ishola fix: Regenerate must route like the sweep - partnership
+  // funnel first. A commission-for-volume pitch on an 'other' thread used to
+  // re-run only the category agent, reproducing the same decline template on
+  // every click; now it reaches the qualifying questions.
+  it('routes a volume pitch through the partnership funnel: regenerate yields the qualifying questions', async () => {
+    const { s, tid } = await seedWithConfig();
+    await s.insertInboundMessageIfNew({
+      threadId: tid, messageId: '<pitch@x>', inReplyTo: null, references: [],
+      from: 'jane@x.com', to: 'support@activepaw.co.uk', subject: 'Re: Hi',
+      bodyText: 'If I could help your business generate 20 additional orders within the next week, would you be open to a performance-based partnership where my compensation is just 3% of the additional revenue generated?',
+      bodyHtml: null, headersJson: '{}', receivedAt: '2026-06-19T10:00:00Z'
+    });
+    const did = await s.insertDraft({ threadId: tid, bodyText: 'Thank you so much for the kind offer... (old decline)', bodyHtml: '<p>old</p>', confidence: 95, quotesPriceOrder: false, holdReasons: [], model: 'm', status: 'pending' });
+    const urls: string[] = [];
+    const r = await regenerateDraft(env.DB, REGEN_ENV(), SHOP, did, llmFetch({ bodyText: 'unused', confidence: 80, quotesPriceOrOrder: false }, urls));
+    expect(r.ok).toBe(true);
+    const fresh = await s.getPendingDraft(tid);
+    expect(fresh?.body_text).toMatch(/where would you promote/i);   // the gating questions
+    expect(fresh?.body_text).toContain('tracked orders');            // earned-tier ladder (volume pitch)
+    expect((await s.getDraft(did))?.status).toBe('discarded');       // old decline retired
+    expect((await s.getApplicantByThread(tid))?.stage).toBe('screen_sent');
+    expect(urls.some((u) => u.includes('resend'))).toBe(false);      // regenerate never sends
+  });
 });
 
 describe('getInboxThread - affiliate applicant', () => {
