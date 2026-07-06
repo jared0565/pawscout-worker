@@ -14,7 +14,7 @@ import { ensureInstalled } from './auth/ensure-installed';
 import { handleUninstall } from './auth/uninstall';
 import { resolveShopFromToken } from './console/session';
 import { connectCj, saveGates, savePricing, saveLlm, saveAddons, saveCollectionMap, getStatus, getInsights, getGlance, getAudit, getAuditConversation, saveGbFreeUk, getPartners, createPartner, partnerVoucherAction, getPartnerOrders, removeQueuedPartner } from './console/routes';
-import { listInboxThreads, getInboxThread, setInboxStatus, setInboxLabels, getInboxConfig, saveInboxConfig, approveDraft, regenerateDraft, applyDraftTemplate, queuePartnerFromThread } from './inbox/routes';
+import { listInboxThreads, getInboxThread, setInboxStatus, setInboxLabels, getInboxConfig, saveInboxConfig, approveDraft, regenerateDraft, applyDraftTemplate, queuePartnerFromThread, setPartnerConsentFromThread } from './inbox/routes';
 import { buildInvoiceForThread, discardInvoice, searchCatalog, adminForShop } from './inbox/invoice-routes';
 import { validateCampaignPayload, resolveCampaignAudience, sendCampaignBatch, sendCampaignTest, campaignForUi, ownerTestAddress, campaignSendBlock, type CampaignAudience } from './campaigns';
 import { collectSystemStates } from './system-states';
@@ -1007,6 +1007,14 @@ app.post('/api/system-states', async (c) => {
   return c.json(await collectSystemStates(c.env, new TenantStore(c.env.DB, s)));
 });
 // Template picker (2026-07-06): replace the thread's pending draft with a
+// Marketing opt-in flipped from the sender's own thread - where their yes
+// actually arrives. Consent only; never changes queue/partner status.
+app.post('/api/inbox/partner-consent', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: { threadId?: unknown; on?: unknown } = {};
+  try { body = await c.req.json(); } catch { return c.json({ ok: false, error: 'Invalid JSON body' }, 400); }
+  return c.json(await setPartnerConsentFromThread(c.env.DB, s, body.threadId, body.on));
+});
 // Trial-code queue: park a qualified applicant so their code can be issued
 // later from Partners. Writes one D1 row; sends nothing.
 app.post('/api/inbox/queue-partner', async (c) => {

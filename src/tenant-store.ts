@@ -1495,11 +1495,11 @@ export class TenantStore {
   }
 
   /** The queue, newest first, for the Partners view. */
-  async listQueuedPartners(): Promise<{ id: string; contact_email: string; name: string | null; notes: string | null; updated_at: string }[]> {
+  async listQueuedPartners(): Promise<{ id: string; contact_email: string; name: string | null; notes: string | null; marketing_consent: number; updated_at: string }[]> {
     const rs = await this.db
-      .prepare(`SELECT id, contact_email, name, notes, updated_at FROM affiliate_partners WHERE shop = ?1 AND status = 'queued' ORDER BY updated_at DESC`)
+      .prepare(`SELECT id, contact_email, name, notes, marketing_consent, updated_at FROM affiliate_partners WHERE shop = ?1 AND status = 'queued' ORDER BY updated_at DESC`)
       .bind(this.shop)
-      .all<{ id: string; contact_email: string; name: string | null; notes: string | null; updated_at: string }>();
+      .all<{ id: string; contact_email: string; name: string | null; notes: string | null; marketing_consent: number; updated_at: string }>();
     return rs.results ?? [];
   }
 
@@ -1525,6 +1525,25 @@ export class TenantStore {
     if (row.live > 0) return 'live';
     if (row.status === 'queued') return 'queued';
     return 'former';
+  }
+
+  /** Partner row id for an email, if one exists (consent setter uses this so it
+   *  never routes through upsertAffiliatePartner, which would graduate a queued
+   *  row or resurrect an ended one as a side effect). */
+  async partnerIdByEmail(email: string): Promise<string | null> {
+    const row = await this.db
+      .prepare(`SELECT id FROM affiliate_partners WHERE shop = ?1 AND contact_email = ?2 LIMIT 1`)
+      .bind(this.shop, email.trim().toLowerCase()).first<{ id: string }>();
+    return row?.id ?? null;
+  }
+
+  /** Marketing consent for one email: true/false, or null when no partner row
+   *  exists yet - drives the Inbox context-rail consent control. */
+  async partnerConsentByEmail(email: string): Promise<boolean | null> {
+    const row = await this.db
+      .prepare(`SELECT marketing_consent FROM affiliate_partners WHERE shop = ?1 AND contact_email = ?2 LIMIT 1`)
+      .bind(this.shop, email.trim().toLowerCase()).first<{ marketing_consent: number }>();
+    return row ? row.marketing_consent === 1 : null;
   }
 
   /** Register an issued code. Codes are stored UPPERCASE; the unique index on
@@ -1866,10 +1885,12 @@ export class TenantStore {
     return row?.n ?? 0;
   }
 
-  /** Partner-audience recipients: ACTIVE partners who explicitly opted in. */
+  /** Partner-audience recipients: partners who explicitly opted in. Queued
+   *  partners (trial code not issued yet) count - their yes is a yes; only
+   *  'ended' rows drop out of the audience. */
   async listConsentingPartnerEmails(): Promise<string[]> {
     const rs = await this.db
-      .prepare(`SELECT DISTINCT contact_email FROM affiliate_partners WHERE shop = ?1 AND status = 'active' AND marketing_consent = 1`)
+      .prepare(`SELECT DISTINCT contact_email FROM affiliate_partners WHERE shop = ?1 AND status IN ('active', 'queued') AND marketing_consent = 1`)
       .bind(this.shop).all<{ contact_email: string }>();
     return (rs.results ?? []).map((r) => r.contact_email);
   }

@@ -154,10 +154,10 @@ async function openInboxThread(id){
   try{
     var r=await api('/inbox/thread',{id:id});
     if(!r.ok){ if(tl) tl.innerHTML='<div class="ibx-empty"><p class="msg no">'+esc(r.error||'Failed to load thread')+'</p></div>'; return; }
-    renderInboxThread(r.thread,r.messages||[],r.labels||[],r.draft||null,r.invoice||null,r.applicant||null,r.contact||null,r.partnerPool||'none');
+    renderInboxThread(r.thread,r.messages||[],r.labels||[],r.draft||null,r.invoice||null,r.applicant||null,r.contact||null,r.partnerPool||'none',(r.partnerConsent===true||r.partnerConsent===false)?r.partnerConsent:null);
   }catch(e){ if(tl) tl.innerHTML='<div class="ibx-empty"><p class="msg no">'+esc(errText(e))+'</p></div>'; }
 }
-function renderInboxThread(thread,messages,labels,draft,invoice,applicant,contact,partnerPool){
+function renderInboxThread(thread,messages,labels,draft,invoice,applicant,contact,partnerPool,partnerConsent){
   var head=el('ibx-convo-head'), tl=el('ibx-timeline');
   if(!head||!tl) return;
   inboxInvoiceItems=[];
@@ -241,12 +241,12 @@ function renderInboxThread(thread,messages,labels,draft,invoice,applicant,contac
   }
   var tplEl=el('inbox-tpl-sel');
   if(tplEl) tplEl.onchange=function(){ if(tplEl.value) applyTemplateAction(tplEl.value,tid); };
-  renderInboxContext(thread,labels,draft,invoice,applicant,contact,partnerPool);
+  renderInboxContext(thread,labels,draft,invoice,applicant,contact,partnerPool,partnerConsent);
 }
 // Context rail: ONLY data the thread GET actually returns (thread fields, labels,
 // contact row, draft hold reasons, applicant screening, invoice, partner pool
-// state) - nothing fabricated.
-function renderInboxContext(thread,labels,draft,invoice,applicant,contact,partnerPool){
+// state + marketing consent) - nothing fabricated.
+function renderInboxContext(thread,labels,draft,invoice,applicant,contact,partnerPool,partnerConsent){
   var ctx=el('ibx-context-body'); if(!ctx) return;
   var tid=thread.id;
   var cust='<div class="ibx-ctx-block"><h4>Customer</h4>'
@@ -302,7 +302,18 @@ function renderInboxContext(thread,labels,draft,invoice,applicant,contact,partne
       poolHtml='<div class="row" style="margin-top:8px"><button id="inbox-queue-btn" class="ghost" type="button">Add to trial code queue</button></div>'
         +'<p class="muted" style="font-size:12px;margin:4px 0 0">Parks them in Partners so you can issue the code later. Sends nothing now.</p>';
     }
-    partnerBlock='<div class="ibx-ctx-block"><h4>Partnership screening</h4>'+screenHtml+poolHtml+'</div>';
+    // Partner updates opt-in: the invite paragraph asks them to "just say yes
+    // in your reply", so the switch sits where the yes arrives. Flip it ONLY on
+    // their own yes - correspondence alone never joins the campaign list.
+    var conHtml='';
+    if(partnerConsent===true){
+      conHtml='<p style="margin:10px 0 0"><span class="prt-chip prt-live">partner updates: opted in</span></p>'
+        +'<div class="row" style="margin-top:6px"><button id="inbox-consent-btn" class="ghost" type="button" data-consent-on="0">Remove updates opt-in</button></div>';
+    } else {
+      conHtml='<div class="row" style="margin-top:10px"><button id="inbox-consent-btn" class="ghost" type="button" data-consent-on="1">Mark updates opt-in</button></div>'
+        +'<p class="muted" style="font-size:12px;margin:4px 0 0">Only when they have themselves said yes to partner updates in this conversation.</p>';
+    }
+    partnerBlock='<div class="ibx-ctx-block"><h4>Partnership screening</h4>'+screenHtml+poolHtml+conHtml+'</div>';
   }
   // Invoice: open-invoice card, or the builder when none is open
   var invoiceBlock='';
@@ -336,6 +347,7 @@ function renderInboxContext(thread,labels,draft,invoice,applicant,contact,partne
   ctx.innerHTML=cust+labBlock+holdBlock+partnerBlock+invoiceBlock;
   var slb=el('inbox-save-labels'); if(slb) slb.onclick=function(){ saveInboxLabels(tid); };
   var qb=el('inbox-queue-btn'); if(qb) qb.onclick=function(){ queuePartnerAction(tid); };
+  var cb=el('inbox-consent-btn'); if(cb) cb.onclick=function(){ threadConsentAction(tid,cb.getAttribute('data-consent-on')==='1'); };
   if(invoice&&invoice.id){
     var invDiscBtn=el('inbox-invoice-discard-btn');
     if(invDiscBtn) invDiscBtn.onclick=function(){ discardInvoiceAction(invoice.id,tid); };
@@ -422,6 +434,18 @@ async function queuePartnerAction(tid){
     else setMsg('ibx-msg','Queued. Issue their code from the Partners view whenever you are ready; the invite email carrying the code will be staged back on this thread.','ok');
     openInboxThread(tid);
   }catch(e){ setMsg('ibx-msg','Failed: '+errText(e),'no'); if(qb) qb.disabled=false; }
+}
+// Marketing opt-in flipped from the thread where the yes arrived. Consent
+// only - it can never queue, graduate or end a partner.
+async function threadConsentAction(tid,on){
+  var cb=el('inbox-consent-btn'); if(cb) cb.disabled=true;
+  setMsg('ibx-msg',on?'Recording their opt-in…':'Removing the opt-in…','muted');
+  try{
+    var r=await api('/inbox/partner-consent',{threadId:tid,on:on});
+    if(!r.ok){ setMsg('ibx-msg','Failed: '+(r.error||'unknown error'),'no'); if(cb) cb.disabled=false; return; }
+    setMsg('ibx-msg',on?'Opted in. They are now part of the Campaigns partner audience.':'Opt-in removed. They are off the partner updates list.','ok');
+    openInboxThread(tid);
+  }catch(e){ setMsg('ibx-msg','Failed: '+errText(e),'no'); if(cb) cb.disabled=false; }
 }
 async function saveInboxLabels(id){
   var sel=el('inbox-label-sel');

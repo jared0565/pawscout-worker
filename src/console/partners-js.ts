@@ -65,10 +65,14 @@ function prtQueueHtml(queued){
     h+='<div class="prt-row"><div class="prt-head"><span class="prt-who">'+esc(q.name||q.email)+'</span>'
       +(q.name?'<span class="prt-mail">'+esc(q.email)+'</span>':'')
       +'<span class="prt-chip prt-expired">waiting for a code</span>'
+      +(q.marketingConsent?prtChipHtml('updates: opted in','prt-live'):'')
       +'<span class="prt-time">queued '+prtWhen(q.queuedAt)+'</span></div>'
       +'<div class="prt-actions">'
       +'<button type="button" data-prt-issueq="'+esc(q.email)+'" data-prt-issueq-name="'+esc(q.name||'')+'">Issue code now</button>'
       +'<button class="ghost" type="button" data-prt-unqueue="'+esc(q.partnerId)+'">Remove</button>'
+      +(q.marketingConsent
+        ?'<button class="ghost" type="button" data-prt-consent="'+esc(q.partnerId)+'" data-prt-consent-on="0">Remove updates opt-in</button>'
+        :'<button class="ghost" type="button" data-prt-consent="'+esc(q.partnerId)+'" data-prt-consent-on="1">Mark updates opt-in</button>')
       +'</div></div>';
   }
   return h+'</div>';

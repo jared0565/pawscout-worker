@@ -6,7 +6,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
 import { TenantStore } from '../src/tenant-store';
-import { getInboxThread, queuePartnerFromThread } from '../src/inbox/routes';
+import { getInboxThread, queuePartnerFromThread, setPartnerConsentFromThread } from '../src/inbox/routes';
 import { getPartners, removeQueuedPartner } from '../src/console/routes';
 
 beforeEach(async () => { await applyD1Migrations(env.DB, env.TEST_MIGRATIONS); });
@@ -97,6 +97,48 @@ describe('queue routes', () => {
   it('rejects a missing thread and a bad payload', async () => {
     expect((await queuePartnerFromThread(env.DB, SHOP, 'nope')).ok).toBe(false);
     expect((await queuePartnerFromThread(env.DB, SHOP, 42)).ok).toBe(false);
+  });
+
+  // "Just say yes in your reply and we'll add you" - the yes arrives in the
+  // Inbox, so consent is recorded from the thread. Consent NEVER changes queue
+  // or partner status; queued partners count in the campaign audience.
+  it('records the updates opt-in from the thread, creating the row when none exists', async () => {
+    const { s, tid } = await seedThread();
+    const before = await getInboxThread(env.DB, SHOP, tid);
+    expect(before.ok && before.partnerConsent).toBe(null); // no partner row yet
+
+    const r = await setPartnerConsentFromThread(env.DB, SHOP, tid, true);
+    expect(r.ok && r.consent).toBe(true);
+    expect(await s.listConsentingPartnerEmails()).toEqual(['creator@x.com']);
+    const after = await getInboxThread(env.DB, SHOP, tid);
+    expect(after.ok && after.partnerConsent).toBe(true);
+
+    // Change of mind: same switch, other direction.
+    await setPartnerConsentFromThread(env.DB, SHOP, tid, false);
+    expect(await s.listConsentingPartnerEmails()).toEqual([]);
+  });
+
+  it('consent on a queued partner keeps them queued and puts them in the audience', async () => {
+    const { s, tid } = await seedThread();
+    await queuePartnerFromThread(env.DB, SHOP, tid);
+    const r = await setPartnerConsentFromThread(env.DB, SHOP, tid, true);
+    expect(r.ok && r.consent).toBe(true);
+    // Still queued - consent must never graduate (or end) a queue row.
+    expect(await s.partnerPoolState('creator@x.com')).toBe('queued');
+    const queued = (await getPartners(env.DB, SHOP)).queued;
+    expect(queued.length).toBe(1);
+    expect(queued[0].marketingConsent).toBe(true);
+    // Queued + consented = in the campaign audience (their yes is a yes).
+    expect(await s.listConsentingPartnerEmails()).toEqual(['creator@x.com']);
+  });
+
+  it('opt-out with no partner row is a quiet no-op, and bad payloads are rejected', async () => {
+    const { s, tid } = await seedThread();
+    const r = await setPartnerConsentFromThread(env.DB, SHOP, tid, false);
+    expect(r.ok && r.consent).toBe(false);
+    expect(await s.partnerIdByEmail('creator@x.com')).toBe(null); // no row created
+    expect((await setPartnerConsentFromThread(env.DB, SHOP, tid, 'yes' as unknown)).ok).toBe(false);
+    expect((await setPartnerConsentFromThread(env.DB, SHOP, 'nope', true)).ok).toBe(false);
   });
 
   it('queue-remove takes them out once and reports a second attempt', async () => {

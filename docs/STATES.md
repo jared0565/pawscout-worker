@@ -49,7 +49,7 @@ SELECT inbox, fulfil, gates, pricing, llm, addons, target FROM tenant_config WHE
 |---|---|---|
 | `inbox.affiliateMode` | `tenant_config.inbox.affiliateMode` | inbox column dump |
 | `inbox.autoIssueVoucher` | `tenant_config.inbox.autoIssueVoucher` | inbox column dump |
-| `partners.consenting` | `affiliate_partners` rows with `marketing_consent = 1` | `SELECT contact_email FROM affiliate_partners WHERE marketing_consent = 1` |
+| `partners.consenting` | `affiliate_partners` rows with `marketing_consent = 1` and status active or queued | `SELECT contact_email FROM affiliate_partners WHERE status IN ('active','queued') AND marketing_consent = 1` |
 
 ## Marketing email
 

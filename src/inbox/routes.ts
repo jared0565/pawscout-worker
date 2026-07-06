@@ -43,7 +43,34 @@ export async function getInboxThread(db: D1Database, shop: string, threadId: str
   const applicant = await store.getApplicantByThread(threadId);
   const contact = await store.getContactByEmail(got.thread.contact_email);
   const partnerPool = await store.partnerPoolState(got.thread.contact_email);
-  return { ok: true as const, thread: got.thread, messages: got.messages, labels: got.labels, draft, invoice, applicant, contact, partnerPool };
+  const partnerConsent = await store.partnerConsentByEmail(got.thread.contact_email);
+  return { ok: true as const, thread: got.thread, messages: got.messages, labels: got.labels, draft, invoice, applicant, contact, partnerPool, partnerConsent };
+}
+
+/** Marketing opt-in flipped from the sender's own thread (2026-07-06): the
+ *  invite paragraph says "just say yes in your reply and we'll add you", and
+ *  the yes arrives in the Inbox - so the switch lives there too. Creates the
+ *  partner row when none exists (opt-in only); on an existing row it updates
+ *  ONLY consent, never status, so flipping consent can never graduate a queued
+ *  partner or resurrect an ended one. The owner clicks it on the partner's own
+ *  yes - correspondence alone never puts anyone on the campaign list. */
+export async function setPartnerConsentFromThread(db: D1Database, shop: string, threadId: unknown, optIn: unknown) {
+  if (typeof threadId !== 'string' || !threadId.trim()) return { ok: false as const, error: 'threadId required' };
+  if (typeof optIn !== 'boolean') return { ok: false as const, error: 'on must be true or false' };
+  const store = new TenantStore(db, shop);
+  const got = await store.getThreadWithMessages(threadId);
+  if (!got) return { ok: false as const, error: 'Thread not found' };
+  const email = got.thread.contact_email;
+  let partnerId = await store.partnerIdByEmail(email);
+  if (!partnerId) {
+    if (!optIn) return { ok: true as const, consent: false }; // nothing recorded, nothing to remove
+    const contact = await store.getContactByEmail(email);
+    partnerId = await store.upsertAffiliatePartner({
+      contactEmail: email, name: contact?.name ?? null, notes: 'Updates opt-in from the Inbox'
+    });
+  }
+  await store.setPartnerMarketingConsent(partnerId, optIn);
+  return { ok: true as const, consent: optIn };
 }
 
 /** "Add to the trial code queue" (2026-07-06): parks a qualified applicant in

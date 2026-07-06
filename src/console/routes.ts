@@ -244,7 +244,8 @@ export async function getPartners(db: D1Database, shop: string) {
   return {
     ok: true as const,
     queued: queued.map((q) => ({
-      partnerId: q.id, email: q.contact_email, name: q.name ?? null, notes: q.notes ?? null, queuedAt: q.updated_at
+      partnerId: q.id, email: q.contact_email, name: q.name ?? null, notes: q.notes ?? null,
+      marketingConsent: q.marketing_consent === 1, queuedAt: q.updated_at
     })),
     partners: rows.map((r) => ({
       partnerId: r.partner_id, voucherId: r.voucher_id,

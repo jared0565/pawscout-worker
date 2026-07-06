@@ -131,7 +131,7 @@ describe('consolePage', () => {
   it('renderInboxThread accepts + renders the partnership applicant panel', async () => {
     const html = await consolePage('test-api-key').text();
     const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
-    expect(scripts).toContain('function renderInboxThread(thread,messages,labels,draft,invoice,applicant,contact,partnerPool)');
+    expect(scripts).toContain('function renderInboxThread(thread,messages,labels,draft,invoice,applicant,contact,partnerPool,partnerConsent)');
     expect(scripts).toContain('Partnership screening');
     expect(scripts).toContain('r.applicant||null');
   });
@@ -485,6 +485,17 @@ describe('consolePage', () => {
     expect(scripts).toContain('Add to trial code queue');
     // Queueing is bookkeeping only; the copy says so and nothing is sent.
     expect(scripts).toContain('Sends nothing now.');
+  });
+
+  it('the inbox Partnership panel records the partner updates opt-in where the yes arrives', async () => {
+    const html = await consolePage('test-api-key').text();
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+    expect(scripts).toContain('function threadConsentAction(');
+    expect(scripts).toContain("'/inbox/partner-consent'");
+    // Guardrail copy: only on the sender's own yes, never mere correspondence.
+    expect(scripts).toContain('Only when they have themselves said yes');
+    // Queue rows in Partners carry the same consent switch and chip.
+    expect(scripts).toContain('q.marketingConsent');
   });
 
   it('Partners renders the queue with armed Issue code now / Remove actions', async () => {

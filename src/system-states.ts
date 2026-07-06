@@ -122,7 +122,7 @@ export async function collectSystemStates(
       states: [
         { key: 'inbox.affiliateMode', label: 'Partnership approaches', value: inbox.affiliateMode, on: null, detail: 'funnel_voucher = screen for a code trial; decline_all = the old policy', source: 'tenant_config.inbox.affiliateMode' },
         { key: 'inbox.autoIssueVoucher', label: 'Auto-issue voucher trials', value: onOff(inbox.autoIssueVoucher === true), on: inbox.autoIssueVoucher === true, detail: 'also requires the reply-mode master', source: 'tenant_config.inbox.autoIssueVoucher' },
-        { key: 'partners.consenting', label: 'Partners opted in to updates', value: String(consentingPartners), on: null, detail: 'the Campaigns partner audience', source: 'affiliate_partners.marketing_consent = 1' }
+        { key: 'partners.consenting', label: 'Partners opted in to updates', value: String(consentingPartners), on: null, detail: 'the Campaigns partner audience', source: 'affiliate_partners.marketing_consent = 1 (status active or queued)' }
       ]
     },
     {

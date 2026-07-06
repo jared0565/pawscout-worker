@@ -11,8 +11,9 @@ import { defaultFetch } from './safe-fetch';
 // - Buyers are resolved LIVE from Shopify at send time, filtered to
 //   emailMarketingConsent SUBSCRIBED (the checkout "news and offers" opt-in).
 //   We never keep a copy that could go stale against a Shopify-side opt-out.
-// - Partners are active affiliate_partners who explicitly opted in
-//   (marketing_consent, flipped by the owner in the Partners view).
+// - Partners are active or queued affiliate_partners who explicitly opted in
+//   (marketing_consent, flipped by the owner in the Partners view or right
+//   from the partner's inbox thread where their yes arrived).
 // - Every email carries the shared HMAC one-click unsubscribe (same
 //   suppression list as reorder reminders) + RFC 8058 headers, an identified
 //   sender, and the business postal address (CAN-SPAM readiness).
@@ -86,7 +87,7 @@ export async function fetchSubscribedBuyers(admin: AdminGraphql, maxPages = 10):
 }
 
 /** The campaign's recipient list. buyers needs a live Admin client; partners
- * reads the opted-in active partners from D1. */
+ * reads the opted-in active/queued partners from D1. */
 export async function resolveCampaignAudience(
   store: TenantStore, admin: AdminGraphql | null, audience: CampaignAudience
 ): Promise<{ ok: true; emails: string[] } | { ok: false; error: string }> {
