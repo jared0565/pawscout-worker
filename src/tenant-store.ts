@@ -1757,6 +1757,24 @@ export class TenantStore {
     return out;
   }
 
+  /** Email-event heartbeat for the System states register: proof the tracking
+   * pipeline is really flowing (webhook verified + at least one event stored)
+   * without trusting any stored flag. */
+  async emailEventPulse(): Promise<{ total: number; latestAt: string | null }> {
+    const row = await this.db
+      .prepare(`SELECT COUNT(*) AS n, MAX(occurred_at) AS latest FROM email_events WHERE shop = ?1`)
+      .bind(this.shop).first<{ n: number; latest: string | null }>();
+    return { total: row?.n ?? 0, latestAt: row?.latest ?? null };
+  }
+
+  /** Size of the shared suppression list (unsubscribes + complaints + hard bounces). */
+  async countUnsubscribes(): Promise<number> {
+    const row = await this.db
+      .prepare(`SELECT COUNT(*) AS n FROM email_unsubscribes WHERE shop = ?1`)
+      .bind(this.shop).first<{ n: number }>();
+    return row?.n ?? 0;
+  }
+
   /** Partner-audience recipients: ACTIVE partners who explicitly opted in. */
   async listConsentingPartnerEmails(): Promise<string[]> {
     const rs = await this.db

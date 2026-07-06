@@ -387,6 +387,22 @@ describe('consolePage', () => {
     expect(scripts).toContain('approve the updated permissions');
   });
 
+  // --- System states register (2026-07-06): the live truth table of switches ---
+
+  it('Settings carries the System states register, loaded live on startup', async () => {
+    const html = await consolePage('test-api-key').text();
+    expect(html).toContain('id="sys-states"');
+    expect(html).toContain('System states');
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+    expect(scripts).toContain('function loadSystemStates(');
+    expect(scripts).toContain("'/system-states'");
+    expect(scripts).toContain('loadSystemStates();'); // read live at startup
+    // Register rows are rendered with esc() on every dynamic value.
+    expect(scripts).toContain("sysChip(st)");
+    expect(scripts).toContain("esc(st.label)");
+    expect(scripts).toContain("esc(st.source)");
+  });
+
   // --- Draft templates (2026-07-06): swap the pending draft from a dropdown ---
 
   it('Inbox carries the template picker wired to /inbox/template', async () => {

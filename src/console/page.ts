@@ -39,7 +39,7 @@ import { campaignsJs } from './campaigns-js';
 import { campaignsView, campaignsCss } from './views/campaigns';
 import { trafficJs } from './traffic-js';
 import { trafficView, trafficCss } from './views/traffic';
-import { settingsView } from './views/settings';
+import { settingsView, settingsCss } from './views/settings';
 import { helpView, helpCss } from './views/help';
 import { railHtml, routerJs, shellCss } from './shell';
 export function consolePage(apiKey: string): Response {
@@ -150,6 +150,7 @@ ${auditCss}
 ${partnersCss}
 ${campaignsCss}
 ${trafficCss}
+${settingsCss}
 ${helpCss}</style>
 </head><body>
 ${railHtml}
@@ -312,6 +313,36 @@ async function refresh(){
     el('status').innerHTML='<p class="msg no">Could not load configuration: '+esc(errText(e))+'</p>';
     setMsg('cjstatus','Could not reach PawScout. Reload the page.','no');
   }
+}
+// --- System states register: live truth table of every switch (never a copy) ---
+function sysChip(st){
+  if(st.on===true) return '<span class="badge ok">'+esc(st.value)+'</span>';
+  if(st.on===false) return '<span class="badge no">'+esc(st.value)+'</span>';
+  return '<strong>'+esc(st.value)+'</strong>';
+}
+async function loadSystemStates(){
+  var box=el('sys-states'); if(!box) return;
+  box.innerHTML='<p class="muted">Reading live state…</p>';
+  try{
+    var r=await api('/system-states',{});
+    if(!r.ok){ box.innerHTML='<p class="msg no">Could not load the register: '+esc(r.error||'unknown error')+'</p>'; return; }
+    var h='';
+    for(var g=0;g<r.groups.length;g++){
+      var grp=r.groups[g];
+      h+='<div class="sys-group">'+esc(grp.title)+'</div>';
+      for(var i=0;i<grp.states.length;i++){
+        var st=grp.states[i];
+        h+='<div class="sys-row">'
+          +'<span class="sys-label">'+esc(st.label)+'</span>'
+          +'<span class="sys-val">'+sysChip(st)+'</span>'
+          +'<span class="sys-detail">'+(st.detail?esc(st.detail):'')
+          +'<code class="sys-src">'+esc(st.source)+'</code></span>'
+          +'</div>';
+      }
+    }
+    h+='<p class="muted" style="font-size:11.5px;margin:10px 0 0">Checked '+esc(String(r.checkedAt||'').replace('T',' ').slice(0,16))+' UTC, read live from the enforcing stores.</p>';
+    box.innerHTML=h;
+  }catch(e){ box.innerHTML='<p class="msg no">Could not load the register: '+esc(errText(e))+'</p>'; }
 }
 async function loadInsights(){
   try{
@@ -899,6 +930,7 @@ loadAudit();
 loadPartners();
 loadCampaigns();
 loadTraffic();
+loadSystemStates();
 ${routerJs}</script>
 </body></html>`;
   // no-store: the console is a single server-rendered page that changes every

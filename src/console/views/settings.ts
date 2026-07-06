@@ -110,6 +110,24 @@ export const settingsView = `  <section class="card">
   </section>
 
   <section class="card">
+    <h2>System states</h2>
+    <p class="sub" style="margin:0 0 10px">The live register of every switch and enforcement setting in PawScout: what the system is actually enforcing right now, grouped by area. Values are read at the moment you load or refresh from the same stores the running code reads - nothing on this table is a stored copy, so it can never go stale. Green means active, red means off or missing, plain values are informational.</p>
+    <div id="sys-states"><p class="muted">Loading…</p></div>
+    <div class="row" style="margin-top:10px"><button type="button" class="ghost" onclick="loadSystemStates()">Refresh</button></div>
+  </section>
+
+  <section class="card">
     <h2>Current configuration</h2>
     <div id="status"><p class="muted">Loading…</p></div>
   </section>`;
+
+// Namespaced (.sys-*) styles for the states register table.
+export const settingsCss = `
+  /* --- Settings: System states register --- */
+  .sys-group{margin:14px 0 4px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--subdued)}
+  .sys-row{display:grid;grid-template-columns:230px 130px minmax(0,1fr);gap:10px;align-items:baseline;padding:5px 0;border-bottom:1px solid var(--border);font-size:12.5px}
+  .sys-label{color:var(--ink);font-weight:550}
+  .sys-detail{color:var(--subdued);overflow-wrap:anywhere}
+  .sys-src{display:block;font-size:10.5px;color:var(--subdued);opacity:.75;overflow-wrap:anywhere}
+  @media(max-width:820px){.sys-row{grid-template-columns:1fr 110px}.sys-detail{grid-column:1 / -1}}
+`;

@@ -17,6 +17,7 @@ import { connectCj, saveGates, savePricing, saveLlm, saveAddons, saveCollectionM
 import { listInboxThreads, getInboxThread, setInboxStatus, setInboxLabels, getInboxConfig, saveInboxConfig, approveDraft, regenerateDraft, applyDraftTemplate } from './inbox/routes';
 import { buildInvoiceForThread, discardInvoice, searchCatalog, adminForShop } from './inbox/invoice-routes';
 import { validateCampaignPayload, resolveCampaignAudience, sendCampaignBatch, sendCampaignTest, campaignForUi, ownerTestAddress, campaignSendBlock, type CampaignAudience } from './campaigns';
+import { collectSystemStates } from './system-states';
 import { issueVoucher, fetchActiveOrderPromos, voucherDateLabel, deactivateVoucherDiscount } from './affiliate-discounts';
 import { buildVoucherInviteWithCode } from './inbox/partnership';
 import { renderReplyHtml } from './inbox/draft';
@@ -891,6 +892,13 @@ app.post('/api/inbox/regenerate', async (c) => {
   try { body = await c.req.json(); } catch { return c.json({ ok: false, error: 'Invalid JSON body' }, 400); }
   if (!body.id) return c.json({ ok: false, error: 'id required' }, 400);
   return c.json(await regenerateDraft(c.env.DB, c.env, s, body.id));
+});
+// System states register (2026-07-06): ONE live table of every switch and
+// enforcement setting, resolved at request time from the same stores the
+// enforcing code reads. Never a copy - see src/system-states.ts.
+app.post('/api/system-states', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  return c.json(await collectSystemStates(c.env, new TenantStore(c.env.DB, s)));
 });
 // Template picker (2026-07-06): replace the thread's pending draft with a
 // canonical, server-rendered template (partnership screening, declines, etc.)
