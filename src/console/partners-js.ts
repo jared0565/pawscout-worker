@@ -19,74 +19,116 @@ function prtStatusChip(s){
   if(s==='revoked') return prtChipHtml('revoked','prt-revoked');
   return prtChipHtml('expired','prt-expired');
 }
-function prtRowHtml(p,live){
+// One voucher = one table row. All row actions live in the Actions menu: each
+// actions cell carries a hidden .prt-menu-src holding the row's action buttons
+// (same escaped data-prt-* attributes as always, so the same click delegation
+// runs them); opening copies that HTML into the single floating #prt-float-menu
+// (position:fixed) so the table's overflow-x wrapper cannot clip it. Armed
+// buttons keep the menu open for their confirming second click.
+function prtVoucherRowHtml(p,live){
   var title=(p.name||p.email)+' · '+p.code;
-  var actions='<button class="ghost" type="button" data-prt-orders="'+esc(p.voucherId)+'" data-prt-title="'+esc(title)+'">Orders</button>';
-  if(p.owed>0) actions+='<button class="ghost" type="button" data-prt-paid="'+esc(p.voucherId)+'">Mark commission paid ('+prtMoney(p.owed)+')</button>';
-  if(p.status==='live') actions+='<button class="ghost" type="button" data-prt-revoke="'+esc(p.voucherId)+'">Revoke</button>';
+  var sub='Discount given '+prtMoney(p.discount)+' · Paid out '+prtMoney(p.paid)+(p.lastOrderAt?(' · Last order '+prtWhen(p.lastOrderAt)):'');
+  var items='<button type="button" data-prt-orders="'+esc(p.voucherId)+'" data-prt-title="'+esc(title)+'" data-prt-sub="'+esc(sub)+'">Orders</button>';
+  if(p.owed>0) items+='<button type="button" data-prt-paid="'+esc(p.voucherId)+'">Mark commission paid ('+prtMoney(p.owed)+')</button>';
+  if(p.status==='live') items+='<button type="button" data-prt-revoke="'+esc(p.voucherId)+'">Revoke</button>';
   // One-click reissue on a finished row: same partner, same terms, fresh code
   // through the normal issue flow (promo-aware timing, invite staged in the
   // Inbox when a conversation exists). Hidden while the partner has ANY live
   // code, so reissuing can never mint a duplicate active discount.
-  if(p.status!=='live'&&!live[p.partnerId]) actions+='<button class="ghost" type="button" data-prt-reissue="'+esc(p.email)+'" data-prt-rename="'+esc(p.name||'')+'" data-prt-repct="'+esc(p.pctOff)+'" data-prt-recomm="'+esc(p.commissionPct)+'">Reissue</button>';
+  if(p.status!=='live'&&!live[p.partnerId]) items+='<button type="button" data-prt-reissue="'+esc(p.email)+'" data-prt-rename="'+esc(p.name||'')+'" data-prt-repct="'+esc(p.pctOff)+'" data-prt-recomm="'+esc(p.commissionPct)+'">Reissue</button>';
   // Marketing opt-in (Campaigns audience): flip ONLY on the partner's own yes -
   // partnership correspondence alone never puts anyone on the campaign list.
-  actions+=p.marketingConsent
-    ?'<button class="ghost" type="button" data-prt-consent="'+esc(p.partnerId)+'" data-prt-consent-on="0">Remove updates opt-in</button>'
-    :'<button class="ghost" type="button" data-prt-consent="'+esc(p.partnerId)+'" data-prt-consent-on="1">Mark updates opt-in</button>';
-  return '<div class="prt-row">'
-    +'<div class="prt-head"><span class="prt-who">'+esc(p.name||p.email)+'</span>'
-    +(p.name?'<span class="prt-mail">'+esc(p.email)+'</span>':'')
-    +'<span class="prt-code">'+esc(p.code)+'</span>'
-    +prtStatusChip(p.status)
-    +(p.marketingConsent?prtChipHtml('updates: opted in','prt-live'):'')
-    +'<span class="muted" style="font-size:12px">'+esc(p.pctOff)+'% off, '+esc(p.commissionPct)+'% commission</span>'
-    +'<span class="prt-time">'+(p.status==='live'?'ends ':'ended ')+prtWhen(p.endsAt)+'</span></div>'
-    +'<div class="prt-stats">'
-    +'<span>Orders <strong>'+esc(p.uses||0)+'</strong></span>'
-    +'<span>Gross <strong>'+prtMoney(p.gross)+'</strong></span>'
-    +'<span>Discount given <strong>'+prtMoney(p.discount)+'</strong></span>'
-    +'<span>Commission owed <strong>'+prtMoney(p.owed)+'</strong></span>'
-    +'<span>Paid out <strong>'+prtMoney(p.paid)+'</strong></span>'
-    +(p.lastOrderAt?'<span>Last order '+prtWhen(p.lastOrderAt)+'</span>':'')
-    +'</div>'
-    +'<div class="prt-actions">'+actions+'</div>'
-    +'</div>';
+  items+=p.marketingConsent
+    ?'<button type="button" data-prt-consent="'+esc(p.partnerId)+'" data-prt-consent-on="0">Remove updates opt-in</button>'
+    :'<button type="button" data-prt-consent="'+esc(p.partnerId)+'" data-prt-consent-on="1">Mark updates opt-in</button>';
+  return '<tr>'
+    +'<td class="prt-cell-who"><span class="prt-who">'+esc(p.name||p.email)+'</span>'+(p.name?'<span class="prt-mail">'+esc(p.email)+'</span>':'')+'</td>'
+    +'<td><span class="prt-code">'+esc(p.code)+'</span></td>'
+    +'<td>'+prtStatusChip(p.status)+(p.marketingConsent?' '+prtChipHtml('updates','prt-live'):'')+'</td>'
+    +'<td class="muted">'+esc(p.pctOff)+'% / '+esc(p.commissionPct)+'%</td>'
+    +'<td class="prt-num">'+esc(p.uses||0)+'</td>'
+    +'<td class="prt-num">'+prtMoney(p.gross)+'</td>'
+    +'<td class="prt-num">'+prtMoney(p.owed)+'</td>'
+    +'<td class="muted">'+prtWhen(p.endsAt)+'</td>'
+    +'<td class="prt-actions-cell"><button class="ghost prt-menu-btn" type="button" data-prt-menu="v'+esc(p.voucherId)+'">Actions</button><div class="prt-menu-src" hidden>'+items+'</div></td>'
+    +'</tr>';
 }
-// Trial-code queue rows: qualified applicants parked from the Inbox. Issue is
+// The floating Actions menu: one panel, repopulated per row on open. Closes on
+// outside click, Escape, scroll, or reload; clicking inside never auto-closes,
+// so a two-click armed action can ask and confirm without the menu vanishing.
+var __prtMenuKey=null;
+function prtCloseMenu(){
+  var m=el('prt-float-menu'); if(!m) return;
+  m.hidden=true; m.innerHTML=''; __prtMenuKey=null;
+}
+function prtToggleMenu(btn){
+  var m=el('prt-float-menu'); if(!m) return;
+  var key=btn.getAttribute('data-prt-menu');
+  if(__prtMenuKey===key&&!m.hidden){ prtCloseMenu(); return; }
+  var src=btn.parentNode?btn.parentNode.querySelector('.prt-menu-src'):null;
+  if(!src) return;
+  m.innerHTML=src.innerHTML;
+  m.hidden=false;
+  __prtMenuKey=key;
+  var rect=btn.getBoundingClientRect();
+  m.style.top=(rect.bottom+4)+'px';
+  m.style.left='auto';
+  m.style.right=Math.max(8,document.documentElement.clientWidth-rect.right)+'px';
+}
+// The "?" info popover: the long how-it-works prose lives in hidden divs in the
+// view; the popover shows one of them on demand (server-authored HTML only).
+function openPartnerInfo(btn){
+  var src=el(btn.getAttribute('data-prt-help')||''); var ov=el('prt-info-overlay');
+  if(!src||!ov) return;
+  var tt=el('prt-info-title'); if(tt) tt.textContent=btn.getAttribute('data-prt-help-title')||'How this works';
+  var body=el('prt-info-body'); if(body){ body.innerHTML=src.innerHTML; body.scrollTop=0; }
+  ov.hidden=false; window.__modalOpen=true;
+}
+function closePartnerInfo(){
+  var ov=el('prt-info-overlay');
+  if(ov) ov.hidden=true;
+  window.__modalOpen=false;
+}
+// Trial-code queue table: qualified applicants parked from the Inbox. Issue is
 // the one-click flow on the programme's standard terms; issuing moves them
-// into the voucher rows below and stages the code invite on their thread.
+// into the voucher table below and stages the code invite on their thread.
 function prtQueueHtml(queued){
   if(!queued||!queued.length) return '';
-  var h='<div class="prt-queue"><h3>Waiting for a code ('+queued.length+')</h3>'
-    +'<p class="muted" style="margin:0 0 6px;font-size:12px">Added from the Inbox. Issue when you are ready: the code is created in Shopify on the standard terms (5% off, 2% commission, 30 days) and the invite email is staged on their thread for your approval.</p>';
+  var rows='';
   for(var i=0;i<queued.length;i++){
     var q=queued[i];
-    h+='<div class="prt-row"><div class="prt-head"><span class="prt-who">'+esc(q.name||q.email)+'</span>'
-      +(q.name?'<span class="prt-mail">'+esc(q.email)+'</span>':'')
-      +'<span class="prt-chip prt-expired">waiting for a code</span>'
-      +(q.marketingConsent?prtChipHtml('updates: opted in','prt-live'):'')
-      +'<span class="prt-time">queued '+prtWhen(q.queuedAt)+'</span></div>'
-      +'<div class="prt-actions">'
-      +'<button type="button" data-prt-issueq="'+esc(q.email)+'" data-prt-issueq-name="'+esc(q.name||'')+'">Issue code now</button>'
-      +'<button class="ghost" type="button" data-prt-unqueue="'+esc(q.partnerId)+'">Remove</button>'
+    var items='<button type="button" data-prt-issueq="'+esc(q.email)+'" data-prt-issueq-name="'+esc(q.name||'')+'">Issue code now</button>'
+      +'<button type="button" data-prt-unqueue="'+esc(q.partnerId)+'">Remove from queue</button>'
       +(q.marketingConsent
-        ?'<button class="ghost" type="button" data-prt-consent="'+esc(q.partnerId)+'" data-prt-consent-on="0">Remove updates opt-in</button>'
-        :'<button class="ghost" type="button" data-prt-consent="'+esc(q.partnerId)+'" data-prt-consent-on="1">Mark updates opt-in</button>')
-      +'</div></div>';
+        ?'<button type="button" data-prt-consent="'+esc(q.partnerId)+'" data-prt-consent-on="0">Remove updates opt-in</button>'
+        :'<button type="button" data-prt-consent="'+esc(q.partnerId)+'" data-prt-consent-on="1">Mark updates opt-in</button>');
+    rows+='<tr>'
+      +'<td class="prt-cell-who"><span class="prt-who">'+esc(q.name||q.email)+'</span>'+(q.name?'<span class="prt-mail">'+esc(q.email)+'</span>':'')+'</td>'
+      +'<td class="muted">'+prtWhen(q.queuedAt)+'</td>'
+      +'<td>'+(q.marketingConsent?prtChipHtml('updates: opted in','prt-live'):'<span class="muted">no opt-in</span>')+'</td>'
+      +'<td class="prt-actions-cell"><button class="ghost prt-menu-btn" type="button" data-prt-menu="q'+esc(q.partnerId)+'">Actions</button><div class="prt-menu-src" hidden>'+items+'</div></td>'
+      +'</tr>';
   }
-  return h+'</div>';
+  return '<div class="prt-queue"><h3>Waiting for a code ('+queued.length+')</h3>'
+    +'<p class="muted" style="margin:0 0 6px;font-size:12px">Added from the Inbox. Issue when you are ready: standard terms (5% off, 2% commission, 30 days), with the invite email staged on their thread for your approval.</p>'
+    +'<div class="prt-tablewrap"><table class="prt-table"><thead><tr><th>Partner</th><th>Queued</th><th>Updates</th><th aria-label="Actions"></th></tr></thead><tbody>'+rows+'</tbody></table></div></div>';
 }
 async function loadPartners(){
   try{
     var r=await api('/partners',{});
     if(!r.ok){ setMsg('prt-msg','Failed: '+(r.error||'unknown error'),'no'); return; }
     var box=el('prt-list'); if(!box) return;
+    prtCloseMenu(); // an open menu would reference rows about to be replaced
     var live={};
     for(var i=0;i<r.partners.length;i++){ if(r.partners[i].status==='live') live[r.partners[i].partnerId]=1; }
-    var h='';
-    for(var i=0;i<r.partners.length;i++) h+=prtRowHtml(r.partners[i],live);
-    box.innerHTML=(prtQueueHtml(r.queued)+h)||'<p class="muted">No partners yet. Create a discount code in Shopify admin, then register it below to start a trial.</p>';
+    var rows='';
+    for(var i=0;i<r.partners.length;i++) rows+=prtVoucherRowHtml(r.partners[i],live);
+    var table=rows
+      ?'<div class="prt-tablewrap"><table class="prt-table"><thead><tr><th>Partner</th><th>Code</th><th>Status</th><th>Terms</th><th class="prt-num">Orders</th><th class="prt-num">Gross</th><th class="prt-num">Owed</th><th>Ends</th><th aria-label="Actions"></th></tr></thead><tbody>'+rows+'</tbody></table></div>'
+      :'';
+    var h=prtQueueHtml(r.queued)+table;
+    box.innerHTML=(h||'<p class="muted">No partners yet. Create a discount code in Shopify admin, then register it below to start a trial.</p>')
+      +'<div id="prt-float-menu" class="prt-menu" hidden></div>';
   }catch(e){ setMsg('prt-msg','Could not load partners.','no'); }
 }
 // Promo/scope status line: shows what voucher timing will schedule around, and
@@ -250,11 +292,12 @@ function prtOrderRowHtml(o){
     +'<span class="prt-time">gross '+prtMoney(o.gross)+', discount '+prtMoney(o.discount)+', commission '+prtMoney(o.commission)+'</span>'
     +'</div>';
 }
-async function openPartnerOrders(voucherId,title){
+async function openPartnerOrders(voucherId,title,sub){
   try{
     var r=await api('/partners/orders',{voucherId:voucherId});
     if(!r.ok){ setMsg('prt-msg','Failed: '+(r.error||'unknown error'),'no'); return; }
     var t=el('prt-orders-title'); if(t) t.textContent=title||'Voucher orders';
+    var st=el('prt-orders-sub'); if(st) st.textContent=sub||'';
     var box=el('prt-orders');
     if(box){
       var h='';
@@ -275,8 +318,10 @@ function closePartnerOrders(){
   if(list) list.addEventListener('click',function(e){
     var t=e.target;
     if(!t||!t.getAttribute) return;
-    var vid=t.getAttribute('data-prt-orders');
-    if(vid){ openPartnerOrders(vid,t.getAttribute('data-prt-title')||''); return; }
+    var vid=t.getAttribute('data-prt-menu');
+    if(vid){ prtToggleMenu(t); return; }
+    vid=t.getAttribute('data-prt-orders');
+    if(vid){ prtCloseMenu(); openPartnerOrders(vid,t.getAttribute('data-prt-title')||'',t.getAttribute('data-prt-sub')||''); return; }
     vid=t.getAttribute('data-prt-revoke');
     if(vid&&prtArm(t,'Click again to revoke')) runVoucherAction(vid,'revoke','Revoked.');
     if(vid) return;
@@ -294,11 +339,27 @@ function closePartnerOrders(){
     vid=t.getAttribute('data-prt-unqueue');
     if(vid&&prtArm(t,'Click again to remove')) unqueuePartner(t);
   });
+  // The floating Actions menu is tooltip-like: it survives clicks inside itself
+  // (so armed actions can confirm) and closes on any outside click, Escape, or
+  // scroll (its fixed position would drift from the row otherwise).
+  document.addEventListener('click',function(e){
+    var t=e.target;
+    if(t&&t.closest&&(t.closest('#prt-float-menu')||t.closest('.prt-menu-btn'))) return;
+    prtCloseMenu();
+  });
+  window.addEventListener('scroll',function(){ prtCloseMenu(); },true);
   var ov=el('prt-overlay');
   if(ov) ov.addEventListener('click',function(e){ if(e.target===ov) closePartnerOrders(); });
+  var iov=el('prt-info-overlay');
+  if(iov) iov.addEventListener('click',function(e){ if(e.target===iov) closePartnerInfo(); });
   // Close on Escape when THIS overlay is visible (gate on visibility, not
   // window.__modalOpen: the Audit escape handler also fires and resets that).
-  window.addEventListener('keydown',function(e){ var o=el('prt-overlay'); if(e.key==='Escape'&&o&&!o.hidden) closePartnerOrders(); });
+  window.addEventListener('keydown',function(e){
+    if(e.key!=='Escape') return;
+    prtCloseMenu();
+    var o=el('prt-overlay'); if(o&&!o.hidden) closePartnerOrders();
+    var io=el('prt-info-overlay'); if(io&&!io.hidden) closePartnerInfo();
+  });
   var ends=el('prt-ends');
   if(ends&&!ends.value){ var d=new Date(Date.now()+30*86400000); ends.value=d.toISOString().slice(0,10); }
   loadDiscountStatus();

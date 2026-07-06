@@ -471,8 +471,27 @@ describe('consolePage', () => {
     expect(scripts).toContain("p.status!=='live'&&!live[p.partnerId]");
     // Armed like every other consequential button (it creates a real code).
     expect(scripts).toContain('Click again to reissue');
-    // The actions row wraps on narrow screens instead of clipping buttons.
-    expect(html).toContain('.prt-actions{display:flex;flex-wrap:wrap');
+  });
+
+  // --- Partners table redesign (2026-07-06): rows scale to 100+ partners ---
+
+  it('Partners renders as tables with a per-row Actions menu and info popovers', async () => {
+    const html = await consolePage('test-api-key').text();
+    expect(html).toContain('.prt-table');
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+    expect(scripts).toContain('function prtVoucherRowHtml(');
+    expect(scripts).toContain('function prtToggleMenu(');
+    expect(scripts).toContain('prt-float-menu');
+    // The menu is a single fixed-position panel so the table's overflow-x
+    // wrapper cannot clip it, and it survives clicks inside itself so armed
+    // actions can ask-and-confirm without the menu vanishing.
+    expect(html).toContain('.prt-menu{position:fixed');
+    expect(scripts).toContain("t.closest('#prt-float-menu')");
+    // Long how-it-works prose lives in hidden divs opened as an info popover.
+    expect(html).toContain('data-prt-help="prt-help-list"');
+    expect(html).toContain('data-prt-help="prt-help-issue"');
+    expect(html).toContain('id="prt-info-overlay"');
+    expect(scripts).toContain('function openPartnerInfo(');
   });
 
   // --- Trial code queue (2026-07-06): qualify in the Inbox, issue later ---
