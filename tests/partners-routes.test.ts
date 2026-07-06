@@ -87,7 +87,7 @@ describe('ledger roll-up + actions', () => {
     expect(before.lastOrderAt).toBe('2026-07-03T10:00:00Z');
 
     const mark = await partnerVoucherAction(env.DB, SHOP, voucherId, 'mark_paid');
-    expect(mark).toEqual({ ok: true, ordersCovered: 2 }); // the £0-commission refund is not "covered"
+    expect(mark).toMatchObject({ ok: true, ordersCovered: 2, amount: 3 }); // the £0-commission refund is not "covered"
     const after = (await getPartners(env.DB, SHOP)).partners[0];
     expect(after.owed).toBe(0);
     expect(after.paid).toBe(3);

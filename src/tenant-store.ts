@@ -116,7 +116,7 @@ export interface AffiliateOrderRow {
   shopify_order_id: string; order_name: string | null;
   gross_gbp: number; discount_gbp: number; commission_gbp: number;
   financial_status: string | null; eligible: number;
-  placed_at: string | null; paid_out_at: string | null;
+  placed_at: string | null; paid_out_at: string | null; payout_id: string | null;
 }
 
 /** Voucher fields the attribution sweep needs for code matching. */
@@ -1568,7 +1568,7 @@ export class TenantStore {
         `SELECT v.id AS voucher_id, v.code, v.pct_off, v.commission_pct, v.starts_at, v.ends_at, v.status, v.created_at,
                 p.id AS partner_id, p.contact_email, p.name, p.channel_url, p.notes, p.marketing_consent,
                 COALESCE(o.uses, 0) AS uses, COALESCE(o.gross, 0) AS gross, COALESCE(o.discount, 0) AS discount,
-                COALESCE(o.owed, 0) AS owed, COALESCE(o.paid, 0) AS paid, o.last_order_at
+                COALESCE(o.owed, 0) AS owed, COALESCE(po.paid, 0) AS paid, o.last_order_at
          FROM affiliate_vouchers v
          JOIN affiliate_partners p ON p.shop = v.shop AND p.id = v.partner_id
          LEFT JOIN (
@@ -1577,10 +1577,16 @@ export class TenantStore {
                   SUM(CASE WHEN eligible = 1 THEN gross_gbp ELSE 0 END) AS gross,
                   SUM(CASE WHEN eligible = 1 THEN discount_gbp ELSE 0 END) AS discount,
                   SUM(CASE WHEN paid_out_at IS NULL THEN commission_gbp ELSE 0 END) AS owed,
-                  SUM(CASE WHEN paid_out_at IS NOT NULL THEN commission_gbp ELSE 0 END) AS paid,
                   MAX(placed_at) AS last_order_at
            FROM affiliate_orders WHERE shop = ?1 GROUP BY voucher_id
          ) o ON o.voucher_id = v.id
+         -- Paid = the frozen payout record (cash that really left), NOT the live
+         -- commission of stamped rows: a refund after a payout recomputes the
+         -- ledger but must never rewrite what was actually paid.
+         LEFT JOIN (
+           SELECT voucher_id, SUM(amount_gbp) AS paid
+           FROM affiliate_payouts WHERE shop = ?1 GROUP BY voucher_id
+         ) po ON po.voucher_id = v.id
          WHERE v.shop = ?1
          ORDER BY v.created_at DESC`
       )
@@ -1621,7 +1627,7 @@ export class TenantStore {
   async affiliateOrdersForVoucher(voucherId: string, limit = 100): Promise<AffiliateOrderRow[]> {
     const rs = await this.db
       .prepare(
-        `SELECT shopify_order_id, order_name, gross_gbp, discount_gbp, commission_gbp, financial_status, eligible, placed_at, paid_out_at
+        `SELECT shopify_order_id, order_name, gross_gbp, discount_gbp, commission_gbp, financial_status, eligible, placed_at, paid_out_at, payout_id
          FROM affiliate_orders WHERE shop = ?1 AND voucher_id = ?2
          ORDER BY placed_at DESC LIMIT ?3`
       )
@@ -1630,17 +1636,71 @@ export class TenantStore {
     return rs.results ?? [];
   }
 
-  /** Stamp every eligible unpaid commission row for the voucher as paid out.
-   *  Returns how many orders the payout covered. */
-  async markVoucherCommissionPaid(voucherId: string): Promise<number> {
-    const r = await this.db
+  /** Record a commission payout (2026-07-06, the accounting record): snapshot
+   *  every eligible unpaid commission row into an immutable affiliate_payouts
+   *  row (amount + per-order figures FROZEN at payout time), then stamp those
+   *  exact rows paid_out_at + payout_id. Later refunds still recompute the
+   *  live ledger honestly, but what was actually paid can never be rewritten.
+   *  Returns null when nothing is owed. */
+  async createAffiliatePayout(voucherId: string, opts?: { method?: string | null; reference?: string | null; note?: string | null }): Promise<{ payoutId: string; amount: number; ordersCovered: number; createdAt: string } | null> {
+    const rs = await this.db
       .prepare(
-        `UPDATE affiliate_orders SET paid_out_at = ?3
-         WHERE shop = ?1 AND voucher_id = ?2 AND paid_out_at IS NULL AND eligible = 1 AND commission_gbp > 0`
+        `SELECT shopify_order_id, order_name, placed_at, gross_gbp, discount_gbp, commission_gbp
+         FROM affiliate_orders
+         WHERE shop = ?1 AND voucher_id = ?2 AND paid_out_at IS NULL AND eligible = 1 AND commission_gbp > 0
+         ORDER BY placed_at ASC`
       )
-      .bind(this.shop, voucherId, new Date().toISOString())
+      .bind(this.shop, voucherId)
+      .all<{ shopify_order_id: string; order_name: string | null; placed_at: string | null; gross_gbp: number; discount_gbp: number; commission_gbp: number }>();
+    const rows = rs.results ?? [];
+    if (!rows.length) return null;
+    const voucher = await this.db
+      .prepare(`SELECT partner_id FROM affiliate_vouchers WHERE shop = ?1 AND id = ?2`)
+      .bind(this.shop, voucherId).first<{ partner_id: string }>();
+    if (!voucher) return null;
+    const payoutId = crypto.randomUUID();
+    const now = new Date().toISOString();
+    const amount = Math.round(rows.reduce((s, r) => s + r.commission_gbp, 0) * 100) / 100;
+    const snapshot = rows.map((r) => ({
+      id: r.shopify_order_id, name: r.order_name, placedAt: r.placed_at,
+      gross: r.gross_gbp, discount: r.discount_gbp, commission: r.commission_gbp
+    }));
+    await this.db
+      .prepare(
+        `INSERT INTO affiliate_payouts (shop, id, voucher_id, partner_id, amount_gbp, orders_count, method, reference, note, orders_json, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)`
+      )
+      .bind(this.shop, payoutId, voucherId, voucher.partner_id, amount, rows.length,
+        opts?.method?.trim() || null, opts?.reference?.trim() || null, opts?.note?.trim() || null,
+        JSON.stringify(snapshot), now)
       .run();
-    return r.meta.changes ?? 0;
+    // Stamp exactly the snapshotted rows (by id, chunked under D1's bind cap),
+    // never a re-run of the WHERE - an order landing between the read and this
+    // write must fall into the NEXT payout, not into this one unrecorded.
+    for (let i = 0; i < rows.length; i += 60) {
+      const chunk = rows.slice(i, i + 60);
+      const marks = chunk.map((_, j) => `?${j + 5}`).join(', ');
+      await this.db
+        .prepare(
+          `UPDATE affiliate_orders SET paid_out_at = ?3, payout_id = ?4
+           WHERE shop = ?1 AND voucher_id = ?2 AND paid_out_at IS NULL AND shopify_order_id IN (${marks})`
+        )
+        .bind(this.shop, voucherId, now, payoutId, ...chunk.map((r) => r.shopify_order_id))
+        .run();
+    }
+    return { payoutId, amount, ordersCovered: rows.length, createdAt: now };
+  }
+
+  /** Payout history for one voucher, newest first (statement data included). */
+  async listAffiliatePayouts(voucherId: string): Promise<{ id: string; amount_gbp: number; orders_count: number; method: string | null; reference: string | null; note: string | null; orders_json: string; created_at: string }[]> {
+    const rs = await this.db
+      .prepare(
+        `SELECT id, amount_gbp, orders_count, method, reference, note, orders_json, created_at
+         FROM affiliate_payouts WHERE shop = ?1 AND voucher_id = ?2 ORDER BY created_at DESC`
+      )
+      .bind(this.shop, voucherId)
+      .all<{ id: string; amount_gbp: number; orders_count: number; method: string | null; reference: string | null; note: string | null; orders_json: string; created_at: string }>();
+    return rs.results ?? [];
   }
 
   async setAffiliateVoucherStatus(voucherId: string, status: 'live' | 'revoked'): Promise<void> {

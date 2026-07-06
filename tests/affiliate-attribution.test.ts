@@ -108,7 +108,7 @@ describe('attributeAffiliateOrders', () => {
     const { store, voucherId } = await seedVoucher(2);
     const first = adminReturning([[orderNode()]]);
     await attributeAffiliateOrders(store, first.admin);
-    expect((await store.markVoucherCommissionPaid(voucherId))).toBe(1);
+    expect((await store.createAffiliatePayout(voucherId))?.ordersCovered).toBe(1);
 
     // The refund re-surfaces the order with a newer updated_at and zeroed
     // CURRENT amounts; the re-upsert must zero commission but keep paid_out_at.

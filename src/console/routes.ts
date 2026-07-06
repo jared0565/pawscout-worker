@@ -283,8 +283,13 @@ export async function createPartner(db: D1Database, shop: string, reg: import('.
 
 /** Owner actions on one voucher: revoke (stop honouring it here; the code must
  *  ALSO be disabled in Shopify admin, which the console reminds them to do) or
- *  mark the outstanding commission as paid out. */
-export async function partnerVoucherAction(db: D1Database, shop: string, voucherId: unknown, action: unknown) {
+ *  record the outstanding commission as paid out. mark_paid writes the
+ *  immutable payout record (amount + covered orders frozen, method/reference
+ *  for the real-world transaction) - the accounting document. */
+export async function partnerVoucherAction(
+  db: D1Database, shop: string, voucherId: unknown, action: unknown,
+  payout?: { method?: unknown; reference?: unknown; note?: unknown }
+) {
   if (typeof voucherId !== 'string' || !voucherId.trim()) return { ok: false as const, error: 'voucherId required' };
   const store = new TenantStore(db, shop);
   if (action === 'revoke') {
@@ -292,8 +297,12 @@ export async function partnerVoucherAction(db: D1Database, shop: string, voucher
     return { ok: true as const };
   }
   if (action === 'mark_paid') {
-    const n = await store.markVoucherCommissionPaid(voucherId);
-    return { ok: true as const, ordersCovered: n };
+    const str = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim().slice(0, 200) : null);
+    const p = await store.createAffiliatePayout(voucherId, {
+      method: str(payout?.method), reference: str(payout?.reference), note: str(payout?.note)
+    });
+    if (!p) return { ok: false as const, error: 'Nothing is owed on this voucher' };
+    return { ok: true as const, ordersCovered: p.ordersCovered, payoutId: p.payoutId, amount: p.amount, createdAt: p.createdAt };
   }
   return { ok: false as const, error: 'action must be revoke or mark_paid' };
 }
@@ -306,19 +315,30 @@ export async function removeQueuedPartner(db: D1Database, shop: string, partnerI
   return removed ? { ok: true as const } : { ok: false as const, error: 'Not in the queue' };
 }
 
-/** Ledger drill-down: the attributed orders behind one voucher's numbers. */
+/** Ledger drill-down: the attributed orders behind one voucher's numbers, plus
+ *  the payout history (with the frozen per-order statement data). */
 export async function getPartnerOrders(db: D1Database, shop: string, voucherId: unknown) {
   if (typeof voucherId !== 'string' || !voucherId.trim()) return { ok: false as const, error: 'voucherId required' };
   const store = new TenantStore(db, shop);
   const rows = await store.affiliateOrdersForVoucher(voucherId);
+  const payouts = await store.listAffiliatePayouts(voucherId);
   return {
     ok: true as const,
     orders: rows.map((o) => ({
       id: o.shopify_order_id, name: o.order_name ?? null,
       gross: o.gross_gbp, discount: o.discount_gbp, commission: o.commission_gbp,
       financialStatus: o.financial_status ?? null, eligible: o.eligible === 1,
-      placedAt: o.placed_at ?? null, paidOutAt: o.paid_out_at ?? null
-    }))
+      placedAt: o.placed_at ?? null, paidOutAt: o.paid_out_at ?? null, payoutId: o.payout_id ?? null
+    })),
+    payouts: payouts.map((p) => {
+      let orders: unknown[] = [];
+      try { orders = JSON.parse(p.orders_json); } catch { /* statement lost, row still shows */ }
+      return {
+        payoutId: p.id, amount: p.amount_gbp, ordersCount: p.orders_count,
+        method: p.method ?? null, reference: p.reference ?? null, note: p.note ?? null,
+        createdAt: p.created_at, orders
+      };
+    })
   };
 }
 

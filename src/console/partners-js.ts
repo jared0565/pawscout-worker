@@ -29,7 +29,7 @@ function prtVoucherRowHtml(p,live){
   var title=(p.name||p.email)+' · '+p.code;
   var sub='Discount given '+prtMoney(p.discount)+' · Paid out '+prtMoney(p.paid)+(p.lastOrderAt?(' · Last order '+prtWhen(p.lastOrderAt)):'');
   var items='<button type="button" data-prt-orders="'+esc(p.voucherId)+'" data-prt-title="'+esc(title)+'" data-prt-sub="'+esc(sub)+'">Orders</button>';
-  if(p.owed>0) items+='<button type="button" data-prt-paid="'+esc(p.voucherId)+'">Mark commission paid ('+prtMoney(p.owed)+')</button>';
+  if(p.owed>0) items+='<button type="button" data-prt-paid="'+esc(p.voucherId)+'" data-prt-title="'+esc(title)+'" data-prt-owed="'+prtMoney(p.owed)+'">Mark commission paid ('+prtMoney(p.owed)+')</button>';
   if(p.status==='live') items+='<button type="button" data-prt-revoke="'+esc(p.voucherId)+'">Revoke</button>';
   // One-click reissue on a finished row: same partner, same terms, fresh code
   // through the normal issue flow (promo-aware timing, invite staged in the
@@ -282,7 +282,99 @@ async function setPartnerConsent(partnerId,on){
     loadPartners();
   }catch(e){ setMsg('prt-msg','Action failed.','no'); }
 }
+// --- Payout recording (2026-07-06): the accounting record. The menu item
+// opens this modal instead of firing directly - a payout deserves a method and
+// a transaction reference, and the armed Record button is the deliberate step.
+var __prtPayoutVoucher=null;
+function prtOpenPayout(btn){
+  __prtPayoutVoucher=btn.getAttribute('data-prt-paid');
+  var owed=btn.getAttribute('data-prt-owed')||'';
+  var sub=el('prt-payout-sub'); if(sub) sub.textContent=(btn.getAttribute('data-prt-title')||'')+' · owed '+owed;
+  var b=el('prt-payout-btn'); if(b){ b.disabled=false; b.textContent='Record payout of '+owed; }
+  setMsg('prt-payout-msg','','muted');
+  var ov=el('prt-payout-overlay'); if(ov){ ov.hidden=false; window.__modalOpen=true; }
+}
+function closePartnerPayout(){
+  var ov=el('prt-payout-overlay');
+  if(ov) ov.hidden=true;
+  window.__modalOpen=false;
+}
+async function recordPartnerPayout(btn){
+  if(!__prtPayoutVoucher) return;
+  if(!prtArm(btn,'Click again to record')) return;
+  btn.disabled=true;
+  setMsg('prt-payout-msg','Recording the payout…','muted');
+  try{
+    var body={voucherId:__prtPayoutVoucher,action:'mark_paid'};
+    var m=el('prt-payout-method').value.trim(); if(m) body.method=m;
+    var rf=el('prt-payout-ref').value.trim(); if(rf) body.reference=rf;
+    var r=await api('/partners/voucher',body);
+    if(!r.ok){ setMsg('prt-payout-msg','Failed: '+(r.error||'unknown error'),'no'); btn.disabled=false; return; }
+    setMsg('prt-payout-msg','Recorded '+prtMoney(r.amount)+' over '+r.ordersCovered+' orders. The statement is under Orders on their row (Statement CSV).','ok');
+    el('prt-payout-method').value=''; el('prt-payout-ref').value='';
+    loadPartners();
+  }catch(e){ setMsg('prt-payout-msg','Could not record the payout.','no'); btn.disabled=false; }
+}
+// --- CSV exports: statements for accounting and later disputes. Built client
+// side from the orders response (the payout figures inside it are the FROZEN
+// snapshot from payout time, not the live ledger).
+function prtCsvCell(v){
+  v=(v==null?'':String(v));
+  return (v.indexOf(',')>=0||v.indexOf('"')>=0||v.indexOf('\\n')>=0)?('"'+v.replace(/"/g,'""')+'"'):v;
+}
+function prtCsvDownload(name,rows){
+  var lines=[];
+  for(var i=0;i<rows.length;i++){
+    var cells=[];
+    for(var j=0;j<rows[i].length;j++) cells.push(prtCsvCell(rows[i][j]));
+    lines.push(cells.join(','));
+  }
+  var blob=new Blob([lines.join('\\r\\n')+'\\r\\n'],{type:'text/csv;charset=utf-8'});
+  var a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  a.download=name;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(function(){ URL.revokeObjectURL(a.href); a.remove(); },1000);
+}
+function prtStatementCsv(idx){
+  var d=__prtOrdersData; if(!d||!d.payouts||!d.payouts[idx]) return;
+  var p=d.payouts[idx];
+  var rows=[
+    ['Active Paw affiliate commission statement'],
+    ['Partner',d.title||''],
+    ['Payout id',p.payoutId],
+    ['Payout date',p.createdAt],
+    ['Method',p.method||''],
+    ['Reference',p.reference||''],
+    ['Orders covered',p.ordersCount],
+    ['Total paid (GBP)',(Number(p.amount)||0).toFixed(2)],
+    [],
+    ['Order','Placed','Gross (GBP)','Discount (GBP)','Commission (GBP)']
+  ];
+  for(var i=0;i<p.orders.length;i++){
+    var o=p.orders[i];
+    rows.push([o.name||o.id,o.placedAt||'',(Number(o.gross)||0).toFixed(2),(Number(o.discount)||0).toFixed(2),(Number(o.commission)||0).toFixed(2)]);
+  }
+  prtCsvDownload('payout-'+String(p.createdAt||'').slice(0,10)+'-'+String(p.payoutId).slice(0,8)+'.csv',rows);
+}
+function exportPartnerLedger(){
+  var d=__prtOrdersData; if(!d) return;
+  var rows=[
+    ['Active Paw affiliate ledger'],
+    ['Partner',d.title||''],
+    ['Exported',new Date().toISOString()],
+    [],
+    ['Order','Placed','Status','Counted','Gross (GBP)','Discount (GBP)','Commission (GBP)','Paid out at','Payout id']
+  ];
+  for(var i=0;i<d.orders.length;i++){
+    var o=d.orders[i];
+    rows.push([o.name||o.id,o.placedAt||'',o.financialStatus||'',o.eligible?'yes':'no',(Number(o.gross)||0).toFixed(2),(Number(o.discount)||0).toFixed(2),(Number(o.commission)||0).toFixed(2),o.paidOutAt||'',o.payoutId||'']);
+  }
+  prtCsvDownload('affiliate-ledger-'+new Date().toISOString().slice(0,10)+'.csv',rows);
+}
 // --- Orders modal ---
+var __prtOrdersData=null; // last drill-down response, feeding the CSV exports
 function prtOrderRowHtml(o){
   var chips=o.eligible?prtChipHtml('counted','prt-live'):prtChipHtml((o.financialStatus||'not counted').toLowerCase(),'prt-expired');
   if(o.paidOutAt) chips+=prtChipHtml('paid out','prt-expired');
@@ -296,13 +388,30 @@ async function openPartnerOrders(voucherId,title,sub){
   try{
     var r=await api('/partners/orders',{voucherId:voucherId});
     if(!r.ok){ setMsg('prt-msg','Failed: '+(r.error||'unknown error'),'no'); return; }
+    __prtOrdersData={title:title||'',orders:r.orders||[],payouts:r.payouts||[]};
     var t=el('prt-orders-title'); if(t) t.textContent=title||'Voucher orders';
     var st=el('prt-orders-sub'); if(st) st.textContent=sub||'';
     var box=el('prt-orders');
     if(box){
+      // Payout history first: each entry is the frozen accounting record, with
+      // its statement one click away.
+      var ph='';
+      var pays=__prtOrdersData.payouts;
+      if(pays.length){
+        ph='<h3 style="font-size:12.5px;margin:10px 0 2px;color:var(--ink)">Payout history</h3>';
+        for(var k=0;k<pays.length;k++){
+          var p=pays[k];
+          ph+='<div class="prt-order-row"><strong>'+prtMoney(p.amount)+'</strong>'
+            +prtChipHtml(esc(p.ordersCount)+' orders','prt-expired')
+            +'<span class="muted">'+prtWhen(p.createdAt)+(p.method?(' · '+esc(p.method)):'')+(p.reference?(' · ref '+esc(p.reference)):'')+'</span>'
+            +'<span class="prt-time"><button class="ghost" type="button" data-prt-stmt="'+k+'">Statement CSV</button></span>'
+            +'</div>';
+        }
+        ph+='<h3 style="font-size:12.5px;margin:12px 0 2px;color:var(--ink)">Orders</h3>';
+      }
       var h='';
       for(var i=0;i<r.orders.length;i++) h+=prtOrderRowHtml(r.orders[i]);
-      box.innerHTML=h||'<p class="muted">No orders with this code yet.</p>';
+      box.innerHTML=ph+(h||'<p class="muted">No orders with this code yet.</p>');
       box.scrollTop=0;
     }
     var ov=el('prt-overlay'); if(ov){ ov.hidden=false; window.__modalOpen=true; }
@@ -331,8 +440,7 @@ function closePartnerOrders(){
     vid=t.getAttribute('data-prt-consent');
     if(vid){ setPartnerConsent(vid,t.getAttribute('data-prt-consent-on')==='1'); return; }
     vid=t.getAttribute('data-prt-paid');
-    if(vid&&prtArm(t,'Click again to confirm payout')) runVoucherAction(vid,'mark_paid','Commission marked as paid out.');
-    if(vid) return;
+    if(vid){ prtCloseMenu(); prtOpenPayout(t); return; }
     vid=t.getAttribute('data-prt-issueq');
     if(vid&&prtArm(t,'Click again to issue')) issueQueuedPartner(t);
     if(vid) return;
@@ -348,10 +456,20 @@ function closePartnerOrders(){
     prtCloseMenu();
   });
   window.addEventListener('scroll',function(){ prtCloseMenu(); },true);
+  // Statement buttons live inside the orders modal, outside the list delegation.
+  var ordbox=el('prt-orders');
+  if(ordbox) ordbox.addEventListener('click',function(e){
+    var t=e.target;
+    if(!t||!t.getAttribute) return;
+    var idx=t.getAttribute('data-prt-stmt');
+    if(idx!=null) prtStatementCsv(Number(idx));
+  });
   var ov=el('prt-overlay');
   if(ov) ov.addEventListener('click',function(e){ if(e.target===ov) closePartnerOrders(); });
   var iov=el('prt-info-overlay');
   if(iov) iov.addEventListener('click',function(e){ if(e.target===iov) closePartnerInfo(); });
+  var pov=el('prt-payout-overlay');
+  if(pov) pov.addEventListener('click',function(e){ if(e.target===pov) closePartnerPayout(); });
   // Close on Escape when THIS overlay is visible (gate on visibility, not
   // window.__modalOpen: the Audit escape handler also fires and resets that).
   window.addEventListener('keydown',function(e){
@@ -359,6 +477,7 @@ function closePartnerOrders(){
     prtCloseMenu();
     var o=el('prt-overlay'); if(o&&!o.hidden) closePartnerOrders();
     var io=el('prt-info-overlay'); if(io&&!io.hidden) closePartnerInfo();
+    var po=el('prt-payout-overlay'); if(po&&!po.hidden) closePartnerPayout();
   });
   var ends=el('prt-ends');
   if(ends&&!ends.value){ var d=new Date(Date.now()+30*86400000); ends.value=d.toISOString().slice(0,10); }

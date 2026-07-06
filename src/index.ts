@@ -147,9 +147,10 @@ app.post('/api/partners/create', async (c) => {
 });
 app.post('/api/partners/voucher', async (c) => {
   const s = await shopOf(c); if (typeof s !== 'string') return s;
-  let body: { voucherId?: string; action?: string } = {};
+  let body: { voucherId?: string; action?: string; method?: unknown; reference?: unknown; note?: unknown } = {};
   try { body = await c.req.json(); } catch {}
-  const r = await partnerVoucherAction(c.env.DB, s, body.voucherId, body.action);
+  const r = await partnerVoucherAction(c.env.DB, s, body.voucherId, body.action,
+    { method: body.method, reference: body.reference, note: body.note });
   // Revoke now really turns the code off in Shopify too (write_discounts,
   // 2026-07-05). Best-effort: the ledger revocation above already succeeded;
   // a Shopify failure is reported so the owner knows to disable it by hand.

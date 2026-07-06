@@ -531,6 +531,24 @@ describe('consolePage', () => {
     expect(scripts).toContain('Click again to issue');
   });
 
+  // --- Commission payout records (2026-07-06): accounting documentation ---
+
+  it('payouts are recorded through a modal and documented with exportable statements', async () => {
+    const html = await consolePage('test-api-key').text();
+    expect(html).toContain('id="prt-payout-overlay"');
+    expect(html).toContain('id="prt-payout-method"');
+    expect(html).toContain('id="prt-payout-ref"');
+    expect(html).toContain('Ledger CSV');
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+    expect(scripts).toContain('function recordPartnerPayout(');
+    expect(scripts).toContain('function prtStatementCsv(');
+    expect(scripts).toContain('function exportPartnerLedger(');
+    expect(scripts).toContain('function prtCsvDownload(');
+    // Statement rows come from the FROZEN payout snapshot, not the live ledger.
+    expect(scripts).toContain('Payout history');
+    expect(scripts).toContain('data-prt-stmt=');
+  });
+
   it('the rail badge re-syncs from every inbox list load (stale-badge fix)', async () => {
     const html = await consolePage('test-api-key').text();
     const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
@@ -573,7 +591,9 @@ describe('consolePage', () => {
     expect(prtBlock.length).toBeGreaterThan(0);
     expect(prtBlock).not.toContain('window.confirm');
     expect(scripts).toContain('Click again to revoke');
-    expect(scripts).toContain('Click again to confirm payout');
+    // Mark-paid opens the payout-record modal; its Record button is armed.
+    expect(scripts).toContain('function prtOpenPayout(');
+    expect(scripts).toContain('Click again to record');
     // Revoke really deactivates the code in Shopify (write_discounts); when
     // Shopify does not confirm, the message tells the owner the manual step.
     expect(scripts).toContain('deactivated in Shopify too');

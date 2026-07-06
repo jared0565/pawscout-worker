@@ -12,7 +12,7 @@
 export const partnersView = `  <section class="card">
     <h2>Partners <button type="button" class="prt-info" onclick="openPartnerInfo(this)" data-prt-help="prt-help-list" data-prt-help-title="How the partner list works" aria-label="How the partner list works">?</button></h2>
     <div id="prt-help-list" hidden>
-      <p>Each row is one voucher you issued to a collaborator. Sales figures come from real Shopify orders placed with the code, refreshed about every 15 minutes. Gross is the face value of the goods before the discount, excluding shipping; commission is calculated on that gross for paid orders only, and refunded orders drop out automatically. Open Orders from a row's Actions menu to see every order behind its numbers, the discount given and what has been paid out.</p>
+      <p>Each row is one voucher you issued to a collaborator. Sales figures come from real Shopify orders placed with the code, refreshed about every 15 minutes. Gross is the face value of the goods before the discount, excluding shipping; commission is calculated on that gross for paid orders only, and refunded orders drop out automatically. Open Orders from a row's Actions menu to see every order behind its numbers, the payout history with per-payout statements (Statement CSV), and the full Ledger CSV export for accounting.</p>
       <p>Revoking a voucher also deactivates the code in Shopify, so it stops working at checkout immediately; if Shopify cannot be reached the message will tell you to disable it by hand. A revoked or expired row offers Reissue: one click starts a fresh code for the same partner on the same terms, with the invite staged in the Inbox when they have a conversation there.</p>
       <p>People you add to the trial code queue from the Inbox appear in their own table as "waiting for a code" until you issue or remove them, so nobody you qualified gets forgotten. "Mark updates opt-in" adds a partner to the Campaigns audience: only flip it after they have themselves said yes to receiving partner updates, never just because they wrote to us. The same switch also sits in the Inbox on their thread's Partnership panel, so you can record the yes the moment you read it; queued partners count in the audience too.</p>
     </div>
@@ -78,9 +78,41 @@ export const partnersView = `  <section class="card">
           <div id="prt-orders-title" class="prt-who"></div>
           <div id="prt-orders-sub" class="muted" style="font-size:12px"></div>
         </div>
-        <button class="ghost" type="button" onclick="closePartnerOrders()">Close</button>
+        <div style="display:flex;gap:8px">
+          <button class="ghost" type="button" onclick="exportPartnerLedger()">Ledger CSV</button>
+          <button class="ghost" type="button" onclick="closePartnerOrders()">Close</button>
+        </div>
       </div>
       <div id="prt-orders" class="prt-orders"></div>
+    </div>
+  </div>
+
+  <div id="prt-payout-overlay" class="prt-overlay" hidden>
+    <div class="prt-modal prt-modal--info" role="dialog" aria-label="Record a commission payout">
+      <div class="prt-modal-head">
+        <div>
+          <div class="prt-who">Record a commission payout</div>
+          <div id="prt-payout-sub" class="muted" style="font-size:12px"></div>
+        </div>
+        <button class="ghost" type="button" onclick="closePartnerPayout()">Close</button>
+      </div>
+      <div class="prt-info-body">
+        <p style="margin:0 0 10px">Pay the partner yourself first (PayPal, bank transfer), then record it here. The amount and the exact orders covered are frozen into a payout record - the accounting document for later, exportable as a statement from the row's Orders view.</p>
+        <div class="row">
+          <div class="grow">
+            <label for="prt-payout-method">Method</label>
+            <input id="prt-payout-method" type="text" maxlength="60" placeholder="PayPal">
+          </div>
+          <div class="grow">
+            <label for="prt-payout-ref">Reference</label>
+            <input id="prt-payout-ref" type="text" maxlength="120" placeholder="Transaction id">
+          </div>
+        </div>
+        <div class="row" style="align-items:center;margin-top:6px">
+          <button type="button" id="prt-payout-btn" onclick="recordPartnerPayout(this)">Record payout</button>
+        </div>
+        <p id="prt-payout-msg" class="msg muted"></p>
+      </div>
     </div>
   </div>
 
