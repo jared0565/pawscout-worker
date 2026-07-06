@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>PawScout + Active Paw - Product User Guide</title>
+<style>
+  @page { size: A4; margin: 18mm 16mm 20mm 16mm; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: "Segoe UI", Inter, system-ui, sans-serif; color: #101820; font-size: 10.5pt; line-height: 1.55; }
+  h1 { font-size: 24pt; margin: 0 0 4pt; letter-spacing: -0.5pt; }
+  h2 { font-size: 15pt; margin: 20pt 0 7pt; border-bottom: 2px solid #f05a28; padding-bottom: 3pt; page-break-after: avoid; }
+  h2 .num { color: #f05a28; margin-right: 6pt; }
+  h3 { font-size: 11.5pt; margin: 12pt 0 4pt; color: #ba3d1a; page-break-after: avoid; }
+  p { margin: 0 0 7pt; }
+  ul, ol { margin: 0 0 8pt; padding-left: 18pt; }
+  li { margin-bottom: 3pt; }
+  .cover { text-align: center; padding-top: 110pt; page-break-after: always; }
+  .cover .logo { width: 110pt; height: 110pt; margin: 0 auto 22pt; }
+  .cover .doc-type { display: inline-block; margin-top: 14pt; padding: 5pt 16pt; border: 1.5pt solid #f05a28; border-radius: 999pt; color: #ba3d1a; font-weight: 600; font-size: 11pt; }
+  .cover .sub { color: #5d6670; font-size: 12pt; margin-top: 8pt; }
+  .cover .meta { color: #8b949e; font-size: 9.5pt; margin-top: 70pt; }
+  .toc { page-break-after: always; }
+  .toc h2 { border: 0; }
+  .toc ol { list-style: none; padding: 0; font-size: 11pt; }
+  .toc li { padding: 4pt 0; border-bottom: 0.5pt dotted #ded8cf; }
+  .toc .n { display: inline-block; width: 22pt; color: #f05a28; font-weight: 700; }
+  table { width: 100%; border-collapse: collapse; margin: 6pt 0 10pt; font-size: 9.5pt; page-break-inside: avoid; }
+  th { text-align: left; background: #101820; color: #fff; padding: 5pt 8pt; font-size: 9pt; }
+  td { padding: 5pt 8pt; border-bottom: 0.5pt solid #ded8cf; vertical-align: top; }
+  .note { background: #f7f4ef; border-left: 3pt solid #f05a28; padding: 7pt 10pt; font-size: 9.5pt; color: #333d47; margin: 8pt 0; page-break-inside: avoid; }
+  .warn { background: #fdecea; border-left: 3pt solid #ba3d1a; padding: 7pt 10pt; font-size: 9.5pt; color: #6b2015; margin: 8pt 0; page-break-inside: avoid; }
+  .steps li { margin-bottom: 6pt; }
+  .kbd { display: inline-block; border: 0.5pt solid #8b949e; border-radius: 3pt; padding: 0 4pt; font-family: Consolas, monospace; font-size: 9pt; background: #f7f4ef; }
+  .arch { display: flex; gap: 8pt; margin: 10pt 0; page-break-inside: avoid; }
+  .arch .box { flex: 1; border: 1pt solid #ded8cf; border-radius: 8pt; padding: 8pt 10pt; text-align: center; font-size: 9pt; }
+  .arch .box strong { display: block; font-size: 10pt; margin-bottom: 3pt; }
+  .arch .hub { border: 1.5pt solid #f05a28; background: #fff8f5; }
+</style>
+</head>
+<body>
+
+<div class="cover">
+  <svg class="logo" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <radialGradient id="bg" cx="32%" cy="24%" r="95%">
+        <stop offset="0%" stop-color="#ff7a4e"/><stop offset="55%" stop-color="#f05a28"/><stop offset="100%" stop-color="#dd4a1a"/>
+      </radialGradient>
+    </defs>
+    <rect width="512" height="512" rx="115" fill="url(#bg)"/>
+    <g transform="translate(256 268) scale(4.35) translate(-48 -52)">
+      <path d="M36 31v-5a12 12 0 0 1 24 0v5" fill="none" stroke="#101820" stroke-width="6" stroke-linecap="round"/>
+      <path d="M30.5 29h35q2.2 0 2.5 2.2l5 46q.9 8.8-8 8.8H31q-8.9 0-8-8.8l5-46q.3-2.2 2.5-2.2Z" fill="#101820"/>
+      <g fill="#f05a28" stroke="#fffdf9" stroke-width="4.5" paint-order="stroke" transform="translate(53.5 60.5) scale(0.92) translate(-53.5 -60.5)">
+        <ellipse cx="36" cy="47" rx="6.3" ry="8.3" transform="rotate(-24 36 47)"/>
+        <ellipse cx="47" cy="40" rx="6.6" ry="8.8" transform="rotate(-8 47 40)"/>
+        <ellipse cx="60" cy="40.5" rx="6.6" ry="8.8" transform="rotate(8 60 40.5)"/>
+        <ellipse cx="71" cy="48" rx="6.3" ry="8.3" transform="rotate(24 71 48)"/>
+        <path d="M53.5 81C44.5 81 37.5 75.5 37.5 67.8 37.5 60 45 54.5 53.5 54.5 62 54.5 69.5 60 69.5 67.8 69.5 75.5 62.5 81 53.5 81Z"/>
+      </g>
+    </g>
+    <path d="M82 18l2 4.6 4.6 2-4.6 2-2 4.6-2-4.6-4.6-2 4.6-2Z" fill="#fffdf9" opacity="0.95" transform="translate(388 112) scale(2.9) translate(-84 -24.6)"/>
+  </svg>
+  <h1>PawScout + Active Paw</h1>
+  <p class="sub">Onboarding, installation and day-to-day operation</p>
+  <div class="doc-type">Product User Guide</div>
+  <p class="meta">Document version 1.0 &middot; July 2026<br>For new tenants of the PawScout platform</p>
+</div>
+
+<div class="toc">
+  <h2>Contents</h2>
+  <ol>
+    <li><span class="n">1</span> Welcome: what you are getting</li>
+    <li><span class="n">2</span> Requirements checklist</li>
+    <li><span class="n">3</span> Installation and onboarding</li>
+    <li><span class="n">4</span> First-day setup, step by step</li>
+    <li><span class="n">5</span> A tour of the console</li>
+    <li><span class="n">6</span> Running the store day to day</li>
+    <li><span class="n">7</span> Marketing: campaigns, partners and the welcome offer</li>
+    <li><span class="n">8</span> Your compliance responsibilities</li>
+    <li><span class="n">9</span> Data, security and what we store</li>
+    <li><span class="n">10</span> Troubleshooting and common questions</li>
+    <li><span class="n">11</span> Glossary</li>
+  </ol>
+</div>
+
+<h2><span class="num">1</span>Welcome: what you are getting</h2>
+<p>Your store runs on three connected pieces:</p>
+<div class="arch">
+  <div class="box"><strong>Active Paw storefront</strong>Your Shopify theme: the shop customers see, installable on their phones like an app.</div>
+  <div class="box hub"><strong>PawScout</strong>The operator: answers customer email, syncs stock and prices, computes delivery promises, runs marketing. Lives as an app inside your Shopify admin.</div>
+  <div class="box"><strong>Your supplier</strong>CJDropshipping: source of products, stock levels, warehouses and delivery routes.</div>
+</div>
+<p>PawScout's job is to make a one-person store operate like a staffed one. Customer email gets answered with drafts you approve (or, when you allow it, automatically). Stock, prices and delivery estimates refresh themselves nightly from supplier truth. Marketing is built so that following the law is the default, not an effort.</p>
+<p>One principle runs through everything and is worth knowing from day one: <strong>the platform only tells customers things it can verify</strong>. If a delivery time, a stock level or a business fact cannot be grounded in live data, the customer sees a safe, honest hedge instead. This protects your reputation and keeps you on the right side of consumer law without you having to police it.</p>
+
+<h2><span class="num">2</span>Requirements checklist</h2>
+<table>
+  <tr><th>You need</th><th>Details</th></tr>
+  <tr><td>A Shopify store</td><td>Any plan, including Basic. You need owner or full-permissions staff access to approve the app install.</td></tr>
+  <tr><td>A custom domain</td><td>Customer-facing email and the storefront should run on your own domain (for example <em>yourbrand.co.uk</em>), not the built-in <em>myshopify.com</em> address. You must be able to edit its DNS records (or delegate that to us during onboarding).</td></tr>
+  <tr><td>A CJDropshipping account</td><td>Free to create. You will generate an API key in CJ's developer settings and paste it into PawScout once, where it is stored encrypted.</td></tr>
+  <tr><td>An AI model key</td><td>PawScout's agents run on a mainstream AI provider under a key connected during onboarding, with a curated list of supported models to choose from in Settings.</td></tr>
+  <tr><td>An alert email address</td><td>A personal address where PawScout can reach you for urgent items and where your campaign test emails go.</td></tr>
+  <tr><td>About an hour</td><td>The guided onboarding below is a single sitting; most of it is approving things we have prepared.</td></tr>
+</table>
+<div class="note"><strong>What you do not need:</strong> servers, developer skills, or a mailbox provider for the support address. PawScout hosts the automation on managed edge infrastructure and provisions the support mailbox routing on your domain as part of onboarding.</div>
+
+<h2><span class="num">3</span>Installation and onboarding</h2>
+<p>Onboarding is white-glove: the PawScout team provisions the platform pieces and you approve each connection to your property. The sequence is:</p>
+<ol class="steps">
+  <li><strong>Install the PawScout app.</strong> You receive an install link for your store. Shopify shows the permissions the app needs (products, inventory, orders, draft orders, publications, shipping, markets and customer read access among them); approving completes the connection. No API keys change hands: Shopify's own managed-install token exchange authenticates the app.</li>
+  <li><strong>Install the Active Paw theme.</strong> The theme is pushed to your store as an unpublished theme first, so you can preview it against your real catalog before publishing. Brand name, logo, favicon and colours are set in Shopify's Theme Editor, no code involved.</li>
+  <li><strong>Wire your email domain.</strong> We provision sending and receiving on your domain (a handful of DNS records: verification, DKIM, routing). After this, support mail to your domain flows into the PawScout Inbox, and outbound mail is authenticated so it lands in inboxes rather than spam folders.</li>
+  <li><strong>Connect the supplier.</strong> In the console's Settings view, paste your CJDropshipping API key into <em>Connect CJ</em>. The key is sealed into the encrypted vault and verified with a live call.</li>
+  <li><strong>Seed the catalog.</strong> From the Catalog view, choose categories and import an initial product set. Imports arrive as drafts with AI-curated titles, descriptions and images for your review before publishing.</li>
+  <li><strong>Let the first nightly run complete.</strong> Overnight, the platform stamps stock, prices, delivery estimates and shipping profiles for everything imported. From then on it maintains itself.</li>
+</ol>
+
+<h2><span class="num">4</span>First-day setup, step by step</h2>
+<p>Everything below happens in the PawScout console (Apps &gt; PawScout inside your Shopify admin), mostly in the <strong>Settings</strong> view.</p>
+<h3>4.1 Connect CJ</h3>
+<p>Paste the API key from CJ's developer settings. The status line confirms the connection and the key disappears into the vault; it is never shown again.</p>
+<h3>4.2 Choose your AI models</h3>
+<p>The <em>AI models</em> card selects which model powers replies and which vision-capable model screens product images. The defaults are sensible; you can change them at any time without breaking anything.</p>
+<h3>4.3 Set the reply mode</h3>
+<p>The <em>Reply mode and per-agent auto-send</em> card is the most important switch in the product. Start in <strong>review mode</strong>: every customer email gets a drafted reply that waits for your one-click approval. As you watch categories perform, flip individual agents (order status is usually first) to auto-send. You stay in review mode for anything you have not explicitly automated.</p>
+<h3>4.4 Inbox settings</h3>
+<p>Set your <strong>alert email</strong> (urgent notifications, campaign tests) and your <strong>business postal address</strong>. The postal address appears in the small print of marketing email and is a legal requirement; campaigns will refuse to send until it is saved. Use a virtual office address if you do not want to publish your home address.</p>
+<h3>4.5 Storefront checks</h3>
+<ul>
+  <li>Open your store on a phone: you should see the install prompt offering to add the store to the home screen.</li>
+  <li>Add a product to the cart: the drawer should show delivery facts and one-tap add-on suggestions.</li>
+  <li>Check the footer: legal pages (privacy, returns, terms) are linked automatically from your Shopify policies.</li>
+</ul>
+<h3>4.6 Run the policy keeper</h3>
+<p>In Campaigns &gt; <em>Privacy policy wording</em>, click the check. If your privacy policy is missing the marketing-email disclosures (opt-in basis, engagement measurement, unsubscribe, business address), one click applies the recommended wording. Requires Shopify's automatic policy management to be off, so the text is yours to edit.</p>
+<h3>4.7 Turn on email analytics</h3>
+<p>In Campaigns &gt; <em>Email analytics</em>, click <em>Turn on tracking</em> once. From then on every email reports delivery, opens and clicks, and bad addresses are suppressed automatically.</p>
+
+<h2><span class="num">5</span>A tour of the console</h2>
+<p>Ten views, reachable from the left rail or the number keys <span class="kbd">1</span>-<span class="kbd">8</span>, <span class="kbd">9</span> for Settings, <span class="kbd">0</span> for Help.</p>
+<table>
+  <tr><th>View</th><th>What you do there</th></tr>
+  <tr><td><strong>Glance</strong></td><td>Start here each day: counts, the attention queue (what needs a human), recent automation activity, and health stamps for the scheduled jobs.</td></tr>
+  <tr><td><strong>Inbox</strong></td><td>Customer conversations. Open a thread, read the drafted reply, approve or regenerate it. Wholesale threads can become priced draft orders from here. The banner at the top always shows your current reply mode.</td></tr>
+  <tr><td><strong>Catalog</strong></td><td>Import products by category, watch the pipeline (draft, published, paused), and see pricing and stock decisions.</td></tr>
+  <tr><td><strong>Operations</strong></td><td>The order pipeline: what came in, what was pushed to the supplier, what is in transit.</td></tr>
+  <tr><td><strong>Audit</strong></td><td>The automation's decision log: what changed, when, and why. Your first stop when something looks surprising.</td></tr>
+  <tr><td><strong>Partners</strong></td><td>Affiliate applications, voucher issuance and revocation, per-partner order attribution, and each partner's marketing consent.</td></tr>
+  <tr><td><strong>Campaigns</strong></td><td>Compose and send broadcasts, watch per-campaign engagement, manage sender details and the policy keeper. Covered in section 7.</td></tr>
+  <tr><td><strong>Traffic</strong></td><td>Your acquisition strategy board: one row per channel with status, priority and a single next action. It arrives pre-seeded with a starter strategy.</td></tr>
+  <tr><td><strong>Settings</strong></td><td>Supplier connection, AI models, reply mode, inbox configuration.</td></tr>
+  <tr><td><strong>Help</strong></td><td>The built-in knowledge base. Everything in this guide, and more, lives there in searchable topic form.</td></tr>
+</table>
+
+<h2><span class="num">6</span>Running the store day to day</h2>
+<h3>What happens without you</h3>
+<ul>
+  <li><strong>Every night:</strong> stock levels sync from the supplier into Shopify, prices re-check against cost rules, delivery estimates restamp from the live logistics matrix, shipping profiles and market availability reconcile, and thin collections refill from the import pipeline.</li>
+  <li><strong>Every 15 minutes:</strong> new orders move through the pipeline, new email is classified and drafted, and any in-flight nightly work resumes.</li>
+  <li><strong>Continuously:</strong> email engagement events flow in; hard bounces and complaints go straight to the suppression list.</li>
+</ul>
+<h3>What needs you</h3>
+<ul>
+  <li><strong>The attention queue</strong> on Glance, and <strong>draft approvals</strong> in the Inbox. In review mode this is minutes per day: read, approve, occasionally edit.</li>
+  <li><strong>Campaign sends.</strong> Nothing broadcasts without your click, ever.</li>
+  <li><strong>Partner decisions.</strong> Approving applications and flipping marketing consent when a partner opts in.</li>
+  <li><strong>Catalog taste.</strong> Reviewing imported drafts before they publish keeps the shop's voice yours.</li>
+</ul>
+<div class="note"><strong>A good weekly rhythm:</strong> Monday, read Glance and the Audit view; midweek, review campaign metrics and partner performance; Friday, update the Traffic board's next actions from what the week's numbers said.</div>
+
+<h2><span class="num">7</span>Marketing: campaigns, partners and the welcome offer</h2>
+<h3>Campaigns</h3>
+<ol class="steps">
+  <li>Compose in plain text, pick the audience: <strong>buyers</strong> (customers who ticked the marketing opt-in at checkout, read live from Shopify at send time) or <strong>partners</strong> (collaborators with a recorded opt-in).</li>
+  <li><strong>Send yourself a test.</strong> It is the exact production email, unsubscribe link and all, with only the subject marked as a test.</li>
+  <li>Send, and confirm the second click. Sending proceeds in small batches with live progress.</li>
+  <li>While sending you can <strong>pause</strong> (instant, reversible; nobody is emailed twice on resume) or <strong>stop</strong> (final; the record of who received it stays). Drafts can be edited or discarded; finished campaigns duplicate into fresh drafts.</li>
+  <li>Watch delivered / opened / clicked on the campaign row once tracking is on. Clicks are the reliable signal; treat opens as a trend line.</li>
+</ol>
+<h3>Partners</h3>
+<p>Applications arrive as inbox threads and appear in the Partners view. Approving one issues a tracked voucher code; orders using it attribute to the partner automatically. Revoking a voucher deactivates its code immediately. Partners only join the campaigns audience after they have explicitly said yes to marketing, which the invitation asks them directly.</p>
+<h3>The welcome offer</h3>
+<p>The storefront's welcome modal offers a discount event with a real end date, obeys interstitial etiquette (never instantly on load, never twice), and applies the code for the customer so nobody fails to redeem it. Voucher issue and trial entries are automated behind deterministic gates.</p>
+
+<h2><span class="num">8</span>Your compliance responsibilities</h2>
+<p>The platform makes the mechanical parts of email and consumer law automatic, but three things remain yours:</p>
+<ul>
+  <li><strong>Register with the ICO</strong> (UK stores). As a business processing personal data you are expected to be registered with the Information Commissioner's Office; most small businesses pay a modest yearly fee.</li>
+  <li><strong>Keep your policies truthful.</strong> The policy keeper maintains the marketing disclosures, but returns windows, delivery promises and contact details in your policies should match how you actually operate. The defaults we provision do.</li>
+  <li><strong>Use a publishable postal address.</strong> The address in marketing footers and policies is public. A virtual office address is fine; decide deliberately.</li>
+</ul>
+<div class="warn"><strong>What the platform will refuse to do for you:</strong> email people who have not opted in, hide the unsubscribe link, send marketing without a postal address, claim stock or delivery times it cannot verify, or state a dispatch origin it cannot prove. These are not settings; they are how it is built.</div>
+
+<h2><span class="num">9</span>Data, security and what we store</h2>
+<ul>
+  <li><strong>Credentials</strong> (your supplier API key, tokens, webhook secrets) are sealed in an encrypted vault: a per-tenant data key, itself wrapped by a platform master key. They are never logged and never shown back to you after entry.</li>
+  <li><strong>Customer data</strong> is minimised. Marketing consent is read live from Shopify rather than copied, so an opt-out is effective immediately. The platform keeps conversation threads, an anonymised send ledger (which address received which campaign), engagement events, and the suppression list.</li>
+  <li><strong>Isolation:</strong> every record is scoped to your shop. Tenants cannot see each other's data.</li>
+  <li><strong>Infrastructure:</strong> managed edge hosting (Cloudflare Workers and D1) with scheduled jobs; no servers of yours, nothing to patch.</li>
+  <li><strong>Email authentication:</strong> your domain sends with proper verification (DKIM), which is both deliverability and anti-spoofing protection.</li>
+</ul>
+
+<h2><span class="num">10</span>Troubleshooting and common questions</h2>
+<table>
+  <tr><th>Symptom</th><th>What to check</th></tr>
+  <tr><td>Campaign will not send</td><td>Almost always the missing business postal address (Settings &gt; Inbox settings, or the Sender details card in Campaigns). The error message says exactly what is missing.</td></tr>
+  <tr><td>A reply draft looks wrong</td><td>Click regenerate on the thread; if the category keeps misfiring, leave that agent in review mode and tell us. Never edit-and-send something you would not say yourself.</td></tr>
+  <tr><td>Product shows "unavailable" unexpectedly</td><td>The supplier stock fell under the safety floor and the platform paused it. It recovers automatically when the supplier restocks; the Audit view shows the pause event.</td></tr>
+  <tr><td>Delivery estimate seems conservative</td><td>Estimates are processing plus door-to-door transit plus a small buffer, from live supplier data. A product not yet stamped shows a safe fallback until its first nightly sync.</td></tr>
+  <tr><td>Opens look low</td><td>Some mail apps block open tracking; clicks are the trustworthy number. Judge campaigns on clicks and orders.</td></tr>
+  <tr><td>The console looks stale</td><td>Reload the tab; the console is a live page inside Shopify admin. Job health stamps on Glance show when each scheduled task last completed.</td></tr>
+</table>
+<p><strong>Support:</strong> your onboarding contact remains your support channel. Include the shop domain and, where relevant, the campaign or thread you are looking at; the Audit view timestamp helps us find anything fast.</p>
+
+<h2><span class="num">11</span>Glossary</h2>
+<table>
+  <tr><td><strong>Agent</strong></td><td>A specialised AI responder for one category of customer email.</td></tr>
+  <tr><td><strong>Review mode / HITL</strong></td><td>Human-in-the-loop: drafts wait for your approval instead of sending automatically.</td></tr>
+  <tr><td><strong>Draft (campaign)</strong></td><td>A saved broadcast that has not been sent; the only campaign state that can be edited.</td></tr>
+  <tr><td><strong>Suppression list</strong></td><td>Addresses that must never receive marketing again: unsubscribes, hard bounces, spam complaints.</td></tr>
+  <tr><td><strong>Send ledger</strong></td><td>The per-recipient record that makes campaign sending resumable and duplicate-proof.</td></tr>
+  <tr><td><strong>Stock floor</strong></td><td>The supplier stock level below which a product is automatically paused for safety.</td></tr>
+  <tr><td><strong>Delivery band</strong></td><td>The order-to-door day range shown to customers, such as "3-10 days", computed from live logistics data.</td></tr>
+  <tr><td><strong>Nearest-warehouse rule</strong></td><td>Every delivery time and cost is calculated from the supplier warehouse closest to the customer that actually stocks the item.</td></tr>
+  <tr><td><strong>Attention queue</strong></td><td>The Glance list of items that need a human decision.</td></tr>
+  <tr><td><strong>Vault</strong></td><td>The encrypted per-tenant store for API keys and secrets.</td></tr>
+</table>
+
+</body>
+</html>
