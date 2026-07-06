@@ -5,8 +5,8 @@
 // for events); announcement drafts still land in the Campaigns composer.
 export const eventsView = `  <section class="card">
     <h2>Events</h2>
-    <p class="sub" style="margin:0 0 8px">Storewide promotions, run entirely from here. The strip below shows what is live or scheduled right now, straight from Shopify. Yearly events are enable-once: the discount schedules itself (the code only works during its window), the storefront pop-up wakes up with the event's own wording and tears itself down at the end, the announcement email is drafted for you about two weeks before each occurrence, and after it ends the card re-dates itself to next year. Partner voucher codes automatically schedule themselves around every event, and no two events can ever run at the same time.</p>
-    <p id="ev-promos" class="sub muted" style="margin:0">Checking events…</p>
+    <p class="sub" style="margin:0 0 8px">Storewide promotions, run entirely from here. The cards below show what is live or scheduled right now, straight from Shopify. Yearly events are enable-once: the discount schedules itself (the code only works during its window), the storefront pop-up wakes up with the event's own wording and tears itself down at the end, the announcement email is drafted for you about two weeks before each occurrence, and after it ends the card re-dates itself to next year. Partner voucher codes automatically schedule themselves around every event, and no two events can ever run at the same time.</p>
+    <div id="ev-promos" class="sub muted" style="margin:0">Checking events…</div>
   </section>
 
   <section class="card">
@@ -46,7 +46,8 @@ export const eventsView = `  <section class="card">
 
 export const eventsCss = `
   /* --- Events view: yearly cards + one-off form --- */
-  .evr-card{border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin:0 0 10px;background:var(--surface)}
+  .evr-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+  .evr-card{display:flex;flex-direction:column;border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin:0;background:var(--surface)}
   .evr-card.is-on{border-color:rgba(63,185,80,.5)}
   .evr-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
   .evr-head strong{color:var(--ink)}
@@ -55,7 +56,9 @@ export const eventsCss = `
   .evr-sub{display:block;font-size:12px;color:var(--subdued);margin-top:2px}
   .evr-chips{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
   .evr-chip{font-size:11px;border:1px solid var(--border);border-radius:9px;padding:2px 8px;color:var(--subdued)}
-  .evr-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+  .evr-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:auto}
   .evr-actions label{display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--subdued);margin:0}
   .evr-actions input[type="number"]{width:80px}
+  @media(max-width:1100px){.evr-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+  @media(max-width:720px){.evr-grid{grid-template-columns:1fr}}
 `;

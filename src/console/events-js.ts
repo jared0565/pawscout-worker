@@ -4,12 +4,21 @@
 // The one-off create/end handlers moved here from campaigns-js when the
 // Storewide event card moved into this view (2026-07-06).
 export const eventsJs = `
-// --- Events: live strip (running/scheduled promos from the Shopify probe) ---
-function evPromoLine(p){
-  var when=(p.status==='ACTIVE'?'running':'scheduled')+(p.endsAt?(', ends '+prtWhen(p.endsAt)):', no end date');
-  var h='"'+esc(p.title)+'" ('+esc(when)+(p.percentage!=null?(', '+esc(p.percentage)+'% off'):'')+')';
-  if(p.source==='code'&&p.code&&p.status==='ACTIVE') h+=' <button class="ghost" type="button" data-ev-end="'+esc(p.code)+'">End now</button>';
-  return h;
+// --- Events: live/scheduled promos from the Shopify probe, as grid cards ---
+function evPromoCard(p){
+  var status=p.status==='ACTIVE'
+    ?'<span class="prt-chip prt-live">running</span>'
+    :'<span class="prt-chip prt-expired">scheduled</span>';
+  var when=(p.percentage!=null?(esc(p.percentage)+'% off, '):'')
+    +(p.endsAt?('ends '+esc(prtWhen(p.endsAt))):'no end date');
+  var h='<div class="evr-card'+(p.status==='ACTIVE'?' is-on':'')+'">'
+    +'<div class="evr-head"><strong>'+esc(p.title)+'</strong>'
+    +(p.code?'<span class="prt-code">'+esc(p.code)+'</span>':'')
+    +status+'</div>'
+    +'<div class="evr-when">'+when+'</div>';
+  if(p.source==='code'&&p.code&&p.status==='ACTIVE')
+    h+='<div class="evr-actions"><button class="ghost" type="button" data-ev-end="'+esc(p.code)+'">End now</button></div>';
+  return h+'</div>';
 }
 async function evLoad(){
   var box=el('ev-promos'); if(!box) return;
@@ -18,8 +27,8 @@ async function evLoad(){
     if(!r.ok||!r.scope){ box.textContent='Event check unavailable'+((r&&r.note)?(': '+r.note):'.'); return; }
     if(!r.promos.length){ box.textContent='No storewide event is running or scheduled.'; return; }
     var parts=[];
-    for(var i=0;i<r.promos.length;i++) parts.push(evPromoLine(r.promos[i]));
-    box.innerHTML=parts.join(' · ');
+    for(var i=0;i<r.promos.length;i++) parts.push(evPromoCard(r.promos[i]));
+    box.innerHTML='<div class="evr-grid">'+parts.join('')+'</div>';
   }catch(e){ box.textContent='Event check unavailable.'; }
 }
 // --- Yearly (recurring) events: catalogue cards + enable/disable ---
@@ -49,7 +58,7 @@ async function evRecLoad(){
     if(!r.ok){ box.innerHTML='<p class="msg no">Could not load the yearly events.</p>'; return; }
     var h='';
     for(var i=0;i<r.events.length;i++) h+=evRecCard(r.events[i]);
-    box.innerHTML=h;
+    box.innerHTML='<div class="evr-grid">'+h+'</div>';
   }catch(e){ box.innerHTML='<p class="msg no">Could not load the yearly events.</p>'; }
 }
 async function evRecToggle(key,on){
