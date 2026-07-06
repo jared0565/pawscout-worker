@@ -131,7 +131,7 @@ describe('consolePage', () => {
   it('renderInboxThread accepts + renders the partnership applicant panel', async () => {
     const html = await consolePage('test-api-key').text();
     const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
-    expect(scripts).toContain('function renderInboxThread(thread,messages,labels,draft,invoice,applicant,contact)');
+    expect(scripts).toContain('function renderInboxThread(thread,messages,labels,draft,invoice,applicant,contact,partnerPool)');
     expect(scripts).toContain('Partnership screening');
     expect(scripts).toContain('r.applicant||null');
   });
@@ -473,6 +473,32 @@ describe('consolePage', () => {
     expect(scripts).toContain('Click again to reissue');
     // The actions row wraps on narrow screens instead of clipping buttons.
     expect(html).toContain('.prt-actions{display:flex;flex-wrap:wrap');
+  });
+
+  // --- Trial code queue (2026-07-06): qualify in the Inbox, issue later ---
+
+  it('the inbox context rail offers Add to trial code queue via /inbox/queue-partner', async () => {
+    const html = await consolePage('test-api-key').text();
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+    expect(scripts).toContain('function queuePartnerAction(');
+    expect(scripts).toContain("'/inbox/queue-partner'");
+    expect(scripts).toContain('Add to trial code queue');
+    // Queueing is bookkeeping only; the copy says so and nothing is sent.
+    expect(scripts).toContain('Sends nothing now.');
+  });
+
+  it('Partners renders the queue with armed Issue code now / Remove actions', async () => {
+    const html = await consolePage('test-api-key').text();
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+    expect(scripts).toContain('function prtQueueHtml(');
+    expect(scripts).toContain('function issueQueuedPartner(');
+    expect(scripts).toContain('function unqueuePartner(');
+    expect(scripts).toContain("'/partners/queue-remove'");
+    // Ids/emails ride in escaped data attributes, resolved by delegation.
+    expect(scripts).toContain('data-prt-issueq="\'+esc(');
+    expect(scripts).toContain('data-prt-unqueue="\'+esc(');
+    // Issue mints a real Shopify discount - two-click armed like reissue.
+    expect(scripts).toContain('Click again to issue');
   });
 
   it('the rail badge re-syncs from every inbox list load (stale-badge fix)', async () => {

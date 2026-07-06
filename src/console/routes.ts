@@ -233,13 +233,19 @@ function voucherEffectiveStatus(status: string, endsAt: string, now: number): 'l
   return 'live';
 }
 
-/** Partners list: one entry per voucher (newest first) with its ledger roll-up. */
+/** Partners list: one entry per voucher (newest first) with its ledger roll-up,
+ *  plus the trial-code queue (qualified applicants parked from the Inbox,
+ *  waiting for a code; issuing graduates them into the voucher rows). */
 export async function getPartners(db: D1Database, shop: string) {
   const store = new TenantStore(db, shop);
   const rows = await store.listAffiliateVouchers();
+  const queued = await store.listQueuedPartners();
   const now = Date.now();
   return {
     ok: true as const,
+    queued: queued.map((q) => ({
+      partnerId: q.id, email: q.contact_email, name: q.name ?? null, notes: q.notes ?? null, queuedAt: q.updated_at
+    })),
     partners: rows.map((r) => ({
       partnerId: r.partner_id, voucherId: r.voucher_id,
       email: r.contact_email, name: r.name ?? null, channel: r.channel_url ?? null, notes: r.notes ?? null,
@@ -289,6 +295,14 @@ export async function partnerVoucherAction(db: D1Database, shop: string, voucher
     return { ok: true as const, ordersCovered: n };
   }
   return { ok: false as const, error: 'action must be revoke or mark_paid' };
+}
+
+/** Remove someone from the trial-code queue without issuing (they stay in the
+ *  partners table as 'ended' so re-queueing from the Inbox still works). */
+export async function removeQueuedPartner(db: D1Database, shop: string, partnerId: unknown) {
+  if (typeof partnerId !== 'string' || !partnerId.trim()) return { ok: false as const, error: 'partnerId required' };
+  const removed = await new TenantStore(db, shop).unqueueAffiliatePartner(partnerId);
+  return removed ? { ok: true as const } : { ok: false as const, error: 'Not in the queue' };
 }
 
 /** Ledger drill-down: the attributed orders behind one voucher's numbers. */

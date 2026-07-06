@@ -13,8 +13,8 @@ import { handleCallback } from './auth/callback';
 import { ensureInstalled } from './auth/ensure-installed';
 import { handleUninstall } from './auth/uninstall';
 import { resolveShopFromToken } from './console/session';
-import { connectCj, saveGates, savePricing, saveLlm, saveAddons, saveCollectionMap, getStatus, getInsights, getGlance, getAudit, getAuditConversation, saveGbFreeUk, getPartners, createPartner, partnerVoucherAction, getPartnerOrders } from './console/routes';
-import { listInboxThreads, getInboxThread, setInboxStatus, setInboxLabels, getInboxConfig, saveInboxConfig, approveDraft, regenerateDraft, applyDraftTemplate } from './inbox/routes';
+import { connectCj, saveGates, savePricing, saveLlm, saveAddons, saveCollectionMap, getStatus, getInsights, getGlance, getAudit, getAuditConversation, saveGbFreeUk, getPartners, createPartner, partnerVoucherAction, getPartnerOrders, removeQueuedPartner } from './console/routes';
+import { listInboxThreads, getInboxThread, setInboxStatus, setInboxLabels, getInboxConfig, saveInboxConfig, approveDraft, regenerateDraft, applyDraftTemplate, queuePartnerFromThread } from './inbox/routes';
 import { buildInvoiceForThread, discardInvoice, searchCatalog, adminForShop } from './inbox/invoice-routes';
 import { validateCampaignPayload, resolveCampaignAudience, sendCampaignBatch, sendCampaignTest, campaignForUi, ownerTestAddress, campaignSendBlock, type CampaignAudience } from './campaigns';
 import { collectSystemStates } from './system-states';
@@ -207,6 +207,14 @@ app.post('/api/partners/issue', async (c) => {
     invitedThreadId = appl.thread_id;
   }
   return c.json({ ...r, invitedThreadId });
+});
+// Trial-code queue removal (the add side lives at /api/inbox/queue-partner,
+// next to the thread it is triggered from).
+app.post('/api/partners/queue-remove', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: { partnerId?: unknown } = {};
+  try { body = await c.req.json(); } catch { return c.json({ ok: false, error: 'Invalid JSON body' }, 400); }
+  return c.json(await removeQueuedPartner(c.env.DB, s, body.partnerId));
 });
 // Promo/scope probe for the Partners view: lists running + scheduled storewide
 // promotions (what voucher timing schedules around) and doubles as the
@@ -999,6 +1007,14 @@ app.post('/api/system-states', async (c) => {
   return c.json(await collectSystemStates(c.env, new TenantStore(c.env.DB, s)));
 });
 // Template picker (2026-07-06): replace the thread's pending draft with a
+// Trial-code queue: park a qualified applicant so their code can be issued
+// later from Partners. Writes one D1 row; sends nothing.
+app.post('/api/inbox/queue-partner', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: { threadId?: unknown } = {};
+  try { body = await c.req.json(); } catch { return c.json({ ok: false, error: 'Invalid JSON body' }, 400); }
+  return c.json(await queuePartnerFromThread(c.env.DB, s, body.threadId));
+});
 // canonical, server-rendered template (partnership screening, declines, etc.)
 // so the owner never has to paste copy in from outside the Inbox. Never sends.
 app.post('/api/inbox/template', async (c) => {

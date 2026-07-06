@@ -42,7 +42,26 @@ export async function getInboxThread(db: D1Database, shop: string, threadId: str
   const invoice = await store.getOpenInvoiceForThread(threadId);
   const applicant = await store.getApplicantByThread(threadId);
   const contact = await store.getContactByEmail(got.thread.contact_email);
-  return { ok: true as const, thread: got.thread, messages: got.messages, labels: got.labels, draft, invoice, applicant, contact };
+  const partnerPool = await store.partnerPoolState(got.thread.contact_email);
+  return { ok: true as const, thread: got.thread, messages: got.messages, labels: got.labels, draft, invoice, applicant, contact, partnerPool };
+}
+
+/** "Add to the trial code queue" (2026-07-06): parks a qualified applicant in
+ *  affiliate_partners as status 'queued' so the owner can issue their code
+ *  later from Partners without having to remember who passed screening. Sends
+ *  nothing; issuing later stages the code invite back on this thread. */
+export async function queuePartnerFromThread(db: D1Database, shop: string, threadId: unknown) {
+  if (typeof threadId !== 'string' || !threadId.trim()) return { ok: false as const, error: 'threadId required' };
+  const store = new TenantStore(db, shop);
+  const got = await store.getThreadWithMessages(threadId);
+  if (!got) return { ok: false as const, error: 'Thread not found' };
+  const contact = await store.getContactByEmail(got.thread.contact_email);
+  const state = await store.queueAffiliatePartner({
+    contactEmail: got.thread.contact_email,
+    name: contact?.name ?? null,
+    notes: 'Queued from the Inbox'
+  });
+  return { ok: true as const, state, email: got.thread.contact_email };
 }
 
 export async function setInboxStatus(db: D1Database, shop: string, threadId: string, status: unknown) {

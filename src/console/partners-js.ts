@@ -53,6 +53,26 @@ function prtRowHtml(p,live){
     +'<div class="prt-actions">'+actions+'</div>'
     +'</div>';
 }
+// Trial-code queue rows: qualified applicants parked from the Inbox. Issue is
+// the one-click flow on the programme's standard terms; issuing moves them
+// into the voucher rows below and stages the code invite on their thread.
+function prtQueueHtml(queued){
+  if(!queued||!queued.length) return '';
+  var h='<div class="prt-queue"><h3>Waiting for a code ('+queued.length+')</h3>'
+    +'<p class="muted" style="margin:0 0 6px;font-size:12px">Added from the Inbox. Issue when you are ready: the code is created in Shopify on the standard terms (5% off, 2% commission, 30 days) and the invite email is staged on their thread for your approval.</p>';
+  for(var i=0;i<queued.length;i++){
+    var q=queued[i];
+    h+='<div class="prt-row"><div class="prt-head"><span class="prt-who">'+esc(q.name||q.email)+'</span>'
+      +(q.name?'<span class="prt-mail">'+esc(q.email)+'</span>':'')
+      +'<span class="prt-chip prt-expired">waiting for a code</span>'
+      +'<span class="prt-time">queued '+prtWhen(q.queuedAt)+'</span></div>'
+      +'<div class="prt-actions">'
+      +'<button type="button" data-prt-issueq="'+esc(q.email)+'" data-prt-issueq-name="'+esc(q.name||'')+'">Issue code now</button>'
+      +'<button class="ghost" type="button" data-prt-unqueue="'+esc(q.partnerId)+'">Remove</button>'
+      +'</div></div>';
+  }
+  return h+'</div>';
+}
 async function loadPartners(){
   try{
     var r=await api('/partners',{});
@@ -62,7 +82,7 @@ async function loadPartners(){
     for(var i=0;i<r.partners.length;i++){ if(r.partners[i].status==='live') live[r.partners[i].partnerId]=1; }
     var h='';
     for(var i=0;i<r.partners.length;i++) h+=prtRowHtml(r.partners[i],live);
-    box.innerHTML=h||'<p class="muted">No partners yet. Create a discount code in Shopify admin, then register it below to start a trial.</p>';
+    box.innerHTML=(prtQueueHtml(r.queued)+h)||'<p class="muted">No partners yet. Create a discount code in Shopify admin, then register it below to start a trial.</p>';
   }catch(e){ setMsg('prt-msg','Could not load partners.','no'); }
 }
 // Promo/scope status line: shows what voucher timing will schedule around, and
@@ -137,6 +157,28 @@ async function reissuePartnerVoucher(btn){
     setMsg('prt-msg',prtIssuedText(r),'ok');
     loadPartners();
   }catch(e){ setMsg('prt-msg','Could not reissue the voucher.','no'); }
+}
+// Queue-row issue: the standard-terms one-click path (5% off, 2% commission,
+// default 30-day window; promo-aware timing like every issue). Armed - it
+// creates a real Shopify discount.
+async function issueQueuedPartner(btn){
+  var body={email:btn.getAttribute('data-prt-issueq'),pctOff:5,commissionPct:2};
+  var nm=btn.getAttribute('data-prt-issueq-name'); if(nm) body.name=nm;
+  setMsg('prt-msg','Creating the code in Shopify…','muted');
+  try{
+    var r=await api('/partners/issue',body);
+    if(!r.ok){ setMsg('prt-msg','Failed: '+(r.error||'unknown error'),'no'); return; }
+    setMsg('prt-msg',prtIssuedText(r),'ok');
+    loadPartners();
+  }catch(e){ setMsg('prt-msg','Could not issue the voucher.','no'); }
+}
+async function unqueuePartner(btn){
+  try{
+    var r=await api('/partners/queue-remove',{partnerId:btn.getAttribute('data-prt-unqueue')});
+    if(!r.ok){ setMsg('prt-msg','Failed: '+(r.error||'unknown error'),'no'); return; }
+    setMsg('prt-msg','Removed from the queue. Queueing them again from their inbox thread still works.','ok');
+    loadPartners();
+  }catch(e){ setMsg('prt-msg','Could not remove them.','no'); }
 }
 async function registerPartner(){
   var body={
@@ -241,6 +283,12 @@ function closePartnerOrders(){
     if(vid){ setPartnerConsent(vid,t.getAttribute('data-prt-consent-on')==='1'); return; }
     vid=t.getAttribute('data-prt-paid');
     if(vid&&prtArm(t,'Click again to confirm payout')) runVoucherAction(vid,'mark_paid','Commission marked as paid out.');
+    if(vid) return;
+    vid=t.getAttribute('data-prt-issueq');
+    if(vid&&prtArm(t,'Click again to issue')) issueQueuedPartner(t);
+    if(vid) return;
+    vid=t.getAttribute('data-prt-unqueue');
+    if(vid&&prtArm(t,'Click again to remove')) unqueuePartner(t);
   });
   var ov=el('prt-overlay');
   if(ov) ov.addEventListener('click',function(e){ if(e.target===ov) closePartnerOrders(); });

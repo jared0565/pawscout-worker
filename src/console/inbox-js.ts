@@ -154,10 +154,10 @@ async function openInboxThread(id){
   try{
     var r=await api('/inbox/thread',{id:id});
     if(!r.ok){ if(tl) tl.innerHTML='<div class="ibx-empty"><p class="msg no">'+esc(r.error||'Failed to load thread')+'</p></div>'; return; }
-    renderInboxThread(r.thread,r.messages||[],r.labels||[],r.draft||null,r.invoice||null,r.applicant||null,r.contact||null);
+    renderInboxThread(r.thread,r.messages||[],r.labels||[],r.draft||null,r.invoice||null,r.applicant||null,r.contact||null,r.partnerPool||'none');
   }catch(e){ if(tl) tl.innerHTML='<div class="ibx-empty"><p class="msg no">'+esc(errText(e))+'</p></div>'; }
 }
-function renderInboxThread(thread,messages,labels,draft,invoice,applicant,contact){
+function renderInboxThread(thread,messages,labels,draft,invoice,applicant,contact,partnerPool){
   var head=el('ibx-convo-head'), tl=el('ibx-timeline');
   if(!head||!tl) return;
   inboxInvoiceItems=[];
@@ -241,11 +241,12 @@ function renderInboxThread(thread,messages,labels,draft,invoice,applicant,contac
   }
   var tplEl=el('inbox-tpl-sel');
   if(tplEl) tplEl.onchange=function(){ if(tplEl.value) applyTemplateAction(tplEl.value,tid); };
-  renderInboxContext(thread,labels,draft,invoice,applicant,contact);
+  renderInboxContext(thread,labels,draft,invoice,applicant,contact,partnerPool);
 }
 // Context rail: ONLY data the thread GET actually returns (thread fields, labels,
-// contact row, draft hold reasons, applicant screening, invoice) - nothing fabricated.
-function renderInboxContext(thread,labels,draft,invoice,applicant,contact){
+// contact row, draft hold reasons, applicant screening, invoice, partner pool
+// state) - nothing fabricated.
+function renderInboxContext(thread,labels,draft,invoice,applicant,contact,partnerPool){
   var ctx=el('ibx-context-body'); if(!ctx) return;
   var tid=thread.id;
   var cust='<div class="ibx-ctx-block"><h4>Customer</h4>'
@@ -279,13 +280,29 @@ function renderInboxContext(thread,labels,draft,invoice,applicant,contact){
       +'</div>';
   }
   var partnerBlock='';
-  if(applicant&&applicant.stage){
-    var v=null; try{ v=applicant.verdict_json?JSON.parse(applicant.verdict_json):null; }catch(e0){}
-    var reasons=(v&&v.reasons&&v.reasons.length)?esc(v.reasons.join(' · ')):'';
-    partnerBlock='<div class="ibx-ctx-block"><h4>Partnership screening</h4>'
-      +'<p style="font-size:13px;margin:0">Stage: <strong>'+esc(applicant.stage)+'</strong>'+((applicant.score!=null)?' · score '+esc(String(applicant.score))+'/12':'')+'</p>'
-      +(reasons?'<p class="muted" style="font-size:12px;margin:4px 0 0">'+reasons+'</p>':'')
-      +'</div>';
+  if((applicant&&applicant.stage)||labels.indexOf('affiliate')>=0||thread.declared_intent==='partnerships'){
+    var screenHtml='';
+    if(applicant&&applicant.stage){
+      var v=null; try{ v=applicant.verdict_json?JSON.parse(applicant.verdict_json):null; }catch(e0){}
+      var reasons=(v&&v.reasons&&v.reasons.length)?esc(v.reasons.join(' · ')):'';
+      screenHtml='<p style="font-size:13px;margin:0">Stage: <strong>'+esc(applicant.stage)+'</strong>'+((applicant.score!=null)?' · score '+esc(String(applicant.score))+'/12':'')+'</p>'
+        +(reasons?'<p class="muted" style="font-size:12px;margin:4px 0 0">'+reasons+'</p>':'');
+    } else {
+      screenHtml='<p class="muted" style="font-size:12px;margin:0">No screening record on this thread.</p>';
+    }
+    // Trial-code queue control: park a qualified applicant so their code can be
+    // issued later from Partners. Sends nothing; state comes from the thread GET.
+    var poolHtml='';
+    if(partnerPool==='live'){
+      poolHtml='<p style="margin:8px 0 0"><span class="prt-chip prt-live">partner with a live code</span></p>';
+    } else if(partnerPool==='queued'){
+      poolHtml='<p style="margin:8px 0 0"><span class="prt-chip prt-expired">in the trial code queue</span></p>'
+        +'<p class="muted" style="font-size:12px;margin:4px 0 0">Issue their code from the Partners view when you are ready; the invite email will be staged back on this thread.</p>';
+    } else {
+      poolHtml='<div class="row" style="margin-top:8px"><button id="inbox-queue-btn" class="ghost" type="button">Add to trial code queue</button></div>'
+        +'<p class="muted" style="font-size:12px;margin:4px 0 0">Parks them in Partners so you can issue the code later. Sends nothing now.</p>';
+    }
+    partnerBlock='<div class="ibx-ctx-block"><h4>Partnership screening</h4>'+screenHtml+poolHtml+'</div>';
   }
   // Invoice: open-invoice card, or the builder when none is open
   var invoiceBlock='';
@@ -318,6 +335,7 @@ function renderInboxContext(thread,labels,draft,invoice,applicant,contact){
   }
   ctx.innerHTML=cust+labBlock+holdBlock+partnerBlock+invoiceBlock;
   var slb=el('inbox-save-labels'); if(slb) slb.onclick=function(){ saveInboxLabels(tid); };
+  var qb=el('inbox-queue-btn'); if(qb) qb.onclick=function(){ queuePartnerAction(tid); };
   if(invoice&&invoice.id){
     var invDiscBtn=el('inbox-invoice-discard-btn');
     if(invDiscBtn) invDiscBtn.onclick=function(){ discardInvoiceAction(invoice.id,tid); };
@@ -391,6 +409,19 @@ async function saveInboxStatus(id){
     if(r.ok){ setMsg('ibx-msg','Status updated to '+(IBX_STATUS_LABELS[status]||status)+'.','ok'); loadInboxThreads(); }
     else setMsg('ibx-msg','Failed: '+(r.error||'unknown error'),'no');
   }catch(e){ setMsg('ibx-msg','Failed: '+errText(e),'no'); }
+}
+// Trial-code queue: one click parks this sender in Partners (status queued) so
+// their code can be issued later. No email, no Shopify object - just bookkeeping.
+async function queuePartnerAction(tid){
+  var qb=el('inbox-queue-btn'); if(qb) qb.disabled=true;
+  setMsg('ibx-msg','Adding to the trial code queue…','muted');
+  try{
+    var r=await api('/inbox/queue-partner',{threadId:tid});
+    if(!r.ok){ setMsg('ibx-msg','Failed: '+(r.error||'unknown error'),'no'); if(qb) qb.disabled=false; return; }
+    if(r.state==='live_partner') setMsg('ibx-msg','This person already has a live code - see the Partners view.','ok');
+    else setMsg('ibx-msg','Queued. Issue their code from the Partners view whenever you are ready; the invite email carrying the code will be staged back on this thread.','ok');
+    openInboxThread(tid);
+  }catch(e){ setMsg('ibx-msg','Failed: '+errText(e),'no'); if(qb) qb.disabled=false; }
 }
 async function saveInboxLabels(id){
   var sel=el('inbox-label-sel');

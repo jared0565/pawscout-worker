@@ -1462,6 +1462,71 @@ export class TenantStore {
     return id;
   }
 
+  /** Trial-code queue (2026-07-06): park a qualified applicant as a partner row
+   *  with status 'queued' so their code can be issued later from Partners. The
+   *  issue flow runs through upsertAffiliatePartner, which flips status back to
+   *  'active' - a queued row graduates automatically the moment a code is minted. */
+  async queueAffiliatePartner(p: { contactEmail: string; name?: string | null; notes?: string | null }): Promise<'queued' | 'already_queued' | 'live_partner'> {
+    const email = p.contactEmail.trim().toLowerCase();
+    const now = new Date().toISOString();
+    const existing = await this.db
+      .prepare(
+        `SELECT p.id, p.status,
+                (SELECT COUNT(*) FROM affiliate_vouchers v
+                  WHERE v.shop = p.shop AND v.partner_id = p.id AND v.status = 'live' AND v.ends_at > ?3) AS live
+         FROM affiliate_partners p WHERE p.shop = ?1 AND p.contact_email = ?2 LIMIT 1`
+      )
+      .bind(this.shop, email, now).first<{ id: string; status: string; live: number }>();
+    if (existing && existing.live > 0) return 'live_partner';
+    if (existing && existing.status === 'queued') return 'already_queued';
+    if (existing) {
+      await this.db
+        .prepare(`UPDATE affiliate_partners SET status = 'queued', name = COALESCE(?3, name), notes = COALESCE(?4, notes), updated_at = ?5 WHERE shop = ?1 AND id = ?2`)
+        .bind(this.shop, existing.id, p.name ?? null, p.notes ?? null, now).run();
+      return 'queued';
+    }
+    await this.db
+      .prepare(
+        `INSERT INTO affiliate_partners (shop, id, contact_email, name, channel_url, status, notes, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, NULL, 'queued', ?5, ?6, ?6)`
+      )
+      .bind(this.shop, crypto.randomUUID(), email, p.name ?? null, p.notes ?? null, now).run();
+    return 'queued';
+  }
+
+  /** The queue, newest first, for the Partners view. */
+  async listQueuedPartners(): Promise<{ id: string; contact_email: string; name: string | null; notes: string | null; updated_at: string }[]> {
+    const rs = await this.db
+      .prepare(`SELECT id, contact_email, name, notes, updated_at FROM affiliate_partners WHERE shop = ?1 AND status = 'queued' ORDER BY updated_at DESC`)
+      .bind(this.shop)
+      .all<{ id: string; contact_email: string; name: string | null; notes: string | null; updated_at: string }>();
+    return rs.results ?? [];
+  }
+
+  /** Take someone out of the queue without issuing ('ended' keeps the history). */
+  async unqueueAffiliatePartner(partnerId: string): Promise<boolean> {
+    const r = await this.db
+      .prepare(`UPDATE affiliate_partners SET status = 'ended', updated_at = ?3 WHERE shop = ?1 AND id = ?2 AND status = 'queued'`)
+      .bind(this.shop, partnerId, new Date().toISOString()).run();
+    return (r.meta?.changes ?? 0) > 0;
+  }
+
+  /** Pool state for one email - drives the Inbox context-rail queue control. */
+  async partnerPoolState(email: string): Promise<'none' | 'queued' | 'live' | 'former'> {
+    const row = await this.db
+      .prepare(
+        `SELECT p.status,
+                (SELECT COUNT(*) FROM affiliate_vouchers v
+                  WHERE v.shop = p.shop AND v.partner_id = p.id AND v.status = 'live' AND v.ends_at > ?3) AS live
+         FROM affiliate_partners p WHERE p.shop = ?1 AND p.contact_email = ?2 LIMIT 1`
+      )
+      .bind(this.shop, email.trim().toLowerCase(), new Date().toISOString()).first<{ status: string; live: number }>();
+    if (!row) return 'none';
+    if (row.live > 0) return 'live';
+    if (row.status === 'queued') return 'queued';
+    return 'former';
+  }
+
   /** Register an issued code. Codes are stored UPPERCASE; the unique index on
    *  (shop, code) makes a duplicate registration throw - callers surface it. */
   async createAffiliateVoucher(v: { partnerId: string; code: string; pctOff: number; commissionPct: number; startsAt?: string; endsAt: string; usageLimit?: number | null }): Promise<string> {
