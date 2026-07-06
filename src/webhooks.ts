@@ -1,4 +1,4 @@
-import { LATEST_API_VERSION } from '@shopify/shopify-api';
+import { ADMIN_API_VERSION } from './shopify-admin';
 import { defaultFetch } from './safe-fetch';
 
 const MUTATION = `mutation pawscoutHook($topic: WebhookSubscriptionTopic!, $url: URL!) {
@@ -25,7 +25,7 @@ export async function registerWebhookTopic(
   fetchImpl: typeof fetch = defaultFetch
 ): Promise<RegisterResult> {
   try {
-    const resp = await fetchImpl(`https://${shop}/admin/api/${LATEST_API_VERSION}/graphql.json`, {
+    const resp = await fetchImpl(`https://${shop}/admin/api/${ADMIN_API_VERSION}/graphql.json`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Shopify-Access-Token': accessToken },
       body: JSON.stringify({ query: MUTATION, variables: { topic, url: callbackUrl } })

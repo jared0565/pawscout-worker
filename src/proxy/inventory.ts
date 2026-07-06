@@ -114,13 +114,11 @@ export async function setInventoryQuantities(
       input: {
         reason: 'correction',
         name: 'available',
-        // API-VERSION DEBT: `ignoreCompareQuantity` is valid on our current
-        // version (2025-07) but REMOVED in 2026-04. When @shopify/shopify-api is
-        // bumped to a 2026-04+ API version, replace this line with a per-quantity
-        // `changeFromQuantity: null` (opt out of the concurrency check - same
-        // force-set behaviour). Deadline ~Jan 2027 / 2025-07 sunset. See TASKS.md.
-        ignoreCompareQuantity: true,
-        quantities: items.map((i) => ({ inventoryItemId: i.inventoryItemId, locationId, quantity: i.quantity }))
+        // 2026-04 shape (migrated 2026-07-06, closing the dev-dashboard
+        // deprecation): changeFromQuantity is required per quantity line; null
+        // opts out of the concurrency check - the same force-set behaviour the
+        // removed top-level ignoreCompareQuantity used to give.
+        quantities: items.map((i) => ({ inventoryItemId: i.inventoryItemId, locationId, quantity: i.quantity, changeFromQuantity: null }))
       }
     }
   );

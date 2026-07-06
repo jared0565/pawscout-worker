@@ -10,6 +10,9 @@ export function makeShopify(env: Env) {
     scopes: env.SHOPIFY_SCOPES.split(','),
     hostName: appUrl.host,
     hostScheme: 'https',
+    // Library-internal machinery only (OAuth + session tokens - versionless
+    // endpoints). Every real Admin GraphQL call instead pins ADMIN_API_VERSION
+    // in shopify-admin.ts / webhooks.ts.
     apiVersion: LATEST_API_VERSION,
     isEmbeddedApp: true,
     logger: { level: LogSeverity.Warning }
