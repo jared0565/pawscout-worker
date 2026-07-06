@@ -23,6 +23,20 @@ import { defaultFetch } from './safe-fetch';
 export type CampaignAudience = 'buyers' | 'partners';
 export const CAMPAIGN_AUDIENCES: readonly CampaignAudience[] = ['buyers', 'partners'];
 
+// Lifecycle (2026-07-06): draft -> sending -> sent, with two owner controls on
+// the way: paused (resumable, /send refuses until Resume) and cancelled
+// (terminal; the ledger stays so already-sent recipients are visible, and the
+// campaign can be duplicated as a fresh draft). Drafts alone are editable.
+export const CAMPAIGN_STATUSES = ['draft', 'sending', 'paused', 'sent', 'cancelled'] as const;
+
+/** Why this campaign cannot send right now, or null when it can. */
+export function campaignSendBlock(status: string): string | null {
+  if (status === 'sent') return 'This campaign has already been sent';
+  if (status === 'cancelled') return 'This campaign was stopped. Duplicate it to send again';
+  if (status === 'paused') return 'This campaign is paused - click Resume to continue';
+  return null;
+}
+
 /** Per-click send cap: keeps one console request comfortably short; the
  * browser auto-continues while the engine reports work remaining. */
 export const CAMPAIGN_BATCH_MAX = 25;

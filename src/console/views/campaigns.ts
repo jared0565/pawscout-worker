@@ -12,8 +12,8 @@ export const campaignsView = `  <section class="card">
     <p id="cmp-msg" class="msg muted"></p>
   </section>
 
-  <section class="card">
-    <h2>New campaign</h2>
+  <section class="card" id="cmp-compose-card">
+    <h2 id="cmp-compose-title">New campaign</h2>
     <div class="row">
       <div>
         <label for="cmp-audience">Audience</label>
@@ -34,8 +34,9 @@ export const campaignsView = `  <section class="card">
       </div>
     </div>
     <div class="row">
-      <button type="button" onclick="cmpCreate()">Save campaign</button>
+      <button type="button" id="cmp-save-btn" onclick="cmpCreate()">Save campaign</button>
       <button type="button" class="ghost" onclick="cmpTogglePreview()">Preview</button>
+      <button type="button" class="ghost" id="cmp-edit-cancel" onclick="cmpEditCancel()" hidden>Cancel edit</button>
     </div>
     <div id="cmp-preview" class="cmp-preview" hidden></div>
     <p id="cmp-new-msg" class="msg muted"></p>
@@ -86,6 +87,8 @@ export const campaignsCss = `
   .cmp-draft{background:rgba(139,148,158,.18);color:var(--subdued)}
   .cmp-sending{background:rgba(232,89,12,.16);color:#f0854b}
   .cmp-sent{background:rgba(63,185,80,.15);color:#3fb950}
+  .cmp-paused{background:rgba(88,166,255,.15);color:#58a6ff}
+  .cmp-cancelled{background:rgba(248,81,73,.15);color:#f85149}
   .cmp-time{margin-left:auto;color:var(--subdued);font-size:12px;white-space:nowrap}
   .cmp-stats{display:flex;gap:16px;flex-wrap:wrap;margin-top:6px;color:var(--subdued);font-size:13px}
   .cmp-stats strong{color:var(--ink);font-variant-numeric:tabular-nums}

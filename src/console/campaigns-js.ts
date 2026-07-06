@@ -11,10 +11,12 @@
 // A call that makes no progress stops the loop instead of hammering the API.
 export const campaignsJs = `
 // --- Campaigns: consented marketing broadcasts (HITL) ---
-var cmpState={postal:'',testAddress:null};
+var cmpState={postal:'',testAddress:null,list:[],editingId:null};
 function cmpChip(s){
   if(s==='sent') return '<span class="cmp-chip cmp-sent">sent</span>';
   if(s==='sending') return '<span class="cmp-chip cmp-sending">sending</span>';
+  if(s==='paused') return '<span class="cmp-chip cmp-paused">paused</span>';
+  if(s==='cancelled') return '<span class="cmp-chip cmp-cancelled">stopped</span>';
   return '<span class="cmp-chip cmp-draft">draft</span>';
 }
 function cmpAudienceLabel(a){ return a==='partners'?'Partners (opted in)':'Buyers (marketing opt-in)'; }
@@ -24,9 +26,24 @@ function cmpParas(t){
   return h;
 }
 function cmpRowHtml(cp){
+  // Per-status controls: drafts are editable, an in-flight send can be
+  // paused or stopped, a paused one resumed or stopped, and anything
+  // finished (sent or stopped) can be duplicated as a fresh draft.
   var actions='<button class="ghost" type="button" data-cmp-test="'+esc(cp.id)+'">Send myself a test</button>';
-  if(cp.status!=='sent') actions+='<button class="ghost" type="button" data-cmp-send="'+esc(cp.id)+'">'+(cp.status==='sending'?'Resume send':'Send now')+'</button>';
-  if(cp.status==='draft') actions+='<button class="ghost" type="button" data-cmp-discard="'+esc(cp.id)+'">Discard</button>';
+  if(cp.status==='draft'){
+    actions+='<button class="ghost" type="button" data-cmp-send="'+esc(cp.id)+'">Send now</button>'
+      +'<button class="ghost" type="button" data-cmp-edit="'+esc(cp.id)+'">Edit</button>'
+      +'<button class="ghost" type="button" data-cmp-discard="'+esc(cp.id)+'">Discard</button>';
+  }else if(cp.status==='sending'){
+    actions+='<button class="ghost" type="button" data-cmp-send="'+esc(cp.id)+'">Continue send</button>'
+      +'<button class="ghost" type="button" data-cmp-pause="'+esc(cp.id)+'">Pause</button>'
+      +'<button class="ghost" type="button" data-cmp-cancel="'+esc(cp.id)+'">Stop</button>';
+  }else if(cp.status==='paused'){
+    actions+='<button class="ghost" type="button" data-cmp-resume="'+esc(cp.id)+'">Resume send</button>'
+      +'<button class="ghost" type="button" data-cmp-cancel="'+esc(cp.id)+'">Stop</button>';
+  }else{
+    actions+='<button class="ghost" type="button" data-cmp-dup="'+esc(cp.id)+'">Duplicate as draft</button>';
+  }
   var stats='<span>Audience '+esc(cmpAudienceLabel(cp.audience))+'</span>';
   if(cp.recipientCount!=null) stats+='<span>Sent <strong>'+esc(cp.sentCount||0)+'</strong> of <strong>'+esc(cp.recipientCount)+'</strong></span>';
   if(cp.metrics){
@@ -52,6 +69,7 @@ async function loadCampaigns(){
     if(!r.ok){ setMsg('cmp-msg','Failed: '+(r.error||'unknown error'),'no'); return; }
     cmpState.postal=r.postalAddress||'';
     cmpState.testAddress=r.testAddress||null;
+    cmpState.list=r.campaigns||[];
     var pi=el('cmp-postal'); if(pi&&!pi.value) pi.value=cmpState.postal;
     var box=el('cmp-list'); if(!box) return;
     var h='';
@@ -149,15 +167,42 @@ async function cmpCreate(){
   };
   if(!body.subject){ setMsg('cmp-new-msg','Give the campaign a subject.','no'); return; }
   if(body.bodyText.length<10){ setMsg('cmp-new-msg','Write the message first (at least a sentence).','no'); return; }
+  var editing=cmpState.editingId;
+  if(editing) body.id=editing;
   setMsg('cmp-new-msg','Saving…','muted');
   try{
-    var r=await api('/campaigns/create',body);
+    var r=await api(editing?'/campaigns/update':'/campaigns/create',body);
     if(!r.ok){ setMsg('cmp-new-msg','Failed: '+(r.error||'unknown error'),'no'); return; }
-    setMsg('cmp-new-msg','Saved as a draft. Send yourself a test from the list above, then send it for real.','ok');
-    el('cmp-subject').value=''; el('cmp-body').value='';
-    var pv=el('cmp-preview'); if(pv) pv.hidden=true;
+    setMsg('cmp-new-msg',editing?'Draft updated.':'Saved as a draft. Send yourself a test from the list above, then send it for real.','ok');
+    cmpEditCancel(true);
     loadCampaigns();
   }catch(e){ setMsg('cmp-new-msg','Could not save the campaign.','no'); }
+}
+// Edit fills the composer with the draft and flips it to save-changes mode;
+// cancel (or a successful save) empties it back to compose mode.
+function cmpEdit(id){
+  var cp=null;
+  for(var i=0;i<cmpState.list.length;i++) if(cmpState.list[i].id===id){ cp=cmpState.list[i]; break; }
+  if(!cp){ setMsg('cmp-msg','Could not find that draft - reload the page.','no'); return; }
+  if(cp.status!=='draft'){ setMsg('cmp-msg','Only drafts can be edited. Duplicate it instead.','no'); return; }
+  cmpState.editingId=id;
+  el('cmp-audience').value=cp.audience;
+  el('cmp-subject').value=cp.subject;
+  el('cmp-body').value=cp.bodyText||'';
+  var t=el('cmp-compose-title'); if(t) t.textContent='Edit campaign';
+  var b=el('cmp-save-btn'); if(b) b.textContent='Save changes';
+  var x=el('cmp-edit-cancel'); if(x) x.hidden=false;
+  var card=el('cmp-compose-card'); if(card&&card.scrollIntoView) card.scrollIntoView({behavior:'smooth',block:'start'});
+  setMsg('cmp-new-msg','Editing "'+cp.subject+'". Save changes or cancel.','muted');
+}
+function cmpEditCancel(keepMsg){
+  cmpState.editingId=null;
+  el('cmp-subject').value=''; el('cmp-body').value='';
+  var t=el('cmp-compose-title'); if(t) t.textContent='New campaign';
+  var b=el('cmp-save-btn'); if(b) b.textContent='Save campaign';
+  var x=el('cmp-edit-cancel'); if(x) x.hidden=true;
+  var pv=el('cmp-preview'); if(pv) pv.hidden=true;
+  if(keepMsg!==true) setMsg('cmp-new-msg','','muted');
 }
 function cmpTogglePreview(){
   var pv=el('cmp-preview'); if(!pv) return;
@@ -208,6 +253,39 @@ async function cmpDiscard(id){
     loadCampaigns();
   }catch(e){ setMsg('cmp-msg','Could not discard.','no'); }
 }
+// Pause is instant and reversible (single click); the batch already in
+// flight finishes (at most 25 emails), then sending refuses until Resume.
+async function cmpPause(id){
+  try{
+    var r=await api('/campaigns/pause',{id:id});
+    if(!r.ok){ setMsg('cmp-msg','Failed: '+(r.error||'unknown error'),'no'); return; }
+    setMsg('cmp-msg','Paused. Nobody else is emailed until you click Resume.','ok');
+    loadCampaigns();
+  }catch(e){ setMsg('cmp-msg','Could not pause.','no'); }
+}
+async function cmpResume(id){
+  try{
+    var r=await api('/campaigns/resume',{id:id});
+    if(!r.ok){ setMsg('cmp-msg','Failed: '+(r.error||'unknown error'),'no'); return; }
+    cmpSend(id);
+  }catch(e){ setMsg('cmp-msg','Could not resume.','no'); }
+}
+async function cmpCancel(id){
+  try{
+    var r=await api('/campaigns/cancel',{id:id});
+    if(!r.ok){ setMsg('cmp-msg','Failed: '+(r.error||'unknown error'),'no'); return; }
+    setMsg('cmp-msg','Stopped. Recipients already emailed stay on record; duplicate the campaign to send again.','ok');
+    loadCampaigns();
+  }catch(e){ setMsg('cmp-msg','Could not stop.','no'); }
+}
+async function cmpDup(id){
+  try{
+    var r=await api('/campaigns/duplicate',{id:id});
+    if(!r.ok){ setMsg('cmp-msg','Failed: '+(r.error||'unknown error'),'no'); return; }
+    setMsg('cmp-msg','Duplicated as a new draft - edit it below or send it as is.','ok');
+    loadCampaigns();
+  }catch(e){ setMsg('cmp-msg','Could not duplicate.','no'); }
+}
 async function cmpSavePostal(){
   var v=el('cmp-postal').value.trim();
   setMsg('cmp-postal-msg','Saving…','muted');
@@ -231,6 +309,18 @@ async function cmpSavePostal(){
     id=t.getAttribute('data-cmp-send');
     if(id&&prtArm(t,'Click again to send to everyone')) cmpSend(id);
     if(id) return;
+    id=t.getAttribute('data-cmp-resume');
+    if(id&&prtArm(t,'Click again to resume sending')) cmpResume(id);
+    if(id) return;
+    id=t.getAttribute('data-cmp-pause');
+    if(id){ cmpPause(id); return; }
+    id=t.getAttribute('data-cmp-cancel');
+    if(id&&prtArm(t,'Click again to stop this campaign for good')) cmpCancel(id);
+    if(id) return;
+    id=t.getAttribute('data-cmp-edit');
+    if(id){ cmpEdit(id); return; }
+    id=t.getAttribute('data-cmp-dup');
+    if(id){ cmpDup(id); return; }
     id=t.getAttribute('data-cmp-discard');
     if(id&&prtArm(t,'Click again to discard')) cmpDiscard(id);
   });

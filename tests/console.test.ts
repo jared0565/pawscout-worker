@@ -270,6 +270,21 @@ describe('consolePage', () => {
     expect(scripts).toContain('data-cmp-send="\'+esc(');
     // Broadcasting is two-click armed like the other consequential actions.
     expect(scripts).toContain('Click again to send to everyone');
+    // Lifecycle controls (2026-07-06): edit drafts, pause/resume/stop a live
+    // send, duplicate anything finished. Stop and Resume are two-click armed.
+    for (const route of ['/campaigns/update', '/campaigns/pause', '/campaigns/resume', '/campaigns/cancel', '/campaigns/duplicate']) {
+      expect(scripts).toContain("'" + route + "'");
+    }
+    for (const attr of ['data-cmp-edit', 'data-cmp-pause', 'data-cmp-resume', 'data-cmp-cancel', 'data-cmp-dup']) {
+      expect(scripts).toContain(attr + '="\'+esc(');
+    }
+    expect(scripts).toContain('Click again to stop this campaign for good');
+    expect(scripts).toContain('Click again to resume sending');
+    expect(html).toContain('cmp-paused');
+    expect(html).toContain('cmp-cancelled');
+    for (const id of ['cmp-compose-title', 'cmp-save-btn', 'cmp-edit-cancel']) {
+      expect(html).toContain('id="' + id + '"');
+    }
     const cmpBlock = scripts.slice(scripts.indexOf('var cmpState'), scripts.indexOf('async function cmpSavePostal('));
     expect(cmpBlock.length).toBeGreaterThan(0);
     expect(cmpBlock).not.toContain('window.confirm');

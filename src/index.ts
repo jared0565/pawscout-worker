@@ -16,7 +16,7 @@ import { resolveShopFromToken } from './console/session';
 import { connectCj, saveGates, savePricing, saveLlm, saveAddons, saveCollectionMap, getStatus, getInsights, getGlance, getAudit, getAuditConversation, saveGbFreeUk, getPartners, createPartner, partnerVoucherAction, getPartnerOrders } from './console/routes';
 import { listInboxThreads, getInboxThread, setInboxStatus, setInboxLabels, getInboxConfig, saveInboxConfig, approveDraft, regenerateDraft } from './inbox/routes';
 import { buildInvoiceForThread, discardInvoice, searchCatalog, adminForShop } from './inbox/invoice-routes';
-import { validateCampaignPayload, resolveCampaignAudience, sendCampaignBatch, sendCampaignTest, campaignForUi, ownerTestAddress, type CampaignAudience } from './campaigns';
+import { validateCampaignPayload, resolveCampaignAudience, sendCampaignBatch, sendCampaignTest, campaignForUi, ownerTestAddress, campaignSendBlock, type CampaignAudience } from './campaigns';
 import { issueVoucher, fetchActiveOrderPromos, voucherDateLabel, deactivateVoucherDiscount } from './affiliate-discounts';
 import { buildVoucherInviteWithCode } from './inbox/partnership';
 import { renderReplyHtml } from './inbox/draft';
@@ -343,6 +343,59 @@ app.post('/api/campaigns/discard', async (c) => {
   const gone = await new TenantStore(c.env.DB, s).discardCampaign(body.id);
   return c.json(gone ? { ok: true } : { ok: false, error: 'Only unsent drafts can be discarded' });
 });
+// Draft-only edit: once any batch has gone out, the campaign is immutable
+// (part of the audience already saw it) - duplicate instead.
+app.post('/api/campaigns/update', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: unknown;
+  try { body = await c.req.json(); } catch { return c.json({ ok: false, error: 'Invalid JSON body' }, 400); }
+  const id = (body as { id?: unknown }).id;
+  if (typeof id !== 'string' || !id) return c.json({ ok: false, error: 'id required' }, 400);
+  const v = validateCampaignPayload(body);
+  if (!v.ok) return c.json({ ok: false, error: v.error }, 400);
+  const updated = await new TenantStore(c.env.DB, s).updateCampaignDraft(id, v.value);
+  return c.json(updated ? { ok: true } : { ok: false, error: 'Only drafts can be edited. Duplicate a sent or stopped campaign instead' });
+});
+// Pause an in-flight send: the next batch call refuses until Resume. Any batch
+// already in flight finishes (bounded at 25 sends) but cannot un-pause.
+app.post('/api/campaigns/pause', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: { id?: unknown } = {};
+  try { body = await c.req.json(); } catch {}
+  if (typeof body.id !== 'string' || !body.id) return c.json({ ok: false, error: 'id required' }, 400);
+  const done = await new TenantStore(c.env.DB, s).setCampaignStatus(body.id, 'paused', ['sending']);
+  return c.json(done ? { ok: true } : { ok: false, error: 'Only a campaign that is currently sending can be paused' });
+});
+app.post('/api/campaigns/resume', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: { id?: unknown } = {};
+  try { body = await c.req.json(); } catch {}
+  if (typeof body.id !== 'string' || !body.id) return c.json({ ok: false, error: 'id required' }, 400);
+  const done = await new TenantStore(c.env.DB, s).setCampaignStatus(body.id, 'sending', ['paused']);
+  return c.json(done ? { ok: true } : { ok: false, error: 'Only a paused campaign can be resumed' });
+});
+// Stop for good (terminal). The send ledger stays - recipients who already
+// got the email are on record - and the campaign can be duplicated as a draft.
+app.post('/api/campaigns/cancel', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: { id?: unknown } = {};
+  try { body = await c.req.json(); } catch {}
+  if (typeof body.id !== 'string' || !body.id) return c.json({ ok: false, error: 'id required' }, 400);
+  const done = await new TenantStore(c.env.DB, s).setCampaignStatus(body.id, 'cancelled', ['sending', 'paused']);
+  return c.json(done ? { ok: true } : { ok: false, error: 'Only a sending or paused campaign can be stopped' });
+});
+// Reuse any campaign (sent, stopped or draft) as a fresh editable draft.
+app.post('/api/campaigns/duplicate', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: { id?: unknown } = {};
+  try { body = await c.req.json(); } catch {}
+  if (typeof body.id !== 'string' || !body.id) return c.json({ ok: false, error: 'id required' }, 400);
+  const store = new TenantStore(c.env.DB, s);
+  const src = await store.getCampaign(body.id);
+  if (!src) return c.json({ ok: false, error: 'Campaign not found' });
+  const id = await store.insertCampaign({ audience: src.audience, subject: src.subject, bodyText: src.body_text });
+  return c.json({ ok: true, id });
+});
 // Live audience sizes so the owner sees who a campaign would reach BEFORE
 // sending. Buyer consent is read from Shopify at this moment, never cached.
 app.post('/api/campaigns/audiences', async (c) => {
@@ -385,7 +438,8 @@ app.post('/api/campaigns/send', async (c) => {
   if (!postal) return c.json({ ok: false, error: 'Add your business postal address under Sender details first - marketing email must carry it' });
   const campaign = await store.getCampaign(body.id);
   if (!campaign) return c.json({ ok: false, error: 'Campaign not found' });
-  if (campaign.status === 'sent') return c.json({ ok: false, error: 'This campaign has already been sent' });
+  const block = campaignSendBlock(campaign.status);
+  if (block) return c.json({ ok: false, error: block });
   const admin = campaign.audience === 'buyers' ? await adminForShop(c.env, store) : null;
   const aud = await resolveCampaignAudience(store, admin, campaign.audience as CampaignAudience);
   if (!aud.ok) return c.json({ ok: false, error: aud.error });

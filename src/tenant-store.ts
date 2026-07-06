@@ -1670,11 +1670,39 @@ export class TenantStore {
     return (r.meta?.changes ?? 0) > 0;
   }
 
+  /** Draft-only edit: audience, subject and body are locked the moment a
+   * campaign starts sending (part of the audience has already seen them). */
+  async updateCampaignDraft(id: string, c: { audience: string; subject: string; bodyText: string }): Promise<boolean> {
+    const r = await this.db
+      .prepare(`UPDATE campaigns SET audience = ?3, subject = ?4, body_text = ?5, updated_at = ?6
+                WHERE shop = ?1 AND id = ?2 AND status = 'draft'`)
+      .bind(this.shop, id, c.audience, c.subject, c.bodyText, new Date().toISOString())
+      .run();
+    return (r.meta?.changes ?? 0) > 0;
+  }
+
+  /** Guarded status transition (pause/resume/stop): fires only when the
+   * current status is in allowedFrom, so a stale button in another tab can
+   * never resurrect a finished or stopped campaign. */
+  async setCampaignStatus(id: string, to: string, allowedFrom: string[]): Promise<boolean> {
+    if (allowedFrom.length === 0) return false;
+    const placeholders = allowedFrom.map((_, i) => `?${i + 5}`).join(', ');
+    const r = await this.db
+      .prepare(`UPDATE campaigns SET status = ?3, updated_at = ?4 WHERE shop = ?1 AND id = ?2 AND status IN (${placeholders})`)
+      .bind(this.shop, id, to, new Date().toISOString(), ...allowedFrom)
+      .run();
+    return (r.meta?.changes ?? 0) > 0;
+  }
+
   /** Batch bookkeeping: recipientCount is idempotent (audience size at send
-   * time), sent_count accumulates across batches, sent_at stamps completion. */
+   * time), sent_count accumulates across batches, sent_at stamps completion.
+   * A pause/stop clicked while a batch was in flight survives it: the batch
+   * may only overwrite paused/cancelled when everything actually went out
+   * (remaining 0 => 'sent' is simply the truth). */
   async updateCampaignProgress(id: string, p: { recipientCount: number; sentDelta: number; status: string; sentAt: string | null }): Promise<void> {
     await this.db
-      .prepare(`UPDATE campaigns SET recipient_count = ?3, sent_count = sent_count + ?4, status = ?5,
+      .prepare(`UPDATE campaigns SET recipient_count = ?3, sent_count = sent_count + ?4,
+                  status = CASE WHEN ?5 = 'sent' THEN 'sent' WHEN status IN ('paused','cancelled') THEN status ELSE ?5 END,
                   sent_at = COALESCE(?6, sent_at), updated_at = ?7 WHERE shop = ?1 AND id = ?2`)
       .bind(this.shop, id, p.recipientCount, p.sentDelta, p.status, p.sentAt, new Date().toISOString())
       .run();

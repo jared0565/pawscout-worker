@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
 import {
   fetchSubscribedBuyers, resolveCampaignAudience, buildCampaignEmail,
-  sendCampaignBatch, sendCampaignTest, validateCampaignPayload
+  sendCampaignBatch, sendCampaignTest, validateCampaignPayload, campaignSendBlock
 } from '../src/campaigns';
 import { TenantStore } from '../src/tenant-store';
 import type { Env } from '../src/types';
@@ -203,5 +203,63 @@ describe('sendCampaignTest', () => {
     expect(r.ok).toBe(true);
     expect((sends[0].body.subject as string).startsWith('[Test] ')).toBe(true);
     expect(await store.hasCampaignSend(cp.id, 'owner@x.com')).toBe(false);
+  });
+});
+
+// --- Lifecycle controls (2026-07-06): edit, pause/resume, stop, duplicate ---
+
+describe('campaignSendBlock', () => {
+  it('lets drafts and in-flight sends through, blocks the rest with a reason', () => {
+    expect(campaignSendBlock('draft')).toBeNull();
+    expect(campaignSendBlock('sending')).toBeNull();
+    expect(campaignSendBlock('paused')).toContain('paused');
+    expect(campaignSendBlock('sent')).toContain('already been sent');
+    expect(campaignSendBlock('cancelled')).toContain('stopped');
+  });
+});
+
+describe('campaign lifecycle (store)', () => {
+  it('updateCampaignDraft edits a draft and refuses once sending has started', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const cp = await seedCampaign(store);
+    expect(await store.updateCampaignDraft(cp.id, { audience: 'partners', subject: 'New subject', bodyText: 'Rewritten body text.' })).toBe(true);
+    const edited = (await store.getCampaign(cp.id))!;
+    expect(edited.audience).toBe('partners');
+    expect(edited.subject).toBe('New subject');
+    expect(edited.body_text).toBe('Rewritten body text.');
+
+    await store.setCampaignStatus(cp.id, 'sending', ['draft']);
+    expect(await store.updateCampaignDraft(cp.id, { audience: 'buyers', subject: 'Too late', bodyText: 'Should not stick.' })).toBe(false);
+    expect((await store.getCampaign(cp.id))!.subject).toBe('New subject');
+  });
+
+  it('setCampaignStatus only fires from an allowed source status', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const cp = await seedCampaign(store);
+    // a draft cannot be paused
+    expect(await store.setCampaignStatus(cp.id, 'paused', ['sending'])).toBe(false);
+    await store.setCampaignStatus(cp.id, 'sending', ['draft']);
+    // pause -> resume round-trip
+    expect(await store.setCampaignStatus(cp.id, 'paused', ['sending'])).toBe(true);
+    expect(await store.setCampaignStatus(cp.id, 'sending', ['paused'])).toBe(true);
+    // stop is terminal: no resume, no re-pause
+    expect(await store.setCampaignStatus(cp.id, 'cancelled', ['sending', 'paused'])).toBe(true);
+    expect(await store.setCampaignStatus(cp.id, 'sending', ['paused'])).toBe(false);
+    expect((await store.getCampaign(cp.id))!.status).toBe('cancelled');
+  });
+
+  it('a pause clicked mid-batch survives the batch finishing (progress cannot un-pause)', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const cp = await seedCampaign(store);
+    await store.setCampaignStatus(cp.id, 'sending', ['draft']);
+    await store.setCampaignStatus(cp.id, 'paused', ['sending']);
+    // the racing batch reports partial progress with status 'sending'
+    await store.updateCampaignProgress(cp.id, { recipientCount: 10, sentDelta: 5, status: 'sending', sentAt: null });
+    const row = (await store.getCampaign(cp.id))!;
+    expect(row.status).toBe('paused');   // pause held
+    expect(row.sent_count).toBe(5);      // bookkeeping still recorded
+    // but full completion is the truth regardless of the pause
+    await store.updateCampaignProgress(cp.id, { recipientCount: 10, sentDelta: 5, status: 'sent', sentAt: new Date(NOW).toISOString() });
+    expect((await store.getCampaign(cp.id))!.status).toBe('sent');
   });
 });
