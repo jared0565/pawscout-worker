@@ -16,7 +16,7 @@ const NOW = Date.parse('2026-07-05T12:00:00Z');
 const DAY = 86_400_000;
 const promo = (over: Partial<PromoWindow> = {}): PromoWindow => ({
   title: 'Welcome 10%', kind: 'Basic', source: 'automatic', percentage: 10, status: 'ACTIVE',
-  startsAt: new Date(NOW - 10 * DAY).toISOString(), endsAt: new Date(NOW + 2 * DAY).toISOString(), ...over
+  startsAt: new Date(NOW - 10 * DAY).toISOString(), endsAt: new Date(NOW + 2 * DAY).toISOString(), code: null, ...over
 });
 
 describe('resolveVoucherWindow (event-aware timing)', () => {

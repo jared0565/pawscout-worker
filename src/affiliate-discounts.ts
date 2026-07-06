@@ -28,6 +28,7 @@ export interface PromoWindow {
   status: string;            // ACTIVE | SCHEDULED
   startsAt: string | null;
   endsAt: string | null;     // null = open-ended
+  code: string | null;       // the redeemable code string for code discounts (storefront modal needs it); null for automatic
 }
 
 /** Our own minted trials carry this title prefix - they are never conflicts. */
@@ -47,8 +48,8 @@ const PROMOS_QUERY = `query pawscoutActivePromos {
     nodes {
       codeDiscount {
         __typename
-        ... on DiscountCodeBasic { title status startsAt endsAt customerGets { value { __typename ... on DiscountPercentage { percentage } } } }
-        ... on DiscountCodeBxgy { title status startsAt endsAt }
+        ... on DiscountCodeBasic { title status startsAt endsAt codes(first: 1) { nodes { code } } customerGets { value { __typename ... on DiscountPercentage { percentage } } } }
+        ... on DiscountCodeBxgy { title status startsAt endsAt codes(first: 1) { nodes { code } } }
       }
     }
   }
@@ -56,6 +57,7 @@ const PROMOS_QUERY = `query pawscoutActivePromos {
 
 interface RawPromo {
   __typename?: string; title?: string; status?: string; startsAt?: string | null; endsAt?: string | null;
+  codes?: { nodes?: { code?: string }[] } | null;
   customerGets?: { value?: { __typename?: string; percentage?: number } | null } | null;
 }
 
@@ -73,7 +75,8 @@ function toPromo(d: RawPromo, source: 'automatic' | 'code'): PromoWindow | null 
     percentage: pct,
     status: d.status,
     startsAt: d.startsAt ?? null,
-    endsAt: d.endsAt ?? null
+    endsAt: d.endsAt ?? null,
+    code: source === 'code' ? (d.codes?.nodes?.[0]?.code ?? null) : null
   };
 }
 

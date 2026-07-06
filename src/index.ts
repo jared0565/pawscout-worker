@@ -18,6 +18,7 @@ import { listInboxThreads, getInboxThread, setInboxStatus, setInboxLabels, getIn
 import { buildInvoiceForThread, discardInvoice, searchCatalog, adminForShop } from './inbox/invoice-routes';
 import { validateCampaignPayload, resolveCampaignAudience, sendCampaignBatch, sendCampaignTest, campaignForUi, ownerTestAddress, campaignSendBlock, type CampaignAudience } from './campaigns';
 import { collectSystemStates } from './system-states';
+import { validateEventRequest, findOverlappingPromo, createEventDiscount, buildEventCampaign, publicEventPayload, eventDayLabel } from './storewide-event';
 import { issueVoucher, fetchActiveOrderPromos, voucherDateLabel, deactivateVoucherDiscount } from './affiliate-discounts';
 import { buildVoucherInviteWithCode } from './inbox/partnership';
 import { renderReplyHtml } from './inbox/draft';
@@ -216,6 +217,61 @@ app.post('/api/partners/discount-status', async (c) => {
   const r = await fetchActiveOrderPromos(admin);
   if (!r.ok) return c.json({ ok: true, scope: false, promos: [], note: r.reconnectRequired ? 'reconnect_required' : r.error });
   return c.json({ ok: true, scope: true, promos: r.promos });
+});
+// --- Storewide events (2026-07-06): console lifecycle over Shopify discounts ---
+// The Shopify discount is the ONLY record (no events table - a second copy of
+// the dates is exactly what drifted in the WELCOME10 incident). The schedule
+// lives inside the discount, so the code is refused at checkout outside its
+// window, and the storefront modal follows /public/event live. The event card
+// reads current promos through /api/partners/discount-status (same probe).
+app.post('/api/event/create', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: unknown;
+  try { body = await c.req.json(); } catch { return c.json({ ok: false, error: 'Invalid JSON body' }, 400); }
+  const v = validateEventRequest(body);
+  if (!v.ok) return c.json(v, 400);
+  const stageCampaign = (body as Record<string, unknown>).stageCampaign !== false;
+  const store = new TenantStore(c.env.DB, s);
+  const admin = await adminForShop(c.env, store);
+  if (!admin) return c.json({ ok: false, error: 'Shopify connection unavailable' });
+  const probe = await fetchActiveOrderPromos(admin);
+  if (!probe.ok) return c.json({ ok: false, error: probe.error });
+  const clash = findOverlappingPromo(probe.promos, v.value.startsAt, v.value.endsAt);
+  if (clash) {
+    return c.json({ ok: false, error: `Overlaps "${clash.title}" (${clash.status === 'ACTIVE' ? 'running' : 'scheduled'}${clash.endsAt ? `, ends ${eventDayLabel(clash.endsAt)}` : ', no end date'}) - end it first or pick dates after it.` });
+  }
+  const created = await createEventDiscount(admin, v.value);
+  if (!created.ok) return c.json(created);
+  let campaignId: string | null = null;
+  if (stageCampaign) {
+    const d = buildEventCampaign(v.value);
+    campaignId = await store.insertCampaign({ audience: 'buyers', subject: d.subject, bodyText: d.bodyText });
+  }
+  // Refresh the storefront feed synthetically (the Shopify search index that
+  // backs the probe can lag a fresh discount by a few seconds).
+  const synthetic = probe.promos.concat([{
+    title: v.value.code, kind: 'Basic', source: 'code' as const, percentage: v.value.pctOff,
+    status: Date.parse(v.value.startsAt) <= Date.now() ? 'ACTIVE' : 'SCHEDULED',
+    startsAt: v.value.startsAt, endsAt: v.value.endsAt, code: v.value.code
+  }]);
+  await store.putSearchCache('public:event', JSON.stringify(publicEventPayload(synthetic)), 10 / 1440);
+  return c.json({ ok: true, code: v.value.code, startsAt: v.value.startsAt, endsAt: v.value.endsAt, campaignId });
+});
+app.post('/api/event/end', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: { code?: unknown } = {};
+  try { body = await c.req.json(); } catch {}
+  const code = typeof body.code === 'string' && body.code.trim() ? body.code.trim().toUpperCase() : '';
+  if (!code) return c.json({ ok: false, error: 'code required' }, 400);
+  const store = new TenantStore(c.env.DB, s);
+  const admin = await adminForShop(c.env, store);
+  if (!admin) return c.json({ ok: false, error: 'Shopify connection unavailable' });
+  const d = await deactivateVoucherDiscount(admin, code);
+  if (!d.ok) return c.json(d);
+  const probe = await fetchActiveOrderPromos(admin);
+  const remaining = probe.ok ? probe.promos.filter((p) => p.code !== code) : [];
+  await store.putSearchCache('public:event', JSON.stringify(publicEventPayload(remaining)), 10 / 1440);
+  return c.json({ ok: true });
 });
 // Marketing opt-in for one partner (owner flips it when the partner says yes -
 // partnership correspondence alone never puts anyone on the campaign list).
@@ -1186,6 +1242,29 @@ app.post('/webhooks/shop-redact', (c) =>
 // shop; spam complaints and permanent bounces feed the suppression list. The
 // signing secret lives sealed in the credential vault (stored by
 // /api/email-tracking/setup); unconfigured or bad-signature requests get 401.
+// Public storewide-event feed (2026-07-06): tells the storefront welcome modal
+// which code event is running RIGHT NOW, so the modal tears itself down when
+// the event ends (or re-points to a new code) without a theme edit. Public by
+// design - the payload is the same marketing info already printed on the
+// storefront. Cached 10 minutes so storefront traffic never hammers Shopify;
+// CORS * because the theme fetches cross-origin from activepaw.co.uk.
+app.get('/public/event', async (c) => {
+  const headers = { 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'public, max-age=120' };
+  const shops = await listActiveShops(c.env.DB);
+  if (!shops.length) return c.json({ error: 'unavailable' }, 503, headers);
+  const store = new TenantStore(c.env.DB, shops[0]);
+  const cached = await store.getSearchCache('public:event');
+  if (cached) {
+    try { return c.json(JSON.parse(cached), 200, headers); } catch { /* recompute below */ }
+  }
+  const admin = await adminForShop(c.env, store).catch(() => null);
+  if (!admin) return c.json({ error: 'unavailable' }, 503, headers);
+  const probe = await fetchActiveOrderPromos(admin);
+  if (!probe.ok) return c.json({ error: 'unavailable' }, 503, headers);
+  const payload = publicEventPayload(probe.promos);
+  await store.putSearchCache('public:event', JSON.stringify(payload), 10 / 1440);
+  return c.json(payload, 200, headers);
+});
 app.post('/webhooks/resend', async (c) => {
   const raw = await c.req.text();
   const shops = await listActiveShops(c.env.DB);

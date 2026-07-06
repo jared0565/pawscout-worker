@@ -325,4 +325,63 @@ async function cmpSavePostal(){
     if(id&&prtArm(t,'Click again to discard')) cmpDiscard(id);
   });
 })();
+// --- Storewide events: create/end from the console; the Shopify discount is
+// the ONLY record (its schedule controls checkout; the storefront modal and
+// voucher deferral both read it live). Probe shared with the Partners view.
+function evPromoLine(p){
+  var when=(p.status==='ACTIVE'?'running':'scheduled')+(p.endsAt?(', ends '+prtWhen(p.endsAt)):', no end date');
+  var h='"'+esc(p.title)+'" ('+esc(when)+(p.percentage!=null?(', '+esc(p.percentage)+'% off'):'')+')';
+  if(p.source==='code'&&p.code&&p.status==='ACTIVE') h+=' <button class="ghost" type="button" data-ev-end="'+esc(p.code)+'">End now</button>';
+  return h;
+}
+async function evLoad(){
+  var box=el('ev-promos'); if(!box) return;
+  try{
+    var r=await api('/partners/discount-status',{});
+    if(!r.ok||!r.scope){ box.textContent='Event check unavailable'+((r&&r.note)?(': '+r.note):'.'); return; }
+    if(!r.promos.length){ box.textContent='No storewide event is running or scheduled.'; return; }
+    var parts=[];
+    for(var i=0;i<r.promos.length;i++) parts.push(evPromoLine(r.promos[i]));
+    box.innerHTML=parts.join(' · ');
+  }catch(e){ box.textContent='Event check unavailable.'; }
+}
+async function evCreate(btn){
+  if(!prtArm(btn,'Click again to create the event')) return;
+  var body={
+    code:el('ev-code').value.trim().toUpperCase(),
+    pctOff:Number(el('ev-pct').value),
+    startDate:el('ev-start').value,
+    endDate:el('ev-end').value,
+    stageCampaign:!!el('ev-stage-chk').checked
+  };
+  setMsg('ev-msg','Creating the event in Shopify…','muted');
+  try{
+    var r=await api('/event/create',body);
+    if(!r.ok){ setMsg('ev-msg','Failed: '+(r.error||'unknown error'),'no'); return; }
+    var msg='Created '+r.code+'. It works at checkout only between '+prtWhen(r.startsAt)+' and '+prtWhen(r.endsAt)+' - the schedule lives inside the discount, and the storefront modal follows it automatically.';
+    if(r.campaignId) msg+=' The announcement draft is in the campaign list above: review, send yourself a test, then send.';
+    msg+=' Reminder: the modal headline wording lives in Theme settings, Welcome offer - update it there if this event needs different words.';
+    setMsg('ev-msg',msg,'ok');
+    el('ev-code').value='';
+    evLoad(); loadCampaigns();
+  }catch(e){ setMsg('ev-msg','Could not create the event.','no'); }
+}
+async function evEnd(code){
+  try{
+    var r=await api('/event/end',{code:code});
+    if(!r.ok){ setMsg('ev-msg','Failed: '+(r.error||'unknown error'),'no'); return; }
+    setMsg('ev-msg','Ended. The code is deactivated in Shopify immediately and the storefront modal clears within about 10 minutes.','ok');
+    evLoad();
+  }catch(e){ setMsg('ev-msg','Could not end the event.','no'); }
+}
+(function(){
+  var box=el('ev-promos');
+  if(box) box.addEventListener('click',function(e){
+    var t=e.target;
+    if(!t||!t.getAttribute) return;
+    var code=t.getAttribute('data-ev-end');
+    if(code&&prtArm(t,'Click again to end the event')) evEnd(code);
+  });
+  evLoad();
+})();
 `;

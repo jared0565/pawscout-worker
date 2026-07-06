@@ -387,6 +387,25 @@ describe('consolePage', () => {
     expect(scripts).toContain('approve the updated permissions');
   });
 
+  // --- Storewide event card (2026-07-06): discount lifecycle from the console ---
+
+  it('Campaigns carries the Storewide event card wired to /event/create and /event/end', async () => {
+    const html = await consolePage('test-api-key').text();
+    for (const id of ['ev-promos', 'ev-code', 'ev-pct', 'ev-start', 'ev-end', 'ev-stage-chk', 'ev-create-btn', 'ev-msg']) {
+      expect(html).toContain('id="' + id + '"');
+    }
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+    expect(scripts).toContain('function evCreate(');
+    expect(scripts).toContain('function evEnd(');
+    expect(scripts).toContain("'/event/create'");
+    expect(scripts).toContain("'/event/end'");
+    expect(scripts).toContain('evLoad();'); // probe runs at startup
+    // Consequential buttons are two-click armed, ids ride in escaped data attrs.
+    expect(scripts).toContain('Click again to create the event');
+    expect(scripts).toContain('Click again to end the event');
+    expect(scripts).toContain('data-ev-end="\'+esc(');
+  });
+
   // --- System states register (2026-07-06): the live truth table of switches ---
 
   it('Settings carries the System states register, loaded live on startup', async () => {

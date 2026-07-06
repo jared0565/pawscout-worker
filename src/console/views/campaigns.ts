@@ -43,6 +43,35 @@ export const campaignsView = `  <section class="card">
   </section>
 
   <section class="card">
+    <h2>Storewide event</h2>
+    <p class="sub" style="margin:0 0 8px">Run a store-off event (for example a bank-holiday weekend) without touching Shopify admin. Create sets up the discount code in Shopify with the schedule inside it: the code simply does not work at checkout before the start day or after the end day, so nothing needs switching off by hand. The storefront welcome modal follows the running event live and tears itself down when it ends. Creating an event also stages an announcement campaign draft with the real dates baked in (review, test and send it from the composer above). Events cannot overlap another promotion, and partner voucher codes automatically schedule themselves around events.</p>
+    <p id="ev-promos" class="sub muted" style="margin:0 0 10px">Checking events…</p>
+    <div class="row">
+      <div class="grow">
+        <label for="ev-code">Event code</label>
+        <input id="ev-code" type="text" maxlength="30" placeholder="BANKHOL15" style="text-transform:uppercase">
+      </div>
+      <div class="grow">
+        <label for="ev-pct">Discount (%)</label>
+        <input id="ev-pct" type="number" value="10" min="1" max="90" step="0.5">
+      </div>
+      <div class="grow">
+        <label for="ev-start">Starts</label>
+        <input id="ev-start" type="date">
+      </div>
+      <div class="grow">
+        <label for="ev-end">Ends (inclusive)</label>
+        <input id="ev-end" type="date">
+      </div>
+    </div>
+    <div class="row" style="align-items:center">
+      <label style="display:flex;align-items:center;gap:8px;font-size:13px;margin:0"><input id="ev-stage-chk" type="checkbox" checked> Stage the announcement campaign draft</label>
+      <button type="button" id="ev-create-btn" onclick="evCreate(this)">Create event</button>
+    </div>
+    <p id="ev-msg" class="msg muted"></p>
+  </section>
+
+  <section class="card">
     <h2>Sender details</h2>
     <p class="sub" style="margin:0 0 10px">Marketing email legally needs to say who it is from and where you are based (this is a hard requirement for US recipients). Campaigns will not send until a business postal address is saved here. It appears in the small print of every campaign email.</p>
     <div class="row">
