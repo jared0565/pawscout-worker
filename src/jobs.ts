@@ -28,6 +28,7 @@ import { LOGISTICS_DESTINATIONS } from './inbox/freight';
 import type { CjDetail } from './cj';
 import { LlmClient, curateProduct, pickHeroImage, rewriteDescription, type Curation, type HeroPick } from './llm';
 import { DEFAULT_SEMANTIC, type Env, type TenantConfig } from './types';
+import { rotateRecurringEvents } from './recurring-events';
 
 export const CULL_WINDOW_DAYS = 30; // grace period AND inactivity window
 const LOG_RETENTION_DAYS = 90;
@@ -1234,6 +1235,18 @@ export const DAILY_SHOP_STAGES: DailyStage[] = [
     async run(ctx) {
       if (ctx.env.RETENTION_REORDER_ENABLED === '1' || ctx.env.RETENTION_REORDER_ENABLED === 'true') {
         await sendReorderReminders(ctx.store, ctx.admin, ctx.cfg, ctx.env);
+      }
+    }
+  },
+  // Recurring events rotation (2026-07-06): keep every ENABLED catalogue event
+  // scheduled in Shopify (this is what rolls an event to next year after it
+  // ends) and stage the announcement campaign draft near each occurrence.
+  {
+    name: 'recurring-events', maxMs: 2 * MIN_MS, needsCj: false,
+    async run(ctx) {
+      const r = await rotateRecurringEvents(ctx.store, ctx.admin);
+      if (r.ensured || r.staged || r.errors.length) {
+        console.log(`recurring events for ${ctx.shop}: ensured ${r.ensured}, staged ${r.staged}${r.errors.length ? `, errors: ${r.errors.join(' | ')}` : ''}`);
       }
     }
   },

@@ -45,6 +45,7 @@ export const railHtml = `<nav class="rail" aria-label="Console sections">
   <button type="button" class="rail-btn" data-route="audit" onclick="location.hash='#/audit'">Audit</button>
   <button type="button" class="rail-btn" data-route="partners" onclick="location.hash='#/partners'">Partners</button>
   <button type="button" class="rail-btn" data-route="campaigns" onclick="location.hash='#/campaigns'">Campaigns</button>
+  <button type="button" class="rail-btn" data-route="events" onclick="location.hash='#/events'">Events</button>
   <button type="button" class="rail-btn" data-route="traffic" onclick="location.hash='#/traffic'">Traffic</button>
   <button type="button" class="rail-btn" data-route="settings" onclick="location.hash='#/settings'">Settings</button>
   <button type="button" class="rail-btn" data-route="help" onclick="location.hash='#/help'">Help</button>
@@ -53,10 +54,14 @@ export const railHtml = `<nav class="rail" aria-label="Console sections">
 export const routerJs = `
 // --- Hash router (shell): #/glance default (Phase 3 landing); #/inbox,
 // #/catalog, #/ops, #/audit, #/partners, #/campaigns, #/traffic, #/settings,
-// #/help. Toggles .active on the .view containers and rail buttons on
-// hashchange and on load; a missing or unknown hash falls back to glance.
+// #/help, #/events. Toggles .active on the .view containers and rail buttons
+// on hashchange and on load; a missing or unknown hash falls back to glance.
 // Hash-only navigation so it works inside the Shopify embedded iframe.
-var ROUTES=['glance','inbox','catalog','ops','audit','partners','campaigns','traffic','settings','help'];
+// 'events' is deliberately LAST: digits 1-9 and 0 map to the first ten routes,
+// so appending keeps every existing keyboard shortcut stable (Events has no
+// key; the rail button sits next to Campaigns regardless - rail order is HTML
+// order, not ROUTES order).
+var ROUTES=['glance','inbox','catalog','ops','audit','partners','campaigns','traffic','settings','help','events'];
 function currentRoute(){
   var h=location.hash||'';
   if(h.indexOf('#/')===0) h=h.slice(2); else if(h.indexOf('#')===0) h=h.slice(1);

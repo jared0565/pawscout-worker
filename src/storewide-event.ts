@@ -1,5 +1,6 @@
 import type { AdminGraphql } from './shopify-admin';
 import { type PromoWindow } from './affiliate-discounts';
+import { templateByCode, renderHeadline } from './event-catalogue';
 
 // Storewide events (2026-07-06, owner request after the WELCOME10 date drift):
 // create and end storewide percentage events from the console, with the
@@ -124,12 +125,20 @@ export interface PublicEventPayload {
   pctOff?: number;
   endsAt?: string | null;
   endsLabel?: string | null; // '19 July' - what the storefront modal prints after "Ends"
+  // Catalogue events repaint the modal completely - no theme edit per event.
+  // Absent for codes without a template (WELCOME10, one-off customs): the
+  // modal keeps its theme-settings wording for those.
+  headline?: string;
+  subline?: string;
+  chips?: string[];
 }
 
 /** What the storefront modal is allowed to advertise RIGHT NOW: the running
  * storewide CODE event (largest percentage if several). Scheduled events,
  * automatic discounts (no code to advertise) and code-less rows are not shown.
- * active:false tears the modal down. */
+ * active:false tears the modal down. Catalogue codes carry their pre-written
+ * wording, with the headline percentage interpolated from the LIVE discount
+ * so an owner-edited percentage can never disagree with the storefront. */
 export function publicEventPayload(promos: PromoWindow[], nowMs = Date.now()): PublicEventPayload {
   const live = promos.filter((p) =>
     p.source === 'code' && p.code && p.status === 'ACTIVE'
@@ -138,5 +147,12 @@ export function publicEventPayload(promos: PromoWindow[], nowMs = Date.now()): P
   if (!live.length) return { active: false };
   const best = live.slice().sort((a, b) => (b.percentage ?? 0) - (a.percentage ?? 0))[0];
   const endsLabel = best.endsAt ? eventDayLabel(best.endsAt).replace(/^\w+ /, '') : null;
-  return { active: true, code: best.code!, pctOff: best.percentage ?? undefined, endsAt: best.endsAt, endsLabel };
+  const base: PublicEventPayload = { active: true, code: best.code!, pctOff: best.percentage ?? undefined, endsAt: best.endsAt, endsLabel };
+  const t = templateByCode(best.code!);
+  if (t) {
+    base.headline = renderHeadline(t, best.percentage);
+    base.subline = t.subline;
+    base.chips = t.chips;
+  }
+  return base;
 }

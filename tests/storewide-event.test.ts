@@ -73,6 +73,17 @@ describe('publicEventPayload', () => {
     const p = publicEventPayload([promo({}), promo({ title: 'MEGA20', code: 'MEGA20', percentage: 20 })], NOW);
     expect(p.code).toBe('MEGA20');
   });
+  it('catalogue codes carry their pre-written wording, pct interpolated from the LIVE discount', () => {
+    const p = publicEventPayload([promo({ title: 'SUMMERSALE', code: 'SUMMERSALE', percentage: 12, startsAt: '2026-07-01T00:00:00Z', endsAt: '2026-07-10T23:59:59Z' })], NOW);
+    expect(p.headline).toBe('12% off everything for the Summer bank holiday');
+    expect(p.subline).toContain('long weekend');
+    expect(p.chips).toContain('Cooling mats');
+  });
+  it('codes without a template (WELCOME10, customs) carry no wording - the modal keeps its theme copy', () => {
+    const p = publicEventPayload([promo({})], NOW);
+    expect(p.headline).toBeUndefined();
+    expect(p.chips).toBeUndefined();
+  });
 });
 
 describe('eventDayLabel', () => {

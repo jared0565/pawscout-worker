@@ -68,6 +68,8 @@ export async function collectSystemStates(
   const pulse = await store.emailEventPulse();
   const suppressed = await store.countUnsubscribes();
   const consentingPartners = (await store.listConsentingPartnerEmails()).length;
+  const recurringRows = await store.listRecurringEvents();
+  const enabledEvents = recurringRows.filter((r) => r.enabled === 1).map((r) => r.key);
   const dailyStamp = await store.getSearchCache(JOB_STAMP_DAILY);
   const pipelineStamp = await store.getSearchCache(JOB_STAMP_PIPELINE);
   const marketsStamp = marketsStampSummary(await store.getSearchCache(JOB_STAMP_MARKETS));
@@ -128,7 +130,8 @@ export async function collectSystemStates(
       states: [
         { key: 'inbox.postalAddress', label: 'Business postal address', value: inbox.postalAddress ? 'Set' : 'MISSING', on: !!inbox.postalAddress, detail: inbox.postalAddress ? inbox.postalAddress : 'campaigns refuse to send without it', source: 'tenant_config.inbox.postalAddress' },
         { key: 'email.tracking', label: 'Email engagement tracking', value: trackingValue, on: trackingOn, detail: trackingBits.join('; '), source: 'Resend domain flags + supplier_credentials resend-webhook + email_events' },
-        { key: 'email.suppressed', label: 'Suppression list size', value: String(suppressed), on: null, detail: 'unsubscribes, spam complaints, permanent bounces', source: 'email_unsubscribes' }
+        { key: 'email.suppressed', label: 'Suppression list size', value: String(suppressed), on: null, detail: 'unsubscribes, spam complaints, permanent bounces', source: 'email_unsubscribes' },
+        { key: 'events.recurring', label: 'Yearly events enabled', value: String(enabledEvents.length), on: enabledEvents.length ? true : null, detail: enabledEvents.length ? enabledEvents.join(', ') : 'none enabled - see the Events view', source: 'recurring_events (enabled = 1); occurrence dates live in the Shopify discounts' }
       ]
     },
     {

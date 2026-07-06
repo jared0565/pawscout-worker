@@ -246,7 +246,8 @@ describe('consolePage', () => {
     expect(scripts).toContain("window.addEventListener('hashchange',applyRoute)");
     expect(scripts).toContain('applyRoute();'); // applied on load too
     // Glance is the default route: unknown/missing hash falls back to it.
-    expect(scripts).toContain("var ROUTES=['glance','inbox','catalog','ops','audit','partners','campaigns','traffic','settings','help']");
+    // 'events' is appended LAST so digits 1-9 and 0 keep their existing routes.
+    expect(scripts).toContain("var ROUTES=['glance','inbox','catalog','ops','audit','partners','campaigns','traffic','settings','help','events']");
     expect(scripts).toContain(":'glance'");
   });
 
@@ -387,11 +388,13 @@ describe('consolePage', () => {
     expect(scripts).toContain('approve the updated permissions');
   });
 
-  // --- Storewide event card (2026-07-06): discount lifecycle from the console ---
+  // --- Events view (2026-07-06): yearly recurring cards + one-off form ---
 
-  it('Campaigns carries the Storewide event card wired to /event/create and /event/end', async () => {
+  it('the Events view carries the one-off form wired to /event/create and /event/end', async () => {
     const html = await consolePage('test-api-key').text();
-    for (const id of ['ev-promos', 'ev-code', 'ev-pct', 'ev-start', 'ev-end', 'ev-stage-chk', 'ev-create-btn', 'ev-msg']) {
+    expect(html).toContain('id="view-events"');
+    expect(html).toContain('data-route="events"');
+    for (const id of ['ev-promos', 'ev-recurring', 'ev-rec-msg', 'ev-code', 'ev-pct', 'ev-start', 'ev-end', 'ev-stage-chk', 'ev-create-btn', 'ev-msg']) {
       expect(html).toContain('id="' + id + '"');
     }
     const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
@@ -404,6 +407,22 @@ describe('consolePage', () => {
     expect(scripts).toContain('Click again to create the event');
     expect(scripts).toContain('Click again to end the event');
     expect(scripts).toContain('data-ev-end="\'+esc(');
+    // Events is appended to ROUTES so the existing digit shortcuts stay stable.
+    expect(scripts).toContain("'settings','help','events'");
+  });
+
+  it('yearly event cards toggle through /events/recurring with armed buttons', async () => {
+    const html = await consolePage('test-api-key').text();
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+    expect(scripts).toContain('function evRecLoad(');
+    expect(scripts).toContain('function evRecToggle(');
+    expect(scripts).toContain("'/events/recurring'");
+    expect(scripts).toContain("'/events/recurring/toggle'");
+    expect(scripts).toContain('Click again to enable');
+    expect(scripts).toContain('Click again to disable');
+    expect(scripts).toContain('data-ev-on="\'+esc(');
+    expect(scripts).toContain('data-ev-off="\'+esc(');
+    expect(scripts).toContain('evRecLoad();'); // cards load at startup
   });
 
   // --- System states register (2026-07-06): the live truth table of switches ---

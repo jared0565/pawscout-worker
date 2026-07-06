@@ -1757,6 +1757,32 @@ export class TenantStore {
     return out;
   }
 
+  // --- Recurring events (2026-07-06): enable flags + pct override, never dates ---
+
+  async listRecurringEvents(): Promise<{ key: string; enabled: number; pct_off: number | null; armed_for: string | null }[]> {
+    const rs = await this.db
+      .prepare(`SELECT key, enabled, pct_off, armed_for FROM recurring_events WHERE shop = ?1`)
+      .bind(this.shop).all<{ key: string; enabled: number; pct_off: number | null; armed_for: string | null }>();
+    return rs.results ?? [];
+  }
+
+  async setRecurringEvent(key: string, enabled: boolean, pctOff: number | null): Promise<void> {
+    const now = new Date().toISOString();
+    await this.db
+      .prepare(`INSERT INTO recurring_events (shop, key, enabled, pct_off, created_at, updated_at)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+                ON CONFLICT(shop, key) DO UPDATE SET enabled = ?3, pct_off = ?4, updated_at = ?5`)
+      .bind(this.shop, key, enabled ? 1 : 0, pctOff, now)
+      .run();
+  }
+
+  async setRecurringArmedFor(key: string, windowStart: string): Promise<void> {
+    await this.db
+      .prepare(`UPDATE recurring_events SET armed_for = ?3, updated_at = ?4 WHERE shop = ?1 AND key = ?2`)
+      .bind(this.shop, key, windowStart, new Date().toISOString())
+      .run();
+  }
+
   /** Email-event heartbeat for the System states register: proof the tracking
    * pipeline is really flowing (webhook verified + at least one event stored)
    * without trusting any stored flag. */

@@ -58,6 +58,7 @@ SELECT inbox, fulfil, gates, pricing, llm, addons, target FROM tenant_config WHE
 | `inbox.postalAddress` | `tenant_config.inbox.postalAddress` (campaigns refuse to send without it) | inbox column dump |
 | `email.tracking` | THREE signals, no stored flag: Resend domain open/click flags (live API probe, needs the worker's key), sealed webhook secret, and stored events | `SELECT (SELECT COUNT(*) FROM supplier_credentials WHERE supplier='resend-webhook') AS secret, (SELECT COUNT(*) FROM email_events) AS events, (SELECT MAX(occurred_at) FROM email_events) AS latest` - secret present + events flowing = ON end-to-end |
 | `email.suppressed` | `email_unsubscribes` (unsubscribes + complaints + permanent bounces) | `SELECT COUNT(*) FROM email_unsubscribes` |
+| `events.recurring` | `recurring_events` rows with `enabled = 1` (yearly rotation flags; occurrence DATES live only in the Shopify discounts + `src/event-catalogue.ts` arithmetic) | `SELECT key, enabled, pct_off, armed_for FROM recurring_events` |
 
 ## Fulfilment and shipping
 

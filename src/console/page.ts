@@ -37,6 +37,8 @@ import { auditView, auditCss } from './views/audit';
 import { partnersView, partnersCss } from './views/partners';
 import { campaignsJs } from './campaigns-js';
 import { campaignsView, campaignsCss } from './views/campaigns';
+import { eventsView, eventsCss } from './views/events';
+import { eventsJs } from './events-js';
 import { trafficJs } from './traffic-js';
 import { trafficView, trafficCss } from './views/traffic';
 import { settingsView, settingsCss } from './views/settings';
@@ -149,6 +151,7 @@ ${glanceCss}
 ${auditCss}
 ${partnersCss}
 ${campaignsCss}
+${eventsCss}
 ${trafficCss}
 ${settingsCss}
 ${helpCss}</style>
@@ -174,6 +177,9 @@ ${partnersView}
 </main>
 <main class="view" id="view-campaigns">
 ${campaignsView}
+</main>
+<main class="view" id="view-events">
+${eventsView}
 </main>
 <main class="view" id="view-traffic">
 ${trafficView}
@@ -920,6 +926,7 @@ ${glanceJs}
 ${auditJs}
 ${partnersJs}
 ${campaignsJs}
+${eventsJs}
 ${trafficJs}
 refresh();
 loadInsights();

@@ -19,6 +19,8 @@ import { buildInvoiceForThread, discardInvoice, searchCatalog, adminForShop } fr
 import { validateCampaignPayload, resolveCampaignAudience, sendCampaignBatch, sendCampaignTest, campaignForUi, ownerTestAddress, campaignSendBlock, type CampaignAudience } from './campaigns';
 import { collectSystemStates } from './system-states';
 import { validateEventRequest, findOverlappingPromo, createEventDiscount, buildEventCampaign, publicEventPayload, eventDayLabel } from './storewide-event';
+import { reservedWindowClash, templateByKey } from './event-catalogue';
+import { ensureRecurringDiscount, retireRecurringDiscount, refreshPublicEventFeed, listRecurringForConsole } from './recurring-events';
 import { issueVoucher, fetchActiveOrderPromos, voucherDateLabel, deactivateVoucherDiscount } from './affiliate-discounts';
 import { buildVoucherInviteWithCode } from './inbox/partnership';
 import { renderReplyHtml } from './inbox/draft';
@@ -234,6 +236,12 @@ app.post('/api/event/create', async (c) => {
   const store = new TenantStore(c.env.DB, s);
   const admin = await adminForShop(c.env, store);
   if (!admin) return c.json({ ok: false, error: 'Shopify connection unavailable' });
+  // Reserved dates: bank-holiday windows belong to their pre-built recurring
+  // events, enabled or not - a custom event can never be allocated onto them.
+  const reserved = reservedWindowClash(v.value.startsAt, v.value.endsAt);
+  if (reserved) {
+    return c.json({ ok: false, error: `Those dates are the ${reserved.template.name} window (${eventDayLabel(reserved.window.startsAt)} to ${eventDayLabel(reserved.window.endsAt)}) - enable that event on the Events view instead, or pick dates outside it.` });
+  }
   const probe = await fetchActiveOrderPromos(admin);
   if (!probe.ok) return c.json({ ok: false, error: probe.error });
   const clash = findOverlappingPromo(probe.promos, v.value.startsAt, v.value.endsAt);
@@ -256,6 +264,40 @@ app.post('/api/event/create', async (c) => {
   }]);
   await store.putSearchCache('public:event', JSON.stringify(publicEventPayload(synthetic)), 10 / 1440);
   return c.json({ ok: true, code: v.value.code, startsAt: v.value.startsAt, endsAt: v.value.endsAt, campaignId });
+});
+// Recurring events: catalogue joined with the owner's enable flags. Enabling
+// UPSERTS the scheduled Shopify discount immediately (which is also what makes
+// the window visible to the overlap check); the nightly rotation then keeps it
+// scheduled year after year and stages the announcement draft near each
+// occurrence. Disabling retires the discount (running or scheduled).
+app.post('/api/events/recurring', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  const store = new TenantStore(c.env.DB, s);
+  return c.json({ ok: true, events: await listRecurringForConsole(store) });
+});
+app.post('/api/events/recurring/toggle', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: { key?: unknown; enabled?: unknown; pctOff?: unknown } = {};
+  try { body = await c.req.json(); } catch { return c.json({ ok: false, error: 'Invalid JSON body' }, 400); }
+  const t = typeof body.key === 'string' ? templateByKey(body.key) : null;
+  if (!t) return c.json({ ok: false, error: 'Unknown event' }, 400);
+  const enabled = body.enabled === true;
+  const pctOff = typeof body.pctOff === 'number' && body.pctOff >= 1 && body.pctOff <= 90 ? body.pctOff : null;
+  const store = new TenantStore(c.env.DB, s);
+  const admin = await adminForShop(c.env, store);
+  if (!admin) return c.json({ ok: false, error: 'Shopify connection unavailable' });
+  if (enabled) {
+    const r = await ensureRecurringDiscount(admin, t, pctOff ?? t.defaultPct);
+    if (!r.ok) return c.json(r);
+    await store.setRecurringEvent(t.key, true, pctOff);
+    await refreshPublicEventFeed(store, admin);
+    return c.json({ ok: true, enabled: true, window: r.window, action: r.action });
+  }
+  const r = await retireRecurringDiscount(admin, t);
+  if (!r.ok) return c.json(r);
+  await store.setRecurringEvent(t.key, false, pctOff);
+  await refreshPublicEventFeed(store, admin);
+  return c.json({ ok: true, enabled: false });
 });
 app.post('/api/event/end', async (c) => {
   const s = await shopOf(c); if (typeof s !== 'string') return s;
