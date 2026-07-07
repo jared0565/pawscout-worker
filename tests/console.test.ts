@@ -247,7 +247,7 @@ describe('consolePage', () => {
     expect(scripts).toContain('applyRoute();'); // applied on load too
     // Glance is the default route: unknown/missing hash falls back to it.
     // 'events' is appended LAST so digits 1-9 and 0 keep their existing routes.
-    expect(scripts).toContain("var ROUTES=['glance','inbox','catalog','ops','audit','partners','campaigns','traffic','settings','help','events']");
+    expect(scripts).toContain("var ROUTES=['glance','inbox','catalog','ops','audit','partners','campaigns','traffic','settings','help','events','content']");
     expect(scripts).toContain(":'glance'");
   });
 
@@ -312,6 +312,27 @@ describe('consolePage', () => {
     expect(scripts).toContain('data-trf-id="\'+esc(');
     // Deleting a channel is two-click armed like the other consequential actions.
     expect(scripts).toContain('Click again to delete');
+  });
+
+  // --- Content view (2026-07-07): blog agents author DRAFT posts ---
+
+  it('renders the Content view: rail entry, generate control, list, wired to /blog endpoints', async () => {
+    const html = await consolePage('test-api-key').text();
+    expect(html).toContain('data-route="content"');
+    expect(html).toContain('id="view-content"');
+    for (const id of ['blg-topic', 'blg-gen-btn', 'blg-msg', 'blg-list']) {
+      expect(html).toContain('id="' + id + '"');
+    }
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+    expect(scripts).toContain('function blogGenerate(');
+    expect(scripts).toContain('function loadContent(');
+    expect(scripts).toContain("'/blog/generate'");
+    expect(scripts).toContain("'/blog/list'");
+    expect(scripts).toContain('loadContent();'); // loaded on startup
+    // Dynamic values are escaped before innerHTML (XSS discipline).
+    expect(scripts).toContain('esc(p.title)');
+    // The copy makes the DRAFT-not-published contract explicit to the owner.
+    expect(html).toContain('Nothing is published automatically');
   });
 
   it('Help covers Traffic as a full KB section: board, starter strategy, methodology, evidence', async () => {

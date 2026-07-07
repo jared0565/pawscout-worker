@@ -41,6 +41,8 @@ import { eventsView, eventsCss } from './views/events';
 import { eventsJs } from './events-js';
 import { trafficJs } from './traffic-js';
 import { trafficView, trafficCss } from './views/traffic';
+import { blogJs } from './blog-js';
+import { blogView, blogCss } from './views/blog';
 import { settingsView, settingsCss } from './views/settings';
 import { helpView, helpCss } from './views/help';
 import { railHtml, routerJs, shellCss } from './shell';
@@ -153,6 +155,7 @@ ${partnersCss}
 ${campaignsCss}
 ${eventsCss}
 ${trafficCss}
+${blogCss}
 ${settingsCss}
 ${helpCss}</style>
 </head><body>
@@ -183,6 +186,9 @@ ${eventsView}
 </main>
 <main class="view" id="view-traffic">
 ${trafficView}
+</main>
+<main class="view" id="view-content">
+${blogView}
 </main>
 <main class="view" id="view-settings">
 ${settingsView}
@@ -928,6 +934,7 @@ ${partnersJs}
 ${campaignsJs}
 ${eventsJs}
 ${trafficJs}
+${blogJs}
 refresh();
 loadInsights();
 loadGlance();
@@ -937,6 +944,7 @@ loadAudit();
 loadPartners();
 loadCampaigns();
 loadTraffic();
+loadContent();
 loadSystemStates();
 ${routerJs}</script>
 </body></html>`;

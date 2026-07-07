@@ -47,6 +47,7 @@ export const railHtml = `<nav class="rail" aria-label="Console sections">
   <button type="button" class="rail-btn" data-route="campaigns" onclick="location.hash='#/campaigns'">Campaigns</button>
   <button type="button" class="rail-btn" data-route="events" onclick="location.hash='#/events'">Events</button>
   <button type="button" class="rail-btn" data-route="traffic" onclick="location.hash='#/traffic'">Traffic</button>
+  <button type="button" class="rail-btn" data-route="content" onclick="location.hash='#/content'">Content</button>
   <button type="button" class="rail-btn" data-route="settings" onclick="location.hash='#/settings'">Settings</button>
   <button type="button" class="rail-btn" data-route="help" onclick="location.hash='#/help'">Help</button>
 </nav>`;
@@ -57,11 +58,11 @@ export const routerJs = `
 // #/help, #/events. Toggles .active on the .view containers and rail buttons
 // on hashchange and on load; a missing or unknown hash falls back to glance.
 // Hash-only navigation so it works inside the Shopify embedded iframe.
-// 'events' is deliberately LAST: digits 1-9 and 0 map to the first ten routes,
-// so appending keeps every existing keyboard shortcut stable (Events has no
-// key; the rail button sits next to Campaigns regardless - rail order is HTML
-// order, not ROUTES order).
-var ROUTES=['glance','inbox','catalog','ops','audit','partners','campaigns','traffic','settings','help','events'];
+// 'events' and 'content' are deliberately LAST: digits 1-9 and 0 map to the
+// first ten routes, so appending keeps every existing keyboard shortcut stable
+// (they have no digit key; the rail buttons sit in HTML order, not ROUTES
+// order - Content sits under Traffic in the rail).
+var ROUTES=['glance','inbox','catalog','ops','audit','partners','campaigns','traffic','settings','help','events','content'];
 function currentRoute(){
   var h=location.hash||'';
   if(h.indexOf('#/')===0) h=h.slice(2); else if(h.indexOf('#')===0) h=h.slice(1);
