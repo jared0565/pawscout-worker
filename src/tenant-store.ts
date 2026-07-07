@@ -1927,6 +1927,39 @@ export class TenantStore {
       .run();
   }
 
+  // --- Blog content pipeline (2026-07-07): staging rows for authored posts ---
+
+  async insertBlogPostDraft(d: {
+    id: string; shopifyArticleId: string | null; blogHandle: string | null; title: string;
+    collectionHandle: string | null; briefJson: string | null; claimFlagsJson: string | null; model: string | null;
+  }): Promise<void> {
+    const now = new Date().toISOString();
+    await this.db
+      .prepare(`INSERT INTO blog_post_drafts (shop, id, shopify_article_id, blog_handle, title, collection_handle, status, brief_json, claim_flags_json, model, created_at, updated_at)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'drafted', ?7, ?8, ?9, ?10, ?10)`)
+      .bind(this.shop, d.id, d.shopifyArticleId, d.blogHandle, d.title, d.collectionHandle, d.briefJson, d.claimFlagsJson, d.model, now)
+      .run();
+  }
+
+  async listBlogPostDrafts(limit = 50): Promise<{
+    id: string; shopify_article_id: string | null; blog_handle: string | null; title: string;
+    collection_handle: string | null; status: string; brief_json: string | null; claim_flags_json: string | null; created_at: string;
+  }[]> {
+    const rs = await this.db
+      .prepare(`SELECT id, shopify_article_id, blog_handle, title, collection_handle, status, brief_json, claim_flags_json, created_at
+                FROM blog_post_drafts WHERE shop = ?1 ORDER BY created_at DESC LIMIT ?2`)
+      .bind(this.shop, limit)
+      .all<{ id: string; shopify_article_id: string | null; blog_handle: string | null; title: string; collection_handle: string | null; status: string; brief_json: string | null; claim_flags_json: string | null; created_at: string }>();
+    return rs.results ?? [];
+  }
+
+  async setBlogPostStatus(id: string, status: string): Promise<void> {
+    await this.db
+      .prepare(`UPDATE blog_post_drafts SET status = ?3, updated_at = ?4 WHERE shop = ?1 AND id = ?2`)
+      .bind(this.shop, id, status, new Date().toISOString())
+      .run();
+  }
+
   /** Email-event heartbeat for the System states register: proof the tracking
    * pipeline is really flowing (webhook verified + at least one event stored)
    * without trusting any stored flag. */

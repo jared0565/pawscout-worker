@@ -21,6 +21,7 @@ import { collectSystemStates } from './system-states';
 import { validateEventRequest, findOverlappingPromo, createEventDiscount, buildEventCampaign, publicEventPayload, eventDayLabel } from './storewide-event';
 import { reservedWindowClash, templateByKey } from './event-catalogue';
 import { ensureRecurringDiscount, retireRecurringDiscount, refreshPublicEventFeed, listRecurringForConsole } from './recurring-events';
+import { runBlogPipeline } from './blog/pipeline';
 import { issueVoucher, fetchActiveOrderPromos, voucherDateLabel, deactivateVoucherDiscount } from './affiliate-discounts';
 import { buildVoucherInviteWithCode } from './inbox/partnership';
 import { renderReplyHtml } from './inbox/draft';
@@ -323,6 +324,25 @@ app.post('/api/event/end', async (c) => {
   const remaining = probe.ok ? probe.promos.filter((p) => p.code !== code) : [];
   await store.putSearchCache('public:event', JSON.stringify(publicEventPayload(remaining)), 10 / 1440);
   return c.json({ ok: true });
+});
+// Blog content pipeline (2026-07-07): the owner triggers the blog agents to
+// author ONE post (research -> ground -> draft -> DRAFT article). Never
+// publishes; the article is created isPublished:false for owner review.
+app.post('/api/blog/generate', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: { topicHint?: unknown } = {};
+  try { body = await c.req.json(); } catch {}
+  const store = new TenantStore(c.env.DB, s);
+  const cfg = await store.getConfig();
+  if (!cfg) return c.json({ ok: false, error: 'Tenant not found' }, 400);
+  const topicHint = typeof body.topicHint === 'string' && body.topicHint.trim() ? body.topicHint.trim().slice(0, 300) : undefined;
+  const result = await runBlogPipeline(c.env, store, cfg, { topicHint, nowMonth0: new Date().getMonth() });
+  return c.json(result);
+});
+app.post('/api/blog/list', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  const store = new TenantStore(c.env.DB, s);
+  return c.json({ ok: true, posts: await store.listBlogPostDrafts() });
 });
 // Marketing opt-in for one partner (owner flips it when the partner says yes -
 // partnership correspondence alone never puts anyone on the campaign list).
