@@ -57,7 +57,13 @@ async function blogEnrich(articleId){
     var r=await api('/blog/enrich',{articleId:articleId});
     if(!r.ok){ setMsg('blg-msg','Could not enrich the post: '+esc(r.error||'unknown error'),'no'); return; }
     var n=(r.relatedHandles&&r.relatedHandles.length)||0;
-    var img=r.imageSet?(' Hero image added'+(r.heroSourceHandle?(' from '+esc(r.heroSourceHandle)):'')+'.'):(r.hadImage?' Your existing hero image was kept.':' No product image was available for a hero.');
+    var img;
+    if(r.imageSet){
+      img=' Hero image added'+(r.heroSourceHandle?(' from '+esc(r.heroSourceHandle)):'')+'.';
+      if(!r.heroIsHighRes){ img+=' That source is under 1200px, so the social card will not be full size - upload a larger hero in admin for a crisp 1200x1200 preview.'; }
+    }else{
+      img=r.hadImage?' Your existing hero image was kept.':' No product image was available for a hero.';
+    }
     setMsg('blg-msg','Shop block set: '+n+' product(s).'+img+' Review and publish in Shopify admin (you can swap the hero there).','ok');
     loadContent();
   }catch(e){ setMsg('blg-msg','Could not enrich the post: '+errText(e),'no'); }

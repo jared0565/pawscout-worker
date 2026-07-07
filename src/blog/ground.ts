@@ -18,7 +18,7 @@ const COLLECTION_QUERY = `query pawscoutBlogGround($q: String!, $n: Int!) {
         nodes {
           handle
           title
-          featuredImage { url }
+          featuredImage { url width height }
           variants(first: 1) { nodes { price availableForSale } }
         }
       }
@@ -31,7 +31,7 @@ interface CollNode {
   title?: string;
   products?: { nodes?: {
     handle?: string; title?: string;
-    featuredImage?: { url?: string } | null;
+    featuredImage?: { url?: string; width?: number; height?: number } | null;
     variants?: { nodes?: { price?: string; availableForSale?: boolean }[] };
   }[] };
 }
@@ -65,7 +65,9 @@ export async function groundCollection(
         path: `/products/${p.handle}`,
         priceGbp: Number.isFinite(priceGbp) ? priceGbp : 0,
         available: v?.availableForSale === true,
-        imageUrl: p.featuredImage?.url || undefined
+        imageUrl: p.featuredImage?.url || undefined,
+        imageWidth: p.featuredImage?.width,
+        imageHeight: p.featuredImage?.height
       };
     })
     .filter((p): p is GroundedProduct => p !== null);

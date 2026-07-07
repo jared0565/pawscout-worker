@@ -184,6 +184,30 @@ describe('blog shop-block selection', () => {
     expect(sel.heroImageUrl).toBe('https://img/h.jpg'); // first pick WITH an image
     expect(sel.heroSourceHandle).toBe('hasimg');
   });
+
+  const PD = (handle: string, url: string, w: number, h: number) =>
+    ({ title: handle, handle, path: `/products/${handle}`, priceGbp: 1, available: true, imageUrl: url, imageWidth: w, imageHeight: h });
+
+  it('hero prefers a >=1200 square image over an earlier smaller one, without reordering the block', () => {
+    const pack: FactPack = {
+      collectionHandle: 'c', collectionTitle: 'C', collectionPath: '/collections/c',
+      products: [PD('small', 'https://img/s.jpg', 1000, 1000), PD('big', 'https://img/b.jpg', 1500, 1500)]
+    };
+    const sel = selectShopBlock(pack, '<a href="/products/small">s</a>'); // small linked -> leads the block
+    expect(sel.handles[0]).toBe('small');          // congruence order unchanged
+    expect(sel.heroSourceHandle).toBe('big');       // hero still prefers the >=1200 source
+    expect(sel.heroIsHighRes).toBe(true);
+  });
+
+  it('hero falls back to the first image and flags not-high-res when nothing reaches 1200', () => {
+    const pack: FactPack = {
+      collectionHandle: 'c', collectionTitle: 'C', collectionPath: '/collections/c',
+      products: [PD('a', 'https://img/a.jpg', 1000, 1000), PD('b', 'https://img/b.jpg', 800, 800)]
+    };
+    const sel = selectShopBlock(pack, '<p>no links</p>');
+    expect(sel.heroSourceHandle).toBe('a'); // first with an image
+    expect(sel.heroIsHighRes).toBe(false);
+  });
 });
 
 describe('blog article asset writes', () => {

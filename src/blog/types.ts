@@ -15,6 +15,8 @@ export interface GroundedProduct {
   priceGbp: number;  // shop-currency price (GBP)
   available: boolean;
   imageUrl?: string; // featured image URL (drives the auto hero pick), if any
+  imageWidth?: number;  // source px - a >=1200 square hero is what makes the
+  imageHeight?: number; // og:image genuinely 1200x1200 (Shopify never upscales)
 }
 
 /** Deterministic fact pack for one target collection: what really exists, so the

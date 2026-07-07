@@ -34,6 +34,7 @@ export interface BlogPipelineResult {
   relatedHandles?: string[];
   heroImageUrl?: string;
   heroSourceHandle?: string;
+  heroIsHighRes?: boolean;
 }
 
 /**
@@ -131,7 +132,8 @@ export async function runBlogPipeline(
     briefAngle: brief.angle,
     relatedHandles: sel.handles,
     heroImageUrl: sel.heroImageUrl,
-    heroSourceHandle: sel.heroSourceHandle
+    heroSourceHandle: sel.heroSourceHandle,
+    heroIsHighRes: sel.heroIsHighRes
   };
 }
 
@@ -142,6 +144,7 @@ export interface BlogEnrichResult {
   relatedHandles?: string[];
   heroImageUrl?: string;
   heroSourceHandle?: string;
+  heroIsHighRes?: boolean; // hero source is >= 1200x1200 (a true 1200 og:image)
   imageSet?: boolean;   // did we set a hero (only when the article had none)
   hadImage?: boolean;   // did the article already carry a hero (left untouched)
 }
@@ -211,6 +214,7 @@ export async function enrichBlogPost(
     relatedHandles: sel.handles,
     heroImageUrl: setImage ? sel.heroImageUrl : undefined,
     heroSourceHandle: setImage ? sel.heroSourceHandle : undefined,
+    heroIsHighRes: setImage ? sel.heroIsHighRes : undefined,
     imageSet: setImage,
     hadImage: article.hasImage
   };

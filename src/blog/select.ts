@@ -8,7 +8,7 @@
 // we top up from the funnel collection so the block is always full. The hero is
 // the first pick that has an image; a human can swap it on review.
 
-import type { FactPack } from './types';
+import type { FactPack, GroundedProduct } from './types';
 
 /** Every /products/<handle> the body links to, in first-seen order, deduped.
  *  Matches both absolute and root-relative hrefs (the drafter is told to use
@@ -27,10 +27,15 @@ export function extractProductHandles(bodyHtml: string): string[] {
 
 export interface ShopBlockSelection {
   handles: string[];             // <= max, congruence-ordered
-  heroImageUrl?: string;         // first pick that has an image
+  heroImageUrl?: string;         // chosen hero (prefers a >=1200 source)
   heroSourceHandle?: string;     // which product the hero came from
   heroAlt?: string;              // that product's title (image alt)
+  heroIsHighRes?: boolean;       // true when the hero source is >= 1200x1200
 }
+
+// Shopify never upscales, so only a >=1200 SQUARE source yields a genuine
+// 1200x1200 og:image (the 1.91:1 wide card also needs both dims >= this).
+const MIN_HERO_PX = 1200;
 
 /**
  * Choose up to `max` products for the shop block and the hero image.
@@ -50,13 +55,24 @@ export function selectShopBlock(pack: FactPack, bodyHtml: string, max = 4): Shop
 
   const handles = [...linked, ...topUp].slice(0, max);
 
-  let heroImageUrl: string | undefined;
-  let heroSourceHandle: string | undefined;
-  let heroAlt: string | undefined;
+  // Hero: keep congruence order, but prefer the first pick whose source is
+  // >=1200 square (a true 1200x1200 og:image). Fall back to the first pick with
+  // any image so every post still gets a hero - a human can swap it on review.
+  let fallback: GroundedProduct | undefined;
+  let highRes: GroundedProduct | undefined;
   for (const h of handles) {
     const p = byHandle.get(h);
-    if (p?.imageUrl) { heroImageUrl = p.imageUrl; heroSourceHandle = p.handle; heroAlt = p.title; break; }
+    if (!p?.imageUrl) continue;
+    if (!fallback) fallback = p;
+    if ((p.imageWidth ?? 0) >= MIN_HERO_PX && (p.imageHeight ?? 0) >= MIN_HERO_PX) { highRes = p; break; }
   }
+  const hero = highRes ?? fallback;
 
-  return { handles, heroImageUrl, heroSourceHandle, heroAlt };
+  return {
+    handles,
+    heroImageUrl: hero?.imageUrl,
+    heroSourceHandle: hero?.handle,
+    heroAlt: hero?.title,
+    heroIsHighRes: !!highRes
+  };
 }
