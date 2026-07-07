@@ -5,14 +5,37 @@ import { TenantStore, listActiveShops, purgeExpiredSearchCache, purgeUnusedWareh
 import { liveCjPasses, normalizeKeyword, CACHE_TTL_DAYS, isLikelyPetProduct, titleSignature } from './proxy/search';
 import { bestLocalQty, localWarehousesFor, HOME_MARKET_WAREHOUSES } from './local-markets';
 
+/** US-lane sourcing keywords (2026-07-07): bulky / high-ticket niches ONLY.
+ *  The generic SEED_KEYWORDS produced a 0-for-35 street-parity pass rate for
+ *  the US market because CJ's US-warehouse COST sits at or above Amazon and
+ *  Walmart RETAIL for small commodity goods (kits, wipes, small toys). The
+ *  only cost-below-street candidates in that review were freight-heavy items
+ *  (a stainless steel litter box: cost $46.81 vs street $57-70), so this set
+ *  targets categories where US street prices carry real freight. Works with
+ *  the lane's gateOverrides price band (below), which replaces the commodity
+ *  band for US discovery. */
+export const US_SEED_KEYWORDS: Record<string, string[]> = {
+  'pet-cleaning': ['stainless steel litter box', 'cat litter box enclosed', 'self cleaning cat litter box'],
+  'pet-grooming': ['dog grooming table', 'dog grooming vacuum', 'dog bath tub'],
+  'pet-toys': ['cat exercise wheel', 'dog agility set'],
+  'pet-accessories': ['dog crate', 'dog kennel', 'cat tree', 'pet stroller', 'dog ramp', 'dog stairs', 'elevated dog bed', 'dog playpen', 'orthopedic dog bed', 'cat wall shelves', 'dog house']
+};
+
 /** Nightly market-fill lanes (owner's local-for-local model, 2026-07-05):
  *  each lane discovers products the TARGET market's local warehouse really
  *  stocks and imports them as DRAFTS (tagged market-<cc>) for owner review.
  *  Publishing stays gated on the per-market visibility phase - drafts are
  *  invisible everywhere, so the lanes are safe to run every night. US first
- *  (deepest CJ supply); EU (DE) and AU lanes join once US validates. */
-export const MARKET_SEED_LANES: { countryCode: string; maxDraftsPerNight: number }[] = [
-  { countryCode: 'US', maxDraftsPerNight: 15 },
+ *  (deepest CJ supply); EU (DE) and AU lanes join once US validates.
+ *  Per-lane `keywords` / `gateOverrides` replace the home-market discovery
+ *  profile where the target market's economics differ (see US_SEED_KEYWORDS):
+ *  priceMin 25 kills the commodity tier that always fails US street parity,
+ *  priceMax 200 admits the furniture class the global band (80) would block. */
+export const MARKET_SEED_LANES: {
+  countryCode: string; maxDraftsPerNight: number;
+  keywords?: Record<string, string[]>; gateOverrides?: Partial<Gates>;
+}[] = [
+  { countryCode: 'US', maxDraftsPerNight: 15, keywords: US_SEED_KEYWORDS, gateOverrides: { priceMin: 25, priceMax: 200 } },
 ];
 import { getExpansions, seedTerm } from './semantic/library';
 import { confirmAndImport, getCachedDetail, resolveCategory, reconcileAddonVisibility, reconcileHeroImages, reconcileDescriptions, reconcileCategories, setProductTags, ADDON_CATEGORY } from './proxy/import';
@@ -27,7 +50,7 @@ import { resolveShipConfig } from './shipping/ship-config';
 import { LOGISTICS_DESTINATIONS } from './inbox/freight';
 import type { CjDetail } from './cj';
 import { LlmClient, curateProduct, pickHeroImage, rewriteDescription, type Curation, type HeroPick } from './llm';
-import { DEFAULT_SEMANTIC, type Env, type TenantConfig } from './types';
+import { DEFAULT_SEMANTIC, type Env, type TenantConfig, type Gates } from './types';
 import { rotateRecurringEvents } from './recurring-events';
 
 export const CULL_WINDOW_DAYS = 30; // grace period AND inactivity window
@@ -949,6 +972,9 @@ export async function seedOriginAssortment(
     pickHero?: (title: string, imageUrls: string[]) => Promise<HeroPick>;
     pause?: (ms: number) => Promise<void>;
     keywords?: Record<string, string[]>;
+    /** Lane-specific discovery gates (e.g. the US lane's bulky-niche price
+     *  band); defaults to the tenant's global gates. */
+    gates?: Gates;
   } = {}
 ): Promise<{ discovered: number; drafted: number; rejected: number }> {
   const cc = opts.countryCode ?? 'GB';
@@ -956,6 +982,7 @@ export async function seedOriginAssortment(
   const maxDrafts = opts.maxDrafts ?? Infinity; // nightly lanes pace themselves
   const pause = opts.pause ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const keywords = opts.keywords ?? SEED_KEYWORDS;
+  const gates = opts.gates ?? cfg.gates;
   // Local-for-local: the seed lane's gate is the TARGET market's warehouses,
   // and non-home seeds carry a market tag (e.g. market-us) so the owner can
   // filter drafts in admin and the visibility phase can scope publishing.
@@ -976,7 +1003,7 @@ export async function seedOriginAssortment(
       // keyword) would be drafted into the wrong collection. The LLM curation gate
       // downstream still applies on top of this.
       const items = (await cj.searchByWarehouse(normalizeKeyword(kw), cc))
-        .filter((i) => liveCjPasses(i, cfg.gates, normalizeKeyword(kw)));
+        .filter((i) => liveCjPasses(i, gates, normalizeKeyword(kw)));
       await pause(CJ_CALL_GAP_MS);
       for (const item of items) {
         if (perCat >= cap || drafted >= maxDrafts) break;
@@ -1203,7 +1230,11 @@ export const DAILY_SHOP_STAGES: DailyStage[] = [
   ...MARKET_SEED_LANES.map((lane): DailyStage => ({
     name: `seed-${lane.countryCode.toLowerCase()}`, maxMs: 9 * MIN_MS,
     async run(ctx) {
-      const r = await seedOriginAssortment(ctx.store, ctx.cj!, ctx.admin, ctx.cfg, { countryCode: lane.countryCode, maxDrafts: lane.maxDraftsPerNight, curate: ctx.curate, pickHero: ctx.pickHero });
+      const r = await seedOriginAssortment(ctx.store, ctx.cj!, ctx.admin, ctx.cfg, {
+        countryCode: lane.countryCode, maxDrafts: lane.maxDraftsPerNight, curate: ctx.curate, pickHero: ctx.pickHero,
+        ...(lane.keywords ? { keywords: lane.keywords } : {}),
+        ...(lane.gateOverrides ? { gates: { ...ctx.cfg.gates, ...lane.gateOverrides } } : {})
+      });
       if (r.drafted || r.discovered) console.log(`market seed ${lane.countryCode}: +${r.drafted} drafts (${r.discovered} discovered, ${r.rejected} rejected)`);
     }
   })),

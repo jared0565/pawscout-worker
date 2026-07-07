@@ -1,7 +1,7 @@
 import { env, applyD1Migrations } from 'cloudflare:test';
 import { beforeEach, describe, it, expect } from 'vitest';
 import { TenantStore } from '../src/tenant-store';
-import { seedOriginAssortment, reconcileDraftLinks } from '../src/jobs';
+import { seedOriginAssortment, reconcileDraftLinks, MARKET_SEED_LANES, US_SEED_KEYWORDS, SEED_KEYWORDS } from '../src/jobs';
 import type { CjClient, CjDetail, CjSearchItem } from '../src/cj';
 import type { AdminGraphql } from '../src/shopify-admin';
 
@@ -154,6 +154,74 @@ describe('seedOriginAssortment - US market lane', () => {
     const summary = await seedOriginAssortment(store, cj, fakeAdmin(), CFG,
       { countryCode: 'US', maxDrafts: 2, pause: async () => {}, keywords: { 'pet-toys': ['dog chew toy'] } });
     expect(summary.drafted).toBe(2); // stopped by the nightly cap, not supply
+  });
+});
+
+// --- US lane bulky-niche gate (2026-07-07) ---
+// The generic keyword set went 0-for-35 on US street parity (CJ US-warehouse
+// cost >= Amazon/Walmart retail for small commodity goods), so the US lane
+// now carries its own keywords + a widened price band. These tests pin the
+// lane wiring and prove the override does the filtering the review did by hand.
+
+describe('US lane bulky-niche gate', () => {
+  beforeEach(async () => { await applyD1Migrations(env.DB, env.TEST_MIGRATIONS); });
+
+  it('MARKET_SEED_LANES wires the US lane to bulky keywords and the widened band', () => {
+    const us = MARKET_SEED_LANES.find((l) => l.countryCode === 'US')!;
+    expect(us.keywords).toBe(US_SEED_KEYWORDS);
+    expect(us.gateOverrides).toMatchObject({ priceMin: 25, priceMax: 200 });
+    // every US keyword bucket is a real collection key the importer can tag into
+    for (const k of Object.keys(US_SEED_KEYWORDS)) {
+      expect(Object.keys(SEED_KEYWORDS)).toContain(k);
+    }
+  });
+
+  it('the lane band admits the steel-box class the global band blocked, and still kills commodity items', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const CFG2 = { ...CFG, collectionMap: { ...CFG.collectionMap, 'pet-cleaning': { tag: 'pet-cleaning' } } };
+    const items: Record<string, { name: string; usd: number }> = {
+      BOX: { name: 'Stainless Steel Cat Litter Box With Lid Extra Large', usd: 96.5 }, // over global priceMax 80
+      SCOOP: { name: 'Stainless Steel Litter Box Scoop', usd: 6 }                      // relevance-passing commodity
+    };
+    const cj = {
+      searchByWarehouse: async (): Promise<CjSearchItem[]> => (
+        Object.keys(items).map((pid) => ({ pid, nameEn: items[pid].name, image: '', sellPriceUsd: items[pid].usd, listedNum: 20, categoryName: 'pet-cleaning' }))
+      ),
+      detail: async (pid: string): Promise<CjDetail> => ({ pid, nameEn: items[pid].name, images: ['https://img/x.jpg'], descriptionHtml: 'x', variants: [{ vid: `v-${pid}`, name: 'Default', sellPriceUsd: items[pid].usd, sku: pid, stock: 50 }], listedNum: 20, categoryName: 'pet-cleaning', stock: 50, origins: { US: 148 } }),
+      stockByPid: async () => new Map([['v-BOX', 50]]),
+      freightEstimate: async () => null
+    } as unknown as CjClient;
+
+    const summary = await seedOriginAssortment(store, cj, fakeAdmin(), CFG2, {
+      countryCode: 'US', pause: async () => {},
+      keywords: { 'pet-cleaning': ['stainless steel litter box'] },
+      gates: { ...CFG.gates, priceMin: 25, priceMax: 200 }
+    });
+
+    expect(summary.drafted).toBe(1);
+    expect((await store.getLink('BOX'))?.state).toBe('draft');   // $96.5: in the lane band, out of the global one
+    expect(await store.getLink('SCOOP')).toBeNull();             // $6 commodity: filtered before any CJ detail call
+  });
+
+  it('without the override the same steel box is blocked by the global band (the pre-tune behavior)', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const CFG2 = { ...CFG, collectionMap: { ...CFG.collectionMap, 'pet-cleaning': { tag: 'pet-cleaning' } } };
+    const cj = {
+      searchByWarehouse: async (): Promise<CjSearchItem[]> => ([
+        { pid: 'BOX', nameEn: 'Stainless Steel Cat Litter Box With Lid Extra Large', image: '', sellPriceUsd: 96.5, listedNum: 20, categoryName: 'pet-cleaning' }
+      ]),
+      detail: async (): Promise<CjDetail> => { throw new Error('must not fetch detail for a gated-out item'); },
+      stockByPid: async () => new Map(),
+      freightEstimate: async () => null
+    } as unknown as CjClient;
+
+    const summary = await seedOriginAssortment(store, cj, fakeAdmin(), CFG2, {
+      countryCode: 'US', pause: async () => {},
+      keywords: { 'pet-cleaning': ['stainless steel litter box'] }
+    });
+
+    expect(summary.drafted).toBe(0);
+    expect(await store.getLink('BOX')).toBeNull();
   });
 });
 
