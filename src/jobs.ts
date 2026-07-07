@@ -46,6 +46,7 @@ import { retailPriceGbp, landedCostGbp } from './pricing';
 import { parseDaysRange, resolveLogistics, doorToDoorBand, formatBand, bandFromQuote } from './logistics';
 import { syncSignatureProfiles } from './shipping/delivery-profile';
 import { syncMarketExclusions } from './shipping/market-catalogs';
+import { syncUsFixedPrices } from './shipping/us-price-list';
 import { resolveShipConfig } from './shipping/ship-config';
 import { LOGISTICS_DESTINATIONS } from './inbox/freight';
 import type { CjDetail } from './cj';
@@ -1243,6 +1244,13 @@ export const DAILY_SHOP_STAGES: DailyStage[] = [
   { name: 'refill', maxMs: 8 * MIN_MS, run: async (ctx) => { await refillCollections(ctx.store, ctx.cj!, ctx.admin, ctx.cfg, { curate: ctx.curate, pickHero: ctx.pickHero }); } },
   // Flip ACTIVE seed drafts to imported.
   { name: 'draft-links', maxMs: 3 * MIN_MS, run: async (ctx) => { await reconcileDraftLinks(ctx.store, ctx.admin); } },
+  // Fixed USD shelf prices on the US & Canada catalog (after all repricing
+  // stages, so tonight's GBP stickers are what gets converted). Takes US
+  // display pricing away from Global-e's padded conversion; see us-price-list.ts.
+  { name: 'us-price-list', maxMs: 5 * MIN_MS, run: async (ctx) => {
+    const r = await syncUsFixedPrices(ctx.admin, ctx.cfg);
+    if (r.stamped || r.deleted) console.log(`us price list: ${r.stamped} stamped, ${r.deleted} deleted (${r.total} active variants)`);
+  } },
   // Unified nearest-warehouse shipping: per-origin-signature delivery profiles
   // (free UK on GB items; per-route nearest-warehouse pricing elsewhere).
   {
