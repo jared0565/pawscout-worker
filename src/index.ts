@@ -21,7 +21,7 @@ import { collectSystemStates } from './system-states';
 import { validateEventRequest, findOverlappingPromo, createEventDiscount, buildEventCampaign, publicEventPayload, eventDayLabel } from './storewide-event';
 import { reservedWindowClash, templateByKey } from './event-catalogue';
 import { ensureRecurringDiscount, retireRecurringDiscount, refreshPublicEventFeed, listRecurringForConsole } from './recurring-events';
-import { runBlogPipeline } from './blog/pipeline';
+import { runBlogPipeline, enrichBlogPost } from './blog/pipeline';
 import { issueVoucher, fetchActiveOrderPromos, voucherDateLabel, deactivateVoucherDiscount } from './affiliate-discounts';
 import { buildVoucherInviteWithCode } from './inbox/partnership';
 import { renderReplyHtml } from './inbox/draft';
@@ -343,6 +343,20 @@ app.post('/api/blog/list', async (c) => {
   const s = await shopOf(c); if (typeof s !== 'string') return s;
   const store = new TenantStore(c.env.DB, s);
   return c.json({ ok: true, posts: await store.listBlogPostDrafts() });
+});
+// Backfill an existing draft with the "Shop this guide" block + a hero image
+// (for posts authored before the pipeline set these). Owner-triggered; through
+// the worker's own token. Never publishes.
+app.post('/api/blog/enrich', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  const store = new TenantStore(c.env.DB, s);
+  const cfg = await store.getConfig();
+  if (!cfg) return c.json({ ok: false, error: 'Tenant not found' }, 400);
+  let body: { articleId?: unknown } = {};
+  try { body = await c.req.json(); } catch {}
+  const articleId = typeof body.articleId === 'string' && body.articleId ? body.articleId : undefined;
+  const result = await enrichBlogPost(c.env, store, cfg, { articleId });
+  return c.json(result);
 });
 // Marketing opt-in for one partner (owner flips it when the partner says yes -
 // partnership correspondence alone never puts anyone on the campaign list).

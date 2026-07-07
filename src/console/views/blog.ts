@@ -9,6 +9,9 @@ export const blogCss = `
   .blg-item-title{font-weight:650}
   .blg-flags{color:var(--no-ink);font-size:13px;margin-top:6px}
   .blg-meta{color:var(--subdued);font-size:12px;margin-top:4px}
+  .blg-actions{margin-top:8px}
+  .blg-actions button{padding:6px 12px;font-size:13px;font-family:inherit;border:1px solid var(--border);border-radius:7px;background:transparent;color:var(--ink);cursor:pointer}
+  .blg-actions button:hover{border-color:var(--ink)}
 `;
 
 export const blogView = `  <section class="card">

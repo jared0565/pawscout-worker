@@ -5,6 +5,7 @@ export const blogJs = `
 // --- Content: blog agents author DRAFT posts (the system authors; a human publishes) ---
 function blgItemHtml(p){
   var flags=[]; try{ flags=JSON.parse(p.claim_flags_json||'[]'); }catch(e){}
+  var related=[]; try{ related=JSON.parse(p.related_handles_json||'[]'); }catch(e){}
   var h='<div class="blg-item">'
     +'<div class="blg-item-head"><span class="blg-item-title">'+esc(p.title)+'</span>'
     +'<span class="badge '+(p.status==='published'?'ok':'muted')+'">'+esc(p.status)+'</span></div>';
@@ -13,7 +14,14 @@ function blgItemHtml(p){
     var concerns={}; for(var j=0;j<flags.length;j++){ concerns[flags[j].concern]=1; }
     h+='<div class="blg-flags">'+flags.length+' line(s) to verify before publishing ('+esc(Object.keys(concerns).join(', '))+').</div>';
   }
-  h+='<div class="blg-meta">Review and publish in Shopify admin: Online Store &gt; Blog posts. Add a featured image before publishing.</div>';
+  if(related.length){
+    h+='<div class="blg-meta">Shop this guide: '+related.length+' product(s)'+(p.hero_source_handle?', hero from '+esc(p.hero_source_handle):'')+'.</div>';
+  }
+  if(p.shopify_article_id && p.status!=='published'){
+    h+='<div class="blg-actions"><button type="button" class="btn-sm" onclick="blogEnrich(\\''+esc(p.shopify_article_id)+'\\')">'
+      +(related.length?'Refresh image + shop block':'Add image + shop block')+'</button></div>';
+  }
+  h+='<div class="blg-meta">Review and publish in Shopify admin: Online Store &gt; Blog posts. You can swap the hero image there before publishing.</div>';
   return h+'</div>';
 }
 async function loadContent(){
@@ -42,5 +50,16 @@ async function blogGenerate(){
     }
   }catch(e){ setMsg('blg-msg','Could not create a post: '+errText(e),'no'); }
   if(btn) btn.disabled=false;
+}
+async function blogEnrich(articleId){
+  setMsg('blg-msg','Adding the shop block and a hero image. This reads the post and picks products it links.','muted');
+  try{
+    var r=await api('/blog/enrich',{articleId:articleId});
+    if(!r.ok){ setMsg('blg-msg','Could not enrich the post: '+esc(r.error||'unknown error'),'no'); return; }
+    var n=(r.relatedHandles&&r.relatedHandles.length)||0;
+    var img=r.imageSet?(' Hero image added'+(r.heroSourceHandle?(' from '+esc(r.heroSourceHandle)):'')+'.'):(r.hadImage?' Your existing hero image was kept.':' No product image was available for a hero.');
+    setMsg('blg-msg','Shop block set: '+n+' product(s).'+img+' Review and publish in Shopify admin (you can swap the hero there).','ok');
+    loadContent();
+  }catch(e){ setMsg('blg-msg','Could not enrich the post: '+errText(e),'no'); }
 }
 `;

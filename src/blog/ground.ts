@@ -31,6 +31,7 @@ interface CollNode {
   title?: string;
   products?: { nodes?: {
     handle?: string; title?: string;
+    featuredImage?: { url?: string } | null;
     variants?: { nodes?: { price?: string; availableForSale?: boolean }[] };
   }[] };
 }
@@ -63,7 +64,8 @@ export async function groundCollection(
         handle: p.handle,
         path: `/products/${p.handle}`,
         priceGbp: Number.isFinite(priceGbp) ? priceGbp : 0,
-        available: v?.availableForSale === true
+        available: v?.availableForSale === true,
+        imageUrl: p.featuredImage?.url || undefined
       };
     })
     .filter((p): p is GroundedProduct => p !== null);

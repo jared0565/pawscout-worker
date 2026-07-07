@@ -1932,24 +1932,27 @@ export class TenantStore {
   async insertBlogPostDraft(d: {
     id: string; shopifyArticleId: string | null; blogHandle: string | null; title: string;
     collectionHandle: string | null; briefJson: string | null; claimFlagsJson: string | null; model: string | null;
+    relatedHandlesJson?: string | null; heroImageUrl?: string | null; heroSourceHandle?: string | null;
   }): Promise<void> {
     const now = new Date().toISOString();
     await this.db
-      .prepare(`INSERT INTO blog_post_drafts (shop, id, shopify_article_id, blog_handle, title, collection_handle, status, brief_json, claim_flags_json, model, created_at, updated_at)
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'drafted', ?7, ?8, ?9, ?10, ?10)`)
-      .bind(this.shop, d.id, d.shopifyArticleId, d.blogHandle, d.title, d.collectionHandle, d.briefJson, d.claimFlagsJson, d.model, now)
+      .prepare(`INSERT INTO blog_post_drafts (shop, id, shopify_article_id, blog_handle, title, collection_handle, status, brief_json, claim_flags_json, related_handles_json, hero_image_url, hero_source_handle, model, created_at, updated_at)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'drafted', ?7, ?8, ?9, ?10, ?11, ?12, ?13)`)
+      .bind(this.shop, d.id, d.shopifyArticleId, d.blogHandle, d.title, d.collectionHandle, d.briefJson, d.claimFlagsJson,
+            d.relatedHandlesJson ?? null, d.heroImageUrl ?? null, d.heroSourceHandle ?? null, d.model, now)
       .run();
   }
 
   async listBlogPostDrafts(limit = 50): Promise<{
     id: string; shopify_article_id: string | null; blog_handle: string | null; title: string;
-    collection_handle: string | null; status: string; brief_json: string | null; claim_flags_json: string | null; created_at: string;
+    collection_handle: string | null; status: string; brief_json: string | null; claim_flags_json: string | null;
+    related_handles_json: string | null; hero_image_url: string | null; hero_source_handle: string | null; created_at: string;
   }[]> {
     const rs = await this.db
-      .prepare(`SELECT id, shopify_article_id, blog_handle, title, collection_handle, status, brief_json, claim_flags_json, created_at
+      .prepare(`SELECT id, shopify_article_id, blog_handle, title, collection_handle, status, brief_json, claim_flags_json, related_handles_json, hero_image_url, hero_source_handle, created_at
                 FROM blog_post_drafts WHERE shop = ?1 ORDER BY created_at DESC LIMIT ?2`)
       .bind(this.shop, limit)
-      .all<{ id: string; shopify_article_id: string | null; blog_handle: string | null; title: string; collection_handle: string | null; status: string; brief_json: string | null; claim_flags_json: string | null; created_at: string }>();
+      .all<{ id: string; shopify_article_id: string | null; blog_handle: string | null; title: string; collection_handle: string | null; status: string; brief_json: string | null; claim_flags_json: string | null; related_handles_json: string | null; hero_image_url: string | null; hero_source_handle: string | null; created_at: string }>();
     return rs.results ?? [];
   }
 
@@ -1957,6 +1960,18 @@ export class TenantStore {
     await this.db
       .prepare(`UPDATE blog_post_drafts SET status = ?3, updated_at = ?4 WHERE shop = ?1 AND id = ?2`)
       .bind(this.shop, id, status, new Date().toISOString())
+      .run();
+  }
+
+  /** Record the shop-block handles + hero the enrich pass chose, keyed by the
+   *  Shopify article id (so a later D1 read confirms exactly what was set). */
+  async setBlogPostAssets(shopifyArticleId: string, a: {
+    relatedHandlesJson?: string | null; heroImageUrl?: string | null; heroSourceHandle?: string | null;
+  }): Promise<void> {
+    await this.db
+      .prepare(`UPDATE blog_post_drafts SET related_handles_json = ?3, hero_image_url = ?4, hero_source_handle = ?5, updated_at = ?6
+                WHERE shop = ?1 AND shopify_article_id = ?2`)
+      .bind(this.shop, shopifyArticleId, a.relatedHandlesJson ?? null, a.heroImageUrl ?? null, a.heroSourceHandle ?? null, new Date().toISOString())
       .run();
   }
 

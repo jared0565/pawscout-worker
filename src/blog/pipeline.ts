@@ -15,7 +15,8 @@ import { proposeBrief, seasonForMonth } from './research';
 import { groundCollection } from './ground';
 import { draftArticle } from './draft';
 import { findClaimFlags } from './quality';
-import { findBlog, renameBlog, createDraftArticle } from './article';
+import { selectShopBlock } from './select';
+import { findBlog, renameBlog, createDraftArticle, ensureRelatedProductsDefinition, getArticleForEnrich, updateArticleAssets } from './article';
 
 const BLOG_HANDLE = 'news';                // the already-indexed blog we reuse
 const BLOG_TITLE = 'Pet Care Guides';      // its new display title
@@ -30,6 +31,9 @@ export interface BlogPipelineResult {
   collectionHandle?: string;
   claimFlags?: { sentence: string; concern: string }[];
   briefAngle?: string;
+  relatedHandles?: string[];
+  heroImageUrl?: string;
+  heroSourceHandle?: string;
 }
 
 /**
@@ -58,6 +62,9 @@ export async function runBlogPipeline(
     return { ok: false, error: `Blog access failed: ${(e as Error).message}` };
   }
 
+  // Insurance so the theme's shop-block metafield read is never a silent miss.
+  await ensureRelatedProductsDefinition(admin);
+
   const validHandles = Object.values(cfg.collectionMap).map((c) => c.handle).filter(Boolean);
   if (validHandles.length === 0) return { ok: false, error: 'No collections configured to funnel into.' };
 
@@ -85,10 +92,17 @@ export async function runBlogPipeline(
 
   const claimFlags = findClaimFlags(draft.bodyHtml);
 
+  // Shop block + hero: products the body links come first, then top up from the
+  // funnel collection; the hero is the first pick that has an image.
+  const sel = selectShopBlock(pack, draft.bodyHtml);
+
   // Create the DRAFT article (isPublished:false) + stage the bookkeeping row.
   let created;
   try {
-    created = await createDraftArticle(admin, { blogId: blog.id, draft, authorName: AUTHOR_NAME });
+    created = await createDraftArticle(admin, {
+      blogId: blog.id, draft, authorName: AUTHOR_NAME,
+      imageUrl: sel.heroImageUrl, imageAlt: sel.heroAlt, relatedHandles: sel.handles
+    });
   } catch (e) {
     return { ok: false, error: `Article creation failed: ${(e as Error).message}` };
   }
@@ -101,6 +115,9 @@ export async function runBlogPipeline(
     collectionHandle: brief.collectionHandle,
     briefJson: JSON.stringify(brief),
     claimFlagsJson: JSON.stringify(claimFlags),
+    relatedHandlesJson: JSON.stringify(sel.handles),
+    heroImageUrl: sel.heroImageUrl,
+    heroSourceHandle: sel.heroSourceHandle,
     model: 'blog-pipeline'
   });
 
@@ -111,6 +128,90 @@ export async function runBlogPipeline(
     title: created.title,
     collectionHandle: brief.collectionHandle,
     claimFlags,
-    briefAngle: brief.angle
+    briefAngle: brief.angle,
+    relatedHandles: sel.handles,
+    heroImageUrl: sel.heroImageUrl,
+    heroSourceHandle: sel.heroSourceHandle
+  };
+}
+
+export interface BlogEnrichResult {
+  ok: boolean;
+  error?: string;
+  articleId?: string;
+  relatedHandles?: string[];
+  heroImageUrl?: string;
+  heroSourceHandle?: string;
+  imageSet?: boolean;   // did we set a hero (only when the article had none)
+  hadImage?: boolean;   // did the article already carry a hero (left untouched)
+}
+
+/**
+ * Backfill an EXISTING draft with the shop-block metafield + a hero image (used
+ * for posts authored before the pipeline set these). Reads the article body to
+ * pick the products it links, grounds the funnel collection to top up + supply
+ * images, and writes the metafield. A hero image is set ONLY when the article
+ * has none, so an owner-chosen image is never overwritten. The chosen set is
+ * recorded to D1 so it can be confirmed later. `articleId` defaults to the most
+ * recent draft. Never publishes; degrades to {ok:false,error} on any failure.
+ */
+export async function enrichBlogPost(
+  env: Env, store: TenantStore, cfg: TenantConfig,
+  opts: { articleId?: string }, fetchImpl: typeof fetch = defaultFetch
+): Promise<BlogEnrichResult> {
+  const rows = await store.listBlogPostDrafts();
+  if (!rows.length) return { ok: false, error: 'No drafted posts to enrich.' };
+  const row = opts.articleId
+    ? rows.find((r) => r.shopify_article_id === opts.articleId)
+    : rows[0];
+  if (!row || !row.shopify_article_id) return { ok: false, error: 'Post not found.' };
+  const articleId = row.shopify_article_id;
+  if (!row.collection_handle) return { ok: false, error: 'Post has no funnel collection to source products from.' };
+
+  const admin = await adminForShop(env, store, fetchImpl).catch(() => null);
+  if (!admin) return { ok: false, error: 'Shopify connection unavailable (needs the write_content scope + a live token).' };
+
+  await ensureRelatedProductsDefinition(admin);
+
+  let article;
+  try {
+    article = await getArticleForEnrich(admin, articleId);
+  } catch (e) {
+    return { ok: false, error: `Could not read the article: ${(e as Error).message}` };
+  }
+  if (!article) return { ok: false, error: 'Article no longer exists.' };
+
+  const pack = await groundCollection(admin, row.collection_handle);
+  if (!pack) return { ok: false, error: `Funnel collection '${row.collection_handle}' has no products to source.` };
+
+  const sel = selectShopBlock(pack, article.bodyHtml);
+  if (!sel.handles.length) return { ok: false, error: 'No available products found to build the shop block.' };
+
+  const setImage = !article.hasImage && !!sel.heroImageUrl;
+  try {
+    await updateArticleAssets(admin, {
+      articleId,
+      relatedHandles: sel.handles,
+      imageUrl: setImage ? sel.heroImageUrl : undefined,
+      imageAlt: sel.heroAlt
+    });
+  } catch (e) {
+    return { ok: false, error: `Update failed: ${(e as Error).message}` };
+  }
+
+  await store.setBlogPostAssets(articleId, {
+    relatedHandlesJson: JSON.stringify(sel.handles),
+    heroImageUrl: setImage ? sel.heroImageUrl : (article.hasImage ? '(owner image kept)' : null),
+    heroSourceHandle: setImage ? sel.heroSourceHandle : null
+  });
+
+  return {
+    ok: true,
+    articleId,
+    relatedHandles: sel.handles,
+    heroImageUrl: setImage ? sel.heroImageUrl : undefined,
+    heroSourceHandle: setImage ? sel.heroSourceHandle : undefined,
+    imageSet: setImage,
+    hadImage: article.hasImage
   };
 }

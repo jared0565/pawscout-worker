@@ -11,6 +11,13 @@ import type { BlogDraft } from './types';
 
 export interface BlogRef { id: string; handle: string; title: string; }
 
+// The "Shop this guide" metafield: a list of product handles the theme renders
+// via all_products[handle]. Handles (not product GIDs) keep the worker side
+// GID-free and let the theme resolve live, market-priced product cards.
+export const RELATED_NS = 'blog';
+export const RELATED_KEY = 'related_products';
+export const RELATED_TYPE = 'list.single_line_text_field';
+
 const BLOGS_QUERY = `query pawscoutBlogs { blogs(first: 20) { nodes { id handle title } } }`;
 
 /** Find a blog by handle (e.g. the default 'news'). Null if none. */
@@ -54,9 +61,16 @@ export interface CreatedArticle { id: string; handle: string; title: string; isP
  */
 export async function createDraftArticle(
   admin: AdminGraphql,
-  opts: { blogId: string; draft: BlogDraft; authorName: string; imageUrl?: string; imageAlt?: string }
+  opts: { blogId: string; draft: BlogDraft; authorName: string; imageUrl?: string; imageAlt?: string; relatedHandles?: string[] }
 ): Promise<CreatedArticle> {
-  const { blogId, draft, authorName, imageUrl, imageAlt } = opts;
+  const { blogId, draft, authorName, imageUrl, imageAlt, relatedHandles } = opts;
+  const metafields: Record<string, unknown>[] = [
+    { namespace: 'global', key: 'title_tag', value: draft.metaTitle, type: 'single_line_text_field' },
+    { namespace: 'global', key: 'description_tag', value: draft.metaDescription, type: 'single_line_text_field' }
+  ];
+  if (relatedHandles && relatedHandles.length) {
+    metafields.push({ namespace: RELATED_NS, key: RELATED_KEY, value: JSON.stringify(relatedHandles), type: RELATED_TYPE });
+  }
   const article: Record<string, unknown> = {
     blogId,
     title: draft.title,
@@ -65,10 +79,7 @@ export async function createDraftArticle(
     isPublished: false,           // DRAFT - human publishes after review
     author: { name: authorName },
     tags: draft.tag ? [draft.tag] : [],
-    metafields: [
-      { namespace: 'global', key: 'title_tag', value: draft.metaTitle, type: 'single_line_text_field' },
-      { namespace: 'global', key: 'description_tag', value: draft.metaDescription, type: 'single_line_text_field' }
-    ]
+    metafields
   };
   if (imageUrl) article.image = { url: imageUrl, altText: imageAlt ?? draft.title };
 
@@ -80,4 +91,96 @@ export async function createDraftArticle(
   const created = data.articleCreate?.article;
   if (!created?.id) throw new Error('articleCreate returned no article');
   return created;
+}
+
+const METAFIELD_DEFINITION_CREATE = `mutation pawscoutBlogMfDef($definition: MetafieldDefinitionInput!) {
+  metafieldDefinitionCreate(definition: $definition) {
+    createdDefinition { id }
+    userErrors { field message code }
+  }
+}`;
+
+/**
+ * Best-effort: register the blog.related_products metafield definition on ARTICLE
+ * with storefront read access. Online Store Liquid can read set metafields even
+ * without a definition, so this is INSURANCE (and gives the metafield admin-UI
+ * visibility + Storefront-API access), never a hard dependency. Idempotent: a
+ * pre-existing definition returns a TAKEN userError, which we swallow; any other
+ * failure is logged and ignored so it can never break article creation.
+ */
+export async function ensureRelatedProductsDefinition(admin: AdminGraphql): Promise<void> {
+  try {
+    const data = await admin(METAFIELD_DEFINITION_CREATE, {
+      definition: {
+        name: 'Shop this guide products',
+        namespace: RELATED_NS,
+        key: RELATED_KEY,
+        ownerType: 'ARTICLE',
+        type: RELATED_TYPE,
+        access: { storefront: 'PUBLIC_READ' }
+      }
+    }) as { metafieldDefinitionCreate?: { userErrors?: { code?: string; message: string }[] } };
+    const errs = data.metafieldDefinitionCreate?.userErrors ?? [];
+    const hard = errs.filter((e) => e.code !== 'TAKEN');
+    if (hard.length) console.warn(`blog metafield definition: ${hard.map((e) => e.message).join('; ')}`);
+  } catch (e) {
+    console.warn(`blog metafield definition create failed (non-fatal): ${(e as Error).message}`);
+  }
+}
+
+const ARTICLE_READ = `query pawscoutArticleRead($id: ID!) {
+  article(id: $id) { id handle title image { url } body }
+}`;
+
+export interface ArticleForEnrich { id: string; handle: string; title: string; hasImage: boolean; bodyHtml: string; }
+
+/** Read the fields enrich needs: whether a hero image already exists (never
+ *  clobber an owner-set one) and the body (to see which products it links). */
+export async function getArticleForEnrich(admin: AdminGraphql, articleId: string): Promise<ArticleForEnrich | null> {
+  const data = await admin(ARTICLE_READ, { id: articleId }) as {
+    article?: { id?: string; handle?: string; title?: string; image?: { url?: string } | null; body?: string };
+  };
+  const a = data.article;
+  if (!a?.id) return null;
+  return {
+    id: a.id,
+    handle: a.handle ?? '',
+    title: a.title ?? '',
+    hasImage: !!a.image?.url,
+    bodyHtml: a.body ?? ''
+  };
+}
+
+const ARTICLE_UPDATE = `mutation pawscoutArticleUpdate($id: ID!, $article: ArticleUpdateInput!) {
+  articleUpdate(id: $id, article: $article) {
+    article { id handle }
+    userErrors { field message }
+  }
+}`;
+
+/**
+ * Attach the shop-block metafield and (optionally) a hero image to an existing
+ * article. `imageUrl` is set only when provided - the caller decides whether to
+ * fill a missing image so an owner-chosen one is never overwritten. Throws on
+ * userErrors so the caller surfaces the failure.
+ */
+export async function updateArticleAssets(
+  admin: AdminGraphql,
+  opts: { articleId: string; relatedHandles?: string[]; imageUrl?: string; imageAlt?: string }
+): Promise<void> {
+  const { articleId, relatedHandles, imageUrl, imageAlt } = opts;
+  const article: Record<string, unknown> = {};
+  if (relatedHandles && relatedHandles.length) {
+    article.metafields = [
+      { namespace: RELATED_NS, key: RELATED_KEY, value: JSON.stringify(relatedHandles), type: RELATED_TYPE }
+    ];
+  }
+  if (imageUrl) article.image = { url: imageUrl, altText: imageAlt ?? '' };
+  if (Object.keys(article).length === 0) return; // nothing to do
+
+  const data = await admin(ARTICLE_UPDATE, { id: articleId, article }) as {
+    articleUpdate?: { userErrors?: { message: string }[] };
+  };
+  const errs = data.articleUpdate?.userErrors ?? [];
+  if (errs.length) throw new Error(`articleUpdate: ${errs.map((e) => e.message).join('; ')}`);
 }

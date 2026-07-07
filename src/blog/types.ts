@@ -14,6 +14,7 @@ export interface GroundedProduct {
   path: string;      // relative storefront path, e.g. /products/<handle>
   priceGbp: number;  // shop-currency price (GBP)
   available: boolean;
+  imageUrl?: string; // featured image URL (drives the auto hero pick), if any
 }
 
 /** Deterministic fact pack for one target collection: what really exists, so the

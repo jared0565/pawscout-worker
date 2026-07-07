@@ -4,7 +4,8 @@ import {
 } from '../src/blog/quality';
 import { factPackToPrompt } from '../src/blog/ground';
 import { sanitizeBlogHtml, draftArticle } from '../src/blog/draft';
-import { createDraftArticle, renameBlog, findBlog } from '../src/blog/article';
+import { createDraftArticle, renameBlog, findBlog, updateArticleAssets } from '../src/blog/article';
+import { extractProductHandles, selectShopBlock } from '../src/blog/select';
 import { proposeBrief, seasonForMonth } from '../src/blog/research';
 import { LlmClient } from '../src/llm';
 import type { AdminGraphql } from '../src/shopify-admin';
@@ -137,6 +138,89 @@ describe('blog article creation (Admin ops)', () => {
     const admin: AdminGraphql = (async () => ({ blogs: { nodes: [{ id: 'gid://blog/9', handle: 'news', title: 'News' }] } })) as unknown as AdminGraphql;
     expect((await findBlog(admin, 'news'))?.id).toBe('gid://blog/9');
     expect(await findBlog(admin, 'missing')).toBeNull();
+  });
+});
+
+describe('blog shop-block selection', () => {
+  const P = (handle: string, available: boolean, imageUrl?: string) =>
+    ({ title: handle[0].toUpperCase() + handle.slice(1), handle, path: `/products/${handle}`, priceGbp: 1, available, imageUrl });
+
+  it('extractProductHandles pulls product handles in order, deduped, ignoring collections', () => {
+    const html =
+      '<a href="/products/alpha">a</a> <a href="/collections/pet-health">c</a> ' +
+      '<a href="https://shop.example/products/beta?variant=9">b</a> <a href="/products/alpha">dup</a>';
+    expect(extractProductHandles(html)).toEqual(['alpha', 'beta']);
+    expect(extractProductHandles('<p>no links</p>')).toEqual([]);
+  });
+
+  it('puts linked+available products first, tops up to 4, skips unavailable, picks first image as hero', () => {
+    const pack: FactPack = {
+      collectionHandle: 'c', collectionTitle: 'C', collectionPath: '/collections/c',
+      products: [
+        P('alpha', true, 'https://img/alpha.jpg'),
+        P('beta', true),
+        P('gamma', true, 'https://img/gamma.jpg'),
+        P('delta', true, 'https://img/delta.jpg'),
+        P('epsilon', true, 'https://img/epsilon.jpg'),
+        P('zeta', false, 'https://img/zeta.jpg')  // linked below, but unavailable
+      ]
+    };
+    const body = '<a href="/products/gamma">g</a> <a href="/products/zeta">z</a>';
+    const sel = selectShopBlock(pack, body);
+    expect(sel.handles.length).toBe(4);
+    expect(sel.handles[0]).toBe('gamma');            // linked + available leads
+    expect(sel.handles).not.toContain('zeta');        // unavailable dropped even though linked
+    expect(sel.heroImageUrl).toBe('https://img/gamma.jpg');
+    expect(sel.heroSourceHandle).toBe('gamma');
+  });
+
+  it('with no body links, uses pack order and the first product that has an image as hero', () => {
+    const pack: FactPack = {
+      collectionHandle: 'c', collectionTitle: 'C', collectionPath: '/collections/c',
+      products: [P('noimg', true), P('hasimg', true, 'https://img/h.jpg')]
+    };
+    const sel = selectShopBlock(pack, '<p>no links</p>');
+    expect(sel.handles).toEqual(['noimg', 'hasimg']);
+    expect(sel.heroImageUrl).toBe('https://img/h.jpg'); // first pick WITH an image
+    expect(sel.heroSourceHandle).toBe('hasimg');
+  });
+});
+
+describe('blog article asset writes', () => {
+  it('createDraftArticle adds the blog.related_products list metafield + image when given', async () => {
+    let vars: any = {};
+    const admin: AdminGraphql = (async (_q: string, v?: any) => {
+      vars = v;
+      return { articleCreate: { article: { id: 'gid://shopify/Article/2', handle: 'h', title: GOOD_DRAFT.title, isPublished: false }, userErrors: [] } };
+    }) as unknown as AdminGraphql;
+    await createDraftArticle(admin, { blogId: 'b', draft: GOOD_DRAFT, authorName: 'Active Paw', imageUrl: 'https://img/x.jpg', imageAlt: 'alt', relatedHandles: ['alpha', 'beta'] });
+    const mf = (vars.article.metafields as any[]).find((m) => m.namespace === 'blog' && m.key === 'related_products');
+    expect(mf.type).toBe('list.single_line_text_field');
+    expect(JSON.parse(mf.value)).toEqual(['alpha', 'beta']);
+    expect(vars.article.image).toEqual({ url: 'https://img/x.jpg', altText: 'alt' });
+  });
+
+  it('createDraftArticle omits the related metafield when no handles are given', async () => {
+    let vars: any = {};
+    const admin: AdminGraphql = (async (_q: string, v?: any) => {
+      vars = v;
+      return { articleCreate: { article: { id: 'gid://shopify/Article/3', handle: 'h', title: GOOD_DRAFT.title, isPublished: false }, userErrors: [] } };
+    }) as unknown as AdminGraphql;
+    await createDraftArticle(admin, { blogId: 'b', draft: GOOD_DRAFT, authorName: 'Active Paw' });
+    expect((vars.article.metafields as any[]).some((m) => m.key === 'related_products')).toBe(false);
+  });
+
+  it('updateArticleAssets sends the metafield + image, and throws on userErrors', async () => {
+    let vars: any = {};
+    const ok: AdminGraphql = (async (_q: string, v?: any) => {
+      vars = v; return { articleUpdate: { article: { id: 'a', handle: 'h' }, userErrors: [] } };
+    }) as unknown as AdminGraphql;
+    await updateArticleAssets(ok, { articleId: 'gid://shopify/Article/2', relatedHandles: ['a', 'b'], imageUrl: 'https://img/x.jpg', imageAlt: 'alt' });
+    expect(JSON.parse((vars.article.metafields as any[])[0].value)).toEqual(['a', 'b']);
+    expect(vars.article.image).toEqual({ url: 'https://img/x.jpg', altText: 'alt' });
+
+    const bad: AdminGraphql = (async () => ({ articleUpdate: { userErrors: [{ message: 'boom' }] } })) as unknown as AdminGraphql;
+    await expect(updateArticleAssets(bad, { articleId: 'a', relatedHandles: ['x'] })).rejects.toThrow(/boom/);
   });
 });
 
