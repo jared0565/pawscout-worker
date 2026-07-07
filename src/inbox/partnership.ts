@@ -217,6 +217,21 @@ Wishing you and your work every success.
 Best Regards,
 Active Paw Partnerships`;
 
+// For messages that probe our goals/strategy/performance rather than pitch a
+// service outright (e.g. "what's your main priority, traffic or revenue?") -
+// often a cold-outreach discovery question ahead of a pitch. Declines on
+// policy grounds without engaging the question at all (2026-07-07, owner:
+// "internal operations are not supposed to be shared, by shop's policy").
+const OPERATIONS_DECLINE_BODY =
+`Thank you for your interest in Active Paw.
+
+As a small team focused on providing quality pet products, we keep our internal operations, strategy and performance private as a matter of policy. This holds regardless of the reason for asking, so it is not something we are able to discuss.
+
+If you have a question about our products or an existing order, we are always glad to help.
+
+Best Regards,
+Active Paw Partnerships`;
+
 const DECLINE_BODY =
 `Thank you for taking the time to reach out - we really do appreciate the interest in Active Paw.
 
@@ -309,6 +324,7 @@ export function buildQualifyingEmail(
 }
 export function buildPartnershipDecline(name: string | null): string { return applySalutation(DECLINE_BODY, name); }
 export function buildServiceDecline(name: string | null): string { return applySalutation(SERVICE_DECLINE_BODY, name); }
+export function buildOperationsDecline(name: string | null): string { return applySalutation(OPERATIONS_DECLINE_BODY, name); }
 export function buildFormInvite(name: string | null): string { return applySalutation(FORM_INVITE_BODY, name); }
 export function buildVoucherInvite(name: string | null): string { return applySalutation(VOUCHER_INVITE_BODY, name); }
 export function buildHoldingAck(name: string | null): string { return applySalutation(HOLDING_ACK_BODY, name); }

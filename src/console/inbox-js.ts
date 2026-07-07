@@ -204,6 +204,7 @@ function renderInboxThread(thread,messages,labels,draft,invoice,applicant,contac
     +'<option value="voucher_invite">Trial invite (code on its way)</option>'
     +'<option value="partnership_decline">Partnership decline</option>'
     +'<option value="service_decline">Service pitch decline</option>'
+    +'<option value="operations_decline">Internal operations decline</option>'
     +'<option value="holding_ack">Holding note (we are reviewing)</option>'
     +'</select>';
   // Pending draft: distinct dashed card at the END of the timeline

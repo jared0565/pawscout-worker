@@ -6,7 +6,7 @@ import { sendReply } from './send';
 import { composeDraftForThread } from './sweep';
 import {
   maybePartnershipDraft, buildQualifyingEmail, buildPartnershipDecline, buildServiceDecline,
-  buildVoucherInvite, buildHoldingAck, detectVolumePitch, type FunnelVariant
+  buildOperationsDecline, buildVoucherInvite, buildHoldingAck, detectVolumePitch, type FunnelVariant
 } from './partnership';
 import { renderReplyHtml } from './draft';
 import { stripQuotedReply } from './quote';
@@ -185,6 +185,7 @@ export const DRAFT_TEMPLATES: { key: string; label: string }[] = [
   { key: 'voucher_invite', label: 'Trial invite (code on its way)' },
   { key: 'partnership_decline', label: 'Partnership decline' },
   { key: 'service_decline', label: 'Service pitch decline' },
+  { key: 'operations_decline', label: 'Internal operations decline' },
   { key: 'holding_ack', label: 'Holding note (we are reviewing)' },
 ];
 
@@ -219,6 +220,7 @@ export async function applyDraftTemplate(db: D1Database, shop: string, threadId:
   } else if (key === 'voucher_invite') body = buildVoucherInvite(name);
   else if (key === 'partnership_decline') body = buildPartnershipDecline(name);
   else if (key === 'service_decline') body = buildServiceDecline(name);
+  else if (key === 'operations_decline') body = buildOperationsDecline(name);
   else body = buildHoldingAck(name);
 
   await store.supersedePendingDrafts(threadId);
@@ -230,7 +232,7 @@ export async function applyDraftTemplate(db: D1Database, shop: string, threadId:
   const applicant = await store.getApplicantByThread(threadId);
   const stage = key === 'qualifying' ? 'screen_sent'
     : key === 'voucher_invite' ? 'passed_to_form'
-    : (key === 'partnership_decline' || key === 'service_decline') ? 'declined'
+    : (key === 'partnership_decline' || key === 'service_decline' || key === 'operations_decline') ? 'declined'
     : null;
   if (stage) {
     if (!applicant) await store.upsertApplicant({ threadId, contactEmail: got.thread.contact_email, stage });

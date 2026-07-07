@@ -254,6 +254,16 @@ describe('applyDraftTemplate', () => {
     expect((await s.getThreadWithMessages(tid))?.thread.status).toBe('needs_reply');
   });
 
+  it('the operations decline stays clear of the actual question asked and stamps declined', async () => {
+    const { s, tid } = await seedWithConfig();
+    const r = await applyDraftTemplate(env.DB, SHOP, tid, 'operations_decline');
+    expect(r.ok).toBe(true);
+    const body = (r as { draft?: { body_text?: string } }).draft?.body_text ?? '';
+    expect(body).toContain('internal operations');
+    expect(body).toContain('regardless of the reason for asking'); // never engages the discovery question itself
+    expect((await s.getApplicantByThread(tid))?.stage).toBe('declined');
+  });
+
   it('creates a draft when none is pending; the holding note leaves the funnel untouched', async () => {
     const { s, tid } = await seedWithConfig();
     expect(await s.getPendingDraft(tid)).toBeNull();
