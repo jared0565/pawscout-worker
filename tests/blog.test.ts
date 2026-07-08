@@ -147,6 +147,16 @@ describe('blog article creation (Admin ops)', () => {
     expect(b.handle).toBe('news');
     expect(vars.blog).toEqual({ title: 'Pet Care Guides' }); // no handle sent -> not changed
   });
+  it('renameBlog migrates the handle when one is passed (news -> guides)', async () => {
+    let vars: any = {};
+    const admin: AdminGraphql = (async (_q: string, v?: any) => {
+      vars = v;
+      return { blogUpdate: { blog: { id: 'gid://blog/1', handle: 'guides', title: 'Pet Care Guides' }, userErrors: [] } };
+    }) as unknown as AdminGraphql;
+    const b = await renameBlog(admin, 'gid://blog/1', 'Pet Care Guides', 'guides');
+    expect(b.handle).toBe('guides');
+    expect(vars.blog).toEqual({ title: 'Pet Care Guides', handle: 'guides' }); // handle migrated
+  });
   it('createDraftArticle throws on a userError', async () => {
     const admin: AdminGraphql = (async () => ({ articleCreate: { article: null, userErrors: [{ message: 'nope' }] } })) as unknown as AdminGraphql;
     await expect(createDraftArticle(admin, { blogId: 'b', draft: GOOD_DRAFT, authorName: 'Active Paw' })).rejects.toThrow(/nope/);

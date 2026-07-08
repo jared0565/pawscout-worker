@@ -30,10 +30,13 @@ const BLOG_UPDATE = `mutation pawscoutBlogRename($id: ID!, $blog: BlogUpdateInpu
   blogUpdate(id: $id, blog: $blog) { blog { id handle title } userErrors { field message } }
 }`;
 
-/** Rename a blog's title (handle is preserved by NOT sending a new handle, so
- *  the already-indexed /blogs/<handle> URL stays valid). Idempotent. */
-export async function renameBlog(admin: AdminGraphql, blogId: string, title: string): Promise<BlogRef> {
-  const data = await admin(BLOG_UPDATE, { id: blogId, blog: { title } }) as {
+/** Rename a blog's title, and optionally its handle. Passing no `handle` keeps
+ *  the existing one (title-only rename). Passing a `handle` migrates the URL
+ *  (e.g. news -> guides). Idempotent. */
+export async function renameBlog(admin: AdminGraphql, blogId: string, title: string, handle?: string): Promise<BlogRef> {
+  const blogInput: Record<string, unknown> = { title };
+  if (handle) blogInput.handle = handle;
+  const data = await admin(BLOG_UPDATE, { id: blogId, blog: blogInput }) as {
     blogUpdate?: { blog?: BlogRef; userErrors?: { message: string }[] };
   };
   const errs = data.blogUpdate?.userErrors ?? [];

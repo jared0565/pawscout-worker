@@ -47,8 +47,9 @@ async function resolveHero(
   return { url, alt, highRes };
 }
 
-const BLOG_HANDLE = 'news';                // the already-indexed blog we reuse
-const BLOG_TITLE = 'Pet Care Guides';      // its new display title
+const BLOG_HANDLE = 'guides';              // the clean handle we want: /blogs/guides
+const BLOG_LEGACY_HANDLE = 'news';         // the default blog we reuse + migrate FROM
+const BLOG_TITLE = 'Pet Care Guides';      // its display title
 const AUTHOR_NAME = 'Active Paw';
 
 export interface BlogPipelineResult {
@@ -94,8 +95,16 @@ export async function runBlogPipeline(
   let blog;
   try {
     blog = await findBlog(admin, BLOG_HANDLE);
-    if (!blog) return { ok: false, error: `Blog '${BLOG_HANDLE}' not found.` };
-    if (blog.title !== BLOG_TITLE) blog = await renameBlog(admin, blog.id, BLOG_TITLE);
+    if (!blog) {
+      // First run after the /blogs/guides choice: migrate the reused default
+      // blog (handle 'news') to the clean handle + title, once. Idempotent
+      // thereafter (found directly by 'guides').
+      const legacy = await findBlog(admin, BLOG_LEGACY_HANDLE);
+      if (!legacy) return { ok: false, error: `Blog not found ('${BLOG_HANDLE}' or '${BLOG_LEGACY_HANDLE}').` };
+      blog = await renameBlog(admin, legacy.id, BLOG_TITLE, BLOG_HANDLE);
+    } else if (blog.title !== BLOG_TITLE) {
+      blog = await renameBlog(admin, blog.id, BLOG_TITLE);
+    }
   } catch (e) {
     return { ok: false, error: `Blog access failed: ${(e as Error).message}` };
   }
