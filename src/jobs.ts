@@ -53,6 +53,7 @@ import type { CjDetail } from './cj';
 import { LlmClient, curateProduct, pickHeroImage, rewriteDescription, type Curation, type HeroPick } from './llm';
 import { DEFAULT_SEMANTIC, type Env, type TenantConfig, type Gates } from './types';
 import { rotateRecurringEvents } from './recurring-events';
+import { debrandCatalog } from './catalog-debrand';
 
 export const CULL_WINDOW_DAYS = 30; // grace period AND inactivity window
 const LOG_RETENTION_DAYS = 90;
@@ -1244,6 +1245,11 @@ export const DAILY_SHOP_STAGES: DailyStage[] = [
   { name: 'refill', maxMs: 8 * MIN_MS, run: async (ctx) => { await refillCollections(ctx.store, ctx.cj!, ctx.admin, ctx.cfg, { curate: ctx.curate, pickHero: ctx.pickHero }); } },
   // Flip ACTIVE seed drafts to imported.
   { name: 'draft-links', maxMs: 3 * MIN_MS, run: async (ctx) => { await reconcileDraftLinks(ctx.store, ctx.admin); } },
+  // De-brand: strip manufacturer/supplier brands (e.g. PawHut) from any product
+  // title or published article body that still carries one, so we never advertise
+  // a competitor. Self-healing and idempotent - a cheap no-op once the catalog is
+  // clean. See src/catalog-debrand.ts + src/debrand.ts.
+  { name: 'debrand', maxMs: 3 * MIN_MS, needsCj: false, run: async (ctx) => { const r = await debrandCatalog(ctx.admin); if (r.errors.length) console.warn(`debrand: ${r.errors.join(' | ')}`); } },
   // Fixed USD shelf prices on the US & Canada catalog (after all repricing
   // stages, so tonight's GBP stickers are what gets converted). Takes US
   // display pricing away from Global-e's padded conversion; see us-price-list.ts.

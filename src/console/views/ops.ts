@@ -76,4 +76,17 @@ export const opsView = `  <section class="card">
       </div>
       <pre id="gb-sync-result" class="sub" style="white-space:pre-wrap;margin:6px 0 0"></pre>
     </div>
+  </section>
+
+  <section class="card">
+    <h2>Catalog</h2>
+    <div class="agents-panel">
+      <div class="agents-panel__head">De-brand titles <span class="sub">(strip manufacturer brands like PawHut)</span></div>
+      <p class="sub" style="margin:6px 0">Removes supplier brand names from product titles and published blog posts, so the store never advertises a competitor and shoppers can&rsquo;t find the same item cheaper elsewhere by its brand. Runs automatically every night; use this to apply it right now. Product handles and links are never changed.</p>
+      <div style="margin-top:10px">
+        <button type="button" id="debrand-btn" onclick="runDebrand()">De-brand catalog now</button>
+        <span id="debrand-msg" class="sub"></span>
+      </div>
+      <pre id="debrand-result" class="sub" style="white-space:pre-wrap;margin:6px 0 0"></pre>
+    </div>
   </section>`;

@@ -804,6 +804,23 @@ async function syncGbLocal(){
   }catch(e){ setMsg('gb-sync-msg','Failed: '+errText(e),'no'); }
   finally{ b.disabled=false; }
 }
+async function runDebrand(){
+  var b=el('debrand-btn'); b.disabled=true; setMsg('debrand-msg','Working…','muted');
+  try{
+    var r=await api('/catalog/debrand',{});
+    if(r&&r.ok){
+      var changed=(r.titlesRenamed||0)+(r.bodiesUpdated||0);
+      setMsg('debrand-msg', changed?'Done':'Nothing to change','ok');
+      var lines=[];
+      lines.push('Titles renamed: '+(r.titlesRenamed||0)+' of '+(r.productsScanned||0)+' products');
+      lines.push('Article bodies updated: '+(r.bodiesUpdated||0)+' of '+(r.articlesScanned||0));
+      if(r.samples&&r.samples.length){ lines.push(''); r.samples.forEach(function(s){ lines.push(s); }); }
+      if(r.errors&&r.errors.length){ lines.push(''); lines.push('Errors: '+r.errors.join(' | ')); }
+      el('debrand-result').textContent=lines.join('\\n');
+    } else { setMsg('debrand-msg','Failed: '+((r&&r.error)||'unknown error'),'no'); }
+  }catch(e){ setMsg('debrand-msg','Failed: '+errText(e),'no'); }
+  finally{ b.disabled=false; }
+}
 async function saveCollections(){
   setMsg('mapmsg','Saving…','muted');
   try{

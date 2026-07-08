@@ -44,6 +44,7 @@ import { readDeliveryConfig, syncSignatureProfiles } from './shipping/delivery-p
 import { resolveShipConfig } from './shipping/ship-config';
 import { resolveLogistics } from './logistics';
 import { runDailyMaintenance, resumeDailyMaintenance, runMarketVisibilityReconcile, syncStoreInventory, refillCollections } from './jobs';
+import { debrandCatalog } from './catalog-debrand';
 import { runOrderPipeline, runOrderPipelineForShop } from './fulfil-run';
 import { parseOrderWebhook, validateOrder, FULFIL_GRACE_MINUTES } from './fulfil';
 import { attributePaidOrder } from './inbox/attribution';
@@ -629,6 +630,23 @@ app.post('/api/gb-sync', async (c) => {
     const l = resolveLogistics(tcfg?.fulfil);
     const result = await syncSignatureProfiles(admin, store, { servedCountries: sc.servedCountries, fx: sc.fx, handlingGbp: sc.handlingGbp, stalenessHours: l.stalenessHours });
     return c.json({ ok: true, gbIsolated, gbZones: gbZones.map((z) => ({ name: z.name, countries: z.countryCodes })), zoneNames: allZones.map((z) => z.name), defaultProfileId: cfg.defaultProfileId, result });
+  } catch (e) {
+    return c.json({ ok: false, error: (e as Error).message }, 500);
+  }
+});
+// Owner-triggered catalog de-brand: strip manufacturer/supplier brands (e.g.
+// PawHut) from product titles + published article bodies NOW (the daily cron
+// also runs this). Idempotent; returns the counts + a few before->after samples.
+app.post('/api/catalog/debrand', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  const store = new TenantStore(c.env.DB, s);
+  const tenant = await store.getTenant();
+  if (!tenant?.access_token_enc) return c.json({ ok: false, error: 'reconnect_required' }, 400);
+  const vault = await Vault.fromMasterKey(c.env.PAWSCOUT_MASTER_KEY);
+  const accessToken = await vault.open(tenant.dek_wrapped, tenant.access_token_enc);
+  const admin = makeAdminGraphql(s, accessToken);
+  try {
+    return c.json({ ok: true, ...(await debrandCatalog(admin)) });
   } catch (e) {
     return c.json({ ok: false, error: (e as Error).message }, 500);
   }

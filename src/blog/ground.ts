@@ -8,6 +8,7 @@
 
 import type { AdminGraphql } from '../shopify-admin';
 import type { FactPack, GroundedProduct } from './types';
+import { debrandTitle } from '../debrand';
 
 const COLLECTION_QUERY = `query pawscoutBlogGround($q: String!, $n: Int!) {
   collections(first: 1, query: $q) {
@@ -67,7 +68,10 @@ export async function groundCollection(
       // so this keeps both the drafter's links AND the shop block to live pages.
       const onStorefront = !!p.onlineStoreUrl;
       return {
-        title: p.title,
+        // De-brand the title the writer sees and links (defense-in-depth): even
+        // if a manufacturer-branded title slips into the catalog, the blog never
+        // reproduces it in prose. See src/debrand.ts.
+        title: debrandTitle(p.title),
         handle: p.handle,
         path: `/products/${p.handle}`,
         priceGbp: Number.isFinite(priceGbp) ? priceGbp : 0,
