@@ -273,6 +273,16 @@ describe('applyDraftTemplate', () => {
     expect(await s.getApplicantByThread(tid)).toBeNull();
   });
 
+  it('the keep-to-email template stays on email without declining, and leaves the funnel untouched', async () => {
+    const { s, tid } = await seedWithConfig();
+    const r = await applyDraftTemplate(env.DB, SHOP, tid, 'keep_to_email');
+    expect(r.ok).toBe(true);
+    const body = (r as { draft?: { body_text?: string } }).draft?.body_text ?? '';
+    expect(body).toContain('keep all of our conversations here on email');
+    expect(body).not.toMatch(/not taking on|in-house|internal operations/i); // neutral, not a decline
+    expect(await s.getApplicantByThread(tid)).toBeNull(); // stage untouched
+  });
+
   it('every registry template renders a pending draft (no key without a body)', async () => {
     for (const t of DRAFT_TEMPLATES) {
       const { s, tid } = await seedWithConfig();

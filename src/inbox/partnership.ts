@@ -97,6 +97,26 @@ export function detectServicePitch(text: string): boolean {
   return offer && service;
 }
 
+/** Detects a REQUEST to move the conversation OFF email to another channel
+ * (WhatsApp/Telegram/Signal/etc.) or to a phone call/text: "can we continue on
+ * WhatsApp", "let's move to Telegram", "drop your WhatsApp", "call/text me". Fires
+ * on switch-REQUEST phrasing, not a bare mention - a partner who lists their
+ * WhatsApp alongside real answers is not asking to switch, and their answers must
+ * still be read. Pure and deterministic; grounded in the message TEXT only. */
+export function detectOffPlatformRequest(text: string): boolean {
+  const t = text.toLowerCase();
+  const CH = '(?:whats\\s?app|telegram|signal|we\\s?chat|viber|messenger|skype|discord)';
+  // A switch/continue/reach verb pointing at a channel within a short span.
+  const switchToChannel = new RegExp(`\\b(?:move|switch|continue|carry on|chat|talk|speak|connect|reach(?:\\s+(?:me|us|you))?|hop on|take (?:this|it)|do (?:this|it)|use)\\b[^.?!\\n]{0,30}?\\b${CH}\\b`);
+  // "can/shall we <channel>" with the channel used directly as the verb.
+  const modalWeChannel = new RegExp(`\\b(?:can|could|shall|should|let'?s|lets|wanna)\\s+we\\s+(?:just\\s+|please\\s+)?${CH}\\b`);
+  // Asking for our off-email contact details.
+  const dropContact = /\b(?:drop|send|share|give|leave)\b[^.?!\n]{0,20}?\b(?:whats\s?app|number|phone|contact|digits)\b/;
+  // "WhatsApp me", "call me", "text me", "DM me".
+  const contactMe = new RegExp(`\\b(?:${CH}|call|text|ring|dm|message)\\s+(?:me|us)\\b`);
+  return switchToChannel.test(t) || modalWeChannel.test(t) || dropContact.test(t) || contactMe.test(t);
+}
+
 function gateDecline(gate: string, reason: string): ScreenVerdict {
   return { decision: 'decline', score: null, gate, signals: {}, reasons: [reason] };
 }
@@ -277,6 +297,17 @@ We're taking a look and reviewing the fit, and we'll be in touch shortly with th
 Best Regards,
 Active Paw Partnerships`;
 
+// Off-platform requests (move to WhatsApp/Telegram, a phone call): keep the
+// conversation on email WITHOUT declining the person or re-committing to anything,
+// so it drops cleanly on any thread and is safe to reuse from the template picker.
+const KEEP_TO_EMAIL_BODY =
+`Thank you for your message. We keep all of our conversations here on email, so everything stays in one place with a clear record for both sides. We are not able to move to WhatsApp or other messaging apps, but we are very happy to carry on right here.
+
+Whatever you need, just reply to this email and we will pick it up from here.
+
+Best Regards,
+Active Paw`;
+
 // One-line tier reminder for the code invite (full ladder already went out in
 // the qualifying email; numbers interpolate from the same constants).
 const EARNED_TIERS_SHORT =
@@ -328,6 +359,7 @@ export function buildOperationsDecline(name: string | null): string { return app
 export function buildFormInvite(name: string | null): string { return applySalutation(FORM_INVITE_BODY, name); }
 export function buildVoucherInvite(name: string | null): string { return applySalutation(VOUCHER_INVITE_BODY, name); }
 export function buildHoldingAck(name: string | null): string { return applySalutation(HOLDING_ACK_BODY, name); }
+export function buildKeepToEmail(name: string | null): string { return applySalutation(KEEP_TO_EMAIL_BODY, name); }
 
 const ENUMS = {
   disqualifier: ['coupon_cashback', 'brand_bidding', 'prohibited_tactics', 'none'],
@@ -460,6 +492,24 @@ export async function maybePartnershipDraft(
     if (!applicant) await store.upsertApplicant({ threadId: thread.id, contactEmail: thread.contact_email, stage: 'declined' });
     else await store.setApplicantStage(thread.id, 'declined', null);
     return { draftId, send: holdReasons.length === 0 };
+  }
+
+  // Off-platform intercept (2026-07-08): an IN-FLIGHT applicant (screened, invited,
+  // or escalated) asking to move the conversation to WhatsApp/Telegram or a phone
+  // call gets a neutral keep-to-email reply, NOT the content-blind holding ack (or,
+  // at screen_sent, a channel-switch request mis-fed to the scorer as if it were
+  // answers). We keep partnership conversations on email for a clear record. One
+  // check here covers every in-flight stage; a declined applicant falls through to
+  // the generic drafter as before, and a first-touch pitch (no applicant) still
+  // hits the funnel. Detector is switch-REQUEST phrasing only, so a partner who
+  // merely lists their WhatsApp alongside real answers is still scored normally.
+  if (applicant && applicant.stage !== 'declined' && detectOffPlatformRequest(latestNewText)) {
+    const body = buildKeepToEmail(name);
+    const draftId = await store.insertDraft({
+      threadId: thread.id, bodyText: body, bodyHtml: renderReplyHtml(body),
+      confidence: null, quotesPriceOrder: false, holdReasons: [], model: 'partnership-screen', status: 'pending',
+    });
+    return { draftId, send: false };
   }
 
   // Pure service pitches (site-speed/SEO/listing vendors) are not partnership

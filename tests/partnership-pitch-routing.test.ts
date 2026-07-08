@@ -13,7 +13,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
 import { TenantStore } from '../src/tenant-store';
 import {
-  detectVolumePitch, detectServicePitch, buildQualifyingEmail, maybePartnershipDraft, QUALIFYING_MARKER,
+  detectVolumePitch, detectServicePitch, detectOffPlatformRequest, buildQualifyingEmail, maybePartnershipDraft, QUALIFYING_MARKER,
   STANDARD_COMMISSION_PCT, TIER_REVIEW_ORDERS, TIER_MAX_PCT
 } from '../src/inbox/partnership';
 // (the on-ramp tests below exercise maybePartnershipDraft with category 'other')
@@ -80,6 +80,24 @@ describe('detectServicePitch', () => {
     expect(detectServicePitch('I want to promote your products to my audience')).toBe(false);
     expect(detectServicePitch('Your product page is loading slowly on my phone')).toBe(false); // customer complaint
     expect(detectServicePitch('I run a dog IG, want to promote you for commission')).toBe(false);
+  });
+});
+
+describe('detectOffPlatformRequest', () => {
+  it('fires on a request to switch channel or take it to a call', () => {
+    expect(detectOffPlatformRequest('Can we continue our conversation through WhatsApp?')).toBe(true); // the Adamray case
+    expect(detectOffPlatformRequest("Let's move to Telegram")).toBe(true);
+    expect(detectOffPlatformRequest('Kindly drop ur Whatsapp if u are interested')).toBe(true);
+    expect(detectOffPlatformRequest('Reach me on Signal instead')).toBe(true);
+    expect(detectOffPlatformRequest('Just WhatsApp me when you can')).toBe(true);
+    expect(detectOffPlatformRequest('give me a call or text me on this number')).toBe(true);
+  });
+
+  it('does NOT fire on a bare mention alongside real content (substance must still be read)', () => {
+    expect(detectOffPlatformRequest('My audience is mostly on WhatsApp and Instagram groups')).toBe(false);
+    expect(detectOffPlatformRequest('I can help you grow on WhatsApp marketing')).toBe(false);
+    expect(detectOffPlatformRequest('Here are my answers to your questions')).toBe(false);
+    expect(detectOffPlatformRequest('Okay, sounds good')).toBe(false);
   });
 });
 
@@ -215,6 +233,19 @@ describe('pitch on-ramp (contact@ + category other, after a bait opener)', () =>
     expect(r).not.toBeNull(); // holding ack, never the generic drafter
     const draft = await s.getPendingDraft(tid);
     expect(draft!.body_text).toMatch(/reviewing|taking a look/i);
+  });
+
+  it('an in-flight applicant asking to move to WhatsApp gets keep-to-email, not the holding ack', async () => {
+    const { s, tid } = await seedBaitOpener('wamove.myshopify.com', 'Do you ship to the UK?', 'Can we continue our conversation through WhatsApp?');
+    await s.upsertApplicant({ threadId: tid, contactEmail: 'p@x.com', stage: 'passed_to_form' });
+    const got = (await s.getThreadWithMessages(tid))!;
+    const r = await maybePartnershipDraft({ ...env } as any, s, CFG, got.thread, got, noFetch);
+    expect(r).not.toBeNull();
+    expect(r!.send).toBe(false); // HITL - the owner reviews before it goes out
+    const draft = await s.getPendingDraft(tid);
+    expect(draft!.body_text).toMatch(/keep all of our conversations here on email/i);
+    expect(draft!.body_text).not.toMatch(/reviewing|taking a look/i); // NOT the content-blind holding ack
+    expect((await s.getApplicantByThread(tid))!.stage).toBe('passed_to_form'); // neutral: not declined, not advanced
   });
 });
 
