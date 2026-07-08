@@ -272,9 +272,18 @@ export async function syncStoreInventory(
           skuToCost.set(v.sku, v.sellPriceUsd);
         }
       } else if (wh) {
+        // Fresh CJ detail fetch failed: fall back to the STORED variant costs so the
+        // price and cost sync still run from last-known cost, instead of freezing the
+        // sticker. Without seeding skuToCost here, any product CJ can no longer return
+        // fresh detail for is stuck forever at its import-time price (the "frozen
+        // catalogue" problem: prices set under an older multiplier never converge on
+        // the current pricing rule).
         try {
-          for (const v of (JSON.parse(wh.detail) as CjDetail).variants) skuToVid.set(v.sku, v.vid);
-        } catch { /* fall back to uniform stock */ }
+          for (const v of (JSON.parse(wh.detail) as CjDetail).variants) {
+            skuToVid.set(v.sku, v.vid);
+            if (typeof v.sellPriceUsd === 'number' && v.sellPriceUsd > 0) skuToCost.set(v.sku, v.sellPriceUsd);
+          }
+        } catch { /* legacy row: fall back to uniform stock */ }
       }
 
       const variants = await productInventoryItems(admin, link.shopify_product_id);

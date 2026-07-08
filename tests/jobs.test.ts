@@ -330,6 +330,29 @@ describe('syncStoreInventory', () => {
     expect((inv.variables!.input as { quantities: { quantity: number }[] }).quantities[0].quantity).toBe(40);
   });
 
+  it('reprices from STORED cost when the fresh CJ detail fetch fails (unfreezes the catalogue)', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await insertLink('A', 'imported', 5);
+    await seedWarehouse(store, 'A', 'pet-toys', 40); // stored detail carries sku-A @ $10 cost
+    const cj = {
+      detail: async () => { throw new Error('CJ detail unavailable'); }, // fresh fetch fails
+      stockByPid: async () => new Map<string, number>([['v-A', 40]])
+    } as unknown as CjClient;
+
+    const calls: Call[] = [];
+    await syncStoreInventory(store, cj, shopAdmin(calls, '53.90'), CFG, { pause: async () => {} });
+
+    // Without the stored-cost fallback, skuToCost is empty on a failed fetch and the price
+    // stays frozen at 53.90. With it, the sync realigns to the current rule ($10 -> £19.99).
+    const reprice = calls.find((c) =>
+      c.query.includes('productVariantsBulkUpdate') &&
+      Array.isArray((c.variables as { variants?: unknown })?.variants) &&
+      (c.variables!.variants as { price?: string }[])[0]?.price !== undefined
+    );
+    expect(reprice).toBeDefined();
+    expect((reprice!.variables!.variants as { price: string }[])[0].price).toBe('19.99');
+  });
+
   it('skips the price write when retail already matches the rule', async () => {
     const store = new TenantStore(env.DB, SHOP);
     await insertLink('A', 'imported', 5);
