@@ -18,6 +18,7 @@ const COLLECTION_QUERY = `query pawscoutBlogGround($q: String!, $n: Int!) {
         nodes {
           handle
           title
+          onlineStoreUrl
           featuredImage { url width height }
           variants(first: 1) { nodes { price availableForSale } }
         }
@@ -31,6 +32,7 @@ interface CollNode {
   title?: string;
   products?: { nodes?: {
     handle?: string; title?: string;
+    onlineStoreUrl?: string | null;
     featuredImage?: { url?: string; width?: number; height?: number } | null;
     variants?: { nodes?: { price?: string; availableForSale?: boolean }[] };
   }[] };
@@ -43,7 +45,7 @@ interface CollNode {
  * asked to invent products). `limit` caps how many products the drafter sees.
  */
 export async function groundCollection(
-  admin: AdminGraphql, handle: string, limit = 8
+  admin: AdminGraphql, handle: string, limit = 12
 ): Promise<FactPack | null> {
   let data: { collections?: { nodes?: CollNode[] } };
   try {
@@ -59,12 +61,17 @@ export async function groundCollection(
       if (!p.handle || !p.title) return null;
       const v = p.variants?.nodes?.[0];
       const priceGbp = v?.price != null ? Number(v.price) : 0;
+      // "available" MUST mean storefront-visible, not just Admin availableForSale:
+      // a product can be availableForSale (published to some channel) yet 404 on
+      // the Online Store. onlineStoreUrl is null unless it is really on the store,
+      // so this keeps both the drafter's links AND the shop block to live pages.
+      const onStorefront = !!p.onlineStoreUrl;
       return {
         title: p.title,
         handle: p.handle,
         path: `/products/${p.handle}`,
         priceGbp: Number.isFinite(priceGbp) ? priceGbp : 0,
-        available: v?.availableForSale === true,
+        available: v?.availableForSale === true && onStorefront,
         imageUrl: p.featuredImage?.url || undefined,
         imageWidth: p.featuredImage?.width,
         imageHeight: p.featuredImage?.height

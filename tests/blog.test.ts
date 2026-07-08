@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   findBlogIssues, findClaimFlags, hasStorefrontLink, htmlToText, countWords, refineBlogUntilClean
 } from '../src/blog/quality';
-import { factPackToPrompt } from '../src/blog/ground';
+import { factPackToPrompt, groundCollection } from '../src/blog/ground';
 import { sanitizeBlogHtml, draftArticle } from '../src/blog/draft';
 import { createDraftArticle, renameBlog, findBlog, updateArticleAssets } from '../src/blog/article';
 import { extractProductHandles, selectShopBlock } from '../src/blog/select';
@@ -99,6 +99,21 @@ describe('blog grounding prompt', () => {
     expect(text).toContain('/collections/pet-health');
     expect(text).toContain('Fountain (link: /products/fountain, price: GBP 47.99)');
     expect(text).not.toContain('Sold Out Bowl'); // unavailable products are not offered
+  });
+
+  it('groundCollection marks a product available only when it is on the Online Store (not just availableForSale)', async () => {
+    const admin: AdminGraphql = (async () => ({
+      collections: { nodes: [{ handle: 'pet-grooming', title: 'Pet Grooming', products: { nodes: [
+        { handle: 'on-store', title: 'On Store', onlineStoreUrl: 'https://shop/products/on-store', featuredImage: { url: 'https://img/a.jpg', width: 1200, height: 1200 }, variants: { nodes: [{ price: '9.99', availableForSale: true }] } },
+        { handle: 'phantom', title: 'Phantom', onlineStoreUrl: null, featuredImage: { url: 'https://img/b.jpg', width: 1200, height: 1200 }, variants: { nodes: [{ price: '9.99', availableForSale: true }] } }
+      ] } }] }
+    })) as unknown as AdminGraphql;
+    const pack = await groundCollection(admin, 'pet-grooming');
+    expect(pack!.products.find((p) => p.handle === 'on-store')!.available).toBe(true);
+    expect(pack!.products.find((p) => p.handle === 'phantom')!.available).toBe(false); // availableForSale but 404 on the storefront
+    const text = factPackToPrompt(pack!);
+    expect(text).toContain('On Store');
+    expect(text).not.toContain('Phantom'); // the drafter is never offered a phantom product to link
   });
 });
 
