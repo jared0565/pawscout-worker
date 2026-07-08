@@ -25,6 +25,50 @@ describe('ADMIN_API_VERSION', () => {
   });
 });
 
+describe('makeAdminGraphql throttle retry', () => {
+  const noSleep = async () => {};
+
+  it('retries a GraphQL THROTTLED error then succeeds', async () => {
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls++;
+      if (calls < 3) return new Response(JSON.stringify({ errors: [{ message: 'Throttled', extensions: { code: 'THROTTLED' } }] }), { status: 200 });
+      return new Response(JSON.stringify({ data: { ok: true } }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const admin = makeAdminGraphql('a.myshopify.com', 'tok', fetchImpl, noSleep);
+    expect(await admin('q')).toEqual({ ok: true });
+    expect(calls).toBe(3);
+  });
+
+  it('retries an HTTP 429 then succeeds', async () => {
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls++;
+      if (calls === 1) return new Response('rate', { status: 429 });
+      return new Response(JSON.stringify({ data: { ok: true } }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const admin = makeAdminGraphql('a.myshopify.com', 'tok', fetchImpl, noSleep);
+    await admin('q');
+    expect(calls).toBe(2);
+  });
+
+  it('does NOT retry a real (non-throttle) GraphQL error', async () => {
+    let calls = 0;
+    const fetchImpl = (async () => { calls++; return new Response(JSON.stringify({ errors: [{ message: 'Field does not exist' }] }), { status: 200 }); }) as unknown as typeof fetch;
+    const admin = makeAdminGraphql('a.myshopify.com', 'tok', fetchImpl, noSleep);
+    await expect(admin('q')).rejects.toThrow(/Field does not exist/);
+    expect(calls).toBe(1);
+  });
+
+  it('gives up after 4 attempts of persistent throttling', async () => {
+    let calls = 0;
+    const fetchImpl = (async () => { calls++; return new Response(JSON.stringify({ errors: [{ message: 'Throttled', extensions: { code: 'THROTTLED' } }] }), { status: 200 }); }) as unknown as typeof fetch;
+    const admin = makeAdminGraphql('a.myshopify.com', 'tok', fetchImpl, noSleep);
+    await expect(admin('q')).rejects.toThrow(/[Tt]hrottl/);
+    expect(calls).toBe(4);
+  });
+});
+
 describe('setInventoryQuantities (2026-04 shape)', () => {
   it('sends changeFromQuantity: null per line and never the removed fields', async () => {
     let vars: Record<string, unknown> = {};

@@ -12,17 +12,54 @@ export const ADMIN_API_VERSION = '2026-04';
 
 export type AdminGraphql = (query: string, variables?: Record<string, unknown>) => Promise<Record<string, unknown>>;
 
-/** Minimal Admin GraphQL caller bound to a shop + offline token. Throws on transport or GraphQL errors. */
-export function makeAdminGraphql(shop: string, accessToken: string, fetchImpl: typeof fetch = defaultFetch): AdminGraphql {
+/** Minimal Admin GraphQL caller bound to a shop + offline token.
+ *
+ * Retries transient failures with backoff so a throttle window can never abort
+ * a batch job mid-flight (the inventory/price sync makes hundreds of Admin calls
+ * across the catalogue; without this, one THROTTLED response threw and dropped
+ * that product's reprice). Retried: HTTP 429, HTTP 5xx, and Shopify's GraphQL
+ * cost-limit error (HTTP 200 with a THROTTLED `errors` entry). Real GraphQL
+ * errors and other 4xx still throw immediately - only genuinely transient
+ * conditions are retried. `sleep` is injectable so tests run without real waits. */
+export function makeAdminGraphql(
+  shop: string,
+  accessToken: string,
+  fetchImpl: typeof fetch = defaultFetch,
+  sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms))
+): AdminGraphql {
+  const MAX_ATTEMPTS = 4;
   return async (query, variables = {}) => {
-    const resp = await fetchImpl(`https://${shop}/admin/api/${ADMIN_API_VERSION}/graphql.json`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Shopify-Access-Token': accessToken },
-      body: JSON.stringify({ query, variables })
-    });
-    if (!resp.ok) throw new Error(`Shopify HTTP ${resp.status}`);
-    const data = (await resp.json()) as { data?: Record<string, unknown>; errors?: { message: string }[] };
-    if (data.errors?.length) throw new Error(data.errors.map((e) => e.message).join('; '));
-    return data.data ?? {};
+    let lastError = 'Shopify request failed';
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+      const resp = await fetchImpl(`https://${shop}/admin/api/${ADMIN_API_VERSION}/graphql.json`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Shopify-Access-Token': accessToken },
+        body: JSON.stringify({ query, variables })
+      });
+      // HTTP-level throttle (429) or transient server error (5xx): back off and retry.
+      if (resp.status === 429 || resp.status >= 500) {
+        lastError = `Shopify HTTP ${resp.status}`;
+        if (attempt === MAX_ATTEMPTS - 1) throw new Error(lastError);
+        const retryAfter = Number(resp.headers.get('Retry-After'));
+        await sleep(Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : 500 * 2 ** attempt);
+        continue;
+      }
+      if (!resp.ok) throw new Error(`Shopify HTTP ${resp.status}`);
+      const data = (await resp.json()) as {
+        data?: Record<string, unknown>;
+        errors?: { message: string; extensions?: { code?: string } }[];
+      };
+      // GraphQL-level throttle: Shopify returns HTTP 200 with a THROTTLED error when
+      // the cost budget is exhausted. Back off (the budget restores over time) and retry.
+      const throttled = data.errors?.some((e) => e.extensions?.code === 'THROTTLED' || /throttl/i.test(e.message));
+      if (throttled && attempt < MAX_ATTEMPTS - 1) {
+        lastError = data.errors!.map((e) => e.message).join('; ');
+        await sleep(500 * 2 ** attempt);
+        continue;
+      }
+      if (data.errors?.length) throw new Error(data.errors.map((e) => e.message).join('; '));
+      return data.data ?? {};
+    }
+    throw new Error(lastError);
   };
 }
