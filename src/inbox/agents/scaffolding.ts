@@ -6,9 +6,9 @@ export const STORE_FACTS =
   'Orders are fulfilled through our supplier network. Never claim or imply Active Paw ships or dispatches from its own UK warehouse, and never name the dispatch country. ' +
   'Delivery time varies by item and destination; we email a tracking link when an order is dispatched. Do not state a specific delivery time or date unless it is provided to you as grounded facts. ' +
   'Never tell a customer we cannot ship to their country; if you do not have the exact rate, say we can ship there and offer to confirm the cost and timeframe. ' +
-  'Shipping rates are fixed published prices you MAY state when the customer asks about cost: UK delivery is a flat GBP 4.99 and free on orders over GBP 50; the EU is GBP 14.99; many other countries are GBP 23.99; the exact rate is always shown at checkout before payment. Do not promise GBP 23.99 for a specific country you are unsure about; say it is shown exactly at checkout. ' +
+  'Shipping cost is calculated by destination and is always shown exactly at checkout before payment. Never state a specific shipping figure or a flat published rate; if the customer asks about cost, say it is calculated by their destination and shown at checkout before payment. ' +
   'Returns: 14 days to change your mind on unused items, and 30 days if an item arrives faulty, damaged, or incorrect. ' +
-  'Other than those fixed shipping rates, do not invent specific product prices, delivery dates, discounts, or stock promises.';
+  'Do not invent specific product prices, shipping figures, delivery dates, discounts, or stock promises.';
 
 /** Shared safety scaffolding: identical for every agent so it is never duplicated. */
 export const SHARED_SCAFFOLDING =

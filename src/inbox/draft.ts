@@ -133,10 +133,11 @@ function validateDraft(v: unknown): DraftResult | null {
  * rewrites its previous reply to clear the quality reviewer's specific objections. */
 function buildDraftSystem(
   agent: CategoryAgent, grounding: Grounding,
-  opts: { hasLatest: boolean; guidance?: string; revisionIssues?: string[] }
+  opts: { hasLatest: boolean; guidance?: string; shippingFact?: string; revisionIssues?: string[] }
 ): string {
   return (
     SHARED_SCAFFOLDING + ' ' + STORE_FACTS + ' ' +
+    (opts.shippingFact ? opts.shippingFact + ' ' : '') +
     agent.promptFragment(grounding) + ' ' +
     (grounding.facts ? `Grounded facts you MAY rely on for this reply: ${grounding.facts} ` : '') +
     (agent.commercial ? COMMERCIAL_GUARDRAILS + ' ' : '') +
@@ -157,9 +158,9 @@ function buildDraftSystem(
 async function reviseDraft(
   llm: LlmClient, store: TenantStore, chain: ReturnType<typeof resolveChain>,
   agent: CategoryAgent, grounding: Grounding, guidance: string | undefined,
-  latest: string, baseUser: string, previousBody: string, issues: string[]
+  latest: string, baseUser: string, previousBody: string, issues: string[], shippingFact: string
 ): Promise<DraftResult | null> {
-  const system = buildDraftSystem(agent, grounding, { hasLatest: !!latest, guidance, revisionIssues: issues });
+  const system = buildDraftSystem(agent, grounding, { hasLatest: !!latest, guidance, shippingFact, revisionIssues: issues });
   const user = JSON.stringify({ ...JSON.parse(baseUser), previousReply: previousBody.slice(0, 2000) });
   const result = await llm.jsonChain<DraftResult>({ chain, maxTokens: 700, system, user, validate: validateDraft });
   if (!result.ok) { console.warn(`inbox revise failed: ${result.error}`); return null; }
@@ -182,8 +183,15 @@ export async function draftReply(
   const guidance = cfg.inbox.replyGuidance?.trim();
   const latest = (input.latestMessage ?? '').trim();
   const { agent, grounding } = input;
+  // Shipping cost is destination-calculated and shown at checkout (STORE_FACTS); the
+  // ONLY concrete shipping-cost fact is free UK delivery, and only while the owner's
+  // verify-then-flip gbFreeUkLive gate is on. Inject it live so a gate flip can never
+  // leave a stale "free UK" (or a stale flat rate) in a reply.
+  const shippingFact = cfg.fulfil?.gbFreeUkLive === true
+    ? 'UK delivery is currently free (checkout charges GBP 0 to UK addresses); you MAY state that UK delivery is free. For all other destinations, shipping is calculated by location and shown at checkout before payment.'
+    : '';
 
-  const system = buildDraftSystem(agent, grounding, { hasLatest: !!latest, guidance });
+  const system = buildDraftSystem(agent, grounding, { hasLatest: !!latest, guidance, shippingFact });
   const baseUser = JSON.stringify({ subject: input.subject.slice(0, 200), category: agent.category, latestMessage: latest.slice(0, 2000), conversation: input.conversation.slice(0, 4000) });
 
   const result = await llm.jsonChain<DraftResult>({ chain, maxTokens: 700, system, user: baseUser, validate: validateDraft });
@@ -196,7 +204,7 @@ export async function draftReply(
   const qctx: DraftQualityContext = { maxWords: DRAFT_MAX_WORDS, askedDelivery: asksDoYouDeliver(latest) };
   const refined = await refineUntilClean(
     result.value,
-    (prev, issues) => reviseDraft(llm, store, chain, agent, grounding, guidance, latest, baseUser, prev.bodyText, issues),
+    (prev, issues) => reviseDraft(llm, store, chain, agent, grounding, guidance, latest, baseUser, prev.bodyText, issues, shippingFact),
     qctx, 2
   );
 

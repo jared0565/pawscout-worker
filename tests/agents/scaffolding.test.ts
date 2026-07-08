@@ -73,7 +73,7 @@ describe('draftReply scaffolding invariants', () => {
     expect(sink.system).not.toContain("Reply to the customer's MOST RECENT message specifically");
   });
 
-  it('includes GBP shipping rates from STORE_FACTS', async () => {
+  it('states shipping is destination-calculated / shown at checkout, with NO stale flat figures', async () => {
     const store = new TenantStore(env.DB, 'a.myshopify.com');
     const sink: { system?: string } = {};
     const llm = capturingLlm({ bodyText: 'Hi.', confidence: 85, quotesPriceOrOrder: false }, sink);
@@ -81,7 +81,27 @@ describe('draftReply scaffolding invariants', () => {
       agent: stubAgent(false), grounding: GROUNDING,
       subject: 'Shipping', conversation: 'What is shipping cost?'
     });
-    expect(sink.system).toContain('UK delivery is a flat GBP 4.99 and free on orders over GBP 50');
+    expect(sink.system).toContain('Shipping cost is calculated by destination');
+    expect(sink.system).toContain('shown exactly at checkout');
+    // the stale flat published rates must be gone from every reply
+    expect(sink.system).not.toContain('flat GBP 4.99');
+    expect(sink.system).not.toContain('GBP 14.99');
+    expect(sink.system).not.toContain('GBP 23.99');
+  });
+
+  it('injects the live free-UK clause only when gbFreeUkLive is on', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const off: { system?: string } = {};
+    await draftReply(capturingLlm({ bodyText: 'Hi.', confidence: 85, quotesPriceOrOrder: false }, off), store,
+      { ...CFG, fulfil: { ...CFG.fulfil, gbFreeUkLive: false } },
+      { agent: stubAgent(false), grounding: GROUNDING, subject: 'Shipping', conversation: 'Do you offer free shipping?' });
+    expect(off.system).not.toContain('UK delivery is currently free');
+
+    const on: { system?: string } = {};
+    await draftReply(capturingLlm({ bodyText: 'Hi.', confidence: 85, quotesPriceOrOrder: false }, on), store,
+      { ...CFG, fulfil: { ...CFG.fulfil, gbFreeUkLive: true } },
+      { agent: stubAgent(false), grounding: GROUNDING, subject: 'Shipping', conversation: 'Do you offer free shipping?' });
+    expect(on.system).toContain('UK delivery is currently free');
   });
 
   it('includes COMMERCIAL_GUARDRAILS when agent.commercial is true', async () => {
