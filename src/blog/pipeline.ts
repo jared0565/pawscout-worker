@@ -122,19 +122,26 @@ export async function runBlogPipeline(
     return { ok: false, error: `Article creation failed: ${(e as Error).message}` };
   }
 
-  await store.insertBlogPostDraft({
-    id: crypto.randomUUID(),
-    shopifyArticleId: created.id,
-    blogHandle: BLOG_HANDLE,
-    title: created.title,
-    collectionHandle: brief.collectionHandle,
-    briefJson: JSON.stringify(brief),
-    claimFlagsJson: JSON.stringify(claimFlags),
-    relatedHandlesJson: JSON.stringify(sel.handles),
-    heroImageUrl: sel.heroImageUrl,
-    heroSourceHandle: sel.heroSourceHandle,
-    model: 'blog-pipeline'
-  });
+  // Bookkeeping is best-effort: the DRAFT article already exists in Shopify, so a
+  // D1 hiccup must never surface as a 500 (which would read as "post failed" when
+  // it actually succeeded). Log and continue.
+  try {
+    await store.insertBlogPostDraft({
+      id: crypto.randomUUID(),
+      shopifyArticleId: created.id,
+      blogHandle: BLOG_HANDLE,
+      title: created.title,
+      collectionHandle: brief.collectionHandle,
+      briefJson: JSON.stringify(brief),
+      claimFlagsJson: JSON.stringify(claimFlags),
+      relatedHandlesJson: JSON.stringify(sel.handles),
+      heroImageUrl: sel.heroImageUrl,
+      heroSourceHandle: sel.heroSourceHandle,
+      model: 'blog-pipeline'
+    });
+  } catch (e) {
+    console.warn(`blog bookkeeping insert failed (article ${created.id} was created): ${(e as Error).message}`);
+  }
 
   return {
     ok: true,

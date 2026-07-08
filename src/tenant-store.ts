@@ -1937,7 +1937,7 @@ export class TenantStore {
     const now = new Date().toISOString();
     await this.db
       .prepare(`INSERT INTO blog_post_drafts (shop, id, shopify_article_id, blog_handle, title, collection_handle, status, brief_json, claim_flags_json, related_handles_json, hero_image_url, hero_source_handle, model, created_at, updated_at)
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'drafted', ?7, ?8, ?9, ?10, ?11, ?12, ?13)`)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'drafted', ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13)`)
       .bind(this.shop, d.id, d.shopifyArticleId, d.blogHandle, d.title, d.collectionHandle, d.briefJson, d.claimFlagsJson,
             d.relatedHandlesJson ?? null, d.heroImageUrl ?? null, d.heroSourceHandle ?? null, d.model, now)
       .run();
