@@ -303,14 +303,21 @@ export async function syncStoreInventory(
         );
       }
 
-      // Price sync: retail must always equal the pricing rule applied to CJ's
-      // CURRENT cost. Only variants whose SKU matches a CJ variant reprice;
-      // unchanged prices are skipped to avoid pointless writes.
+      // Price sync: realign retail toward the pricing rule applied to CJ's CURRENT
+      // cost. Only variants whose SKU matches a CJ variant reprice; unchanged prices
+      // are skipped. The sync only ever LOWERS a live price: a rule-driven increase
+      // (a frozen underpriced item, or a CJ cost rise) must be a deliberate owner
+      // decision, never an automatic customer-facing price hike. This is what lets the
+      // frozen-catalogue reprice drop overpriced items without bumping the freight-
+      // cratered cheap CN items to their (uncompetitive) rule price - those need the
+      // decoupled-shipping model, not a hike. Increases are left for owner review.
       const priceUpdates = variants.flatMap((v) => {
         const cost = skuToCost.get(v.sku);
         if (cost === undefined || cost <= 0) return [];
         const expected = retailPriceGbp(cost, cfg.pricing, freightUsd).toFixed(2);
-        return expected === v.price ? [] : [{ id: v.variantId, price: expected }];
+        if (expected === v.price) return [];
+        if (Number(expected) > Number(v.price)) return []; // never auto-raise; lower only
+        return [{ id: v.variantId, price: expected }];
       });
       if (priceUpdates.length) await updateVariantPrices(admin, link.shopify_product_id, priceUpdates);
 

@@ -353,6 +353,26 @@ describe('syncStoreInventory', () => {
     expect((reprice!.variables!.variants as { price: string }[])[0].price).toBe('19.99');
   });
 
+  it('never RAISES a live price on sync (holds underpriced items for owner review)', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await insertLink('A', 'imported', 5);
+    const cj = {
+      detail: async (pid: string) => detailOf(pid, 40, 10), // $10 -> rule GBP19.99
+      stockByPid: async () => new Map<string, number>()
+    } as unknown as CjClient;
+
+    const calls: Call[] = [];
+    // live price 4.99 is BELOW the rule's 19.99: the sync must NOT bump it up.
+    await syncStoreInventory(store, cj, shopAdmin(calls, '4.99'), CFG, { pause: async () => {} });
+
+    const priceWrite = calls.find((c) =>
+      c.query.includes('productVariantsBulkUpdate') &&
+      Array.isArray((c.variables as { variants?: unknown })?.variants) &&
+      (c.variables!.variants as { price?: string }[])[0]?.price !== undefined
+    );
+    expect(priceWrite).toBeUndefined();
+  });
+
   it('skips the price write when retail already matches the rule', async () => {
     const store = new TenantStore(env.DB, SHOP);
     await insertLink('A', 'imported', 5);
