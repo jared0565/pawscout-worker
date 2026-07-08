@@ -54,3 +54,14 @@ export interface TopicSeed {
   workingTitle: string;
   note: string; // why this is a fit (season, evergreen, catalog gap)
 }
+
+/** A proposed topic the owner can pick from. It CARRIES its full validated
+ *  brief (so generation reuses it and never re-derives the topic/collection),
+ *  plus display evidence that it is backed by real, in-stock, on-storefront
+ *  products (the gate that makes the suggestion trustworthy). */
+export interface BlogTopicCandidate {
+  brief: BlogBrief;            // the full validated brief, carried into generation
+  collectionTitle: string;    // funnel collection display name
+  liveProductCount: number;   // how many live storefront products back it
+  sampleProducts: string[];   // a few product titles, for the dropdown subtitle
+}

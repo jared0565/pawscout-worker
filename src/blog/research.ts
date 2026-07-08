@@ -10,7 +10,7 @@ import { LlmClient } from '../llm';
 import { resolveChain } from '../llm-resolve';
 import type { TenantConfig } from '../types';
 import type { TenantStore } from '../tenant-store';
-import type { BlogBrief, TopicSeed } from './types';
+import type { BlogBrief, TopicSeed, FactPack, BlogTopicCandidate } from './types';
 
 /** Curated evergreen starting points, one+ per real collection. The research
  *  agent may pick from these or propose its own, but the collection it funnels
@@ -32,7 +32,7 @@ export function seasonForMonth(month0: number): string {
   return 'autumn';
 }
 
-function validateBrief(v: unknown, validHandles: string[]): BlogBrief | null {
+export function validateBrief(v: unknown, validHandles: string[]): BlogBrief | null {
   const o = v as Record<string, unknown>;
   if (typeof o !== 'object' || o === null) return null;
   const title = typeof o.title === 'string' ? o.title.trim() : '';
@@ -78,5 +78,88 @@ export async function proposeBrief(
   });
   if (!r.ok) { console.warn(`blog research failed: ${r.error}`); return null; }
   await store.logLlmUsage('blog-research', r.usage.model, r.usage.promptTokens, r.usage.completionTokens, r.usage.costUsd);
+  return r.value;
+}
+
+/**
+ * Validate + assemble topic candidates from a raw LLM `{topics:[...]}` payload.
+ * Each brief is validated against the eligible (already product-gated) handles,
+ * hallucinated collections are dropped, titles are deduped, and coverage is
+ * spread across collections (at most `maxPerCollection`) so the dropdown is not
+ * five flavours of one collection. Returns null when nothing survives.
+ */
+function validateCandidates(
+  v: unknown, packByHandle: Map<string, FactPack>, count: number
+): BlogTopicCandidate[] | null {
+  const arr = (v as { topics?: unknown })?.topics;
+  if (!Array.isArray(arr)) return null;
+  const handles = [...packByHandle.keys()];
+  const maxPerCollection = Math.max(1, Math.ceil(count / handles.length));
+  const perCollection = new Map<string, number>();
+  const seenTitles = new Set<string>();
+  const out: BlogTopicCandidate[] = [];
+  for (const item of arr) {
+    const brief = validateBrief(item, handles);
+    if (!brief) continue;
+    const key = brief.title.toLowerCase();
+    if (seenTitles.has(key)) continue;
+    const used = perCollection.get(brief.collectionHandle) ?? 0;
+    if (used >= maxPerCollection) continue;
+    const pack = packByHandle.get(brief.collectionHandle)!;
+    const live = pack.products.filter((p) => p.available);
+    out.push({
+      brief,
+      collectionTitle: pack.collectionTitle,
+      liveProductCount: live.length,
+      sampleProducts: live.slice(0, 3).map((p) => p.title)
+    });
+    seenTitles.add(key);
+    perCollection.set(brief.collectionHandle, used + 1);
+    if (out.length >= count) break;
+  }
+  return out.length ? out : null;
+}
+
+/**
+ * Propose several DIVERSE topic candidates FROM already-grounded collections.
+ * The caller passes only packs it has gated (enough live, on-storefront
+ * products), so every suggestion is congruent AND buildable before drafting
+ * starts. Each candidate carries a full brief the owner can send straight to
+ * generation. Hermetic: signal is the real catalog + season, not live trend
+ * data (that is a later enhancement, and would inform the brief only). Returns
+ * [] when the LLM is unavailable or nothing validates.
+ */
+export async function proposeTopics(
+  llm: LlmClient, store: TenantStore, cfg: TenantConfig,
+  opts: { packs: FactPack[]; season: string; count?: number }
+): Promise<BlogTopicCandidate[]> {
+  const count = opts.count ?? 5;
+  const packByHandle = new Map(opts.packs.map((p) => [p.collectionHandle, p]));
+  const handles = [...packByHandle.keys()];
+  if (!handles.length) return [];
+
+  const catalog = opts.packs.map((p) => {
+    const names = p.products.filter((x) => x.available).slice(0, 6).map((x) => x.title).join(', ');
+    return `- ${p.collectionTitle} [${p.collectionHandle}]: ${names}`;
+  }).join('\n');
+
+  const chain = resolveChain(cfg, 'text');
+  const system = [
+    'You are a content strategist for Active Paw, a UK pet-care store for dogs and cats.',
+    `Propose ${count} DIVERSE blog article topics a pet owner would genuinely search for. Each MUST funnel into one of the real collections below and be congruent with that collection's actual products.`,
+    'Diversity is required: spread topics across DIFFERENT collections; do not propose several topics for the same collection unless there are fewer collections than requested topics.',
+    'Honest and useful only: evergreen or seasonal, never clickbait, never a topic we cannot tie to the listed products.',
+    `Current season: ${opts.season}. Prefer seasonally relevant angles where there is a strong one.`,
+    `Real collections and their in-stock products (choose collectionHandle EXACTLY from: ${handles.join(', ')}):\n${catalog}`,
+    `Respond with ONLY JSON: {"topics": [ ${count} objects, each {"title": <specific search-friendly title>, "angle": <the specific promise>, "targetKeyword": <primary search intent>, "collectionHandle": <one real handle from the list>, "whyNow": <one sentence>, "keyPoints": <array of 3-6 short points to cover>} ]}.`
+  ].join(' ');
+
+  const r = await llm.jsonChain<BlogTopicCandidate[]>({
+    chain, maxTokens: 1800, system,
+    user: JSON.stringify({ season: opts.season, count }),
+    validate: (v) => validateCandidates(v, packByHandle, count)
+  });
+  if (!r.ok) { console.warn(`blog topic research failed: ${r.error}`); return []; }
+  await store.logLlmUsage('blog-topics', r.usage.model, r.usage.promptTokens, r.usage.completionTokens, r.usage.costUsd);
   return r.value;
 }

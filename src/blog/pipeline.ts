@@ -11,7 +11,8 @@ import { TenantStore } from '../tenant-store';
 import { adminForShop } from '../inbox/invoice-routes';
 import { defaultFetch } from '../safe-fetch';
 import type { Env, TenantConfig } from '../types';
-import { proposeBrief, seasonForMonth } from './research';
+import type { BlogBrief, BlogTopicCandidate } from './types';
+import { proposeBrief, proposeTopics, validateBrief, seasonForMonth } from './research';
 import { groundCollection } from './ground';
 import { draftArticle } from './draft';
 import { findClaimFlags } from './quality';
@@ -43,9 +44,17 @@ export interface BlogPipelineResult {
  * (0-11) so season is deterministic/testable. Every failure degrades to
  * {ok:false, error} and is safe to retry; nothing partial is published.
  */
+/** Use the brief the owner picked from the suggestions (revalidated so a tampered
+ *  or stale collection is rejected), or null to fall back to fresh research. This
+ *  is the load-bearing passthrough: a picked topic must be written as-is, never
+ *  re-derived, or the congruence gate is meaningless. */
+export function resolvePipelineBrief(passed: BlogBrief | undefined, validHandles: string[]): BlogBrief | null {
+  return passed ? validateBrief(passed, validHandles) : null;
+}
+
 export async function runBlogPipeline(
   env: Env, store: TenantStore, cfg: TenantConfig,
-  opts: { topicHint?: string; nowMonth0: number } , fetchImpl: typeof fetch = defaultFetch
+  opts: { topicHint?: string; brief?: BlogBrief; nowMonth0: number } , fetchImpl: typeof fetch = defaultFetch
 ): Promise<BlogPipelineResult> {
   const admin = await adminForShop(env, store, fetchImpl).catch(() => null);
   if (!admin) return { ok: false, error: 'Shopify connection unavailable (needs the write_content scope + a live token).' };
@@ -69,10 +78,15 @@ export async function runBlogPipeline(
   const validHandles = Object.values(cfg.collectionMap).map((c) => c.handle).filter(Boolean);
   if (validHandles.length === 0) return { ok: false, error: 'No collections configured to funnel into.' };
 
-  // Research -> brief.
-  const brief = await proposeBrief(llm, store, cfg, {
-    validHandles, season: seasonForMonth(opts.nowMonth0), topicHint: opts.topicHint
-  });
+  // Brief: reuse the validated one the owner picked from the suggestions (skip
+  // re-research so the exact topic + collection they chose is what gets written),
+  // else research fresh from an optional freehand topic hint.
+  let brief = resolvePipelineBrief(opts.brief, validHandles);
+  if (!brief) {
+    brief = await proposeBrief(llm, store, cfg, {
+      validHandles, season: seasonForMonth(opts.nowMonth0), topicHint: opts.topicHint
+    });
+  }
   if (!brief) return { ok: false, error: 'Research agent could not produce a brief.' };
 
   // Ground -> real products for the chosen collection (fall back through others
@@ -218,4 +232,47 @@ export async function enrichBlogPost(
     imageSet: setImage,
     hadImage: article.hasImage
   };
+}
+
+export interface BlogTopicsResult {
+  ok: boolean;
+  error?: string;
+  candidates?: BlogTopicCandidate[];
+}
+
+// Enough live products to fill a 4-item shop block AND give the drafter products
+// to link in the body without running dry.
+const MIN_LIVE_FOR_TOPIC = 4;
+
+/**
+ * Research a set of topic suggestions the owner can pick from. Grounds EVERY
+ * configured collection, keeps only those with enough live on-storefront
+ * products, and asks the research agent to propose diverse topics FROM those
+ * real products. Every returned candidate is therefore congruent + buildable
+ * before drafting starts, and carries a full brief the owner sends straight to
+ * generation. Degrades to {ok:false,error}.
+ */
+export async function proposeBlogTopics(
+  env: Env, store: TenantStore, cfg: TenantConfig,
+  opts: { nowMonth0: number }, fetchImpl: typeof fetch = defaultFetch
+): Promise<BlogTopicsResult> {
+  const admin = await adminForShop(env, store, fetchImpl).catch(() => null);
+  if (!admin) return { ok: false, error: 'Shopify connection unavailable (needs the write_content scope + a live token).' };
+
+  const llm = new LlmClient({ openrouter: env.OPENROUTER_API_KEY, openai: env.OPENAI_API_KEY }, fetchImpl);
+  if (!llm.available) return { ok: false, error: 'No LLM configured.' };
+
+  const validHandles = Object.values(cfg.collectionMap).map((c) => c.handle).filter(Boolean);
+  if (!validHandles.length) return { ok: false, error: 'No collections configured to funnel into.' };
+
+  const packs = [];
+  for (const h of validHandles) {
+    const pack = await groundCollection(admin, h, 12);
+    if (pack && pack.products.filter((p) => p.available).length >= MIN_LIVE_FOR_TOPIC) packs.push(pack);
+  }
+  if (!packs.length) return { ok: false, error: 'No collection has enough live products yet to build a topic from.' };
+
+  const candidates = await proposeTopics(llm, store, cfg, { packs, season: seasonForMonth(opts.nowMonth0) });
+  if (!candidates.length) return { ok: false, error: 'Could not research topics right now. Please try again.' };
+  return { ok: true, candidates };
 }

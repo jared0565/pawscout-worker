@@ -6,10 +6,11 @@ import { factPackToPrompt, groundCollection } from '../src/blog/ground';
 import { sanitizeBlogHtml, draftArticle } from '../src/blog/draft';
 import { createDraftArticle, renameBlog, findBlog, updateArticleAssets } from '../src/blog/article';
 import { extractProductHandles, selectShopBlock } from '../src/blog/select';
-import { proposeBrief, seasonForMonth } from '../src/blog/research';
+import { proposeBrief, proposeTopics, seasonForMonth } from '../src/blog/research';
+import { resolvePipelineBrief } from '../src/blog/pipeline';
 import { LlmClient } from '../src/llm';
 import type { AdminGraphql } from '../src/shopify-admin';
-import type { BlogDraft, FactPack } from '../src/blog/types';
+import type { BlogBrief, BlogDraft, FactPack, GroundedProduct } from '../src/blog/types';
 
 const CFG: any = { llm: { models: {} } };
 const STORE: any = { logLlmUsage: async () => {} };
@@ -260,6 +261,48 @@ describe('blog article asset writes', () => {
 
     const bad: AdminGraphql = (async () => ({ articleUpdate: { userErrors: [{ message: 'boom' }] } })) as unknown as AdminGraphql;
     await expect(updateArticleAssets(bad, { articleId: 'a', relatedHandles: ['x'] })).rejects.toThrow(/boom/);
+  });
+});
+
+describe('blog topic suggestions + brief passthrough', () => {
+  const mkPack = (handle: string, title: string, n: number): FactPack => ({
+    collectionHandle: handle, collectionTitle: title, collectionPath: `/collections/${handle}`,
+    products: Array.from({ length: n }, (_, i): GroundedProduct =>
+      ({ title: `${handle}-p${i}`, handle: `${handle}-p${i}`, path: `/products/${handle}-p${i}`, priceGbp: 9.99, available: true }))
+  });
+  const topic = (title: string, h: string) => ({ title, angle: 'a', targetKeyword: 'k', collectionHandle: h, whyNow: 'w', keyPoints: ['a', 'b', 'c'] });
+
+  it('proposeTopics returns validated candidates, drops a hallucinated collection, and carries live counts', async () => {
+    const packs = [mkPack('pet-health', 'Pet Health', 4), mkPack('pet-toys', 'Pet Toys', 5)];
+    const llm = fakeLlm([{ topics: [
+      topic('Hydration guide', 'pet-health'),
+      topic('Boredom busters', 'pet-toys'),
+      topic('Ghost topic', 'not-real')   // dropped: collection is not in the gated set
+    ] }]);
+    const cands = await proposeTopics(llm, STORE, CFG, { packs, season: 'summer' });
+    expect(cands.length).toBe(2);
+    expect(cands.map((c) => c.brief.collectionHandle).sort()).toEqual(['pet-health', 'pet-toys']);
+    expect(cands.find((c) => c.brief.collectionHandle === 'not-real')).toBeUndefined();
+    expect(cands.find((c) => c.brief.collectionHandle === 'pet-toys')!.liveProductCount).toBe(5);
+    expect(cands[0].brief.keyPoints.length).toBeGreaterThanOrEqual(3); // a full brief, not just a title
+  });
+
+  it('proposeTopics caps repeats per collection so the list is diverse', async () => {
+    const packs = [mkPack('pet-health', 'Pet Health', 4), mkPack('pet-toys', 'Pet Toys', 4)];
+    const llm = fakeLlm([{ topics: [
+      topic('H1', 'pet-health'), topic('H2', 'pet-health'), topic('H3', 'pet-health'),
+      topic('H4', 'pet-health'), topic('T1', 'pet-toys')
+    ] }]);
+    const cands = await proposeTopics(llm, STORE, CFG, { packs, season: 'summer', count: 5 });
+    expect(cands.filter((c) => c.brief.collectionHandle === 'pet-health').length).toBeLessThanOrEqual(3); // ceil(5/2)
+    expect(cands.some((c) => c.brief.collectionHandle === 'pet-toys')).toBe(true);
+  });
+
+  it('resolvePipelineBrief reuses a valid picked brief and rejects undefined or a stale collection', () => {
+    const brief: BlogBrief = { title: 'Winter paw care basics', angle: 'a', targetKeyword: 'k', collectionHandle: 'pet-health', whyNow: 'w', keyPoints: ['x', 'y', 'z'] };
+    expect(resolvePipelineBrief(brief, ['pet-health', 'pet-toys'])).toEqual(brief); // written as-is, no re-research
+    expect(resolvePipelineBrief(undefined, ['pet-health'])).toBeNull();             // -> pipeline researches
+    expect(resolvePipelineBrief({ ...brief, collectionHandle: 'ghost' }, ['pet-health'])).toBeNull(); // stale/tampered rejected
   });
 });
 

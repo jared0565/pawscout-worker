@@ -21,7 +21,8 @@ import { collectSystemStates } from './system-states';
 import { validateEventRequest, findOverlappingPromo, createEventDiscount, buildEventCampaign, publicEventPayload, eventDayLabel } from './storewide-event';
 import { reservedWindowClash, templateByKey } from './event-catalogue';
 import { ensureRecurringDiscount, retireRecurringDiscount, refreshPublicEventFeed, listRecurringForConsole } from './recurring-events';
-import { runBlogPipeline, enrichBlogPost } from './blog/pipeline';
+import { runBlogPipeline, enrichBlogPost, proposeBlogTopics } from './blog/pipeline';
+import type { BlogBrief } from './blog/types';
 import { issueVoucher, fetchActiveOrderPromos, voucherDateLabel, deactivateVoucherDiscount } from './affiliate-discounts';
 import { buildVoucherInviteWithCode } from './inbox/partnership';
 import { renderReplyHtml } from './inbox/draft';
@@ -330,13 +331,26 @@ app.post('/api/event/end', async (c) => {
 // publishes; the article is created isPublished:false for owner review.
 app.post('/api/blog/generate', async (c) => {
   const s = await shopOf(c); if (typeof s !== 'string') return s;
-  let body: { topicHint?: unknown } = {};
+  let body: { topicHint?: unknown; brief?: unknown } = {};
   try { body = await c.req.json(); } catch {}
   const store = new TenantStore(c.env.DB, s);
   const cfg = await store.getConfig();
   if (!cfg) return c.json({ ok: false, error: 'Tenant not found' }, 400);
   const topicHint = typeof body.topicHint === 'string' && body.topicHint.trim() ? body.topicHint.trim().slice(0, 300) : undefined;
-  const result = await runBlogPipeline(c.env, store, cfg, { topicHint, nowMonth0: new Date().getMonth() });
+  // A brief picked from the suggestions rides through verbatim (revalidated in
+  // the pipeline) so the chosen topic + collection is what gets written.
+  const brief = body.brief && typeof body.brief === 'object' ? (body.brief as BlogBrief) : undefined;
+  const result = await runBlogPipeline(c.env, store, cfg, { topicHint, brief, nowMonth0: new Date().getMonth() });
+  return c.json(result);
+});
+// Research topic suggestions, each gated to a collection with enough live
+// products (so every pick is congruent + buildable before drafting starts).
+app.post('/api/blog/topics', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  const store = new TenantStore(c.env.DB, s);
+  const cfg = await store.getConfig();
+  if (!cfg) return c.json({ ok: false, error: 'Tenant not found' }, 400);
+  const result = await proposeBlogTopics(c.env, store, cfg, { nowMonth0: new Date().getMonth() });
   return c.json(result);
 });
 app.post('/api/blog/list', async (c) => {

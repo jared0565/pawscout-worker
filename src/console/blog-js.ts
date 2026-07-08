@@ -3,6 +3,42 @@
 // dollar-brace, '+' concatenation, esc() every dynamic value.
 export const blogJs = `
 // --- Content: blog agents author DRAFT posts (the system authors; a human publishes) ---
+// Topic suggestions: researched picks, each already backed by in-stock products.
+// The chosen candidate carries its full brief into generation (no re-research).
+var blgCandidates=[]; var blgChosen=null;
+async function blogSuggest(){
+  var btn=el('blg-suggest-btn'); if(btn) btn.disabled=true;
+  setMsg('blg-msg','Researching topics grounded in your live, in-stock products. This can take a moment.','muted');
+  try{
+    var r=await api('/blog/topics',{});
+    if(!r.ok||!r.candidates||!r.candidates.length){ setMsg('blg-msg','No topic suggestions right now: '+esc((r&&r.error)||'none found'),'no'); if(btn) btn.disabled=false; return; }
+    blgCandidates=r.candidates;
+    var sel=el('blg-suggest');
+    if(sel){
+      sel.innerHTML='';
+      for(var i=0;i<blgCandidates.length;i++){
+        var c=blgCandidates[i];
+        var o=document.createElement('option');
+        o.value=String(i);
+        o.textContent=c.brief.title+'  ['+c.collectionTitle+', '+c.liveProductCount+' in stock]';
+        sel.appendChild(o);
+      }
+      sel.style.display='';
+    }
+    blgChosen=blgCandidates[0];
+    if(el('blg-topic')) el('blg-topic').value=blgChosen.brief.title;
+    setMsg('blg-msg','Researched '+blgCandidates.length+' topic(s), each backed by in-stock products. Pick one (or edit the field), then Draft a new post.','ok');
+  }catch(e){ setMsg('blg-msg','Could not research topics: '+errText(e),'no'); }
+  if(btn) btn.disabled=false;
+}
+function blogPickSuggested(){
+  var sel=el('blg-suggest'); if(!sel) return;
+  var i=parseInt(sel.value,10);
+  if(isNaN(i)||!blgCandidates[i]) return;
+  blgChosen=blgCandidates[i];
+  if(el('blg-topic')) el('blg-topic').value=blgChosen.brief.title;
+}
+function blgTopicEdited(){ blgChosen=null; } // typing over a suggestion = freehand topic
 function blgItemHtml(p){
   var flags=[]; try{ flags=JSON.parse(p.claim_flags_json||'[]'); }catch(e){}
   var related=[]; try{ related=JSON.parse(p.related_handles_json||'[]'); }catch(e){}
@@ -37,15 +73,20 @@ async function loadContent(){
 async function blogGenerate(){
   var btn=el('blg-gen-btn');
   var topic=((el('blg-topic')&&el('blg-topic').value)||'').trim();
+  // A chosen suggestion carries its full validated brief; otherwise send the
+  // freehand topic (blank lets the agent choose).
+  var payload = blgChosen ? {brief:blgChosen.brief} : {topicHint:topic};
   if(btn) btn.disabled=true;
-  setMsg('blg-msg','Researching an angle and writing the post. This can take up to a minute.','muted');
+  setMsg('blg-msg','Writing the post from your real products. This can take up to a minute.','muted');
   try{
-    var r=await api('/blog/generate',{topicHint:topic});
+    var r=await api('/blog/generate',payload);
     if(!r.ok){ setMsg('blg-msg','Could not create a post: '+esc(r.error||'unknown error'),'no'); }
     else{
       var extra=(r.claimFlags&&r.claimFlags.length)?(' '+r.claimFlags.length+' line(s) were flagged to verify before you publish.'):'';
       setMsg('blg-msg','Draft created: "'+esc(r.title)+'". Review and publish it in Shopify admin (Online Store, Blog posts).'+extra,'ok');
       if(el('blg-topic')) el('blg-topic').value='';
+      blgChosen=null;
+      var sel=el('blg-suggest'); if(sel){ sel.style.display='none'; sel.innerHTML=''; }
       loadContent();
     }
   }catch(e){ setMsg('blg-msg','Could not create a post: '+errText(e),'no'); }
