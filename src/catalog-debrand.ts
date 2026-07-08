@@ -27,7 +27,7 @@ const ARTICLES_QUERY = `query pawscoutDebrandArticles {
     nodes {
       id handle
       articles(first: 100) {
-        nodes { id title body }
+        nodes { id title body image { url altText } }
         pageInfo { hasNextPage }
       }
     }
@@ -88,7 +88,7 @@ async function debrandProductTitles(
 async function debrandArticleBodies(
   admin: AdminGraphql, brands: string[], result: DebrandResult
 ): Promise<void> {
-  let data: { blogs?: { nodes?: { handle?: string; articles?: { nodes?: { id: string; title?: string; body?: string }[]; pageInfo?: { hasNextPage?: boolean } } }[] } };
+  let data: { blogs?: { nodes?: { handle?: string; articles?: { nodes?: { id: string; title?: string; body?: string; image?: { url?: string; altText?: string } }[]; pageInfo?: { hasNextPage?: boolean } } }[] } };
   try {
     data = await admin(ARTICLES_QUERY) as typeof data;
   } catch (e) {
@@ -98,17 +98,30 @@ async function debrandArticleBodies(
   for (const blog of data.blogs?.nodes ?? []) {
     for (const a of blog.articles?.nodes ?? []) {
       result.articlesScanned++;
-      if (!a.body) continue;
-      const cleaned = debrandText(a.body, brands);
-      if (cleaned === a.body) continue;
+      const article: Record<string, unknown> = {};
+      const changes: string[] = [];
+      if (a.body) {
+        const cleaned = debrandText(a.body, brands);
+        if (cleaned !== a.body) { article.body = cleaned; changes.push('body'); }
+      }
+      // The featured-image alt is a snapshot of the hero product title taken at
+      // creation, so it can still carry a brand after the title rename. Use
+      // debrandTitle (plain string, no URL to damage) and re-pass the current
+      // image url (a harmless re-process of the same photo) so og:image:alt,
+      // twitter:image:alt and the hero <img alt> all go clean in one write.
+      if (a.image?.altText) {
+        const cleanedAlt = debrandTitle(a.image.altText, brands);
+        if (cleanedAlt !== a.image.altText) { article.image = { url: a.image.url, altText: cleanedAlt }; changes.push('image alt'); }
+      }
+      if (!changes.length) continue;
       try {
-        const r = await admin(ARTICLE_BODY_UPDATE, { id: a.id, article: { body: cleaned } }) as {
+        const r = await admin(ARTICLE_BODY_UPDATE, { id: a.id, article }) as {
           articleUpdate?: { userErrors?: { message: string }[] };
         };
         const errs = r.articleUpdate?.userErrors ?? [];
         if (errs.length) throw new Error(errs.map((e) => e.message).join('; '));
         result.bodiesUpdated++;
-        if (result.samples.length < 12) result.samples.push(`article: "${a.title ?? a.id}" body de-branded`);
+        if (result.samples.length < 12) result.samples.push(`article "${a.title ?? a.id}" de-branded (${changes.join(' + ')})`);
       } catch (e) {
         result.errors.push(`article ${a.id}: ${(e as Error).message}`);
       }

@@ -1,10 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import { debrandCatalog } from '../src/catalog-debrand';
 
+type ArticleInput = { body?: string; image?: { url?: string; altText?: string } };
+
 /** A fake AdminGraphql that serves two product pages + one blog, and records writes. */
 function makeFakeAdmin() {
   const titleUpdates: { id: string; title: string }[] = [];
-  const bodyUpdates: { id: string; body: string }[] = [];
+  const articleUpdates: { id: string; article: ArticleInput }[] = [];
   const admin = (async (query: string, vars?: Record<string, unknown>) => {
     if (query.includes('products(first: 100')) {
       const cursor = vars?.cursor as string | null;
@@ -34,19 +36,28 @@ function makeFakeAdmin() {
       return { blogs: { nodes: [ {
         handle: 'guides',
         articles: { nodes: [
-          { id: 'gid://a/1', title: 'Litter smells', body: '<p>The <a href="/products/pawhut-litter-tray">PawHut Stainless Steel Cat Litter Tray</a> helps.</p>' },
-          { id: 'gid://a/2', title: 'Nails', body: '<p>Trim with clippers.</p>' }
+          // both body link text AND featured-image alt carry the brand
+          { id: 'gid://a/1', title: 'Litter smells',
+            body: '<p>The <a href="/products/pawhut-litter-tray">PawHut Stainless Steel Cat Litter Tray</a> helps.</p>',
+            image: { url: 'https://cdn.shopify.com/x/tray.jpg', altText: 'PawHut Stainless Steel Cat Litter Tray, Extra Large Enclosed' } },
+          // clean body, but the image alt is still branded (alt-only update)
+          { id: 'gid://a/2', title: 'Cat trees',
+            body: '<p>A tall cat tree is great.</p>',
+            image: { url: 'https://cdn.shopify.com/x/tree.jpg', altText: 'PawHut 88cm Cat Tree' } },
+          // fully clean article - must not be touched
+          { id: 'gid://a/3', title: 'Nails',
+            body: '<p>Trim with clippers.</p>',
+            image: { url: 'https://cdn.shopify.com/x/nail.jpg', altText: 'Nail clipper and grinder' } }
         ], pageInfo: { hasNextPage: false } }
       } ] } };
     }
     if (query.includes('articleUpdate')) {
-      const article = vars?.article as { body: string };
-      bodyUpdates.push({ id: vars?.id as string, body: article.body });
+      articleUpdates.push({ id: vars?.id as string, article: vars?.article as ArticleInput });
       return { articleUpdate: { userErrors: [] } };
     }
     throw new Error('unexpected query: ' + query.slice(0, 40));
   });
-  return { admin: admin as unknown as import('../src/shopify-admin').AdminGraphql, titleUpdates, bodyUpdates };
+  return { admin: admin as unknown as import('../src/shopify-admin').AdminGraphql, titleUpdates, articleUpdates };
 }
 
 describe('debrandCatalog', () => {
@@ -61,16 +72,23 @@ describe('debrandCatalog', () => {
     ]);
   });
 
-  it('de-brands article body visible text but never the link href/handle', async () => {
-    const { admin, bodyUpdates } = makeFakeAdmin();
+  it('de-brands article body + image alt, preserves the href handle and the image url', async () => {
+    const { admin, articleUpdates } = makeFakeAdmin();
     const r = await debrandCatalog(admin);
-    expect(r.articlesScanned).toBe(2);
-    expect(r.bodiesUpdated).toBe(1);
-    expect(bodyUpdates).toHaveLength(1);
-    const body = bodyUpdates[0].body;
-    expect(body).toContain('/products/pawhut-litter-tray'); // handle preserved
-    expect(body).toContain('>Stainless Steel Cat Litter Tray</a>'); // visible text de-branded
-    expect(body).not.toContain('>PawHut ');
+    expect(r.articlesScanned).toBe(3);
+    expect(r.bodiesUpdated).toBe(2); // a/1 (body+alt) and a/2 (alt only); a/3 untouched
+
+    const a1 = articleUpdates.find((u) => u.id === 'gid://a/1')!;
+    expect(a1.article.body).toContain('/products/pawhut-litter-tray');       // handle preserved
+    expect(a1.article.body).toContain('>Stainless Steel Cat Litter Tray</a>'); // visible text de-branded
+    expect(a1.article.body).not.toContain('>PawHut ');
+    expect(a1.article.image).toEqual({ url: 'https://cdn.shopify.com/x/tray.jpg', altText: 'Stainless Steel Cat Litter Tray, Extra Large Enclosed' });
+
+    const a2 = articleUpdates.find((u) => u.id === 'gid://a/2')!;
+    expect(a2.article.body).toBeUndefined(); // body was already clean - not rewritten
+    expect(a2.article.image).toEqual({ url: 'https://cdn.shopify.com/x/tree.jpg', altText: '88cm Cat Tree' });
+
+    expect(articleUpdates.find((u) => u.id === 'gid://a/3')).toBeUndefined(); // clean article never written
   });
 
   it('collects userErrors without throwing', async () => {

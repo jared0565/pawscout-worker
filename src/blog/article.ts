@@ -8,6 +8,7 @@
 
 import type { AdminGraphql } from '../shopify-admin';
 import type { BlogDraft } from './types';
+import { debrandTitle } from '../debrand';
 
 export interface BlogRef { id: string; handle: string; title: string; }
 
@@ -84,7 +85,10 @@ export async function createDraftArticle(
     tags: draft.tag ? [draft.tag] : [],
     metafields
   };
-  if (imageUrl) article.image = { url: imageUrl, altText: imageAlt ?? draft.title };
+  // De-brand the featured-image alt (it becomes og:image:alt / twitter:image:alt
+  // and the hero <img alt>). The alt is a snapshot of the hero product's title,
+  // so strip any manufacturer brand here, at the write choke point. See src/debrand.ts.
+  if (imageUrl) article.image = { url: imageUrl, altText: debrandTitle(imageAlt ?? draft.title) };
 
   const data = await admin(ARTICLE_CREATE, { article }) as {
     articleCreate?: { article?: CreatedArticle; userErrors?: { message: string }[] };
@@ -178,7 +182,7 @@ export async function updateArticleAssets(
       { namespace: RELATED_NS, key: RELATED_KEY, value: JSON.stringify(relatedHandles), type: RELATED_TYPE }
     ];
   }
-  if (imageUrl) article.image = { url: imageUrl, altText: imageAlt ?? '' };
+  if (imageUrl) article.image = { url: imageUrl, altText: debrandTitle(imageAlt ?? '') };
   if (Object.keys(article).length === 0) return; // nothing to do
 
   const data = await admin(ARTICLE_UPDATE, { id: articleId, article }) as {
