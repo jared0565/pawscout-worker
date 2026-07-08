@@ -41,7 +41,7 @@ async function seedBaitOpener(shop: string, opener: string, pitch: string) {
   const tid = await s.createThread({ contactEmail: 'p@x.com', subject: '', subjectNorm: '', receivedAt: '2026-07-04T10:00:00Z', initialStatus: 'needs_reply' });
   await s.setThreadClassification(tid, { status: 'needs_reply', primaryCategory: 'other', intentScore: 20, summary: null, classifiedAt: '2026-07-04T10:00:01Z' });
   await s.insertInboundMessageIfNew({ threadId: tid, messageId: `<o1@${shop}>`, inReplyTo: null, references: [], from: 'p@x.com', to: 'contact@activepaw.co.uk', subject: '', bodyText: opener, bodyHtml: null, headersJson: '{}', receivedAt: '2026-07-04T10:00:00Z' });
-  await s.insertOutboundMessage({ threadId: tid, messageId: `<r1@${shop}>`, from: 'contact@activepaw.co.uk', to: 'p@x.com', subject: '', bodyText: 'Hi Sam,\n\nYes, we ship there.\n\nBest Regards,\nActive Paw Customer Service', bodyHtml: '<p>Yes</p>', sentAt: '2026-07-04T11:00:00Z' });
+  await s.insertOutboundMessage({ threadId: tid, messageId: `<r1@${shop}>`, from: 'contact@activepaw.co.uk', to: 'p@x.com', subject: '', bodyText: 'Hi Sam,\n\nYes, we ship there.\n\nBest Regards,\nActive Paw Customer Support', bodyHtml: '<p>Yes</p>', sentAt: '2026-07-04T11:00:00Z' });
   await s.insertInboundMessageIfNew({ threadId: tid, messageId: `<o2@${shop}>`, inReplyTo: `<r1@${shop}>`, references: [], from: 'p@x.com', to: 'contact@activepaw.co.uk', subject: '', bodyText: pitch, bodyHtml: null, headersJson: '{}', receivedAt: '2026-07-05T09:00:00Z' });
   return { s, tid };
 }

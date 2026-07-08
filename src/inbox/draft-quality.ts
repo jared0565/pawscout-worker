@@ -25,7 +25,7 @@ const FILLER_PATTERNS: RegExp[] = [
   /\bwe (?:really )?appreciate (?:you|your)[^.]*\.?/i,
 ];
 
-/** A trailing sign-off block ("Best regards, Active Paw Customer Service") - courtesy,
+/** A trailing sign-off block ("Best regards, Active Paw Customer Support") - courtesy,
  * not substance, so it is stripped before measuring substance. */
 const SIGNOFF_PATTERN = /\b(?:best (?:regards|wishes)|kind regards|warm regards|many thanks|wishing you)\b[\s\S]*$/i;
 

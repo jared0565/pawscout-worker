@@ -88,10 +88,16 @@ export function applySalutation(bodyText: string, customerName: string | null | 
   return sanitizeOutbound(`${greeting}\n\n${stripped}`);
 }
 
-/** Department signature lines for the deterministic footer (the owner's exact format). */
+/** Department signature lines for the deterministic footer (the owner's exact format).
+ * Four desks so a reply is recognisable/auditable by the team that signed it: Sales
+ * (leads, wholesale), Customer Support (shipping, order status, complaints, general),
+ * Partnerships (affiliate lane), Technical Team (product/spec questions). The
+ * partnership funnel signs "Active Paw Partnerships" directly on its own templates. */
 export const DEPARTMENT_SIGNATURES: Record<import('./agents/types').Department, string> = {
   sales: 'Active Paw Sales Team',
-  service: 'Active Paw Customer Service',
+  service: 'Active Paw Customer Support',
+  partnership: 'Active Paw Partnerships',
+  tech: 'Active Paw Technical Team',
 };
 
 // A trailing sign-off block the model may have added despite being told not to

@@ -4,7 +4,7 @@ export const affiliateAgent: CategoryAgent = {
   category: 'affiliate',
   displayName: 'Affiliate / Partnership',
   description: 'Policy: not taking on partnerships; warm polite decline',
-  department: 'sales',
+  department: 'partnership',
   commercial: false,
   async ground(): Promise<Grounding> { return { confident: true, facts: '', quotesFigure: false }; },
   promptFragment(): string {

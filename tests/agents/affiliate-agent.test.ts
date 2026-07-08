@@ -16,6 +16,6 @@ describe('affiliateAgent', () => {
     expect(p).toContain('not taking on');
     expect(p).toContain('decline');
     expect(p).toContain('do not ask qualifying questions');
-    expect(affiliateAgent.department).toBe('sales');
+    expect(affiliateAgent.department).toBe('partnership');
   });
 });

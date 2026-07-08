@@ -263,7 +263,7 @@ describe('composeAgentDraft', () => {
   it('appends the department footer LAST (body, then appendix, then footer) so HITL sees the exact outbound', () => {
     const line = 'Delivery to the UK: estimated 4-12 days.';
     const out = composeAgentDraft({ bodyText: 'Yes, we ship to the UK.', quotesPriceOrOrder: false }, line, 'service');
-    expect(out.bodyText).toBe(`Yes, we ship to the UK.\n\n${line}\n\nBest Regards,\nActive Paw Customer Service`);
+    expect(out.bodyText).toBe(`Yes, we ship to the UK.\n\n${line}\n\nBest Regards,\nActive Paw Customer Support`);
   });
 
   it('strips a stray LLM sign-off from the body BEFORE the appendix so it cannot sit mid-draft', () => {

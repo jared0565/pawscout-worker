@@ -64,7 +64,7 @@ describe('substanceWordCount', () => {
     expect(substanceWordCount('Thank you for getting in touch! We do ship to the US.')).toBeGreaterThanOrEqual(6);
   });
   it('collapses to near zero when the reply is only courtesy + sign-off', () => {
-    const allCourtesy = 'Thank you for getting in touch. We really appreciate you. Best regards, Active Paw Customer Service.';
+    const allCourtesy = 'Thank you for getting in touch. We really appreciate you. Best regards, Active Paw Customer Support.';
     expect(substanceWordCount(allCourtesy)).toBeLessThan(6);
   });
 });
@@ -110,7 +110,7 @@ describe('findDraftIssues (runtime quality gate)', () => {
   });
 
   it('flags a courtesy-only reply that carries no substance', () => {
-    const empty = 'Thank you for getting in touch. We really appreciate you. Best regards, Active Paw Customer Service.';
+    const empty = 'Thank you for getting in touch. We really appreciate you. Best regards, Active Paw Customer Support.';
     const issues = findDraftIssues(empty);
     expect(issues.some((i) => /substance|actual answer|what the customer/i.test(i))).toBe(true);
   });
@@ -152,7 +152,7 @@ describe('asksDoYouDeliver', () => {
 describe('refineUntilClean (runtime self-correction loop)', () => {
   const CLEAN = { bodyText: 'Yes, we ship to the US, including NYC. Tracking follows on dispatch.' };
   // courtesy-only, no substance -> fails the gate (needs revision)
-  const FILLER = { bodyText: 'Thank you for getting in touch. We really appreciate you. Best regards, Active Paw Customer Service.' };
+  const FILLER = { bodyText: 'Thank you for getting in touch. We really appreciate you. Best regards, Active Paw Customer Support.' };
 
   it('returns the draft untouched and never revises when it already passes', async () => {
     let calls = 0;
@@ -175,7 +175,7 @@ describe('refineUntilClean (runtime self-correction loop)', () => {
   });
 
   it('keeps the best (fewest-issue) candidate when revisions never fully pass', async () => {
-    const STILL_BAD = { bodyText: 'Thank you for getting in touch. Best regards, Active Paw Customer Service.' };
+    const STILL_BAD = { bodyText: 'Thank you for getting in touch. Best regards, Active Paw Customer Support.' };
     let calls = 0;
     const revise = async () => { calls++; return STILL_BAD; };
     const out = await refineUntilClean(FILLER, revise, { maxWords: 70 }, 2);

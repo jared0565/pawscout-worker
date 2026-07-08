@@ -10,6 +10,12 @@ describe('otherAgent', () => {
     expect(otherAgent.deterministicAppendix(g)).toBeNull();
   });
 
+  // The catch-all lane signs as Customer Support (it used to sign as Sales, which
+  // read oddly on a general enquiry or an uncategorised thread).
+  it('signs as the Customer Support desk', () => {
+    expect(otherAgent.department).toBe('service');
+  });
+
   // 2026-07-04 owner directive (the azanwatch3 case): the draft declined a
   // "collaboration" the MESSAGE never offered - the subject line alone tripped
   // the pitch branch. Replies must judge by the sender's actual text; an

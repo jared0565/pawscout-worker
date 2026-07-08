@@ -4,7 +4,7 @@ export const otherAgent: CategoryAgent = {
   category: 'other',
   displayName: 'General',
   description: 'General enquiries; safe generic handling',
-  department: 'sales',
+  department: 'service',
   commercial: false,
   async ground(): Promise<Grounding> { return { confident: true, facts: '', quotesFigure: false }; },
   promptFragment(): string {

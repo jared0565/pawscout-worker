@@ -69,7 +69,7 @@ describe('applySalutation strips dashes from the composed body', () => {
 
 describe('stripTrailingSignoff (no doubled sign-offs under the deterministic footer)', () => {
   it('removes a trailing "Best regards" block with a team line', () => {
-    expect(stripTrailingSignoff('Yes, we ship to France.\n\nBest regards,\nActive Paw Customer Service'))
+    expect(stripTrailingSignoff('Yes, we ship to France.\n\nBest regards,\nActive Paw Customer Support'))
       .toBe('Yes, we ship to France.');
   });
   it('removes a bare trailing "Kind regards" line', () => {
@@ -84,17 +84,25 @@ describe('stripTrailingSignoff (no doubled sign-offs under the deterministic foo
 });
 
 describe('applyFooter (deterministic department signature, lives IN the draft)', () => {
-  it('appends the Customer Service footer in the owner format', () => {
+  it('appends the Customer Support footer in the owner format', () => {
     expect(applyFooter('Your order is on its way.', 'service'))
-      .toBe('Your order is on its way.\n\nBest Regards,\nActive Paw Customer Service');
+      .toBe('Your order is on its way.\n\nBest Regards,\nActive Paw Customer Support');
   });
   it('appends the Sales Team footer in the owner format', () => {
     expect(applyFooter('Yes, that bed comes in large.', 'sales'))
       .toBe('Yes, that bed comes in large.\n\nBest Regards,\nActive Paw Sales Team');
   });
+  it('appends the Partnerships footer for the affiliate lane', () => {
+    expect(applyFooter('Thank you for thinking of us.', 'partnership'))
+      .toBe('Thank you for thinking of us.\n\nBest Regards,\nActive Paw Partnerships');
+  });
+  it('appends the Technical Team footer for product and spec questions', () => {
+    expect(applyFooter('That bed holds up to 40kg.', 'tech'))
+      .toBe('That bed holds up to 40kg.\n\nBest Regards,\nActive Paw Technical Team');
+  });
   it('replaces an LLM sign-off instead of doubling it', () => {
     const out = applyFooter('Happy to help.\n\nBest regards,\nActive Paw', 'service');
-    expect(out).toBe('Happy to help.\n\nBest Regards,\nActive Paw Customer Service');
+    expect(out).toBe('Happy to help.\n\nBest Regards,\nActive Paw Customer Support');
   });
   it('sanitizes dashes so the footer path is also em-dash-safe', () => {
     expect(applyFooter(`See you soon ${EM} team`, 'sales')).not.toMatch(DASH_RE);

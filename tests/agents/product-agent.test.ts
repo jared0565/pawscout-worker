@@ -10,6 +10,14 @@ const singleProductAdmin = async () => ({
   products: { edges: [{ node: { id: 'p1', title: 'Blue Harness', variants: { edges: [{ node: { id: 'v1', title: 'M', sku: 'BH-M', price: '12.00', availableForSale: true, inventoryQuantity: 5 } }] } } }] }
 });
 
+describe('productAgent department', () => {
+  // Product/spec questions ("does this come in large?", "is the material pet-safe?")
+  // are the shop's "technical questions" bucket, so they sign as the Technical Team.
+  it('signs as the Technical Team desk', () => {
+    expect(productAgent.department).toBe('tech');
+  });
+});
+
 describe('productAgent.ground', () => {
   it('hedges when admin is null (not authed)', async () => {
     const g = await productAgent.ground(mkCtx(null));
