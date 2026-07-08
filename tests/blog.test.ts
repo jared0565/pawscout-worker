@@ -6,6 +6,7 @@ import { factPackToPrompt, groundCollection } from '../src/blog/ground';
 import { sanitizeBlogHtml, draftArticle } from '../src/blog/draft';
 import { createDraftArticle, renameBlog, findBlog, updateArticleAssets } from '../src/blog/article';
 import { extractProductHandles, selectShopBlock } from '../src/blog/select';
+import { pickBlogHeroImage, getProductImages } from '../src/blog/hero';
 import { proposeBrief, proposeTopics, seasonForMonth } from '../src/blog/research';
 import { resolvePipelineBrief } from '../src/blog/pipeline';
 import { LlmClient } from '../src/llm';
@@ -261,6 +262,41 @@ describe('blog article asset writes', () => {
 
     const bad: AdminGraphql = (async () => ({ articleUpdate: { userErrors: [{ message: 'boom' }] } })) as unknown as AdminGraphql;
     await expect(updateArticleAssets(bad, { articleId: 'a', relatedHandles: ['x'] })).rejects.toThrow(/boom/);
+  });
+});
+
+describe('blog hero image (vision, lifestyle-preferring)', () => {
+  const CFG_ON: any = { llm: { enabled: true, models: {} } };
+  const IMGS = [
+    { url: 'https://img/white-bg.jpg', width: 1500, height: 1500 },   // clean product on white
+    { url: 'https://img/dog-using-it.jpg', width: 1000, height: 1000 } // pet with product (smaller)
+  ];
+
+  it('returns the vision-chosen frame even when it is smaller than a product shot', async () => {
+    const llm = fakeLlm([{ index: 1, reason: 'dog using product' }]);
+    expect(await pickBlogHeroImage(llm, STORE, CFG_ON, 'Dog drying towel', IMGS)).toEqual(IMGS[1]);
+  });
+
+  it('with 0-1 images returns the only image (or null) without consulting the model', async () => {
+    const llm = fakeLlm([{ index: 9 }]); // invalid, but must not be consulted
+    expect(await pickBlogHeroImage(llm, STORE, CFG_ON, 't', [IMGS[0]])).toEqual(IMGS[0]);
+    expect(await pickBlogHeroImage(llm, STORE, CFG_ON, 't', [])).toBeNull();
+  });
+
+  it('returns null on an out-of-range index so the caller falls back to the featured image', async () => {
+    const llm = fakeLlm([{ index: 5 }]);
+    expect(await pickBlogHeroImage(llm, STORE, CFG_ON, 't', IMGS)).toBeNull();
+  });
+
+  it('getProductImages maps url + dimensions and tolerates an admin error', async () => {
+    const admin: AdminGraphql = (async () => ({ products: { nodes: [{ images: { nodes: [
+      { url: 'https://img/a.jpg', width: 1200, height: 1200 }, { url: 'https://img/b.jpg', width: 800, height: 800 }
+    ] } }] } })) as unknown as AdminGraphql;
+    expect(await getProductImages(admin, 'x')).toEqual([
+      { url: 'https://img/a.jpg', width: 1200, height: 1200 }, { url: 'https://img/b.jpg', width: 800, height: 800 }
+    ]);
+    const bad: AdminGraphql = (async () => { throw new Error('boom'); }) as unknown as AdminGraphql;
+    expect(await getProductImages(bad, 'x')).toEqual([]);
   });
 });
 

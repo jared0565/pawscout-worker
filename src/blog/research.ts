@@ -129,6 +129,26 @@ function validateCandidates(
  * data (that is a later enhancement, and would inform the brief only). Returns
  * [] when the LLM is unavailable or nothing validates.
  */
+function buildTopicSystem(handles: string[], catalog: string, season: string, count: number, useWeb: boolean): string {
+  // The demand instruction is the ONLY difference between the web + hermetic
+  // prompts. Web framing (advisor): rank OUR coverable categories by REAL current
+  // demand and never force a trend we cannot stock - the collection gate then
+  // guarantees we only surface topics we can actually fulfill.
+  const demand = useWeb
+    ? 'Use live web search to judge which of these stocked categories has REAL current search demand right now (this season, current pet-owner interest) and the SPECIFIC angle people are actually searching for. Rank your suggestions by genuine current demand. Never invent or force a trending topic onto a category we cannot stock - only propose topics we can fully back with the products listed below.'
+    : 'Judge which of these stocked categories a pet owner is most likely to search for this season, and the specific angle they want.';
+  return [
+    'You are a content strategist for Active Paw, a UK pet-care store for dogs and cats.',
+    `Propose ${count} DIVERSE blog article topics a pet owner would genuinely search for. Each MUST funnel into one of the real collections below and be congruent with that collection's actual products.`,
+    demand,
+    'Diversity is required: spread topics across DIFFERENT collections; do not propose several topics for the same collection unless there are fewer collections than requested topics.',
+    'Honest and useful only: never clickbait, never a topic we cannot tie to the listed products.',
+    `Current season: ${season}.`,
+    `Real collections and their in-stock products (choose collectionHandle EXACTLY from: ${handles.join(', ')}):\n${catalog}`,
+    `Respond with ONLY JSON: {"topics": [ ${count} objects, each {"title": <specific search-friendly title>, "angle": <the specific promise>, "targetKeyword": <primary search intent>, "collectionHandle": <one real handle from the list>, "whyNow": <one sentence, cite the demand signal>, "keyPoints": <array of 3-6 short points to cover>} ]}.`
+  ].join(' ');
+}
+
 export async function proposeTopics(
   llm: LlmClient, store: TenantStore, cfg: TenantConfig,
   opts: { packs: FactPack[]; season: string; count?: number }
@@ -142,21 +162,29 @@ export async function proposeTopics(
     const names = p.products.filter((x) => x.available).slice(0, 6).map((x) => x.title).join(', ');
     return `- ${p.collectionTitle} [${p.collectionHandle}]: ${names}`;
   }).join('\n');
-
   const chain = resolveChain(cfg, 'text');
-  const system = [
-    'You are a content strategist for Active Paw, a UK pet-care store for dogs and cats.',
-    `Propose ${count} DIVERSE blog article topics a pet owner would genuinely search for. Each MUST funnel into one of the real collections below and be congruent with that collection's actual products.`,
-    'Diversity is required: spread topics across DIFFERENT collections; do not propose several topics for the same collection unless there are fewer collections than requested topics.',
-    'Honest and useful only: evergreen or seasonal, never clickbait, never a topic we cannot tie to the listed products.',
-    `Current season: ${opts.season}. Prefer seasonally relevant angles where there is a strong one.`,
-    `Real collections and their in-stock products (choose collectionHandle EXACTLY from: ${handles.join(', ')}):\n${catalog}`,
-    `Respond with ONLY JSON: {"topics": [ ${count} objects, each {"title": <specific search-friendly title>, "angle": <the specific promise>, "targetKeyword": <primary search intent>, "collectionHandle": <one real handle from the list>, "whyNow": <one sentence>, "keyPoints": <array of 3-6 short points to cover>} ]}.`
-  ].join(' ');
+  const user = JSON.stringify({ season: opts.season, count });
 
+  // 1) Demand-driven: web search grounds the topics in what people search NOW.
+  const web = await llm.jsonChain<BlogTopicCandidate[]>({
+    chain, maxTokens: 1800, web: { maxResults: 6 },
+    system: buildTopicSystem(handles, catalog, opts.season, count, true),
+    user,
+    validate: (v) => validateCandidates(v, packByHandle, count)
+  });
+  if (web.ok && web.value.length) {
+    await store.logLlmUsage('blog-topics-web', web.usage.model, web.usage.promptTokens, web.usage.completionTokens, web.usage.costUsd);
+    console.log(`blog topics: web-grounded ok, ${web.value.length} candidates, costUsd=${web.usage.costUsd}`);
+    return web.value;
+  }
+  console.warn(`blog topics: web grounding produced nothing (${web.ok ? 'no valid candidates' : web.error}); falling back to hermetic catalog+season.`);
+
+  // 2) Fallback: hermetic (catalog + season only) so the feature still works if
+  //    web search is unavailable or does not compose on the current models.
   const r = await llm.jsonChain<BlogTopicCandidate[]>({
-    chain, maxTokens: 1800, system,
-    user: JSON.stringify({ season: opts.season, count }),
+    chain, maxTokens: 1800,
+    system: buildTopicSystem(handles, catalog, opts.season, count, false),
+    user,
     validate: (v) => validateCandidates(v, packByHandle, count)
   });
   if (!r.ok) { console.warn(`blog topic research failed: ${r.error}`); return []; }

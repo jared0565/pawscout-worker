@@ -17,7 +17,35 @@ import { groundCollection } from './ground';
 import { draftArticle } from './draft';
 import { findClaimFlags } from './quality';
 import { selectShopBlock } from './select';
+import type { ShopBlockSelection } from './select';
+import { getProductImages, pickBlogHeroImage } from './hero';
+import type { AdminGraphql } from '../shopify-admin';
 import { findBlog, renameBlog, createDraftArticle, ensureRelatedProductsDefinition, getArticleForEnrich, updateArticleAssets } from './article';
+
+/**
+ * Resolve the hero image: prefer a pet-with-product LIFESTYLE frame (converts
+ * better in an article) from the chosen product's full gallery, falling back to
+ * the plain featured pick the selector already made. Returns the url + whether
+ * it is a true >=1200 square (a lifestyle frame may be smaller - that trade-off
+ * is surfaced to the owner, not hidden).
+ */
+async function resolveHero(
+  admin: AdminGraphql, llm: LlmClient, store: TenantStore, cfg: TenantConfig,
+  sel: ShopBlockSelection, fallbackTitle: string
+): Promise<{ url?: string; alt?: string; highRes?: boolean }> {
+  let url = sel.heroImageUrl;
+  const alt = sel.heroAlt;
+  let highRes = sel.heroIsHighRes;
+  if (sel.heroSourceHandle) {
+    const imgs = await getProductImages(admin, sel.heroSourceHandle);
+    const picked = await pickBlogHeroImage(llm, store, cfg, alt ?? fallbackTitle, imgs);
+    if (picked) {
+      url = picked.url;
+      highRes = picked.width >= 1200 && picked.height >= 1200;
+    }
+  }
+  return { url, alt, highRes };
+}
 
 const BLOG_HANDLE = 'news';                // the already-indexed blog we reuse
 const BLOG_TITLE = 'Pet Care Guides';      // its new display title
@@ -108,15 +136,16 @@ export async function runBlogPipeline(
   const claimFlags = findClaimFlags(draft.bodyHtml);
 
   // Shop block + hero: products the body links come first, then top up from the
-  // funnel collection; the hero is the first pick that has an image.
+  // funnel collection. The hero prefers a pet-with-product lifestyle frame.
   const sel = selectShopBlock(pack, draft.bodyHtml);
+  const hero = await resolveHero(admin, llm, store, cfg, sel, draft.title);
 
   // Create the DRAFT article (isPublished:false) + stage the bookkeeping row.
   let created;
   try {
     created = await createDraftArticle(admin, {
       blogId: blog.id, draft, authorName: AUTHOR_NAME,
-      imageUrl: sel.heroImageUrl, imageAlt: sel.heroAlt, relatedHandles: sel.handles
+      imageUrl: hero.url, imageAlt: hero.alt, relatedHandles: sel.handles
     });
   } catch (e) {
     return { ok: false, error: `Article creation failed: ${(e as Error).message}` };
@@ -135,7 +164,7 @@ export async function runBlogPipeline(
       briefJson: JSON.stringify(brief),
       claimFlagsJson: JSON.stringify(claimFlags),
       relatedHandlesJson: JSON.stringify(sel.handles),
-      heroImageUrl: sel.heroImageUrl,
+      heroImageUrl: hero.url,
       heroSourceHandle: sel.heroSourceHandle,
       model: 'blog-pipeline'
     });
@@ -152,9 +181,9 @@ export async function runBlogPipeline(
     claimFlags,
     briefAngle: brief.angle,
     relatedHandles: sel.handles,
-    heroImageUrl: sel.heroImageUrl,
+    heroImageUrl: hero.url,
     heroSourceHandle: sel.heroSourceHandle,
-    heroIsHighRes: sel.heroIsHighRes
+    heroIsHighRes: hero.highRes
   };
 }
 
@@ -197,6 +226,8 @@ export async function enrichBlogPost(
 
   await ensureRelatedProductsDefinition(admin);
 
+  const llm = new LlmClient({ openrouter: env.OPENROUTER_API_KEY, openai: env.OPENAI_API_KEY }, fetchImpl);
+
   let article;
   try {
     article = await getArticleForEnrich(admin, articleId);
@@ -212,11 +243,15 @@ export async function enrichBlogPost(
   if (!sel.handles.length) return { ok: false, error: 'No available products found to build the shop block.' };
 
   const setImage = !article.hasImage && !!sel.heroImageUrl;
+  // Only pay for the vision hero pick when we are actually going to set an image.
+  const hero = setImage
+    ? await resolveHero(admin, llm, store, cfg, sel, article.title || 'Active Paw guide')
+    : { url: undefined as string | undefined, alt: sel.heroAlt, highRes: undefined as boolean | undefined };
   try {
     await updateArticleAssets(admin, {
       articleId,
       relatedHandles: sel.handles,
-      imageUrl: setImage ? sel.heroImageUrl : undefined,
+      imageUrl: setImage ? hero.url : undefined,
       imageAlt: sel.heroAlt
     });
   } catch (e) {
@@ -225,7 +260,7 @@ export async function enrichBlogPost(
 
   await store.setBlogPostAssets(articleId, {
     relatedHandlesJson: JSON.stringify(sel.handles),
-    heroImageUrl: setImage ? sel.heroImageUrl : (article.hasImage ? '(owner image kept)' : null),
+    heroImageUrl: setImage ? hero.url : (article.hasImage ? '(owner image kept)' : null),
     heroSourceHandle: setImage ? sel.heroSourceHandle : null
   });
 
@@ -233,9 +268,9 @@ export async function enrichBlogPost(
     ok: true,
     articleId,
     relatedHandles: sel.handles,
-    heroImageUrl: setImage ? sel.heroImageUrl : undefined,
+    heroImageUrl: setImage ? hero.url : undefined,
     heroSourceHandle: setImage ? sel.heroSourceHandle : undefined,
-    heroIsHighRes: setImage ? sel.heroIsHighRes : undefined,
+    heroIsHighRes: setImage ? hero.highRes : undefined,
     imageSet: setImage,
     hadImage: article.hasImage
   };
