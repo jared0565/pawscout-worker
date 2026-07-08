@@ -65,7 +65,7 @@ export class LlmClient {
   /** Walk a resolved tier chain; degrade to {ok:false} when exhausted. Never throws. */
   async jsonChain<T>(opts: {
     chain: ChainTier[]; system: string; user: string;
-    images?: string[]; maxTokens?: number; validate: (v: unknown) => T | null;
+    images?: string[]; maxTokens?: number; web?: { maxResults?: number }; validate: (v: unknown) => T | null;
   }): Promise<LlmJson<T>> {
     let lastError = 'no usable LLM tier';
     for (const tier of opts.chain) {
@@ -89,7 +89,7 @@ export class LlmClient {
   }
 
   private async send<T>(tier: ChainTier, key: string, opts: {
-    system: string; user: string; images?: string[]; maxTokens?: number; validate: (v: unknown) => T | null;
+    system: string; user: string; images?: string[]; maxTokens?: number; web?: { maxResults?: number }; validate: (v: unknown) => T | null;
   }): Promise<SendOutcome<T>> {
     const userContent = opts.images?.length
       ? [{ type: 'text', text: opts.user }, ...opts.images.map((url) => ({ type: 'image_url', image_url: { url } }))]
@@ -97,9 +97,13 @@ export class LlmClient {
     const messages = [{ role: 'system', content: opts.system }, { role: 'user', content: userContent }];
     const isOpenai = tier.provider === 'openai';
     const url = isOpenai ? OPENAI_URL : OPENROUTER_URL;
-    const body = isOpenai
+    const body: Record<string, unknown> = isOpenai
       ? { model: tier.model, max_completion_tokens: Math.max(opts.maxTokens ?? 1024, 3000), reasoning_effort: 'medium', response_format: { type: 'json_object' }, messages }
       : { models: tier.models, max_tokens: opts.maxTokens ?? 1024, response_format: { type: 'json_object' }, usage: { include: true }, messages };
+    // Web search grounding (OpenRouter only, opt-in per call): injects live search
+    // results as context so the model reasons over current demand. Strictly
+    // additive - the non-web request shape is unchanged.
+    if (opts.web && !isOpenai) body.plugins = [{ id: 'web', max_results: opts.web.maxResults ?? 5 }];
     const headers: Record<string, string> = { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' };
     if (!isOpenai) { headers['HTTP-Referer'] = 'https://pawscout.activepaw.co.uk'; headers['X-Title'] = 'PawScout'; }
 

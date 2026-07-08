@@ -85,6 +85,23 @@ describe('LlmClient.jsonChain', () => {
     expect((fetchImpl.mock.calls[2][0] as string)).toBe('https://api.openai.com/v1/chat/completions');
   });
 
+  it('web flag adds the OpenRouter web plugin; without it the body is unchanged', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(ok('a/b', '{"v":1}'));
+    const llm = new LlmClient({ openrouter: 'k' }, fetchImpl as any);
+    const chain = [{ provider: 'openrouter' as const, models: ['a/b'] }];
+    await llm.jsonChain({ chain, system: 's', user: 'u', validate: (v: any) => v });
+    expect(JSON.parse((fetchImpl.mock.calls[0][1] as any).body).plugins).toBeUndefined(); // non-web: unchanged
+    await llm.jsonChain({ chain, system: 's', user: 'u', web: { maxResults: 5 }, validate: (v: any) => v });
+    expect(JSON.parse((fetchImpl.mock.calls[1][1] as any).body).plugins).toEqual([{ id: 'web', max_results: 5 }]);
+  });
+
+  it('web flag is ignored on the OpenAI tier (no plugins param)', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(ok('gpt-5.4-mini', '{"v":1}'));
+    const llm = new LlmClient({ openai: 'o' }, fetchImpl as any);
+    await llm.jsonChain({ chain: [{ provider: 'openai', model: 'gpt-5.4-mini' }], system: 's', user: 'u', web: { maxResults: 5 }, validate: (v: any) => v });
+    expect(JSON.parse((fetchImpl.mock.calls[0][1] as any).body).plugins).toBeUndefined();
+  });
+
   it('tier3 activation log fires when OpenAI tier serves', async () => {
     const fetchImpl = vi.fn()
       .mockResolvedValueOnce({ ok: false, status: 429, json: async () => ({ error: { code: 'insufficient_quota', message: 'quota' } }) })
