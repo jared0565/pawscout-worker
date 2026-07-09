@@ -57,11 +57,32 @@ export interface ProfitVerdictRow {
   competitor_sources: string | null; // JSON array
   reason: string;
   checked_at: string;
+  // Latest action the active agent took/would-take on this product (nullable
+  // until the runner acts; observe-only rows leave these unset).
+  action?: string | null;             // reprice | drop | flag | keep
+  from_gbp?: number | null;           // from-price of the latest reprice
+  to_gbp?: number | null;             // target of the latest reprice
+  acted_at?: string | null;
+  dry_run?: number | null;            // 1 = previewed only, 0 = executed live
   // Joined from product_links (listProfitVerdicts only): the current product so
   // the console can link to it and skip already-archived rows.
   handle?: string | null;
   shopify_product_id?: string | null;
   link_state?: string | null;
+}
+
+/** One row of the append-only profit_actions ledger (newest first via listProfitActions). */
+export interface ProfitActionRow {
+  id: number;
+  cj_pid: string;
+  action: string;                     // reprice | drop | flag | keep
+  from_gbp: number | null;
+  to_gbp: number | null;
+  competitor_gbp: number | null;
+  competitor_confidence: string | null;
+  reason: string;
+  dry_run: number;                    // 1 = previewed only, 0 = executed live
+  created_at: string;
 }
 
 export interface OrderRow {
@@ -246,22 +267,60 @@ export class TenantStore {
       .run();
   }
 
-  /** Upsert a product's profitability verdict (the observe audit's output). */
+  /** Upsert a product's profitability state (the active agent's per-product output).
+   *  Action fields are optional so the observe path (verdict only) still works; the
+   *  runner always passes them so the console can render the latest action inline. */
   async upsertProfitVerdict(rec: {
     cjPid: string; verdict: string; netGbp: number | null; netPct: number | null; ourRetailGbp: number | null;
     competitorGbp: number | null; competitorConfidence: string | null; competitorSources: string[] | null; reason: string;
+    action?: string | null; fromGbp?: number | null; toGbp?: number | null; dryRun?: boolean | null;
   }): Promise<void> {
+    const now = new Date().toISOString();
+    const actedAt = rec.action ? now : null;
+    const dry = rec.dryRun === undefined || rec.dryRun === null ? null : (rec.dryRun ? 1 : 0);
     await this.db
       .prepare(
-        `INSERT INTO product_profit (shop, cj_pid, verdict, net_gbp, net_pct, our_retail_gbp, competitor_gbp, competitor_confidence, competitor_sources, reason, checked_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
-         ON CONFLICT(shop, cj_pid) DO UPDATE SET verdict = ?3, net_gbp = ?4, net_pct = ?5, our_retail_gbp = ?6, competitor_gbp = ?7, competitor_confidence = ?8, competitor_sources = ?9, reason = ?10, checked_at = ?11`
+        `INSERT INTO product_profit (shop, cj_pid, verdict, net_gbp, net_pct, our_retail_gbp, competitor_gbp, competitor_confidence, competitor_sources, reason, checked_at, action, from_gbp, to_gbp, acted_at, dry_run)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+         ON CONFLICT(shop, cj_pid) DO UPDATE SET verdict = ?3, net_gbp = ?4, net_pct = ?5, our_retail_gbp = ?6, competitor_gbp = ?7, competitor_confidence = ?8, competitor_sources = ?9, reason = ?10, checked_at = ?11, action = ?12, from_gbp = ?13, to_gbp = ?14, acted_at = ?15, dry_run = ?16`
       )
       .bind(
         this.shop, rec.cjPid, rec.verdict, rec.netGbp, rec.netPct, rec.ourRetailGbp, rec.competitorGbp, rec.competitorConfidence,
-        rec.competitorSources ? JSON.stringify(rec.competitorSources) : null, rec.reason, new Date().toISOString()
+        rec.competitorSources ? JSON.stringify(rec.competitorSources) : null, rec.reason, now,
+        rec.action ?? null, rec.fromGbp ?? null, rec.toGbp ?? null, actedAt, dry
       )
       .run();
+  }
+
+  /** Append one immutable row to the profit_actions ledger (every reprice/drop the
+   *  agent takes or, in dry-run, WOULD take). This is the only surviving record of
+   *  a drop once the product is archived off the verdict list. */
+  async logProfitAction(rec: {
+    cjPid: string; action: string; fromGbp: number | null; toGbp: number | null;
+    competitorGbp: number | null; competitorConfidence: string | null; reason: string; dryRun: boolean;
+  }): Promise<void> {
+    await this.db
+      .prepare(
+        `INSERT INTO profit_actions (shop, cj_pid, action, from_gbp, to_gbp, competitor_gbp, competitor_confidence, reason, dry_run, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)`
+      )
+      .bind(
+        this.shop, rec.cjPid, rec.action, rec.fromGbp, rec.toGbp, rec.competitorGbp,
+        rec.competitorConfidence, rec.reason, rec.dryRun ? 1 : 0, new Date().toISOString()
+      )
+      .run();
+  }
+
+  /** The action ledger newest-first (console "recent actions" surface). */
+  async listProfitActions(limit = 100): Promise<ProfitActionRow[]> {
+    const { results } = await this.db
+      .prepare(
+        `SELECT id, cj_pid, action, from_gbp, to_gbp, competitor_gbp, competitor_confidence, reason, dry_run, created_at
+         FROM profit_actions WHERE shop = ?1 ORDER BY id DESC LIMIT ?2`
+      )
+      .bind(this.shop, limit)
+      .all<ProfitActionRow>();
+    return results ?? [];
   }
 
   /** Verdicts worst-first (reject, then review, then pass), then lowest net.
@@ -272,6 +331,7 @@ export class TenantStore {
     const { results } = await this.db
       .prepare(
         `SELECT pp.cj_pid, pp.verdict, pp.net_gbp, pp.net_pct, pp.our_retail_gbp, pp.competitor_gbp, pp.competitor_confidence, pp.competitor_sources, pp.reason, pp.checked_at,
+                pp.action AS action, pp.from_gbp AS from_gbp, pp.to_gbp AS to_gbp, pp.acted_at AS acted_at, pp.dry_run AS dry_run,
                 pl.handle AS handle, pl.shopify_product_id AS shopify_product_id, pl.state AS link_state
          FROM product_profit pp
          LEFT JOIN product_links pl ON pl.shop = pp.shop AND pl.cj_pid = pp.cj_pid

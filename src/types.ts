@@ -203,6 +203,12 @@ export const DEFAULT_SEMANTIC: SemanticConfig = { enabled: true, maxExpansions: 
  */
 export interface ProfitConfig {
   enabled: boolean;                  // master switch; false = fully dormant (no spend, gate no-ops)
+  // Preview mode for the ACTIVE agent. true = compute + record every intended
+  // action (reprice/drop) WITHOUT touching prices or listings, so the owner sees
+  // exactly what full-auto would do. false = full auto (execute on defensible data).
+  // First-enable must WRITE this true explicitly (getConfig merges saved JSON over
+  // DEFAULT_PROFIT, so a saved profit block's dryRun wins over the default).
+  dryRun: boolean;
   hardBlock: boolean;                // enforce: import gate REJECTs a sub-floor product (else imports it as a review draft)
   competitionCheckOnImport: boolean; // add the LLM+web competitor check to the sync import path (default off; audit always runs it)
   adShareOfRevenue: number;          // ad spend as a fraction of GROSS retail (0.33 = ROAS 3)
@@ -242,7 +248,7 @@ export interface ProfitConfig {
 // affiliate sales carry no ad cost), and/or raise minNetAfterAdsGbp to demand a
 // real per-unit cushion.
 export const DEFAULT_PROFIT: ProfitConfig = {
-  enabled: false, hardBlock: false, competitionCheckOnImport: false,
+  enabled: false, dryRun: true, hardBlock: false, competitionCheckOnImport: false,
   adShareOfRevenue: 0.33, paymentsFeeRate: 0.025, refundReserveRate: 0.03, vatRate: 0.20,
   minNetAfterAdsGbp: 2, minNetMarginPct: 0, competitionTolerancePct: 0.15, cacheTtlDays: 14,
   expectedDiscountRate: 0.05, fixedOverheadRate: 0.02, undercutPct: 0.05,

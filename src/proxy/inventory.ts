@@ -99,6 +99,23 @@ export async function updateVariantPrices(
   if (errs.length) throw new Error(errs.map((e) => e.message).join('; '));
 }
 
+/**
+ * Archive a product (take it off sale without deleting it). Same mutation the
+ * 30-day cull uses; exposed here so the profitability agent can drop a product
+ * that cannot be sold at a profit. Reversible (status back to ACTIVE + link
+ * state). Throws on userErrors. Callers also flip the product_link state.
+ */
+export async function archiveProduct(admin: AdminGraphql, productId: string): Promise<void> {
+  const data = await admin(
+    `mutation pawscoutArchiveOne($input: ProductInput!) {
+      productUpdate(input: $input) { product { id } userErrors { field message } }
+    }`,
+    { input: { id: productId, status: 'ARCHIVED' } }
+  );
+  const errs = (data.productUpdate as { userErrors?: { message: string }[] } | undefined)?.userErrors ?? [];
+  if (errs.length) throw new Error(errs.map((e) => e.message).join('; '));
+}
+
 /** Absolute-set available quantities (reason: correction). Throws on userErrors. */
 export async function setInventoryQuantities(
   admin: AdminGraphql,
