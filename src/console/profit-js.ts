@@ -81,6 +81,7 @@ async function pfRunAudit(btn){
       var r=await api('/profit/run',{offset:offset});
       if(!r.ok){ setMsg('pf-msg','Audit failed: '+(r.error||'unknown'),'no'); break; }
       if(btn) btn.textContent='Auditing '+Math.min(r.offset+r.scanned,r.total)+'/'+r.total+'…';
+      await pfLoad(); // fill the summary + table live so it never reads "Nothing audited yet" mid-run
       if(r.next===null||r.next===undefined){ setMsg('pf-msg','Audit complete.','ok'); break; }
       offset=r.next;
     }
