@@ -1,18 +1,21 @@
 // src/profitability.ts
 //
 // The profitability engine: is a product there to make REAL net profit? One
-// deterministic core (net after ALL costs incl. ads, at the live pricing rule)
-// plus a soft LLM+web competitor signal, combined into a pass/review/reject
-// verdict. Two consumers use it: the import gate (preventive, in confirmAndImport)
-// and the nightly audit agent (continuous, observe-first). Ships DORMANT - every
-// entry point no-ops unless cfg.profit.enabled. See docs/superpowers/specs/
-// 2026-07-09-profitability-engine-design.md.
+// deterministic core (net after ALL costs incl. ads) plus a soft LLM+web
+// competitor signal. Consumers: the import gate (preventive, in confirmAndImport)
+// and the ACTIVE agent `runProfitAgent` (continuous, on the 15-min cron) which
+// values each product on its LIVE Shopify price+cost and adjusts-or-drops per the
+// owner's rule (decideProfitAction). Ships DORMANT - every entry point no-ops
+// unless cfg.profit.enabled. Specs: 2026-07-09-profitability-agent-active.md
+// (active) supersedes 2026-07-09-profitability-engine-design.md (observe-first).
 
 import { retailPriceGbp, landedCostGbp } from './pricing';
 import { LlmClient } from './llm';
 import { resolveChain } from './llm-resolve';
 import type { TenantStore } from './tenant-store';
 import type { CjDetail } from './cj';
+import type { AdminGraphql } from './shopify-admin';
+import { productInventoryItems, updateVariantPrices, archiveProduct } from './proxy/inventory';
 import type { Pricing, ProfitConfig, TenantConfig } from './types';
 import { DEFAULT_PROFIT } from './types';
 
@@ -303,4 +306,122 @@ export async function auditProfitability(
     } catch (e) { console.warn(`profit audit failed for ${link.cj_pid}: ${(e as Error).message}`); }
   }
   return { scanned, flagged, total, next: offset + limit < total ? offset + limit : null };
+}
+
+// --- Active agent (adjust-or-drop on LIVE Shopify numbers) ---
+
+/**
+ * The ACTIVE profitability agent (2026-07-09). Walk imported products, value each
+ * on its LIVE Shopify price + landed cost (`productInventoryItems`, not a stale
+ * admission cost or the rule price), research the market (cached competitor
+ * DELIVERED price), and ACT per `decideProfitAction`: raise/lower to just under the
+ * market, or drop a clear loss - executing on defensible data, no approval gate.
+ *
+ * `dryRun` (default true on first enable) computes and RECORDS every intended
+ * action WITHOUT touching prices/listings, so the owner previews full-auto. It is
+ * the SOLE writer of product_profit (supersedes the observe audit) and the ledger.
+ * Rolling: returns `next` for the 15-min cron to checkpoint. No-ops when disabled.
+ * Never throws out of the per-product loop (one bad product can't stall the sweep).
+ */
+export async function runProfitAgent(
+  store: TenantStore, admin: AdminGraphql, llm: LlmClient, cfg: TenantConfig,
+  opts: { offset?: number; limit?: number } = {}
+): Promise<{ scanned: number; acted: number; repriced: number; dropped: number; flagged: number; total: number; next: number | null; dryRun: boolean }> {
+  const profit = cfg.profit;
+  const dryRun = profit?.dryRun !== false; // preview unless explicitly cleared to false
+  if (!profit?.enabled) return { scanned: 0, acted: 0, repriced: 0, dropped: 0, flagged: 0, total: 0, next: null, dryRun };
+  const offset = Math.max(0, opts.offset ?? 0);
+  const limit = opts.limit ?? 8;
+  const all = (await store.listImportedLinks(500)).filter((l) => l.shopify_product_id);
+  const total = all.length;
+  const links = all.slice(offset, offset + limit);
+  let scanned = 0, repriced = 0, dropped = 0, flagged = 0;
+
+  for (const link of links) {
+    scanned++;
+    const pid = link.shopify_product_id as string;
+    try {
+      // Snapshot the stored state BEFORE any write, so the ledger can skip
+      // re-logging an identical mutation on every tick (dry-run re-previews the
+      // same reprice each pass; steady-state repeats the same target).
+      const prev = await store.getProfitVerdict(link.cj_pid);
+
+      const inv = await productInventoryItems(admin, pid);
+      const sellable = inv
+        .map((v) => ({ variantId: v.variantId, priceGbp: Number(v.price), costGbp: Number(v.cost) }))
+        .filter((v) => Number.isFinite(v.priceGbp) && v.priceGbp > 0 && Number.isFinite(v.costGbp) && v.costGbp > 0);
+
+      if (!sellable.length) {
+        // Nothing sellable + costed to judge - record it was seen, act on nothing.
+        await store.upsertProfitVerdict({
+          cjPid: link.cj_pid, verdict: 'pass', netGbp: null, netPct: null, ourRetailGbp: null,
+          competitorGbp: null, competitorConfidence: null, competitorSources: null,
+          reason: 'no live price/cost to judge', action: 'keep', fromGbp: null, toGbp: null, dryRun,
+        });
+        continue;
+      }
+
+      const fromPrice = Math.min(...sellable.map((v) => v.priceGbp));
+      const costByVid = new Map(sellable.map((v) => [v.variantId, v.costGbp]));
+
+      // Title for the market lookup (competitorSignal ignores it on a cache hit).
+      let title = link.cj_pid;
+      try {
+        const wh = await store.getWarehouseProduct(link.cj_pid);
+        if (wh) { const d = JSON.parse(wh.detail) as CjDetail; if (d.nameEn) title = d.nameEn; }
+      } catch { /* fall back to the pid */ }
+
+      const signal = await competitorSignal(llm, store, cfg, { pid: link.cj_pid, title, ourRetailGbp: fromPrice });
+      const competitor = signal && signal.estimateGbp > 0 ? { estimateGbp: signal.estimateGbp, confidence: signal.confidence } : null;
+      const action = decideProfitAction({ variants: sellable, competitor, profit });
+
+      // Reported net + our price + verdict, from the decided action.
+      let toGbp: number | null = null;
+      let reportNet = Math.min(...sellable.map((v) => liveNetGbp(v.priceGbp, v.costGbp, profit)));
+      if (action.kind === 'reprice') {
+        toGbp = Math.min(...action.updates.map((u) => u.toGbp));
+        reportNet = Math.min(...action.updates.map((u) => liveNetGbp(u.toGbp, costByVid.get(u.variantId) ?? 0, profit)));
+      }
+      const ourPrice = action.kind === 'reprice' ? (toGbp as number) : fromPrice;
+      const exVat = ourPrice / (1 + profit.vatRate);
+      const verdict = action.kind === 'drop' ? 'reject' : action.kind === 'flag' ? 'review' : 'pass';
+
+      // EXECUTE (live only). Dry-run still counts what it WOULD do.
+      if (action.kind === 'reprice') {
+        if (!dryRun) await updateVariantPrices(admin, pid, action.updates.map((u) => ({ id: u.variantId, price: u.toGbp.toFixed(2) })));
+        repriced++;
+      } else if (action.kind === 'drop') {
+        if (!dryRun) { await archiveProduct(admin, pid); await store.putLink({ cjPid: link.cj_pid, state: 'archived' }); }
+        dropped++;
+      } else if (action.kind === 'flag') {
+        flagged++;
+      }
+
+      // Persist current state (always).
+      await store.upsertProfitVerdict({
+        cjPid: link.cj_pid, verdict, netGbp: round2(reportNet), netPct: exVat > 0 ? round2(reportNet / exVat) : null,
+        ourRetailGbp: round2(ourPrice), competitorGbp: signal?.estimateGbp ?? null, competitorConfidence: signal?.confidence ?? null,
+        competitorSources: signal?.sources ?? null, reason: action.reason, action: action.kind,
+        fromGbp: action.kind === 'reprice' ? round2(fromPrice) : null, toGbp: toGbp === null ? null : round2(toGbp), dryRun,
+      });
+
+      // Ledger: record only real mutations (reprice/drop), deduped against the
+      // pre-write snapshot so a re-preview / steady-state repeat is not re-logged.
+      if (action.kind === 'reprice' || action.kind === 'drop') {
+        const sig = (a: string | null | undefined, to: number | null | undefined, dr: number | null | undefined) =>
+          `${a ?? ''}|${to == null ? '' : Number(to).toFixed(2)}|${dr ?? ''}`;
+        const cur = sig(action.kind, toGbp, dryRun ? 1 : 0);
+        const before = prev ? sig(prev.action, prev.to_gbp, prev.dry_run) : '';
+        if (cur !== before) {
+          await store.logProfitAction({
+            cjPid: link.cj_pid, action: action.kind, fromGbp: action.kind === 'reprice' ? round2(fromPrice) : null,
+            toGbp: toGbp === null ? null : round2(toGbp), competitorGbp: signal?.estimateGbp ?? null,
+            competitorConfidence: signal?.confidence ?? null, reason: action.reason, dryRun,
+          });
+        }
+      }
+    } catch (e) { console.warn(`profit agent failed for ${link.cj_pid}: ${(e as Error).message}`); }
+  }
+
+  return { scanned, acted: repriced + dropped, repriced, dropped, flagged, total, next: offset + limit < total ? offset + limit : null, dryRun };
 }

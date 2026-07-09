@@ -346,7 +346,8 @@ export class TenantStore {
   async getProfitVerdict(cjPid: string): Promise<ProfitVerdictRow | null> {
     return await this.db
       .prepare(
-        `SELECT cj_pid, verdict, net_gbp, net_pct, our_retail_gbp, competitor_gbp, competitor_confidence, competitor_sources, reason, checked_at
+        `SELECT cj_pid, verdict, net_gbp, net_pct, our_retail_gbp, competitor_gbp, competitor_confidence, competitor_sources, reason, checked_at,
+                action, from_gbp, to_gbp, acted_at, dry_run
          FROM product_profit WHERE shop = ?1 AND cj_pid = ?2`
       )
       .bind(this.shop, cjPid)
