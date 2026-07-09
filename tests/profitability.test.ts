@@ -107,50 +107,60 @@ describe('round99Down', () => {
   });
 });
 
-describe('decideProfitAction (the owner\'s adjust-or-drop algorithm on LIVE numbers)', () => {
-  // adShare 0.2, floor GBP1: liveNet ~= 0.583*price - cost.
-  const P: ProfitConfig = { ...DEFAULT_PROFIT, adShareOfRevenue: 0.2, minNetAfterAdsGbp: 1, competitionTolerancePct: 0.15 };
+describe('decideProfitAction (owner rule: net >= GBP2, price just under the competitor delivered price)', () => {
+  // Realistic ad share; floor GBP2 comes from DEFAULT_PROFIT. liveNet ~= 0.57*price - cost.
+  const P: ProfitConfig = { ...DEFAULT_PROFIT, adShareOfRevenue: 0.15 };
   const hi = (estimateGbp: number) => ({ estimateGbp, confidence: 'high' as const });
 
   it('KEEPS (never acts blind) when there is no live price/cost', () => {
     expect(decideProfitAction({ variants: [{ variantId: 'v', priceGbp: 0, costGbp: 0 }], competitor: null, profit: P }).kind).toBe('keep');
   });
 
-  it('DROPS a clear loss: loses money at its current price, no competitor', () => {
+  it('DROPS a clear loss: loses money at its current price with no market data', () => {
     const a = decideProfitAction({ variants: [{ variantId: 'v', priceGbp: 10, costGbp: 8 }], competitor: null, profit: P });
-    expect(a.kind).toBe('drop'); // net ~= 5.83 - 8 < 0
+    expect(a.kind).toBe('drop');
   });
 
-  it('FLAGS (does not auto-raise) when it loses now but the market price would clear it', () => {
-    const a = decideProfitAction({ variants: [{ variantId: 'v', priceGbp: 10, costGbp: 6 }], competitor: hi(20), profit: P });
-    expect(a.kind).toBe('flag'); // losing at GBP10, but at GBP20 it clears the floor - owner's call to raise
-  });
-
-  it('REPRICES down to the market when profitable and priced above it', () => {
-    const a = decideProfitAction({ variants: [{ variantId: 'v', priceGbp: 30, costGbp: 8 }], competitor: hi(20), profit: P });
+  it('AUTO-RAISES toward just under the competitor when there is headroom', () => {
+    const a = decideProfitAction({ variants: [{ variantId: 'v', priceGbp: 15, costGbp: 5 }], competitor: hi(25), profit: P });
     expect(a.kind).toBe('reprice');
-    if (a.kind === 'reprice') { expect(a.updates[0].toGbp).toBeLessThanOrEqual(20); expect(a.updates[0].toGbp).toBeGreaterThan(0); }
+    if (a.kind === 'reprice') {
+      expect(a.updates[0].toGbp).toBeGreaterThan(15);          // raised
+      expect(a.updates[0].toGbp).toBeLessThan(25);             // still under the market
+      expect(a.reason).toContain('raise');
+    }
   });
 
-  it('DROPS when we would have to price below our profitable floor to compete', () => {
-    const a = decideProfitAction({ variants: [{ variantId: 'v', priceGbp: 30, costGbp: 13 }], competitor: hi(20), profit: P });
-    expect(a.kind).toBe('drop'); // profitable at 30, but at market 20 it is underwater
+  it('AUTO-LOWERS to just under the competitor when we are priced above it', () => {
+    const a = decideProfitAction({ variants: [{ variantId: 'v', priceGbp: 30, costGbp: 5 }], competitor: hi(20), profit: P });
+    expect(a.kind).toBe('reprice');
+    if (a.kind === 'reprice') { expect(a.updates[0].toGbp).toBeLessThan(30); expect(a.updates[0].toGbp).toBeLessThan(20); }
   });
 
-  it('KEEPS when profitable and already at/below the market', () => {
-    const a = decideProfitAction({ variants: [{ variantId: 'v', priceGbp: 15, costGbp: 6 }], competitor: hi(20), profit: P });
+  it('DROPS when it cannot clear GBP2 net even at the best price below the market', () => {
+    const a = decideProfitAction({ variants: [{ variantId: 'v', priceGbp: 30, costGbp: 12 }], competitor: hi(15), profit: P });
+    expect(a.kind).toBe('drop');
+  });
+
+  it('KEEPS (deadband) when already at the best price just under the market', () => {
+    const a = decideProfitAction({ variants: [{ variantId: 'v', priceGbp: 24.99, costGbp: 5 }], competitor: hi(25), profit: P });
     expect(a.kind).toBe('keep');
   });
 
-  it('treats a LOW-confidence competitor as no market data (keeps a profitable item)', () => {
-    const a = decideProfitAction({ variants: [{ variantId: 'v', priceGbp: 30, costGbp: 8 }], competitor: { estimateGbp: 20, confidence: 'low' }, profit: P });
-    expect(a.kind).toBe('keep'); // profitable now; low-confidence market signal is not acted on
+  it('treats a LOW-confidence competitor as no market data (keeps a >= GBP2 item, no reprice)', () => {
+    const a = decideProfitAction({ variants: [{ variantId: 'v', priceGbp: 30, costGbp: 5 }], competitor: { estimateGbp: 20, confidence: 'low' }, profit: P });
+    expect(a.kind).toBe('keep');
   });
 
-  it('judges multi-variant on the worst, and reprices every variant', () => {
+  it('FLAGS a sub-GBP2 item when there is no market price to safely reprice from', () => {
+    const a = decideProfitAction({ variants: [{ variantId: 'v', priceGbp: 12, costGbp: 6 }], competitor: null, profit: P });
+    expect(a.kind).toBe('flag'); // net ~0.84: positive but under the GBP2 target, no data to raise
+  });
+
+  it('reprices EVERY variant, judged on the worst', () => {
     const a = decideProfitAction({
-      variants: [{ variantId: 'v1', priceGbp: 30, costGbp: 8 }, { variantId: 'v2', priceGbp: 40, costGbp: 12 }],
-      competitor: hi(20), profit: P
+      variants: [{ variantId: 'v1', priceGbp: 40, costGbp: 5 }, { variantId: 'v2', priceGbp: 60, costGbp: 10 }],
+      competitor: hi(30), profit: P
     });
     expect(a.kind).toBe('reprice');
     if (a.kind === 'reprice') expect(a.updates.map((u) => u.variantId)).toEqual(['v1', 'v2']);
@@ -161,6 +171,6 @@ describe('decideProfitAction (the owner\'s adjust-or-drop algorithm on LIVE numb
     const exVat = 20 / 1.2;
     const affiliate = P.affiliateSalesShare * (P.affiliateCommissionRate * exVat + P.affiliatePlatformFeeRate * 20);
     const discount = P.expectedDiscountRate * 20;
-    expect(n).toBeCloseTo(exVat - 8 - 0.2 * 20 - 0.025 * 20 - 0.03 * exVat - affiliate - discount, 6);
+    expect(n).toBeCloseTo(exVat - 8 - P.adShareOfRevenue * 20 - P.paymentsFeeRate * 20 - P.refundReserveRate * exVat - affiliate - discount, 6);
   });
 });

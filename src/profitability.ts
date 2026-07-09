@@ -115,8 +115,9 @@ export async function competitorSignal(
   const r = await llm.jsonChain<CompetitorSignal>({
     chain, maxTokens: 500, web: { maxResults: 5 },
     system:
-      'You are a UK retail price researcher for a pet-care shop. Using live web search, find the typical UK retail price (GBP, including VAT) that comparable products sell for RIGHT NOW at mainstream UK retailers (Amazon.co.uk, Pets at Home, eBay UK, B&M, Argos, etc.). ' +
-      'Respond with ONLY a JSON object: {"estimateGbp": <typical UK street price incl VAT for a comparable product, or 0 if you truly cannot find one>, "confidence": <"high" when several mainstream UK listings agree, "medium" when few agree, "low" when guessing or comparables are weak>, "sources": [<up to 3 short retailer or domain names>]}.',
+      'You are a UK retail price researcher for a pet-care shop. Using live web search, find the typical UK DELIVERED price a normal shopper pays RIGHT NOW for a comparable product at mainstream UK retailers (Amazon.co.uk, Pets at Home, eBay UK, B&M, Argos, etc.). ' +
+      'CRITICAL: the estimate must be the TOTAL a standard (non-member) buyer pays including VAT AND delivery. Only add-on membership tiers get free shipping (e.g. Amazon free next-day is Prime-only); a normal buyer usually pays postage, so add typical delivery cost to the item price. If a listing is genuinely free-delivery for everyone, use the item price alone. ' +
+      'Respond with ONLY a JSON object: {"estimateGbp": <typical UK DELIVERED price incl VAT + shipping for a comparable product, or 0 if you truly cannot find one>, "confidence": <"high" when several mainstream UK listings agree, "medium" when few agree, "low" when guessing or comparables are weak>, "sources": [<up to 3 short retailer or domain names>]}.',
     user: JSON.stringify({ product: arg.title, ourPriceGbp: arg.ourRetailGbp }),
     validate: (v) => {
       const o = v as Record<string, unknown>;
@@ -182,13 +183,17 @@ export function round99Down(x: number): number {
   return Math.max(0.99, Math.round(cand * 100) / 100);
 }
 
+const REPRICE_DEADBAND_GBP = 0.5; // ignore churny sub-50p moves on the from-price
+
 /**
- * The owner's algorithm as a pure function: given a product's live variants, the
- * competitor signal, and the fee config, decide keep / reprice(lower) / drop /
- * flag. Judged on the WORST sellable variant. Competitor counts only at high or
- * medium confidence (low = treated as no market data). NEVER auto-raises: the
- * raise-to-save case returns `flag` for the owner. See the design doc
- * 2026-07-09-profitability-agent-active.md for the full tree.
+ * The owner's governing rule as a pure function (2026-07-09): every kept product
+ * must net >= the floor (GBP2), with NO upper cap; price it as HIGH as possible
+ * while staying strictly below the competitor's DELIVERED price (item + shipping)
+ * so we are the cheapest AND make the most margin - so it auto-RAISES as readily
+ * as it lowers. If it cannot clear the floor even at the best sub-market price ->
+ * drop. All from defensible values (live cost, live price, real competitor price).
+ * Judged on the WORST sellable variant; competitor counts only at high/medium
+ * confidence (low = no market data). See 2026-07-09-profitability-agent-active.md.
  */
 export function decideProfitAction(input: {
   variants: LiveVariant[];
@@ -200,36 +205,35 @@ export function decideProfitAction(input: {
   const sellable = input.variants.filter((v) => v.priceGbp > 0 && v.costGbp > 0);
   if (!sellable.length) return { kind: 'keep', reason: 'no live price/cost data to judge' };
 
-  const worstCurrent = Math.min(...sellable.map((v) => liveNetGbp(v.priceGbp, v.costGbp, p)));
   const fromPrice = Math.min(...sellable.map((v) => v.priceGbp));
+  const worstNow = Math.min(...sellable.map((v) => liveNetGbp(v.priceGbp, v.costGbp, p)));
   // Low-confidence market estimate is noise: treat it as no data (owner's rule).
   const comp = input.competitor && input.competitor.estimateGbp > 0
     && (input.competitor.confidence === 'high' || input.competitor.confidence === 'medium')
     ? input.competitor : null;
   const worstAt = (scale: number) => Math.min(...sellable.map((v) => liveNetGbp(v.priceGbp * scale, v.costGbp, p)));
 
-  // CASE A: loses money at the CURRENT shelf price. Lowering only makes it worse.
-  if (worstCurrent < floor) {
-    if (comp && comp.estimateGbp > fromPrice && worstAt(comp.estimateGbp / fromPrice) >= floor) {
-      // The only fix is a price INCREASE, which we never do automatically -> owner's call.
-      return { kind: 'flag', reason: `loses money now but would clear the floor at the market price ~GBP ${comp.estimateGbp.toFixed(2)} - a price increase is your call` };
+  if (comp) {
+    // Price as high as possible while staying strictly UNDER the competitor's
+    // delivered price. Scale the whole product so the from-price hits that target
+    // (raises when we are below the market, lowers when above).
+    const target = round99Down(comp.estimateGbp);
+    const scale = target / fromPrice;
+    if (worstAt(scale) >= floor) {
+      const updates = sellable.map((v) => ({ variantId: v.variantId, toGbp: round99Down(v.priceGbp * scale) }));
+      if (!updates.some((u, i) => Math.abs(u.toGbp - sellable[i].priceGbp) >= REPRICE_DEADBAND_GBP)) {
+        return { kind: 'keep', reason: `already at the best price below the market (~GBP ${comp.estimateGbp.toFixed(2)} delivered), net >= GBP ${floor}` };
+      }
+      const dir = target > fromPrice ? 'raise' : 'lower';
+      return { kind: 'reprice', updates, reason: `${dir} to GBP ${target.toFixed(2)} (just under the market ~GBP ${comp.estimateGbp.toFixed(2)} delivered), net >= GBP ${floor}/unit` };
     }
-    return { kind: 'drop', reason: `loses GBP ${(-worstCurrent).toFixed(2)}/unit at its current price and cannot be fixed by lowering` };
+    return { kind: 'drop', reason: `cannot clear GBP ${floor} net even at the best price below the market (~GBP ${comp.estimateGbp.toFixed(2)} delivered)` };
   }
 
-  // CASE B: profitable now, but are we priced ABOVE the market? Lower to compete if still profitable.
-  if (comp) {
-    const ceiling = comp.estimateGbp * (1 + p.competitionTolerancePct);
-    if (fromPrice > ceiling) {
-      const scale = comp.estimateGbp / fromPrice; // bring the from-price down to the market
-      if (worstAt(scale) >= floor) {
-        const updates = sellable.map((v) => ({ variantId: v.variantId, toGbp: round99Down(v.priceGbp * scale) }));
-        return { kind: 'reprice', updates, reason: `above UK street ~GBP ${comp.estimateGbp.toFixed(2)}; lowered to compete, still profitable` };
-      }
-      return { kind: 'drop', reason: `to compete we would need ~GBP ${comp.estimateGbp.toFixed(2)}, below our profitable floor` };
-    }
-  }
-  return { kind: 'keep', reason: `profitable at GBP ${fromPrice.toFixed(2)} and at/below the market` };
+  // No defensible market price -> cannot safely reprice (never guess a price).
+  if (worstNow < 0) return { kind: 'drop', reason: 'loses money at its current price and there is no market data to reprice from' };
+  if (worstNow < floor) return { kind: 'flag', reason: `below the GBP ${floor} net target and no market price to safely reprice - your call` };
+  return { kind: 'keep', reason: `net >= GBP ${floor}/unit at its current price` };
 }
 
 // --- Audit agent (observe-first; never archives) ---

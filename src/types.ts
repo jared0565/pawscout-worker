@@ -237,7 +237,7 @@ export interface ProfitConfig {
 export const DEFAULT_PROFIT: ProfitConfig = {
   enabled: false, hardBlock: false, competitionCheckOnImport: false,
   adShareOfRevenue: 0.33, paymentsFeeRate: 0.025, refundReserveRate: 0.03, vatRate: 0.20,
-  minNetAfterAdsGbp: 0, minNetMarginPct: 0, competitionTolerancePct: 0.15, cacheTtlDays: 14,
+  minNetAfterAdsGbp: 2, minNetMarginPct: 0, competitionTolerancePct: 0.15, cacheTtlDays: 14,
   expectedDiscountRate: 0.05,
   affiliateSalesShare: 0.15, affiliateCommissionRate: 0.08, affiliatePlatformFeeRate: 0.02,
 };
