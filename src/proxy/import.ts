@@ -9,6 +9,7 @@ import { isLikelyPetProduct, signaledCategory } from './search';
 import { getPrimaryLocationId, setSupplierMetafields, MAX_TRACKED_QTY } from './inventory';
 import { bestLocalQty, HOME_MARKET_WAREHOUSES } from '../local-markets';
 import { debrandTitle } from '../debrand';
+import { productNetAfterAds } from '../profitability';
 
 export const IMPORT_TAG = 'cj-import';
 /** W-ADDON: hidden basket-fillers - buyable, but never browsable/searchable. */
@@ -159,7 +160,7 @@ export async function confirmAndImport(
   category?: string | null,
   curate?: (detail: CjDetail, context: string) => Promise<Curation | null>,
   pickHero?: (title: string, imageUrls: string[]) => Promise<HeroPick>,
-  opts: { publish?: boolean; localWarehouses?: string[]; marketTag?: string } = {}
+  opts: { publish?: boolean; localWarehouses?: string[]; marketTag?: string; extraTags?: string[] } = {}
 ): Promise<void> {
   // Ghost-click curation gate (added 2026-06-12 after a "pet food" search
   // imported a kitchen vacuum sealer): clicked ghosts must pass the SAME
@@ -267,6 +268,24 @@ export async function confirmAndImport(
       return;
     }
   }
+  // Profitability gate (DORMANT unless cfg.profit.enabled). DETERMINISTIC
+  // net-after-ads only - the competition (LLM+web) check runs in the nightly
+  // audit, never this batch import path, so the seed/refill lanes stay cheap.
+  // enabled + hardBlock => REJECT a per-unit money-loser. enabled without
+  // hardBlock => import it as a REVIEW DRAFT (observe mode), never hard-reject.
+  const profit = cfg.profit;
+  if (profit?.enabled) {
+    const net = productNetAfterAds(detail.variants, cfg.pricing, detail.freightUsd, profit);
+    if (net?.belowFloor) {
+      if (profit.hardBlock) {
+        console.warn(`import blocked (below profit floor) for ${detail.pid}: net GBP ${net.worstNetGbp.toFixed(2)} (${Math.round(net.worstNetPct * 100)}%)`);
+        await store.putLink({ cjPid: detail.pid, state: 'failed', category: category ?? null });
+        return;
+      }
+      console.warn(`import flagged for review (below profit floor) for ${detail.pid}: net GBP ${net.worstNetGbp.toFixed(2)}`);
+      opts = { ...opts, publish: false, extraTags: [...(opts.extraTags ?? []), 'cj-profit-review'] };
+    }
+  }
   await importProduct(store, admin, cfg, detail, category, opts);
 }
 
@@ -302,7 +321,7 @@ export async function importProduct(
   cfg: TenantConfig,
   detail: CjDetail,
   category?: string | null,
-  opts: { publish?: boolean; localWarehouses?: string[]; marketTag?: string } = {}
+  opts: { publish?: boolean; localWarehouses?: string[]; marketTag?: string; extraTags?: string[] } = {}
 ): Promise<void> {
   const publish = opts.publish ?? true;
   const cat = category !== undefined ? category : resolveCategory(cfg, detail);
@@ -343,7 +362,7 @@ export async function importProduct(
       title: debrandTitle(detail.nameEn),
       descriptionHtml: detail.descriptionHtml,
       status: publish ? 'ACTIVE' : 'DRAFT',
-      tags: [IMPORT_TAG, `cj-pid-${detail.pid}`, ...(opts.marketTag ? [opts.marketTag] : []), ...(isAddon ? [ADDON_TAG] : []), ...(detail.petClass ? [`cj-species-${detail.petClass}`] : []), ...(browseCat && cfg.collectionMap[browseCat] ? [cfg.collectionMap[browseCat].tag] : []), ...(!isAddon && productAffiliateEligible(variants, cfg.pricing, detail.freightUsd) ? [AFFILIATE_ELIGIBLE_TAG] : [])],
+      tags: [IMPORT_TAG, `cj-pid-${detail.pid}`, ...(opts.marketTag ? [opts.marketTag] : []), ...(opts.extraTags ?? []), ...(isAddon ? [ADDON_TAG] : []), ...(detail.petClass ? [`cj-species-${detail.petClass}`] : []), ...(browseCat && cfg.collectionMap[browseCat] ? [cfg.collectionMap[browseCat].tag] : []), ...(!isAddon && productAffiliateEligible(variants, cfg.pricing, detail.freightUsd) ? [AFFILIATE_ELIGIBLE_TAG] : [])],
       files: detail.images.slice(0, MAX_IMAGES).map((src) => ({ originalSource: src, contentType: 'IMAGE' })),
       productOptions: [{ name: optionName, values: multi ? variants.map((v) => ({ name: v.name })) : [{ name: 'Default Title' }] }],
       variants: variants.map((v) => ({

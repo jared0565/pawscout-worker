@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
 import { importProduct, buildPreview, stripHtml, resolveCategory, confirmAndImport, curateDetailImages, vetOrder, reconcileHeroImages, reconcileDescriptions, needsDescriptionRewrite, mediaSignature, reconcileCategories } from '../src/proxy/import';
 import { TenantStore } from '../src/tenant-store';
-import { DEFAULT_GATES, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, DEFAULT_INBOX, type TenantConfig } from '../src/types';
+import { DEFAULT_GATES, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, DEFAULT_INBOX, DEFAULT_PROFIT, type TenantConfig } from '../src/types';
 import type { CjClient, CjDetail } from '../src/cj';
 import type { AdminGraphql } from '../src/shopify-admin';
 
@@ -543,6 +543,54 @@ describe('reconcileCategories (re-audit)', () => {
     await store.putLink({ cjPid: 'P3', state: 'imported', shopifyProductId: 'gid://shopify/Product/3', handle: 'h3', category: 'pet-health' });
     const r = await reconcileCategories(store, catAdmin([], 'Pet Dental Wipes'), CATCFG);
     expect(r.moved).toBe(0);
+  });
+});
+
+describe('confirmAndImport profitability gate (dormant unless cfg.profit.enabled)', () => {
+  // GB-stocked so the local-for-local + live-stock gates pass and the profit
+  // gate is what decides. Uses the LIVE capped pricing (2.2x + GBP30 margin cap):
+  // a $140 unit is capped at GBP30 margin yet ads (~33% of gross) exceed the cap,
+  // so its net-after-ads is deeply negative - a per-unit money-loser. (The default
+  // 2.5x/uncapped pricing would net this positive, which is why the cap matters.)
+  const CAPPED = { ...DEFAULT_PRICING, multiplier: 2.2, maxMarginGbp: 30 };
+  const cjStub = () => ({
+    stockByPid: async () => new Map([['v1', 50]]),
+    originsByPid: async () => ({ GB: 50 }),
+    freightEstimate: async () => null
+  } as unknown as CjClient);
+  const lossDetail = (pid: string): CjDetail => ({
+    ...DETAIL, pid, variants: [{ vid: 'v1', name: 'Default', sellPriceUsd: 140, sku: 'S1' }]
+  });
+
+  it('hard-blocks a per-unit money-loser when enabled + hardBlock (no import)', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const calls: Call[] = [];
+    const cfg = { ...CFG, pricing: CAPPED, profit: { ...DEFAULT_PROFIT, enabled: true, hardBlock: true } };
+    await confirmAndImport(store, cjStub(), fakeAdmin(calls), cfg, lossDetail('LOSS1'), 'pet-toys');
+    expect(calls.some((c) => c.query.includes('productSet'))).toBe(false);
+    expect((await store.getLink('LOSS1'))?.state).toBe('failed');
+  });
+
+  it('imports a money-loser as a REVIEW DRAFT when enabled without hardBlock (observe mode)', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const calls: Call[] = [];
+    const cfg = { ...CFG, pricing: CAPPED, profit: { ...DEFAULT_PROFIT, enabled: true, hardBlock: false } };
+    await confirmAndImport(store, cjStub(), fakeAdmin(calls), cfg, lossDetail('LOSS2'), 'pet-toys');
+    const setCall = calls.find((c) => c.query.includes('productSet'))!;
+    const input = setCall.variables!.input as { status: string; tags: string[] };
+    expect(input.status).toBe('DRAFT');
+    expect(input.tags).toContain('cj-profit-review');
+    expect(calls.some((c) => c.query.includes('publishablePublish'))).toBe(false); // draft, not published
+    expect((await store.getLink('LOSS2'))?.state).toBe('draft');
+  });
+
+  it('ignores profit entirely when disabled (default cfg) - the same money-loser still imports normally', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const calls: Call[] = [];
+    const cfg = { ...CFG, pricing: CAPPED }; // no profit block => dormant
+    await confirmAndImport(store, cjStub(), fakeAdmin(calls), cfg, lossDetail('OK1'), 'pet-toys');
+    expect(calls.some((c) => c.query.includes('productSet'))).toBe(true);
+    expect((await store.getLink('OK1'))?.state).toBe('imported');
   });
 });
 

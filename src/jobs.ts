@@ -39,6 +39,7 @@ export const MARKET_SEED_LANES: {
 ];
 import { getExpansions, seedTerm } from './semantic/library';
 import { confirmAndImport, getCachedDetail, resolveCategory, reconcileAddonVisibility, reconcileHeroImages, reconcileDescriptions, reconcileCategories, setProductTags, ADDON_CATEGORY } from './proxy/import';
+import { auditProfitability } from './profitability';
 import { AFFILIATE_ELIGIBLE_TAG, productAffiliateEligible, ensureAffiliateCollection } from './affiliate';
 import { sendReorderReminders } from './retention';
 import { enableTracking, getPrimaryLocationId, productInventoryItems, setInventoryQuantities, setSupplierMetafields, updateVariantPrices, updateVariantCosts, MAX_TRACKED_QTY } from './proxy/inventory';
@@ -1257,6 +1258,22 @@ export const DAILY_SHOP_STAGES: DailyStage[] = [
     }
   })),
   { name: 'store-inventory', maxMs: 10 * MIN_MS, run: async (ctx) => { await syncStoreInventory(ctx.store, ctx.cj!, ctx.admin, ctx.cfg); } },
+  // Profitability audit (OBSERVE-first; DORMANT unless cfg.profit.enabled). Walks
+  // the catalog in batches, writing a net-after-ads + competition verdict per
+  // product for the console's Profitability view. Never archives. needsCj:false -
+  // it reads the stored warehouse detail + (cached) LLM competitor signal, no CJ call.
+  {
+    name: 'profit-audit', maxMs: 6 * MIN_MS, needsCj: false,
+    async run(ctx, offset, deadline) {
+      if (!ctx.cfg.profit?.enabled) return; // dormant: no spend, no work
+      let off: number | null = offset;
+      while (off !== null) {
+        const r = await auditProfitability(ctx.store, ctx.llm, ctx.cfg, { offset: off, limit: 20 });
+        off = r.next;
+        if (off !== null && Date.now() > deadline) return off; // checkpoint mid-catalog
+      }
+    },
+  },
   // Promote-from-warehouse (floor 8, target 12).
   { name: 'refill', maxMs: 8 * MIN_MS, run: async (ctx) => { await refillCollections(ctx.store, ctx.cj!, ctx.admin, ctx.cfg, { curate: ctx.curate, pickHero: ctx.pickHero }); } },
   // Flip ACTIVE seed drafts to imported.

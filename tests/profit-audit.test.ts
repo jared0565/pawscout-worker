@@ -35,8 +35,9 @@ describe('auditProfitability', () => {
     const cfg = { pricing: PRICING, llm: { enabled: false }, profit: { ...DEFAULT_PROFIT, enabled: true } } as any;
     const r = await auditProfitability(store, noLlm, cfg, {});
     expect(r.scanned).toBe(2);
-    expect(store.verdicts.find((v) => v.cjPid === 'LOSS')?.verdict).toBe('reject'); // margin-capped, ads sink it
-    expect(store.verdicts.find((v) => v.cjPid === 'GOOD')?.verdict).toBe('pass');   // thin but positive
+    const find = (pid: string) => store.verdicts.find((v: { cjPid: string; verdict: string }) => v.cjPid === pid);
+    expect(find('LOSS')?.verdict).toBe('reject'); // margin-capped, ads sink it
+    expect(find('GOOD')?.verdict).toBe('pass');   // thin but positive
     expect(r.flagged).toBe(1);
   });
 
