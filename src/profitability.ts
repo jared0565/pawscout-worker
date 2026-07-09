@@ -18,6 +18,16 @@ import { DEFAULT_PROFIT } from './types';
 
 function round2(x: number): number { return Math.round(x * 100) / 100; }
 
+/**
+ * Blended affiliate commission per unit: commission is only paid on the SHARE of
+ * sales that come through an affiliate link, so it is a fractional expense like
+ * ad spend. commission on ex-VAT revenue + platform fee on gross, scaled by the
+ * affiliate sales share. Matches the affiliate-eligibility floor's rate model.
+ */
+function affiliateCostGbp(priceGbp: number, exVatGbp: number, p: ProfitConfig): number {
+  return p.affiliateSalesShare * (p.affiliateCommissionRate * exVatGbp + p.affiliatePlatformFeeRate * priceGbp);
+}
+
 // --- Deterministic net-after-ads (no LLM) ---
 
 export interface NetAfterAds {
@@ -38,7 +48,8 @@ export function netAfterAdsGbp(landedUsd: number, freightUsd: number, pricing: P
   const adCostGbp = round2(profit.adShareOfRevenue * retailGbp);
   const paymentsFee = round2(profit.paymentsFeeRate * retailGbp);
   const refundReserve = round2(profit.refundReserveRate * exVatRevenue);
-  const netGbp = round2(exVatRevenue - cogsGbp - adCostGbp - paymentsFee - refundReserve);
+  const affiliateFee = round2(affiliateCostGbp(retailGbp, exVatRevenue, profit));
+  const netGbp = round2(exVatRevenue - cogsGbp - adCostGbp - paymentsFee - refundReserve - affiliateFee);
   return {
     retailGbp,
     cogsGbp,
@@ -160,7 +171,7 @@ export type ProfitAction =
 /** Per-unit net after ads at a GIVEN live price + cost (no rule price - real numbers). */
 export function liveNetGbp(priceGbp: number, costGbp: number, p: ProfitConfig): number {
   const exVat = priceGbp / (1 + p.vatRate);
-  return exVat - costGbp - p.adShareOfRevenue * priceGbp - p.paymentsFeeRate * priceGbp - p.refundReserveRate * exVat;
+  return exVat - costGbp - p.adShareOfRevenue * priceGbp - p.paymentsFeeRate * priceGbp - p.refundReserveRate * exVat - affiliateCostGbp(priceGbp, exVat, p);
 }
 
 /** Nearest .99 ending at or BELOW x, so a competitive reprice never lands above the market. */

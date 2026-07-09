@@ -213,6 +213,13 @@ export interface ProfitConfig {
   minNetMarginPct: number;           // net as a fraction of ex-VAT revenue floor
   competitionTolerancePct: number;   // how far above the cheapest competitor we may sit before "won't sell"
   cacheTtlDays: number;              // competitor-signal cache TTL
+  // Affiliate commission cost. Commission is only paid on the SHARE of sales that
+  // come through an affiliate link, so it is a blended expense like ad spend:
+  // affiliateSalesShare x (commission on ex-VAT revenue + platform fee on gross).
+  // Rates mirror the affiliate-eligibility floor (DEFAULT_AFFILIATE_FLOOR).
+  affiliateSalesShare: number;       // fraction of sales made via an affiliate (0..1)
+  affiliateCommissionRate: number;   // commission on ex-VAT revenue for those sales (0.08)
+  affiliatePlatformFeeRate: number;  // affiliate-platform fee on gross for those sales (0.02)
 }
 // DORMANT + discriminating defaults. adShareOfRevenue 0.33 is the researched
 // worst case (ROAS 3, 100% paid acquisition on GROSS retail). At the live 2.2x
@@ -227,6 +234,7 @@ export const DEFAULT_PROFIT: ProfitConfig = {
   enabled: false, hardBlock: false, competitionCheckOnImport: false,
   adShareOfRevenue: 0.33, paymentsFeeRate: 0.025, refundReserveRate: 0.03, vatRate: 0.20,
   minNetAfterAdsGbp: 0, minNetMarginPct: 0, competitionTolerancePct: 0.15, cacheTtlDays: 14,
+  affiliateSalesShare: 0.15, affiliateCommissionRate: 0.08, affiliatePlatformFeeRate: 0.02,
 };
 // fulfilment mode 'manual' by default - Stage B never spends until set to 'pawscout'.
 export const DEFAULT_FULFIL: Fulfil = { mode: 'manual' };

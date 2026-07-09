@@ -12,11 +12,12 @@ describe('netAfterAdsGbp', () => {
     expect(n.adCostGbp).toBeCloseTo(DEFAULT_PROFIT.adShareOfRevenue * n.retailGbp, 2);
   });
 
-  it('follows the cost-stack identity: net = exVAT - COGS - ad - payments - refund (to the penny)', () => {
+  it('follows the cost-stack identity: net = exVAT - COGS - ad - payments - refund - affiliate (to the penny)', () => {
     const p = DEFAULT_PROFIT;
     const n = netAfterAdsGbp(10, 0, PRICING, p);
     const exVat = n.retailGbp / (1 + p.vatRate);
-    const expected = exVat - n.cogsGbp - p.adShareOfRevenue * n.retailGbp - p.paymentsFeeRate * n.retailGbp - p.refundReserveRate * exVat;
+    const affiliate = p.affiliateSalesShare * (p.affiliateCommissionRate * exVat + p.affiliatePlatformFeeRate * n.retailGbp);
+    const expected = exVat - n.cogsGbp - p.adShareOfRevenue * n.retailGbp - p.paymentsFeeRate * n.retailGbp - p.refundReserveRate * exVat - affiliate;
     expect(n.netGbp).toBeCloseTo(expected, 1); // within a penny of the raw formula (components are rounded)
   });
 
@@ -151,8 +152,10 @@ describe('decideProfitAction (the owner\'s adjust-or-drop algorithm on LIVE numb
     if (a.kind === 'reprice') expect(a.updates.map((u) => u.variantId)).toEqual(['v1', 'v2']);
   });
 
-  it('liveNetGbp is revenue-ex-VAT minus cost, ads and fees', () => {
+  it('liveNetGbp is revenue-ex-VAT minus cost, ads, fees and affiliate commission', () => {
     const n = liveNetGbp(20, 8, P);
-    expect(n).toBeCloseTo(20 / 1.2 - 8 - 0.2 * 20 - 0.025 * 20 - 0.03 * (20 / 1.2), 6);
+    const exVat = 20 / 1.2;
+    const affiliate = P.affiliateSalesShare * (P.affiliateCommissionRate * exVat + P.affiliatePlatformFeeRate * 20);
+    expect(n).toBeCloseTo(exVat - 8 - 0.2 * 20 - 0.025 * 20 - 0.03 * exVat - affiliate, 6);
   });
 });
