@@ -20,22 +20,56 @@ Caveat (honest): `cost` freshness is bounded by how often the inventory sync tou
 `liveNet(price,cost) = price/(1+vat) - cost - adShare*price - payments*price - refund*(price/(1+vat)) - affiliate - discount`, where affiliate = `affiliateSalesShare*(commission*exVat + platformFee*price)` and discount = `expectedDiscountRate*price`. Inputs: `price` = live Shopify shelf price, `cost` = live Shopify landed cost (both real). Defaults: adShare 0.33 (worst-case, tune to real blend), payments 2.5%, refunds 3%, VAT 20%, affiliate 15% share x (8%+2%), discount 5% blended, **floor = GBP2**. Open item: a fixed-overhead term (Shopify/apps ~2%) if the owner wants it.
 
 ## Decision tree (pure function `decideProfitAction`, judged on the WORST sellable variant)
-Competitor counts only at **high/medium** confidence (low = no data).
+Competitor counts only at **high/medium** confidence (low = no data). The competitor
+price is the SOFTEST input (an LLM web lookup), so the most destructive action -
+archiving a product - is gated to the HARDEST evidence.
 1. **No live price/cost** -> `keep` (never act blind).
-2. **Defensible competitor delivered price exists:** target = `round99Down(competitorDelivered)` (a .99 strictly below it). Scale all variants so the from-price hits target (RAISES if we are below it, LOWERS if above).
-   - Worst variant still `>= GBP2` at target -> `reprice` all variants to target (skip if the from-price move is under a 50p deadband -> `keep`). Direction (raise/lower) is logged.
-   - Worst variant `< GBP2` at the best sub-market price -> `drop` ("cannot clear GBP2 even at the best price below the market").
+2. **Defensible competitor delivered price exists (high/medium):** target =
+   `undercutTarget(competitorDelivered, undercutPct)` - a .99 an undercut-% below the
+   market. Scale all variants so the from-price hits target (RAISES if we are below it,
+   LOWERS if above).
+   - Worst variant still `>= GBP2` at target -> `reprice` all variants to target (skip
+     if the from-price move is under a 50p deadband -> `keep`). Direction (raise/lower)
+     is logged. Reprice runs on high OR medium confidence (it is recoverable).
+   - Worst variant `< GBP2` at the best sub-market price -> can't win here:
+     - competitor confidence **high** -> `drop` ("cannot clear GBP2 even at the best
+       price below the market"). Auto-archive only on hard, agreed market evidence.
+     - competitor confidence **medium** -> `flag` (owner's call). A soft low estimate
+       must never silently archive a possibly-profitable product.
 3. **No defensible market price:** cannot safely reprice (never guess a price).
-   - Loses money at current price -> `drop`. Positive but `< GBP2` -> `flag` (owner's call). `>= GBP2` -> `keep`.
+   - Loses money at current price -> `drop` (hard data: it loses at its OWN live price).
+     Positive but `< GBP2` -> `flag` (owner's call). `>= GBP2` -> `keep`.
 
-Prices only ever land on a `.99` at or below the competitor's delivered price (never above the market). Auto-raise and auto-drop both run without approval on defensible data; every action is logged.
+Prices only ever land on a `.99` at or below the competitor's delivered price (never
+above the market). Auto-raise runs freely on defensible data; auto-drop runs only on
+hard evidence (a clear loss at our own price, or a high-confidence market it can't beat);
+every action is logged. **Asymmetry rule:** more/softer competitor data must never unlock
+a MORE destructive action than less data would.
+
+## Coherence with the existing crons (two collisions, resolved)
+The active agent shares the catalog with `syncStoreInventory` (nightly price/cost/stock
+sync) and `auditProfitability` (observe verdicts). Both collide and are resolved here:
+
+1. **Price authority.** `syncStoreInventory` reprices variants toward the pricing-rule
+   price and is LOWER-ONLY (jobs.ts: `if (Number(expected) > Number(v.price)) return []`).
+   The agent RAISES above the rule price (to just under a higher competitor), so the
+   sync would drag every raised product back down and the agent would re-raise it - a
+   price sawtooth on exactly the products the agent lifts. Resolution: when
+   `profit.enabled && !dryRun` the **profit agent is the price authority** and the sync
+   SKIPS its price-lowering block (cost-per-item and stock still sync every night). In
+   dry-run or when disabled, the sync keeps full control (nothing changes today).
+2. **Single writer of `product_profit`.** `auditProfitability` (nightly stage + "Run
+   Audit Now") and `runProfitAgent` both upsert the same `(shop,cj_pid)` row with
+   DIFFERENT models. The active agent supersedes observe: the nightly `profit-audit`
+   stage is retired and "Run Audit Now" re-points at the runner in dry-run, so the
+   runner is the sole writer. Dry-run reproduces the observe output the console renders.
 
 ## Architecture
 - **`decideProfitAction(...)`** — pure, deterministic, fully unit-tested (this doc's first deliverable).
 - **`runProfitAgent(store, admin, llm, cfg, {offset, limit})`** — per product: `productInventoryItems` (live price+cost) -> `competitorSignal` (cached) -> `decideProfitAction` -> execute (`updateVariantPrices` to lower / archive to drop) -> write the verdict + the action taken to `product_profit` (+ an action log) -> continue. Never throws out of the loop.
 - **Continuous:** runs on the **15-minute cron** in rolling batches (small, cached competitor calls) so the whole catalog is re-evaluated through the day — not a nightly pass. Also re-checks a product right after its inventory sync (fresh cost) — event-adjacent.
-- **Switch model:** `profit.enabled` gates everything (dormant = nothing). When enabled, a `profit.dryRun` flag (default true on first enable) makes the agent COMPUTE and record what it *would* do without touching prices/listings — a one-look preview — then the owner clears dryRun for full-auto. This is a preview, not per-action approval (owner chose full auto).
-- **Action log:** every reprice (from->to) and drop is recorded (reusing `product_profit` + a reason/action column, or a small `profit_actions` table) so the owner can review and reverse.
+- **Switch model:** `profit.enabled` gates everything (dormant = nothing). When enabled, a `profit.dryRun` flag makes the agent COMPUTE and record what it *would* do without touching prices/listings — a one-look preview — then the owner clears dryRun for full-auto. This is a preview, not per-action approval (owner chose full auto). **First-enable must WRITE `dryRun:true` explicitly:** `getConfig` merges saved JSON *over* `DEFAULT_PROFIT`, so a saved profit object's `dryRun` wins over the default — the enable action sets it, never relying on the default surviving the merge.
+- **Action log (`profit_actions`, append-only):** every reprice (from->to) and drop is recorded so the owner can review and reverse. This ledger is **load-bearing, not optional:** a dropped product is archived and archived rows are excluded from `listProfitVerdicts`, so the ledger is the ONLY surviving record of a drop. `product_profit` also carries the latest action inline (action / from / to / acted_at / dry_run) as a console convenience — those two are the whole persistence surface, nothing more.
 
 ## Console
 The Profitability view shows: current live price, competitor price, verdict, and the **action taken** (kept / repriced £X->£Y / dropped) with timestamp. Archived products drop off the list (already shipped). A dry-run banner + a single "Go live (full auto)" control replaces the manual per-row archive as the primary flow (manual archive stays as a fallback).
