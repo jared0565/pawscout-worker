@@ -21,45 +21,68 @@ function pfActionHtml(r){
   else label='kept';
   return '<span class="pf-chip pf-act'+(dry?' dry':'')+'">'+esc(label)+'</span>';
 }
-// Canonical CJ product page for the pid (the -p-<pid>.html scheme). encodeURIComponent
-// guards odd pids; a logged-in CJ tab lands on the product for review.
+// Review links. CJ: canonical -p-<pid>.html product page. PDP: our storefront
+// product page. Competitor: a SEARCH (we hold retailer names, not URLs), so the
+// link is honestly a search and the real analysis rides the tooltip.
 function pfCjUrl(pid){ return 'https://cjdropshipping.com/product/-p-'+encodeURIComponent(pid)+'.html'; }
+function pfPdpUrl(handle){ return 'https://activepaw.co.uk/products/'+encodeURIComponent(handle); }
+function pfCompUrl(q){ return 'https://www.google.com/search?q='+encodeURIComponent((q||'')+' uk price'); }
 function pfWhen(s){ if(!s) return '-'; try{ return new Date(s).toLocaleString(); }catch(e){ return String(s); } }
-// One table row per product: the decision, SKU, market it was judged against, the
-// net, when it was processed, and a direct CJ link. The reason rides as a muted
-// sub-line in the product cell (that cell overrides the table's nowrap so it wraps).
+var PF_EXT=' <span class="pf-ext">&#8599;</span>';
+// One table row per product. Product cell = readable name + SKU + the decision
+// reason (all wrap; the cell breaks space-less tokens so nothing collides). Three
+// clickable prices (PDP / CJ / Competitor) each carry a tooltip that says exactly
+// what the number is - the CJ price is the supplier ITEM price, NOT the landed cost
+// behind the net, so it is labelled to avoid reading as broken margin maths.
 function pfRowTr(r){
-  var name=r.handle?r.handle:r.cjPid;
-  var prod='<td class="pf-prod"><div class="pf-pname">'+esc(name)+'</div>';
+  var name=r.name?r.name:(r.handle?r.handle:r.cjPid);
+  var prod='<td class="pf-prod"><span class="pf-pname" title="'+esc(name)+'">'+esc(name)+'</span>'
+    +'<span class="pf-sku">'+(r.sku?esc(r.sku):'<span class="pf-none">no SKU</span>')+'</span>';
   if(r.reason) prod+='<div class="pf-why">'+esc(r.reason)+'</div>';
   prod+='</td>';
-  var sku='<td class="pf-sku">'+(r.sku?esc(r.sku):'<span class="pf-none">-</span>')+'</td>';
-  // Verdict chip (pass/review/reject colour = at-a-glance triage) + the specific action.
-  var act='<td>'+pfChip(r.verdict)+' '+pfActionHtml(r);
+  // Verdict colour chip (triage) + the specific action.
+  var act='<td class="pf-act-cell">'+pfChip(r.verdict)+' '+pfActionHtml(r);
   if(r.linkState==='archived') act+=' <span class="pf-chip pf-arch">archived</span>';
   act+='</td>';
-  var price='<td class="pf-num">'+esc(pfMoney(r.ourRetailGbp));
-  if(r.action==='reprice'&&r.fromGbp!==null&&r.toGbp!==null)
-    price+='<div class="pf-move">'+esc(pfMoney(r.fromGbp))+' &rarr; '+esc(pfMoney(r.toGbp))+'</div>';
-  price+='</td>';
-  var mkt='<td class="pf-mkt">';
+  // PDP: our storefront price, links to the product page (only when we have a handle).
+  var pdp='<td class="pf-num">';
+  if(r.ourRetailGbp!==null&&r.ourRetailGbp!==undefined){
+    if(r.handle) pdp+='<a class="pf-plink" href="'+esc(pfPdpUrl(r.handle))+'" target="_blank" rel="noopener" title="Your storefront price. Click to open the product page (PDP).">'+esc(pfMoney(r.ourRetailGbp))+PF_EXT+'</a>';
+    else pdp+=esc(pfMoney(r.ourRetailGbp));
+    if(r.action==='reprice'&&r.fromGbp!==null&&r.toGbp!==null) pdp+='<span class="pf-move">'+esc(Number(r.fromGbp).toFixed(2))+' &rarr; '+esc(Number(r.toGbp).toFixed(2))+'</span>';
+  } else { pdp+='<span class="pf-none">-</span>'; }
+  pdp+='</td>';
+  // CJ: supplier ITEM price at import (excl. shipping) - NOT the landed cost behind
+  // the net. Always links to the CJ product page even when no price is stored.
+  var cjTip=(r.cjPriceGbp!==null&&r.cjPriceGbp!==undefined)
+    ? 'CJ item price at import (excludes shipping). This is NOT the landed cost behind the net. Click to open the product in CJ.'
+    : 'Open the product in CJ.';
+  var cj='<td class="pf-num"><a class="pf-plink" href="'+esc(pfCjUrl(r.cjPid))+'" target="_blank" rel="noopener" title="'+esc(cjTip)+'">'
+    +((r.cjPriceGbp!==null&&r.cjPriceGbp!==undefined)?esc(pfMoney(r.cjPriceGbp)):'CJ')+PF_EXT+'</a></td>';
+  // Competitor: typical UK delivered price + confidence. The link is a SEARCH; the
+  // estimate/confidence/sources (the analysis) live in the tooltip.
+  var comp='<td class="pf-num">';
   if(r.competitorGbp!==null&&r.competitorGbp>0){
-    mkt+='~'+esc(pfMoney(r.competitorGbp))+(r.competitorConfidence?(' ('+esc(r.competitorConfidence)+')'):'');
-    if(r.sources&&r.sources.length) mkt+='<div class="pf-why">'+esc(r.sources.join(', '))+'</div>';
-  } else { mkt+='<span class="pf-none">no market</span>'; }
-  mkt+='</td>';
+    var tip='Typical UK delivered price ~'+pfMoney(r.competitorGbp)
+      +(r.competitorConfidence?(', '+r.competitorConfidence+' confidence'):'')
+      +(r.sources&&r.sources.length?('. Sources: '+r.sources.join(', ')):'')
+      +'. Click to search for comparable listings.';
+    comp+='<a class="pf-plink" href="'+esc(pfCompUrl(name))+'" target="_blank" rel="noopener" title="'+esc(tip)+'">~'+esc(pfMoney(r.competitorGbp))+PF_EXT+'</a>';
+    if(r.competitorConfidence) comp+='<span class="pf-conf">'+esc(r.competitorConfidence)+' conf</span>';
+  } else { comp+='<span class="pf-none">no market</span>'; }
+  comp+='</td>';
+  // Net (coloured) + margin %.
   var neg=(r.netGbp!==null&&r.netGbp<0);
   var net='<td class="pf-num"><span class="'+(neg?'pf-nneg':'pf-npos')+'">'+esc(pfMoney(r.netGbp))+'</span>'
-    +(r.netPct!==null?('<div class="pf-move">'+Math.round(r.netPct*100)+'%</div>'):'')+'</td>';
+    +(r.netPct!==null?('<span class="pf-move">'+Math.round(r.netPct*100)+'%</span>'):'')+'</td>';
   var when='<td class="pf-when-c">'+esc(pfWhen(r.checkedAt))+'</td>';
-  var cj='<td><a class="pf-cj" href="'+esc(pfCjUrl(r.cjPid))+'" target="_blank" rel="noopener">CJ &#8599;</a></td>';
-  // Manual archive fallback (only for non-pass, live, not-yet-archived rows). The
-  // pid rides a data- attribute (delegated click in the IIFE below), never inline code.
+  // Manual archive fallback (non-pass, live, not-yet-archived). The pid rides a
+  // data- attribute (delegated click in the IIFE below), never inline code.
   var actionCell='<td>';
   if(r.verdict!=='pass'&&r.linkState&&r.linkState!=='archived'&&r.productId)
     actionCell+='<button type="button" class="ghost" data-pf-pid="'+esc(r.cjPid)+'">Archive</button>';
   actionCell+='</td>';
-  return '<tr>'+prod+sku+act+price+mkt+net+when+cj+actionCell+'</tr>';
+  return '<tr>'+prod+act+pdp+cj+comp+net+when+actionCell+'</tr>';
 }
 function pfBanner(c){
   var b=el('pf-banner'); if(!b) return;
@@ -103,7 +126,14 @@ function pfRender(){
     if(!pfState.rows.length){ box.innerHTML='<p class="muted">No decisions yet. Turn on the agent and run it.</p>'; }
     else{
       var s='<div class="pf-tablewrap"><table class="pf-table"><thead><tr>'
-        +'<th>Product / decision</th><th>SKU</th><th>Action</th><th class="pf-num">Price</th><th>Market</th><th class="pf-num">Net</th><th>Processed</th><th>CJ</th><th aria-label="Actions"></th>'
+        +'<th class="pf-c-prod">Product</th>'
+        +'<th class="pf-c-act">Decision</th>'
+        +'<th class="pf-c-price pf-num">PDP</th>'
+        +'<th class="pf-c-price pf-num">CJ</th>'
+        +'<th class="pf-c-comp pf-num">Competitor</th>'
+        +'<th class="pf-c-price pf-num">Net</th>'
+        +'<th class="pf-c-when">Processed</th>'
+        +'<th class="pf-c-arch" aria-label="Actions"></th>'
         +'</tr></thead><tbody>';
       for(var i=0;i<pfState.rows.length;i++) s+=pfRowTr(pfState.rows[i]);
       s+='</tbody></table></div>';

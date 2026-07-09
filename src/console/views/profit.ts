@@ -32,7 +32,7 @@ export const profitView = `  <section class="card">
 
   <section class="card">
     <h2>Products</h2>
-    <p class="sub" style="margin:0 0 10px">Worst first. Each row is the agent's latest decision with the SKU, the market it was judged against, when it was processed, and a direct link to open the product in CJ for review. <strong>Dropped</strong> = archived, cannot profit; <strong>Repriced</strong> = moved to just under the market; <strong>Flagged</strong> = your call (soft market signal). Archiving from here is a manual one-click fallback and asks to confirm; it never deletes.</p>
+    <p class="sub" style="margin:0 0 10px">Worst first. Each row shows the product (name + SKU), the agent's decision and why, and three prices you can click to review: <strong>PDP</strong> (your storefront price, opens the product page), <strong>CJ</strong> (the supplier item price, opens the product in CJ) and <strong>Competitor</strong> (the market delivered price, opens a search; hover for the confidence and sources). <strong>Dropped</strong> = archived, cannot profit; <strong>Repriced</strong> = moved to just under the market; <strong>Flagged</strong> = your call. Archiving here is a manual one-click fallback and asks to confirm; it never deletes.</p>
     <div id="pf-list">Turn on the agent and run it to see decisions.</div>
   </section>
 
@@ -77,23 +77,34 @@ export const profitCss = `
   .pf-led{padding:8px 4px;border-bottom:1px solid var(--border);font-size:13px;color:var(--subdued);display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}
   .pf-led .pf-when{color:var(--subdued);font-variant-numeric:tabular-nums;white-space:nowrap}
   .pf-led .pf-what{color:var(--ink);font-weight:600}
-  /* --- Products review table (mirrors the Partners table pattern) --- */
+  /* --- Products review table: FIXED layout so a long name can never collide
+         with the next column (auto-layout ignores cell max-width). Wide content
+         scrolls inside .pf-tablewrap on a narrow console pane. --- */
   .pf-tablewrap{overflow-x:auto;margin-top:4px}
-  .pf-table{width:100%;border-collapse:collapse;font-size:13px}
+  .pf-table{table-layout:fixed;width:100%;min-width:940px;border-collapse:collapse;font-size:13px}
   .pf-table th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--subdued);font-weight:650;padding:8px 10px 6px;border-bottom:1px solid var(--border);white-space:nowrap}
   .pf-table td{padding:9px 10px;border-bottom:1px solid var(--border);vertical-align:top;white-space:nowrap}
   .pf-table tbody tr:last-child td{border-bottom:none}
   .pf-table th.pf-num,.pf-table td.pf-num{text-align:right;font-variant-numeric:tabular-nums}
-  .pf-prod{white-space:normal;min-width:220px;max-width:340px}
-  .pf-pname{font-weight:600;color:var(--ink);word-break:break-word}
-  .pf-why{margin-top:3px;color:var(--subdued);font-size:12px;line-height:1.35;white-space:normal}
-  .pf-sku{font-family:ui-monospace,monospace;font-size:12px;color:var(--ink)}
+  /* Fixed column widths (read from the header row). */
+  .pf-c-prod{width:242px}
+  .pf-c-act{width:118px}
+  .pf-c-price{width:90px}
+  .pf-c-comp{width:120px}
+  .pf-c-when{width:130px}
+  .pf-c-arch{width:92px}
+  /* Cells that hold long text WRAP and break space-less tokens so nothing spills. */
+  td.pf-prod,td.pf-act-cell{white-space:normal;overflow-wrap:anywhere;word-break:break-word}
+  .pf-pname{display:block;font-weight:600;color:var(--ink);overflow-wrap:anywhere}
+  .pf-sku{display:block;margin-top:2px;font-family:ui-monospace,monospace;font-size:11.5px;color:var(--subdued);overflow-wrap:anywhere}
+  .pf-why{margin-top:4px;color:var(--subdued);font-size:12px;line-height:1.35;white-space:normal;overflow-wrap:anywhere}
   .pf-when-c{color:var(--subdued);font-size:12px}
-  .pf-cj{color:#58a6ff;text-decoration:none;font-weight:600}
-  .pf-cj:hover{text-decoration:underline}
-  .pf-move{color:var(--subdued);font-variant-numeric:tabular-nums}
-  .pf-mkt{color:var(--subdued)}
-  .pf-nneg{color:#f85149}
-  .pf-npos{color:var(--ink)}
+  .pf-plink{color:#58a6ff;text-decoration:none;font-weight:600}
+  .pf-plink:hover{text-decoration:underline}
+  .pf-ext{font-size:10px;opacity:.7}
+  .pf-conf{display:block;margin-top:1px;color:var(--subdued);font-size:11px;font-weight:400}
+  .pf-move{display:block;margin-top:1px;color:var(--subdued);font-size:11.5px;font-variant-numeric:tabular-nums;white-space:normal}
+  .pf-nneg{color:#f85149;font-weight:600}
+  .pf-npos{color:var(--ink);font-weight:600}
   .pf-none{color:var(--subdued)}
 `;

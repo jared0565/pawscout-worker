@@ -70,8 +70,11 @@ export interface ProfitVerdictRow {
   shopify_product_id?: string | null;
   link_state?: string | null;
   // Joined from warehouse_products.detail (listProfitVerdicts only): the CJ
-  // variant SKU (first variant) so the console table can show it for review.
+  // product name + variant SKU + CJ item price (USD) so the console table can
+  // show a readable short name, the SKU, and the supplier price for review.
   sku?: string | null;
+  name?: string | null;
+  cj_price_usd?: number | null;
 }
 
 /** One row of the append-only profit_actions ledger (newest first via listProfitActions). */
@@ -336,7 +339,9 @@ export class TenantStore {
         `SELECT pp.cj_pid, pp.verdict, pp.net_gbp, pp.net_pct, pp.our_retail_gbp, pp.competitor_gbp, pp.competitor_confidence, pp.competitor_sources, pp.reason, pp.checked_at,
                 pp.action AS action, pp.from_gbp AS from_gbp, pp.to_gbp AS to_gbp, pp.acted_at AS acted_at, pp.dry_run AS dry_run,
                 pl.handle AS handle, pl.shopify_product_id AS shopify_product_id, pl.state AS link_state,
-                json_extract(wp.detail, '$.variants[0].sku') AS sku
+                json_extract(wp.detail, '$.variants[0].sku') AS sku,
+                json_extract(wp.detail, '$.nameEn') AS name,
+                json_extract(wp.detail, '$.variants[0].sellPriceUsd') AS cj_price_usd
          FROM product_profit pp
          LEFT JOIN product_links pl ON pl.shop = pp.shop AND pl.cj_pid = pp.cj_pid
          LEFT JOIN warehouse_products wp ON wp.shop = pp.shop AND wp.cj_pid = pp.cj_pid

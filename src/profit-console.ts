@@ -13,6 +13,8 @@ import { DEFAULT_PROFIT } from './types';
 export interface ProfitConsoleRow {
   cjPid: string;
   sku: string | null;            // CJ variant SKU (first variant) for the review table
+  name: string | null;           // CJ product name (readable short name; wraps, unlike the handle)
+  cjPriceGbp: number | null;      // CJ item price (sellPriceUsd x FX) at import - NOT the landed cost behind net
   handle: string | null;
   productId: string | null;
   linkState: string | null;      // imported | draft | archived | ...
@@ -64,6 +66,7 @@ function parseSources(json: string | null): string[] {
  *  verdict rows worst-first. */
 export async function getProfitConsole(store: TenantStore, cfg: TenantConfig | null): Promise<ProfitConsole> {
   const p = cfg?.profit ?? DEFAULT_PROFIT;
+  const fx = cfg?.pricing?.fxUsdToGbp && cfg.pricing.fxUsdToGbp > 0 ? cfg.pricing.fxUsdToGbp : 0.78;
   const rows = await store.listProfitVerdicts(500);
   const actions = await store.listProfitActions(50);
   const summary = { total: rows.length, reject: 0, review: 0, pass: 0, lastCheckedAt: null as string | null };
@@ -82,7 +85,10 @@ export async function getProfitConsole(store: TenantStore, cfg: TenantConfig | n
     },
     summary,
     rows: rows.map((r) => ({
-      cjPid: r.cj_pid, sku: r.sku ?? null, handle: r.handle ?? null, productId: r.shopify_product_id ?? null, linkState: r.link_state ?? null,
+      cjPid: r.cj_pid, sku: r.sku ?? null,
+      name: r.name ?? null,
+      cjPriceGbp: typeof r.cj_price_usd === 'number' && Number.isFinite(r.cj_price_usd) ? Math.round(r.cj_price_usd * fx * 100) / 100 : null,
+      handle: r.handle ?? null, productId: r.shopify_product_id ?? null, linkState: r.link_state ?? null,
       verdict: r.verdict, netGbp: r.net_gbp, netPct: r.net_pct, ourRetailGbp: r.our_retail_gbp,
       competitorGbp: r.competitor_gbp, competitorConfidence: r.competitor_confidence, sources: parseSources(r.competitor_sources),
       reason: r.reason, checkedAt: r.checked_at,
