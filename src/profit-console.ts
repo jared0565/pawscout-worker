@@ -24,16 +24,34 @@ export interface ProfitConsoleRow {
   sources: string[];
   reason: string;
   checkedAt: string;
+  // The active agent's latest action on this product (nullable until it acts).
+  action: string | null;         // reprice | drop | flag | keep
+  fromGbp: number | null;        // from-price of the latest reprice
+  toGbp: number | null;          // target of the latest reprice
+  dryRun: number | null;         // 1 = previewed only, 0 = executed live
+}
+
+export interface ProfitActionView {
+  cjPid: string;
+  action: string;                // reprice | drop
+  fromGbp: number | null;
+  toGbp: number | null;
+  competitorGbp: number | null;
+  competitorConfidence: string | null;
+  reason: string;
+  dryRun: number;                // 1 = previewed only, 0 = executed live
+  createdAt: string;
 }
 
 export interface ProfitConsole {
   ok: true;
   config: {
-    enabled: boolean; hardBlock: boolean; competitionCheckOnImport: boolean;
+    enabled: boolean; dryRun: boolean; hardBlock: boolean; competitionCheckOnImport: boolean;
     adShareOfRevenue: number; minNetAfterAdsGbp: number; minNetMarginPct: number; competitionTolerancePct: number;
   };
   summary: { total: number; reject: number; review: number; pass: number; lastCheckedAt: string | null };
   rows: ProfitConsoleRow[];
+  recentActions: ProfitActionView[];
 }
 
 function parseSources(json: string | null): string[] {
@@ -46,6 +64,7 @@ function parseSources(json: string | null): string[] {
 export async function getProfitConsole(store: TenantStore, cfg: TenantConfig | null): Promise<ProfitConsole> {
   const p = cfg?.profit ?? DEFAULT_PROFIT;
   const rows = await store.listProfitVerdicts(500);
+  const actions = await store.listProfitActions(50);
   const summary = { total: rows.length, reject: 0, review: 0, pass: 0, lastCheckedAt: null as string | null };
   for (const r of rows) {
     if (r.verdict === 'reject') summary.reject++;
@@ -56,7 +75,7 @@ export async function getProfitConsole(store: TenantStore, cfg: TenantConfig | n
   return {
     ok: true,
     config: {
-      enabled: p.enabled, hardBlock: p.hardBlock, competitionCheckOnImport: p.competitionCheckOnImport,
+      enabled: p.enabled, dryRun: p.dryRun, hardBlock: p.hardBlock, competitionCheckOnImport: p.competitionCheckOnImport,
       adShareOfRevenue: p.adShareOfRevenue, minNetAfterAdsGbp: p.minNetAfterAdsGbp, minNetMarginPct: p.minNetMarginPct,
       competitionTolerancePct: p.competitionTolerancePct,
     },
@@ -66,23 +85,35 @@ export async function getProfitConsole(store: TenantStore, cfg: TenantConfig | n
       verdict: r.verdict, netGbp: r.net_gbp, netPct: r.net_pct, ourRetailGbp: r.our_retail_gbp,
       competitorGbp: r.competitor_gbp, competitorConfidence: r.competitor_confidence, sources: parseSources(r.competitor_sources),
       reason: r.reason, checkedAt: r.checked_at,
+      action: r.action ?? null, fromGbp: r.from_gbp ?? null, toGbp: r.to_gbp ?? null, dryRun: r.dry_run ?? null,
+    })),
+    recentActions: actions.map((a) => ({
+      cjPid: a.cj_pid, action: a.action, fromGbp: a.from_gbp, toGbp: a.to_gbp,
+      competitorGbp: a.competitor_gbp, competitorConfidence: a.competitor_confidence,
+      reason: a.reason, dryRun: a.dry_run, createdAt: a.created_at,
     })),
   };
 }
 
-/** Merge the owner's dormancy flips onto the current profit config and persist.
- *  Only the three booleans are settable from the console; the numeric thresholds
- *  are tuned in tenant_config directly (documented in the view). */
+/** Merge the owner's console flips onto the current profit config and persist.
+ *  The booleans settable from the console are enabled / dryRun (preview) / hardBlock
+ *  (enforce imports); the numeric thresholds are tuned in tenant_config directly
+ *  (documented in the view). SAFETY: on the FIRST enable we force dryRun:true so the
+ *  agent can only preview until the owner deliberately clears it - going full-auto is
+ *  never a side effect of turning the agent on. */
 export async function saveProfitFlags(
   store: TenantStore, cfg: TenantConfig | null,
-  flags: { enabled?: unknown; hardBlock?: unknown; competitionCheckOnImport?: unknown }
+  flags: { enabled?: unknown; dryRun?: unknown; hardBlock?: unknown; competitionCheckOnImport?: unknown }
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   if (!cfg) return { ok: false, error: 'no config' };
   const base = cfg.profit ?? DEFAULT_PROFIT;
   const bool = (v: unknown, cur: boolean) => (typeof v === 'boolean' ? v : cur);
+  const enabling = flags.enabled === true && base.enabled === false; // off -> on this flip
   await store.saveProfit({
     ...base,
     enabled: bool(flags.enabled, base.enabled),
+    // First enable always starts in preview; otherwise honor an explicit dryRun flip.
+    dryRun: enabling ? true : bool(flags.dryRun, base.dryRun ?? true),
     hardBlock: bool(flags.hardBlock, base.hardBlock),
     competitionCheckOnImport: bool(flags.competitionCheckOnImport, base.competitionCheckOnImport),
   });

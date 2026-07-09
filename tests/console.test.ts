@@ -335,19 +335,23 @@ describe('consolePage', () => {
     expect(html).toContain('Nothing is published automatically');
   });
 
-  // --- Profitability view (2026-07-09): observe-first profit audit window ---
+  // --- Profitability view (2026-07-09): active adjust-or-drop agent window ---
 
-  it('renders the Profitability view: rail entry, switches, list, wired to /profit endpoints', async () => {
+  it('renders the Profitability view: rail entry, switches (incl. dry-run), list, ledger, wired to /profit endpoints', async () => {
     const html = await consolePage('test-api-key').text();
     expect(html).toContain('data-route="profitability"');
     expect(html).toContain('id="view-profitability"');
-    for (const id of ['pf-enabled', 'pf-hardblock', 'pf-thresholds', 'pf-summary', 'pf-list', 'pf-msg']) {
+    for (const id of ['pf-enabled', 'pf-dryrun', 'pf-hardblock', 'pf-banner', 'pf-thresholds', 'pf-summary', 'pf-list', 'pf-ledger', 'pf-msg']) {
       expect(html).toContain('id="' + id + '"');
     }
     const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
     expect(scripts).toContain('function pfLoad(');
-    expect(scripts).toContain('function pfRunAudit(');
+    expect(scripts).toContain('function pfRunNow(');
     expect(scripts).toContain('function pfArchive(');
+    // The dry-run flip is wired (preview vs full-auto, onchange in the view HTML)
+    // and the ledger renders (function in the script bundle).
+    expect(html).toContain("pfSetFlag('dryRun'");
+    expect(scripts).toContain('function pfRenderLedger(');
     for (const route of ["'/profit'", "'/profit/config'", "'/profit/run'", "'/profit/archive'"]) {
       expect(scripts).toContain(route); // api() prepends /api
     }

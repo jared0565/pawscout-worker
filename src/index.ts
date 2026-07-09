@@ -441,9 +441,10 @@ app.post('/api/traffic/delete', async (c) => {
   return c.json(gone ? { ok: true } : { ok: false, error: 'Channel not found' });
 });
 
-// --- Profitability audit (2026-07-09): the observe-first profit engine's console.
-// Ships dormant; /config flips Observe/Enforce, /run drains one audit batch,
-// /archive archives ONE flagged product on explicit owner confirm.
+// --- Profitability agent (2026-07-09): the active adjust-or-drop agent's console.
+// Ships dormant; /config flips Enabled/Preview(dryRun)/Enforce, /run drains one
+// agent batch (dry-run previews, live executes), /archive is a manual one-product
+// fallback on explicit owner confirm. The 15-min cron runs the same agent.
 app.post('/api/profit', async (c) => {
   const s = await shopOf(c); if (typeof s !== 'string') return s;
   const store = new TenantStore(c.env.DB, s);
