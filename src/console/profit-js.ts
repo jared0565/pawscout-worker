@@ -74,11 +74,14 @@ function pfRender(){
   var en=el('pf-enabled'); if(en) en.checked=!!c.enabled;
   var dr=el('pf-dryrun'); if(dr){ dr.checked=(c.dryRun!==false); dr.disabled=!c.enabled; }
   var hb=el('pf-hardblock'); if(hb){ hb.checked=!!c.hardBlock; hb.disabled=!c.enabled; }
+  var as=el('pf-adshare'); if(as){ as.value=Math.round((c.adShareOfRevenue||0)*100); as.disabled=!c.enabled; }
+  var ah=el('pf-adshare-hint');
+  if(ah){ var apct=Math.round((c.adShareOfRevenue||0)*100);
+    ah.textContent=(apct>=30?'('+apct+'% assumes ~100% paid at ROAS 3 - the worst case; lower it toward your real blend)':'('+apct+'% blended)'); }
   pfBanner(c);
   var th=el('pf-thresholds');
-  if(th) th.innerHTML='Thresholds (tune in tenant_config.profit): net floor <strong>'
-    +esc(pfMoney(c.minNetAfterAdsGbp))+'/unit</strong>, ad share <strong>'
-    +Math.round((c.adShareOfRevenue||0)*100)+'%</strong> of revenue; it prices just under the market delivered price.';
+  if(th) th.innerHTML='Net floor <strong>'
+    +esc(pfMoney(c.minNetAfterAdsGbp))+'/unit</strong>; it prices just under the market delivered price and keeps at least the floor. Other thresholds are tuned in tenant_config.profit.';
   var box=el('pf-list');
   if(box){
     if(!pfState.rows.length){ box.innerHTML='<p class="muted">No decisions yet. Turn on the agent and run it.</p>'; }
@@ -110,6 +113,18 @@ async function pfSetFlag(flag,on){
     else if(flag==='dryRun') m=on?'Preview only - nothing will change.':'FULL AUTO - the agent will now adjust and drop for real.';
     else m=on?'Enforce on.':'Enforce off.';
     setMsg('pf-msg',m,'ok');
+    pfLoad();
+  }catch(e){ setMsg('pf-msg','Could not save.','no'); }
+}
+async function pfSetAdShare(pct){
+  var n=Number(pct);
+  if(!isFinite(n)||n<0||n>60){ setMsg('pf-msg','Enter an ad share between 0 and 60%.','no'); pfLoad(); return; }
+  var frac=Math.round(n)/100; // store as a fraction of revenue
+  setMsg('pf-msg','Saving…','muted');
+  try{
+    var r=await api('/profit/config',{adShareOfRevenue:frac});
+    if(!r.ok){ setMsg('pf-msg','Failed: '+(r.error||'unknown'),'no'); return; }
+    setMsg('pf-msg','Ad share set to '+Math.round(n)+'%. Click Run now to re-preview at the new value.','ok');
     pfLoad();
   }catch(e){ setMsg('pf-msg','Could not save.','no'); }
 }

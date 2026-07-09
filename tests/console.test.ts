@@ -341,7 +341,7 @@ describe('consolePage', () => {
     const html = await consolePage('test-api-key').text();
     expect(html).toContain('data-route="profitability"');
     expect(html).toContain('id="view-profitability"');
-    for (const id of ['pf-enabled', 'pf-dryrun', 'pf-hardblock', 'pf-banner', 'pf-thresholds', 'pf-summary', 'pf-list', 'pf-ledger', 'pf-msg']) {
+    for (const id of ['pf-enabled', 'pf-dryrun', 'pf-hardblock', 'pf-adshare', 'pf-banner', 'pf-thresholds', 'pf-summary', 'pf-list', 'pf-ledger', 'pf-msg']) {
       expect(html).toContain('id="' + id + '"');
     }
     const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
@@ -352,6 +352,9 @@ describe('consolePage', () => {
     // and the ledger renders (function in the script bundle).
     expect(html).toContain("pfSetFlag('dryRun'");
     expect(scripts).toContain('function pfRenderLedger(');
+    // The ad-share tuning field is wired (onchange in the view HTML, handler in JS).
+    expect(html).toContain('pfSetAdShare(this.value)');
+    expect(scripts).toContain('function pfSetAdShare(');
     for (const route of ["'/profit'", "'/profit/config'", "'/profit/run'", "'/profit/archive'"]) {
       expect(scripts).toContain(route); // api() prepends /api
     }

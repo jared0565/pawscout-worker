@@ -95,20 +95,30 @@ export async function getProfitConsole(store: TenantStore, cfg: TenantConfig | n
   };
 }
 
-/** Merge the owner's console flips onto the current profit config and persist.
- *  The booleans settable from the console are enabled / dryRun (preview) / hardBlock
- *  (enforce imports); the numeric thresholds are tuned in tenant_config directly
- *  (documented in the view). SAFETY: on the FIRST enable we force dryRun:true so the
- *  agent can only preview until the owner deliberately clears it - going full-auto is
- *  never a side effect of turning the agent on. */
+/** Highest ad share the console will accept. Above ~0.70 the per-unit net stops
+ *  rising with price (the price coefficient in liveNetGbp goes negative), which
+ *  would invert the agent's reprice logic - so cap the settable value well below it. */
+export const MAX_AD_SHARE = 0.6;
+
+/** Merge the owner's console edits onto the current profit config and persist.
+ *  Settable from the console: enabled / dryRun (preview) / hardBlock (enforce imports)
+ *  and adShareOfRevenue (the key tuning lever - the blended fraction of revenue spent
+ *  on ads); the rest of the numeric thresholds are tuned in tenant_config directly.
+ *  SAFETY: on the FIRST enable we force dryRun:true so the agent can only preview
+ *  until the owner deliberately clears it - going full-auto is never a side effect of
+ *  turning the agent on. adShareOfRevenue is clamped to [0, MAX_AD_SHARE]. */
 export async function saveProfitFlags(
   store: TenantStore, cfg: TenantConfig | null,
-  flags: { enabled?: unknown; dryRun?: unknown; hardBlock?: unknown; competitionCheckOnImport?: unknown }
+  flags: { enabled?: unknown; dryRun?: unknown; hardBlock?: unknown; competitionCheckOnImport?: unknown; adShareOfRevenue?: unknown }
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   if (!cfg) return { ok: false, error: 'no config' };
   const base = cfg.profit ?? DEFAULT_PROFIT;
   const bool = (v: unknown, cur: boolean) => (typeof v === 'boolean' ? v : cur);
   const enabling = flags.enabled === true && base.enabled === false; // off -> on this flip
+  // Numeric lever: accept a finite number, clamp to a safe range; ignore anything else.
+  const adShare = typeof flags.adShareOfRevenue === 'number' && Number.isFinite(flags.adShareOfRevenue)
+    ? Math.min(Math.max(flags.adShareOfRevenue, 0), MAX_AD_SHARE)
+    : base.adShareOfRevenue;
   await store.saveProfit({
     ...base,
     enabled: bool(flags.enabled, base.enabled),
@@ -116,6 +126,7 @@ export async function saveProfitFlags(
     dryRun: enabling ? true : bool(flags.dryRun, base.dryRun ?? true),
     hardBlock: bool(flags.hardBlock, base.hardBlock),
     competitionCheckOnImport: bool(flags.competitionCheckOnImport, base.competitionCheckOnImport),
+    adShareOfRevenue: adShare,
   });
   return { ok: true };
 }

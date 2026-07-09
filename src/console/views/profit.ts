@@ -14,6 +14,13 @@ export const profitView = `  <section class="card">
       <label class="pf-switch"><input type="checkbox" id="pf-dryrun" checked onchange="pfSetFlag('dryRun',this.checked)"> <span><strong>Preview only</strong> - show what it WOULD do without touching prices or listings. Uncheck to go full auto.</span></label>
       <label class="pf-switch"><input type="checkbox" id="pf-hardblock" onchange="pfSetFlag('hardBlock',this.checked)"> <span><strong>Enforce at import</strong> - also hard-reject a per-unit money-loser when a NEW product is imported</span></label>
     </div>
+    <div class="pf-tune">
+      <label for="pf-adshare"><strong>Ad share</strong> - the blended % of revenue spent on ads across ALL traffic (organic, repeat and affiliate sales carry no ad cost, so they pull this down). This is the biggest lever on what counts as profitable.</label>
+      <div class="pf-tune-row">
+        <input type="number" id="pf-adshare" min="0" max="60" step="1" onchange="pfSetAdShare(this.value)"> <span class="pf-unit">% of revenue</span>
+        <span id="pf-adshare-hint" class="muted"></span>
+      </div>
+    </div>
     <div id="pf-banner" class="pf-banner" hidden></div>
     <p class="sub" id="pf-thresholds" style="margin:10px 0 0"></p>
     <div class="row" style="margin-top:12px">
@@ -42,6 +49,12 @@ export const profitCss = `
   .pf-switch input{margin-top:3px;flex:0 0 auto}
   .pf-switch span{color:var(--subdued)}
   .pf-switch strong{color:var(--ink)}
+  .pf-tune{margin:14px 0 0;font-size:14px;color:var(--subdued)}
+  .pf-tune label{display:block;margin-bottom:6px}
+  .pf-tune label strong{color:var(--ink)}
+  .pf-tune-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .pf-tune-row input{width:72px;padding:5px 8px;border:1px solid var(--border);border-radius:7px;background:var(--surface);color:var(--ink);font-variant-numeric:tabular-nums}
+  .pf-unit{color:var(--subdued)}
   .pf-banner{margin:12px 0 0;padding:10px 12px;border-radius:9px;font-size:13px;font-weight:600;border:1px solid var(--border)}
   .pf-banner.preview{background:rgba(232,137,12,.12);color:#f0854b;border-color:rgba(232,137,12,.35)}
   .pf-banner.live{background:rgba(63,185,80,.13);color:#3fb950;border-color:rgba(63,185,80,.35)}
