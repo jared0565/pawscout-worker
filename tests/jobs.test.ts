@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
 import { cullStaleProducts, refillCollections, syncStoreInventory, resyncLowStockInventory, seedSemanticLibrary, sellableQty, LOW_STOCK_BAND, LOW_STOCK_RESERVE } from '../src/jobs';
 import { TenantStore } from '../src/tenant-store';
-import { DEFAULT_GATES, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, DEFAULT_INBOX, DEFAULT_SEMANTIC, type TenantConfig } from '../src/types';
+import { DEFAULT_GATES, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, DEFAULT_INBOX, DEFAULT_SEMANTIC, DEFAULT_PROFIT, type TenantConfig } from '../src/types';
 import type { CjClient, CjDetail } from '../src/cj';
 import type { LlmClient } from '../src/llm';
 import type { AdminGraphql } from '../src/shopify-admin';
@@ -384,6 +384,44 @@ describe('syncStoreInventory', () => {
     const calls: Call[] = [];
     await syncStoreInventory(store, cj, shopAdmin(calls, '19.99'), CFG, { pause: async () => {} });
     expect(calls.some((c) => c.query.includes('productVariantsBulkUpdate'))).toBe(false);
+  });
+
+  // Price-authority handoff to the active profit agent.
+  const priceWriteOf = (calls: Call[]) => calls.find((c) =>
+    c.query.includes('productVariantsBulkUpdate') &&
+    Array.isArray((c.variables as { variants?: unknown })?.variants) &&
+    (c.variables!.variants as { price?: string }[])[0]?.price !== undefined
+  );
+
+  it('cedes price authority when the profit agent is LIVE (no price LOWERING; cost still syncs)', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await insertLink('A', 'imported', 5);
+    const cj = {
+      detail: async (pid: string) => detailOf(pid, 40, 10), // $10 -> rule GBP19.99
+      stockByPid: async () => new Map<string, number>()
+    } as unknown as CjClient;
+    const calls: Call[] = [];
+    // live 53.90 is ABOVE the rule 19.99, so the sync would normally LOWER it. With
+    // the agent live (enabled + not dry-run) it owns price, so the sync leaves it be.
+    const cfg = { ...CFG, profit: { ...DEFAULT_PROFIT, enabled: true, dryRun: false } };
+    await syncStoreInventory(store, cj, shopAdmin(calls, '53.90'), cfg, { pause: async () => {} });
+    expect(priceWriteOf(calls)).toBeUndefined();                          // price ceded
+    expect(calls.some((c) => c.query.includes('pawscoutCost'))).toBe(true); // cost still syncs
+  });
+
+  it('KEEPS lowering price while the agent only PREVIEWS (dry-run), and when disabled', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await insertLink('A', 'imported', 5);
+    const cj = {
+      detail: async (pid: string) => detailOf(pid, 40, 10),
+      stockByPid: async () => new Map<string, number>()
+    } as unknown as CjClient;
+    const calls: Call[] = [];
+    const cfg = { ...CFG, profit: { ...DEFAULT_PROFIT, enabled: true, dryRun: true } };
+    await syncStoreInventory(store, cj, shopAdmin(calls, '53.90'), cfg, { pause: async () => {} });
+    const w = priceWriteOf(calls);
+    expect(w).toBeDefined();
+    expect((w!.variables!.variants as { price: string }[])[0].price).toBe('19.99'); // lowered to the rule
   });
 
   it('activates tracking + DENY on untracked variants before setting quantities', async () => {

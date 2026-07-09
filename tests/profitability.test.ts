@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { netAfterAdsGbp, productNetAfterAds, profitVerdict, competitorCacheKey, decideProfitAction, liveNetGbp, round99Down, undercutTarget } from '../src/profitability';
+import { netAfterAdsGbp, productNetAfterAds, competitorCacheKey, decideProfitAction, liveNetGbp, round99Down, undercutTarget } from '../src/profitability';
 import { DEFAULT_PROFIT, type Pricing, type ProfitConfig } from '../src/types';
 
 // Live pricing rule (2.2x, GBP0.78 FX, +2% buffer, GBP30 margin cap).
@@ -64,34 +64,6 @@ describe('productNetAfterAds (worst-variant policy, mirrors productAffiliateElig
 
   it('returns null when no variant has a usable cost', () => {
     expect(productNetAfterAds([{ sellPriceUsd: 0 }], PRICING, 0, DEFAULT_PROFIT)).toBeNull();
-  });
-});
-
-describe('profitVerdict', () => {
-  const healthy = { worstNetGbp: 8, worstNetPct: 0.2, belowFloor: false, fromRetailGbp: 20 };
-
-  it('REJECTS when below the deterministic floor', () => {
-    const v = profitVerdict({ net: { ...healthy, belowFloor: true, worstNetGbp: -3 }, competitor: null, profit: DEFAULT_PROFIT });
-    expect(v.verdict).toBe('reject');
-  });
-
-  it('REJECTS on a HIGH-confidence competitor undercut beyond tolerance', () => {
-    const v = profitVerdict({ net: healthy, competitor: { estimateGbp: 12, confidence: 'high', sources: ['amazon.co.uk'] }, profit: DEFAULT_PROFIT });
-    expect(v.verdict).toBe('reject'); // GBP20 > GBP12 * 1.15
-  });
-
-  it('only REVIEWS on a low-confidence undercut (never hard-blocks a noisy signal)', () => {
-    const v = profitVerdict({ net: healthy, competitor: { estimateGbp: 12, confidence: 'low', sources: [] }, profit: DEFAULT_PROFIT });
-    expect(v.verdict).toBe('review');
-  });
-
-  it('PASSES when priced at/under the competitor', () => {
-    const v = profitVerdict({ net: healthy, competitor: { estimateGbp: 25, confidence: 'high', sources: [] }, profit: DEFAULT_PROFIT });
-    expect(v.verdict).toBe('pass');
-  });
-
-  it('PASSES when there is no competitor signal (no signal is not a failure)', () => {
-    expect(profitVerdict({ net: healthy, competitor: null, profit: DEFAULT_PROFIT }).verdict).toBe('pass');
   });
 });
 

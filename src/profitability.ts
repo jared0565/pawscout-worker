@@ -97,7 +97,6 @@ export function productNetAfterAds(
 // --- Competitor signal (LLM + web search, cached, hermetic-safe) ---
 
 export interface CompetitorSignal { estimateGbp: number; confidence: 'high' | 'medium' | 'low'; sources: string[] }
-export type Verdict = 'pass' | 'review' | 'reject';
 
 export function competitorCacheKey(pid: string): string { return `comp:${pid}`; }
 
@@ -139,28 +138,6 @@ export async function competitorSignal(
   return r.value;
 }
 
-/**
- * Combine the deterministic net + the (soft) competitor signal into a verdict.
- * REJECT only on the deterministic floor breach OR a HIGH-confidence competitor
- * undercut beyond tolerance. A medium/low-confidence undercut is REVIEW. Else PASS.
- */
-export function profitVerdict(arg: { net: ProductNet; competitor: CompetitorSignal | null; profit: ProfitConfig }): { verdict: Verdict; reason: string } {
-  const { net, competitor, profit } = arg;
-  const pct = (x: number) => `${Math.round(x * 100)}%`;
-  if (net.belowFloor) {
-    return { verdict: 'reject', reason: `net after ads GBP ${net.worstNetGbp.toFixed(2)} (${pct(net.worstNetPct)}) below floor GBP ${profit.minNetAfterAdsGbp} / ${pct(profit.minNetMarginPct)}` };
-  }
-  if (competitor && competitor.estimateGbp > 0) {
-    const ceiling = competitor.estimateGbp * (1 + profit.competitionTolerancePct);
-    if (net.fromRetailGbp > ceiling) {
-      if (competitor.confidence === 'high') {
-        return { verdict: 'reject', reason: `priced GBP ${net.fromRetailGbp.toFixed(2)} vs UK street ~GBP ${competitor.estimateGbp.toFixed(2)} (over ${pct(profit.competitionTolerancePct)}), will not sell` };
-      }
-      return { verdict: 'review', reason: `may exceed UK street ~GBP ${competitor.estimateGbp.toFixed(2)} (${competitor.confidence} confidence)` };
-    }
-  }
-  return { verdict: 'pass', reason: `net GBP ${net.worstNetGbp.toFixed(2)} (${pct(net.worstNetPct)})` };
-}
 
 // --- Active agent decision (adjust-or-drop) on LIVE Shopify numbers ---
 
@@ -260,52 +237,6 @@ export function decideProfitAction(input: {
   if (worstNow < 0) return { kind: 'drop', reason: 'loses money at its current price and there is no market data to reprice from' };
   if (worstNow < floor) return { kind: 'flag', reason: `below the GBP ${floor} net target and no market price to safely reprice - your call` };
   return { kind: 'keep', reason: `net >= GBP ${floor}/unit at its current price` };
-}
-
-// --- Audit agent (observe-first; never archives) ---
-
-/**
- * OBSERVE-first audit: walk imported products in a batch, compute the
- * deterministic net + the (cached) competitor signal, and write a verdict per
- * product. NEVER archives - the console surfaces flagged products for the owner
- * to confirm. No-ops when profit is disabled. Rolling: returns `next` for the
- * cron to checkpoint against its deadline.
- */
-export async function auditProfitability(
-  store: TenantStore, llm: LlmClient, cfg: TenantConfig, opts: { offset?: number; limit?: number } = {}
-): Promise<{ scanned: number; flagged: number; total: number; next: number | null }> {
-  const profit = cfg.profit;
-  if (!profit?.enabled) return { scanned: 0, flagged: 0, total: 0, next: null };
-  const offset = Math.max(0, opts.offset ?? 0);
-  // Small batch: each product may make ONE sequential web-search competitor call
-  // (cached after) with no mid-batch deadline. Match the codebase's limit-8 cap
-  // for LLM-bearing sweeps (reconcileHeroImages/Descriptions) - web search is
-  // slower than their vision/text calls, so never exceed it here.
-  const limit = opts.limit ?? 8;
-  const all = (await store.listImportedLinks(500)).filter((l) => l.shopify_product_id);
-  const total = all.length;
-  const links = all.slice(offset, offset + limit);
-  let scanned = 0, flagged = 0;
-  for (const link of links) {
-    scanned++;
-    try {
-      const wh = await store.getWarehouseProduct(link.cj_pid);
-      if (!wh) continue;
-      let detail: CjDetail;
-      try { detail = JSON.parse(wh.detail) as CjDetail; } catch { continue; }
-      const net = productNetAfterAds(detail.variants, cfg.pricing, detail.freightUsd, profit);
-      if (!net) continue;
-      const competitor = await competitorSignal(llm, store, cfg, { pid: link.cj_pid, title: detail.nameEn, ourRetailGbp: net.fromRetailGbp });
-      const { verdict, reason } = profitVerdict({ net, competitor, profit });
-      if (verdict !== 'pass') flagged++;
-      await store.upsertProfitVerdict({
-        cjPid: link.cj_pid, verdict, netGbp: net.worstNetGbp, netPct: net.worstNetPct, ourRetailGbp: net.fromRetailGbp,
-        competitorGbp: competitor?.estimateGbp ?? null, competitorConfidence: competitor?.confidence ?? null,
-        competitorSources: competitor?.sources ?? null, reason,
-      });
-    } catch (e) { console.warn(`profit audit failed for ${link.cj_pid}: ${(e as Error).message}`); }
-  }
-  return { scanned, flagged, total, next: offset + limit < total ? offset + limit : null };
 }
 
 // --- Active agent (adjust-or-drop on LIVE Shopify numbers) ---

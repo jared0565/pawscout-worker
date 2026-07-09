@@ -41,11 +41,11 @@ import { LlmClient, classifyKeyword, curateProduct, pickHeroImage, rewriteDescri
 import { buildPreview, getDetailPreferWarehouse, curateDetailImages, confirmAndImport, reconcileAddonVisibility, reconcileHeroImages, reconcileDescriptions, reconcileCategories } from './proxy/import';
 import { makeAdminGraphql } from './shopify-admin';
 import { getProfitConsole, saveProfitFlags, archiveProfitProduct } from './profit-console';
-import { auditProfitability } from './profitability';
+import { runProfitAgent } from './profitability';
 import { readDeliveryConfig, syncSignatureProfiles } from './shipping/delivery-profile';
 import { resolveShipConfig } from './shipping/ship-config';
 import { resolveLogistics } from './logistics';
-import { runDailyMaintenance, resumeDailyMaintenance, runMarketVisibilityReconcile, syncStoreInventory, refillCollections } from './jobs';
+import { runDailyMaintenance, resumeDailyMaintenance, runMarketVisibilityReconcile, runProfitAgentSweep, syncStoreInventory, refillCollections } from './jobs';
 import { debrandCatalog } from './catalog-debrand';
 import { runOrderPipeline, runOrderPipelineForShop } from './fulfil-run';
 import { parseOrderWebhook, validateOrder, FULFIL_GRACE_MINUTES } from './fulfil';
@@ -460,14 +460,18 @@ app.post('/api/profit/run', async (c) => {
   const s = await shopOf(c); if (typeof s !== 'string') return s;
   const store = new TenantStore(c.env.DB, s);
   const cfg = await store.getConfig();
-  if (!cfg?.profit?.enabled) return c.json({ ok: false, error: 'Observe is off' });
+  if (!cfg?.profit?.enabled) return c.json({ ok: false, error: 'The profitability agent is off' });
+  const admin = await adminForShop(c.env, store);
+  if (!admin) return c.json({ ok: false, error: 'Shopify is not connected' });
   let body: { offset?: unknown } = {};
   try { body = await c.req.json(); } catch {}
   const offset = Number.isFinite(Number(body.offset)) ? Math.max(0, Math.floor(Number(body.offset))) : 0;
   const llm = new LlmClient({ openrouter: c.env.OPENROUTER_API_KEY, openai: c.env.OPENAI_API_KEY });
-  // Small batch: each product may make ONE sequential web-search call (cached
-  // after) within this single request. The console loops with the next cursor.
-  const r = await auditProfitability(store, llm, cfg, { offset, limit: 8 });
+  // One batch per request (each product may make one cached web-search call). The
+  // console loops with the returned next cursor. Honors dryRun from cfg.profit -
+  // dry-run records what it WOULD do; live executes reprices/drops. Same runner as
+  // the 15-min cron, so "Run now" is just the sweep on demand.
+  const r = await runProfitAgent(store, admin, llm, cfg, { offset, limit: 8 });
   return c.json({ ok: true, ...r, offset });
 });
 app.post('/api/profit/archive', async (c) => {
@@ -1498,7 +1502,7 @@ const worker: ExportedHandler<Env> = {
     ctx.waitUntil(
       controller.cron === DAILY_CRON
         ? runDailyMaintenance(env)
-        : Promise.all([runOrderPipeline(env), runInboxClassifySweep(env), runMarketVisibilityReconcile(env), resumeDailyMaintenance(env)]).then(() => undefined)
+        : Promise.all([runOrderPipeline(env), runInboxClassifySweep(env), runMarketVisibilityReconcile(env), runProfitAgentSweep(env), resumeDailyMaintenance(env)]).then(() => undefined)
     );
   },
   email: (message, env, ctx) => handleInboundEmail(message, env, ctx)

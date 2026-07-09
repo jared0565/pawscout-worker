@@ -39,7 +39,7 @@ export const MARKET_SEED_LANES: {
 ];
 import { getExpansions, seedTerm } from './semantic/library';
 import { confirmAndImport, getCachedDetail, resolveCategory, reconcileAddonVisibility, reconcileHeroImages, reconcileDescriptions, reconcileCategories, setProductTags, ADDON_CATEGORY } from './proxy/import';
-import { auditProfitability } from './profitability';
+import { runProfitAgent } from './profitability';
 import { AFFILIATE_ELIGIBLE_TAG, productAffiliateEligible, ensureAffiliateCollection } from './affiliate';
 import { sendReorderReminders } from './retention';
 import { enableTracking, getPrimaryLocationId, productInventoryItems, setInventoryQuantities, setSupplierMetafields, updateVariantPrices, updateVariantCosts, MAX_TRACKED_QTY } from './proxy/inventory';
@@ -205,6 +205,13 @@ export async function syncStoreInventory(
   const maxProducts = opts.maxProducts ?? 60;
   const offset = opts.offset ?? 0;
   const pause = opts.pause ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  // Price-authority handoff: when the active profitability agent is LIVE (enabled
+  // AND not dry-run) IT owns shelf prices - it raises above the rule price to just
+  // under a higher competitor. This nightly sync must then NOT drag those back down
+  // to the (lower) rule price, or the two crons sawtooth the price against each
+  // other. Cost-per-item and stock still sync every night regardless; only the
+  // price-LOWERING is ceded. In dry-run or when disabled, the sync keeps full control.
+  const profitOwnsPrice = cfg.profit?.enabled === true && cfg.profit?.dryRun === false;
   const locationId = await getPrimaryLocationId(admin);
   if (!locationId) {
     console.warn('inventory sync skipped: no primary location');
@@ -312,7 +319,7 @@ export async function syncStoreInventory(
       // frozen-catalogue reprice drop overpriced items without bumping the freight-
       // cratered cheap CN items to their (uncompetitive) rule price - those need the
       // decoupled-shipping model, not a hike. Increases are left for owner review.
-      const priceUpdates = variants.flatMap((v) => {
+      const priceUpdates = profitOwnsPrice ? [] : variants.flatMap((v) => {
         const cost = skuToCost.get(v.sku);
         if (cost === undefined || cost <= 0) return [];
         const expected = retailPriceGbp(cost, cfg.pricing, freightUsd).toFixed(2);
@@ -1126,6 +1133,38 @@ export async function runMarketVisibilityReconcile(env: Env): Promise<void> {
   }
 }
 
+/** Checkpoint key for the profit agent's rolling catalog cursor (per shop). */
+export const PROFIT_AGENT_OFFSET_KEY = 'job:profit-agent-offset';
+
+/**
+ * 15-min cron lane for the ACTIVE profitability agent. Rolling batches of 8 across
+ * the day so the whole catalog is re-evaluated CONTINUOUSLY (not a nightly pass):
+ * read each shop's saved offset, run one batch, advance the cursor, wrap to 0 at the
+ * end of the catalog. Fully DORMANT unless cfg.profit.enabled - a disabled shop
+ * costs one config read and never builds an admin client or spends a token. In
+ * dry-run the agent records what it WOULD do; only live mode touches prices/listings.
+ */
+export async function runProfitAgentSweep(env: Env): Promise<void> {
+  const vault = await Vault.fromMasterKey(env.PAWSCOUT_MASTER_KEY);
+  const llm = new LlmClient({ openrouter: env.OPENROUTER_API_KEY, openai: env.OPENAI_API_KEY });
+  for (const shop of await listActiveShops(env.DB)) {
+    try {
+      const store = new TenantStore(env.DB, shop);
+      const tenant = await store.getTenant();
+      const cfg = await store.getConfig();
+      if (!tenant?.access_token_enc || !cfg?.profit?.enabled) continue; // dormant: no admin, no spend
+      const accessToken = await vault.open(tenant.dek_wrapped, tenant.access_token_enc);
+      const admin = makeAdminGraphql(shop, accessToken);
+      const saved = Number(await readJobCheckpoint(env.DB, shop, PROFIT_AGENT_OFFSET_KEY));
+      const offset = Number.isFinite(saved) && saved > 0 ? saved : 0;
+      const r = await runProfitAgent(store, admin, llm, cfg, { offset, limit: 8 });
+      // Advance the rolling cursor; r.next is null at the catalog end -> wrap to 0.
+      await writeJobCheckpoint(env.DB, shop, PROFIT_AGENT_OFFSET_KEY, String(r.next ?? 0), JOB_STAMP_TTL_DAYS * 86400_000);
+      if (r.acted) console.log(`profit agent (${r.dryRun ? 'dry-run' : 'live'}) ${shop}: ${r.repriced} repriced, ${r.dropped} dropped, ${r.flagged} flagged of ${r.scanned}`);
+    } catch (e) { console.warn(`profit agent sweep failed for ${shop}: ${(e as Error).message}`); }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Resumable daily maintenance - stage-cursor continuation.
 //
@@ -1258,22 +1297,10 @@ export const DAILY_SHOP_STAGES: DailyStage[] = [
     }
   })),
   { name: 'store-inventory', maxMs: 10 * MIN_MS, run: async (ctx) => { await syncStoreInventory(ctx.store, ctx.cj!, ctx.admin, ctx.cfg); } },
-  // Profitability audit (OBSERVE-first; DORMANT unless cfg.profit.enabled). Walks
-  // the catalog in batches, writing a net-after-ads + competition verdict per
-  // product for the console's Profitability view. Never archives. needsCj:false -
-  // it reads the stored warehouse detail + (cached) LLM competitor signal, no CJ call.
-  {
-    name: 'profit-audit', maxMs: 6 * MIN_MS, needsCj: false,
-    async run(ctx, offset, deadline) {
-      if (!ctx.cfg.profit?.enabled) return; // dormant: no spend, no work
-      let off: number | null = offset;
-      while (off !== null) {
-        const r = await auditProfitability(ctx.store, ctx.llm, ctx.cfg, { offset: off, limit: 8 });
-        off = r.next;
-        if (off !== null && Date.now() > deadline) return off; // checkpoint mid-catalog
-      }
-    },
-  },
+  // NOTE: the profitability agent is NOT a nightly stage. It runs CONTINUOUSLY on
+  // the 15-min cron (runProfitAgentSweep) so the catalog is re-evaluated through the
+  // day, and it is the sole writer of product_profit (the old observe-first
+  // profit-audit stage was retired 2026-07-09 - two writers clobbered one row).
   // Promote-from-warehouse (floor 8, target 12).
   { name: 'refill', maxMs: 8 * MIN_MS, run: async (ctx) => { await refillCollections(ctx.store, ctx.cj!, ctx.admin, ctx.cfg, { curate: ctx.curate, pickHero: ctx.pickHero }); } },
   // Flip ACTIVE seed drafts to imported.
