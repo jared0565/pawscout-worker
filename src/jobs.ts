@@ -1268,7 +1268,7 @@ export const DAILY_SHOP_STAGES: DailyStage[] = [
       if (!ctx.cfg.profit?.enabled) return; // dormant: no spend, no work
       let off: number | null = offset;
       while (off !== null) {
-        const r = await auditProfitability(ctx.store, ctx.llm, ctx.cfg, { offset: off, limit: 20 });
+        const r = await auditProfitability(ctx.store, ctx.llm, ctx.cfg, { offset: off, limit: 8 });
         off = r.next;
         if (off !== null && Date.now() > deadline) return off; // checkpoint mid-catalog
       }

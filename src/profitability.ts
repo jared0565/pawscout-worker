@@ -160,7 +160,11 @@ export async function auditProfitability(
   const profit = cfg.profit;
   if (!profit?.enabled) return { scanned: 0, flagged: 0, total: 0, next: null };
   const offset = Math.max(0, opts.offset ?? 0);
-  const limit = opts.limit ?? 20;
+  // Small batch: each product may make ONE sequential web-search competitor call
+  // (cached after) with no mid-batch deadline. Match the codebase's limit-8 cap
+  // for LLM-bearing sweeps (reconcileHeroImages/Descriptions) - web search is
+  // slower than their vision/text calls, so never exceed it here.
+  const limit = opts.limit ?? 8;
   const all = (await store.listImportedLinks(500)).filter((l) => l.shopify_product_id);
   const total = all.length;
   const links = all.slice(offset, offset + limit);

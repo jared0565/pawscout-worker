@@ -465,7 +465,9 @@ app.post('/api/profit/run', async (c) => {
   try { body = await c.req.json(); } catch {}
   const offset = Number.isFinite(Number(body.offset)) ? Math.max(0, Math.floor(Number(body.offset))) : 0;
   const llm = new LlmClient({ openrouter: c.env.OPENROUTER_API_KEY, openai: c.env.OPENAI_API_KEY });
-  const r = await auditProfitability(store, llm, cfg, { offset, limit: 15 });
+  // Small batch: each product may make ONE sequential web-search call (cached
+  // after) within this single request. The console loops with the next cursor.
+  const r = await auditProfitability(store, llm, cfg, { offset, limit: 8 });
   return c.json({ ok: true, ...r, offset });
 });
 app.post('/api/profit/archive', async (c) => {
