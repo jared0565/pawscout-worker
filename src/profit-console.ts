@@ -12,6 +12,7 @@ import { DEFAULT_PROFIT } from './types';
 
 export interface ProfitConsoleRow {
   cjPid: string;
+  sku: string | null;            // CJ variant SKU (first variant) for the review table
   handle: string | null;
   productId: string | null;
   linkState: string | null;      // imported | draft | archived | ...
@@ -81,7 +82,7 @@ export async function getProfitConsole(store: TenantStore, cfg: TenantConfig | n
     },
     summary,
     rows: rows.map((r) => ({
-      cjPid: r.cj_pid, handle: r.handle ?? null, productId: r.shopify_product_id ?? null, linkState: r.link_state ?? null,
+      cjPid: r.cj_pid, sku: r.sku ?? null, handle: r.handle ?? null, productId: r.shopify_product_id ?? null, linkState: r.link_state ?? null,
       verdict: r.verdict, netGbp: r.net_gbp, netPct: r.net_pct, ourRetailGbp: r.our_retail_gbp,
       competitorGbp: r.competitor_gbp, competitorConfidence: r.competitor_confidence, sources: parseSources(r.competitor_sources),
       reason: r.reason, checkedAt: r.checked_at,

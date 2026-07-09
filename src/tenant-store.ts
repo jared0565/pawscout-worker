@@ -69,6 +69,9 @@ export interface ProfitVerdictRow {
   handle?: string | null;
   shopify_product_id?: string | null;
   link_state?: string | null;
+  // Joined from warehouse_products.detail (listProfitVerdicts only): the CJ
+  // variant SKU (first variant) so the console table can show it for review.
+  sku?: string | null;
 }
 
 /** One row of the append-only profit_actions ledger (newest first via listProfitActions). */
@@ -332,9 +335,11 @@ export class TenantStore {
       .prepare(
         `SELECT pp.cj_pid, pp.verdict, pp.net_gbp, pp.net_pct, pp.our_retail_gbp, pp.competitor_gbp, pp.competitor_confidence, pp.competitor_sources, pp.reason, pp.checked_at,
                 pp.action AS action, pp.from_gbp AS from_gbp, pp.to_gbp AS to_gbp, pp.acted_at AS acted_at, pp.dry_run AS dry_run,
-                pl.handle AS handle, pl.shopify_product_id AS shopify_product_id, pl.state AS link_state
+                pl.handle AS handle, pl.shopify_product_id AS shopify_product_id, pl.state AS link_state,
+                json_extract(wp.detail, '$.variants[0].sku') AS sku
          FROM product_profit pp
          LEFT JOIN product_links pl ON pl.shop = pp.shop AND pl.cj_pid = pp.cj_pid
+         LEFT JOIN warehouse_products wp ON wp.shop = pp.shop AND wp.cj_pid = pp.cj_pid
          WHERE pp.shop = ?1 AND (pl.state IS NULL OR pl.state <> 'archived')
          ORDER BY CASE pp.verdict WHEN 'reject' THEN 0 WHEN 'review' THEN 1 ELSE 2 END, pp.net_gbp ASC LIMIT ?2`
       )

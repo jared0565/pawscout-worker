@@ -32,7 +32,7 @@ export const profitView = `  <section class="card">
 
   <section class="card">
     <h2>Products</h2>
-    <p class="sub" style="margin:0 0 10px">Worst first. Each row shows the agent's latest decision and the market it was judged against. <strong>Dropped</strong> = archived, cannot profit; <strong>Repriced</strong> = moved to just under the market; <strong>Flagged</strong> = your call (soft market signal). Archiving from here is a manual one-click fallback and asks to confirm; it never deletes.</p>
+    <p class="sub" style="margin:0 0 10px">Worst first. Each row is the agent's latest decision with the SKU, the market it was judged against, when it was processed, and a direct link to open the product in CJ for review. <strong>Dropped</strong> = archived, cannot profit; <strong>Repriced</strong> = moved to just under the market; <strong>Flagged</strong> = your call (soft market signal). Archiving from here is a manual one-click fallback and asks to confirm; it never deletes.</p>
     <div id="pf-list">Turn on the agent and run it to see decisions.</div>
   </section>
 
@@ -77,4 +77,23 @@ export const profitCss = `
   .pf-led{padding:8px 4px;border-bottom:1px solid var(--border);font-size:13px;color:var(--subdued);display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}
   .pf-led .pf-when{color:var(--subdued);font-variant-numeric:tabular-nums;white-space:nowrap}
   .pf-led .pf-what{color:var(--ink);font-weight:600}
+  /* --- Products review table (mirrors the Partners table pattern) --- */
+  .pf-tablewrap{overflow-x:auto;margin-top:4px}
+  .pf-table{width:100%;border-collapse:collapse;font-size:13px}
+  .pf-table th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--subdued);font-weight:650;padding:8px 10px 6px;border-bottom:1px solid var(--border);white-space:nowrap}
+  .pf-table td{padding:9px 10px;border-bottom:1px solid var(--border);vertical-align:top;white-space:nowrap}
+  .pf-table tbody tr:last-child td{border-bottom:none}
+  .pf-table th.pf-num,.pf-table td.pf-num{text-align:right;font-variant-numeric:tabular-nums}
+  .pf-prod{white-space:normal;min-width:220px;max-width:340px}
+  .pf-pname{font-weight:600;color:var(--ink);word-break:break-word}
+  .pf-why{margin-top:3px;color:var(--subdued);font-size:12px;line-height:1.35;white-space:normal}
+  .pf-sku{font-family:ui-monospace,monospace;font-size:12px;color:var(--ink)}
+  .pf-when-c{color:var(--subdued);font-size:12px}
+  .pf-cj{color:#58a6ff;text-decoration:none;font-weight:600}
+  .pf-cj:hover{text-decoration:underline}
+  .pf-move{color:var(--subdued);font-variant-numeric:tabular-nums}
+  .pf-mkt{color:var(--subdued)}
+  .pf-nneg{color:#f85149}
+  .pf-npos{color:var(--ink)}
+  .pf-none{color:var(--subdued)}
 `;
