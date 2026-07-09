@@ -2,8 +2,10 @@
 
 **Supersedes the action model in** `2026-07-09-profitability-engine-design.md` (which was observe-first / owner-confirm). Owner redefined the requirement (2026-07-09): a **continuous** agent that acts on its own — research the market, then **adjust the price if we can still profit, else drop; a clear loss is dropped immediately, no owner decision.** Owner approved: **full auto** (log every action for review/undo); **no market data => cost-check only** (drop only if it loses money at its own price, never drop for competition without evidence).
 
-## The owner's algorithm (verbatim intent)
-inventory -> research price vs other sellers (LLM + web search) -> *can we set a competitive price and still be profitable?* -> **Yes: adjust (lower to it). No: drop.** Clear loss (loses money even at its current shelf price) -> **immediate auto-drop.**
+## The owner's governing rule (definitive, 2026-07-09)
+> **Net profit must always be >= GBP2 per unit, no ceiling.** Price each product as HIGH as possible while staying **strictly below the competitor's DELIVERED price** (their item price + their shipping - only membership tiers like Amazon Prime get free delivery, so a normal buyer pays postage and our free UK delivery is a real edge). So the agent **auto-RAISES** as readily as it lowers. If it **cannot clear GBP2 even at the best sub-market price -> drop.** Clear loss -> drop. Act on **defensible values only** (real CJ cost, real competitor delivered price, our real price); no approval needed, just keep the owner informed. **The shop must make profit and never lose money.**
+
+This supersedes the earlier "never auto-raise / lower-only" model.
 
 ## Data basis (traced, not assumed)
 Value each product on its **ACTUAL live Shopify numbers**, not a rule price or admission-time cost:
@@ -14,19 +16,19 @@ Value each product on its **ACTUAL live Shopify numbers**, not a rule price or a
 
 Caveat (honest): `cost` freshness is bounded by how often the inventory sync touches each product (it writes `unitCost`). Confirming/deepening that coverage is a related follow-up, tracked separately.
 
-## Decision tree (pure function `decideProfitAction`)
-Fee stack from `ProfitConfig` (adShareOfRevenue, paymentsFeeRate, refundReserveRate, vatRate, minNetAfterAdsGbp = floor, competitionTolerancePct). `liveNet(price,cost) = price/(1+vat) - cost - adShare*price - payments*price - refund*(price/(1+vat))`. A product is judged on its **worst sellable variant** (mirrors affiliate eligibility). Competitor counts only at **high/medium** confidence; low confidence is treated as no data.
+## The full cost stack (what "net" weighs)
+`liveNet(price,cost) = price/(1+vat) - cost - adShare*price - payments*price - refund*(price/(1+vat)) - affiliate - discount`, where affiliate = `affiliateSalesShare*(commission*exVat + platformFee*price)` and discount = `expectedDiscountRate*price`. Inputs: `price` = live Shopify shelf price, `cost` = live Shopify landed cost (both real). Defaults: adShare 0.33 (worst-case, tune to real blend), payments 2.5%, refunds 3%, VAT 20%, affiliate 15% share x (8%+2%), discount 5% blended, **floor = GBP2**. Open item: a fixed-overhead term (Shopify/apps ~2%) if the owner wants it.
 
-1. **No live price/cost** for any variant -> `keep` (never act blind).
-2. **Loses money at the current shelf price** (worst variant `liveNet < floor`): lowering can't fix it (less revenue = worse).
-   - If a high/medium competitor price is **above** our from-price AND the product would clear the floor at that market price -> `flag` ("only viable at a higher price ~£X; a price increase is your call") — because the system never auto-RAISES a customer price.
-   - Else -> `drop` ("loses £X/unit at its current price; cannot be fixed by lowering"). This is the **clear-loss auto-drop**.
-3. **Profitable now, but priced above the market** (from-price > competitor * (1+tolerance), high/medium confidence):
-   - Scale all variant prices down so the from-price meets the market. If the worst variant still clears the floor at those prices -> `reprice` (lower to compete, still profitable). New prices round DOWN to a .99 ending so we never land above market.
-   - Else -> `drop` ("to compete we'd need ~£X, below our profitable floor").
-4. **Profitable and at/below market (or no usable competitor)** -> `keep`.
+## Decision tree (pure function `decideProfitAction`, judged on the WORST sellable variant)
+Competitor counts only at **high/medium** confidence (low = no data).
+1. **No live price/cost** -> `keep` (never act blind).
+2. **Defensible competitor delivered price exists:** target = `round99Down(competitorDelivered)` (a .99 strictly below it). Scale all variants so the from-price hits target (RAISES if we are below it, LOWERS if above).
+   - Worst variant still `>= GBP2` at target -> `reprice` all variants to target (skip if the from-price move is under a 50p deadband -> `keep`). Direction (raise/lower) is logged.
+   - Worst variant `< GBP2` at the best sub-market price -> `drop` ("cannot clear GBP2 even at the best price below the market").
+3. **No defensible market price:** cannot safely reprice (never guess a price).
+   - Loses money at current price -> `drop`. Positive but `< GBP2` -> `flag` (owner's call). `>= GBP2` -> `keep`.
 
-Only ever LOWERS a price (respects the standing no-auto-raise rule). The raise-to-save case is surfaced as `flag`, not executed.
+Prices only ever land on a `.99` at or below the competitor's delivered price (never above the market). Auto-raise and auto-drop both run without approval on defensible data; every action is logged.
 
 ## Architecture
 - **`decideProfitAction(...)`** — pure, deterministic, fully unit-tested (this doc's first deliverable).

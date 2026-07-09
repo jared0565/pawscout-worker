@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { netAfterAdsGbp, productNetAfterAds, profitVerdict, competitorCacheKey, decideProfitAction, liveNetGbp, round99Down } from '../src/profitability';
+import { netAfterAdsGbp, productNetAfterAds, profitVerdict, competitorCacheKey, decideProfitAction, liveNetGbp, round99Down, undercutTarget } from '../src/profitability';
 import { DEFAULT_PROFIT, type Pricing, type ProfitConfig } from '../src/types';
 
 // Live pricing rule (2.2x, GBP0.78 FX, +2% buffer, GBP30 margin cap).
@@ -18,7 +18,8 @@ describe('netAfterAdsGbp', () => {
     const exVat = n.retailGbp / (1 + p.vatRate);
     const affiliate = p.affiliateSalesShare * (p.affiliateCommissionRate * exVat + p.affiliatePlatformFeeRate * n.retailGbp);
     const discount = p.expectedDiscountRate * n.retailGbp;
-    const expected = exVat - n.cogsGbp - p.adShareOfRevenue * n.retailGbp - p.paymentsFeeRate * n.retailGbp - p.refundReserveRate * exVat - affiliate - discount;
+    const overhead = p.fixedOverheadRate * n.retailGbp;
+    const expected = exVat - n.cogsGbp - p.adShareOfRevenue * n.retailGbp - p.paymentsFeeRate * n.retailGbp - p.refundReserveRate * exVat - affiliate - discount - overhead;
     expect(n.netGbp).toBeCloseTo(expected, 1); // within a penny of the raw formula (components are rounded)
   });
 
@@ -142,8 +143,9 @@ describe('decideProfitAction (owner rule: net >= GBP2, price just under the comp
     expect(a.kind).toBe('drop');
   });
 
-  it('KEEPS (deadband) when already at the best price just under the market', () => {
-    const a = decideProfitAction({ variants: [{ variantId: 'v', priceGbp: 24.99, costGbp: 5 }], competitor: hi(25), profit: P });
+  it('KEEPS (deadband) when already at the undercut target below the market', () => {
+    // Undercut target for a GBP25 competitor is ~GBP23.99, so a product already there stays put.
+    const a = decideProfitAction({ variants: [{ variantId: 'v', priceGbp: 23.99, costGbp: 5 }], competitor: hi(25), profit: P });
     expect(a.kind).toBe('keep');
   });
 
@@ -171,6 +173,13 @@ describe('decideProfitAction (owner rule: net >= GBP2, price just under the comp
     const exVat = 20 / 1.2;
     const affiliate = P.affiliateSalesShare * (P.affiliateCommissionRate * exVat + P.affiliatePlatformFeeRate * 20);
     const discount = P.expectedDiscountRate * 20;
-    expect(n).toBeCloseTo(exVat - 8 - P.adShareOfRevenue * 20 - P.paymentsFeeRate * 20 - P.refundReserveRate * exVat - affiliate - discount, 6);
+    const overhead = P.fixedOverheadRate * 20;
+    expect(n).toBeCloseTo(exVat - 8 - P.adShareOfRevenue * 20 - P.paymentsFeeRate * 20 - P.refundReserveRate * exVat - affiliate - discount - overhead, 6);
+  });
+
+  it('undercutTarget lands meaningfully below the competitor, on a .99 (GBP25 -> GBP23.99 at 5%)', () => {
+    expect(undercutTarget(25, 0.05)).toBe(23.99);
+    expect(undercutTarget(20, 0.05)).toBe(18.99);
+    expect(undercutTarget(25, 0.05)).toBeLessThan(25); // always strictly under the market
   });
 });

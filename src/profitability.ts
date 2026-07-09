@@ -50,7 +50,8 @@ export function netAfterAdsGbp(landedUsd: number, freightUsd: number, pricing: P
   const refundReserve = round2(profit.refundReserveRate * exVatRevenue);
   const affiliateFee = round2(affiliateCostGbp(retailGbp, exVatRevenue, profit));
   const discountCost = round2(profit.expectedDiscountRate * retailGbp);
-  const netGbp = round2(exVatRevenue - cogsGbp - adCostGbp - paymentsFee - refundReserve - affiliateFee - discountCost);
+  const overhead = round2(profit.fixedOverheadRate * retailGbp);
+  const netGbp = round2(exVatRevenue - cogsGbp - adCostGbp - paymentsFee - refundReserve - affiliateFee - discountCost - overhead);
   return {
     retailGbp,
     cogsGbp,
@@ -173,7 +174,7 @@ export type ProfitAction =
 /** Per-unit net after ads at a GIVEN live price + cost (no rule price - real numbers). */
 export function liveNetGbp(priceGbp: number, costGbp: number, p: ProfitConfig): number {
   const exVat = priceGbp / (1 + p.vatRate);
-  return exVat - costGbp - p.adShareOfRevenue * priceGbp - p.paymentsFeeRate * priceGbp - p.refundReserveRate * exVat - affiliateCostGbp(priceGbp, exVat, p) - p.expectedDiscountRate * priceGbp;
+  return exVat - costGbp - p.adShareOfRevenue * priceGbp - p.paymentsFeeRate * priceGbp - p.refundReserveRate * exVat - affiliateCostGbp(priceGbp, exVat, p) - p.expectedDiscountRate * priceGbp - p.fixedOverheadRate * priceGbp;
 }
 
 /** Nearest .99 ending at or BELOW x, so a competitive reprice never lands above the market. */
@@ -181,6 +182,20 @@ export function round99Down(x: number): number {
   const up = Math.ceil(x) - 0.01;
   const cand = up <= x + 1e-9 ? up : Math.floor(x) - 0.01;
   return Math.max(0.99, Math.round(cand * 100) / 100);
+}
+
+/**
+ * The price to aim for below a competitor's DELIVERED price: undercut by
+ * `undercutPct` (so we win as the cheaper newcomer, not by a penny), rounded to
+ * the nearest .99, and CLAMPED to always sit strictly below the competitor.
+ * e.g. GBP25 competitor at 5% -> GBP23.99.
+ */
+export function undercutTarget(competitorGbp: number, undercutPct: number): number {
+  const raw = competitorGbp * (1 - Math.max(0, undercutPct));
+  let t = Math.round((raw - 0.99) ) + 0.99;      // nearest .99 to the undercut price
+  t = Math.round(t * 100) / 100;
+  if (t >= competitorGbp) t = round99Down(competitorGbp); // never at/above the market
+  return Math.max(0.99, t);
 }
 
 const REPRICE_DEADBAND_GBP = 0.5; // ignore churny sub-50p moves on the from-price
@@ -214,10 +229,10 @@ export function decideProfitAction(input: {
   const worstAt = (scale: number) => Math.min(...sellable.map((v) => liveNetGbp(v.priceGbp * scale, v.costGbp, p)));
 
   if (comp) {
-    // Price as high as possible while staying strictly UNDER the competitor's
-    // delivered price. Scale the whole product so the from-price hits that target
-    // (raises when we are below the market, lowers when above).
-    const target = round99Down(comp.estimateGbp);
+    // Undercut the competitor's delivered price by undercutPct (win as the cheaper
+    // newcomer, not by a penny). Scale the whole product so the from-price hits
+    // that target (raises when we are below the market, lowers when above).
+    const target = undercutTarget(comp.estimateGbp, p.undercutPct);
     const scale = target / fromPrice;
     if (worstAt(scale) >= floor) {
       const updates = sellable.map((v) => ({ variantId: v.variantId, toGbp: round99Down(v.priceGbp * scale) }));

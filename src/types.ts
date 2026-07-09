@@ -217,6 +217,13 @@ export interface ProfitConfig {
   // (WELCOME10, event vouchers) reduce the price paid by this fraction across all
   // sales. Tunable to the store's promo calendar.
   expectedDiscountRate: number;      // average discount as a fraction of revenue (e.g. 0.05)
+  // Fixed overhead (Shopify plan, apps, domain, email) allocated per sale as a
+  // fraction of revenue. Owner rule: EVERY expense that affects net profit counts.
+  fixedOverheadRate: number;         // fixed overhead as a fraction of revenue (e.g. 0.02)
+  // How far BELOW the competitor's delivered price to aim when repricing, so we
+  // win as the cheaper newcomer (not just a penny under). e.g. 0.05 => a GBP25
+  // competitor targets ~GBP23.99. Applied then rounded to a .99 strictly below market.
+  undercutPct: number;
   // Affiliate commission cost. Commission is only paid on the SHARE of sales that
   // come through an affiliate link, so it is a blended expense like ad spend:
   // affiliateSalesShare x (commission on ex-VAT revenue + platform fee on gross).
@@ -238,7 +245,7 @@ export const DEFAULT_PROFIT: ProfitConfig = {
   enabled: false, hardBlock: false, competitionCheckOnImport: false,
   adShareOfRevenue: 0.33, paymentsFeeRate: 0.025, refundReserveRate: 0.03, vatRate: 0.20,
   minNetAfterAdsGbp: 2, minNetMarginPct: 0, competitionTolerancePct: 0.15, cacheTtlDays: 14,
-  expectedDiscountRate: 0.05,
+  expectedDiscountRate: 0.05, fixedOverheadRate: 0.02, undercutPct: 0.05,
   affiliateSalesShare: 0.15, affiliateCommissionRate: 0.08, affiliatePlatformFeeRate: 0.02,
 };
 // fulfilment mode 'manual' by default - Stage B never spends until set to 'pawscout'.
