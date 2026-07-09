@@ -10,6 +10,7 @@ Before non-trivial code changes:
 2. Run `graphite context <target-file>` before editing important files.
 3. Run `graphite impact <target-file>` before changing shared logic, APIs, data flow, auth, persistence, or deployment behavior.
 4. Use `graphite query "stats"` when project structure is unclear.
+5. To trace data flow, use the call-graph verbs instead of grepping: `graphite query "callers <fn>"` (who calls it), `graphite query "calls <fn>"` (what it calls), `graphite query "reaches <a> -> <b>"` (is there a call path). These resolve at function granularity, cross-file. Caveat: static analysis only - dynamic dispatch (e.g. calling `x.run()` on an array of objects) is not linked, so `reaches` can return a false "no path" across such hops.
 
 After edits:
 

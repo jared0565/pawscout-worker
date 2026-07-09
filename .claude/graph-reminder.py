@@ -14,8 +14,10 @@ REMINDER = (
     "fresh. Before editing any SHARED or core source file - a function with many "
     "callers, an API, auth, persistence, or data flow - FIRST run "
     "`python -m graphite context <file>` and `python -m graphite impact <file>`, then "
-    "read the call sites it names. Grep is not a substitute (GRAPHITE.md: impact before "
-    "shared-logic changes, context before editing important files). "
+    "read the call sites it names. For 'who calls X / what does X call / does A reach B', use "
+    "`python -m graphite query \"callers <fn>\"`, `query \"calls <fn>\"`, `query \"reaches <a> -> <b>\"` "
+    "(function-level, cross-file) - do NOT grep for callers. Grep is not a substitute (GRAPHITE.md: "
+    "impact before shared-logic changes, context before editing important files). "
     "graphite = `python -m graphite` (CLI not on PATH)."
 )
 
