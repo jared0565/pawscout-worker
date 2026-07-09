@@ -139,9 +139,28 @@ describe('decideProfitAction (owner rule: net >= GBP2, price just under the comp
     if (a.kind === 'reprice') { expect(a.updates[0].toGbp).toBeLessThan(30); expect(a.updates[0].toGbp).toBeLessThan(20); }
   });
 
-  it('DROPS when it cannot clear GBP2 net even at the best price below a HIGH-confidence market', () => {
+  it('DROPS on a clear LOSS: even priced just under a HIGH-confidence market it sells below all-in cost', () => {
+    // price 30 / cost 12 vs a GBP15 market: the best price we can hold under the
+    // market (~GBP13.99) nets NEGATIVE (revenue ex-VAT < cost), so to compete we
+    // would have to sell at a loss. A high-confidence market makes that a defensible drop.
     const a = decideProfitAction({ variants: [{ variantId: 'v', priceGbp: 30, costGbp: 12 }], competitor: hi(15), profit: P });
     expect(a.kind).toBe('drop');
+  });
+
+  it('FLAGS (never drops) a money-maker that is profitable-but-under-floor beneath a HIGH-confidence market', () => {
+    // price 8 / cost 5 under a GBP11.99 market: the agent would raise toward ~GBP10.99,
+    // netting ~GBP1 - real profit, just under the GBP2 floor. That is a money-maker, so
+    // it must be flagged for the owner, NEVER auto-archived (the decision-1 softening).
+    const a = decideProfitAction({ variants: [{ variantId: 'v', priceGbp: 8, costGbp: 5 }], competitor: hi(11.99), profit: P });
+    expect(a.kind).toBe('flag');
+    if (a.kind === 'flag') expect(a.reason).toContain('best price below the market');
+  });
+
+  it('FLAGS a profitable-but-under-floor item regardless of confidence (medium market, same money-maker)', () => {
+    // Same money-maker under a MEDIUM-confidence market: still a flag. Profitable-thin
+    // never auto-drops on ANY confidence; only an actual LOSS at high confidence does.
+    const a = decideProfitAction({ variants: [{ variantId: 'v', priceGbp: 8, costGbp: 5 }], competitor: med(11.99), profit: P });
+    expect(a.kind).toBe('flag');
   });
 
   it('FLAGS (never auto-archives) when it cannot clear the floor against only a MEDIUM-confidence market', () => {

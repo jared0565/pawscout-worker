@@ -217,7 +217,8 @@ export function decideProfitAction(input: {
     // that target (raises when we are below the market, lowers when above).
     const target = undercutTarget(comp.estimateGbp, p.undercutPct);
     const scale = target / fromPrice;
-    if (worstAt(scale) >= floor) {
+    const netAtBest = worstAt(scale); // net at the best (highest) price we can hold below the market
+    if (netAtBest >= floor) {
       const updates = sellable.map((v) => ({ variantId: v.variantId, toGbp: round99Down(v.priceGbp * scale) }));
       if (!updates.some((u, i) => Math.abs(u.toGbp - sellable[i].priceGbp) >= REPRICE_DEADBAND_GBP)) {
         return { kind: 'keep', reason: `already at the best price below the market (~GBP ${comp.estimateGbp.toFixed(2)} delivered), net >= GBP ${floor}` };
@@ -225,15 +226,33 @@ export function decideProfitAction(input: {
       const dir = target > fromPrice ? 'raise' : 'lower';
       return { kind: 'reprice', updates, reason: `${dir} to GBP ${target.toFixed(2)} (just under the market ~GBP ${comp.estimateGbp.toFixed(2)} delivered), net >= GBP ${floor}/unit` };
     }
-    // Can't clear the floor even at the best price below the market. Archiving is
-    // the most destructive action and the competitor price is the softest input, so
-    // auto-drop needs HARD evidence: only a HIGH-confidence market triggers it. A
-    // medium-confidence low estimate is flagged for the owner, never auto-archived
-    // (a reprice above is recoverable; an archive effectively is not).
-    if (comp.confidence === 'high') {
-      return { kind: 'drop', reason: `cannot clear GBP ${floor} net even at the best price below the market (~GBP ${comp.estimateGbp.toFixed(2)} delivered)` };
+    // Cannot clear the floor even at the best price below the market. Drop (archive)
+    // is the most destructive, least reversible action, so it is reserved for a
+    // defensible LOSS, never a merely thin margin: a product that still makes money,
+    // just under the floor, is a money-maker we must not auto-destroy (owner's rule).
+    //
+    // The two branches deliberately use DIFFERENT loss tests. HERE a real competitor
+    // bounds the price, so "loss" is the FULL-STACK net (liveNetGbp, ad share
+    // included) going negative: a high-confidence market this low means we cannot
+    // sit under it without selling below our all-in cost. The no-competitor branch
+    // below has no market to lean on and cannot assume the tunable ad share, so it
+    // uses the assumption-free below-landed-cost test instead. (Raising ad share
+    // pushes more products into net < 0 here, widening the auto-drop set - the
+    // console re-preview is the safety valve before going live.)
+    if (netAtBest < 0) {
+      // To sit under the market we would have to sell at a loss - the owner's drop
+      // trigger. Only a HIGH-confidence market auto-archives; a medium-confidence
+      // loss is the owner's call (a reprice is recoverable, an archive is not).
+      if (comp.confidence === 'high') {
+        return { kind: 'drop', reason: `to price under the market (~GBP ${comp.estimateGbp.toFixed(2)} delivered) we would sell at a loss (net ~GBP ${netAtBest.toFixed(2)}/unit) - a clear loss` };
+      }
+      return { kind: 'flag', reason: `would sell at a loss to sit under the market (~GBP ${comp.estimateGbp.toFixed(2)} delivered, ${comp.confidence} confidence) - your call before archiving` };
     }
-    return { kind: 'flag', reason: `cannot clear GBP ${floor} net below the market (~GBP ${comp.estimateGbp.toFixed(2)} delivered, ${comp.confidence} confidence) - your call before archiving` };
+    // Profitable but under the floor at its best price below the market: it still
+    // MAKES money, just not the full GBP ${floor}, so it is never auto-archived. Flag
+    // it for the owner. The reason carries BOTH the current net and the best-price
+    // net so it reconciles with the current-price net shown on the row.
+    return { kind: 'flag', reason: `currently nets ~GBP ${worstNow.toFixed(2)}/unit; at its best price below the market (~GBP ${comp.estimateGbp.toFixed(2)} delivered) ~GBP ${netAtBest.toFixed(2)}/unit, under the GBP ${floor} target - your call` };
   }
 
   // No defensible market price. A DROP here must be a defensible loss that does NOT
