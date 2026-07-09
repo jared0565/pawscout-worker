@@ -265,8 +265,9 @@ export class TenantStore {
   }
 
   /** Verdicts worst-first (reject, then review, then pass), then lowest net.
-   *  Joins the current product_link so the console can link to the product and
-   *  tell which rows are already archived. */
+   *  Joins the current product_link for the handle/link, and EXCLUDES already
+   *  archived products so the console list shrinks as the owner archives (an
+   *  archived product's verdict row is kept for history, just hidden here). */
   async listProfitVerdicts(limit = 500): Promise<ProfitVerdictRow[]> {
     const { results } = await this.db
       .prepare(
@@ -274,7 +275,7 @@ export class TenantStore {
                 pl.handle AS handle, pl.shopify_product_id AS shopify_product_id, pl.state AS link_state
          FROM product_profit pp
          LEFT JOIN product_links pl ON pl.shop = pp.shop AND pl.cj_pid = pp.cj_pid
-         WHERE pp.shop = ?1
+         WHERE pp.shop = ?1 AND (pl.state IS NULL OR pl.state <> 'archived')
          ORDER BY CASE pp.verdict WHEN 'reject' THEN 0 WHEN 'review' THEN 1 ELSE 2 END, pp.net_gbp ASC LIMIT ?2`
       )
       .bind(this.shop, limit)
