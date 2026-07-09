@@ -29,6 +29,19 @@ export function makeAdminGraphql(
 ): AdminGraphql {
   const MAX_ATTEMPTS = 4;
   return async (query, variables = {}) => {
+    // Idempotency (Admin API 2026-04): inventory + refund mutations are REJECTED at
+    // runtime ("The @idempotent directive is required for this mutation") unless the
+    // field carries @idempotent(key:). Mint the key ONCE here, before the retry loop,
+    // so every attempt below reuses the SAME key - a retried write then dedupes on
+    // Shopify's side (applied at most once) instead of double-applying. A fresh UUID
+    // per call keeps distinct operations from colliding in Shopify's key cache (a key
+    // reused across runs would replay the first response and silently drop later
+    // updates). Only documents that opt in (contain the directive) are touched; a
+    // caller-supplied key is respected. NB: this is a runtime rule, invisible to
+    // static schema validation - re-check the changelog on any future version bump.
+    if (variables.idempotencyKey === undefined && query.includes('@idempotent')) {
+      variables = { ...variables, idempotencyKey: crypto.randomUUID() };
+    }
     let lastError = 'Shopify request failed';
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
       const resp = await fetchImpl(`https://${shop}/admin/api/${ADMIN_API_VERSION}/graphql.json`, {

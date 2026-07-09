@@ -69,6 +69,57 @@ describe('makeAdminGraphql throttle retry', () => {
   });
 });
 
+describe('makeAdminGraphql idempotency (2026-04)', () => {
+  const noSleep = async () => {};
+  const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+  function capture() {
+    const bodies: Record<string, unknown>[] = [];
+    const fetchImpl = (async (_u: RequestInfo | URL, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return new Response(JSON.stringify({ data: { ok: true } }), { status: 200 });
+    }) as unknown as typeof fetch;
+    return { bodies, fetchImpl };
+  }
+  const vars = (b: Record<string, unknown>) => b.variables as Record<string, unknown>;
+
+  it('mints a UUID idempotencyKey when the document uses @idempotent', async () => {
+    const { bodies, fetchImpl } = capture();
+    const admin = makeAdminGraphql('a.myshopify.com', 'tok', fetchImpl, noSleep);
+    await admin('mutation X($input: I!, $idempotencyKey: String!) { foo(input: $input) @idempotent(key: $idempotencyKey) { id } }', { input: {} });
+    expect(vars(bodies[0]).idempotencyKey).toMatch(UUID);
+  });
+
+  it('reuses the SAME key across throttle retries so a retried write dedupes', async () => {
+    const keys: string[] = [];
+    let calls = 0;
+    const fetchImpl = (async (_u: RequestInfo | URL, init?: RequestInit) => {
+      calls++;
+      keys.push((JSON.parse(String(init?.body)).variables as { idempotencyKey: string }).idempotencyKey);
+      if (calls < 2) return new Response(JSON.stringify({ errors: [{ message: 'Throttled', extensions: { code: 'THROTTLED' } }] }), { status: 200 });
+      return new Response(JSON.stringify({ data: { ok: true } }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const admin = makeAdminGraphql('a.myshopify.com', 'tok', fetchImpl, noSleep);
+    await admin('mutation X { foo @idempotent(key: $idempotencyKey) { id } }', {});
+    expect(keys.length).toBe(2);
+    expect(keys[0]).toBe(keys[1]);
+  });
+
+  it('does not inject a key when the document has no @idempotent', async () => {
+    const { bodies, fetchImpl } = capture();
+    const admin = makeAdminGraphql('a.myshopify.com', 'tok', fetchImpl, noSleep);
+    await admin('mutation { productUpdate(input: {}) { product { id } } }', {});
+    expect('idempotencyKey' in vars(bodies[0])).toBe(false);
+  });
+
+  it('does not override a caller-supplied idempotencyKey', async () => {
+    const { bodies, fetchImpl } = capture();
+    const admin = makeAdminGraphql('a.myshopify.com', 'tok', fetchImpl, noSleep);
+    await admin('mutation X { foo @idempotent(key: $idempotencyKey) { id } }', { idempotencyKey: 'caller-fixed' });
+    expect(vars(bodies[0]).idempotencyKey).toBe('caller-fixed');
+  });
+});
+
 describe('setInventoryQuantities (2026-04 shape)', () => {
   it('sends changeFromQuantity: null per line and never the removed fields', async () => {
     let vars: Record<string, unknown> = {};
@@ -90,5 +141,15 @@ describe('setInventoryQuantities (2026-04 shape)', () => {
       expect('changeFromQuantity' in q).toBe(true); // required on 2026-04
       expect(q.changeFromQuantity).toBeNull();      // null = force-set opt-out
     }
+  });
+
+  it('carries @idempotent(key: $idempotencyKey) on the field (2026-04 runtime requirement)', async () => {
+    let doc = '';
+    const admin: AdminGraphql = async (query) => { doc = query; return { inventorySetQuantities: { userErrors: [] } }; };
+    await setInventoryQuantities(admin, 'gid://loc/1', [{ inventoryItemId: 'gid://item/1', quantity: 5 }]);
+    // inventorySetQuantities is on Shopify's mandatory-idempotency list for 2026-04:
+    // without the directive the live API throws "The @idempotent directive is required".
+    expect(doc).toMatch(/inventorySetQuantities\(input: \$input\) @idempotent\(key: \$idempotencyKey\)/);
+    expect(doc).toMatch(/\$idempotencyKey: String!/);
   });
 });

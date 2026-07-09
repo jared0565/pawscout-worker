@@ -107,8 +107,11 @@ export async function setInventoryQuantities(
 ): Promise<void> {
   if (!items.length) return;
   const data = await admin(
-    `mutation pawscoutInventory($input: InventorySetQuantitiesInput!) {
-      inventorySetQuantities(input: $input) { userErrors { field message } }
+    // @idempotent(key:) is MANDATORY for inventorySetQuantities on 2026-04 (Shopify's
+    // inventory/refund idempotency requirement); without it the API throws at runtime.
+    // makeAdminGraphql mints and injects $idempotencyKey (stable across its retries).
+    `mutation pawscoutInventory($input: InventorySetQuantitiesInput!, $idempotencyKey: String!) {
+      inventorySetQuantities(input: $input) @idempotent(key: $idempotencyKey) { userErrors { field message } }
     }`,
     {
       input: {
