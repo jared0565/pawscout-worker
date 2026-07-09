@@ -233,8 +233,15 @@ export function decideProfitAction(input: {
     return { kind: 'flag', reason: `cannot clear GBP ${floor} net below the market (~GBP ${comp.estimateGbp.toFixed(2)} delivered, ${comp.confidence} confidence) - your call before archiving` };
   }
 
-  // No defensible market price -> cannot safely reprice (never guess a price).
-  if (worstNow < 0) return { kind: 'drop', reason: 'loses money at its current price and there is no market data to reprice from' };
+  // No defensible market price -> cannot safely reprice (never guess a price). A
+  // drop here must be a DEFENSIBLE loss that does NOT depend on the tunable ad-share
+  // assumption: the item sells BELOW LANDED COST (revenue ex-VAT < cost), i.e. the
+  // shop loses money on the product itself. A merely thin full-stack net (gross-
+  // positive, negative only after the placeholder ad share) is FLAGGED, never
+  // auto-archived - same asymmetry rule as the competitor branch: no/soft market
+  // data must not unlock a MORE destructive action than hard, agreed market data.
+  const worstGrossExVat = Math.min(...sellable.map((v) => v.priceGbp / (1 + p.vatRate) - v.costGbp));
+  if (worstGrossExVat < 0) return { kind: 'drop', reason: 'sells below landed cost (loses money on the item itself) and there is no market data to reprice from' };
   if (worstNow < floor) return { kind: 'flag', reason: `below the GBP ${floor} net target and no market price to safely reprice - your call` };
   return { kind: 'keep', reason: `net >= GBP ${floor}/unit at its current price` };
 }

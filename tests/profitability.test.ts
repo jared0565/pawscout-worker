@@ -90,9 +90,21 @@ describe('decideProfitAction (owner rule: net >= GBP2, price just under the comp
     expect(decideProfitAction({ variants: [{ variantId: 'v', priceGbp: 0, costGbp: 0 }], competitor: null, profit: P }).kind).toBe('keep');
   });
 
-  it('DROPS a clear loss: loses money at its current price with no market data', () => {
-    const a = decideProfitAction({ variants: [{ variantId: 'v', priceGbp: 10, costGbp: 8 }], competitor: null, profit: P });
+  it('DROPS a clear loss with no market data ONLY when it sells below landed cost', () => {
+    // price 10 / cost 9: revenue ex-VAT (8.33) is below cost, so the shop loses
+    // money on the item itself - a defensible drop that does not depend on any
+    // tunable assumption.
+    const a = decideProfitAction({ variants: [{ variantId: 'v', priceGbp: 10, costGbp: 9 }], competitor: null, profit: P });
     expect(a.kind).toBe('drop');
+  });
+
+  it('FLAGS (never auto-drops) a gross-positive item with no market data even when the placeholder ad share makes full-stack net negative', () => {
+    // price 12 / cost 5 is 58% gross margin (genuinely profitable), but the
+    // WORST-CASE default ad share (0.33) makes full-stack net negative. With no
+    // market data the agent must FLAG, not archive healthy stock - the no-data drop
+    // gate is below landed cost, which does not depend on the tunable ad share.
+    const a = decideProfitAction({ variants: [{ variantId: 'v', priceGbp: 12, costGbp: 5 }], competitor: null, profit: DEFAULT_PROFIT });
+    expect(a.kind).toBe('flag');
   });
 
   it('AUTO-RAISES toward just under the competitor when there is headroom', () => {

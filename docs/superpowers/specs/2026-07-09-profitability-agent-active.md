@@ -37,8 +37,16 @@ archiving a product - is gated to the HARDEST evidence.
      - competitor confidence **medium** -> `flag` (owner's call). A soft low estimate
        must never silently archive a possibly-profitable product.
 3. **No defensible market price:** cannot safely reprice (never guess a price).
-   - Loses money at current price -> `drop` (hard data: it loses at its OWN live price).
-     Positive but `< GBP2` -> `flag` (owner's call). `>= GBP2` -> `keep`.
+   - Sells **below landed cost** (revenue ex-VAT `< cost`) -> `drop`. This is a
+     DEFENSIBLE loss - the shop loses money on the item itself, independent of the
+     tunable ad-share assumption. Any other sub-floor net (gross-positive, thin only
+     after the placeholder ad share) -> `flag` (owner's call). `>= GBP2` net -> `keep`.
+   - Rationale (asymmetry, again): the ad share defaults to the worst case (0.33), so
+     judging a no-market-data drop on FULL-STACK net would auto-archive genuinely
+     profitable stock the moment a market lookup comes back empty (cold cache / LLM
+     off). The drop gate here is assumption-free (below cost); everything else waits
+     for the owner. No/soft data must never unlock a more destructive action than
+     hard market data does.
 
 Prices only ever land on a `.99` at or below the competitor's delivered price (never
 above the market). Auto-raise runs freely on defensible data; auto-drop runs only on
