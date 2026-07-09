@@ -1,36 +1,72 @@
-# Profitability Engine + Import Gate + Audit Agent — DESIGN (DRAFT)
+# Profitability Engine + Import Gate + Audit Agent — DESIGN
 
-**Status:** DRAFT, mid-brainstorm. Architecture presented to owner 2026-07-09; owner had not yet approved when the session compacted. Resume by confirming the architecture below (and the two open decisions), then finalize this spec → `writing-plans` → build. Do NOT start implementation until the owner approves.
+**Status:** APPROVED (owner said "finish everything end-to-end", 2026-07-09). Architecture below incorporates the advisor's activation-safety and correctness review. Build fully, ship **dormant** (`profit.enabled = false`), hand the owner the thresholds + the flips to activate.
 
 ## Goal
-When PawScout adds a product to inventory, it must already be vetted to create **real net profit** — so the class of "discover an unprofitable item later" never happens. Same logic, run continuously over the existing catalog, is the audit agent. (Owner's words: an agent "auditing all possible weaknesses and strengths of a product ... making sure the product is there to create real net profit.")
 
-## Locked decisions (owner-approved this session)
-1. **Profit criterion = net-after-ads floor AND a competition check.** The pricing rule already guarantees ~£6 gross margin/unit and the 2.2x multiplier is sized for ads ≈ 33% of revenue (ROAS ~3), so most products already net positive at rule — EXCEPT high cost+freight items where the £30 margin cap doesn't survive ads (the £112 auto-feeder class). The gate must catch those AND the "can't beat competitors so it won't sell" case.
-2. **Competitor-price signal = LLM + web search** (reuses the worker's existing OpenRouter web-search grounding). No new paid API. Per-call cost + latency; estimate quality varies → only HARD-block on high-confidence signals, draft-for-review otherwise. Cache results in D1 (per cj_pid, TTL).
+When PawScout adds a product to inventory it must already be vetted to create **real net profit** — so the class of "discover an unprofitable item later" never happens. The SAME logic, run continuously over the existing catalog, is the audit agent (owner's words: an agent "auditing all possible weaknesses and strengths of a product ... making sure the product is there to create real net profit").
+
+## Locked decisions (owner-approved)
+
+1. **Profit criterion = a deterministic net-after-ads floor AND a competition check.** The pricing rule already guarantees a gross margin (~£6 via the affiliate floor) and the live 2.2× multiplier is sized for ads ≈ 33% of revenue (ROAS ~3), so most products net positive at rule — EXCEPT high cost+freight items where the £30 margin cap does not survive ads (the ~£112 auto-feeder class). The gate must catch those AND the "can't beat competitors so it won't sell" case.
+2. **Competitor-price signal = LLM + web search** (reuses the worker's existing OpenRouter web-search grounding, exactly as `blog/research.ts proposeTopics` does — try web, fall back hermetic). No new paid API. Estimate quality varies → only ever a SOFT signal; cache per `cj_pid` in `search_cache` (`comp:<pid>`, TTL).
+
+## Activation safety (advisor-driven — the core of this design)
+
+A new REJECT wired into all three `confirmAndImport` lanes and a new stage in the 04:17 cron must NOT change behaviour the moment it deploys. Follow the codebase's dormant-feature pattern (`RETENTION_REORDER` dormant, `gbFreeUkLive` verify-then-flip, `autoInvoice` off) and **separate observe from enforce** with two knobs:
+
+| `profit.enabled` | `profit.hardBlock` | Behaviour |
+|---|---|---|
+| `false` (DEFAULT) | — | **Fully dormant.** No LLM spend. Import gate is a complete no-op (existing import tests unaffected). Audit stage skips. |
+| `true` | `false` | **Observe + review.** Audit runs OBSERVE-ONLY: populates the Profitability console view, never archives. Import gate runs REVIEW mode: a sub-floor product imports as a DRAFT (never hard-rejected) tagged for review. |
+| `true` | `true` | **Enforce.** Import gate hard-REJECTs a sub-floor product (deterministic floor only). Audit may RECOMMEND archive — still owner-confirm, never automatic. |
+
+The owner flips `enabled` first, watches real verdicts in the console, tunes thresholds, then flips `hardBlock`. This is presented at the end of the build, not asked as a blocking question.
 
 ## Architecture: one shared engine, two consumers
-### Profitability engine (new, e.g. `src/profitability.ts`)
-- `netAfterAdsGbp(cost, freight, cfg)` — DETERMINISTIC. At the product's rule price (retailPriceGbp): ex-VAT revenue − landed COGS − freight − platform fee − ad cost (revenue × ad-share). Returns £/unit + %. No LLM. Reuses the pricing.ts rule + affiliate-floor-style math.
-- `competitorSignal(product, llm)` — LLM + web-search → `{ estimateGbp, confidence, sources }`. Cached in D1 (per cj_pid, TTL) to avoid re-querying every run.
-- `profitVerdict(...)` → `PASS | REVIEW | REJECT` + reason, combining both.
 
-### Consumer A — import gate (preventive)
-Wire `profitVerdict` into `confirmAndImport`'s gate chain (chain today = isLikelyPetProduct / curate / curateDetailImages / cj.stockByPid / importProduct — NO profit gate; confirmed via `graphite query "calls confirmAndImport"`). REJECT → don't import (link ends `rejected`, logged w/ reason). REVIEW → import as draft (as today) tagged w/ verdict+reason. PASS → normal.
+### Profitability engine (`src/profitability.ts`, new)
 
-### Consumer B — audit agent (continuous)
-Nightly rolling stage (like `store-inventory`, which does 60/night) + on-demand console action; runs `profitVerdict` over the existing catalog, writes a verdict/reason per product, surfaces a "Profitability" console view. Clear losers FLAGGED for owner review; archive-with-reason on owner confirm (never auto-delete — competition-aware-catalog policy).
+- **`netAfterAdsGbp(landedUsd, freightUsd, pricing, profit)` — DETERMINISTIC, no LLM.** At the product's rule price (`retailPriceGbp`, computed from the **live** `cfg.pricing` passed in — never `DEFAULT_PRICING`):
+  - `exVatRevenue = retail / (1 + vatRate)`
+  - `cogs = landedCostGbp` (honest product + freight)
+  - `adCost = adShareOfRevenue × retail` (0.33 × **gross** retail = the ROAS-3 ad spend; explicit gross base per advisor)
+  - `paymentsFee = paymentsFeeRate × retail`; `refundReserve = refundReserveRate × exVatRevenue`
+  - `net = exVatRevenue − cogs − adCost − paymentsFee − refundReserve`; `netPct = net / exVatRevenue`
+  - Returns `{ retailGbp, cogsGbp, adCostGbp, netGbp, netPct }`.
+- **`productNetAfterAds(variants, pricing, freightUsd, profit)`** — mirrors `productAffiliateEligible`'s variant policy: evaluates EVERY sellable variant and the product is judged on its **worst** one ("one thin variant disqualifies the whole product"). Returns the worst variant's `netGbp`/`netPct` + a `belowFloor` boolean.
+- **`competitorSignal(llm, store, cfg, { pid, title, ourRetailGbp })` → `{ estimateGbp, confidence: 'high'|'medium'|'low', sources } | null`.** LLM + web search via `jsonChain({ web })`, cached in `search_cache` (`comp:<pid>`, `profit.cacheTtlDays`). Hermetic-safe: any failure / no LLM → `null` (no signal is NOT a fail). Logs `logLlmUsage('profit-competition', …)`.
+- **`profitVerdict({ net, competitor, ourRetailGbp, profit })` → `{ verdict: 'pass'|'review'|'reject', reason }`.** Combines: deterministic floor breach (`net.belowFloor`) → **reject** (the only hard signal). High-confidence competitor estimate showing our price materially above the cheapest competitor beyond `competitionTolerancePct` → **reject** (won't sell). Medium/low-confidence competition concern → **review**. Otherwise **pass**.
+
+### Consumer A — import gate (preventive, in `confirmAndImport`)
+
+Runs ONLY when `cfg.profit.enabled`. After the local-for-local + live-stock gates, before `importProduct`:
+- Compute `productNetAfterAds` on the detail's variants using **live** `cfg.pricing` + captured `freightUsd`.
+- `belowFloor && hardBlock` → REJECT: `store.putLink({ state: 'failed' })` + return (same mechanic as every other gate; verified via `graphite query "calls confirmAndImport"`).
+- `belowFloor && !hardBlock` → REVIEW: force `opts.publish = false` (import as DRAFT) + add a `cj-profit-review` tag; still records the link.
+- Competitor check is NOT run here by default (keeps the `seedOriginAssortment` / `refillCollections` batch lanes cheap). A `competitionCheckOnImport` flag (default `false`) can add it later; the audit always runs it.
+- `!cfg.profit.enabled` → the whole block is skipped: zero behaviour change, zero spend.
+
+### Consumer B — audit agent (continuous, observe-first)
+
+`auditProfitability(store, cj, admin, llm, cfg, { offset, limit })` — a rolling batch walk of `listImportedLinks` (like `reconcileCategories`, checkpointing offset). For each product: load stored detail (warehouse cache), compute `productNetAfterAds`, fetch `competitorSignal` (cached), derive `profitVerdict`, `upsertProfitVerdict`. **Never archives.** Wired as:
+- Nightly STAGE `{ name: 'profit-audit', run(ctx, offset, deadline) }` (only does work when `cfg.profit.enabled`; the deterministic-only pass is cheap, competitor calls are cached + amortised 60/night).
+- On-demand console "Run now" action.
+- A **Profitability** console view: verdict/reason/net £+%/competitor estimate per product, sorted worst-first; a per-row **Archive (owner confirms)** button reusing the existing archive/cull path. Never auto-archive (competition-aware-catalog policy: archive not delete, owner confirms).
+
+## Data + config
+
+- **Migration `0027_profitability.sql`:** `product_profit` table (`shop, cj_pid` PK, `verdict, net_gbp, net_pct, our_retail_gbp, competitor_gbp, competitor_confidence, competitor_sources, reason, checked_at`) + `ALTER TABLE tenant_config ADD COLUMN profit TEXT NOT NULL DEFAULT '{}'` (rides the same `'{}'`-default + `getConfig` merge as addons/fulfil/semantic).
+- **`ProfitConfig`** in `types.ts` + `DEFAULT_PROFIT` (dormant). Fields: `enabled=false, hardBlock=false, competitionCheckOnImport=false, adShareOfRevenue=0.33, paymentsFeeRate=0.025, refundReserveRate=0.03, vatRate=0.20, minNetAfterAdsGbp=2, minNetMarginPct=0.05, competitionTolerancePct=0.15, cacheTtlDays=14`. All owner-tunable in `tenant_config.profit`.
+- **`tenant-store.ts`:** `getConfig` merge for `profit`; `saveProfit`; `upsertProfitVerdict` / `listProfitVerdicts` (worst-first) / `getProfitVerdict`.
 
 ## Guardrails
-- Hard-block ONLY on the deterministic net-after-ads floor + high-confidence competition loss. Everything uncertain → REVIEW (draft/flag), never silent auto-reject/auto-archive.
-- Config (net-after-ads floor, ad-share/ROAS, competition margin, confidence thresholds) in `tenant_config`.
-- LLM calls cached + rate-aware for cost.
 
-## Open decisions (raise on resume, before finalizing spec)
-- Fail behavior: hard-block vs always-draft-for-review (recommended: hard-block only on deterministic floor + high-confidence competition; else draft).
-- Audit action on fail: flag-for-review vs auto-archive (recommended: flag, owner confirms).
-- Exact config values (floor £/%, ad-share, competition margin, confidence thresholds).
-- Verify confirmAndImport's exact reject mechanics + where to insert the gate (read the code during spec finalize; use `graphite context src/proxy/import.ts`).
+- Hard REJECT only on the deterministic net-after-ads floor (real cost math) + a high-confidence competition loss. Everything uncertain → REVIEW (draft/flag), never a silent auto-reject/auto-archive.
+- Ships dormant; `enabled=false` = zero behaviour change + zero spend.
+- LLM competition calls cached (`comp:<pid>`), kept out of the synchronous batch import path.
+- Live `cfg.pricing` everywhere (2.2× today), never the 2.5× default.
 
 ## Sequence context
-This is Piece 2 (+3) of a 3-piece request. Piece 1 (Graphite call-graph fix: callers/calls/reaches verbs, function-level + cross-file) is DONE, verified, deployed-in-editable-install. Pieces 2+3 converged into this one engine.
+
+Piece 2 (+3) of the owner's 3-piece request. Piece 1 (Graphite call-graph fix: `callers`/`calls`/`reaches`, function-level + cross-file) is DONE, verified, deployed-in-editable-install. Pieces 2+3 converged into this one engine + its two consumers.
