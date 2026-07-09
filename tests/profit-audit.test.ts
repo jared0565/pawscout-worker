@@ -32,12 +32,14 @@ describe('auditProfitability', () => {
       GOOD: { pid: 'GOOD', nameEn: 'cheap cat toy', variants: [{ sellPriceUsd: 10 }], freightUsd: 0 },
       LOSS: { pid: 'LOSS', nameEn: 'big grooming table', variants: [{ sellPriceUsd: 140 }], freightUsd: 25 },
     });
-    const cfg = { pricing: PRICING, llm: { enabled: false }, profit: { ...DEFAULT_PROFIT, enabled: true } } as any;
+    // Realistic (tuned) ad share so a healthy product passes; at the worst-case
+    // 33% default the full cost stack sinks even a cheap item (that is the lever).
+    const cfg = { pricing: PRICING, llm: { enabled: false }, profit: { ...DEFAULT_PROFIT, enabled: true, adShareOfRevenue: 0.15 } } as any;
     const r = await auditProfitability(store, noLlm, cfg, {});
     expect(r.scanned).toBe(2);
     const find = (pid: string) => store.verdicts.find((v: { cjPid: string; verdict: string }) => v.cjPid === pid);
     expect(find('LOSS')?.verdict).toBe('reject'); // margin-capped, ads sink it
-    expect(find('GOOD')?.verdict).toBe('pass');   // thin but positive
+    expect(find('GOOD')?.verdict).toBe('pass');   // profitable at a realistic ad share
     expect(r.flagged).toBe(1);
   });
 

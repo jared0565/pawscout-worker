@@ -213,6 +213,10 @@ export interface ProfitConfig {
   minNetMarginPct: number;           // net as a fraction of ex-VAT revenue floor
   competitionTolerancePct: number;   // how far above the cheapest competitor we may sit before "won't sell"
   cacheTtlDays: number;              // competitor-signal cache TTL
+  // Event/promo discount cost. A blended revenue haircut: on average, codes
+  // (WELCOME10, event vouchers) reduce the price paid by this fraction across all
+  // sales. Tunable to the store's promo calendar.
+  expectedDiscountRate: number;      // average discount as a fraction of revenue (e.g. 0.05)
   // Affiliate commission cost. Commission is only paid on the SHARE of sales that
   // come through an affiliate link, so it is a blended expense like ad spend:
   // affiliateSalesShare x (commission on ex-VAT revenue + platform fee on gross).
@@ -234,6 +238,7 @@ export const DEFAULT_PROFIT: ProfitConfig = {
   enabled: false, hardBlock: false, competitionCheckOnImport: false,
   adShareOfRevenue: 0.33, paymentsFeeRate: 0.025, refundReserveRate: 0.03, vatRate: 0.20,
   minNetAfterAdsGbp: 0, minNetMarginPct: 0, competitionTolerancePct: 0.15, cacheTtlDays: 14,
+  expectedDiscountRate: 0.05,
   affiliateSalesShare: 0.15, affiliateCommissionRate: 0.08, affiliatePlatformFeeRate: 0.02,
 };
 // fulfilment mode 'manual' by default - Stage B never spends until set to 'pawscout'.

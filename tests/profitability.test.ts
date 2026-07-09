@@ -17,13 +17,17 @@ describe('netAfterAdsGbp', () => {
     const n = netAfterAdsGbp(10, 0, PRICING, p);
     const exVat = n.retailGbp / (1 + p.vatRate);
     const affiliate = p.affiliateSalesShare * (p.affiliateCommissionRate * exVat + p.affiliatePlatformFeeRate * n.retailGbp);
-    const expected = exVat - n.cogsGbp - p.adShareOfRevenue * n.retailGbp - p.paymentsFeeRate * n.retailGbp - p.refundReserveRate * exVat - affiliate;
+    const discount = p.expectedDiscountRate * n.retailGbp;
+    const expected = exVat - n.cogsGbp - p.adShareOfRevenue * n.retailGbp - p.paymentsFeeRate * n.retailGbp - p.refundReserveRate * exVat - affiliate - discount;
     expect(n.netGbp).toBeCloseTo(expected, 1); // within a penny of the raw formula (components are rounded)
   });
 
-  it('a thin-but-positive low-ticket item clears the GBP0 money-loser floor', () => {
-    const n = netAfterAdsGbp(10, 0, PRICING, DEFAULT_PROFIT);
-    expect(n.netGbp).toBeGreaterThan(0);
+  it('at a realistic ad share a low-ticket item clears the floor; at the worst-case default it does not', () => {
+    // The full cost stack (ads+payments+refunds+affiliate+discount) sinks a
+    // GBP10-cost item at the worst-case 33% ad share, but clears at a realistic
+    // blended ad share. That gap IS the tuning lever the owner sets.
+    expect(netAfterAdsGbp(10, 0, PRICING, { ...DEFAULT_PROFIT, adShareOfRevenue: 0.15 }).netGbp).toBeGreaterThan(0);
+    expect(netAfterAdsGbp(10, 0, PRICING, DEFAULT_PROFIT).netGbp).toBeLessThan(0);
   });
 
   it('goes NEGATIVE on the high cost+freight, margin-capped class (the auto-feeder)', () => {
@@ -152,10 +156,11 @@ describe('decideProfitAction (the owner\'s adjust-or-drop algorithm on LIVE numb
     if (a.kind === 'reprice') expect(a.updates.map((u) => u.variantId)).toEqual(['v1', 'v2']);
   });
 
-  it('liveNetGbp is revenue-ex-VAT minus cost, ads, fees and affiliate commission', () => {
+  it('liveNetGbp is revenue-ex-VAT minus cost, ads, fees, affiliate and discount', () => {
     const n = liveNetGbp(20, 8, P);
     const exVat = 20 / 1.2;
     const affiliate = P.affiliateSalesShare * (P.affiliateCommissionRate * exVat + P.affiliatePlatformFeeRate * 20);
-    expect(n).toBeCloseTo(exVat - 8 - 0.2 * 20 - 0.025 * 20 - 0.03 * exVat - affiliate, 6);
+    const discount = P.expectedDiscountRate * 20;
+    expect(n).toBeCloseTo(exVat - 8 - 0.2 * 20 - 0.025 * 20 - 0.03 * exVat - affiliate - discount, 6);
   });
 });

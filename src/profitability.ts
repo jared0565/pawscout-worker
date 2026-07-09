@@ -49,7 +49,8 @@ export function netAfterAdsGbp(landedUsd: number, freightUsd: number, pricing: P
   const paymentsFee = round2(profit.paymentsFeeRate * retailGbp);
   const refundReserve = round2(profit.refundReserveRate * exVatRevenue);
   const affiliateFee = round2(affiliateCostGbp(retailGbp, exVatRevenue, profit));
-  const netGbp = round2(exVatRevenue - cogsGbp - adCostGbp - paymentsFee - refundReserve - affiliateFee);
+  const discountCost = round2(profit.expectedDiscountRate * retailGbp);
+  const netGbp = round2(exVatRevenue - cogsGbp - adCostGbp - paymentsFee - refundReserve - affiliateFee - discountCost);
   return {
     retailGbp,
     cogsGbp,
@@ -171,7 +172,7 @@ export type ProfitAction =
 /** Per-unit net after ads at a GIVEN live price + cost (no rule price - real numbers). */
 export function liveNetGbp(priceGbp: number, costGbp: number, p: ProfitConfig): number {
   const exVat = priceGbp / (1 + p.vatRate);
-  return exVat - costGbp - p.adShareOfRevenue * priceGbp - p.paymentsFeeRate * priceGbp - p.refundReserveRate * exVat - affiliateCostGbp(priceGbp, exVat, p);
+  return exVat - costGbp - p.adShareOfRevenue * priceGbp - p.paymentsFeeRate * priceGbp - p.refundReserveRate * exVat - affiliateCostGbp(priceGbp, exVat, p) - p.expectedDiscountRate * priceGbp;
 }
 
 /** Nearest .99 ending at or BELOW x, so a competitive reprice never lands above the market. */
