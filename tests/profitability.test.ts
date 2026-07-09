@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { netAfterAdsGbp, productNetAfterAds, profitVerdict, competitorCacheKey } from '../src/profitability';
+import { netAfterAdsGbp, productNetAfterAds, profitVerdict, competitorCacheKey, decideProfitAction, liveNetGbp, round99Down } from '../src/profitability';
 import { DEFAULT_PROFIT, type Pricing, type ProfitConfig } from '../src/types';
 
 // Live pricing rule (2.2x, GBP0.78 FX, +2% buffer, GBP30 margin cap).
@@ -91,4 +91,68 @@ describe('profitVerdict', () => {
 
 describe('competitorCacheKey', () => {
   it('namespaces by pid', () => { expect(competitorCacheKey('ABC')).toBe('comp:ABC'); });
+});
+
+describe('round99Down', () => {
+  it('rounds to a .99 ending at or below x (never above the market)', () => {
+    expect(round99Down(13.5)).toBe(12.99);
+    expect(round99Down(13.99)).toBe(13.99);
+    expect(round99Down(14)).toBe(13.99);
+    expect(round99Down(0.4)).toBe(0.99); // floor guard
+  });
+});
+
+describe('decideProfitAction (the owner\'s adjust-or-drop algorithm on LIVE numbers)', () => {
+  // adShare 0.2, floor GBP1: liveNet ~= 0.583*price - cost.
+  const P: ProfitConfig = { ...DEFAULT_PROFIT, adShareOfRevenue: 0.2, minNetAfterAdsGbp: 1, competitionTolerancePct: 0.15 };
+  const hi = (estimateGbp: number) => ({ estimateGbp, confidence: 'high' as const });
+
+  it('KEEPS (never acts blind) when there is no live price/cost', () => {
+    expect(decideProfitAction({ variants: [{ variantId: 'v', priceGbp: 0, costGbp: 0 }], competitor: null, profit: P }).kind).toBe('keep');
+  });
+
+  it('DROPS a clear loss: loses money at its current price, no competitor', () => {
+    const a = decideProfitAction({ variants: [{ variantId: 'v', priceGbp: 10, costGbp: 8 }], competitor: null, profit: P });
+    expect(a.kind).toBe('drop'); // net ~= 5.83 - 8 < 0
+  });
+
+  it('FLAGS (does not auto-raise) when it loses now but the market price would clear it', () => {
+    const a = decideProfitAction({ variants: [{ variantId: 'v', priceGbp: 10, costGbp: 6 }], competitor: hi(20), profit: P });
+    expect(a.kind).toBe('flag'); // losing at GBP10, but at GBP20 it clears the floor - owner's call to raise
+  });
+
+  it('REPRICES down to the market when profitable and priced above it', () => {
+    const a = decideProfitAction({ variants: [{ variantId: 'v', priceGbp: 30, costGbp: 8 }], competitor: hi(20), profit: P });
+    expect(a.kind).toBe('reprice');
+    if (a.kind === 'reprice') { expect(a.updates[0].toGbp).toBeLessThanOrEqual(20); expect(a.updates[0].toGbp).toBeGreaterThan(0); }
+  });
+
+  it('DROPS when we would have to price below our profitable floor to compete', () => {
+    const a = decideProfitAction({ variants: [{ variantId: 'v', priceGbp: 30, costGbp: 13 }], competitor: hi(20), profit: P });
+    expect(a.kind).toBe('drop'); // profitable at 30, but at market 20 it is underwater
+  });
+
+  it('KEEPS when profitable and already at/below the market', () => {
+    const a = decideProfitAction({ variants: [{ variantId: 'v', priceGbp: 15, costGbp: 6 }], competitor: hi(20), profit: P });
+    expect(a.kind).toBe('keep');
+  });
+
+  it('treats a LOW-confidence competitor as no market data (keeps a profitable item)', () => {
+    const a = decideProfitAction({ variants: [{ variantId: 'v', priceGbp: 30, costGbp: 8 }], competitor: { estimateGbp: 20, confidence: 'low' }, profit: P });
+    expect(a.kind).toBe('keep'); // profitable now; low-confidence market signal is not acted on
+  });
+
+  it('judges multi-variant on the worst, and reprices every variant', () => {
+    const a = decideProfitAction({
+      variants: [{ variantId: 'v1', priceGbp: 30, costGbp: 8 }, { variantId: 'v2', priceGbp: 40, costGbp: 12 }],
+      competitor: hi(20), profit: P
+    });
+    expect(a.kind).toBe('reprice');
+    if (a.kind === 'reprice') expect(a.updates.map((u) => u.variantId)).toEqual(['v1', 'v2']);
+  });
+
+  it('liveNetGbp is revenue-ex-VAT minus cost, ads and fees', () => {
+    const n = liveNetGbp(20, 8, P);
+    expect(n).toBeCloseTo(20 / 1.2 - 8 - 0.2 * 20 - 0.025 * 20 - 0.03 * (20 / 1.2), 6);
+  });
 });

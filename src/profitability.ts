@@ -145,6 +145,81 @@ export function profitVerdict(arg: { net: ProductNet; competitor: CompetitorSign
   return { verdict: 'pass', reason: `net GBP ${net.worstNetGbp.toFixed(2)} (${pct(net.worstNetPct)})` };
 }
 
+// --- Active agent decision (adjust-or-drop) on LIVE Shopify numbers ---
+
+/** One sellable variant valued at its ACTUAL live Shopify price + landed cost (GBP). */
+export interface LiveVariant { variantId: string; priceGbp: number; costGbp: number }
+
+/** What the agent decides to do with a product. `reprice` only ever LOWERS. */
+export type ProfitAction =
+  | { kind: 'keep'; reason: string }
+  | { kind: 'reprice'; updates: { variantId: string; toGbp: number }[]; reason: string }
+  | { kind: 'drop'; reason: string }
+  | { kind: 'flag'; reason: string };
+
+/** Per-unit net after ads at a GIVEN live price + cost (no rule price - real numbers). */
+export function liveNetGbp(priceGbp: number, costGbp: number, p: ProfitConfig): number {
+  const exVat = priceGbp / (1 + p.vatRate);
+  return exVat - costGbp - p.adShareOfRevenue * priceGbp - p.paymentsFeeRate * priceGbp - p.refundReserveRate * exVat;
+}
+
+/** Nearest .99 ending at or BELOW x, so a competitive reprice never lands above the market. */
+export function round99Down(x: number): number {
+  const up = Math.ceil(x) - 0.01;
+  const cand = up <= x + 1e-9 ? up : Math.floor(x) - 0.01;
+  return Math.max(0.99, Math.round(cand * 100) / 100);
+}
+
+/**
+ * The owner's algorithm as a pure function: given a product's live variants, the
+ * competitor signal, and the fee config, decide keep / reprice(lower) / drop /
+ * flag. Judged on the WORST sellable variant. Competitor counts only at high or
+ * medium confidence (low = treated as no market data). NEVER auto-raises: the
+ * raise-to-save case returns `flag` for the owner. See the design doc
+ * 2026-07-09-profitability-agent-active.md for the full tree.
+ */
+export function decideProfitAction(input: {
+  variants: LiveVariant[];
+  competitor: { estimateGbp: number; confidence: 'high' | 'medium' | 'low' } | null;
+  profit: ProfitConfig;
+}): ProfitAction {
+  const p = input.profit;
+  const floor = p.minNetAfterAdsGbp;
+  const sellable = input.variants.filter((v) => v.priceGbp > 0 && v.costGbp > 0);
+  if (!sellable.length) return { kind: 'keep', reason: 'no live price/cost data to judge' };
+
+  const worstCurrent = Math.min(...sellable.map((v) => liveNetGbp(v.priceGbp, v.costGbp, p)));
+  const fromPrice = Math.min(...sellable.map((v) => v.priceGbp));
+  // Low-confidence market estimate is noise: treat it as no data (owner's rule).
+  const comp = input.competitor && input.competitor.estimateGbp > 0
+    && (input.competitor.confidence === 'high' || input.competitor.confidence === 'medium')
+    ? input.competitor : null;
+  const worstAt = (scale: number) => Math.min(...sellable.map((v) => liveNetGbp(v.priceGbp * scale, v.costGbp, p)));
+
+  // CASE A: loses money at the CURRENT shelf price. Lowering only makes it worse.
+  if (worstCurrent < floor) {
+    if (comp && comp.estimateGbp > fromPrice && worstAt(comp.estimateGbp / fromPrice) >= floor) {
+      // The only fix is a price INCREASE, which we never do automatically -> owner's call.
+      return { kind: 'flag', reason: `loses money now but would clear the floor at the market price ~GBP ${comp.estimateGbp.toFixed(2)} - a price increase is your call` };
+    }
+    return { kind: 'drop', reason: `loses GBP ${(-worstCurrent).toFixed(2)}/unit at its current price and cannot be fixed by lowering` };
+  }
+
+  // CASE B: profitable now, but are we priced ABOVE the market? Lower to compete if still profitable.
+  if (comp) {
+    const ceiling = comp.estimateGbp * (1 + p.competitionTolerancePct);
+    if (fromPrice > ceiling) {
+      const scale = comp.estimateGbp / fromPrice; // bring the from-price down to the market
+      if (worstAt(scale) >= floor) {
+        const updates = sellable.map((v) => ({ variantId: v.variantId, toGbp: round99Down(v.priceGbp * scale) }));
+        return { kind: 'reprice', updates, reason: `above UK street ~GBP ${comp.estimateGbp.toFixed(2)}; lowered to compete, still profitable` };
+      }
+      return { kind: 'drop', reason: `to compete we would need ~GBP ${comp.estimateGbp.toFixed(2)}, below our profitable floor` };
+    }
+  }
+  return { kind: 'keep', reason: `profitable at GBP ${fromPrice.toFixed(2)} and at/below the market` };
+}
+
 // --- Audit agent (observe-first; never archives) ---
 
 /**
