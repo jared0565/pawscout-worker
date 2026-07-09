@@ -2,5 +2,32 @@
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
   "skillOverrides": {
     "graphify": "off"
+  },
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python -m graphite build F:/Projects/Shopify/demo-store2/pawscout-worker",
+            "timeout": 120,
+            "statusMessage": "Rebuilding Graphite code graph (0 tokens)"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python F:/Projects/Shopify/demo-store2/pawscout-worker/.claude/graph-reminder.py",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
   }
 }
