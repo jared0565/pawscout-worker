@@ -112,6 +112,7 @@ describe('decideProfitAction (owner rule: net >= GBP2, price just under the comp
   // Realistic ad share; floor GBP2 comes from DEFAULT_PROFIT. liveNet ~= 0.57*price - cost.
   const P: ProfitConfig = { ...DEFAULT_PROFIT, adShareOfRevenue: 0.15 };
   const hi = (estimateGbp: number) => ({ estimateGbp, confidence: 'high' as const });
+  const med = (estimateGbp: number) => ({ estimateGbp, confidence: 'medium' as const });
 
   it('KEEPS (never acts blind) when there is no live price/cost', () => {
     expect(decideProfitAction({ variants: [{ variantId: 'v', priceGbp: 0, costGbp: 0 }], competitor: null, profit: P }).kind).toBe('keep');
@@ -138,9 +139,22 @@ describe('decideProfitAction (owner rule: net >= GBP2, price just under the comp
     if (a.kind === 'reprice') { expect(a.updates[0].toGbp).toBeLessThan(30); expect(a.updates[0].toGbp).toBeLessThan(20); }
   });
 
-  it('DROPS when it cannot clear GBP2 net even at the best price below the market', () => {
+  it('DROPS when it cannot clear GBP2 net even at the best price below a HIGH-confidence market', () => {
     const a = decideProfitAction({ variants: [{ variantId: 'v', priceGbp: 30, costGbp: 12 }], competitor: hi(15), profit: P });
     expect(a.kind).toBe('drop');
+  });
+
+  it('FLAGS (never auto-archives) when it cannot clear the floor against only a MEDIUM-confidence market', () => {
+    // The competitor price is the softest input; a medium-confidence low estimate
+    // must not silently archive a possibly-profitable product. Reprice can run on
+    // medium confidence (recoverable); an archive cannot, so it needs hard evidence.
+    const a = decideProfitAction({ variants: [{ variantId: 'v', priceGbp: 30, costGbp: 12 }], competitor: med(15), profit: P });
+    expect(a.kind).toBe('flag');
+  });
+
+  it('still REPRICES on a medium-confidence market when it CAN clear the floor (reprice is recoverable)', () => {
+    const a = decideProfitAction({ variants: [{ variantId: 'v', priceGbp: 15, costGbp: 5 }], competitor: med(25), profit: P });
+    expect(a.kind).toBe('reprice');
   });
 
   it('KEEPS (deadband) when already at the undercut target below the market', () => {

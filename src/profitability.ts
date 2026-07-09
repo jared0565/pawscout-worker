@@ -242,7 +242,15 @@ export function decideProfitAction(input: {
       const dir = target > fromPrice ? 'raise' : 'lower';
       return { kind: 'reprice', updates, reason: `${dir} to GBP ${target.toFixed(2)} (just under the market ~GBP ${comp.estimateGbp.toFixed(2)} delivered), net >= GBP ${floor}/unit` };
     }
-    return { kind: 'drop', reason: `cannot clear GBP ${floor} net even at the best price below the market (~GBP ${comp.estimateGbp.toFixed(2)} delivered)` };
+    // Can't clear the floor even at the best price below the market. Archiving is
+    // the most destructive action and the competitor price is the softest input, so
+    // auto-drop needs HARD evidence: only a HIGH-confidence market triggers it. A
+    // medium-confidence low estimate is flagged for the owner, never auto-archived
+    // (a reprice above is recoverable; an archive effectively is not).
+    if (comp.confidence === 'high') {
+      return { kind: 'drop', reason: `cannot clear GBP ${floor} net even at the best price below the market (~GBP ${comp.estimateGbp.toFixed(2)} delivered)` };
+    }
+    return { kind: 'flag', reason: `cannot clear GBP ${floor} net below the market (~GBP ${comp.estimateGbp.toFixed(2)} delivered, ${comp.confidence} confidence) - your call before archiving` };
   }
 
   // No defensible market price -> cannot safely reprice (never guess a price).
