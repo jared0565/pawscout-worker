@@ -1,4 +1,4 @@
-import { DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, DEFAULT_SEMANTIC, type TenantRow, type TenantConfig, type Fulfil } from './types';
+import { DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, DEFAULT_SEMANTIC, DEFAULT_PROFIT, type TenantRow, type TenantConfig, type Fulfil, type ProfitConfig } from './types';
 import type { LogisticsRoute } from './logistics';
 import { deriveModels } from './llm-migrate';
 import { DEFAULT_INBOX, type InboxConfig } from './inbox/types';
@@ -44,6 +44,19 @@ export interface WarehouseRow {
   fetched_at: string;
   stock_checked_at: string;
   created_at: string;
+}
+
+export interface ProfitVerdictRow {
+  cj_pid: string;
+  verdict: string; // pass | review | reject
+  net_gbp: number | null;
+  net_pct: number | null;
+  our_retail_gbp: number | null;
+  competitor_gbp: number | null;
+  competitor_confidence: string | null;
+  competitor_sources: string | null; // JSON array
+  reason: string;
+  checked_at: string;
 }
 
 export interface OrderRow {
@@ -174,9 +187,9 @@ export class TenantStore {
 
   async getConfig(): Promise<TenantConfig | null> {
     const row = await this.db
-      .prepare(`SELECT collection_map, gates, pricing, floors, llm, addons, fulfil, inbox, semantic, target FROM tenant_config WHERE shop = ?1`)
+      .prepare(`SELECT collection_map, gates, pricing, floors, llm, addons, fulfil, inbox, semantic, target, profit FROM tenant_config WHERE shop = ?1`)
       .bind(this.shop)
-      .first<{ collection_map: string; gates: string; pricing: string; floors: string; llm: string; addons: string; fulfil: string; inbox: string; semantic: string; target: number }>();
+      .first<{ collection_map: string; gates: string; pricing: string; floors: string; llm: string; addons: string; fulfil: string; inbox: string; semantic: string; target: number; profit: string }>();
     if (!row) return null;
     return {
       collectionMap: JSON.parse(row.collection_map),
@@ -199,6 +212,7 @@ export class TenantStore {
       fulfil: { ...DEFAULT_FULFIL, ...JSON.parse(row.fulfil || '{}') },
       inbox: { ...DEFAULT_INBOX, ...JSON.parse(row.inbox || '{}') },
       semantic: { ...DEFAULT_SEMANTIC, ...JSON.parse(row.semantic || '{}') },
+      profit: { ...DEFAULT_PROFIT, ...JSON.parse(row.profit || '{}') },
       target: row.target
     };
   }
@@ -217,6 +231,55 @@ export class TenantStore {
       .prepare(`UPDATE tenant_config SET inbox = ?2, updated_at = ?3 WHERE shop = ?1`)
       .bind(this.shop, JSON.stringify(inbox), new Date().toISOString())
       .run();
+  }
+
+  /** Persist the profitability config block (the enabled/hardBlock flips live here). */
+  async saveProfit(profit: ProfitConfig): Promise<void> {
+    await this.db
+      .prepare(`UPDATE tenant_config SET profit = ?2, updated_at = ?3 WHERE shop = ?1`)
+      .bind(this.shop, JSON.stringify(profit), new Date().toISOString())
+      .run();
+  }
+
+  /** Upsert a product's profitability verdict (the observe audit's output). */
+  async upsertProfitVerdict(rec: {
+    cjPid: string; verdict: string; netGbp: number | null; netPct: number | null; ourRetailGbp: number | null;
+    competitorGbp: number | null; competitorConfidence: string | null; competitorSources: string[] | null; reason: string;
+  }): Promise<void> {
+    await this.db
+      .prepare(
+        `INSERT INTO product_profit (shop, cj_pid, verdict, net_gbp, net_pct, our_retail_gbp, competitor_gbp, competitor_confidence, competitor_sources, reason, checked_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+         ON CONFLICT(shop, cj_pid) DO UPDATE SET verdict = ?3, net_gbp = ?4, net_pct = ?5, our_retail_gbp = ?6, competitor_gbp = ?7, competitor_confidence = ?8, competitor_sources = ?9, reason = ?10, checked_at = ?11`
+      )
+      .bind(
+        this.shop, rec.cjPid, rec.verdict, rec.netGbp, rec.netPct, rec.ourRetailGbp, rec.competitorGbp, rec.competitorConfidence,
+        rec.competitorSources ? JSON.stringify(rec.competitorSources) : null, rec.reason, new Date().toISOString()
+      )
+      .run();
+  }
+
+  /** Verdicts worst-first (reject, then review, then pass), then lowest net. */
+  async listProfitVerdicts(limit = 500): Promise<ProfitVerdictRow[]> {
+    const { results } = await this.db
+      .prepare(
+        `SELECT cj_pid, verdict, net_gbp, net_pct, our_retail_gbp, competitor_gbp, competitor_confidence, competitor_sources, reason, checked_at
+         FROM product_profit WHERE shop = ?1
+         ORDER BY CASE verdict WHEN 'reject' THEN 0 WHEN 'review' THEN 1 ELSE 2 END, net_gbp ASC LIMIT ?2`
+      )
+      .bind(this.shop, limit)
+      .all<ProfitVerdictRow>();
+    return results ?? [];
+  }
+
+  async getProfitVerdict(cjPid: string): Promise<ProfitVerdictRow | null> {
+    return await this.db
+      .prepare(
+        `SELECT cj_pid, verdict, net_gbp, net_pct, our_retail_gbp, competitor_gbp, competitor_confidence, competitor_sources, reason, checked_at
+         FROM product_profit WHERE shop = ?1 AND cj_pid = ?2`
+      )
+      .bind(this.shop, cjPid)
+      .first<ProfitVerdictRow>();
   }
 
   async putSupplierCredential(supplier: string, apiKeyEnc: string, label: string): Promise<void> {

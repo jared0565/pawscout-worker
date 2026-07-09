@@ -168,6 +168,9 @@ export interface TenantConfig {
   // so callers/tests building a partial TenantConfig need not all set it. Read it via
   // the semantic library's own default-guard, never assume presence on a hand-built cfg.
   semantic?: SemanticConfig;
+  // Profitability gate config. Always populated by getConfig ('{}' default +
+  // DEFAULT_PROFIT merge); optional on hand-built cfgs. Read via DEFAULT_PROFIT guard.
+  profit?: ProfitConfig;
   target: number;
 }
 
@@ -188,6 +191,43 @@ export const DEFAULT_ADDONS: Addons = { enabled: true, priceMinUsd: 0.5, priceMa
 /** Pet semantic term library: query/sourcing term expansion, per collection. */
 export interface SemanticConfig { enabled: boolean; maxExpansions: number; ttlDays: number; excludeCollections: string[] }
 export const DEFAULT_SEMANTIC: SemanticConfig = { enabled: true, maxExpansions: 8, ttlDays: 30, excludeCollections: ['more-to-love'] };
+
+/**
+ * Profitability gate config. Ships DORMANT (enabled=false): the import gate and
+ * the nightly audit stage are no-ops until the owner flips it on. Two knobs
+ * separate OBSERVE from ENFORCE - `enabled` turns on the observe audit + a
+ * REVIEW-mode import gate (sub-floor items import as drafts, never rejected);
+ * `hardBlock` then turns on actual REJECT. Fee rates are the researched cost
+ * stack the pricing multiplier was sized for. All values owner-tunable in
+ * tenant_config.profit. See docs/superpowers/specs/2026-07-09-profitability-engine-design.md.
+ */
+export interface ProfitConfig {
+  enabled: boolean;                  // master switch; false = fully dormant (no spend, gate no-ops)
+  hardBlock: boolean;                // enforce: import gate REJECTs a sub-floor product (else imports it as a review draft)
+  competitionCheckOnImport: boolean; // add the LLM+web competitor check to the sync import path (default off; audit always runs it)
+  adShareOfRevenue: number;          // ad spend as a fraction of GROSS retail (0.33 = ROAS 3)
+  paymentsFeeRate: number;           // payment processing, on gross (~0.025)
+  refundReserveRate: number;         // refund reserve, on ex-VAT revenue (~0.03)
+  vatRate: number;                   // UK VAT included in the sticker (0.20)
+  minNetAfterAdsGbp: number;         // per-unit net-after-ads floor, GBP
+  minNetMarginPct: number;           // net as a fraction of ex-VAT revenue floor
+  competitionTolerancePct: number;   // how far above the cheapest competitor we may sit before "won't sell"
+  cacheTtlDays: number;              // competitor-signal cache TTL
+}
+// DORMANT + discriminating defaults. adShareOfRevenue 0.33 is the researched
+// worst case (ROAS 3, 100% paid acquisition on GROSS retail). At the live 2.2x
+// multiplier per-unit net is thin, so the floor defaults to 0: observe mode
+// flags only per-unit MONEY-LOSERS (the high-cost, margin-capped auto-feeder
+// class that goes negative once ads are charged), not thin-but-positive items.
+// The owner tunes two levers after seeing the observe output: lower
+// adShareOfRevenue toward their real BLENDED acquisition cost (organic/repeat/
+// affiliate sales carry no ad cost), and/or raise minNetAfterAdsGbp to demand a
+// real per-unit cushion.
+export const DEFAULT_PROFIT: ProfitConfig = {
+  enabled: false, hardBlock: false, competitionCheckOnImport: false,
+  adShareOfRevenue: 0.33, paymentsFeeRate: 0.025, refundReserveRate: 0.03, vatRate: 0.20,
+  minNetAfterAdsGbp: 0, minNetMarginPct: 0, competitionTolerancePct: 0.15, cacheTtlDays: 14,
+};
 // fulfilment mode 'manual' by default - Stage B never spends until set to 'pawscout'.
 export const DEFAULT_FULFIL: Fulfil = { mode: 'manual' };
 export const DEFAULT_TARGET = 12;
