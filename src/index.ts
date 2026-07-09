@@ -40,6 +40,8 @@ import { searchBackfill, normalizeKeyword } from './proxy/search';
 import { LlmClient, classifyKeyword, curateProduct, pickHeroImage, rewriteDescription } from './llm';
 import { buildPreview, getDetailPreferWarehouse, curateDetailImages, confirmAndImport, reconcileAddonVisibility, reconcileHeroImages, reconcileDescriptions, reconcileCategories } from './proxy/import';
 import { makeAdminGraphql } from './shopify-admin';
+import { getProfitConsole, saveProfitFlags, archiveProfitProduct } from './profit-console';
+import { auditProfitability } from './profitability';
 import { readDeliveryConfig, syncSignatureProfiles } from './shipping/delivery-profile';
 import { resolveShipConfig } from './shipping/ship-config';
 import { resolveLogistics } from './logistics';
@@ -437,6 +439,43 @@ app.post('/api/traffic/delete', async (c) => {
   if (typeof body.id !== 'string' || !body.id) return c.json({ ok: false, error: 'id required' }, 400);
   const gone = await new TenantStore(c.env.DB, s).deleteTrafficChannel(body.id);
   return c.json(gone ? { ok: true } : { ok: false, error: 'Channel not found' });
+});
+
+// --- Profitability audit (2026-07-09): the observe-first profit engine's console.
+// Ships dormant; /config flips Observe/Enforce, /run drains one audit batch,
+// /archive archives ONE flagged product on explicit owner confirm.
+app.post('/api/profit', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  const store = new TenantStore(c.env.DB, s);
+  return c.json(await getProfitConsole(store, await store.getConfig()));
+});
+app.post('/api/profit/config', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: Record<string, unknown> = {};
+  try { body = await c.req.json(); } catch {}
+  const store = new TenantStore(c.env.DB, s);
+  return c.json(await saveProfitFlags(store, await store.getConfig(), body));
+});
+app.post('/api/profit/run', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  const store = new TenantStore(c.env.DB, s);
+  const cfg = await store.getConfig();
+  if (!cfg?.profit?.enabled) return c.json({ ok: false, error: 'Observe is off' });
+  let body: { offset?: unknown } = {};
+  try { body = await c.req.json(); } catch {}
+  const offset = Number.isFinite(Number(body.offset)) ? Math.max(0, Math.floor(Number(body.offset))) : 0;
+  const llm = new LlmClient({ openrouter: c.env.OPENROUTER_API_KEY, openai: c.env.OPENAI_API_KEY });
+  const r = await auditProfitability(store, llm, cfg, { offset, limit: 15 });
+  return c.json({ ok: true, ...r, offset });
+});
+app.post('/api/profit/archive', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: { cjPid?: unknown } = {};
+  try { body = await c.req.json(); } catch {}
+  const store = new TenantStore(c.env.DB, s);
+  const admin = await adminForShop(c.env, store);
+  if (!admin) return c.json({ ok: false, error: 'Shopify is not connected' });
+  return c.json(await archiveProfitProduct(store, admin, body.cjPid));
 });
 
 // --- Privacy-policy wording keeper (2026-07-05): check + one-click apply ---

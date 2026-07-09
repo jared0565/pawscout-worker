@@ -41,6 +41,8 @@ import { eventsView, eventsCss } from './views/events';
 import { eventsJs } from './events-js';
 import { trafficJs } from './traffic-js';
 import { trafficView, trafficCss } from './views/traffic';
+import { profitJs } from './profit-js';
+import { profitView, profitCss } from './views/profit';
 import { blogJs } from './blog-js';
 import { blogView, blogCss } from './views/blog';
 import { settingsView, settingsCss } from './views/settings';
@@ -155,6 +157,7 @@ ${partnersCss}
 ${campaignsCss}
 ${eventsCss}
 ${trafficCss}
+${profitCss}
 ${blogCss}
 ${settingsCss}
 ${helpCss}</style>
@@ -189,6 +192,9 @@ ${trafficView}
 </main>
 <main class="view" id="view-content">
 ${blogView}
+</main>
+<main class="view" id="view-profitability">
+${profitView}
 </main>
 <main class="view" id="view-settings">
 ${settingsView}
@@ -951,6 +957,7 @@ ${partnersJs}
 ${campaignsJs}
 ${eventsJs}
 ${trafficJs}
+${profitJs}
 ${blogJs}
 refresh();
 loadInsights();
@@ -962,6 +969,7 @@ loadPartners();
 loadCampaigns();
 loadTraffic();
 loadContent();
+pfLoad();
 loadSystemStates();
 ${routerJs}</script>
 </body></html>`;

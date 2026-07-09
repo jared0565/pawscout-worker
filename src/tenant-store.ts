@@ -57,6 +57,11 @@ export interface ProfitVerdictRow {
   competitor_sources: string | null; // JSON array
   reason: string;
   checked_at: string;
+  // Joined from product_links (listProfitVerdicts only): the current product so
+  // the console can link to it and skip already-archived rows.
+  handle?: string | null;
+  shopify_product_id?: string | null;
+  link_state?: string | null;
 }
 
 export interface OrderRow {
@@ -259,13 +264,18 @@ export class TenantStore {
       .run();
   }
 
-  /** Verdicts worst-first (reject, then review, then pass), then lowest net. */
+  /** Verdicts worst-first (reject, then review, then pass), then lowest net.
+   *  Joins the current product_link so the console can link to the product and
+   *  tell which rows are already archived. */
   async listProfitVerdicts(limit = 500): Promise<ProfitVerdictRow[]> {
     const { results } = await this.db
       .prepare(
-        `SELECT cj_pid, verdict, net_gbp, net_pct, our_retail_gbp, competitor_gbp, competitor_confidence, competitor_sources, reason, checked_at
-         FROM product_profit WHERE shop = ?1
-         ORDER BY CASE verdict WHEN 'reject' THEN 0 WHEN 'review' THEN 1 ELSE 2 END, net_gbp ASC LIMIT ?2`
+        `SELECT pp.cj_pid, pp.verdict, pp.net_gbp, pp.net_pct, pp.our_retail_gbp, pp.competitor_gbp, pp.competitor_confidence, pp.competitor_sources, pp.reason, pp.checked_at,
+                pl.handle AS handle, pl.shopify_product_id AS shopify_product_id, pl.state AS link_state
+         FROM product_profit pp
+         LEFT JOIN product_links pl ON pl.shop = pp.shop AND pl.cj_pid = pp.cj_pid
+         WHERE pp.shop = ?1
+         ORDER BY CASE pp.verdict WHEN 'reject' THEN 0 WHEN 'review' THEN 1 ELSE 2 END, pp.net_gbp ASC LIMIT ?2`
       )
       .bind(this.shop, limit)
       .all<ProfitVerdictRow>();

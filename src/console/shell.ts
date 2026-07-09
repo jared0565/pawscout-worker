@@ -42,6 +42,7 @@ export const railHtml = `<nav class="rail" aria-label="Console sections">
   <button type="button" class="rail-btn" data-route="inbox" onclick="location.hash='#/inbox'">Inbox<span class="rail-badge" id="rail-inbox-badge" hidden>0</span></button>
   <button type="button" class="rail-btn" data-route="catalog" onclick="location.hash='#/catalog'">Catalog</button>
   <button type="button" class="rail-btn" data-route="ops" onclick="location.hash='#/ops'">Operations</button>
+  <button type="button" class="rail-btn" data-route="profitability" onclick="location.hash='#/profitability'">Profitability</button>
   <button type="button" class="rail-btn" data-route="audit" onclick="location.hash='#/audit'">Audit</button>
   <button type="button" class="rail-btn" data-route="partners" onclick="location.hash='#/partners'">Partners</button>
   <button type="button" class="rail-btn" data-route="campaigns" onclick="location.hash='#/campaigns'">Campaigns</button>
@@ -62,7 +63,7 @@ export const routerJs = `
 // first ten routes, so appending keeps every existing keyboard shortcut stable
 // (they have no digit key; the rail buttons sit in HTML order, not ROUTES
 // order - Content sits under Traffic in the rail).
-var ROUTES=['glance','inbox','catalog','ops','audit','partners','campaigns','traffic','settings','help','events','content'];
+var ROUTES=['glance','inbox','catalog','ops','audit','partners','campaigns','traffic','settings','help','events','content','profitability'];
 function currentRoute(){
   var h=location.hash||'';
   if(h.indexOf('#/')===0) h=h.slice(2); else if(h.indexOf('#')===0) h=h.slice(1);

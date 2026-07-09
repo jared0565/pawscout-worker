@@ -247,7 +247,7 @@ describe('consolePage', () => {
     expect(scripts).toContain('applyRoute();'); // applied on load too
     // Glance is the default route: unknown/missing hash falls back to it.
     // 'events' is appended LAST so digits 1-9 and 0 keep their existing routes.
-    expect(scripts).toContain("var ROUTES=['glance','inbox','catalog','ops','audit','partners','campaigns','traffic','settings','help','events','content']");
+    expect(scripts).toContain("var ROUTES=['glance','inbox','catalog','ops','audit','partners','campaigns','traffic','settings','help','events','content','profitability']");
     expect(scripts).toContain(":'glance'");
   });
 
@@ -333,6 +333,32 @@ describe('consolePage', () => {
     expect(scripts).toContain('esc(p.title)');
     // The copy makes the DRAFT-not-published contract explicit to the owner.
     expect(html).toContain('Nothing is published automatically');
+  });
+
+  // --- Profitability view (2026-07-09): observe-first profit audit window ---
+
+  it('renders the Profitability view: rail entry, switches, list, wired to /profit endpoints', async () => {
+    const html = await consolePage('test-api-key').text();
+    expect(html).toContain('data-route="profitability"');
+    expect(html).toContain('id="view-profitability"');
+    for (const id of ['pf-enabled', 'pf-hardblock', 'pf-thresholds', 'pf-summary', 'pf-list', 'pf-msg']) {
+      expect(html).toContain('id="' + id + '"');
+    }
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+    expect(scripts).toContain('function pfLoad(');
+    expect(scripts).toContain('function pfRunAudit(');
+    expect(scripts).toContain('function pfArchive(');
+    for (const route of ["'/profit'", "'/profit/config'", "'/profit/run'", "'/profit/archive'"]) {
+      expect(scripts).toContain(route); // api() prepends /api
+    }
+    expect(scripts).toContain('pfLoad();'); // loaded on startup
+    // The pid rides an ESCAPED data attribute resolved by delegation (XSS discipline),
+    // never string-built into inline onclick JS.
+    expect(scripts).toContain('data-pf-pid="\'+esc(');
+    // Archiving one product is two-click armed (prtArm), never automatic.
+    expect(scripts).toContain('Click again to archive');
+    // profitability is appended to ROUTES so the digit shortcuts stay stable.
+    expect(scripts).toContain("'events','content','profitability'");
   });
 
   it('Help covers Traffic as a full KB section: board, starter strategy, methodology, evidence', async () => {
