@@ -54,6 +54,27 @@ export function landedCostGbp(landedUsd: number, p: Pricing, freightUsd = 0): nu
 }
 
 /**
+ * Defensible cost-plus shelf price from a GBP LANDED cost (product + freight
+ * already in GBP - e.g. Shopify's live "Cost per item"). This is the active
+ * profitability agent's "market of one" when NO competitor price exists: our
+ * standard markup on the REAL, current cost. It mirrors retailPriceGbp's markup +
+ * minimum/maximum-margin clauses but is GBP-native, so it tracks the freshest live
+ * cost rather than an admission-time USD figure (freight is already inside the
+ * landed cost here, so it is part of the marked-up base rather than a pass-through
+ * term - a small, conservative difference vs retailPriceGbp that only matters for
+ * freight-heavy items, where it errs toward MORE margin). Returns 0 (no defensible
+ * price) for a non-positive cost, so callers can fall back to a flag.
+ */
+export function costPlusPriceGbp(costGbp: number, p: Pricing): number {
+  if (!Number.isFinite(costGbp) || costGbp <= 0) return 0;
+  let retail = costGbp * Math.max(p.multiplier, p.floor);
+  if (retail - costGbp < p.minMarginGbp) retail = costGbp + p.minMarginGbp;
+  const cap = p.maxMarginGbp;
+  if (typeof cap === 'number' && Number.isFinite(cap) && cap > 0 && retail - costGbp > cap) retail = costGbp + cap;
+  return round99(retail);
+}
+
+/**
  * Affiliate £6-floor parameters. The floor is the per-unit contribution that
  * must SURVIVE an affiliate sale: net-of-VAT revenue (the VAT isn't ours),
  * minus honest COGS, minus the affiliate commission (on the ex-VAT base) and

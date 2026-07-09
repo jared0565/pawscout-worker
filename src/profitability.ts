@@ -9,7 +9,7 @@
 // unless cfg.profit.enabled. Specs: 2026-07-09-profitability-agent-active.md
 // (active) supersedes 2026-07-09-profitability-engine-design.md (observe-first).
 
-import { retailPriceGbp, landedCostGbp } from './pricing';
+import { retailPriceGbp, landedCostGbp, costPlusPriceGbp } from './pricing';
 import { LlmClient } from './llm';
 import { resolveChain } from './llm-resolve';
 import type { TenantStore } from './tenant-store';
@@ -141,8 +141,11 @@ export async function competitorSignal(
 
 // --- Active agent decision (adjust-or-drop) on LIVE Shopify numbers ---
 
-/** One sellable variant valued at its ACTUAL live Shopify price + landed cost (GBP). */
-export interface LiveVariant { variantId: string; priceGbp: number; costGbp: number }
+/** One sellable variant valued at its ACTUAL live Shopify price + landed cost (GBP).
+ *  `rulePriceGbp` is our defensible cost-plus shelf price (costPlusPriceGbp on the
+ *  live cost) - the "market of one" the agent reprices to when NO competitor exists.
+ *  Optional so the decision stays pure/testable; the runner always supplies it. */
+export interface LiveVariant { variantId: string; priceGbp: number; costGbp: number; rulePriceGbp?: number }
 
 /** What the agent decides to do with a product. `reprice` only ever LOWERS. */
 export type ProfitAction =
@@ -233,17 +236,41 @@ export function decideProfitAction(input: {
     return { kind: 'flag', reason: `cannot clear GBP ${floor} net below the market (~GBP ${comp.estimateGbp.toFixed(2)} delivered, ${comp.confidence} confidence) - your call before archiving` };
   }
 
-  // No defensible market price -> cannot safely reprice (never guess a price). A
-  // drop here must be a DEFENSIBLE loss that does NOT depend on the tunable ad-share
-  // assumption: the item sells BELOW LANDED COST (revenue ex-VAT < cost), i.e. the
-  // shop loses money on the product itself. A merely thin full-stack net (gross-
-  // positive, negative only after the placeholder ad share) is FLAGGED, never
-  // auto-archived - same asymmetry rule as the competitor branch: no/soft market
-  // data must not unlock a MORE destructive action than hard, agreed market data.
+  // No defensible market price. A DROP here must be a defensible loss that does NOT
+  // depend on the tunable ad-share assumption: the item sells BELOW LANDED COST
+  // (revenue ex-VAT < cost), i.e. the shop loses money on the product itself.
   const worstGrossExVat = Math.min(...sellable.map((v) => v.priceGbp / (1 + p.vatRate) - v.costGbp));
   if (worstGrossExVat < 0) return { kind: 'drop', reason: 'sells below landed cost (loses money on the item itself) and there is no market data to reprice from' };
-  if (worstNow < floor) return { kind: 'flag', reason: `below the GBP ${floor} net target and no market price to safely reprice - your call` };
-  return { kind: 'keep', reason: `net >= GBP ${floor}/unit at its current price` };
+
+  // Already profitable at its current price -> KEEP. We do not lower a working price
+  // with no evidence it is above market ("no competitor found" is ambiguous - it can
+  // mean we are the only seller as easily as an unmatched search), and we never
+  // speculate a raise above the current price when it is already clearing the floor.
+  if (worstNow >= floor) return { kind: 'keep', reason: `net >= GBP ${floor}/unit at its current price (no market data)` };
+
+  // Thin (below the floor) with no market price. Price it to our DEFENSIBLE cost-plus
+  // rule (the "market of one" = our standard markup on the real live cost) and keep it
+  // live - the owner's rule: with no competitor, compute the defensible shelf price
+  // rather than freezing or flagging. The raise is CAPPED at the rule (never speculate
+  // a premium above our own markup without a competitor signal the market bears more).
+  // Because net rises monotonically with price, clearing the floor at the rule means
+  // the rule sits above the current thin price, so this only ever RAISES.
+  const rules = sellable.map((v) => v.rulePriceGbp);
+  if (rules.every((r) => typeof r === 'number' && (r as number) > 0)) {
+    const worstAtRule = Math.min(...sellable.map((v) => liveNetGbp(v.rulePriceGbp as number, v.costGbp, p)));
+    if (worstAtRule >= floor) {
+      const updates = sellable.map((v) => ({ variantId: v.variantId, toGbp: v.rulePriceGbp as number }));
+      if (!updates.some((u, i) => Math.abs(u.toGbp - sellable[i].priceGbp) >= REPRICE_DEADBAND_GBP)) {
+        return { kind: 'keep', reason: `already at our cost-plus price, net >= GBP ${floor}/unit (no market data)` };
+      }
+      const target = Math.min(...updates.map((u) => u.toGbp));
+      return { kind: 'reprice', updates, reason: `raise to our cost-plus price GBP ${target.toFixed(2)} (no market data - our standard markup on real cost), net >= GBP ${floor}/unit` };
+    }
+  }
+
+  // Even our standard markup cannot lift it to the floor (or no cost-plus price is
+  // available): a genuine human call, never an auto-archive on soft/no data.
+  return { kind: 'flag', reason: `below the GBP ${floor} net target and even our standard markup can't clear it - your call` };
 }
 
 // --- Active agent (adjust-or-drop on LIVE Shopify numbers) ---
@@ -287,7 +314,10 @@ export async function runProfitAgent(
       const inv = await productInventoryItems(admin, pid);
       const sellable = inv
         .map((v) => ({ variantId: v.variantId, priceGbp: Number(v.price), costGbp: Number(v.cost) }))
-        .filter((v) => Number.isFinite(v.priceGbp) && v.priceGbp > 0 && Number.isFinite(v.costGbp) && v.costGbp > 0);
+        .filter((v) => Number.isFinite(v.priceGbp) && v.priceGbp > 0 && Number.isFinite(v.costGbp) && v.costGbp > 0)
+        // Defensible cost-plus price from the LIVE cost - the reprice target when no
+        // competitor is found (decideProfitAction's no-market-data branch).
+        .map((v) => ({ ...v, rulePriceGbp: costPlusPriceGbp(v.costGbp, cfg.pricing) }));
 
       if (!sellable.length) {
         // Nothing sellable + costed to judge - record it was seen, act on nothing.

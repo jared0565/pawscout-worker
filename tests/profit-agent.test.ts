@@ -106,6 +106,20 @@ describe('runProfitAgent (active adjust-or-drop on live Shopify numbers)', () =>
     expect(f.productProfit.get('MAYBE')?.verdict).toBe('review');
   });
 
+  it('RAISES a thin NO-competitor product to our cost-plus price (the market of one), not a flag', async () => {
+    // price 13 / cost 10: gross-positive but full-stack net thin, and NO competitor
+    // found. The runner computes the cost-plus price from the live cost and reprices
+    // to it, keeping the product live rather than flagging or freezing it.
+    const f = makeFakes({ THIN: { variants: [{ variantId: 'v', price: '13.00', cost: '10.00' }] } });
+    const r = await runProfitAgent(f.store, f.admin, f.llm, cfg({ dryRun: true }), {});
+    expect(r.repriced).toBe(1);
+    expect(f.priceCalls.length).toBe(0);                 // dry-run previews only
+    expect(f.ledger.length).toBe(1);
+    expect(f.ledger[0].action).toBe('reprice');
+    expect(Number(f.ledger[0].toGbp)).toBeGreaterThan(13); // raised toward our markup
+    expect(f.productProfit.get('THIN')?.action).toBe('reprice');
+  });
+
   it('the ledger DEDUPES: re-previewing the same reprice each tick logs only once', async () => {
     const f = makeFakes({ RAISE: { variants: [{ variantId: 'v', price: '15.00', cost: '5.00' }], competitor: { estimateGbp: 25, confidence: 'high' } } });
     await runProfitAgent(f.store, f.admin, f.llm, cfg({ dryRun: true }), {});

@@ -36,17 +36,31 @@ archiving a product - is gated to the HARDEST evidence.
        price below the market"). Auto-archive only on hard, agreed market evidence.
      - competitor confidence **medium** -> `flag` (owner's call). A soft low estimate
        must never silently archive a possibly-profitable product.
-3. **No defensible market price:** cannot safely reprice (never guess a price).
-   - Sells **below landed cost** (revenue ex-VAT `< cost`) -> `drop`. This is a
-     DEFENSIBLE loss - the shop loses money on the item itself, independent of the
-     tunable ad-share assumption. Any other sub-floor net (gross-positive, thin only
-     after the placeholder ad share) -> `flag` (owner's call). `>= GBP2` net -> `keep`.
-   - Rationale (asymmetry, again): the ad share defaults to the worst case (0.33), so
-     judging a no-market-data drop on FULL-STACK net would auto-archive genuinely
-     profitable stock the moment a market lookup comes back empty (cold cache / LLM
-     off). The drop gate here is assumption-free (below cost); everything else waits
-     for the owner. No/soft data must never unlock a more destructive action than
-     hard market data does.
+3. **No defensible market price:** price on our OWN defensible rule (the "market of
+   one"), never guess against a phantom competitor. In priority order:
+   - Sells **below landed cost** (revenue ex-VAT `< cost`) -> `drop`. A DEFENSIBLE
+     loss - the shop loses money on the item itself, independent of the tunable
+     ad-share assumption.
+   - Net **`>= GBP2`** at its current price -> `keep`. We do NOT lower a working price
+     with no evidence it is above market ("no competitor found" is ambiguous - it can
+     mean we are the only seller as easily as an unmatched search), and never
+     speculate a raise above a price already clearing the floor.
+   - **Thin** (net `< GBP2`, above cost): reprice to our **cost-plus rule price**
+     (`costPlusPriceGbp` on the LIVE cost = our standard markup, capped) when that
+     price clears the floor - a `reprice` that keeps the product live. The raise is
+     CAPPED at the rule (never a premium above our own markup without a competitor
+     signal the market bears more); since net rises monotonically with price, this
+     only ever RAISES a thin item. If even the rule price can't clear the floor (or no
+     cost-plus price is available) -> `flag` (owner's call).
+   - Rationale (asymmetry + owner's rule): the ad share defaults to the worst case
+     (0.33), so judging a no-market-data drop on FULL-STACK net would auto-archive
+     genuinely profitable stock the moment a lookup comes back empty (cold cache / LLM
+     off). The drop gate is assumption-free (below cost); a thin item is PRICED to our
+     defensible margin and kept selling rather than flagged-and-frozen; only a genuine
+     human call flags. No/soft data never unlocks a more destructive action than hard
+     market data does. The cost-plus price uses the live Shopify cost, so it also
+     corrects a no-competitor product whose cost rose after the agent took price
+     authority (the nightly sync no longer reprices it).
 
 Prices only ever land on a `.99` at or below the competitor's delivered price (never
 above the market). Auto-raise runs freely on defensible data; auto-drop runs only on

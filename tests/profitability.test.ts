@@ -98,12 +98,28 @@ describe('decideProfitAction (owner rule: net >= GBP2, price just under the comp
     expect(a.kind).toBe('drop');
   });
 
-  it('FLAGS (never auto-drops) a gross-positive item with no market data even when the placeholder ad share makes full-stack net negative', () => {
-    // price 12 / cost 5 is 58% gross margin (genuinely profitable), but the
-    // WORST-CASE default ad share (0.33) makes full-stack net negative. With no
-    // market data the agent must FLAG, not archive healthy stock - the no-data drop
-    // gate is below landed cost, which does not depend on the tunable ad share.
-    const a = decideProfitAction({ variants: [{ variantId: 'v', priceGbp: 12, costGbp: 5 }], competitor: null, profit: DEFAULT_PROFIT });
+  it('RAISES a thin no-competitor item to our cost-plus price (keeps it live; never auto-drops healthy stock on the placeholder ad share)', () => {
+    // price 12 / cost 5 is 58% gross margin (profitable), but full-stack net is
+    // negative at the WORST-CASE default ad share (0.33) - thin. With a defensible
+    // cost-plus price that clears the floor, the agent RAISES to it and keeps the
+    // product live (the owner's "market of one"), never archiving healthy stock.
+    const a = decideProfitAction({ variants: [{ variantId: 'v', priceGbp: 12, costGbp: 5, rulePriceGbp: 24.99 }], competitor: null, profit: DEFAULT_PROFIT });
+    expect(a.kind).toBe('reprice');
+    if (a.kind === 'reprice') { expect(a.updates[0].toGbp).toBe(24.99); expect(a.updates[0].toGbp).toBeGreaterThan(12); expect(a.reason).toContain('cost-plus'); }
+  });
+
+  it('KEEPS a healthy no-competitor item at its current price (does not lower a working price without market evidence)', () => {
+    // net well above the floor at 30, no competitor - we neither lower it (no evidence
+    // it is above market) nor touch it. "No competitor found" can mean we are the only
+    // seller as easily as an unmatched search, so a working price is left alone.
+    const a = decideProfitAction({ variants: [{ variantId: 'v', priceGbp: 30, costGbp: 5, rulePriceGbp: 12.99 }], competitor: null, profit: P });
+    expect(a.kind).toBe('keep');
+  });
+
+  it('FLAGS a thin no-competitor item when even our cost-plus price cannot clear the floor', () => {
+    // gross-positive (not below cost) but structurally thin: our standard markup still
+    // nets under the floor. No auto-drop on no market data - a human decides.
+    const a = decideProfitAction({ variants: [{ variantId: 'v', priceGbp: 14, costGbp: 10, rulePriceGbp: 15 }], competitor: null, profit: DEFAULT_PROFIT });
     expect(a.kind).toBe('flag');
   });
 
@@ -152,9 +168,11 @@ describe('decideProfitAction (owner rule: net >= GBP2, price just under the comp
     expect(a.kind).toBe('keep');
   });
 
-  it('FLAGS a sub-GBP2 item when there is no market price to safely reprice from', () => {
+  it('FLAGS a thin no-competitor item when no cost-plus price is available (fallback)', () => {
+    // No rulePriceGbp supplied (legacy / no cost source): the agent cannot compute a
+    // defensible reprice target, so a thin item flags rather than guessing a price.
     const a = decideProfitAction({ variants: [{ variantId: 'v', priceGbp: 12, costGbp: 6 }], competitor: null, profit: P });
-    expect(a.kind).toBe('flag'); // net ~0.84: positive but under the GBP2 target, no data to raise
+    expect(a.kind).toBe('flag'); // net ~0.6: positive but under the GBP2 target, no rule price to raise to
   });
 
   it('reprices EVERY variant, judged on the worst', () => {

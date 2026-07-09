@@ -1,6 +1,28 @@
 import { describe, it, expect } from 'vitest';
-import { retailPriceGbp, landedCostGbp, affiliateEligible, affiliateContributionGbp } from '../src/pricing';
+import { retailPriceGbp, landedCostGbp, costPlusPriceGbp, affiliateEligible, affiliateContributionGbp } from '../src/pricing';
 import { DEFAULT_PRICING } from '../src/types';
+
+describe('costPlusPriceGbp (GBP-native defensible markup on a live landed cost)', () => {
+  it('applies the multiplier to the GBP cost and rounds up to .99', () => {
+    // 10 GBP cost x 2.5 = 25 -> 25.99
+    expect(costPlusPriceGbp(10, DEFAULT_PRICING)).toBe(25.99);
+  });
+
+  it('enforces the absolute minimum margin on low-ticket items', () => {
+    // 1 GBP cost x 2.5 = 2.5 (margin 1.5 < 6) -> 1 + 6 = 7 -> 7.99
+    expect(costPlusPriceGbp(1, DEFAULT_PRICING)).toBe(7.99);
+  });
+
+  it('caps the absolute margin when maxMarginGbp is set', () => {
+    // 100 GBP cost x 2.5 = 250 (margin 150 > 30) -> 100 + 30 = 130 -> 130.99
+    expect(costPlusPriceGbp(100, { ...DEFAULT_PRICING, maxMarginGbp: 30 })).toBe(130.99);
+  });
+
+  it('returns 0 (no defensible price) for a non-positive cost', () => {
+    expect(costPlusPriceGbp(0, DEFAULT_PRICING)).toBe(0);
+    expect(costPlusPriceGbp(-5, DEFAULT_PRICING)).toBe(0);
+  });
+});
 
 describe('retailPriceGbp', () => {
   it('applies multiplier, FX and buffer, then rounds up to .99', () => {
