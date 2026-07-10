@@ -56,6 +56,17 @@ describe('LlmClient.jsonChain', () => {
     expect((fetchImpl.mock.calls[0][0] as string)).toContain('openrouter.ai');
   });
 
+  it('402 insufficient credits → advance immediately (no same-tier retry); OpenAI serves (2026-07-09 outage)', async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce({ ok: false, status: 402, json: async () => ({ error: { message: 'Insufficient credits. Add more using https://openrouter.ai/settings/credits', code: 402 } }) })
+      .mockResolvedValueOnce(ok('gpt-5.4-mini', '{"v":6}'));
+    const llm = new LlmClient({ openrouter: 'k', openai: 'o' }, fetchImpl as any);
+    const r = await llm.jsonChain({ chain: CHAIN, system: 's', user: 'u', validate: (v: any) => v });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.usage.provider).toBe('openai');
+    expect(fetchImpl).toHaveBeenCalledTimes(2); // an empty account never gets a pointless retry
+  });
+
   it('429 rate_limit_exceeded → retry SAME tier once; succeeds on retry without touching OpenAI', async () => {
     const fetchImpl = vi.fn()
       .mockResolvedValueOnce({ ok: false, status: 429, json: async () => ({ error: { code: 'rate_limit_exceeded', message: 'slow down' } }) })

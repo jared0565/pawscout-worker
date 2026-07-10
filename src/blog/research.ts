@@ -165,6 +165,14 @@ export async function collectSourcedFacts(
   });
   if (!r.ok) { console.warn(`blog facts research produced nothing: ${r.error}`); return []; }
   await store.logLlmUsage('blog-facts', r.usage.model, r.usage.promptTokens, r.usage.completionTokens, r.usage.costUsd);
+  // Provenance guard: the web plugin exists only on the OpenRouter tier. A
+  // floor-served (OpenAI) response had NO live search, so its "facts" and
+  // source URLs are model memory - exactly the fabricated-citation class this
+  // feature must never ship. Drop them; the drafter writes hermetically.
+  if (r.usage.provider === 'openai') {
+    console.warn('blog facts served without web search (floor tier) - discarded');
+    return [];
+  }
   return r.value;
 }
 

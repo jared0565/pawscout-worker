@@ -534,6 +534,17 @@ describe('sourced facts (web research the drafter may cite)', () => {
   it('an empty facts list is a VALID research outcome (never pushed to invent)', () => {
     expect(validateSourcedFacts({ facts: [] })).toEqual([]);
   });
+
+  it('discards facts served by the OpenAI floor (no web plugin = source URLs are model memory)', async () => {
+    // Same OpenRouter-shaped payload, but the client only has an OpenAI key, so
+    // the chain's floor tier serves it: provider === 'openai' -> facts dropped.
+    const fetchImpl = (async () => new Response(JSON.stringify({
+      choices: [{ message: { content: JSON.stringify({ facts: [{ fact: 'f', sourceUrl: 'https://rspca.org.uk/x', sourceName: 'RSPCA' }] }) } }],
+      usage: { prompt_tokens: 1, completion_tokens: 1 }, model: 'gpt-5.4-mini'
+    }), { status: 200 })) as unknown as typeof fetch;
+    const floorLlm = new LlmClient({ openai: 'k' }, fetchImpl);
+    expect(await collectSourcedFacts(floorLlm, STORE, CFG, { title: 't', angle: 'a', keyPoints: ['k'] })).toEqual([]);
+  });
 });
 
 describe('brief research web-first with hermetic fallback', () => {

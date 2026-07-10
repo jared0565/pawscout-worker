@@ -124,7 +124,7 @@ export async function draftArticle(
   const baseUser = JSON.stringify({ title: brief.title, angle: brief.angle, keyPoints: brief.keyPoints });
 
   const initialResult = await llm.jsonChain<BlogDraft>({
-    chain, maxTokens: 3200,
+    chain, maxTokens: 4800,
     system: buildSystem(brief, factPackText, facts),
     user: baseUser,
     validate: (v) => validateBlogDraft(v, tag)
@@ -134,7 +134,7 @@ export async function draftArticle(
 
   const revise = async (prev: BlogDraft, issues: string[]): Promise<BlogDraft | null> => {
     const r = await llm.jsonChain<BlogDraft>({
-      chain, maxTokens: 3200,
+      chain, maxTokens: 4800,
       system: buildSystem(brief, factPackText, facts, issues),
       user: JSON.stringify({ ...JSON.parse(baseUser), previousDraft: prev.bodyHtml.slice(0, 6000) }),
       validate: (v) => validateBlogDraft(v, tag)

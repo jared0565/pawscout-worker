@@ -230,12 +230,12 @@ describe('competitorSignal (delivered price = item + delivery)', () => {
     putSearchCache: async (key: string, value: string) => { cached.push(value); },
     logLlmUsage: async () => undefined
   } as unknown as TenantStore);
-  const llmOf = (raw: unknown) => ({
+  const llmOf = (raw: unknown, provider: 'openrouter' | 'openai' = 'openrouter') => ({
     available: true,
     jsonChain: async (o: { validate: (v: unknown) => CompetitorSignal | null }) => {
       const value = o.validate(raw);
       return value
-        ? { ok: true as const, value, usage: { model: 'test', promptTokens: 0, completionTokens: 0, costUsd: 0 } }
+        ? { ok: true as const, value, usage: { provider, model: 'test', promptTokens: 0, completionTokens: 0, costUsd: 0 } }
         : { ok: false as const, error: 'invalid' };
     }
   } as unknown as LlmClient);
@@ -252,5 +252,18 @@ describe('competitorSignal (delivered price = item + delivery)', () => {
   it('falls back to estimateGbp when the split fields are absent (older/partial shapes)', async () => {
     const r = await competitorSignal(llmOf({ estimateGbp: 14.99, confidence: 'medium', sources: [] }), storeOf([]), CFG, { pid: 'p2', title: 'X', ourRetailGbp: 9.99 });
     expect(r?.estimateGbp).toBe(14.99);
+  });
+
+  it('caps confidence at LOW when the OpenAI floor served (no web plugin = priors, not live search), and caches the capped value', async () => {
+    // 2026-07-09 outage: OpenRouter credits ran out, every call fell to the
+    // floor tier, and prior-based "high confidence" markets drove real drops.
+    // Low = "no market data" downstream, so the floor can never archive.
+    const cached: string[] = [];
+    const r = await competitorSignal(
+      llmOf({ itemGbp: 9.99, deliveryGbp: 2.0, estimateGbp: 11.99, confidence: 'high', sources: ['amazon.co.uk'] }, 'openai'),
+      storeOf(cached), CFG, { pid: 'p3', title: 'Dog Bottle', ourRetailGbp: 15.99 }
+    );
+    expect(r?.confidence).toBe('low');
+    expect(JSON.parse(cached[0]).confidence).toBe('low'); // the cache carries the capped signal too
   });
 });

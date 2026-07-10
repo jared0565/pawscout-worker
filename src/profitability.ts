@@ -141,8 +141,15 @@ export async function competitorSignal(
   });
   if (!r.ok) { console.warn(`competitor signal failed for ${arg.pid}: ${r.error}`); return null; }
   await store.logLlmUsage('profit-competition', r.usage.model, r.usage.promptTokens, r.usage.completionTokens, r.usage.costUsd);
-  if (r.value.estimateGbp > 0) await store.putSearchCache(competitorCacheKey(arg.pid), JSON.stringify(r.value), profit.cacheTtlDays);
-  return r.value;
+  // Provenance guard (2026-07-09 outage lesson): the web plugin exists only on
+  // the OpenRouter tier. When the OpenAI floor served this call, the "market"
+  // is model priors, not live search - cap confidence at low, which the
+  // decision policy already treats as NO market data (cost-plus pricing, never
+  // a market-driven drop). The floor must never archive a product on a
+  // remembered price.
+  const value: CompetitorSignal = r.usage.provider === 'openai' ? { ...r.value, confidence: 'low' } : r.value;
+  if (value.estimateGbp > 0) await store.putSearchCache(competitorCacheKey(arg.pid), JSON.stringify(value), profit.cacheTtlDays);
+  return value;
 }
 
 

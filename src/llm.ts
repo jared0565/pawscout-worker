@@ -117,6 +117,9 @@ export class LlmClient {
       const code = errBody?.error?.code; const type = errBody?.error?.type;
       const msg = errBody?.error?.message ?? `HTTP ${resp.status}`;
       if (resp.status === 400 && type === 'invalid_request_error') return { kind: 'stop', error: msg };
+      // 402 = OpenRouter "Insufficient credits" (2026-07-09 outage): the account
+      // is empty, so a same-tier retry can only fail again - advance immediately.
+      if (resp.status === 402) return { kind: 'advance', error: msg };
       if (resp.status === 429 && code === 'insufficient_quota') return { kind: 'advance', error: msg };
       if (resp.status === 401 || resp.status === 403 || resp.status === 404) return { kind: 'advance', error: msg };
       return { kind: 'retry', error: msg }; // 5xx/503/429 rate_limit
