@@ -138,6 +138,20 @@ export async function saveProfitFlags(
   return { ok: true };
 }
 
+/** Owner-confirmed "clear list & re-judge" (2026-07-10): wipe the standing
+ *  decisions AND the cached competitor signals so the continuous agent rebuilds
+ *  the Products list from scratch - fresh market research, live costs, current
+ *  pricing knobs. The action ledger is deliberately KEPT (history), and nothing
+ *  is archived or repriced by clearing: the next sweep re-decides every product
+ *  on live numbers exactly as it always does. */
+export async function clearProfitDecisions(
+  store: TenantStore
+): Promise<{ ok: true; cleared: number; cacheCleared: number }> {
+  const cleared = await store.clearProfitVerdicts();
+  const cacheCleared = await store.clearCompetitorCache();
+  return { ok: true, cleared, cacheCleared };
+}
+
 const ARCHIVE_PRODUCT = `mutation pawscoutProfitArchive($input: ProductInput!) {
   productUpdate(input: $input) { product { id } userErrors { field message } }
 }`;

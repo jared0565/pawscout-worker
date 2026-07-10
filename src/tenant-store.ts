@@ -353,6 +353,25 @@ export class TenantStore {
     return results ?? [];
   }
 
+  /** Wipe ALL standing profitability decisions for this shop (the console's
+   *  Products list). The action LEDGER (profit_actions) is deliberately kept -
+   *  history is history - and nothing is archived or repriced by clearing: the
+   *  15-min agent re-decides every product on live numbers and repopulates the
+   *  list over its next cycles. Returns the number of rows removed. */
+  async clearProfitVerdicts(): Promise<number> {
+    const r = await this.db.prepare(`DELETE FROM product_profit WHERE shop = ?1`).bind(this.shop).run();
+    return r.meta.changes ?? 0;
+  }
+
+  /** Drop every cached competitor signal (comp:<pid>) so the next judgment of
+   *  each product re-researches the market FRESH (current prompt, current
+   *  listings) instead of reusing a stale estimate - what makes "clear &
+   *  re-judge" meaningful. Other cache keys (pid:, hero:, ...) are untouched. */
+  async clearCompetitorCache(): Promise<number> {
+    const r = await this.db.prepare(`DELETE FROM search_cache WHERE shop = ?1 AND cache_key LIKE 'comp:%'`).bind(this.shop).run();
+    return r.meta.changes ?? 0;
+  }
+
   async getProfitVerdict(cjPid: string): Promise<ProfitVerdictRow | null> {
     return await this.db
       .prepare(

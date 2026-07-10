@@ -40,7 +40,7 @@ import { searchBackfill, normalizeKeyword } from './proxy/search';
 import { LlmClient, classifyKeyword, curateProduct, pickHeroImage, rewriteDescription } from './llm';
 import { buildPreview, getDetailPreferWarehouse, curateDetailImages, confirmAndImport, reconcileAddonVisibility, reconcileHeroImages, reconcileDescriptions, reconcileCategories } from './proxy/import';
 import { makeAdminGraphql } from './shopify-admin';
-import { getProfitConsole, saveProfitFlags, archiveProfitProduct } from './profit-console';
+import { getProfitConsole, saveProfitFlags, archiveProfitProduct, clearProfitDecisions } from './profit-console';
 import { runProfitAgent, competitorSignal } from './profitability';
 import { readDeliveryConfig, syncSignatureProfiles } from './shipping/delivery-profile';
 import { resolveShipConfig } from './shipping/ship-config';
@@ -456,6 +456,11 @@ app.post('/api/profit/config', async (c) => {
   try { body = await c.req.json(); } catch {}
   const store = new TenantStore(c.env.DB, s);
   return c.json(await saveProfitFlags(store, await store.getConfig(), body));
+});
+app.post('/api/profit/clear', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  const store = new TenantStore(c.env.DB, s);
+  return c.json(await clearProfitDecisions(store));
 });
 app.post('/api/profit/run', async (c) => {
   const s = await shopOf(c); if (typeof s !== 'string') return s;

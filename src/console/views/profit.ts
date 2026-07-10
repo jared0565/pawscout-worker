@@ -33,7 +33,11 @@ export const profitView = `  <section class="card">
 
   <section class="card">
     <h2>Products</h2>
-    <p class="sub" style="margin:0 0 10px">Worst first. Each row shows the product (name + SKU), the agent's decision and why, and three prices you can click to review: <strong>PDP</strong> (your storefront price, opens the product page), <strong>CJ</strong> (the supplier item price, opens the product in CJ) and <strong>Competitor</strong> (the market delivered price, opens a search; hover for the confidence and sources). <strong>Dropped</strong> = archived, cannot profit; <strong>Repriced</strong> = moved to just under the market; <strong>Flagged</strong> = your call. Archiving here is a manual one-click fallback and asks to confirm; it never deletes.</p>
+    <p class="sub" style="margin:0 0 10px">Worst first, and only what needs your eyes: <strong>passing products are hidden by default</strong> (a link under the table shows everything). Each row shows the product (name + SKU), the agent's decision and why, and three prices you can click to review: <strong>PDP</strong> (your storefront price, opens the product page), <strong>CJ</strong> (the supplier item price, opens the product in CJ) and <strong>Competitor</strong> (the market delivered price, opens a search; hover for the confidence and sources). <strong>Dropped</strong> = archived, cannot profit; <strong>Repriced</strong> = moved to just under the market; <strong>Flagged</strong> = your call. Archiving here is a manual one-click fallback and asks to confirm; it never deletes.</p>
+    <div class="row" style="margin:0 0 10px">
+      <button type="button" onclick="pfClearDecisions(this)">Clear list &amp; re-judge</button>
+      <span class="muted" style="align-self:center;font-size:12px">Wipes every decision AND the cached market prices; the agent re-researches and re-judges the whole catalog over the next few hours. Nothing is archived or repriced by clearing; the action history below is kept.</span>
+    </div>
     <div id="pf-list">Turn on the agent and run it to see decisions.</div>
   </section>
 

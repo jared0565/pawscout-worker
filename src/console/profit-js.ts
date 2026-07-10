@@ -4,7 +4,7 @@
 // Reuses the shared helpers el(), esc(), setMsg(), api(), prtArm().
 export const profitJs = `
 // --- Profitability: the active adjust-or-drop agent window ---
-var pfState={rows:[],config:null,recentActions:[]};
+var pfState={rows:[],config:null,recentActions:[],showAll:false};
 function pfChip(v){
   if(v==='reject') return '<span class="pf-chip pf-reject">reject</span>';
   if(v==='review') return '<span class="pf-chip pf-review">review</span>';
@@ -124,7 +124,13 @@ function pfRender(){
     +esc(pfMoney(c.minNetAfterAdsGbp))+'/unit</strong>; it prices just under the market delivered price and keeps at least the floor. Other thresholds are tuned in tenant_config.profit.';
   var box=el('pf-list');
   if(box){
-    if(!pfState.rows.length){ box.innerHTML='<p class="muted">No decisions yet. Turn on the agent and run it.</p>'; }
+    // Default view = only what needs eyes (review/reject). Passing products are
+    // behind the toggle so the list stays short as the catalog grows.
+    var all=pfState.rows;
+    var need=[]; for(var k=0;k<all.length;k++){ if(all[k].verdict!=='pass') need.push(all[k]); }
+    var rows=pfState.showAll?all:need;
+    if(!all.length){ box.innerHTML='<p class="muted">No decisions yet. The agent repopulates this list as it walks the catalog (or click Run now).</p>'; }
+    else if(!rows.length){ box.innerHTML='<p class="muted">Nothing needs review - all '+all.length+' evaluated products pass. <a href="#" class="pf-plink" onclick="return pfToggleAll()">Show them</a></p>'; }
     else{
       var s='<div class="pf-tablewrap"><table class="pf-table"><thead><tr>'
         +'<th class="pf-c-prod">Product</th>'
@@ -136,13 +142,19 @@ function pfRender(){
         +'<th class="pf-c-when">Processed</th>'
         +'<th class="pf-c-arch" aria-label="Actions"></th>'
         +'</tr></thead><tbody>';
-      for(var i=0;i<pfState.rows.length;i++) s+=pfRowTr(pfState.rows[i]);
+      for(var i=0;i<rows.length;i++) s+=pfRowTr(rows[i]);
       s+='</tbody></table></div>';
+      if(pfState.showAll){
+        if(need.length<all.length) s+='<p class="muted" style="margin:8px 4px 0;font-size:12px">Showing all '+all.length+'. <a href="#" class="pf-plink" onclick="return pfToggleAll()">Show only the '+need.length+' needing review</a></p>';
+      } else if(all.length>rows.length){
+        s+='<p class="muted" style="margin:8px 4px 0;font-size:12px">'+rows.length+' need review; '+(all.length-rows.length)+' passing products hidden. <a href="#" class="pf-plink" onclick="return pfToggleAll()">Show all '+all.length+'</a></p>';
+      }
       box.innerHTML=s;
     }
   }
   pfRenderLedger();
 }
+function pfToggleAll(){ pfState.showAll=!pfState.showAll; pfRender(); return false; }
 function pfSummary(sm){
   var el2=el('pf-summary'); if(!el2||!sm) return;
   if(!sm.total){ el2.textContent='Nothing evaluated yet.'; return; }
@@ -197,6 +209,18 @@ async function pfRunNow(btn){
     }
   }catch(e){ setMsg('pf-msg','Run stopped.','no'); }
   if(btn){ btn.disabled=false; btn.textContent='Run now'; }
+  pfLoad();
+}
+async function pfClearDecisions(btn){
+  if(!prtArm(btn,'Click again to clear ALL')) return;
+  btn.disabled=true; setMsg('pf-msg','Clearing…','muted');
+  try{
+    var r=await api('/profit/clear',{});
+    if(!r.ok) setMsg('pf-msg','Clear failed: '+(r.error||'unknown'),'no');
+    else setMsg('pf-msg','Cleared '+r.cleared+' decisions and '+r.cacheCleared+' cached market prices. The agent re-researches and re-judges the catalog over the next few hours (or click Run now).','ok');
+  }catch(e){ setMsg('pf-msg','Could not clear.','no'); }
+  btn.disabled=false; btn.removeAttribute('data-armed');
+  btn.textContent=btn.getAttribute('data-orig')||'Clear list & re-judge';
   pfLoad();
 }
 async function pfArchive(btn,pid){
