@@ -13,6 +13,7 @@ export const profitView = `  <section class="card">
       <label class="pf-switch"><input type="checkbox" id="pf-enabled" onchange="pfSetFlag('enabled',this.checked)"> <span><strong>Enabled</strong> - run the agent (off = fully dormant, nothing changes)</span></label>
       <label class="pf-switch"><input type="checkbox" id="pf-dryrun" checked onchange="pfSetFlag('dryRun',this.checked)"> <span><strong>Preview only</strong> - show what it WOULD do without touching prices or listings. Uncheck to go full auto.</span></label>
       <label class="pf-switch"><input type="checkbox" id="pf-hardblock" onchange="pfSetFlag('hardBlock',this.checked)"> <span><strong>Enforce at import</strong> - also hard-reject a per-unit money-loser when a NEW product is imported</span></label>
+      <label class="pf-switch"><input type="checkbox" id="pf-compimport" onchange="pfSetFlag('competitionCheckOnImport',this.checked)"> <span><strong>Competition check at import</strong> - before a NEW product enters, also research the market's delivered price and stop anything that could only compete below the net floor (one cached lookup per import; the agent reuses it later, so this costs nothing extra overall)</span></label>
     </div>
     <div class="pf-tune">
       <label for="pf-adshare"><strong>Ad share</strong> - the blended % of revenue spent on ads across ALL traffic (organic, repeat and affiliate sales carry no ad cost, so they pull this down). This is the biggest lever on what counts as profitable.</label>

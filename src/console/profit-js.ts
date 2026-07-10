@@ -113,6 +113,7 @@ function pfRender(){
   var en=el('pf-enabled'); if(en) en.checked=!!c.enabled;
   var dr=el('pf-dryrun'); if(dr){ dr.checked=(c.dryRun!==false); dr.disabled=!c.enabled; }
   var hb=el('pf-hardblock'); if(hb){ hb.checked=!!c.hardBlock; hb.disabled=!c.enabled; }
+  var ci=el('pf-compimport'); if(ci){ ci.checked=!!c.competitionCheckOnImport; ci.disabled=!c.enabled; }
   var as=el('pf-adshare'); if(as){ as.value=Math.round((c.adShareOfRevenue||0)*100); as.disabled=!c.enabled; }
   var ah=el('pf-adshare-hint');
   if(ah){ var apct=Math.round((c.adShareOfRevenue||0)*100);

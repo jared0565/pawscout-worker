@@ -598,6 +598,73 @@ describe('confirmAndImport profitability gate (dormant unless cfg.profit.enabled
   });
 });
 
+describe('confirmAndImport competition check at entry (competitionCheckOnImport)', () => {
+  // DETAIL's rule stickers are 19.99/23.99 (DEFAULT_PRICING); at the live ad share
+  // (0.10) they net ~GBP 4.20/5.04 so the DETERMINISTIC gate passes and the
+  // competition check is what decides. A ~GBP12 delivered market forces pricing to
+  // GBP10.99 (5% undercut, .99), where the worst variant nets ~-GBP1.44 -> fail; a
+  // ~GBP40 market prices to GBP37.99, worst net ~GBP15 -> pass.
+  const PROFIT = { ...DEFAULT_PROFIT, enabled: true, competitionCheckOnImport: true, adShareOfRevenue: 0.10 };
+  const cjStub = () => ({
+    stockByPid: async () => new Map([['v1', 50]]),
+    originsByPid: async () => ({ GB: 50 }),
+    freightEstimate: async () => null
+  } as unknown as CjClient);
+  const signalOf = (estimateGbp: number, confidence: 'high' | 'medium' | 'low') =>
+    async () => ({ estimateGbp, confidence, sources: ['amazon.co.uk'] });
+
+  it('hard-blocks a product that cannot clear the floor under a HIGH-confidence market', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const calls: Call[] = [];
+    const cfg = { ...CFG, profit: { ...PROFIT, hardBlock: true } };
+    const ret = await confirmAndImport(store, cjStub(), fakeAdmin(calls), cfg, { ...DETAIL, pid: 'MKT1' }, 'pet-toys', undefined, undefined, { competitorCheck: signalOf(12, 'high') });
+    expect(ret).toBeNull();
+    expect(calls.some((c) => c.query.includes('productSet'))).toBe(false);
+    expect((await store.getLink('MKT1'))?.state).toBe('failed');
+  });
+
+  it('imports the same failing product as a REVIEW DRAFT without hardBlock', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const calls: Call[] = [];
+    const cfg = { ...CFG, profit: { ...PROFIT, hardBlock: false } };
+    await confirmAndImport(store, cjStub(), fakeAdmin(calls), cfg, { ...DETAIL, pid: 'MKT2' }, 'pet-toys', undefined, undefined, { competitorCheck: signalOf(12, 'medium') });
+    const input = calls.find((c) => c.query.includes('productSet'))!.variables!.input as { status: string; tags: string[] };
+    expect(input.status).toBe('DRAFT');
+    expect(input.tags).toContain('cj-profit-review');
+    expect((await store.getLink('MKT2'))?.state).toBe('draft');
+  });
+
+  it('a generous market leaves the import untouched (ACTIVE)', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const calls: Call[] = [];
+    const cfg = { ...CFG, profit: { ...PROFIT, hardBlock: true } };
+    await confirmAndImport(store, cjStub(), fakeAdmin(calls), cfg, { ...DETAIL, pid: 'MKT3' }, 'pet-toys', undefined, undefined, { competitorCheck: signalOf(40, 'high') });
+    const input = calls.find((c) => c.query.includes('productSet'))!.variables!.input as { status: string };
+    expect(input.status).toBe('ACTIVE');
+    expect((await store.getLink('MKT3'))?.state).toBe('imported');
+  });
+
+  it('a LOW-confidence signal is no market data: the import proceeds (fail-open)', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const calls: Call[] = [];
+    const cfg = { ...CFG, profit: { ...PROFIT, hardBlock: true } };
+    await confirmAndImport(store, cjStub(), fakeAdmin(calls), cfg, { ...DETAIL, pid: 'MKT4' }, 'pet-toys', undefined, undefined, { competitorCheck: signalOf(12, 'low') });
+    expect((await store.getLink('MKT4'))?.state).toBe('imported');
+  });
+
+  it('never consults the closure while the flag is off (no spend without opt-in)', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const calls: Call[] = [];
+    let consulted = 0;
+    const cfg = { ...CFG, profit: { ...PROFIT, competitionCheckOnImport: false, hardBlock: true } };
+    await confirmAndImport(store, cjStub(), fakeAdmin(calls), cfg, { ...DETAIL, pid: 'MKT5' }, 'pet-toys', undefined, undefined, {
+      competitorCheck: async () => { consulted++; return { estimateGbp: 12, confidence: 'high', sources: [] }; }
+    });
+    expect(consulted).toBe(0);
+    expect((await store.getLink('MKT5'))?.state).toBe('imported');
+  });
+});
+
 describe('importProduct publish flag', () => {
   it('publish:false revival sets DRAFT status and records link state=draft', async () => {
     const store = new TenantStore(env.DB, 'a.myshopify.com');

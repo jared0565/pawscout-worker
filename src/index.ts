@@ -41,7 +41,7 @@ import { LlmClient, classifyKeyword, curateProduct, pickHeroImage, rewriteDescri
 import { buildPreview, getDetailPreferWarehouse, curateDetailImages, confirmAndImport, reconcileAddonVisibility, reconcileHeroImages, reconcileDescriptions, reconcileCategories } from './proxy/import';
 import { makeAdminGraphql } from './shopify-admin';
 import { getProfitConsole, saveProfitFlags, archiveProfitProduct } from './profit-console';
-import { runProfitAgent } from './profitability';
+import { runProfitAgent, competitorSignal } from './profitability';
 import { readDeliveryConfig, syncSignatureProfiles } from './shipping/delivery-profile';
 import { resolveShipConfig } from './shipping/ship-config';
 import { resolveLogistics } from './logistics';
@@ -831,7 +831,10 @@ app.post('/api/sync', async (c) => {
       const pickHero = syncLlm.available && cfg.llm.enabled
         ? (title: string, urls: string[]) => pickHeroImage(syncLlm, store, cfg, title, urls)
         : undefined;
-      const imported = await refillCollections(store, cj, admin, cfg, { maxImports: REFILL_BATCH, curate, pickHero });
+      const competitorCheck = syncLlm.available && cfg.llm.enabled
+        ? (d: { pid: string; nameEn: string }, ourRetailGbp: number) => competitorSignal(syncLlm, store, cfg, { pid: d.pid, title: d.nameEn, ourRetailGbp })
+        : undefined;
+      const imported = await refillCollections(store, cj, admin, cfg, { maxImports: REFILL_BATCH, curate, pickHero, competitorCheck });
       return c.json({ ok: true, phase: 'refill', imported, next: imported >= REFILL_BATCH ? 0 : null });
     }
     const offset = Math.max(0, Math.floor(Number(body.offset) || 0));
@@ -1273,7 +1276,10 @@ app.get('/proxy/product', async (c) => {
       const pickHero = importLlm.available && p.cfg.llm.enabled
         ? (title: string, urls: string[]) => pickHeroImage(importLlm, p.store, p.cfg, title, urls)
         : undefined;
-      c.executionCtx.waitUntil(confirmAndImport(p.store, cj, admin, p.cfg, detail, undefined, curate, pickHero));
+      const competitorCheck = importLlm.available && p.cfg.llm.enabled
+        ? (d: { pid: string; nameEn: string }, ourRetailGbp: number) => competitorSignal(importLlm, p.store, p.cfg, { pid: d.pid, title: d.nameEn, ourRetailGbp })
+        : undefined;
+      c.executionCtx.waitUntil(confirmAndImport(p.store, cj, admin, p.cfg, detail, undefined, curate, pickHero, { competitorCheck }));
       link = await p.store.getLink(pid);
     }
     await p.store.recordEvent(pid, 'view');

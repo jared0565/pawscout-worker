@@ -9,7 +9,7 @@ import { isLikelyPetProduct, signaledCategory } from './search';
 import { getPrimaryLocationId, setSupplierMetafields, MAX_TRACKED_QTY } from './inventory';
 import { bestLocalQty, HOME_MARKET_WAREHOUSES } from '../local-markets';
 import { debrandTitle } from '../debrand';
-import { productNetAfterAds } from '../profitability';
+import { productNetAfterAds, undercutTarget, liveNetGbp, type CompetitorSignal } from '../profitability';
 
 export const IMPORT_TAG = 'cj-import';
 /** W-ADDON: hidden basket-fillers - buyable, but never browsable/searchable. */
@@ -166,7 +166,13 @@ export async function confirmAndImport(
   category?: string | null,
   curate?: (detail: CjDetail, context: string) => Promise<Curation | null>,
   pickHero?: (title: string, imageUrls: string[]) => Promise<HeroPick>,
-  opts: { publish?: boolean; localWarehouses?: string[]; marketTag?: string; extraTags?: string[] } = {}
+  opts: {
+    publish?: boolean; localWarehouses?: string[]; marketTag?: string; extraTags?: string[];
+    /** LLM+web market lookup for the entry competition check (cached per pid, so
+     *  the 15-min agent reuses the same signal later at no extra spend). Only
+     *  consulted when profit.competitionCheckOnImport is on. */
+    competitorCheck?: (detail: CjDetail, ourRetailGbp: number) => Promise<CompetitorSignal | null>;
+  } = {}
 ): Promise<CjDetail | null> {
   // Ghost-click curation gate (added 2026-06-12 after a "pet food" search
   // imported a kitchen vacuum sealer): clicked ghosts must pass the SAME
@@ -274,21 +280,55 @@ export async function confirmAndImport(
       return null;
     }
   }
-  // Profitability gate (DORMANT unless cfg.profit.enabled). DETERMINISTIC
-  // net-after-ads only - the competition (LLM+web) check runs in the nightly
-  // audit, never this batch import path, so the seed/refill lanes stay cheap.
-  // enabled + hardBlock => REJECT a per-unit money-loser. enabled without
-  // hardBlock => import it as a REVIEW DRAFT (observe mode), never hard-reject.
+  // Profitability gate (DORMANT unless cfg.profit.enabled). The DETERMINISTIC
+  // net-after-ads check always runs. The LLM+web competition check additionally
+  // runs when profit.competitionCheckOnImport is on AND the caller wired a
+  // competitorCheck closure (2026-07-10, audit gap #3: the flag previously
+  // existed but nothing read it, so a product entered at cost-plus and only met
+  // its market when the 15-min agent reached it hours later). The signal is
+  // cached per pid, so the agent's later sweep reuses it - checking here is not
+  // extra spend, just earlier. Fail-OPEN on a missing/low-confidence signal:
+  // absence of market data is not a profitability failure.
+  // enabled + hardBlock => REJECT a failing product. enabled without hardBlock
+  // => import it as a REVIEW DRAFT (observe mode), never hard-reject.
   const profit = cfg.profit;
   if (profit?.enabled) {
     const net = productNetAfterAds(detail.variants, cfg.pricing, detail.freightUsd, profit);
+    let failReason: string | null = null;
     if (net?.belowFloor) {
+      failReason = `net GBP ${net.worstNetGbp.toFixed(2)} (${Math.round(net.worstNetPct * 100)}%) at our rule price`;
+    } else if (net && profit.competitionCheckOnImport && opts.competitorCheck) {
+      try {
+        const signal = await opts.competitorCheck(detail, net.fromRetailGbp);
+        if (signal && signal.estimateGbp > 0 && (signal.confidence === 'high' || signal.confidence === 'medium')) {
+          // The same test the active agent applies (decideProfitAction's
+          // competitor branch), at the rule stickers: scale the product to just
+          // under the market's delivered price and require the WORST variant to
+          // still clear the net floor there. Failing means we could only compete
+          // below the floor (or at a loss) - what the entry gate exists to stop.
+          const target = undercutTarget(signal.estimateGbp, profit.undercutPct);
+          const scale = target / net.fromRetailGbp;
+          const sellable = detail.variants.filter((v) => Number.isFinite(v.sellPriceUsd) && v.sellPriceUsd > 0);
+          const worstAtBest = Math.min(...sellable.map((v) => liveNetGbp(
+            retailPriceGbp(v.sellPriceUsd, cfg.pricing, detail.freightUsd) * scale,
+            landedCostGbp(v.sellPriceUsd, cfg.pricing, detail.freightUsd),
+            profit
+          )));
+          if (worstAtBest < profit.minNetAfterAdsGbp) {
+            failReason = `cannot clear GBP ${profit.minNetAfterAdsGbp} under the market (~GBP ${signal.estimateGbp.toFixed(2)} delivered, ${signal.confidence} confidence; best sub-market net ~GBP ${worstAtBest.toFixed(2)})`;
+          }
+        }
+      } catch (e) {
+        console.warn(`import competition check failed for ${detail.pid}: ${(e as Error).message}`);
+      }
+    }
+    if (failReason) {
       if (profit.hardBlock) {
-        console.warn(`import blocked (below profit floor) for ${detail.pid}: net GBP ${net.worstNetGbp.toFixed(2)} (${Math.round(net.worstNetPct * 100)}%)`);
+        console.warn(`import blocked (below profit floor) for ${detail.pid}: ${failReason}`);
         await store.putLink({ cjPid: detail.pid, state: 'failed', category: category ?? null });
         return null;
       }
-      console.warn(`import flagged for review (below profit floor) for ${detail.pid}: net GBP ${net.worstNetGbp.toFixed(2)}`);
+      console.warn(`import flagged for review (below profit floor) for ${detail.pid}: ${failReason}`);
       opts = { ...opts, publish: false, extraTags: [...(opts.extraTags ?? []), 'cj-profit-review'] };
     }
   }

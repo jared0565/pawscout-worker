@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { netAfterAdsGbp, productNetAfterAds, competitorCacheKey, decideProfitAction, liveNetGbp, round99Down, undercutTarget } from '../src/profitability';
-import { DEFAULT_PROFIT, type Pricing, type ProfitConfig } from '../src/types';
+import { netAfterAdsGbp, productNetAfterAds, competitorCacheKey, competitorSignal, decideProfitAction, liveNetGbp, round99Down, undercutTarget, type CompetitorSignal } from '../src/profitability';
+import { DEFAULT_PROFIT, type Pricing, type ProfitConfig, type TenantConfig } from '../src/types';
+import type { TenantStore } from '../src/tenant-store';
+import type { LlmClient } from '../src/llm';
 
 // Live pricing rule (2.2x, GBP0.78 FX, +2% buffer, GBP30 margin cap).
 const PRICING: Pricing = { multiplier: 2.2, floor: 2.2, minMarginGbp: 6, fxUsdToGbp: 0.78, fxBufferPct: 2, maxMarginGbp: 30 };
@@ -216,5 +218,39 @@ describe('decideProfitAction (owner rule: net >= GBP2, price just under the comp
     expect(undercutTarget(25, 0.05)).toBe(23.99);
     expect(undercutTarget(20, 0.05)).toBe(18.99);
     expect(undercutTarget(25, 0.05)).toBeLessThan(25); // always strictly under the market
+  });
+});
+
+describe('competitorSignal (delivered price = item + delivery)', () => {
+  // In-memory fakes: this file stays pure (no D1). The LLM fake feeds a raw JSON
+  // object through the REAL validate, which is what these tests exercise.
+  const CFG = { llm: { enabled: true, scoreThreshold: 60, models: {} }, profit: DEFAULT_PROFIT } as unknown as TenantConfig;
+  const storeOf = (cached: string[]) => ({
+    getSearchCache: async () => null,
+    putSearchCache: async (key: string, value: string) => { cached.push(value); },
+    logLlmUsage: async () => undefined
+  } as unknown as TenantStore);
+  const llmOf = (raw: unknown) => ({
+    available: true,
+    jsonChain: async (o: { validate: (v: unknown) => CompetitorSignal | null }) => {
+      const value = o.validate(raw);
+      return value
+        ? { ok: true as const, value, usage: { model: 'test', promptTokens: 0, completionTokens: 0, costUsd: 0 } }
+        : { ok: false as const, error: 'invalid' };
+    }
+  } as unknown as LlmClient);
+
+  it('sums the item and delivery parts - the missed-postage under-read fix (2026-07-10 audit)', async () => {
+    // The nail-grinder failure: the model knew the GBP12.99 item but dropped the
+    // GBP4.99 postage. Forcing the split and summing it beats a stale estimateGbp.
+    const cached: string[] = [];
+    const r = await competitorSignal(llmOf({ itemGbp: 12.99, deliveryGbp: 4.99, estimateGbp: 12.99, confidence: 'high', sources: ['amazon.co.uk'] }), storeOf(cached), CFG, { pid: 'p1', title: 'Dog Nail Grinder', ourRetailGbp: 11.99 });
+    expect(r?.estimateGbp).toBe(17.98);
+    expect(cached).toHaveLength(1); // usable signal cached for the agent's sweep
+  });
+
+  it('falls back to estimateGbp when the split fields are absent (older/partial shapes)', async () => {
+    const r = await competitorSignal(llmOf({ estimateGbp: 14.99, confidence: 'medium', sources: [] }), storeOf([]), CFG, { pid: 'p2', title: 'X', ourRetailGbp: 9.99 });
+    expect(r?.estimateGbp).toBe(14.99);
   });
 });

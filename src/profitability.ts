@@ -116,16 +116,23 @@ export async function competitorSignal(
   if (!llm.available || !cfg.llm.enabled) return null;
   const chain = resolveChain(cfg, 'text');
   const r = await llm.jsonChain<CompetitorSignal>({
-    chain, maxTokens: 500, web: { maxResults: 5 },
+    chain, maxTokens: 500, web: { maxResults: 6 },
     system:
       'You are a UK retail price researcher for a pet-care shop. Using live web search, find the typical UK DELIVERED price a normal shopper pays RIGHT NOW for a comparable product at mainstream UK retailers (Amazon.co.uk, Pets at Home, eBay UK, B&M, Argos, etc.). ' +
-      'CRITICAL: the estimate must be the TOTAL a standard (non-member) buyer pays including VAT AND delivery. Only add-on membership tiers get free shipping (e.g. Amazon free next-day is Prime-only); a normal buyer usually pays postage, so add typical delivery cost to the item price. If a listing is genuinely free-delivery for everyone, use the item price alone. ' +
-      'Respond with ONLY a JSON object: {"estimateGbp": <typical UK DELIVERED price incl VAT + shipping for a comparable product, or 0 if you truly cannot find one>, "confidence": <"high" when several mainstream UK listings agree, "medium" when few agree, "low" when guessing or comparables are weak>, "sources": [<up to 3 short retailer or domain names>]}.',
+      'Work in two parts so delivery is never missed: FIRST the ITEM price of the closest comparable current listing, THEN that same listing\'s actual DELIVERY charge for a standard (non-member) buyer. Membership-only free shipping does NOT count (e.g. Amazon free next-day is Prime-only; a normal buyer pays the postage shown below the price). Report delivery 0 only when the listing is genuinely free-delivery for every buyer. ' +
+      'Respond with ONLY a JSON object: {"itemGbp": <item price incl VAT of the closest comparable listing, or 0 if you truly cannot find one>, "deliveryGbp": <that listing\'s delivery charge for a standard buyer, 0 only when free for everyone>, "estimateGbp": <itemGbp + deliveryGbp>, "confidence": <"high" when several mainstream UK listings agree, "medium" when few agree, "low" when guessing or comparables are weak>, "sources": [<up to 3 short retailer or domain names>]}.',
     user: JSON.stringify({ product: arg.title, ourPriceGbp: arg.ourRetailGbp }),
     validate: (v) => {
       const o = v as Record<string, unknown>;
       if (typeof o !== 'object' || o === null) return null;
-      const est = Number(o.estimateGbp);
+      // The split fields are the primary signal: summing item + delivery forces
+      // the model to price postage explicitly (the 2026-07-10 audit's under-read
+      // failure mode was a missed delivery line: GBP 14.99 stored vs GBP 17.98
+      // real delivered). estimateGbp alone remains the fallback.
+      const item = Number(o.itemGbp);
+      const delivery = Number(o.deliveryGbp);
+      let est = Number(o.estimateGbp);
+      if (Number.isFinite(item) && item > 0 && Number.isFinite(delivery) && delivery >= 0) est = item + delivery;
       if (!Number.isFinite(est) || est < 0) return null;
       const confidence = (['high', 'medium', 'low'].includes(o.confidence as string) ? o.confidence : 'low') as CompetitorSignal['confidence'];
       const sources = Array.isArray(o.sources) ? o.sources.filter((s): s is string => typeof s === 'string').slice(0, 3) : [];

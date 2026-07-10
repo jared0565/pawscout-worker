@@ -39,7 +39,7 @@ export const MARKET_SEED_LANES: {
 ];
 import { getExpansions, seedTerm } from './semantic/library';
 import { confirmAndImport, getCachedDetail, resolveCategory, reconcileAddonVisibility, reconcileHeroImages, reconcileDescriptions, reconcileCategories, setProductTags, ADDON_CATEGORY } from './proxy/import';
-import { runProfitAgent } from './profitability';
+import { runProfitAgent, competitorSignal, type CompetitorSignal } from './profitability';
 import { AFFILIATE_ELIGIBLE_TAG, productAffiliateEligible, ensureAffiliateCollection } from './affiliate';
 import { sendReorderReminders } from './retention';
 import { enableTracking, getPrimaryLocationId, productInventoryItems, setInventoryQuantities, setSupplierMetafields, updateVariantPrices, updateVariantCosts, MAX_TRACKED_QTY } from './proxy/inventory';
@@ -135,7 +135,7 @@ export async function refillCollections(
   cj: CjClient,
   admin: AdminGraphql,
   cfg: TenantConfig,
-  opts: { maxImports?: number; pause?: (ms: number) => Promise<void>; now?: () => number; curate?: (detail: CjDetail, context: string) => Promise<Curation | null>; pickHero?: (title: string, imageUrls: string[]) => Promise<HeroPick> } = {}
+  opts: { maxImports?: number; pause?: (ms: number) => Promise<void>; now?: () => number; curate?: (detail: CjDetail, context: string) => Promise<Curation | null>; pickHero?: (title: string, imageUrls: string[]) => Promise<HeroPick>; competitorCheck?: (detail: CjDetail, ourRetailGbp: number) => Promise<CompetitorSignal | null> } = {}
 ): Promise<number> {
   const maxImports = opts.maxImports ?? MAX_IMPORTS_PER_RUN;
   const pause = opts.pause ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
@@ -152,7 +152,7 @@ export async function refillCollections(
     // proceed - confirmAndImport verifies live and fails closed either way.
     if (detail.origins && bestLocalQty(detail.origins, HOME_MARKET_WAREHOUSES) < cfg.floors.stockFloor) return false;
     await pause(CJ_CALL_GAP_MS); // confirmAndImport makes one CJ stock call
-    await confirmAndImport(store, cj, admin, cfg, detail, category, opts.curate, opts.pickHero);
+    await confirmAndImport(store, cj, admin, cfg, detail, category, opts.curate, opts.pickHero, { competitorCheck: opts.competitorCheck });
     return (await store.getLink(row.cj_pid))?.state === 'imported';
   };
 
@@ -1059,6 +1059,7 @@ export async function seedOriginAssortment(
     maxDrafts?: number;
     curate?: (detail: CjDetail, context: string) => Promise<Curation | null>;
     pickHero?: (title: string, imageUrls: string[]) => Promise<HeroPick>;
+    competitorCheck?: (detail: CjDetail, ourRetailGbp: number) => Promise<CompetitorSignal | null>;
     pause?: (ms: number) => Promise<void>;
     keywords?: Record<string, string[]>;
     /** Lane-specific discovery gates (e.g. the US lane's bulky-niche price
@@ -1107,7 +1108,7 @@ export async function seedOriginAssortment(
         const sig = titleSignature(detail.nameEn);
         if (seenTitleSigs.has(sig)) { rejected++; continue; }
         const enriched = await confirmAndImport(store, cj, admin, cfg, detail, category, opts.curate, opts.pickHero, {
-          publish: false, localWarehouses: laneWarehouses, ...(marketTag ? { marketTag } : {})
+          publish: false, localWarehouses: laneWarehouses, competitorCheck: opts.competitorCheck, ...(marketTag ? { marketTag } : {})
         });
         await pause(CJ_CALL_GAP_MS);
         if ((await store.getLink(detail.pid))?.state === 'draft') {
@@ -1301,6 +1302,9 @@ export interface DailyShopCtx {
   llm: LlmClient;
   curate?: (detail: CjDetail, context: string) => ReturnType<typeof curateProduct>;
   pickHero?: (title: string, urls: string[]) => ReturnType<typeof pickHeroImage>;
+  /** Entry competition check for the import gate (confirmAndImport); only
+   *  consulted when profit.competitionCheckOnImport is on. Cached per pid. */
+  competitorCheck?: (detail: CjDetail, ourRetailGbp: number) => Promise<CompetitorSignal | null>;
 }
 
 export interface DailyGlobalStage {
@@ -1357,7 +1361,7 @@ export const DAILY_SHOP_STAGES: DailyStage[] = [
     name: `seed-${lane.countryCode.toLowerCase()}`, maxMs: 9 * MIN_MS,
     async run(ctx) {
       const r = await seedOriginAssortment(ctx.store, ctx.cj!, ctx.admin, ctx.cfg, {
-        countryCode: lane.countryCode, maxDrafts: lane.maxDraftsPerNight, curate: ctx.curate, pickHero: ctx.pickHero,
+        countryCode: lane.countryCode, maxDrafts: lane.maxDraftsPerNight, curate: ctx.curate, pickHero: ctx.pickHero, competitorCheck: ctx.competitorCheck,
         ...(lane.keywords ? { keywords: lane.keywords } : {}),
         ...(lane.gateOverrides ? { gates: { ...ctx.cfg.gates, ...lane.gateOverrides } } : {})
       });
@@ -1370,7 +1374,7 @@ export const DAILY_SHOP_STAGES: DailyStage[] = [
   // day, and it is the sole writer of product_profit (the old observe-first
   // profit-audit stage was retired 2026-07-09 - two writers clobbered one row).
   // Promote-from-warehouse (floor 8, target 12).
-  { name: 'refill', maxMs: 8 * MIN_MS, run: async (ctx) => { await refillCollections(ctx.store, ctx.cj!, ctx.admin, ctx.cfg, { curate: ctx.curate, pickHero: ctx.pickHero }); } },
+  { name: 'refill', maxMs: 8 * MIN_MS, run: async (ctx) => { await refillCollections(ctx.store, ctx.cj!, ctx.admin, ctx.cfg, { curate: ctx.curate, pickHero: ctx.pickHero, competitorCheck: ctx.competitorCheck }); } },
   // Flip ACTIVE seed drafts to imported.
   { name: 'draft-links', maxMs: 3 * MIN_MS, run: async (ctx) => { await reconcileDraftLinks(ctx.store, ctx.admin); } },
   // De-brand: strip manufacturer/supplier brands (e.g. PawHut) from any product
@@ -1483,7 +1487,10 @@ async function buildDailyShopCtx(env: Env, vault: Vault, shop: string): Promise<
   const pickHero = llm.available && cfg.llm.enabled
     ? (title: string, urls: string[]) => pickHeroImage(llm, store, cfg, title, urls)
     : undefined;
-  return { env, shop, store, admin, cfg, cj, llm, curate, pickHero };
+  const competitorCheck = llm.available && cfg.llm.enabled
+    ? (detail: CjDetail, ourRetailGbp: number) => competitorSignal(llm, store, cfg, { pid: detail.pid, title: detail.nameEn, ourRetailGbp })
+    : undefined;
+  return { env, shop, store, admin, cfg, cj, llm, curate, pickHero, competitorCheck };
 }
 
 /** Test injection points; production callers pass nothing. */
