@@ -254,6 +254,79 @@ describe('competitorSignal (delivered price = item + delivery)', () => {
     expect(r?.estimateGbp).toBe(14.99);
   });
 
+  const mkCand = (title: string, deliveredGbp: number) => ({ title, itemGbp: deliveredGbp, deliveryGbp: 0, deliveredGbp });
+  const marketOf = (candidates: ReturnType<typeof mkCand>[] | null) => ({ name: 'ebay.co.uk', search: async () => candidates });
+  const neverLlm = { available: true, jsonChain: async () => { throw new Error('LLM must not be consulted on the zero-LLM path'); } } as unknown as LlmClient;
+
+  it('ZERO-LLM path: strong structured matches produce a cached signal without any LLM call', async () => {
+    const cached: string[] = [];
+    const r = await competitorSignal(neverLlm, storeOf(cached), CFG, {
+      pid: 'z1', title: '800ml Dog Water Bottle Portable Leakproof', ourRetailGbp: 12.99,
+      market: marketOf([
+        mkCand('Portable Dog Water Bottle 800ml Leakproof', 12.98),
+        mkCand('Dog Water Bottle 800ml Portable Travel Leakproof', 11.49),
+        mkCand('800ml Leakproof Portable Dog Water Bottle', 12.48)
+      ])
+    });
+    expect(r).toEqual({ estimateGbp: 11.49, confidence: 'high', sources: ['ebay.co.uk (3 matches)'] });
+    expect(cached).toHaveLength(1);
+  });
+
+  it('AMBIGUOUS shortlist -> tiny title-classifier confirms -> medium confidence (never high)', async () => {
+    const classifier = llmOf({ indices: [0, 1] });
+    const r = await competitorSignal(classifier, storeOf([]), CFG, {
+      pid: 'z2', title: '800ml Dog Water Bottle Portable Leakproof', ourRetailGbp: 12.99,
+      market: marketOf([mkCand('Dog Travel Bottle Water Dispenser', 10.99), mkCand('Pet Bottle Water Feeder for Dogs', 12.49)])
+    });
+    expect(r?.confidence).toBe('medium');
+    expect(r?.estimateGbp).toBe(10.99);
+    expect(r?.sources?.[0]).toMatch(/llm-matched 2/);
+  });
+
+  it('market answered NOTHING comparable -> null, and the expensive legacy path is NOT taken', async () => {
+    const r = await competitorSignal(neverLlm, storeOf([]), CFG, {
+      pid: 'z3', title: 'Cat Water Fountain Stainless 3.2L', ourRetailGbp: 39.99,
+      market: marketOf([mkCand('Garden Hose Reel 30m', 35)])
+    });
+    expect(r).toBeNull(); // agent's cost-plus market-of-one branch applies
+  });
+
+  it('market SOURCE failure -> legacy LLM+web fallback with results capped at 3', async () => {
+    let capturedWeb: any = null;
+    const legacy = {
+      available: true,
+      jsonChain: async (o: any) => {
+        capturedWeb = o.web;
+        const value = o.validate({ itemGbp: 10.99, deliveryGbp: 2.0, estimateGbp: 12.99, confidence: 'medium', sources: ['amazon.co.uk'] });
+        return { ok: true, value, usage: { provider: 'openrouter', model: 't', promptTokens: 0, completionTokens: 0, costUsd: 0 } };
+      }
+    } as unknown as LlmClient;
+    const r = await competitorSignal(legacy, storeOf([]), CFG, { pid: 'z4', title: 'X', ourRetailGbp: 9.99, market: marketOf(null) });
+    expect(r?.estimateGbp).toBe(12.99);
+    expect(capturedWeb).toEqual({ maxResults: 3 });
+  });
+
+  it('DEEP check bypasses the cache and the market source, and raises web results to 6', async () => {
+    let capturedWeb: any = null;
+    const legacy = {
+      available: true,
+      jsonChain: async (o: any) => {
+        capturedWeb = o.web;
+        const value = o.validate({ itemGbp: 20, deliveryGbp: 0, estimateGbp: 20, confidence: 'high', sources: ['argos.co.uk'] });
+        return { ok: true, value, usage: { provider: 'openrouter', model: 't', promptTokens: 0, completionTokens: 0, costUsd: 0 } };
+      }
+    } as unknown as LlmClient;
+    const store = {
+      getSearchCache: async () => { throw new Error('deep must not read the cache'); },
+      putSearchCache: async () => undefined,
+      logLlmUsage: async () => undefined
+    } as unknown as TenantStore;
+    const market = { name: 'ebay.co.uk', search: async () => { throw new Error('deep must not use the structured source'); } };
+    const r = await competitorSignal(legacy, store, CFG, { pid: 'z5', title: 'X', ourRetailGbp: 15, market, deep: true });
+    expect(r?.estimateGbp).toBe(20);
+    expect(capturedWeb).toEqual({ maxResults: 6 });
+  });
+
   it('caps confidence at LOW when the OpenAI floor served (no web plugin = priors, not live search), and caches the capped value', async () => {
     // 2026-07-09 outage: OpenRouter credits ran out, every call fell to the
     // floor tier, and prior-based "high confidence" markets drove real drops.

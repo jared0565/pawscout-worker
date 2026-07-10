@@ -76,9 +76,13 @@ function pfRowTr(r){
   var net='<td class="pf-num"><span class="'+(neg?'pf-nneg':'pf-npos')+'">'+esc(pfMoney(r.netGbp))+'</span>'
     +(r.netPct!==null?('<span class="pf-move">'+Math.round(r.netPct*100)+'%</span>'):'')+'</td>';
   var when='<td class="pf-when-c">'+esc(pfWhen(r.checkedAt))+'</td>';
-  // Manual archive fallback (non-pass, live, not-yet-archived). The pid rides a
-  // data- attribute (delegated click in the IIFE below), never inline code.
+  // Row actions (pids ride data- attributes; delegated click in the IIFE below,
+  // never inline code): Deep check = the thorough LLM+web market read (costs
+  // roughly 30p, so it is a button, not the cron), then an immediate re-judge.
+  // Archive = manual fallback (non-pass, live, not-yet-archived).
   var actionCell='<td>';
+  if(r.linkState&&r.linkState!=='archived'&&r.productId)
+    actionCell+='<button type="button" class="ghost" data-pf-deep="'+esc(r.cjPid)+'">Deep check</button> ';
   if(r.verdict!=='pass'&&r.linkState&&r.linkState!=='archived'&&r.productId)
     actionCell+='<button type="button" class="ghost" data-pf-pid="'+esc(r.cjPid)+'">Archive</button>';
   actionCell+='</td>';
@@ -232,9 +236,25 @@ async function pfArchive(btn,pid){
     pfLoad();
   }catch(e){ setMsg('pf-msg','Could not archive.','no'); }
 }
+async function pfDeep(btn,pid){
+  // Costs a real web read (~30p), so two-click confirm like the other actions.
+  if(!prtArm(btn,'Costs ~30p - click again')) return;
+  btn.disabled=true;
+  setMsg('pf-msg','Deep market research running: fresh web read, then an immediate re-judge. Up to a minute.','muted');
+  try{
+    var r=await api('/profit/deep',{cjPid:pid});
+    if(!r.ok){ setMsg('pf-msg','Deep check failed: '+(r.error||'unknown'),'no'); btn.disabled=false; return; }
+    var m=r.signal?('market ~'+esc(pfMoney(r.signal.estimateGbp))+' ('+esc(r.signal.confidence)+', '+esc((r.signal.sources||[]).join(', '))+')'):'no usable market found (cost-plus rule applies)';
+    setMsg('pf-msg','Deep check done: '+m+'. Decision: '+esc(r.action)+(r.dryRun?' (preview)':'')+' - '+esc(r.reason),'ok');
+    pfLoad();
+  }catch(e){ setMsg('pf-msg','Could not run the deep check.','no'); }
+  btn.disabled=false;
+}
 (function(){
   var list=el('pf-list');
   if(list) list.addEventListener('click',function(e){
+    var deep=e.target&&e.target.closest?e.target.closest('[data-pf-deep]'):null;
+    if(deep){ pfDeep(deep,deep.getAttribute('data-pf-deep')); return; }
     var btn=e.target&&e.target.closest?e.target.closest('[data-pf-pid]'):null;
     if(!btn) return;
     pfArchive(btn,btn.getAttribute('data-pf-pid'));

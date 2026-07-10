@@ -40,6 +40,7 @@ export const MARKET_SEED_LANES: {
 import { getExpansions, seedTerm } from './semantic/library';
 import { confirmAndImport, getCachedDetail, resolveCategory, reconcileAddonVisibility, reconcileHeroImages, reconcileDescriptions, reconcileCategories, setProductTags, ADDON_CATEGORY } from './proxy/import';
 import { runProfitAgent, competitorSignal, type CompetitorSignal } from './profitability';
+import { ebayFromEnv } from './market';
 import { AFFILIATE_ELIGIBLE_TAG, productAffiliateEligible, ensureAffiliateCollection } from './affiliate';
 import { sendReorderReminders } from './retention';
 import { enableTracking, getPrimaryLocationId, productInventoryItems, setInventoryQuantities, setSupplierMetafields, updateVariantPrices, updateVariantCosts, MAX_TRACKED_QTY } from './proxy/inventory';
@@ -1222,7 +1223,7 @@ export async function runProfitAgentSweep(env: Env): Promise<void> {
       const admin = makeAdminGraphql(shop, accessToken);
       const saved = Number(await readJobCheckpoint(env.DB, shop, PROFIT_AGENT_OFFSET_KEY));
       const offset = Number.isFinite(saved) && saved > 0 ? saved : 0;
-      const r = await runProfitAgent(store, admin, llm, cfg, { offset, limit: 8 });
+      const r = await runProfitAgent(store, admin, llm, cfg, { offset, limit: 8, market: ebayFromEnv(env) });
       // Advance the rolling cursor; r.next is null at the catalog end -> wrap to 0.
       await writeJobCheckpoint(env.DB, shop, PROFIT_AGENT_OFFSET_KEY, String(r.next ?? 0), JOB_STAMP_TTL_DAYS * 86400_000);
       if (r.acted) console.log(`profit agent (${r.dryRun ? 'dry-run' : 'live'}) ${shop}: ${r.repriced} repriced, ${r.dropped} dropped, ${r.flagged} flagged of ${r.scanned}`);
@@ -1487,8 +1488,9 @@ async function buildDailyShopCtx(env: Env, vault: Vault, shop: string): Promise<
   const pickHero = llm.available && cfg.llm.enabled
     ? (title: string, urls: string[]) => pickHeroImage(llm, store, cfg, title, urls)
     : undefined;
+  const nightlyMarket = ebayFromEnv(env);
   const competitorCheck = llm.available && cfg.llm.enabled
-    ? (detail: CjDetail, ourRetailGbp: number) => competitorSignal(llm, store, cfg, { pid: detail.pid, title: detail.nameEn, ourRetailGbp })
+    ? (detail: CjDetail, ourRetailGbp: number) => competitorSignal(llm, store, cfg, { pid: detail.pid, title: detail.nameEn, ourRetailGbp, market: nightlyMarket })
     : undefined;
   return { env, shop, store, admin, cfg, cj, llm, curate, pickHero, competitorCheck };
 }

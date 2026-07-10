@@ -41,7 +41,9 @@ import { LlmClient, classifyKeyword, curateProduct, pickHeroImage, rewriteDescri
 import { buildPreview, getDetailPreferWarehouse, curateDetailImages, confirmAndImport, reconcileAddonVisibility, reconcileHeroImages, reconcileDescriptions, reconcileCategories } from './proxy/import';
 import { makeAdminGraphql } from './shopify-admin';
 import { getProfitConsole, saveProfitFlags, archiveProfitProduct, clearProfitDecisions } from './profit-console';
-import { runProfitAgent, competitorSignal } from './profitability';
+import { runProfitAgent, competitorSignal, judgeImportedLink } from './profitability';
+import { ebayFromEnv } from './market';
+import { productInventoryItems } from './proxy/inventory';
 import { readDeliveryConfig, syncSignatureProfiles } from './shipping/delivery-profile';
 import { resolveShipConfig } from './shipping/ship-config';
 import { resolveLogistics } from './logistics';
@@ -479,8 +481,45 @@ app.post('/api/profit/run', async (c) => {
   // console loops with the returned next cursor. Honors dryRun from cfg.profit -
   // dry-run records what it WOULD do; live executes reprices/drops. Same runner as
   // the 15-min cron, so "Run now" is just the sweep on demand.
-  const r = await runProfitAgent(store, admin, llm, cfg, { offset, limit: 8 });
+  const r = await runProfitAgent(store, admin, llm, cfg, { offset, limit: 8, market: ebayFromEnv(c.env) });
   return c.json({ ok: true, ...r, offset });
+});
+// Per-product DEEP market check (owner-triggered): the thorough LLM+web read
+// (6 injected results, ~200k tokens, ~$0.29) that used to run in the cron now
+// lives ONLY behind this button. Bypasses the cache, stores the fresh signal,
+// and re-judges the product immediately with the live dryRun setting.
+app.post('/api/profit/deep', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  const store = new TenantStore(c.env.DB, s);
+  const cfg = await store.getConfig();
+  if (!cfg?.profit?.enabled) return c.json({ ok: false, error: 'The profitability agent is off' });
+  let body: { cjPid?: unknown } = {};
+  try { body = await c.req.json(); } catch {}
+  const cjPid = typeof body.cjPid === 'string' && body.cjPid ? body.cjPid : null;
+  if (!cjPid) return c.json({ ok: false, error: 'cjPid required' }, 400);
+  const admin = await adminForShop(c.env, store);
+  if (!admin) return c.json({ ok: false, error: 'Shopify is not connected' });
+  const link = await store.getLink(cjPid);
+  if (!link?.shopify_product_id) return c.json({ ok: false, error: 'Product not found or not imported' });
+  const llm = new LlmClient({ openrouter: c.env.OPENROUTER_API_KEY, openai: c.env.OPENAI_API_KEY });
+  if (!llm.available || !cfg.llm.enabled) return c.json({ ok: false, error: 'No LLM configured for deep research' });
+  try {
+    let title = cjPid;
+    try {
+      const wh = await store.getWarehouseProduct(cjPid);
+      if (wh) { const d = JSON.parse(wh.detail) as { nameEn?: string }; if (d.nameEn) title = d.nameEn; }
+    } catch { /* pid fallback */ }
+    const inv = await productInventoryItems(admin, link.shopify_product_id);
+    const prices = inv.map((v) => Number(v.price)).filter((p) => Number.isFinite(p) && p > 0);
+    const ourRetailGbp = prices.length ? Math.min(...prices) : 0;
+    const signal = await competitorSignal(llm, store, cfg, { pid: cjPid, title, ourRetailGbp, deep: true });
+    const dryRun = cfg.profit.dryRun !== false;
+    const judged = await judgeImportedLink(store, admin, llm, cfg,
+      { cj_pid: cjPid, shopify_product_id: link.shopify_product_id }, dryRun, { signalOverride: signal });
+    return c.json({ ok: true, signal, action: judged.action, reason: judged.reason, dryRun });
+  } catch (e) {
+    return c.json({ ok: false, error: (e as Error).message });
+  }
 });
 app.post('/api/profit/archive', async (c) => {
   const s = await shopOf(c); if (typeof s !== 'string') return s;
@@ -838,8 +877,9 @@ app.post('/api/sync', async (c) => {
       const pickHero = syncLlm.available && cfg.llm.enabled
         ? (title: string, urls: string[]) => pickHeroImage(syncLlm, store, cfg, title, urls)
         : undefined;
+      const syncMarket = ebayFromEnv(c.env);
       const competitorCheck = syncLlm.available && cfg.llm.enabled
-        ? (d: { pid: string; nameEn: string }, ourRetailGbp: number) => competitorSignal(syncLlm, store, cfg, { pid: d.pid, title: d.nameEn, ourRetailGbp })
+        ? (d: { pid: string; nameEn: string }, ourRetailGbp: number) => competitorSignal(syncLlm, store, cfg, { pid: d.pid, title: d.nameEn, ourRetailGbp, market: syncMarket })
         : undefined;
       const imported = await refillCollections(store, cj, admin, cfg, { maxImports: REFILL_BATCH, curate, pickHero, competitorCheck });
       return c.json({ ok: true, phase: 'refill', imported, next: imported >= REFILL_BATCH ? 0 : null });
@@ -1283,8 +1323,9 @@ app.get('/proxy/product', async (c) => {
       const pickHero = importLlm.available && p.cfg.llm.enabled
         ? (title: string, urls: string[]) => pickHeroImage(importLlm, p.store, p.cfg, title, urls)
         : undefined;
+      const importMarket = ebayFromEnv(c.env);
       const competitorCheck = importLlm.available && p.cfg.llm.enabled
-        ? (d: { pid: string; nameEn: string }, ourRetailGbp: number) => competitorSignal(importLlm, p.store, p.cfg, { pid: d.pid, title: d.nameEn, ourRetailGbp })
+        ? (d: { pid: string; nameEn: string }, ourRetailGbp: number) => competitorSignal(importLlm, p.store, p.cfg, { pid: d.pid, title: d.nameEn, ourRetailGbp, market: importMarket })
         : undefined;
       c.executionCtx.waitUntil(confirmAndImport(p.store, cj, admin, p.cfg, detail, undefined, curate, pickHero, { competitorCheck }));
       link = await p.store.getLink(pid);

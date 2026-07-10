@@ -18,6 +18,8 @@ import type { AdminGraphql } from './shopify-admin';
 import { productInventoryItems, updateVariantPrices, archiveProduct } from './proxy/inventory';
 import type { Pricing, ProfitConfig, TenantConfig } from './types';
 import { DEFAULT_PROFIT } from './types';
+import { buildMarketQuery, matchCandidates, credibleMinGbp } from './market';
+import type { MarketSource, MarketCandidate } from './market';
 
 function round2(x: number): number { return Math.round(x * 100) / 100; }
 
@@ -101,22 +103,96 @@ export interface CompetitorSignal { estimateGbp: number; confidence: 'high' | 'm
 export function competitorCacheKey(pid: string): string { return `comp:${pid}`; }
 
 /**
- * LLM + web-search estimate of the typical UK street price for a comparable
- * product. Cached per pid in search_cache. Hermetic-safe: no LLM / any failure
- * returns null (no signal is NOT a profitability failure). Only a usable
- * (estimateGbp > 0) result is cached.
+ * Tiny LLM title-classifier for AMBIGUOUS structured shortlists: which of these
+ * eBay titles are the same kind of product as ours? ~1k tokens of TITLES, never
+ * page content. Returns the confirmed candidates ([] on any failure).
+ */
+async function classifyShortlist(
+  llm: LlmClient, store: TenantStore, cfg: TenantConfig,
+  ourTitle: string, shortlist: MarketCandidate[]
+): Promise<MarketCandidate[]> {
+  if (!llm.available || !cfg.llm.enabled) return [];
+  const chain = resolveChain(cfg, 'text');
+  const r = await llm.jsonChain<{ indices: number[] }>({
+    chain, maxTokens: 120,
+    system:
+      'You match retail listings. Given OUR product title and a numbered list of marketplace listing titles with delivered prices, ' +
+      'return the indices of listings that are genuinely the SAME KIND of product a shopper would consider interchangeable with ours (same product type, compatible size/quantity). ' +
+      'Exclude parts, accessories-for, multipacks of a different count, and different product types. ' +
+      'Respond with ONLY JSON: {"indices": [<0-based indices, may be empty>]}.',
+    user: JSON.stringify({ ours: ourTitle, listings: shortlist.map((c, i) => ({ i, title: c.title, deliveredGbp: c.deliveredGbp })) }),
+    validate: (v) => {
+      const arr = (v as { indices?: unknown })?.indices;
+      if (!Array.isArray(arr)) return null;
+      const idx = [...new Set(arr.map(Number).filter((n) => Number.isInteger(n) && n >= 0 && n < shortlist.length))];
+      return { indices: idx };
+    }
+  });
+  if (!r.ok) { console.warn(`market shortlist classify failed: ${r.error}`); return []; }
+  await store.logLlmUsage('profit-competition-match', r.usage.model, r.usage.promptTokens, r.usage.completionTokens, r.usage.costUsd);
+  return r.value.indices.map((i) => shortlist[i]);
+}
+
+/**
+ * Competitor DELIVERED-price signal, hybrid (2026-07-10):
+ *   1. cache (14d)
+ *   2. STRUCTURED: eBay Browse candidates + deterministic matching - zero LLM
+ *   3. ambiguous shortlist -> tiny LLM title-classifier (~1k tokens)
+ *   4. eBay answered "nothing comparable" -> null (the agent's cost-plus
+ *      market-of-one branch; the console Deep check button exists for a manual
+ *      full web read)
+ *   5. no market source configured, or the source ERRORED -> legacy LLM+web
+ *      path (web results capped at 3; `deep` raises it to 6 and skips the
+ *      cache read - the manual Deep check)
+ * Hermetic-safe: any failure returns null. Only a usable (estimateGbp > 0)
+ * result is cached.
  */
 export async function competitorSignal(
   llm: LlmClient, store: TenantStore, cfg: TenantConfig,
-  arg: { pid: string; title: string; ourRetailGbp: number }
+  arg: { pid: string; title: string; ourRetailGbp: number; market?: MarketSource | null; deep?: boolean }
 ): Promise<CompetitorSignal | null> {
   const profit = cfg.profit ?? DEFAULT_PROFIT;
-  const cached = await store.getSearchCache(competitorCacheKey(arg.pid));
-  if (cached) { try { return JSON.parse(cached) as CompetitorSignal; } catch { /* corrupt - re-fetch */ } }
+  if (!arg.deep) {
+    const cached = await store.getSearchCache(competitorCacheKey(arg.pid));
+    if (cached) { try { return JSON.parse(cached) as CompetitorSignal; } catch { /* corrupt - re-fetch */ } }
+  }
+
+  if (arg.market && !arg.deep) {
+    const candidates = await arg.market.search(buildMarketQuery(arg.title));
+    if (candidates !== null) {
+      const m = matchCandidates(arg.title, arg.ourRetailGbp, candidates);
+      if (m.kind === 'match') {
+        const signal: CompetitorSignal = {
+          estimateGbp: m.estimateGbp, confidence: m.confidence,
+          sources: [`${arg.market.name} (${m.matched} matches)`]
+        };
+        await store.putSearchCache(competitorCacheKey(arg.pid), JSON.stringify(signal), profit.cacheTtlDays);
+        return signal;
+      }
+      if (m.kind === 'ambiguous') {
+        const confirmed = await classifyShortlist(llm, store, cfg, arg.title, m.shortlist);
+        if (confirmed.length >= 2) {
+          const signal: CompetitorSignal = {
+            estimateGbp: Math.round(credibleMinGbp(confirmed.map((c) => c.deliveredGbp)) * 100) / 100,
+            confidence: 'medium', // classifier-assisted never claims high
+            sources: [`${arg.market.name} (llm-matched ${confirmed.length})`]
+          };
+          await store.putSearchCache(competitorCacheKey(arg.pid), JSON.stringify(signal), profit.cacheTtlDays);
+          return signal;
+        }
+      }
+      // The source ANSWERED and nothing comparable survived: no market data.
+      // Deliberately no legacy fallback here - that path costs ~200k tokens and
+      // the agent's no-market branch (cost-plus) is the owner-approved behavior.
+      return null;
+    }
+    // candidates === null: the SOURCE failed (auth/network) - fall through to legacy.
+  }
+
   if (!llm.available || !cfg.llm.enabled) return null;
   const chain = resolveChain(cfg, 'text');
   const r = await llm.jsonChain<CompetitorSignal>({
-    chain, maxTokens: 500, web: { maxResults: 6 },
+    chain, maxTokens: 500, web: { maxResults: arg.deep ? 6 : 3 },
     system:
       'You are a UK retail price researcher for a pet-care shop. Using live web search, find the typical UK DELIVERED price a normal shopper pays RIGHT NOW for a comparable product at mainstream UK retailers (Amazon.co.uk, Pets at Home, eBay UK, B&M, Argos, etc.). ' +
       'Work in two parts so delivery is never missed: FIRST the ITEM price of the closest comparable current listing, THEN that same listing\'s actual DELIVERY charge for a standard (non-member) buyer. Membership-only free shipping does NOT count (e.g. Amazon free next-day is Prime-only; a normal buyer pays the postage shown below the price). Report delivery 0 only when the listing is genuinely free-delivery for every buyer. ' +
@@ -321,9 +397,108 @@ export function decideProfitAction(input: {
  * Rolling: returns `next` for the 15-min cron to checkpoint. No-ops when disabled.
  * Never throws out of the per-product loop (one bad product can't stall the sweep).
  */
+/**
+ * Judge and (unless dryRun) act on ONE imported link - the agent loop's body,
+ * extracted so the console's per-product Deep check can re-judge immediately
+ * instead of waiting for the sweep to come round. `signalOverride` skips the
+ * market lookup and judges against the given signal (the deep path researches
+ * first, then judges once). Throws on Shopify/API errors (callers catch).
+ */
+export async function judgeImportedLink(
+  store: TenantStore, admin: AdminGraphql, llm: LlmClient, cfg: TenantConfig,
+  link: { cj_pid: string; shopify_product_id: string }, dryRun: boolean,
+  opts: { market?: MarketSource | null; signalOverride?: CompetitorSignal | null } = {}
+): Promise<{ action: 'keep' | 'reprice' | 'drop' | 'flag'; reason: string; signal: CompetitorSignal | null }> {
+  const profit = cfg.profit as ProfitConfig;
+  const pid = link.shopify_product_id;
+
+  // Snapshot the stored state BEFORE any write, so the ledger can skip
+  // re-logging an identical mutation on every tick (dry-run re-previews the
+  // same reprice each pass; steady-state repeats the same target).
+  const prev = await store.getProfitVerdict(link.cj_pid);
+
+  const inv = await productInventoryItems(admin, pid);
+  const sellable = inv
+    .map((v) => ({ variantId: v.variantId, priceGbp: Number(v.price), costGbp: Number(v.cost) }))
+    .filter((v) => Number.isFinite(v.priceGbp) && v.priceGbp > 0 && Number.isFinite(v.costGbp) && v.costGbp > 0)
+    // Defensible cost-plus price from the LIVE cost - the reprice target when no
+    // competitor is found (decideProfitAction's no-market-data branch).
+    .map((v) => ({ ...v, rulePriceGbp: costPlusPriceGbp(v.costGbp, cfg.pricing) }));
+
+  if (!sellable.length) {
+    // Nothing sellable + costed to judge - record it was seen, act on nothing.
+    await store.upsertProfitVerdict({
+      cjPid: link.cj_pid, verdict: 'pass', netGbp: null, netPct: null, ourRetailGbp: null,
+      competitorGbp: null, competitorConfidence: null, competitorSources: null,
+      reason: 'no live price/cost to judge', action: 'keep', fromGbp: null, toGbp: null, dryRun,
+    });
+    return { action: 'keep', reason: 'no live price/cost to judge', signal: null };
+  }
+
+  const fromPrice = Math.min(...sellable.map((v) => v.priceGbp));
+  const costByVid = new Map(sellable.map((v) => [v.variantId, v.costGbp]));
+
+  // Title for the market lookup (competitorSignal ignores it on a cache hit).
+  let title = link.cj_pid;
+  try {
+    const wh = await store.getWarehouseProduct(link.cj_pid);
+    if (wh) { const d = JSON.parse(wh.detail) as CjDetail; if (d.nameEn) title = d.nameEn; }
+  } catch { /* fall back to the pid */ }
+
+  const signal = opts.signalOverride !== undefined
+    ? opts.signalOverride
+    : await competitorSignal(llm, store, cfg, { pid: link.cj_pid, title, ourRetailGbp: fromPrice, market: opts.market });
+  const competitor = signal && signal.estimateGbp > 0 ? { estimateGbp: signal.estimateGbp, confidence: signal.confidence } : null;
+  const action = decideProfitAction({ variants: sellable, competitor, profit });
+
+  // Reported net + our price + verdict, from the decided action.
+  let toGbp: number | null = null;
+  let reportNet = Math.min(...sellable.map((v) => liveNetGbp(v.priceGbp, v.costGbp, profit)));
+  if (action.kind === 'reprice') {
+    toGbp = Math.min(...action.updates.map((u) => u.toGbp));
+    reportNet = Math.min(...action.updates.map((u) => liveNetGbp(u.toGbp, costByVid.get(u.variantId) ?? 0, profit)));
+  }
+  const ourPrice = action.kind === 'reprice' ? (toGbp as number) : fromPrice;
+  const exVat = ourPrice / (1 + profit.vatRate);
+  const verdict = action.kind === 'drop' ? 'reject' : action.kind === 'flag' ? 'review' : 'pass';
+
+  // EXECUTE (live only). Dry-run still counts what it WOULD do.
+  if (action.kind === 'reprice') {
+    if (!dryRun) await updateVariantPrices(admin, pid, action.updates.map((u) => ({ id: u.variantId, price: u.toGbp.toFixed(2) })));
+  } else if (action.kind === 'drop') {
+    if (!dryRun) { await archiveProduct(admin, pid); await store.putLink({ cjPid: link.cj_pid, state: 'archived' }); }
+  }
+
+  // Persist current state (always).
+  await store.upsertProfitVerdict({
+    cjPid: link.cj_pid, verdict, netGbp: round2(reportNet), netPct: exVat > 0 ? round2(reportNet / exVat) : null,
+    ourRetailGbp: round2(ourPrice), competitorGbp: signal?.estimateGbp ?? null, competitorConfidence: signal?.confidence ?? null,
+    competitorSources: signal?.sources ?? null, reason: action.reason, action: action.kind,
+    fromGbp: action.kind === 'reprice' ? round2(fromPrice) : null, toGbp: toGbp === null ? null : round2(toGbp), dryRun,
+  });
+
+  // Ledger: record only real mutations (reprice/drop), deduped against the
+  // pre-write snapshot so a re-preview / steady-state repeat is not re-logged.
+  if (action.kind === 'reprice' || action.kind === 'drop') {
+    const sig = (a: string | null | undefined, to: number | null | undefined, dr: number | null | undefined) =>
+      `${a ?? ''}|${to == null ? '' : Number(to).toFixed(2)}|${dr ?? ''}`;
+    const cur = sig(action.kind, toGbp, dryRun ? 1 : 0);
+    const before = prev ? sig(prev.action, prev.to_gbp, prev.dry_run) : '';
+    if (cur !== before) {
+      await store.logProfitAction({
+        cjPid: link.cj_pid, action: action.kind, fromGbp: action.kind === 'reprice' ? round2(fromPrice) : null,
+        toGbp: toGbp === null ? null : round2(toGbp), competitorGbp: signal?.estimateGbp ?? null,
+        competitorConfidence: signal?.confidence ?? null, reason: action.reason, dryRun,
+      });
+    }
+  }
+
+  return { action: action.kind, reason: action.reason, signal };
+}
+
 export async function runProfitAgent(
   store: TenantStore, admin: AdminGraphql, llm: LlmClient, cfg: TenantConfig,
-  opts: { offset?: number; limit?: number } = {}
+  opts: { offset?: number; limit?: number; market?: MarketSource | null } = {}
 ): Promise<{ scanned: number; acted: number; repriced: number; dropped: number; flagged: number; total: number; next: number | null; dryRun: boolean }> {
   const profit = cfg.profit;
   const dryRun = profit?.dryRun !== false; // preview unless explicitly cleared to false
@@ -337,90 +512,15 @@ export async function runProfitAgent(
 
   for (const link of links) {
     scanned++;
-    const pid = link.shopify_product_id as string;
     try {
-      // Snapshot the stored state BEFORE any write, so the ledger can skip
-      // re-logging an identical mutation on every tick (dry-run re-previews the
-      // same reprice each pass; steady-state repeats the same target).
-      const prev = await store.getProfitVerdict(link.cj_pid);
-
-      const inv = await productInventoryItems(admin, pid);
-      const sellable = inv
-        .map((v) => ({ variantId: v.variantId, priceGbp: Number(v.price), costGbp: Number(v.cost) }))
-        .filter((v) => Number.isFinite(v.priceGbp) && v.priceGbp > 0 && Number.isFinite(v.costGbp) && v.costGbp > 0)
-        // Defensible cost-plus price from the LIVE cost - the reprice target when no
-        // competitor is found (decideProfitAction's no-market-data branch).
-        .map((v) => ({ ...v, rulePriceGbp: costPlusPriceGbp(v.costGbp, cfg.pricing) }));
-
-      if (!sellable.length) {
-        // Nothing sellable + costed to judge - record it was seen, act on nothing.
-        await store.upsertProfitVerdict({
-          cjPid: link.cj_pid, verdict: 'pass', netGbp: null, netPct: null, ourRetailGbp: null,
-          competitorGbp: null, competitorConfidence: null, competitorSources: null,
-          reason: 'no live price/cost to judge', action: 'keep', fromGbp: null, toGbp: null, dryRun,
-        });
-        continue;
-      }
-
-      const fromPrice = Math.min(...sellable.map((v) => v.priceGbp));
-      const costByVid = new Map(sellable.map((v) => [v.variantId, v.costGbp]));
-
-      // Title for the market lookup (competitorSignal ignores it on a cache hit).
-      let title = link.cj_pid;
-      try {
-        const wh = await store.getWarehouseProduct(link.cj_pid);
-        if (wh) { const d = JSON.parse(wh.detail) as CjDetail; if (d.nameEn) title = d.nameEn; }
-      } catch { /* fall back to the pid */ }
-
-      const signal = await competitorSignal(llm, store, cfg, { pid: link.cj_pid, title, ourRetailGbp: fromPrice });
-      const competitor = signal && signal.estimateGbp > 0 ? { estimateGbp: signal.estimateGbp, confidence: signal.confidence } : null;
-      const action = decideProfitAction({ variants: sellable, competitor, profit });
-
-      // Reported net + our price + verdict, from the decided action.
-      let toGbp: number | null = null;
-      let reportNet = Math.min(...sellable.map((v) => liveNetGbp(v.priceGbp, v.costGbp, profit)));
-      if (action.kind === 'reprice') {
-        toGbp = Math.min(...action.updates.map((u) => u.toGbp));
-        reportNet = Math.min(...action.updates.map((u) => liveNetGbp(u.toGbp, costByVid.get(u.variantId) ?? 0, profit)));
-      }
-      const ourPrice = action.kind === 'reprice' ? (toGbp as number) : fromPrice;
-      const exVat = ourPrice / (1 + profit.vatRate);
-      const verdict = action.kind === 'drop' ? 'reject' : action.kind === 'flag' ? 'review' : 'pass';
-
-      // EXECUTE (live only). Dry-run still counts what it WOULD do.
-      if (action.kind === 'reprice') {
-        if (!dryRun) await updateVariantPrices(admin, pid, action.updates.map((u) => ({ id: u.variantId, price: u.toGbp.toFixed(2) })));
-        repriced++;
-      } else if (action.kind === 'drop') {
-        if (!dryRun) { await archiveProduct(admin, pid); await store.putLink({ cjPid: link.cj_pid, state: 'archived' }); }
-        dropped++;
-      } else if (action.kind === 'flag') {
-        flagged++;
-      }
-
-      // Persist current state (always).
-      await store.upsertProfitVerdict({
-        cjPid: link.cj_pid, verdict, netGbp: round2(reportNet), netPct: exVat > 0 ? round2(reportNet / exVat) : null,
-        ourRetailGbp: round2(ourPrice), competitorGbp: signal?.estimateGbp ?? null, competitorConfidence: signal?.confidence ?? null,
-        competitorSources: signal?.sources ?? null, reason: action.reason, action: action.kind,
-        fromGbp: action.kind === 'reprice' ? round2(fromPrice) : null, toGbp: toGbp === null ? null : round2(toGbp), dryRun,
-      });
-
-      // Ledger: record only real mutations (reprice/drop), deduped against the
-      // pre-write snapshot so a re-preview / steady-state repeat is not re-logged.
-      if (action.kind === 'reprice' || action.kind === 'drop') {
-        const sig = (a: string | null | undefined, to: number | null | undefined, dr: number | null | undefined) =>
-          `${a ?? ''}|${to == null ? '' : Number(to).toFixed(2)}|${dr ?? ''}`;
-        const cur = sig(action.kind, toGbp, dryRun ? 1 : 0);
-        const before = prev ? sig(prev.action, prev.to_gbp, prev.dry_run) : '';
-        if (cur !== before) {
-          await store.logProfitAction({
-            cjPid: link.cj_pid, action: action.kind, fromGbp: action.kind === 'reprice' ? round2(fromPrice) : null,
-            toGbp: toGbp === null ? null : round2(toGbp), competitorGbp: signal?.estimateGbp ?? null,
-            competitorConfidence: signal?.confidence ?? null, reason: action.reason, dryRun,
-          });
-        }
-      }
+      const r = await judgeImportedLink(
+        store, admin, llm, cfg,
+        { cj_pid: link.cj_pid, shopify_product_id: link.shopify_product_id as string },
+        dryRun, { market: opts.market }
+      );
+      if (r.action === 'reprice') repriced++;
+      else if (r.action === 'drop') dropped++;
+      else if (r.action === 'flag') flagged++;
     } catch (e) { console.warn(`profit agent failed for ${link.cj_pid}: ${(e as Error).message}`); }
   }
 
