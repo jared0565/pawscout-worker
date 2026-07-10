@@ -150,6 +150,12 @@ export async function curateDetailImages(
  * The single CJ call left near the request path: a live stock confirmation
  * before the (background) import, so we never list something CJ can't fulfil.
  * Stock-unknown (endpoint failure) proceeds - the W2 daily sync corrects it.
+ *
+ * Returns the gate-ENRICHED detail (curated copy, per-country origins, chosen
+ * origin, freightUsd) when the import was attempted, null when a gate rejected -
+ * so callers that persist the candidate (the seed lane's warehouse cache) store
+ * the SAME numbers the gates judged, freight included (2026-07-10 audit fix:
+ * a freight-less cached row makes the nightly cost sync freight-blind).
  */
 export async function confirmAndImport(
   store: TenantStore,
@@ -161,7 +167,7 @@ export async function confirmAndImport(
   curate?: (detail: CjDetail, context: string) => Promise<Curation | null>,
   pickHero?: (title: string, imageUrls: string[]) => Promise<HeroPick>,
   opts: { publish?: boolean; localWarehouses?: string[]; marketTag?: string; extraTags?: string[] } = {}
-): Promise<void> {
+): Promise<CjDetail | null> {
   // Ghost-click curation gate (added 2026-06-12 after a "pet food" search
   // imported a kitchen vacuum sealer): clicked ghosts must pass the SAME
   // LLM relevance gate as warehouse admissions. Already-curated details
@@ -173,7 +179,7 @@ export async function confirmAndImport(
         if (curated.relevanceScore < cfg.llm.scoreThreshold) {
           console.warn(`import rejected by curation for ${detail.pid}: score ${curated.relevanceScore} < ${cfg.llm.scoreThreshold}`);
           await store.putLink({ cjPid: detail.pid, state: 'failed', category: category ?? null });
-          return;
+          return null;
         }
         detail = {
           ...detail,
@@ -195,7 +201,7 @@ export async function confirmAndImport(
   if (detail.llmScore === undefined && !isLikelyPetProduct(`${detail.nameEn} ${detail.categoryName ?? ''}`)) {
     console.warn(`import blocked (not pet-relevant) for ${detail.pid}: ${detail.nameEn}`);
     await store.putLink({ cjPid: detail.pid, state: 'failed', category: category ?? null });
-    return;
+    return null;
   }
   // Image QA (vision): CJ's first image is often a single component or a
   // packaging shot, and CJ galleries can include images of a DIFFERENT animal
@@ -207,7 +213,7 @@ export async function confirmAndImport(
     if (!congruent) { // no image matches the title - don't list a mislabelled product
       console.warn(`import rejected (no congruent image) for ${detail.pid}: ${detail.nameEn}`);
       await store.putLink({ cjPid: detail.pid, state: 'failed', category: category ?? null });
-      return;
+      return null;
     }
     detail = curated;
   }
@@ -248,7 +254,7 @@ export async function confirmAndImport(
   if (localQty < cfg.floors.stockFloor) {
     console.warn(`import blocked (no local-warehouse stock for lane ${locals.join('/')}) for ${detail.pid}: ${detail.nameEn}`);
     await store.putLink({ cjPid: detail.pid, state: 'failed', category: category ?? null });
-    return;
+    return null;
   }
   // Origin evidence rides the detail into importProduct and the warehouse
   // cache so downstream gates and per-buyer search filters can read it.
@@ -265,7 +271,7 @@ export async function confirmAndImport(
     if (live < cfg.floors.stockFloor) {
       console.warn(`import blocked for ${detail.pid}: CJ stock ${live} < floor ${cfg.floors.stockFloor}`);
       await store.putLink({ cjPid: detail.pid, state: 'failed', category: category ?? null });
-      return;
+      return null;
     }
   }
   // Profitability gate (DORMANT unless cfg.profit.enabled). DETERMINISTIC
@@ -280,13 +286,14 @@ export async function confirmAndImport(
       if (profit.hardBlock) {
         console.warn(`import blocked (below profit floor) for ${detail.pid}: net GBP ${net.worstNetGbp.toFixed(2)} (${Math.round(net.worstNetPct * 100)}%)`);
         await store.putLink({ cjPid: detail.pid, state: 'failed', category: category ?? null });
-        return;
+        return null;
       }
       console.warn(`import flagged for review (below profit floor) for ${detail.pid}: net GBP ${net.worstNetGbp.toFixed(2)}`);
       opts = { ...opts, publish: false, extraTags: [...(opts.extraTags ?? []), 'cj-profit-review'] };
     }
   }
   await importProduct(store, admin, cfg, detail, category, opts);
+  return detail;
 }
 
 const PRODUCT_SET = `mutation pawscoutImport($input: ProductSetInput!) {

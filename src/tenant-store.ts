@@ -921,6 +921,17 @@ export class TenantStore {
       .first<WarehouseRow>();
   }
 
+  /** Detail-only update of a warehouse row (e.g. the freight backfill enriching
+   *  the stored CjDetail). Unlike putWarehouseProduct this touches NOTHING else -
+   *  no status reset to 'available', no stock overwrite, no freshness restamp -
+   *  because the caller is annotating stored data, not reporting a fresh fetch. */
+  async updateWarehouseDetail(cjPid: string, detailJson: string): Promise<void> {
+    await this.db
+      .prepare(`UPDATE warehouse_products SET detail = ?3 WHERE shop = ?1 AND cj_pid = ?2`)
+      .bind(this.shop, cjPid, detailJson)
+      .run();
+  }
+
   /** Available rows matching ANY token in title/category text (ranking happens in the caller). */
   async searchWarehouse(tokens: string[], limit: number): Promise<WarehouseRow[]> {
     const clean = tokens.map((t) => t.replace(/[%_]/g, '')).filter(Boolean).slice(0, 6);
@@ -1530,6 +1541,27 @@ export class TenantStore {
       )
       .bind(this.shop)
       .all<{ cj_pid: string; category: string | null }>();
+    return rs.results ?? [];
+  }
+
+  /** Imported, Shopify-linked products whose warehouse row carries NO freightUsd.
+   *  For these the nightly cost sync can only compute a freight-FREE landed cost,
+   *  so the profitability agent judges them on understated costs (the freight-blind
+   *  audit gap, 2026-07-10) - the nightly backfill (backfillWarehouseFreight) works
+   *  this list off. Keyed on the very field the backfill writes, so a failed
+   *  estimate stays in the list and retries the next night. */
+  async importedRowsWithoutFreight(limit = 25): Promise<{ cj_pid: string; detail: string }[]> {
+    const rs = await this.db
+      .prepare(
+        `SELECT w.cj_pid AS cj_pid, w.detail AS detail
+         FROM product_links l
+         JOIN warehouse_products w ON w.shop = l.shop AND w.cj_pid = l.cj_pid
+         WHERE l.shop = ?1 AND l.state = 'imported' AND l.shopify_product_id IS NOT NULL
+           AND json_extract(w.detail, '$.freightUsd') IS NULL
+         ORDER BY l.created_at ASC LIMIT ${Math.min(Math.max(limit, 1), 100)}`
+      )
+      .bind(this.shop)
+      .all<{ cj_pid: string; detail: string }>();
     return rs.results ?? [];
   }
 

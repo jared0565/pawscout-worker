@@ -218,7 +218,8 @@ describe('hero-image QA (vision)', () => {
     const store = new TenantStore(env.DB, 'a.myshopify.com');
     const calls: Call[] = [];
     const cnOnly = { ...DETAIL, pid: 'CNONLY', origins: { CN: 900 } };
-    await confirmAndImport(store, cjStub(), fakeAdmin(calls), CFG, cnOnly, 'pet-toys');
+    const ret = await confirmAndImport(store, cjStub(), fakeAdmin(calls), CFG, cnOnly, 'pet-toys');
+    expect(ret).toBeNull(); // a gate rejection returns null - callers must not cache it
     expect(calls.some((c) => c.query.includes('productSet'))).toBe(false);
     expect((await store.getLink('CNONLY'))?.state).toBe('failed');
   });
@@ -240,8 +241,11 @@ describe('hero-image QA (vision)', () => {
     const store = new TenantStore(env.DB, 'a.myshopify.com');
     const calls: Call[] = [];
     // DETAIL has no origins map; the cjStub answers { GB: 50 } → import proceeds.
-    await confirmAndImport(store, cjStub(), fakeAdmin(calls), CFG, { ...DETAIL, pid: 'LIVEGB' }, 'pet-toys');
+    const ret = await confirmAndImport(store, cjStub(), fakeAdmin(calls), CFG, { ...DETAIL, pid: 'LIVEGB' }, 'pet-toys');
     expect(calls.some((c) => c.query.includes('productSet'))).toBe(true);
+    // An attempted import returns the gate-ENRICHED detail (here: the live-verified
+    // origins) so callers persist the same numbers the gates judged.
+    expect(ret?.origins).toEqual({ GB: 50 });
   });
 
   it('confirmAndImport blocks a non-pet item on the mechanical fallback (no curation)', async () => {

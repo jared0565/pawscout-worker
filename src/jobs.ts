@@ -332,12 +332,21 @@ export async function syncStoreInventory(
       // Cost-per-item sync: write the honest landed GBP COGS (raw FX, product +
       // freight) so Shopify margin analytics and the affiliate £6 floor read a
       // current figure. Admin-only field; only changed costs are written.
+      // Freight-UNKNOWN guard (2026-07-10 audit): when the stored row carries no
+      // freightUsd the landed figure here is ITEM-ONLY, and writing it would strip
+      // real freight from an honest cost - the profitability agent then judges an
+      // understated cost and over-states net. With freight unknown, never LOWER an
+      // existing cost: raises (a real CJ item-cost rise) still land, an empty cost
+      // still gets seeded, and the nightly freight backfill fills the row so the
+      // full figure converges. Known freight (including 0) syncs freely.
       const costUpdates = variants.flatMap((v) => {
         const cost = skuToCost.get(v.sku);
         if (cost === undefined || cost <= 0) return [];
         const landed = landedCostGbp(cost, cfg.pricing, freightUsd).toFixed(2);
         const current = v.cost === '' ? '' : Number(v.cost).toFixed(2);
-        return current === landed ? [] : [{ inventoryItemId: v.inventoryItemId, cost: landed }];
+        if (current === landed) return [];
+        if (freightUsd === undefined && current !== '' && Number(landed) < Number(current)) return [];
+        return [{ inventoryItemId: v.inventoryItemId, cost: landed }];
       });
       if (costUpdates.length) await updateVariantCosts(admin, costUpdates);
 
@@ -470,6 +479,60 @@ export async function backfillOriginSignatures(
     }
   }
   if (done) console.log(`origin backfill: ${done} product(s) gained an origin signature`);
+  return done;
+}
+
+/** Freight backfill batch: up to 2 paced CJ calls per row per nightly run. */
+export const FREIGHT_BACKFILL_BATCH = 40;
+
+/**
+ * Backfill warehouse freight (2026-07-10 profitability audit): legacy warehouse
+ * rows admitted before freight capture carry no freightUsd, so the nightly cost
+ * sync could only write a freight-FREE landed cost and the profitability agent
+ * judged those products on understated costs (75 of 164 live products at audit
+ * time; the origin backfill never revisits them because its work-list keys on
+ * missing ORIGINS, and a row whose freight estimate once failed has origins).
+ * For each imported product whose row lacks freight, choose its dispatch origin
+ * (fetching the per-country origins map when the stored detail lacks one) and
+ * write the freight estimate into the stored detail - a detail-only update that
+ * never touches stock or status. The same nightly's store-inventory stage then
+ * writes the corrected landed cost, and the 15-min profit agent re-judges on it.
+ * The work-list keys on the field this writes, so a failed estimate simply stays
+ * in the list and retries the next night. Paced (~1.1s/call), capped per run.
+ */
+export async function backfillWarehouseFreight(
+  store: TenantStore,
+  cj: CjClient,
+  cfg: TenantConfig,
+  opts: { limit?: number; pause?: (ms: number) => Promise<void> } = {}
+): Promise<number> {
+  const rows = await store.importedRowsWithoutFreight(opts.limit ?? FREIGHT_BACKFILL_BATCH);
+  if (!rows.length) return 0;
+  const pause = opts.pause ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  let done = 0;
+  for (const row of rows) {
+    try {
+      let detail: CjDetail;
+      try { detail = JSON.parse(row.detail) as CjDetail; } catch { continue; } // corrupt legacy row - nothing to annotate
+      const vid = detail.variants?.[0]?.vid;
+      if (!vid || vid === 'default') continue; // no real variant id - CJ cannot quote freight
+      let origins = detail.origins;
+      if (!origins || !Object.values(origins).some((n) => n > 0)) {
+        await pause(CJ_CALL_GAP_MS);
+        origins = await cj.originsByPid(row.cj_pid);
+        if (!Object.values(origins).some((n) => n > 0)) continue; // nothing stocked anywhere - no origin to quote from
+      }
+      const origin = detail.origin ?? chooseOrigin({ ...detail, origins }, cfg.floors.stockFloor);
+      await pause(CJ_CALL_GAP_MS);
+      const f = await cj.freightEstimate(vid, origin);
+      if (!f) continue; // no quote - the row stays in the work-list and retries next night
+      await store.updateWarehouseDetail(row.cj_pid, JSON.stringify({ ...detail, origins, origin, freightUsd: f.priceUsd }));
+      done++;
+    } catch (e) {
+      console.warn(`freight backfill failed for ${row.cj_pid}: ${(e as Error).message}`);
+    }
+  }
+  if (done) console.log(`freight backfill: ${done} warehouse row(s) gained freightUsd`);
   return done;
 }
 
@@ -1043,25 +1106,26 @@ export async function seedOriginAssortment(
         if (!detail) { rejected++; continue; }
         const sig = titleSignature(detail.nameEn);
         if (seenTitleSigs.has(sig)) { rejected++; continue; }
-        await confirmAndImport(store, cj, admin, cfg, detail, category, opts.curate, opts.pickHero, {
+        const enriched = await confirmAndImport(store, cj, admin, cfg, detail, category, opts.curate, opts.pickHero, {
           publish: false, localWarehouses: laneWarehouses, ...(marketTag ? { marketTag } : {})
         });
         await pause(CJ_CALL_GAP_MS);
         if ((await store.getLink(detail.pid))?.state === 'draft') {
-          // Cache the detail (with per-country origins) only for candidates that
-          // passed the full gate chain - rejected candidates must not pollute
+          // Cache the gate-ENRICHED detail (curated copy, per-country origins,
+          // freightUsd - the exact numbers the gates judged) only for candidates
+          // that passed the full gate chain - rejected candidates must not pollute
           // warehouse_products (those rows feed searchBackfill ghost cards).
-          // NOTE: the cached `detail` does NOT carry confirmAndImport's freightUsd enrichment
-          // (confirmAndImport mutates only its local copy); harmless in Phase 1 (chooseOrigin /
-          // geo-ranking read `origins`, not freight) and Phase 2's replenish re-derives freight on cache read.
+          // Caching freight here keeps the nightly cost sync freight-aware for
+          // this product from day one (the freight-blind audit gap, 2026-07-10).
+          const cached = enriched ?? detail;
           await store.putWarehouseProduct({
             cjPid: detail.pid,
             category,
-            title: detail.nameEn,
-            detailJson: JSON.stringify(detail),
-            priceUsd: detail.variants[0]?.sellPriceUsd ?? 0,
-            listedNum: detail.listedNum,
-            stock: detail.stock ?? 0
+            title: cached.nameEn,
+            detailJson: JSON.stringify(cached),
+            priceUsd: cached.variants[0]?.sellPriceUsd ?? 0,
+            listedNum: cached.listedNum,
+            stock: cached.stock ?? 0
           });
           drafted++; perCat++; seenTitleSigs.add(sig);
         } else {
@@ -1282,6 +1346,10 @@ export const DAILY_SHOP_STAGES: DailyStage[] = [
   // backfilled product is repriced (freight-baked sticker) and adopted into its
   // engineered shipping profile in the SAME nightly chain.
   { name: 'origin-backfill', maxMs: 8 * MIN_MS, run: async (ctx) => { await backfillOriginSignatures(ctx.store, ctx.cj!, ctx.cfg); } },
+  // Freight backfill BEFORE the inventory sync: a warehouse row that gains its
+  // freightUsd tonight gets its honest (freight-inclusive) landed cost written in
+  // the SAME chain, and the 15-min profit agent re-judges on real numbers.
+  { name: 'warehouse-freight', maxMs: 6 * MIN_MS, run: async (ctx) => { await backfillWarehouseFreight(ctx.store, ctx.cj!, ctx.cfg); } },
   // Market fill lanes: paced nightly discovery of each target market's
   // local-warehouse stock, drafted (never published) for owner review. One
   // stage per lane so the budget check runs between lanes.

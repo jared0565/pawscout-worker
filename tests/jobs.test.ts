@@ -54,7 +54,7 @@ async function seedWarehouse(store: TenantStore, pid: string, category: string, 
 
 interface Call { query: string; variables?: Record<string, unknown> }
 
-function shopAdmin(calls: Call[], currentPrice = '99.99', tracked = true): AdminGraphql {
+function shopAdmin(calls: Call[], currentPrice = '99.99', tracked = true, currentCost?: string): AdminGraphql {
   return async (query, variables) => {
     calls.push({ query, variables });
     if (query.includes('inventoryItemUpdate')) return { inventoryItemUpdate: { userErrors: [] } };
@@ -67,7 +67,7 @@ function shopAdmin(calls: Call[], currentPrice = '99.99', tracked = true): Admin
     if (query.includes('publishablePublish')) return { publishablePublish: { userErrors: [] } };
     if (query.includes('pawscoutLocation')) return { location: { id: 'gid://shopify/Location/1' } };
     if (query.includes('pawscoutVariants')) {
-      return { product: { variants: { nodes: [{ id: 'gid://v/1', sku: (variables!.id as string).includes('A') ? 'sku-A' : 'sku-x', price: currentPrice, inventoryItem: { id: 'gid://inv/1', tracked } }] } } };
+      return { product: { variants: { nodes: [{ id: 'gid://v/1', sku: (variables!.id as string).includes('A') ? 'sku-A' : 'sku-x', price: currentPrice, inventoryItem: { id: 'gid://inv/1', tracked, unitCost: currentCost ? { amount: currentCost } : null } }] } } };
     }
     if (query.includes('productVariantsBulkUpdate')) return { productVariantsBulkUpdate: { userErrors: [] } };
     if (query.includes('inventorySetQuantities')) return { inventorySetQuantities: { userErrors: [] } };
@@ -422,6 +422,52 @@ describe('syncStoreInventory', () => {
     const w = priceWriteOf(calls);
     expect(w).toBeDefined();
     expect((w!.variables!.variants as { price: string }[])[0].price).toBe('19.99'); // lowered to the rule
+  });
+
+  // Freight-unknown cost guard (2026-07-10 audit): a stored row without freightUsd
+  // makes the sync's landed figure ITEM-ONLY - writing it would strip real freight
+  // from an honest Shopify cost and the profit agent would over-state net.
+  it('never LOWERS Cost-per-item when the stored row has no freight (freight-unknown guard)', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await insertLink('A', 'imported', 5);
+    await seedWarehouse(store, 'A', 'pet-toys', 40); // detailOf carries NO freightUsd
+    const cj = {
+      detail: async (pid: string) => detailOf(pid, 40, 10), // $10 item-only -> landed £7.80
+      stockByPid: async () => new Map<string, number>()
+    } as unknown as CjClient;
+    const calls: Call[] = [];
+    // live Shopify cost 9.60 already carries freight; 7.80 < 9.60 -> the write is withheld
+    await syncStoreInventory(store, cj, shopAdmin(calls, '19.99', true, '9.60'), CFG, { pause: async () => {} });
+    expect(calls.some((c) => c.query.includes('pawscoutCost'))).toBe(false);
+  });
+
+  it('freight-unknown still RAISES Cost-per-item (a real CJ item-cost rise lands)', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await insertLink('A', 'imported', 5);
+    await seedWarehouse(store, 'A', 'pet-toys', 40);
+    const cj = {
+      detail: async (pid: string) => detailOf(pid, 40, 10), // landed £7.80 > current 6.50
+      stockByPid: async () => new Map<string, number>()
+    } as unknown as CjClient;
+    const calls: Call[] = [];
+    await syncStoreInventory(store, cj, shopAdmin(calls, '19.99', true, '6.50'), CFG, { pause: async () => {} });
+    const cost = calls.find((c) => c.query.includes('pawscoutCost'))!;
+    expect(cost.variables!.cost).toBe('7.80');
+  });
+
+  it('KNOWN freight (even 0) still lowers freely - the guard bites only on unknown', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await insertLink('A', 'imported', 5);
+    const d = { ...detailOf('A', 40, 10), freightUsd: 0 }; // stored row carries KNOWN zero freight
+    await store.putWarehouseProduct({ cjPid: 'A', category: 'pet-toys', title: d.nameEn, detailJson: JSON.stringify(d), priceUsd: 10, listedNum: d.listedNum, stock: 40 });
+    const cj = {
+      detail: async (pid: string) => detailOf(pid, 40, 10), // landed (10+0)*0.78 = £7.80 < current 9.60
+      stockByPid: async () => new Map<string, number>()
+    } as unknown as CjClient;
+    const calls: Call[] = [];
+    await syncStoreInventory(store, cj, shopAdmin(calls, '19.99', true, '9.60'), CFG, { pause: async () => {} });
+    const cost = calls.find((c) => c.query.includes('pawscoutCost'))!;
+    expect(cost.variables!.cost).toBe('7.80');
   });
 
   it('activates tracking + DENY on untracked variants before setting quantities', async () => {

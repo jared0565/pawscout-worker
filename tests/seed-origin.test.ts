@@ -54,7 +54,13 @@ describe('seedOriginAssortment', () => {
     expect((await store.getLink('GB1'))?.state).toBe('draft');
     const wh = await store.getWarehouseProduct('GB1');
     expect(wh).not.toBeNull();
-    expect(JSON.parse(wh!.detail).origins.GB).toBe(40);   // origins cached for Phase-2 geo-ranking
+    const cached = JSON.parse(wh!.detail);
+    expect(cached.origins.GB).toBe(40);   // origins cached for Phase-2 geo-ranking
+    // The cached detail is confirmAndImport's ENRICHED copy: the freight the gates
+    // judged is persisted (KNOWN 0 here, not absent), so the nightly cost sync is
+    // freight-aware for this product from day one (freight-blind audit gap fix).
+    expect(cached.freightUsd).toBe(0);
+    expect(cached.origin).toBe('GB');
   });
 
   it('filters out-of-price-band candidates (liveCjPasses gate) before drafting', async () => {
