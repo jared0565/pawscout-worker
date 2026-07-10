@@ -53,11 +53,16 @@ function blgItemHtml(p){
   if(related.length){
     h+='<div class="blg-meta">Shop this guide: '+related.length+' product(s)'+(p.hero_source_handle?', hero from '+esc(p.hero_source_handle):'')+'.</div>';
   }
-  if(p.shopify_article_id && p.status!=='published'){
-    h+='<div class="blg-actions"><button type="button" class="btn-sm" onclick="blogEnrich(\\''+esc(p.shopify_article_id)+'\\')">'
-      +(related.length?'Refresh image + shop block':'Add image + shop block')+'</button></div>';
+  if(p.shopify_article_id){
+    // Published posts keep the button: refreshing the shop block re-runs the
+    // congruence merchandiser on the LIVE article (an owner-set hero image is
+    // never overwritten, and publish state is never touched).
+    var lbl=p.status==='published'?'Refresh shop block':(related.length?'Refresh image + shop block':'Add image + shop block');
+    h+='<div class="blg-actions"><button type="button" class="btn-sm" onclick="blogEnrich(\\''+esc(p.shopify_article_id)+'\\')">'+lbl+'</button></div>';
   }
-  h+='<div class="blg-meta">Review and publish in Shopify admin: Online Store &gt; Blog posts. You can swap the hero image there before publishing.</div>';
+  if(p.status!=='published'){
+    h+='<div class="blg-meta">Review and publish in Shopify admin: Online Store &gt; Blog posts. You can swap the hero image there before publishing.</div>';
+  }
   return h+'</div>';
 }
 async function loadContent(){

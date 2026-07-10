@@ -37,6 +37,33 @@ export interface ShopBlockSelection {
 // 1200x1200 og:image (the 1.91:1 wide card also needs both dims >= this).
 const MIN_HERO_PX = 1200;
 
+export type HeroFields = Pick<ShopBlockSelection, 'heroImageUrl' | 'heroSourceHandle' | 'heroAlt' | 'heroIsHighRes'>;
+
+/**
+ * Hero for a chosen handle set: keep the set's congruence order, but prefer the
+ * first pick whose source is >=1200 square (a true 1200x1200 og:image). Fall
+ * back to the first pick with any image so every post still gets a hero - a
+ * human can swap it on review. Shared by the deterministic selection and the
+ * combo merchandiser (the hero must always follow the FINAL handle set).
+ */
+export function pickHeroFields(byHandle: Map<string, GroundedProduct>, handles: string[]): HeroFields {
+  let fallback: GroundedProduct | undefined;
+  let highRes: GroundedProduct | undefined;
+  for (const h of handles) {
+    const p = byHandle.get(h);
+    if (!p?.imageUrl) continue;
+    if (!fallback) fallback = p;
+    if ((p.imageWidth ?? 0) >= MIN_HERO_PX && (p.imageHeight ?? 0) >= MIN_HERO_PX) { highRes = p; break; }
+  }
+  const hero = highRes ?? fallback;
+  return {
+    heroImageUrl: hero?.imageUrl,
+    heroSourceHandle: hero?.handle,
+    heroAlt: hero?.title,
+    heroIsHighRes: !!highRes
+  };
+}
+
 /**
  * Choose up to `max` products for the shop block and the hero image.
  *
@@ -55,24 +82,5 @@ export function selectShopBlock(pack: FactPack, bodyHtml: string, max = 4): Shop
 
   const handles = [...linked, ...topUp].slice(0, max);
 
-  // Hero: keep congruence order, but prefer the first pick whose source is
-  // >=1200 square (a true 1200x1200 og:image). Fall back to the first pick with
-  // any image so every post still gets a hero - a human can swap it on review.
-  let fallback: GroundedProduct | undefined;
-  let highRes: GroundedProduct | undefined;
-  for (const h of handles) {
-    const p = byHandle.get(h);
-    if (!p?.imageUrl) continue;
-    if (!fallback) fallback = p;
-    if ((p.imageWidth ?? 0) >= MIN_HERO_PX && (p.imageHeight ?? 0) >= MIN_HERO_PX) { highRes = p; break; }
-  }
-  const hero = highRes ?? fallback;
-
-  return {
-    handles,
-    heroImageUrl: hero?.imageUrl,
-    heroSourceHandle: hero?.handle,
-    heroAlt: hero?.title,
-    heroIsHighRes: !!highRes
-  };
+  return { handles, ...pickHeroFields(byHandle, handles) };
 }

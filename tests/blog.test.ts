@@ -1,19 +1,21 @@
 import { describe, it, expect } from 'vitest';
 import {
-  findBlogIssues, findClaimFlags, hasStorefrontLink, htmlToText, countWords, refineBlogUntilClean
+  findBlogIssues, findClaimFlags, hasStorefrontLink, htmlToText, countWords, refineBlogUntilClean, quickAnswerText
 } from '../src/blog/quality';
 import { factPackToPrompt, groundCollection } from '../src/blog/ground';
-import { sanitizeBlogHtml, draftArticle } from '../src/blog/draft';
-import { createDraftArticle, renameBlog, findBlog, updateArticleAssets } from '../src/blog/article';
-import { extractProductHandles, selectShopBlock } from '../src/blog/select';
+import { sanitizeBlogHtml, draftArticle, validateFaq } from '../src/blog/draft';
+import { createDraftArticle, renameBlog, findBlog, updateArticleAssets, getPublishedMap } from '../src/blog/article';
+import { extractProductHandles, selectShopBlock, pickHeroFields } from '../src/blog/select';
+import { pickComboHandles, availableByHandle } from '../src/blog/combo';
 import { pickBlogHeroImage, getProductImages } from '../src/blog/hero';
-import { proposeBrief, proposeTopics, seasonForMonth } from '../src/blog/research';
+import { proposeBrief, proposeTopics, seasonForMonth, validateSourcedFacts, collectSourcedFacts } from '../src/blog/research';
 import { resolvePipelineBrief } from '../src/blog/pipeline';
 import { LlmClient } from '../src/llm';
 import type { AdminGraphql } from '../src/shopify-admin';
 import type { BlogBrief, BlogDraft, FactPack, GroundedProduct } from '../src/blog/types';
 
 const CFG: any = { llm: { models: {} } };
+const CFG_LLM_ON: any = { llm: { enabled: true, models: {} } };
 const STORE: any = { logLlmUsage: async () => {} };
 
 // A minimal OpenRouter-shaped fake LLM that returns each object in sequence.
@@ -26,12 +28,26 @@ function fakeLlm(objs: unknown[]): LlmClient {
   return new LlmClient({ openrouter: 'k' }, fetchImpl);
 }
 
+// Opens the body: a standalone 49-word quick answer (the AI-citation gate wants
+// one 25-80 word <p> before the first <h2>).
+const QUICK_ANSWER =
+  '<p>Cats drink too little because still water bores them, bowls sit in busy spots, and whisker fatigue makes narrow dishes unpleasant. ' +
+  'Move water away from food, offer a wide fresh bowl daily, and consider a quiet fountain. ' +
+  'Most cats drink noticeably more within a week of these small changes.</p>';
+
 const GOOD_BODY =
-  '<p>Intro paragraph that is genuinely useful and sets up the guide for the reader in a warm way. ' +
+  QUICK_ANSWER +
+  '<h2>First section</h2><p>Genuinely useful guidance that sets up the guide for the reader in a warm way. ' +
   Array.from({ length: 60 }, (_, i) => `helpful sentence ${i} about caring for your pet at home.`).join(' ') +
-  '</p><h2>First section</h2><p>More real content here that helps the owner decide, linking to ' +
+  ' More real content here that helps the owner decide, linking to ' +
   '<a href="/products/2-2l-automatic-pet-water-fountain">the fountain</a> naturally.</p>' +
   '<h2>Second section</h2><p>Closing advice and a nudge to <a href="/collections/pet-health">Pet Health</a>.</p>';
+
+const GOOD_FAQ = [
+  { q: 'How much water should a cat drink each day?', a: 'A healthy cat needs roughly fifty millilitres per kilo of body weight daily, and wet food supplies part of that. Offer fresh water in a wide bowl away from food, and speak to your vet if drinking suddenly changes, because a sharp shift can matter.' },
+  { q: 'Do water fountains really help cats drink more?', a: 'Many cats prefer moving water because it reads as fresher, so a quiet fountain often nudges reluctant drinkers to visit more. Keep it clean weekly, place it away from the litter tray, and keep one still-water bowl available so your cat always has a choice it likes.' },
+  { q: 'Where should I put my cat\'s water bowl?', a: 'Pick a calm spot away from food, litter and busy walkways. Cats dislike drinking where they eat, and many prefer a couple of stations around the home. A wide, shallow bowl avoids whisker fatigue, and refreshing the water daily keeps the station genuinely inviting.' }
+];
 
 const GOOD_DRAFT: BlogDraft = {
   title: 'Why won\'t my cat drink enough water?',
@@ -39,14 +55,15 @@ const GOOD_DRAFT: BlogDraft = {
   excerpt: 'Cats are famously reluctant drinkers. Here is why, and how to help at home.',
   metaTitle: 'Why won\'t my cat drink enough water?',
   metaDescription: 'Cats are famously reluctant drinkers. Here is why it happens and simple ways to help your cat stay hydrated.',
-  tag: 'pet-health'
+  tag: 'pet-health',
+  faq: GOOD_FAQ
 };
 
 describe('blog quality gate', () => {
   it('passes a well-formed draft', () => {
     expect(findBlogIssues(GOOD_DRAFT)).toEqual([]);
   });
-  it('flags a too-short draft, a missing product link, no headings, and a bad meta description', () => {
+  it('flags a too-short draft, a missing product link, no headings, a bad meta description, and no FAQ', () => {
     const bad: BlogDraft = { title: 'Too thin', bodyHtml: '<p>Short.</p>', excerpt: '', metaTitle: 'x', metaDescription: 'short', tag: 'pet-health' };
     const issues = findBlogIssues(bad).join(' | ');
     expect(issues).toMatch(/too short/i);
@@ -54,6 +71,25 @@ describe('blog quality gate', () => {
     expect(issues).toMatch(/does not link to any real product/i);
     expect(issues).toMatch(/meta description/i);
     expect(issues).toMatch(/excerpt/i);
+    expect(issues).toMatch(/quick answer/i);
+    expect(issues).toMatch(/"faq"/);
+  });
+  it('quick-answer gate: flags a rambling opening paragraph and an <h2>-first body, passes a standalone 25-80 word opener', () => {
+    const ramble = { ...GOOD_DRAFT, bodyHtml: GOOD_BODY.replace(QUICK_ANSWER, '<p>' + Array.from({ length: 40 }, () => 'many words that never answer anything directly').join(' ') + '</p>') };
+    expect(findBlogIssues(ramble).join(' ')).toMatch(/quick answer/i);
+    const h2First = { ...GOOD_DRAFT, bodyHtml: GOOD_BODY.replace(QUICK_ANSWER, '') };
+    expect(findBlogIssues(h2First).join(' ')).toMatch(/quick answer/i);
+    expect(findBlogIssues(GOOD_DRAFT)).toEqual([]); // the 49-word opener passes
+  });
+  it('quickAnswerText extracts only a <p> that appears before the first <h2>', () => {
+    expect(quickAnswerText('<p>answer here</p><h2>s</h2>')).toBe('answer here');
+    expect(quickAnswerText('<h2>s</h2><p>too late</p>')).toBe('');
+    expect(quickAnswerText('no paragraphs')).toBe('');
+  });
+  it('faq gate: fewer than 3 entries is an issue, 3 clears it', () => {
+    expect(findBlogIssues({ ...GOOD_DRAFT, faq: GOOD_FAQ.slice(0, 2) }).join(' ')).toMatch(/"faq"/);
+    expect(findBlogIssues({ ...GOOD_DRAFT, faq: undefined }).join(' ')).toMatch(/"faq"/);
+    expect(findBlogIssues(GOOD_DRAFT)).toEqual([]);
   });
   it('hasStorefrontLink only matches real product/collection paths', () => {
     expect(hasStorefrontLink('<a href="/products/x-1">x</a>')).toBe(true);
@@ -378,5 +414,148 @@ describe('blog research + draft agents (LLM-backed)', () => {
   });
   it('sanitizeBlogHtml strips em/en dashes', () => {
     expect(sanitizeBlogHtml('a — b – c')).toBe('a - b - c');
+  });
+});
+
+describe('combo merchandiser (congruent cross-catalog shop block)', () => {
+  const mkPack = (handle: string, title: string, products: [string, string][]): FactPack => ({
+    collectionHandle: handle, collectionTitle: title, collectionPath: `/collections/${handle}`,
+    products: products.map(([h, t]): GroundedProduct =>
+      ({ title: t, handle: h, path: `/products/${h}`, priceGbp: 9.99, available: true, imageUrl: `https://img/${h}.jpg`, imageWidth: 1400, imageHeight: 1400 }))
+  });
+  const HEALTH = mkPack('pet-health', 'Pet Health', [['fountain', 'Cat Water Fountain'], ['scale', 'Digital Pet Scale'], ['ramp', 'Folding Dog Ramp']]);
+  const ACCESSORIES = mkPack('pet-accessories', 'Pet Accessories', [['cooling-mat', 'Pet Cooling Mat'], ['crate', 'Dog Crate']]);
+  const ARTICLE = { title: 'Keep your cat cool this summer', angle: 'hydration and cooling', bodyHtml: '<p>Use a <a href="/products/fountain">fountain</a> for fresh water.</p>' };
+
+  it('availableByHandle merges packs, keeps only available, dedupes by handle', () => {
+    const dupe = mkPack('x', 'X', [['fountain', 'Duplicate Fountain']]);
+    const unavailable: FactPack = { ...mkPack('y', 'Y', [['ghost', 'Ghost']]), products: [{ title: 'Ghost', handle: 'ghost', path: '/products/ghost', priceGbp: 1, available: false }] };
+    const map = availableByHandle([HEALTH, dupe, unavailable]);
+    expect(map.get('fountain')!.title).toBe('Cat Water Fountain'); // first pack wins
+    expect(map.get('fountain')!.collectionTitle).toBe('Pet Health');
+    expect(map.has('ghost')).toBe(false);
+  });
+
+  it('keeps body-linked products first and appends only VALIDATED congruent picks (hallucinations dropped)', async () => {
+    const llm = fakeLlm([{ handles: ['cooling-mat', 'invented-product'] }]);
+    const handles = await pickComboHandles(llm, STORE, CFG_LLM_ON, { article: ARTICLE, packs: [HEALTH, ACCESSORIES], linkedHandles: ['fountain'] });
+    expect(handles).toEqual(['fountain', 'cooling-mat']); // linked leads; hallucination dropped; scale/ramp NOT blind-padded
+  });
+
+  it('an empty top-up is a valid outcome (fewer congruent picks beat off-topic padding)', async () => {
+    const llm = fakeLlm([{ handles: [] }]);
+    expect(await pickComboHandles(llm, STORE, CFG_LLM_ON, { article: ARTICLE, packs: [HEALTH], linkedHandles: ['fountain'] }))
+      .toEqual(['fountain']);
+  });
+
+  it('falls back to linked-only on an invalid LLM payload, and to null when nothing was linked either', async () => {
+    const bad = fakeLlm([{ nope: true }]);
+    expect(await pickComboHandles(bad, STORE, CFG_LLM_ON, { article: ARTICLE, packs: [HEALTH], linkedHandles: ['fountain'] }))
+      .toEqual(['fountain']);
+    const badAgain = fakeLlm([{ nope: true }]);
+    expect(await pickComboHandles(badAgain, STORE, CFG_LLM_ON, { article: ARTICLE, packs: [HEALTH], linkedHandles: [] }))
+      .toBeNull(); // caller keeps its deterministic selection
+  });
+
+  it('LLM disabled in config -> linked-only without consulting the model', async () => {
+    const llm = fakeLlm([{ handles: ['cooling-mat'] }]); // must not be used
+    expect(await pickComboHandles(llm, STORE, CFG, { article: ARTICLE, packs: [HEALTH, ACCESSORIES], linkedHandles: ['fountain'] }))
+      .toEqual(['fountain']);
+  });
+
+  it('four linked products fill the block deterministically, no LLM call needed', async () => {
+    const big = mkPack('c', 'C', [['a', 'A'], ['b', 'B'], ['c', 'C'], ['d', 'D'], ['e', 'E']]);
+    const llm = fakeLlm([{ handles: ['e'] }]); // would be wrong if consulted
+    expect(await pickComboHandles(llm, STORE, CFG_LLM_ON, { article: ARTICLE, packs: [big], linkedHandles: ['a', 'b', 'c', 'd', 'e'] }))
+      .toEqual(['a', 'b', 'c', 'd']);
+  });
+
+  it('pickHeroFields follows the FINAL handle set (a cross-collection pick can supply the hero)', () => {
+    const map = availableByHandle([HEALTH, ACCESSORIES]);
+    const hero = pickHeroFields(map, ['cooling-mat', 'fountain']);
+    expect(hero.heroSourceHandle).toBe('cooling-mat'); // first pick with a >=1200 square image
+    expect(hero.heroIsHighRes).toBe(true);
+  });
+});
+
+describe('blog FAQ (drafter output -> metafield -> theme)', () => {
+  it('validateFaq strips HTML, trims, caps at 5, drops malformed entries', () => {
+    const faq = validateFaq([
+      { q: '<strong>How often?</strong>', a: '<p>Twice a day is plenty.</p>' },
+      { q: 'no answer' },
+      { q: 'Q2', a: 'A2' }, { q: 'Q3', a: 'A3' }, { q: 'Q4', a: 'A4' }, { q: 'Q5', a: 'A5' }, { q: 'Q6', a: 'A6' }
+    ]);
+    expect(faq.length).toBe(5);
+    expect(faq[0]).toEqual({ q: 'How often?', a: 'Twice a day is plenty.' });
+    expect(validateFaq('not an array' as any)).toEqual([]);
+  });
+
+  it('createDraftArticle writes blog.faq_json when the draft carries a FAQ, omits it when absent', async () => {
+    let vars: any = {};
+    const admin: AdminGraphql = (async (_q: string, v?: any) => {
+      vars = v;
+      return { articleCreate: { article: { id: 'gid://shopify/Article/9', handle: 'h', title: GOOD_DRAFT.title, isPublished: false }, userErrors: [] } };
+    }) as unknown as AdminGraphql;
+    await createDraftArticle(admin, { blogId: 'b', draft: GOOD_DRAFT, authorName: 'Active Paw' });
+    const mf = (vars.article.metafields as any[]).find((m) => m.key === 'faq_json');
+    expect(mf.namespace).toBe('blog');
+    expect(mf.type).toBe('json');
+    expect(JSON.parse(mf.value)).toEqual(GOOD_FAQ);
+
+    await createDraftArticle(admin, { blogId: 'b', draft: { ...GOOD_DRAFT, faq: [] }, authorName: 'Active Paw' });
+    expect((vars.article.metafields as any[]).some((m) => m.key === 'faq_json')).toBe(false);
+  });
+});
+
+describe('sourced facts (web research the drafter may cite)', () => {
+  it('validateSourcedFacts keeps only real http(s)-sourced external facts, deduped, capped at 4', () => {
+    const facts = validateSourcedFacts({ facts: [
+      { fact: 'Cats need about 50ml of water per kg daily', sourceUrl: 'https://icatcare.org/hydration', sourceName: 'International Cat Care' },
+      { fact: 'dup', sourceUrl: 'https://icatcare.org/hydration', sourceName: 'ICC' },
+      { fact: 'dup', sourceUrl: 'https://icatcare.org/hydration', sourceName: 'ICC' },       // duplicate dropped
+      { fact: 'no source', sourceUrl: 'from memory', sourceName: 'X' },                      // not a URL
+      { fact: 'self cite', sourceUrl: 'https://activepaw.co.uk/blogs/guides/x', sourceName: 'Active Paw' }, // internal dropped
+      { fact: 'f3', sourceUrl: 'https://rspca.org.uk/a', sourceName: 'RSPCA' },
+      { fact: 'f4', sourceUrl: 'https://pdsa.org.uk/b', sourceName: 'PDSA' },
+      { fact: 'f5', sourceUrl: 'https://bluecross.org.uk/c', sourceName: 'Blue Cross' }
+    ] });
+    expect(facts!.map((f) => f.sourceName)).toEqual(['International Cat Care', 'ICC', 'RSPCA', 'PDSA']); // capped at 4
+    expect(validateSourcedFacts({})).toBeNull();
+  });
+
+  it('collectSourcedFacts returns [] on an invalid payload (drafter stays hermetic), values on success', async () => {
+    const bad = fakeLlm([{ nope: 1 }]);
+    expect(await collectSourcedFacts(bad, STORE, CFG, { title: 't', angle: 'a', keyPoints: ['k'] })).toEqual([]);
+    const good = fakeLlm([{ facts: [{ fact: 'f', sourceUrl: 'https://rspca.org.uk/x', sourceName: 'RSPCA' }] }]);
+    const facts = await collectSourcedFacts(good, STORE, CFG, { title: 't', angle: 'a', keyPoints: ['k'] });
+    expect(facts).toEqual([{ fact: 'f', sourceUrl: 'https://rspca.org.uk/x', sourceName: 'RSPCA' }]);
+  });
+
+  it('an empty facts list is a VALID research outcome (never pushed to invent)', () => {
+    expect(validateSourcedFacts({ facts: [] })).toEqual([]);
+  });
+});
+
+describe('brief research web-first with hermetic fallback', () => {
+  const goodBrief = { title: 'Summer cat cooling guide', angle: 'a', targetKeyword: 'k', collectionHandle: 'pet-health', whyNow: 'heatwave searches', keyPoints: ['x', 'y', 'z'] };
+  it('falls back to the hermetic prompt when the web-grounded attempt yields nothing valid', async () => {
+    const llm = fakeLlm([{ title: 'bad', collectionHandle: 'ghost' }, goodBrief]); // web attempt invalid -> hermetic succeeds
+    const brief = await proposeBrief(llm, STORE, CFG, { validHandles: ['pet-health'], season: 'summer' });
+    expect(brief?.title).toBe('Summer cat cooling guide');
+  });
+});
+
+describe('published-status sync (D1 follows Shopify)', () => {
+  it('getPublishedMap maps ids to isPublished and skips null nodes', async () => {
+    const admin: AdminGraphql = (async () => ({ nodes: [
+      { id: 'gid://shopify/Article/1', isPublished: true },
+      { id: 'gid://shopify/Article/2', isPublished: false },
+      null
+    ] })) as unknown as AdminGraphql;
+    const map = await getPublishedMap(admin, ['gid://shopify/Article/1', 'gid://shopify/Article/2', 'gid://shopify/Article/3']);
+    expect(map.get('gid://shopify/Article/1')).toBe(true);
+    expect(map.get('gid://shopify/Article/2')).toBe(false);
+    expect(map.has('gid://shopify/Article/3')).toBe(false); // deleted article: absent, never flipped
+    expect((await getPublishedMap(admin, [])).size).toBe(0); // no query when nothing is stale
   });
 });

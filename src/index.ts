@@ -21,7 +21,7 @@ import { collectSystemStates } from './system-states';
 import { validateEventRequest, findOverlappingPromo, createEventDiscount, buildEventCampaign, publicEventPayload, eventDayLabel } from './storewide-event';
 import { reservedWindowClash, templateByKey } from './event-catalogue';
 import { ensureRecurringDiscount, retireRecurringDiscount, refreshPublicEventFeed, listRecurringForConsole } from './recurring-events';
-import { runBlogPipeline, enrichBlogPost, proposeBlogTopics } from './blog/pipeline';
+import { runBlogPipeline, enrichBlogPost, proposeBlogTopics, listPostsSynced } from './blog/pipeline';
 import type { BlogBrief } from './blog/types';
 import { issueVoucher, fetchActiveOrderPromos, voucherDateLabel, deactivateVoucherDiscount } from './affiliate-discounts';
 import { buildVoucherInviteWithCode } from './inbox/partnership';
@@ -359,7 +359,9 @@ app.post('/api/blog/topics', async (c) => {
 app.post('/api/blog/list', async (c) => {
   const s = await shopOf(c); if (typeof s !== 'string') return s;
   const store = new TenantStore(c.env.DB, s);
-  return c.json({ ok: true, posts: await store.listBlogPostDrafts() });
+  // Synced list: flips D1 'drafted' rows whose article the owner has since
+  // published in Shopify admin (best-effort; stale statuses on API failure).
+  return c.json({ ok: true, posts: await listPostsSynced(c.env, store) });
 });
 // Backfill an existing draft with the "Shop this guide" block + a hero image
 // (for posts authored before the pipeline set these). Owner-triggered; through

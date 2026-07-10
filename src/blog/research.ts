@@ -10,7 +10,7 @@ import { LlmClient } from '../llm';
 import { resolveChain } from '../llm-resolve';
 import type { TenantConfig } from '../types';
 import type { TenantStore } from '../tenant-store';
-import type { BlogBrief, TopicSeed, FactPack, BlogTopicCandidate } from './types';
+import type { BlogBrief, TopicSeed, FactPack, BlogTopicCandidate, SourcedFact } from './types';
 
 /** Curated evergreen starting points, one+ per real collection. The research
  *  agent may pick from these or propose its own, but the collection it funnels
@@ -49,11 +49,34 @@ export function validateBrief(v: unknown, validHandles: string[]): BlogBrief | n
   return { title: title.slice(0, 180), angle: angle.slice(0, 400), targetKeyword: targetKeyword.slice(0, 120), collectionHandle, whyNow: whyNow.slice(0, 400), keyPoints };
 }
 
+function buildBriefSystem(
+  validHandles: string[], season: string, seeds: TopicSeed[], topicHint: string | undefined, useWeb: boolean
+): string {
+  // Same web-first/hermetic-fallback split as the topic suggestions: web framing
+  // ranks by REAL current demand; the hermetic variant keeps the feature alive
+  // when web search is unavailable. Demand informs the BRIEF only, never the
+  // drafter's facts.
+  const demand = useWeb
+    ? 'Use live web search to judge what UK pet owners are actually searching for RIGHT NOW around this direction and season, and pick the angle with genuine current demand. Never force a trending topic we cannot back with a real collection.'
+    : 'Judge what a pet owner is most likely to search for this season.';
+  return [
+    'You are a content strategist for Active Paw, a UK pet-care store for dogs and cats.',
+    'Propose ONE blog article brief: a genuinely useful buying-guide or how-to that a pet owner would search for, and that funnels naturally into one of our real collections.',
+    demand,
+    'It must be honest and evergreen-to-seasonal, never clickbait, never a topic we cannot tie to a real product category.',
+    `The collectionHandle in your brief MUST be exactly one of these real handles: ${validHandles.join(', ')}.`,
+    `Current season: ${season}. Prefer a topic that fits the season when there is a good one, otherwise a strong evergreen.`,
+    topicHint ? `The owner suggested this direction, build the brief around it: ${topicHint}` : `Some evergreen starting points (you may use or improve one, or propose your own): ${seeds.map((s) => `${s.workingTitle} [${s.collectionHandle}]`).join('; ')}.`,
+    'Respond with ONLY JSON: {"title": <specific search-friendly title>, "angle": <the specific promise of the piece>, "targetKeyword": <primary search intent>, "collectionHandle": <one real handle from the list>, "whyNow": <one sentence: why this topic now, citing the demand signal>, "keyPoints": <array of 3-6 short points the article should cover>}.'
+  ].join(' ');
+}
+
 /**
  * Propose a brief. `validHandles` are the real collection handles the brief may
  * funnel into. `topicHint` (optional) steers the angle (e.g. the owner picked a
  * topic); otherwise the agent chooses, guided by the seeds and the season.
- * Returns null when the LLM is unavailable.
+ * Web-grounded demand first, hermetic catalog+season fallback (same pattern as
+ * proposeTopics). Returns null when the LLM is unavailable.
  */
 export async function proposeBrief(
   llm: LlmClient, store: TenantStore, cfg: TenantConfig,
@@ -61,23 +84,87 @@ export async function proposeBrief(
 ): Promise<BlogBrief | null> {
   const chain = resolveChain(cfg, 'text');
   const seeds = SEED_TOPICS.filter((s) => opts.validHandles.includes(s.collectionHandle));
-  const system = [
-    'You are a content strategist for Active Paw, a UK pet-care store for dogs and cats.',
-    'Propose ONE blog article brief: a genuinely useful buying-guide or how-to that a pet owner would search for, and that funnels naturally into one of our real collections.',
-    'It must be honest and evergreen-to-seasonal, never clickbait, never a topic we cannot tie to a real product category.',
-    `The collectionHandle in your brief MUST be exactly one of these real handles: ${opts.validHandles.join(', ')}.`,
-    `Current season: ${opts.season}. Prefer a topic that fits the season when there is a good one, otherwise a strong evergreen.`,
-    opts.topicHint ? `The owner suggested this direction, build the brief around it: ${opts.topicHint}` : `Some evergreen starting points (you may use or improve one, or propose your own): ${seeds.map((s) => `${s.workingTitle} [${s.collectionHandle}]`).join('; ')}.`,
-    'Respond with ONLY JSON: {"title": <specific search-friendly title>, "angle": <the specific promise of the piece>, "targetKeyword": <primary search intent>, "collectionHandle": <one real handle from the list>, "whyNow": <one sentence: why this topic now>, "keyPoints": <array of 3-6 short points the article should cover>}.'
-  ].join(' ');
+  const user = JSON.stringify({ season: opts.season, topicHint: opts.topicHint ?? null });
+
+  const web = await llm.jsonChain<BlogBrief>({
+    chain, maxTokens: 700, web: { maxResults: 6 },
+    system: buildBriefSystem(opts.validHandles, opts.season, seeds, opts.topicHint, true),
+    user,
+    validate: (v) => validateBrief(v, opts.validHandles)
+  });
+  if (web.ok) {
+    await store.logLlmUsage('blog-research-web', web.usage.model, web.usage.promptTokens, web.usage.completionTokens, web.usage.costUsd);
+    return web.value;
+  }
+  console.warn(`blog research: web grounding produced nothing (${web.error}); falling back to hermetic season+seeds.`);
 
   const r = await llm.jsonChain<BlogBrief>({
-    chain, maxTokens: 700, system,
-    user: JSON.stringify({ season: opts.season, topicHint: opts.topicHint ?? null }),
+    chain, maxTokens: 700,
+    system: buildBriefSystem(opts.validHandles, opts.season, seeds, opts.topicHint, false),
+    user,
     validate: (v) => validateBrief(v, opts.validHandles)
   });
   if (!r.ok) { console.warn(`blog research failed: ${r.error}`); return null; }
   await store.logLlmUsage('blog-research', r.usage.model, r.usage.promptTokens, r.usage.completionTokens, r.usage.costUsd);
+  return r.value;
+}
+
+/** Validate a `{facts:[...]}` payload: short claims with a real http(s) source
+ *  page each, deduped, capped at 4. An empty array is VALID - "nothing could be
+ *  verified" must be an acceptable answer or the model is pushed to invent. */
+export function validateSourcedFacts(v: unknown): SourcedFact[] | null {
+  const arr = (v as { facts?: unknown })?.facts;
+  if (!Array.isArray(arr)) return null;
+  const out: SourcedFact[] = [];
+  const seen = new Set<string>();
+  for (const item of arr) {
+    const o = item as Record<string, unknown>;
+    const fact = typeof o?.fact === 'string' ? o.fact.trim() : '';
+    const sourceUrl = typeof o?.sourceUrl === 'string' ? o.sourceUrl.trim() : '';
+    const sourceName = typeof o?.sourceName === 'string' ? o.sourceName.trim() : '';
+    if (!fact || !sourceName) continue;
+    if (!/^https?:\/\/[^\s"'<>]+$/i.test(sourceUrl)) continue;    // a real, linkable page
+    if (/activepaw/i.test(sourceUrl)) continue;                    // external sources only
+    const key = (fact + sourceUrl).toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ fact: fact.slice(0, 240), sourceUrl: sourceUrl.slice(0, 500), sourceName: sourceName.slice(0, 120) });
+    if (out.length >= 4) break;
+  }
+  return out;
+}
+
+/**
+ * Web-research 2-4 SHORT verifiable facts for a brief, each with the source
+ * page that states it. These become the ONLY external statistics the drafter
+ * may cite (linked inline), which is what makes the article quotable by AI
+ * engines without opening the fabrication door. Empty on any failure - the
+ * drafter then writes hermetically, exactly as before. The claim-flag pass and
+ * the human publish gate still apply to every cited line.
+ */
+export async function collectSourcedFacts(
+  llm: LlmClient, store: TenantStore, cfg: TenantConfig,
+  opts: { title: string; angle: string; keyPoints: string[] }
+): Promise<SourcedFact[]> {
+  if (!llm.available) return [];
+  const chain = resolveChain(cfg, 'text');
+  const system = [
+    'You are a careful fact researcher for a pet-care publication.',
+    'Using live web search, find 2-4 SHORT, verifiable, genuinely useful facts or statistics directly relevant to the article described, each from a reputable source (veterinary bodies, animal welfare charities, academic or government pages).',
+    'Only include a fact you actually found stated on the source page, with that page\'s URL. NEVER invent, estimate, round beyond the source, or cite from memory.',
+    'Prefer facts a reader would quote (a number, a threshold, a frequency). Skip anything medical-dosage shaped.',
+    'If you cannot verify enough, return fewer, or an empty list. An empty list is a good answer; an unverified fact is not.',
+    'Respond with ONLY JSON: {"facts": [{"fact": <the claim, short and quotable>, "sourceUrl": <the exact page URL>, "sourceName": <the source display name>}]}.'
+  ].join(' ');
+
+  const r = await llm.jsonChain<SourcedFact[]>({
+    chain, maxTokens: 700, web: { maxResults: 6 },
+    system,
+    user: JSON.stringify({ title: opts.title, angle: opts.angle, keyPoints: opts.keyPoints }),
+    validate: validateSourcedFacts
+  });
+  if (!r.ok) { console.warn(`blog facts research produced nothing: ${r.error}`); return []; }
+  await store.logLlmUsage('blog-facts', r.usage.model, r.usage.promptTokens, r.usage.completionTokens, r.usage.costUsd);
   return r.value;
 }
 

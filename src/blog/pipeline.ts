@@ -12,15 +12,18 @@ import { adminForShop } from '../inbox/invoice-routes';
 import { defaultFetch } from '../safe-fetch';
 import type { Env, TenantConfig } from '../types';
 import type { BlogBrief, BlogTopicCandidate } from './types';
-import { proposeBrief, proposeTopics, validateBrief, seasonForMonth } from './research';
+import { proposeBrief, proposeTopics, validateBrief, seasonForMonth, collectSourcedFacts } from './research';
 import { groundCollection } from './ground';
 import { draftArticle } from './draft';
 import { findClaimFlags } from './quality';
-import { selectShopBlock } from './select';
+import { selectShopBlock, pickHeroFields, extractProductHandles } from './select';
 import type { ShopBlockSelection } from './select';
+import { pickComboHandles, availableByHandle } from './combo';
+import type { ComboArticle } from './combo';
 import { getProductImages, pickBlogHeroImage } from './hero';
 import type { AdminGraphql } from '../shopify-admin';
-import { findBlog, renameBlog, createDraftArticle, ensureRelatedProductsDefinition, getArticleForEnrich, updateArticleAssets } from './article';
+import { findBlog, renameBlog, createDraftArticle, ensureRelatedProductsDefinition, getArticleForEnrich, updateArticleAssets, getPublishedMap } from './article';
+import type { FactPack } from './types';
 
 /**
  * Resolve the hero image: prefer a pet-with-product LIFESTYLE frame (converts
@@ -45,6 +48,32 @@ async function resolveHero(
     }
   }
   return { url, alt, highRes };
+}
+
+/**
+ * Choose the final "Shop this guide" selection for an article: ground every
+ * other configured collection (best effort), let the merchandiser pick a
+ * congruent set across the WHOLE live catalog (body-linked products always
+ * lead), and derive the hero from the FINAL set. Falls back to the old
+ * deterministic single-collection selection only when the merchandiser has no
+ * better answer (no LLM and nothing linked), so the block never blind-pads
+ * with off-topic items when a judgment was possible.
+ */
+async function selectShopBlockAcross(
+  admin: AdminGraphql, llm: LlmClient, store: TenantStore, cfg: TenantConfig,
+  opts: { primary: FactPack; validHandles: string[]; article: ComboArticle }
+): Promise<ShopBlockSelection> {
+  const packs: FactPack[] = [opts.primary];
+  for (const h of opts.validHandles) {
+    if (h === opts.primary.collectionHandle) continue;
+    const pack = await groundCollection(admin, h);
+    if (pack) packs.push(pack);
+  }
+  const combo = await pickComboHandles(llm, store, cfg, {
+    article: opts.article, packs, linkedHandles: extractProductHandles(opts.article.bodyHtml)
+  });
+  if (combo === null) return selectShopBlock(opts.primary, opts.article.bodyHtml);
+  return { handles: combo, ...pickHeroFields(availableByHandle(packs), combo) };
 }
 
 const BLOG_HANDLE = 'guides';              // the clean handle we want: /blogs/guides
@@ -138,15 +167,25 @@ export async function runBlogPipeline(
   }
   if (!pack) return { ok: false, error: 'No collection with products to ground the article in.' };
 
+  // Verified, source-linked facts the drafter may cite (best effort: an empty
+  // list keeps the drafter hermetic exactly as before).
+  const facts = await collectSourcedFacts(llm, store, cfg, {
+    title: brief.title, angle: brief.angle, keyPoints: brief.keyPoints
+  });
+
   // Draft -> LLM writes, blog gate refines.
-  const draft = await draftArticle(llm, store, cfg, brief, pack);
+  const draft = await draftArticle(llm, store, cfg, brief, pack, {}, facts);
   if (!draft) return { ok: false, error: 'Draft agent could not produce an article.' };
 
   const claimFlags = findClaimFlags(draft.bodyHtml);
 
-  // Shop block + hero: products the body links come first, then top up from the
-  // funnel collection. The hero prefers a pet-with-product lifestyle frame.
-  const sel = selectShopBlock(pack, draft.bodyHtml);
+  // Shop block + hero: products the body links come first, then the merchandiser
+  // tops up with CONGRUENT picks from across all collections (never blind
+  // same-collection padding). The hero prefers a pet-with-product lifestyle frame.
+  const sel = await selectShopBlockAcross(admin, llm, store, cfg, {
+    primary: pack, validHandles,
+    article: { title: draft.title, angle: brief.angle, bodyHtml: draft.bodyHtml }
+  });
   const hero = await resolveHero(admin, llm, store, cfg, sel, draft.title);
 
   // Create the DRAFT article (isPublished:false) + stage the bookkeeping row.
@@ -248,7 +287,13 @@ export async function enrichBlogPost(
   const pack = await groundCollection(admin, row.collection_handle);
   if (!pack) return { ok: false, error: `Funnel collection '${row.collection_handle}' has no products to source.` };
 
-  const sel = selectShopBlock(pack, article.bodyHtml);
+  // Same merchandiser flow as generation, so re-running enrich on an older post
+  // replaces a blind same-collection top-up with congruent cross-catalog picks.
+  const validHandles = Object.values(cfg.collectionMap).map((c) => c.handle).filter(Boolean);
+  const sel = await selectShopBlockAcross(admin, llm, store, cfg, {
+    primary: pack, validHandles,
+    article: { title: article.title || 'Active Paw guide', bodyHtml: article.bodyHtml }
+  });
   if (!sel.handles.length) return { ok: false, error: 'No available products found to build the shop block.' };
 
   const setImage = !article.hasImage && !!sel.heroImageUrl;
@@ -326,4 +371,34 @@ export async function proposeBlogTopics(
   const candidates = await proposeTopics(llm, store, cfg, { packs, season: seasonForMonth(opts.nowMonth0) });
   if (!candidates.length) return { ok: false, error: 'Could not research topics right now. Please try again.' };
   return { ok: true, candidates };
+}
+
+type BlogPostRow = Awaited<ReturnType<TenantStore['listBlogPostDrafts']>>[number];
+
+/**
+ * List the staged posts, first flipping any 'drafted' row whose Shopify article
+ * the owner has since published (publishing happens in Shopify admin, so D1
+ * follows Shopify, never the other way round). Sync is best-effort: if the
+ * Admin API is unreachable the list still returns, just with stale statuses.
+ */
+export async function listPostsSynced(
+  env: Env, store: TenantStore, fetchImpl: typeof fetch = defaultFetch
+): Promise<BlogPostRow[]> {
+  const rows = await store.listBlogPostDrafts();
+  const stale = rows.filter((r) => r.status === 'drafted' && r.shopify_article_id);
+  if (stale.length) {
+    try {
+      const admin = await adminForShop(env, store, fetchImpl);
+      if (!admin) return rows; // no Shopify connection: stale statuses beat a 500
+      const published = await getPublishedMap(admin, stale.map((r) => r.shopify_article_id as string));
+      for (const r of stale) {
+        if (published.get(r.shopify_article_id as string) !== true) continue;
+        await store.setBlogPostStatus(r.id, 'published');
+        r.status = 'published';
+      }
+    } catch (e) {
+      console.warn(`blog status sync skipped: ${(e as Error).message}`);
+    }
+  }
+  return rows;
 }

@@ -38,6 +38,22 @@ export interface BlogBrief {
   keyPoints: string[];     // 3-6 points the draft should cover
 }
 
+/** One FAQ entry the drafter produces: rendered by the theme as a visible FAQ
+ *  section AND as FAQPage JSON-LD from the same metafield (never drifts). */
+export interface BlogFaqEntry {
+  q: string; // a question a pet owner genuinely asks, natural phrasing
+  a: string; // 40-80 word plain-text answer, grounded like the article
+}
+
+/** A short verifiable fact the research step found via web search, with the
+ *  source page that states it. The drafter may cite ONLY these (linked), so the
+ *  article gains citable data points without opening the fabrication door. */
+export interface SourcedFact {
+  fact: string;       // the claim, short and quotable
+  sourceUrl: string;  // http(s) page that states it
+  sourceName: string; // display name of the source (e.g. a charity or vet body)
+}
+
 /** The draft agent's output: a full article ready to stage as a Shopify DRAFT. */
 export interface BlogDraft {
   title: string;
@@ -46,6 +62,7 @@ export interface BlogDraft {
   metaTitle: string;       // SEO title
   metaDescription: string; // SEO meta description
   tag: string;             // collection handle -> drives the related-products block
+  faq?: BlogFaqEntry[];    // 3-5 Q&As -> blog.faq_json metafield (visible FAQ + schema)
 }
 
 /** A candidate topic the research agent ranks. Internal + seasonal signal. */

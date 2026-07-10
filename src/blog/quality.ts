@@ -39,6 +39,16 @@ export function hasStorefrontLink(bodyHtml: string): boolean {
   return /href\s*=\s*["'](?:https?:\/\/[^"']*)?\/(?:products|collections)\/[a-z0-9-]+/i.test(bodyHtml);
 }
 
+/** Text of the opening paragraph, when a <p> opens the body before the first
+ *  <h2>. Empty string otherwise. This is the "quick answer" search engines and
+ *  AI assistants lift, so the gate can hold it to a standalone 40-60 words. */
+export function quickAnswerText(bodyHtml: string): string {
+  const h2At = bodyHtml.search(/<h2[\s>]/i);
+  const head = h2At === -1 ? bodyHtml : bodyHtml.slice(0, h2At);
+  const m = head.match(/<p[\s>][^]*?<\/p>/i);
+  return m ? htmlToText(m[0]) : '';
+}
+
 export interface BlogQualityContext {
   minWords?: number; // floor (default 350: a real guide, not a thin snippet)
   maxWords?: number; // ceiling (default 1200)
@@ -76,6 +86,17 @@ export function findBlogIssues(draft: BlogDraft, ctx: BlogQualityContext = {}): 
   }
   if (!draft.excerpt || draft.excerpt.trim().length < 20) {
     issues.push('The excerpt is missing or too short. Provide a one or two sentence summary for the listing card.');
+  }
+  // AI-citation shape: a standalone quick answer up top (what assistants and
+  // search snippets lift), and a real FAQ (what they quote). Tolerances are
+  // wider than the asked-for 40-60 words so a near-miss never loops the reviser.
+  const qaWords = countWords(quickAnswerText(draft.bodyHtml));
+  if (qaWords < 25 || qaWords > 80) {
+    issues.push(`The body must OPEN with a quick answer: a single paragraph of 40-60 words, before the first <h2>, that directly and completely answers the reader's core question (currently ${qaWords} words there). No teasers like "read on".`);
+  }
+  const faqCount = draft.faq?.length ?? 0;
+  if (faqCount < 3) {
+    issues.push(`Include a "faq" array of 3-5 questions pet owners genuinely ask about this topic, each with a grounded 40-80 word plain-text answer (currently ${faqCount}).`);
   }
   return issues;
 }

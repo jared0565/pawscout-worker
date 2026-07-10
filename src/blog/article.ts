@@ -19,6 +19,13 @@ export const RELATED_NS = 'blog';
 export const RELATED_KEY = 'related_products';
 export const RELATED_TYPE = 'list.single_line_text_field';
 
+// The article FAQ metafield: [{q, a}...] the theme renders as a visible FAQ
+// section AND as FAQPage JSON-LD from the SAME source, so the schema can never
+// drift from what the reader sees.
+export const FAQ_NS = 'blog';
+export const FAQ_KEY = 'faq_json';
+export const FAQ_TYPE = 'json';
+
 const BLOGS_QUERY = `query pawscoutBlogs { blogs(first: 20) { nodes { id handle title } } }`;
 
 /** Find a blog by handle (e.g. the default 'news'). Null if none. */
@@ -75,6 +82,9 @@ export async function createDraftArticle(
   if (relatedHandles && relatedHandles.length) {
     metafields.push({ namespace: RELATED_NS, key: RELATED_KEY, value: JSON.stringify(relatedHandles), type: RELATED_TYPE });
   }
+  if (draft.faq && draft.faq.length) {
+    metafields.push({ namespace: FAQ_NS, key: FAQ_KEY, value: JSON.stringify(draft.faq), type: FAQ_TYPE });
+  }
   const article: Record<string, unknown> = {
     blogId,
     title: draft.title,
@@ -108,31 +118,50 @@ const METAFIELD_DEFINITION_CREATE = `mutation pawscoutBlogMfDef($definition: Met
 }`;
 
 /**
- * Best-effort: register the blog.related_products metafield definition on ARTICLE
- * with storefront read access. Online Store Liquid can read set metafields even
- * without a definition, so this is INSURANCE (and gives the metafield admin-UI
- * visibility + Storefront-API access), never a hard dependency. Idempotent: a
- * pre-existing definition returns a TAKEN userError, which we swallow; any other
- * failure is logged and ignored so it can never break article creation.
+ * Best-effort: register the blog article metafield definitions (related_products
+ * + faq_json) on ARTICLE with storefront read access. Online Store Liquid can
+ * read set metafields even without a definition, so this is INSURANCE (and gives
+ * the metafields admin-UI visibility + Storefront-API access), never a hard
+ * dependency. Idempotent: a pre-existing definition returns a TAKEN userError,
+ * which we swallow; any other failure is logged and ignored so it can never
+ * break article creation.
  */
 export async function ensureRelatedProductsDefinition(admin: AdminGraphql): Promise<void> {
-  try {
-    const data = await admin(METAFIELD_DEFINITION_CREATE, {
-      definition: {
-        name: 'Shop this guide products',
-        namespace: RELATED_NS,
-        key: RELATED_KEY,
-        ownerType: 'ARTICLE',
-        type: RELATED_TYPE,
-        access: { storefront: 'PUBLIC_READ' }
-      }
-    }) as { metafieldDefinitionCreate?: { userErrors?: { code?: string; message: string }[] } };
-    const errs = data.metafieldDefinitionCreate?.userErrors ?? [];
-    const hard = errs.filter((e) => e.code !== 'TAKEN');
-    if (hard.length) console.warn(`blog metafield definition: ${hard.map((e) => e.message).join('; ')}`);
-  } catch (e) {
-    console.warn(`blog metafield definition create failed (non-fatal): ${(e as Error).message}`);
+  const definitions = [
+    { name: 'Shop this guide products', namespace: RELATED_NS, key: RELATED_KEY, ownerType: 'ARTICLE', type: RELATED_TYPE, access: { storefront: 'PUBLIC_READ' } },
+    { name: 'Article FAQ', namespace: FAQ_NS, key: FAQ_KEY, ownerType: 'ARTICLE', type: FAQ_TYPE, access: { storefront: 'PUBLIC_READ' } }
+  ];
+  for (const definition of definitions) {
+    try {
+      const data = await admin(METAFIELD_DEFINITION_CREATE, { definition }) as {
+        metafieldDefinitionCreate?: { userErrors?: { code?: string; message: string }[] };
+      };
+      const errs = data.metafieldDefinitionCreate?.userErrors ?? [];
+      const hard = errs.filter((e) => e.code !== 'TAKEN');
+      if (hard.length) console.warn(`blog metafield definition ${definition.key}: ${hard.map((e) => e.message).join('; ')}`);
+    } catch (e) {
+      console.warn(`blog metafield definition create failed (non-fatal, ${definition.key}): ${(e as Error).message}`);
+    }
   }
+}
+
+const ARTICLES_PUBLISHED = `query pawscoutArticlesPublished($ids: [ID!]!) {
+  nodes(ids: $ids) { ... on Article { id isPublished } }
+}`;
+
+/** isPublished by article id, for the staged rows whose D1 status may lag the
+ *  owner's publish action in Shopify admin. Missing/deleted articles are simply
+ *  absent from the map. Throws on transport errors (caller degrades). */
+export async function getPublishedMap(admin: AdminGraphql, ids: string[]): Promise<Map<string, boolean>> {
+  const map = new Map<string, boolean>();
+  if (!ids.length) return map;
+  const data = await admin(ARTICLES_PUBLISHED, { ids }) as {
+    nodes?: ({ id?: string; isPublished?: boolean } | null)[];
+  };
+  for (const n of data.nodes ?? []) {
+    if (n?.id) map.set(n.id, n.isPublished === true);
+  }
+  return map;
 }
 
 const ARTICLE_READ = `query pawscoutArticleRead($id: ID!) {
