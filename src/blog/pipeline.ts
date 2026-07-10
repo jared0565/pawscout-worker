@@ -28,20 +28,23 @@ import type { FactPack } from './types';
 /**
  * Resolve the hero image: prefer a pet-with-product LIFESTYLE frame (converts
  * better in an article) from the chosen product's full gallery, falling back to
- * the plain featured pick the selector already made. Returns the url + whether
- * it is a true >=1200 square (a lifestyle frame may be smaller - that trade-off
- * is surfaced to the owner, not hidden).
+ * the plain featured pick the selector already made. The vision pass knows the
+ * ARTICLE title and may reject the whole gallery (2026-07-10 defect: a hero
+ * disconnected from the post's subject), in which case the congruent product's
+ * featured image stands. Returns the url + whether it is a true >=1200 square
+ * (a lifestyle frame may be smaller - that trade-off is surfaced to the owner,
+ * not hidden).
  */
 async function resolveHero(
   admin: AdminGraphql, llm: LlmClient, store: TenantStore, cfg: TenantConfig,
-  sel: ShopBlockSelection, fallbackTitle: string
+  sel: ShopBlockSelection, articleTitle: string
 ): Promise<{ url?: string; alt?: string; highRes?: boolean }> {
   let url = sel.heroImageUrl;
   const alt = sel.heroAlt;
   let highRes = sel.heroIsHighRes;
   if (sel.heroSourceHandle) {
     const imgs = await getProductImages(admin, sel.heroSourceHandle);
-    const picked = await pickBlogHeroImage(llm, store, cfg, alt ?? fallbackTitle, imgs);
+    const picked = await pickBlogHeroImage(llm, store, cfg, { articleTitle, productTitle: alt ?? articleTitle }, imgs);
     if (picked) {
       url = picked.url;
       highRes = picked.width >= 1200 && picked.height >= 1200;
@@ -73,7 +76,7 @@ async function selectShopBlockAcross(
     article: opts.article, packs, linkedHandles: extractProductHandles(opts.article.bodyHtml)
   });
   if (combo === null) return selectShopBlock(opts.primary, opts.article.bodyHtml);
-  return { handles: combo, ...pickHeroFields(availableByHandle(packs), combo) };
+  return { handles: combo.handles, ...pickHeroFields(availableByHandle(packs), combo.handles, combo.linkedCount) };
 }
 
 const BLOG_HANDLE = 'guides';              // the clean handle we want: /blogs/guides

@@ -60,16 +60,21 @@ function validateComboHandles(v: unknown, allowed: Set<string>, max: number): { 
   return { handles }; // empty is valid: nothing congruent beats padding with off-topic items
 }
 
+/** The merchandiser's selection: display-ordered handles plus how many of the
+ *  leading ones are the writer's own body links (the congruent prefix the hero
+ *  picker may prefer a high-res image within). */
+export interface ComboSelection { handles: string[]; linkedCount: number; }
+
 /**
  * Pick the final shop-block handle list for an article. Returns the handles in
- * display order (body-linked first, then the merchandiser's congruent top-up),
- * or null when there is no better answer than the caller's own deterministic
- * selection (no LLM AND nothing linked).
+ * display order (body-linked first, then the merchandiser's congruent top-up)
+ * with the linked-prefix length, or null when there is no better answer than
+ * the caller's own deterministic selection (no LLM AND nothing linked).
  */
 export async function pickComboHandles(
   llm: LlmClient, store: TenantStore, cfg: TenantConfig,
   opts: { article: ComboArticle; packs: FactPack[]; linkedHandles: string[]; max?: number }
-): Promise<string[] | null> {
+): Promise<ComboSelection | null> {
   const max = opts.max ?? 4;
   const byHandle = availableByHandle(opts.packs);
 
@@ -82,13 +87,14 @@ export async function pickComboHandles(
   }
 
   const slots = max - linked.length;
-  if (slots <= 0) return linked;
+  if (slots <= 0) return { handles: linked, linkedCount: linked.length };
 
   const linkedSet = new Set(linked);
+  const asSelection = () => (linked.length ? { handles: linked, linkedCount: linked.length } : null);
   const candidates = [...byHandle.values()].filter((p) => !linkedSet.has(p.handle));
-  if (!candidates.length) return linked.length ? linked : null;
+  if (!candidates.length) return asSelection();
 
-  if (!llm.available || !cfg.llm.enabled) return linked.length ? linked : null;
+  if (!llm.available || !cfg.llm.enabled) return asSelection();
 
   const chain = resolveChain(cfg, 'text');
   const system = [
@@ -118,8 +124,8 @@ export async function pickComboHandles(
   });
   if (!r.ok) {
     console.warn(`blog combo pick failed: ${r.error}`);
-    return linked.length ? linked : null; // defensible fallback: never blind-pad
+    return asSelection(); // defensible fallback: never blind-pad
   }
   await store.logLlmUsage('blog-combo', r.usage.model, r.usage.promptTokens, r.usage.completionTokens, r.usage.costUsd);
-  return [...linked, ...r.value.handles];
+  return { handles: [...linked, ...r.value.handles], linkedCount: linked.length };
 }

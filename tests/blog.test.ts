@@ -251,15 +251,35 @@ describe('blog shop-block selection', () => {
   const PD = (handle: string, url: string, w: number, h: number) =>
     ({ title: handle, handle, path: `/products/${handle}`, priceGbp: 1, available: true, imageUrl: url, imageWidth: w, imageHeight: h });
 
-  it('hero prefers a >=1200 square image over an earlier smaller one, without reordering the block', () => {
+  it('hero congruence outranks resolution: a linked 1000px subject beats an unlinked 1500px top-up (the water-bowl-on-a-beds-post defect)', () => {
     const pack: FactPack = {
       collectionHandle: 'c', collectionTitle: 'C', collectionPath: '/collections/c',
       products: [PD('small', 'https://img/s.jpg', 1000, 1000), PD('big', 'https://img/b.jpg', 1500, 1500)]
     };
-    const sel = selectShopBlock(pack, '<a href="/products/small">s</a>'); // small linked -> leads the block
-    expect(sel.handles[0]).toBe('small');          // congruence order unchanged
-    expect(sel.heroSourceHandle).toBe('big');       // hero still prefers the >=1200 source
+    const sel = selectShopBlock(pack, '<a href="/products/small">s</a>'); // small linked -> the article's subject
+    expect(sel.handles[0]).toBe('small');
+    expect(sel.heroSourceHandle).toBe('small');   // the subject supplies the hero
+    expect(sel.heroIsHighRes).toBe(false);        // trade-off surfaced, not hidden
+  });
+
+  it('hero resolution may still choose AMONG the linked prefix (all writer-chosen, all congruent)', () => {
+    const pack: FactPack = {
+      collectionHandle: 'c', collectionTitle: 'C', collectionPath: '/collections/c',
+      products: [PD('small', 'https://img/s.jpg', 1000, 1000), PD('big', 'https://img/b.jpg', 1500, 1500)]
+    };
+    const sel = selectShopBlock(pack, '<a href="/products/small">s</a> <a href="/products/big">b</a>'); // BOTH linked
+    expect(sel.handles.slice(0, 2)).toEqual(['small', 'big']);
+    expect(sel.heroSourceHandle).toBe('big');     // high-res wins within the congruent prefix
     expect(sel.heroIsHighRes).toBe(true);
+  });
+
+  it('pickHeroFields with linkedCount: top-up images are used only when no linked product has ANY image', () => {
+    const byHandle = new Map([
+      ['noimg', { title: 'NoImg', handle: 'noimg', path: '/products/noimg', priceGbp: 1, available: true }],
+      ['topup', PD('topup', 'https://img/t.jpg', 1600, 1600)]
+    ] as [string, GroundedProduct][]);
+    const hero = pickHeroFields(byHandle, ['noimg', 'topup'], 1); // linked prefix has no image
+    expect(hero.heroSourceHandle).toBe('topup');  // fallback to the top-up region, in order
   });
 
   it('hero falls back to the first image and flags not-high-res when nothing reaches 1200', () => {
@@ -318,20 +338,27 @@ describe('blog hero image (vision, lifestyle-preferring)', () => {
     { url: 'https://img/dog-using-it.jpg', width: 1000, height: 1000 } // pet with product (smaller)
   ];
 
+  const TITLES = { articleTitle: 'How to dry your dog fast after walks', productTitle: 'Dog drying towel' };
+
   it('returns the vision-chosen frame even when it is smaller than a product shot', async () => {
     const llm = fakeLlm([{ index: 1, reason: 'dog using product' }]);
-    expect(await pickBlogHeroImage(llm, STORE, CFG_ON, 'Dog drying towel', IMGS)).toEqual(IMGS[1]);
+    expect(await pickBlogHeroImage(llm, STORE, CFG_ON, TITLES, IMGS)).toEqual(IMGS[1]);
   });
 
   it('with 0-1 images returns the only image (or null) without consulting the model', async () => {
     const llm = fakeLlm([{ index: 9 }]); // invalid, but must not be consulted
-    expect(await pickBlogHeroImage(llm, STORE, CFG_ON, 't', [IMGS[0]])).toEqual(IMGS[0]);
-    expect(await pickBlogHeroImage(llm, STORE, CFG_ON, 't', [])).toBeNull();
+    expect(await pickBlogHeroImage(llm, STORE, CFG_ON, TITLES, [IMGS[0]])).toEqual(IMGS[0]);
+    expect(await pickBlogHeroImage(llm, STORE, CFG_ON, TITLES, [])).toBeNull();
   });
 
   it('returns null on an out-of-range index so the caller falls back to the featured image', async () => {
     const llm = fakeLlm([{ index: 5 }]);
-    expect(await pickBlogHeroImage(llm, STORE, CFG_ON, 't', IMGS)).toBeNull();
+    expect(await pickBlogHeroImage(llm, STORE, CFG_ON, TITLES, IMGS)).toBeNull();
+  });
+
+  it('honours a -1 rejection: nothing in the gallery fits the article -> null (featured image stands)', async () => {
+    const llm = fakeLlm([{ index: -1, reason: 'gallery is a different product' }]);
+    expect(await pickBlogHeroImage(llm, STORE, CFG_ON, TITLES, IMGS)).toBeNull();
   });
 
   it('getProductImages maps url + dimensions and tolerates an admin error', async () => {
@@ -438,20 +465,20 @@ describe('combo merchandiser (congruent cross-catalog shop block)', () => {
 
   it('keeps body-linked products first and appends only VALIDATED congruent picks (hallucinations dropped)', async () => {
     const llm = fakeLlm([{ handles: ['cooling-mat', 'invented-product'] }]);
-    const handles = await pickComboHandles(llm, STORE, CFG_LLM_ON, { article: ARTICLE, packs: [HEALTH, ACCESSORIES], linkedHandles: ['fountain'] });
-    expect(handles).toEqual(['fountain', 'cooling-mat']); // linked leads; hallucination dropped; scale/ramp NOT blind-padded
+    const sel = await pickComboHandles(llm, STORE, CFG_LLM_ON, { article: ARTICLE, packs: [HEALTH, ACCESSORIES], linkedHandles: ['fountain'] });
+    expect(sel).toEqual({ handles: ['fountain', 'cooling-mat'], linkedCount: 1 }); // linked leads; hallucination dropped; scale/ramp NOT blind-padded
   });
 
   it('an empty top-up is a valid outcome (fewer congruent picks beat off-topic padding)', async () => {
     const llm = fakeLlm([{ handles: [] }]);
     expect(await pickComboHandles(llm, STORE, CFG_LLM_ON, { article: ARTICLE, packs: [HEALTH], linkedHandles: ['fountain'] }))
-      .toEqual(['fountain']);
+      .toEqual({ handles: ['fountain'], linkedCount: 1 });
   });
 
   it('falls back to linked-only on an invalid LLM payload, and to null when nothing was linked either', async () => {
     const bad = fakeLlm([{ nope: true }]);
     expect(await pickComboHandles(bad, STORE, CFG_LLM_ON, { article: ARTICLE, packs: [HEALTH], linkedHandles: ['fountain'] }))
-      .toEqual(['fountain']);
+      .toEqual({ handles: ['fountain'], linkedCount: 1 });
     const badAgain = fakeLlm([{ nope: true }]);
     expect(await pickComboHandles(badAgain, STORE, CFG_LLM_ON, { article: ARTICLE, packs: [HEALTH], linkedHandles: [] }))
       .toBeNull(); // caller keeps its deterministic selection
@@ -460,14 +487,14 @@ describe('combo merchandiser (congruent cross-catalog shop block)', () => {
   it('LLM disabled in config -> linked-only without consulting the model', async () => {
     const llm = fakeLlm([{ handles: ['cooling-mat'] }]); // must not be used
     expect(await pickComboHandles(llm, STORE, CFG, { article: ARTICLE, packs: [HEALTH, ACCESSORIES], linkedHandles: ['fountain'] }))
-      .toEqual(['fountain']);
+      .toEqual({ handles: ['fountain'], linkedCount: 1 });
   });
 
   it('four linked products fill the block deterministically, no LLM call needed', async () => {
     const big = mkPack('c', 'C', [['a', 'A'], ['b', 'B'], ['c', 'C'], ['d', 'D'], ['e', 'E']]);
     const llm = fakeLlm([{ handles: ['e'] }]); // would be wrong if consulted
     expect(await pickComboHandles(llm, STORE, CFG_LLM_ON, { article: ARTICLE, packs: [big], linkedHandles: ['a', 'b', 'c', 'd', 'e'] }))
-      .toEqual(['a', 'b', 'c', 'd']);
+      .toEqual({ handles: ['a', 'b', 'c', 'd'], linkedCount: 4 });
   });
 
   it('pickHeroFields follows the FINAL handle set (a cross-collection pick can supply the hero)', () => {

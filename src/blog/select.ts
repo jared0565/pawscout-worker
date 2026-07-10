@@ -40,27 +40,33 @@ const MIN_HERO_PX = 1200;
 export type HeroFields = Pick<ShopBlockSelection, 'heroImageUrl' | 'heroSourceHandle' | 'heroAlt' | 'heroIsHighRes'>;
 
 /**
- * Hero for a chosen handle set: keep the set's congruence order, but prefer the
- * first pick whose source is >=1200 square (a true 1200x1200 og:image). Fall
- * back to the first pick with any image so every post still gets a hero - a
- * human can swap it on review. Shared by the deterministic selection and the
- * combo merchandiser (the hero must always follow the FINAL handle set).
+ * Hero for a chosen handle set. CONGRUENCE OUTRANKS RESOLUTION (2026-07-10
+ * live defect: a 1600px water bowl in slot 2 beat the 1100px elevated bed the
+ * article was actually about, so a dog-beds post shipped a water-bowl hero).
+ * The >=1200-square preference (a true 1200x1200 og:image) may only choose
+ * AMONG the first `linkedCount` handles - the writer's own body-linked picks,
+ * which are all congruent with the article. From the top-up region the hero is
+ * strictly the first product with an image; a smaller social card is a better
+ * failure than a wrong-subject hero, and heroIsHighRes surfaces the trade-off
+ * to the owner. Shared by the deterministic selection and the combo
+ * merchandiser (the hero must always follow the FINAL handle set).
  */
-export function pickHeroFields(byHandle: Map<string, GroundedProduct>, handles: string[]): HeroFields {
-  let fallback: GroundedProduct | undefined;
-  let highRes: GroundedProduct | undefined;
-  for (const h of handles) {
-    const p = byHandle.get(h);
-    if (!p?.imageUrl) continue;
-    if (!fallback) fallback = p;
-    if ((p.imageWidth ?? 0) >= MIN_HERO_PX && (p.imageHeight ?? 0) >= MIN_HERO_PX) { highRes = p; break; }
-  }
-  const hero = highRes ?? fallback;
+export function pickHeroFields(
+  byHandle: Map<string, GroundedProduct>, handles: string[], linkedCount = handles.length
+): HeroFields {
+  const products = (hs: string[]) => hs.map((h) => byHandle.get(h)).filter((p): p is GroundedProduct => !!p);
+  const isHighRes = (p: GroundedProduct) => (p.imageWidth ?? 0) >= MIN_HERO_PX && (p.imageHeight ?? 0) >= MIN_HERO_PX;
+  const linked = products(handles.slice(0, Math.max(0, linkedCount)));
+  const rest = products(handles.slice(Math.max(0, linkedCount)));
+  const hero =
+    linked.find((p) => p.imageUrl && isHighRes(p)) ??
+    linked.find((p) => p.imageUrl) ??
+    rest.find((p) => p.imageUrl);
   return {
     heroImageUrl: hero?.imageUrl,
     heroSourceHandle: hero?.handle,
     heroAlt: hero?.title,
-    heroIsHighRes: !!highRes
+    heroIsHighRes: !!hero && isHighRes(hero)
   };
 }
 
@@ -82,5 +88,5 @@ export function selectShopBlock(pack: FactPack, bodyHtml: string, max = 4): Shop
 
   const handles = [...linked, ...topUp].slice(0, max);
 
-  return { handles, ...pickHeroFields(byHandle, handles) };
+  return { handles, ...pickHeroFields(byHandle, handles, Math.min(linked.length, handles.length)) };
 }
