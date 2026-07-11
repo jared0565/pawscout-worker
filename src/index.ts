@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { RequestedTokenType } from '@shopify/shopify-api';
-import type { Env, TenantConfig, TenantRow } from './types';
+import { type Env, type TenantConfig, type TenantRow, SYNDICATE_CHANNEL_KEYS, mergeSyndicate, type SyndicateChannelKey, type SyndicateChannelConfig } from './types';
 import { makeShopify } from './shopify';
 import { Vault } from './vault';
 import { TenantStore, listActiveShops } from './tenant-store';
@@ -50,7 +50,8 @@ import { resolveLogistics } from './logistics';
 import { runDailyMaintenance, resumeDailyMaintenance, runMarketVisibilityReconcile, runProfitAgentSweep, syncStoreInventory, refillCollections } from './jobs';
 import { debrandCatalog } from './catalog-debrand';
 import { runOrderPipeline, runOrderPipelineForShop } from './fulfil-run';
-import { runSyndicationSweep } from './syndicate/run';
+import { runSyndicationSweep, ensurePack, sendChannel, runSyndicationForShop } from './syndicate/run';
+import { blotatoFromEnv } from './syndicate/blotato';
 import { parseOrderWebhook, validateOrder, FULFIL_GRACE_MINUTES } from './fulfil';
 import { attributePaidOrder } from './inbox/attribution';
 import { firecrawlCjSearch } from './firecrawl';
@@ -379,6 +380,131 @@ app.post('/api/blog/enrich', async (c) => {
   const articleId = typeof body.articleId === 'string' && body.articleId ? body.articleId : undefined;
   const result = await enrichBlogPost(c.env, store, cfg, { articleId });
   return c.json(result);
+});
+// --- Blog syndication (distribution phase 1, 2026-07-11) ---
+// List the distribution state: published posts + their creative packs + the
+// per-channel ledger. Runs one fire:false sweep pass first (enqueue + pack +
+// confirm, never auto-send) so opening the card reflects a just-published
+// guide without waiting for the cron AND can never race the cron into a
+// double post - console sends only ever happen via the explicit send route.
+app.post('/api/syndicate/list', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  const store = new TenantStore(c.env.DB, s);
+  const cfg = await store.getConfig();
+  if (!cfg) return c.json({ ok: false, error: 'Tenant not found' }, 400);
+  try { await runSyndicationForShop(c.env, store, cfg, { fire: false }); } catch { /* list still renders */ }
+  const posts = (await listPostsSynced(c.env, store)).filter((p) => p.status === 'published' && p.shopify_article_id).slice(0, 12);
+  const packs: Record<string, { articleHandle: string | null; captions: unknown; pinImageUrl: string | null }> = {};
+  for (const p of posts) {
+    const row = await store.getSyndicationPack(p.id);
+    if (row) {
+      let captions: unknown = null;
+      try { captions = JSON.parse(row.captions_json); } catch { /* render without */ }
+      packs[p.id] = { articleHandle: row.article_handle, captions, pinImageUrl: row.pin_image_url };
+    }
+  }
+  return c.json({
+    ok: true,
+    blotatoConfigured: blotatoFromEnv(c.env) !== null,
+    syndicate: cfg.syndicate ?? mergeSyndicate('{}'),
+    posts: posts.map((p) => ({ id: p.id, title: p.title, articleId: p.shopify_article_id, createdAt: p.created_at })),
+    packs,
+    ledger: await store.listSyndicationLedger()
+  });
+});
+// Save channel toggles / ids / digest mode. Validated field-by-field; unknown
+// channels and keys are dropped (the config is owner-facing, not free-form).
+app.post('/api/syndicate/config', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: { channels?: unknown; digest?: unknown } = {};
+  try { body = await c.req.json(); } catch {}
+  const store = new TenantStore(c.env.DB, s);
+  const cfg = await store.getConfig();
+  if (!cfg) return c.json({ ok: false, error: 'Tenant not found' }, 400);
+  const syn = cfg.syndicate ?? mergeSyndicate('{}');
+  const chIn = (body.channels && typeof body.channels === 'object' ? body.channels : {}) as Record<string, Partial<SyndicateChannelConfig>>;
+  for (const k of SYNDICATE_CHANNEL_KEYS) {
+    const inc = chIn[k];
+    if (!inc || typeof inc !== 'object') continue;
+    const cur = syn.channels[k];
+    if (typeof inc.enabled === 'boolean') cur.enabled = inc.enabled;
+    if (typeof inc.auto === 'boolean') cur.auto = inc.auto;
+    for (const id of ['accountId', 'boardId', 'pageId'] as const) {
+      if (typeof inc[id] === 'string') {
+        const v = (inc[id] as string).trim().slice(0, 160);
+        if (v) cur[id] = v; else delete cur[id];
+      }
+    }
+  }
+  const dg = (body.digest && typeof body.digest === 'object' ? body.digest : {}) as { mode?: unknown };
+  if (dg.mode === 'weekly' || dg.mode === 'per-post') syn.digest.mode = dg.mode;
+  await store.saveSyndicate(syn);
+  return c.json({ ok: true, syndicate: syn });
+});
+// Connected Blotato accounts + Pinterest boards + Facebook pages, so the owner
+// configures channels by picking, never by hand-copying ids.
+app.post('/api/syndicate/accounts', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  const blotato = blotatoFromEnv(c.env);
+  if (!blotato) return c.json({ ok: false, error: 'Blotato is not connected (set the BLOTATO_API_KEY secret first)' });
+  const accounts = await blotato.listAccounts();
+  if (!accounts) return c.json({ ok: false, error: 'Could not list Blotato accounts (check the key)' });
+  const boards: Record<string, unknown[]> = {};
+  const pages: Record<string, unknown[]> = {};
+  for (const a of accounts) {
+    const platform = (a.platform ?? '').toLowerCase();
+    if (platform === 'pinterest') boards[a.id] = (await blotato.listPinterestBoards(a.id)) ?? [];
+    if (platform === 'facebook') pages[a.id] = (await blotato.listSubaccounts(a.id)) ?? [];
+  }
+  return c.json({ ok: true, accounts, boards, pages });
+});
+// Manual send for one post x channel (also the retry button). Bypasses the
+// auto flag and the attempt cap - an owner click IS the authorization.
+app.post('/api/syndicate/send', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: { postId?: unknown; channel?: unknown } = {};
+  try { body = await c.req.json(); } catch {}
+  const postId = typeof body.postId === 'string' ? body.postId : '';
+  const channel = SYNDICATE_CHANNEL_KEYS.find((k) => k === body.channel);
+  if (!postId || !channel) return c.json({ ok: false, error: 'postId and a known channel are required' }, 400);
+  const store = new TenantStore(c.env.DB, s);
+  const cfg = await store.getConfig();
+  if (!cfg) return c.json({ ok: false, error: 'Tenant not found' }, 400);
+  const syn = cfg.syndicate ?? mergeSyndicate('{}');
+  if (!syn.channels[channel].enabled) return c.json({ ok: false, error: 'That channel is not enabled' }, 400);
+  const post = (await store.listBlogPostDrafts()).find((p) => p.id === postId);
+  if (!post || !post.shopify_article_id) return c.json({ ok: false, error: 'Post not found' }, 404);
+  const blotato = blotatoFromEnv(c.env);
+  await store.enqueueSyndication(postId, channel); // idempotent (first manual send can precede any sweep)
+  const ensured = await ensurePack(c.env, store, cfg, blotato, {
+    id: post.id, shopifyArticleId: post.shopify_article_id, title: post.title,
+    collectionHandle: post.collection_handle, relatedHandlesJson: post.related_handles_json
+  });
+  if ('error' in ensured) {
+    await store.markSyndication(postId, channel, { error: ensured.error });
+    return c.json({ ok: false, error: ensured.error });
+  }
+  const row = (await store.listSyndicationLedger()).find((r) => r.post_id === postId && r.channel === channel);
+  const sent = await sendChannel(store, syn, blotato, postId, channel, ensured.pack, row?.attempts ?? 0);
+  return c.json(sent.ok ? { ok: true } : { ok: false, error: sent.error });
+});
+// Rebuild one post's creative pack (fresh copy + fresh hero mirror).
+app.post('/api/syndicate/regenerate', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: { postId?: unknown } = {};
+  try { body = await c.req.json(); } catch {}
+  const postId = typeof body.postId === 'string' ? body.postId : '';
+  if (!postId) return c.json({ ok: false, error: 'postId required' }, 400);
+  const store = new TenantStore(c.env.DB, s);
+  const cfg = await store.getConfig();
+  if (!cfg) return c.json({ ok: false, error: 'Tenant not found' }, 400);
+  const post = (await store.listBlogPostDrafts()).find((p) => p.id === postId);
+  if (!post || !post.shopify_article_id) return c.json({ ok: false, error: 'Post not found' }, 404);
+  const ensured = await ensurePack(c.env, store, cfg, blotatoFromEnv(c.env), {
+    id: post.id, shopifyArticleId: post.shopify_article_id, title: post.title,
+    collectionHandle: post.collection_handle, relatedHandlesJson: post.related_handles_json
+  }, { force: true });
+  return c.json('error' in ensured ? { ok: false, error: ensured.error } : { ok: true });
 });
 // Marketing opt-in for one partner (owner flips it when the partner says yes -
 // partnership correspondence alone never puts anyone on the campaign list).
