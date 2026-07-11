@@ -354,6 +354,23 @@ describe('runSyndicationForShop', () => {
     expect(sent.length).toBe(0); // the loser never posted
   });
 
+  it('a disabled channel never auto-fires a surviving queued row (enabled unchecked after enqueue)', async () => {
+    const store = fakeSynStore();
+    const sent: unknown[] = [];
+    await store.enqueueSyndication('post-1', 'pinterest'); // row queued while the channel was enabled
+    // facebook stays enabled (auto:false) so the shop-level anyChannelEnabled
+    // gate lets the sweep reach stage 3; pinterest's surviving queued row is
+    // the one under test.
+    const cfg = synCfg({
+      pinterest: { enabled: false, auto: true, accountId: 'a', boardId: 'b' },
+      facebook: { enabled: true, auto: false, accountId: 'a', pageId: 'p' }
+    });
+    const r = await runSyndicationForShop(okLlmEnv, store as never, cfg, deps(store, fakeBlotato(sent)));
+    expect(r.posted).toBe(0);
+    expect(sent.length).toBe(0);
+    expect(store.ledger.get('post-1|pinterest')!.status).toBe('queued');
+  });
+
   it('permanent send failure goes failed immediately; no blotato = queued untouched', async () => {
     const store = fakeSynStore();
     const cfg = synCfg({ pinterest: { enabled: true, auto: true, accountId: 'a', boardId: 'b' } });

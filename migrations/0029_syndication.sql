@@ -1,6 +1,10 @@
 -- Blog distribution phase 1 (2026-07-11 design): per-post creative pack +
--- per-channel send ledger. UNIQUE(shop, post_id, channel) via the ledger PK is
--- THE idempotency guarantee - a re-run sweep can never double-post. Statuses:
+-- per-channel send ledger. UNIQUE(shop, post_id, channel) via the ledger PK
+-- guarantees one ledger row per post per channel, and the claimed-attempts
+-- CAS (see claimSyndicationAttempt) prevents concurrent actors double-
+-- sending. A transient createPost failure whose submission actually landed
+-- (lost response) can still re-fire on a later sweep - an accepted
+-- at-least-once tail, capped by the auto-attempt limit. Statuses:
 -- queued (awaiting send) | sent (accepted by Blotato, pending confirmation) |
 -- published (confirmed live) | failed | skipped. tenant_config gains the
 -- 'syndicate' block (channel toggles), merged over DEFAULT_SYNDICATE on read.

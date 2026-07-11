@@ -125,7 +125,10 @@ Blotato) and posts to Pinterest / Facebook / Instagram via the Blotato API
 live in `tenant_config.syndicate` (all off by default; owner clicks Send in
 the console's Content > Distribution card until a channel earns auto). Ledger:
 `syndication_ledger` (queued/sent/published/failed, one row per post per
-channel = idempotency + a claimed-attempts double-post fence). Links carry
+channel via a UNIQUE PK; a claimed-attempts CAS prevents concurrent actors
+double-sending; a transient createPost failure whose submission actually
+landed can still re-fire on a later sweep, an accepted at-least-once tail
+capped by the auto-attempt limit). Links carry
 utm_source/medium/campaign for per-channel attribution. Copy gates: no prices,
 no supplier brands, no em-dash, length caps. Spec:
 docs/superpowers/specs/2026-07-11-blog-distribution-design.md (90-day Blotato

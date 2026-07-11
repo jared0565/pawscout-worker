@@ -187,7 +187,7 @@ export async function runSyndicationForShop(
     if (pack && blotato && fire) {
       for (const r of queuedRows) {
         const k = r.channel as SyndicateChannelKey;
-        if (!syn.channels[k]?.auto || r.attempts >= SYNDICATION_MAX_AUTO_ATTEMPTS) continue;
+        if (!syn.channels[k]?.enabled || !syn.channels[k]?.auto || r.attempts >= SYNDICATION_MAX_AUTO_ATTEMPTS) continue;
         const sent = await sendChannel(store, syn, blotato, p.id, k, pack, r.attempts);
         if (sent.ok) out.posted++; else out.failed++;
       }
