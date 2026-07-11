@@ -32,6 +32,13 @@ export const settingsView = `  <section class="card">
   </section>
 
   <section class="card">
+    <h2>AI spend</h2>
+    <p class="sub" style="margin:0 0 10px">The daily expense record of every AI call the system makes, logged at the moment it happens: which function spent it, on which model, how many calls, and the cost. Last 14 days, newest first, with a total per day. Amounts are USD (the providers bill in dollars).</p>
+    <div id="llm-usage"><p class="muted">Loading…</p></div>
+    <div class="row" style="margin-top:10px"><button type="button" class="ghost" onclick="loadLlmUsage()">Refresh</button></div>
+  </section>
+
+  <section class="card">
     <h2>Reply mode and per-agent auto-send</h2>
     <div id="reply-mode" class="reply-mode">
       <div class="reply-mode__text">
@@ -130,4 +137,13 @@ export const settingsCss = `
   .sys-detail{color:var(--subdued);overflow-wrap:anywhere}
   .sys-src{display:block;font-size:10.5px;color:var(--subdued);opacity:.75;overflow-wrap:anywhere}
   @media(max-width:820px){.sys-row{grid-template-columns:1fr 110px}.sys-detail{grid-column:1 / -1}}
+  /* --- Settings: AI spend ledger --- */
+  .spend-day{margin:14px 0 2px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--subdued);display:flex;justify-content:space-between;align-items:baseline}
+  .spend-day:first-child{margin-top:2px}
+  .spend-total{color:var(--ink);font-weight:650;font-variant-numeric:tabular-nums}
+  .spend-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.3fr) 52px 76px;gap:10px;padding:4px 0;border-bottom:1px solid var(--border);font-size:12.5px}
+  .spend-head{border-bottom:none;padding:2px 0 0;font-size:10.5px;text-transform:uppercase;letter-spacing:.04em;color:var(--subdued)}
+  .spend-task{color:var(--ink);font-weight:550;overflow-wrap:anywhere}
+  .spend-model{color:var(--subdued);overflow-wrap:anywhere}
+  .spend-num{text-align:right;font-variant-numeric:tabular-nums;color:var(--subdued)}
 `;

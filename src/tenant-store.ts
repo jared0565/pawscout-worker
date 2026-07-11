@@ -775,6 +775,19 @@ export class TenantStore {
     return { calls: row?.calls ?? 0, costUsd: row?.cost ?? 0 };
   }
 
+  /** Daily AI expense ledger (owner request 2026-07-11): per day x task x model
+   * rollup since the cutoff, newest day first, biggest spend first within a
+   * day. Feeds the console Settings "AI spend" card. */
+  async llmUsageDaily(sinceIso: string): Promise<{ day: string; task: string; model: string; calls: number; cost_usd: number }[]> {
+    const rs = await this.db
+      .prepare(`SELECT substr(created_at, 1, 10) AS day, task, model, COUNT(*) AS calls, COALESCE(SUM(cost_usd), 0) AS cost_usd
+                FROM llm_usage WHERE shop = ?1 AND created_at >= ?2
+                GROUP BY day, task, model ORDER BY day DESC, cost_usd DESC`)
+      .bind(this.shop, sinceIso)
+      .all<{ day: string; task: string; model: string; calls: number; cost_usd: number }>();
+    return rs.results ?? [];
+  }
+
   /**
    * Imported products older than the grace cutoff with zero qualifying events
    * since the window cutoff. Stock-paused products are exempt - they couldn't

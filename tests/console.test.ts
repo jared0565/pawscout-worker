@@ -510,6 +510,20 @@ describe('consolePage', () => {
     expect(scripts).toContain("esc(st.source)");
   });
 
+  it('Settings carries the AI spend daily ledger, loaded live on startup', async () => {
+    const html = await consolePage('test-api-key').text();
+    expect(html).toContain('id="llm-usage"');
+    expect(html).toContain('AI spend');
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+    expect(scripts).toContain('function loadLlmUsage(');
+    expect(scripts).toContain("'/llm/usage'");
+    expect(scripts).toContain('loadLlmUsage();'); // read live at startup
+    // Ledger rows are rendered with esc() on every dynamic value.
+    expect(scripts).toContain('esc(row.task)');
+    expect(scripts).toContain('esc(row.model)');
+    expect(scripts).toContain('esc(Number(row.cost_usd).toFixed(4))');
+  });
+
   // --- Draft templates (2026-07-06): swap the pending draft from a dropdown ---
 
   it('Inbox carries the template picker wired to /inbox/template', async () => {

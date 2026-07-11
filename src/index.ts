@@ -1296,6 +1296,14 @@ app.post('/api/system-states', async (c) => {
   const s = await shopOf(c); if (typeof s !== 'string') return s;
   return c.json(await collectSystemStates(c.env, new TenantStore(c.env.DB, s)));
 });
+// Daily AI expense ledger (owner request 2026-07-11): per day x task x model
+// rollup from llm_usage, last 14 days, read-only. Every AI call the system
+// makes is logged there at the moment it happens, so this is the audit trail.
+app.post('/api/llm/usage', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  const since = new Date(Date.now() - 14 * 86400_000).toISOString().slice(0, 10);
+  return c.json({ ok: true, since, rows: await new TenantStore(c.env.DB, s).llmUsageDaily(since) });
+});
 // Template picker (2026-07-06): replace the thread's pending draft with a
 // Marketing opt-in flipped from the sender's own thread - where their yes
 // actually arrives. Consent only; never changes queue/partner status.

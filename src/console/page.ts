@@ -362,6 +362,36 @@ async function loadSystemStates(){
     box.innerHTML=h;
   }catch(e){ box.innerHTML='<p class="msg no">Could not load the register: '+esc(errText(e))+'</p>'; }
 }
+// --- AI spend ledger: the daily expense record of every AI call (task x model) ---
+async function loadLlmUsage(){
+  var box=el('llm-usage'); if(!box) return;
+  box.innerHTML='<p class="muted">Loading…</p>';
+  try{
+    var r=await api('/llm/usage',{});
+    if(!r.ok){ box.innerHTML='<p class="msg no">Could not load the ledger: '+esc(r.error||'unknown error')+'</p>'; return; }
+    if(!r.rows||!r.rows.length){ box.innerHTML='<p class="muted">No AI calls in the last 14 days.</p>'; return; }
+    var order=[]; var groups={};
+    for(var i=0;i<r.rows.length;i++){
+      var x=r.rows[i];
+      if(!groups[x.day]){ groups[x.day]=[]; order.push(x.day); }
+      groups[x.day].push(x);
+    }
+    var h=''; var grand=0;
+    for(var g=0;g<order.length;g++){
+      var d=order[g]; var rows=groups[d]; var total=0; var body='';
+      for(var j=0;j<rows.length;j++){
+        var row=rows[j]; total+=Number(row.cost_usd)||0;
+        body+='<div class="spend-row"><span class="spend-task">'+esc(row.task)+'</span><span class="spend-model">'+esc(row.model)+'</span><span class="spend-num">'+esc(row.calls)+'</span><span class="spend-num">$'+esc(Number(row.cost_usd).toFixed(4))+'</span></div>';
+      }
+      grand+=total;
+      h+='<div class="spend-day"><span>'+esc(d)+'</span><span class="spend-total">$'+esc(total.toFixed(4))+'</span></div>'
+        +'<div class="spend-row spend-head"><span>function</span><span>model</span><span class="spend-num">calls</span><span class="spend-num">cost</span></div>'
+        +body;
+    }
+    h+='<p class="muted" style="margin-top:10px">14-day total: <strong>$'+esc(grand.toFixed(2))+'</strong></p>';
+    box.innerHTML=h;
+  }catch(e){ box.innerHTML='<p class="msg no">Could not load the ledger: '+esc(errText(e))+'</p>'; }
+}
 async function loadInsights(){
   try{
     var r=await api('/insights');
@@ -971,6 +1001,7 @@ loadTraffic();
 loadContent();
 pfLoad();
 loadSystemStates();
+loadLlmUsage();
 ${routerJs}</script>
 </body></html>`;
   // no-store: the console is a single server-rendered page that changes every
