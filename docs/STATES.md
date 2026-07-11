@@ -98,3 +98,13 @@ SELECT inbox, fulfil, gates, pricing, llm, addons, target FROM tenant_config WHE
 | `job.daily` | `search_cache` key `job:daily-maintenance` | `SELECT cache_key, payload FROM search_cache WHERE cache_key LIKE 'job:%'` (note: rows expire after `expires_at`) |
 | `job.pipeline` | `search_cache` key `job:order-pipeline` | same |
 | `job.markets` | `search_cache` key `job:market-exclusions` | same |
+
+## Blog distribution and syndication
+
+| Key | Where it lives | Check |
+|---|---|---|
+| Syndication channel enabled | `tenant_config.syndicate` (enabled/auto toggles per channel) | `wrangler d1 execute pawscout --remote --json --command "SELECT syndicate FROM tenant_config"` |
+| Syndication queue/results | `syndication_ledger` (queued/sent/published/failed, one per post per channel) | `wrangler d1 execute pawscout --remote --json --command "SELECT post_id, channel, status, error, attempts FROM syndication_ledger ORDER BY updated_at DESC LIMIT 20"` |
+| Creative packs built | `syndication_packs` (article hero + gated LLM copy mirrored to Blotato) | `wrangler d1 execute pawscout --remote --json --command "SELECT post_id, article_handle, pin_image_url IS NOT NULL AS has_image FROM syndication_packs"` |
+| Blotato rail connected | worker secret `BLOTATO_API_KEY` (presence only); console Distribution card | `npx wrangler secret list` shows BLOTATO_API_KEY; console Distribution card shows no red box |
+| Syndication copy spend | `llm_usage` rows with `task='blog-syndication-copy'` (cost tracking) | `wrangler d1 execute pawscout --remote --json --command "SELECT COUNT(*), SUM(cost_usd) FROM llm_usage WHERE task='blog-syndication-copy'"` |

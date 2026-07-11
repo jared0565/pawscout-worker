@@ -116,6 +116,22 @@ npm run migrate:remote   # apply new D1 migrations to prod (only when migrations
   ("generate N sales", commission offers, BDT/Taka). Don't reply; filter to spam;
   reCAPTCHA on the contact form will reduce the inflow.
 
+## Blog distribution (phase 1, 2026-07-11)
+
+Publishing a guide queues it for social distribution: the 15-min cron builds a
+creative pack (one gated LLM copy call + the article's live hero mirrored to
+Blotato) and posts to Pinterest / Facebook / Instagram via the Blotato API
+(`BLOTATO_API_KEY` secret; absent = dormant). Per-channel enabled/auto toggles
+live in `tenant_config.syndicate` (all off by default; owner clicks Send in
+the console's Content > Distribution card until a channel earns auto). Ledger:
+`syndication_ledger` (queued/sent/published/failed, one row per post per
+channel = idempotency + a claimed-attempts double-post fence). Links carry
+utm_source/medium/campaign for per-channel attribution. Copy gates: no prices,
+no supplier brands, no em-dash, length caps. Spec:
+docs/superpowers/specs/2026-07-11-blog-distribution-design.md (90-day Blotato
+earn-it review; native-API exit path). Phases 2 (composed creatives) and 3
+(email digest + partner packs) are specced, not built.
+
 ## 7. Where to look
 
 - `TASKS.md` - prioritized, granular checklist (PS vs You ownership).
