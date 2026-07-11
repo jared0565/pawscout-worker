@@ -79,7 +79,7 @@ async function selectShopBlockAcross(
   return { handles: combo.handles, ...pickHeroFields(availableByHandle(packs), combo.handles, combo.linkedCount) };
 }
 
-const BLOG_HANDLE = 'guides';              // the clean handle we want: /blogs/guides
+export const BLOG_HANDLE = 'guides';       // the clean handle we want: /blogs/guides (also imported by src/syndicate)
 const BLOG_LEGACY_HANDLE = 'news';         // the default blog we reuse + migrate FROM
 const BLOG_TITLE = 'Pet Care Guides';      // its display title
 const AUTHOR_NAME = 'Active Paw';

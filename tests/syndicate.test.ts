@@ -138,3 +138,54 @@ describe('Blotato client', () => {
     expect(blotatoFromEnv({ BLOTATO_API_KEY: 'k' } as Env)).not.toBeNull();
   });
 });
+
+import { utmUrl, blotatoPostFor } from '../src/syndicate/channels';
+import type { SyndicateChannelConfig } from '../src/types';
+
+describe('channel payloads', () => {
+  const copy = GOOD_COPY as SyndicationCopy;
+  const IMG = 'https://database.blotato.com/abc.jpg';
+
+  it('utmUrl carries source, medium and the guide campaign', () => {
+    expect(utmUrl('cat-hydration', 'pinterest'))
+      .toBe('https://activepaw.co.uk/blogs/guides/cat-hydration?utm_source=pinterest&utm_medium=social&utm_campaign=guide-cat-hydration');
+  });
+
+  it('pinterest: pin with board, title, utm link, alt and image', () => {
+    const ch: SyndicateChannelConfig = { enabled: true, auto: false, accountId: 'a1', boardId: 'b1' };
+    const p = blotatoPostFor('pinterest', ch, { copy, articleHandle: 'cat-hydration', imageUrl: IMG });
+    expect(p).toEqual({
+      accountId: 'a1', text: copy.pinDesc, mediaUrls: [IMG], platform: 'pinterest',
+      target: { targetType: 'pinterest', boardId: 'b1', title: copy.pinTitle, link: utmUrl('cat-hydration', 'pinterest'), altText: copy.altText }
+    });
+  });
+
+  it('facebook: link post (OG card carries the image), pageId required', () => {
+    const ch: SyndicateChannelConfig = { enabled: true, auto: false, accountId: 'a2', pageId: 'pg9' };
+    const p = blotatoPostFor('facebook', ch, { copy, articleHandle: 'cat-hydration', imageUrl: IMG });
+    expect(p).toEqual({
+      accountId: 'a2', text: copy.caption, mediaUrls: [], platform: 'facebook',
+      target: { targetType: 'facebook', pageId: 'pg9', link: utmUrl('cat-hydration', 'facebook') }
+    });
+    expect(blotatoPostFor('facebook', { enabled: true, auto: false, accountId: 'a2' }, { copy, articleHandle: 'h', imageUrl: IMG }))
+      .toEqual({ error: 'facebook channel has no pageId' });
+  });
+
+  it('instagram: image post, url rides in the caption text', () => {
+    const ch: SyndicateChannelConfig = { enabled: true, auto: false, accountId: 'a3' };
+    const p = blotatoPostFor('instagram', ch, { copy, articleHandle: 'cat-hydration', imageUrl: IMG });
+    if ('error' in p) throw new Error(p.error);
+    expect(p.mediaUrls).toEqual([IMG]);
+    expect(p.text).toContain(utmUrl('cat-hydration', 'instagram'));
+    expect(p.target).toEqual({ targetType: 'instagram' });
+  });
+
+  it('hard errors: no accountId, and no image where an image is required', () => {
+    expect(blotatoPostFor('pinterest', { enabled: true, auto: false, boardId: 'b' }, { copy, articleHandle: 'h', imageUrl: IMG }))
+      .toEqual({ error: 'channel has no connected accountId' });
+    expect(blotatoPostFor('pinterest', { enabled: true, auto: false, accountId: 'a', boardId: 'b' }, { copy, articleHandle: 'h', imageUrl: null }))
+      .toEqual({ error: 'no image available for a pin' });
+    expect(blotatoPostFor('instagram', { enabled: true, auto: false, accountId: 'a' }, { copy, articleHandle: 'h', imageUrl: null }))
+      .toEqual({ error: 'no image available for an instagram post' });
+  });
+});
