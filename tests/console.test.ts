@@ -345,6 +345,7 @@ describe('consolePage', () => {
     expect(html).toContain('/syndicate/accounts');
     expect(html).toContain('/syndicate/regenerate');
     expect(html).toContain('data-syd-send');
+    expect(html).toContain('data-syd-wire');       // account picker: inert data-* + delegation, never inline onclick JS
     expect(html).toContain('sydLoad()');           // wired into loadContent
     expect(html).toContain("prtArm(btn,'Posts publicly - click again to confirm')");
   });

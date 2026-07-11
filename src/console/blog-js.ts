@@ -191,13 +191,13 @@ async function sydAccounts(btn){
       var name=a.username||a.name||a.id;
       if(plat==='pinterest'){
         var bs=(r.boards&&r.boards[a.id])||[];
-        for(var j=0;j<bs.length;j++) lines.push('<button type="button" class="btn-sm" onclick="sydSaveConfig(\\'pinterest\\',{accountId:\\''+esc(a.id)+'\\',boardId:\\''+esc(bs[j].id)+'\\'})">Pinterest: '+esc(name)+' / '+esc(bs[j].name||bs[j].id)+'</button>');
+        for(var j=0;j<bs.length;j++) lines.push('<button type="button" class="btn-sm" data-syd-wire="pinterest" data-syd-account="'+esc(a.id)+'" data-syd-board="'+esc(bs[j].id)+'">Pinterest: '+esc(name)+' / '+esc(bs[j].name||bs[j].id)+'</button>');
         if(!bs.length) lines.push('<span class="muted">Pinterest '+esc(name)+': no boards visible yet (new accounts can take 2-3 weeks to warm up; you can also paste the board id from Pinterest itself).</span>');
       }else if(plat==='facebook'){
         var ps=(r.pages&&r.pages[a.id])||[];
-        for(var q=0;q<ps.length;q++) lines.push('<button type="button" class="btn-sm" onclick="sydSaveConfig(\\'facebook\\',{accountId:\\''+esc(a.id)+'\\',pageId:\\''+esc(ps[q].id)+'\\'})">Facebook: '+esc(ps[q].name||ps[q].id)+'</button>');
+        for(var q=0;q<ps.length;q++) lines.push('<button type="button" class="btn-sm" data-syd-wire="facebook" data-syd-account="'+esc(a.id)+'" data-syd-page="'+esc(ps[q].id)+'">Facebook: '+esc(ps[q].name||ps[q].id)+'</button>');
       }else if(plat==='instagram'){
-        lines.push('<button type="button" class="btn-sm" onclick="sydSaveConfig(\\'instagram\\',{accountId:\\''+esc(a.id)+'\\'})">Instagram: '+esc(name)+'</button>');
+        lines.push('<button type="button" class="btn-sm" data-syd-wire="instagram" data-syd-account="'+esc(a.id)+'">Instagram: '+esc(name)+'</button>');
       }
     }
     var msgBox=el('syd-msg'); // setMsg() writes textContent (plain status text); this message
@@ -234,6 +234,8 @@ async function sydRegen(btn,postId){
   document.addEventListener('click',function(ev){
     var t=ev.target;
     if(!t||!t.getAttribute) return;
+    var wire=t.getAttribute('data-syd-wire');
+    if(wire){ var patch={accountId:t.getAttribute('data-syd-account')}; var b=t.getAttribute('data-syd-board'); if(b) patch.boardId=b; var pg=t.getAttribute('data-syd-page'); if(pg) patch.pageId=pg; sydSaveConfig(wire,patch); return; }
     var send=t.getAttribute('data-syd-send');
     if(send){ var parts=send.split('|'); sydSend(t,parts[0],parts[1]); return; }
     var regen=t.getAttribute('data-syd-regen');
