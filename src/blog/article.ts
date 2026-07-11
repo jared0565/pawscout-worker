@@ -164,6 +164,30 @@ export async function getPublishedMap(admin: AdminGraphql, ids: string[]): Promi
   return map;
 }
 
+const ARTICLES_FOR_SYNDICATION = `query pawscoutArticlesSyndication($ids: [ID!]!) {
+  nodes(ids: $ids) { ... on Article { id handle title isPublished image { url } } }
+}`;
+
+export interface ArticleSyndicationInfo { id: string; handle: string; title: string; imageUrl: string | null; isPublished: boolean }
+
+/** Live handle + title + CURRENT featured image per article id, for the
+ * syndication pack build. Shopify is the source of truth here (an owner-swapped
+ * hero must be what gets pinned, not the stale D1 bookkeeping url). Missing or
+ * deleted articles are simply absent. Throws on transport errors (caller
+ * degrades). */
+export async function getArticlesForSyndication(admin: AdminGraphql, ids: string[]): Promise<Map<string, ArticleSyndicationInfo>> {
+  const map = new Map<string, ArticleSyndicationInfo>();
+  if (!ids.length) return map;
+  const data = await admin(ARTICLES_FOR_SYNDICATION, { ids }) as {
+    nodes?: ({ id?: string; handle?: string; title?: string; isPublished?: boolean; image?: { url?: string } | null } | null)[];
+  };
+  for (const n of data.nodes ?? []) {
+    if (!n?.id || !n.handle) continue;
+    map.set(n.id, { id: n.id, handle: n.handle, title: n.title ?? '', imageUrl: n.image?.url ?? null, isPublished: n.isPublished === true });
+  }
+  return map;
+}
+
 const ARTICLE_READ = `query pawscoutArticleRead($id: ID!) {
   article(id: $id) { id handle title image { url } body }
 }`;

@@ -6,6 +6,8 @@ import type { Env } from '../src/types';
 import type { TenantStore } from '../src/tenant-store';
 import type { TenantConfig } from '../src/types';
 import type { LlmClient } from '../src/llm';
+import { getArticlesForSyndication } from '../src/blog/article';
+import type { AdminGraphql } from '../src/shopify-admin';
 
 describe('mergeSyndicate', () => {
   it('empty/corrupt blobs yield the full dormant default', () => {
@@ -187,5 +189,21 @@ describe('channel payloads', () => {
       .toEqual({ error: 'no image available for a pin' });
     expect(blotatoPostFor('instagram', { enabled: true, auto: false, accountId: 'a' }, { copy, articleHandle: 'h', imageUrl: null }))
       .toEqual({ error: 'no image available for an instagram post' });
+  });
+});
+
+describe('getArticlesForSyndication', () => {
+  it('maps id -> handle/title/image/published; missing nodes absent', async () => {
+    const admin = (async (_q: string, vars?: Record<string, unknown>) => {
+      expect((vars as { ids: string[] }).ids).toEqual(['gid://shopify/Article/1', 'gid://shopify/Article/2']);
+      return { nodes: [
+        { id: 'gid://shopify/Article/1', handle: 'cat-hydration', title: 'Cat hydration', image: { url: 'https://cdn.shopify.com/h.jpg' }, isPublished: true },
+        null
+      ] };
+    }) as unknown as AdminGraphql;
+    const m = await getArticlesForSyndication(admin, ['gid://shopify/Article/1', 'gid://shopify/Article/2']);
+    expect(m.get('gid://shopify/Article/1')).toEqual({ id: 'gid://shopify/Article/1', handle: 'cat-hydration', title: 'Cat hydration', imageUrl: 'https://cdn.shopify.com/h.jpg', isPublished: true });
+    expect(m.has('gid://shopify/Article/2')).toBe(false);
+    expect(await getArticlesForSyndication(admin, [])).toEqual(new Map());
   });
 });
