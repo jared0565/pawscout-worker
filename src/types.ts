@@ -17,6 +17,10 @@ export interface Env {
   // absent = market source dormant; competitor research keeps the legacy LLM+web path.
   EBAY_CLIENT_ID?: string;
   EBAY_CLIENT_SECRET?: string;
+  // Blotato social posting rail (blog distribution phase 1, 2026-07-11) - optional:
+  // absent = syndication rail dormant (ledger rows queue; console shows not connected).
+  // $29/mo vendor with a 90-day earn-it review; see the 2026-07-11 spec's exit path.
+  BLOTATO_API_KEY?: string;
   // OpenAI direct (LLM-centralization last-resort floor, gpt-5.4-mini) - optional:
   // absent = OpenAI tier skipped (OpenRouter tiers + mechanical degradation remain).
   OPENAI_API_KEY?: string;

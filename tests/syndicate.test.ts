@@ -1,6 +1,8 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { mergeSyndicate, DEFAULT_SYNDICATE, SYNDICATE_CHANNEL_KEYS } from '../src/types';
 import { validateCopy, copyGateErrors, buildCopy, COPY_CAPS, type SyndicationCopy } from '../src/syndicate/pack';
+import { Blotato, blotatoFromEnv } from '../src/syndicate/blotato';
+import type { Env } from '../src/types';
 import type { TenantStore } from '../src/tenant-store';
 import type { TenantConfig } from '../src/types';
 import type { LlmClient } from '../src/llm';
@@ -82,5 +84,57 @@ describe('buildCopy', () => {
     const llm = { jsonChain: async () => ({ ok: false, error: 'exhausted' }) } as unknown as LlmClient;
     expect(await buildCopy(llm, storeOf(calls), CFG, { articleTitle: 'T', collectionHandle: null, productTitles: [] })).toBeNull();
     expect(calls.length).toBe(0);
+  });
+});
+
+describe('Blotato client', () => {
+  it('mirrorMedia returns the hosted url, null on failure', async () => {
+    const f = vi.fn()
+      .mockResolvedValueOnce({ ok: true, status: 201, json: async () => ({ url: 'https://database.blotato.com/abc.jpg' }) })
+      .mockResolvedValueOnce({ ok: false, status: 400, json: async () => ({}) });
+    const b = new Blotato('k', f as unknown as typeof fetch);
+    expect(await b.mirrorMedia('https://cdn.shopify.com/x.jpg')).toBe('https://database.blotato.com/abc.jpg');
+    expect(await b.mirrorMedia('https://cdn.shopify.com/x.jpg')).toBeNull();
+    const call = f.mock.calls[0];
+    expect(call[0]).toBe('https://backend.blotato.com/v2/media');
+    expect((call[1] as { headers: Record<string, string> }).headers['blotato-api-key']).toBe('k');
+  });
+
+  it('createPost returns the submission id; 4xx is permanent, 5xx/429 is not', async () => {
+    const f = vi.fn()
+      .mockResolvedValueOnce({ ok: true, status: 201, json: async () => ({ postSubmissionId: 'sub-1' }) })
+      .mockResolvedValueOnce({ ok: false, status: 422, json: async () => ({ message: 'bad boardId' }) })
+      .mockResolvedValueOnce({ ok: false, status: 429, json: async () => ({ message: 'slow down' }) });
+    const b = new Blotato('k', f as unknown as typeof fetch);
+    const post = { accountId: 'a', text: 't', mediaUrls: [], platform: 'pinterest' as const, target: { targetType: 'pinterest' } };
+    expect(await b.createPost(post)).toEqual({ ok: true, submissionId: 'sub-1' });
+    expect(await b.createPost(post)).toEqual({ ok: false, error: 'bad boardId', permanent: true });
+    expect(await b.createPost(post)).toEqual({ ok: false, error: 'slow down', permanent: false });
+    const body = JSON.parse((f.mock.calls[0][1] as { body: string }).body);
+    expect(body.post.content.platform).toBe('pinterest');
+  });
+
+  it('pollStatus maps the three states, null on transport error', async () => {
+    const f = vi.fn()
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ status: 'published', publicUrl: 'https://pin.it/x' }) })
+      .mockRejectedValueOnce(new Error('net'));
+    const b = new Blotato('k', f as unknown as typeof fetch);
+    expect(await b.pollStatus('sub-1')).toEqual({ status: 'published', errorMessage: undefined, publicUrl: 'https://pin.it/x' });
+    expect(await b.pollStatus('sub-1')).toBeNull();
+  });
+
+  it('listAccounts/listPinterestBoards unwrap items[]', async () => {
+    const f = vi.fn()
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ items: [{ id: '98432', platform: 'pinterest', username: 'activepaw' }] }) })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ items: [{ id: 'board-1', name: 'Pet Care Guides' }] }) });
+    const b = new Blotato('k', f as unknown as typeof fetch);
+    expect((await b.listAccounts())![0].id).toBe('98432');
+    expect((await b.listPinterestBoards('98432'))![0].id).toBe('board-1');
+    expect(f.mock.calls[1][0]).toContain('/social/pinterest/boards?accountId=98432');
+  });
+
+  it('blotatoFromEnv is dormant without the secret', () => {
+    expect(blotatoFromEnv({} as Env)).toBeNull();
+    expect(blotatoFromEnv({ BLOTATO_API_KEY: 'k' } as Env)).not.toBeNull();
   });
 });
