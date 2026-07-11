@@ -335,6 +335,20 @@ describe('consolePage', () => {
     expect(html).toContain('Nothing is published automatically');
   });
 
+  it('blog view carries the Distribution card and its JS wiring', async () => {
+    const html = await consolePage('test-api-key').text();
+    expect(html).toContain('id="syd-channels"');
+    expect(html).toContain('id="syd-list"');
+    expect(html).toContain('/syndicate/list');
+    expect(html).toContain('/syndicate/send');
+    expect(html).toContain('/syndicate/config');
+    expect(html).toContain('/syndicate/accounts');
+    expect(html).toContain('/syndicate/regenerate');
+    expect(html).toContain('data-syd-send');
+    expect(html).toContain('sydLoad()');           // wired into loadContent
+    expect(html).toContain("prtArm(btn,'Posts publicly - click again to confirm')");
+  });
+
   // --- Profitability view (2026-07-09): active adjust-or-drop agent window ---
 
   it('renders the Profitability view: rail entry, switches (incl. dry-run), list, ledger, wired to /profit endpoints', async () => {
