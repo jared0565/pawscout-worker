@@ -46,6 +46,14 @@ describe('syndication copy gates', () => {
   it('rejects supplier brand tokens', () => {
     expect(validateCopy({ ...GOOD_COPY, caption: 'Our PawHut fountain guide' })).toBeNull();
   });
+  it('brand tokens with regex metacharacters are escaped, not executed', () => {
+    // Verify no exception is thrown when building regex with unescaped metacharacters
+    expect(() => copyGateErrors(GOOD_COPY as SyndicationCopy, ['Broken(Paren'])).not.toThrow();
+    expect(() => copyGateErrors(GOOD_COPY as SyndicationCopy, ['Brand+Meta[char]'])).not.toThrow();
+    // Verify normal brand detection still works
+    const errs = copyGateErrors({ ...GOOD_COPY, caption: 'Our PawHut brand guide' } as SyndicationCopy, ['PawHut']);
+    expect(errs.join(' ')).toContain('supplier brand');
+  });
   it('rejects missing fields and over-cap lengths', () => {
     expect(validateCopy({ ...GOOD_COPY, altText: '' })).toBeNull();
     expect(validateCopy({ ...GOOD_COPY, pinTitle: 'x'.repeat(COPY_CAPS.pinTitle + 1) })).toBeNull();

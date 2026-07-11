@@ -25,7 +25,7 @@
  *  Whole-word matches only. Add brands here as the catalog reveals them. */
 export const BRAND_TOKENS = ['PawHut'];
 
-function escapeRegex(s: string): string {
+export function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 

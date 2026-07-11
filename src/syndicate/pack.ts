@@ -11,7 +11,7 @@ import { resolveChain } from '../llm-resolve';
 import type { TenantStore } from '../tenant-store';
 import type { TenantConfig } from '../types';
 import { sanitizeOutbound } from '../inbox/draft';
-import { BRAND_TOKENS } from '../debrand';
+import { BRAND_TOKENS, escapeRegex } from '../debrand';
 
 export interface SyndicationCopy {
   pinTitle: string;  // Pinterest pin title
@@ -30,15 +30,15 @@ export const COPY_CAPS: Record<keyof SyndicationCopy, number> = {
 /** Currency amounts are banned in syndicated copy. */
 const PRICE_RE = /[£$€]\s?\d|\b\d+(?:\.\d{1,2})?\s?(?:gbp|usd|eur|pounds?|quid|dollars?)\b/i;
 
-export function copyGateErrors(c: SyndicationCopy): string[] {
+export function copyGateErrors(c: SyndicationCopy, brands: string[] = BRAND_TOKENS): string[] {
   const errs: string[] = [];
   for (const k of Object.keys(COPY_CAPS) as (keyof SyndicationCopy)[]) {
     const v = c[k];
     if (!v || !v.trim()) { errs.push(`${k} is empty`); continue; }
     if (v.length > COPY_CAPS[k]) errs.push(`${k} exceeds ${COPY_CAPS[k]} chars`);
     if (PRICE_RE.test(v)) errs.push(`${k} contains a price`);
-    for (const b of BRAND_TOKENS) {
-      if (new RegExp(`\\b${b}\\b`, 'i').test(v)) errs.push(`${k} names supplier brand ${b}`);
+    for (const b of brands) {
+      if (new RegExp(`\\b${escapeRegex(b)}\\b`, 'i').test(v)) errs.push(`${k} names supplier brand ${b}`);
     }
   }
   return errs;
