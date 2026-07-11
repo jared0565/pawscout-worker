@@ -50,6 +50,7 @@ import { resolveLogistics } from './logistics';
 import { runDailyMaintenance, resumeDailyMaintenance, runMarketVisibilityReconcile, runProfitAgentSweep, syncStoreInventory, refillCollections } from './jobs';
 import { debrandCatalog } from './catalog-debrand';
 import { runOrderPipeline, runOrderPipelineForShop } from './fulfil-run';
+import { runSyndicationSweep } from './syndicate/run';
 import { parseOrderWebhook, validateOrder, FULFIL_GRACE_MINUTES } from './fulfil';
 import { attributePaidOrder } from './inbox/attribution';
 import { firecrawlCjSearch } from './firecrawl';
@@ -1557,7 +1558,7 @@ const worker: ExportedHandler<Env> = {
     ctx.waitUntil(
       controller.cron === DAILY_CRON
         ? runDailyMaintenance(env)
-        : Promise.all([runOrderPipeline(env), runInboxClassifySweep(env), runMarketVisibilityReconcile(env), runProfitAgentSweep(env), resumeDailyMaintenance(env)]).then(() => undefined)
+        : Promise.all([runOrderPipeline(env), runInboxClassifySweep(env), runMarketVisibilityReconcile(env), runProfitAgentSweep(env), runSyndicationSweep(env), resumeDailyMaintenance(env)]).then(() => undefined)
     );
   },
   email: (message, env, ctx) => handleInboundEmail(message, env, ctx)
