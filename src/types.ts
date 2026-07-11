@@ -175,6 +175,9 @@ export interface TenantConfig {
   // Profitability gate config. Always populated by getConfig ('{}' default +
   // DEFAULT_PROFIT merge); optional on hand-built cfgs. Read via DEFAULT_PROFIT guard.
   profit?: ProfitConfig;
+  // Blog syndication config. Always populated by getConfig ('{}' default +
+  // mergeSyndicate); optional on hand-built cfgs. Read via mergeSyndicate guard.
+  syndicate?: SyndicateConfig;
   target: number;
 }
 
@@ -258,6 +261,48 @@ export const DEFAULT_PROFIT: ProfitConfig = {
   expectedDiscountRate: 0.05, fixedOverheadRate: 0.02, undercutPct: 0.05,
   affiliateSalesShare: 0.15, affiliateCommissionRate: 0.08, affiliatePlatformFeeRate: 0.02,
 };
+/** Blog syndication (2026-07-11 design): per-channel distribution config.
+ * Ships DORMANT: every channel disabled until the owner configures it in the
+ * console, and `auto` is a separate per-channel switch (all false at first),
+ * the same preview-to-full-auto ramp as the profitability agent. `digest` is
+ * consumed by phase 3 (email digest cadence); stored now so the block shape
+ * is stable. See docs/superpowers/specs/2026-07-11-blog-distribution-design.md. */
+export interface SyndicateChannelConfig {
+  enabled: boolean;   // configured + participating (ledger rows get created)
+  auto: boolean;      // fire on publish without an owner click
+  accountId?: string; // Blotato connected-account id
+  boardId?: string;   // pinterest only
+  pageId?: string;    // facebook only
+}
+export interface SyndicateConfig {
+  channels: {
+    pinterest: SyndicateChannelConfig;
+    facebook: SyndicateChannelConfig;
+    instagram: SyndicateChannelConfig;
+  };
+  digest: { mode: 'weekly' | 'per-post' };
+}
+export type SyndicateChannelKey = keyof SyndicateConfig['channels'];
+export const SYNDICATE_CHANNEL_KEYS: readonly SyndicateChannelKey[] = ['pinterest', 'facebook', 'instagram'];
+export const DEFAULT_SYNDICATE: SyndicateConfig = {
+  channels: {
+    pinterest: { enabled: false, auto: false },
+    facebook: { enabled: false, auto: false },
+    instagram: { enabled: false, auto: false }
+  },
+  digest: { mode: 'weekly' }
+};
+/** Two-level default merge for the stored tenant_config.syndicate blob (a
+ * partial saved block must not erase sibling channels or the digest mode). */
+export function mergeSyndicate(rawJson: string | null | undefined): SyndicateConfig {
+  let raw: { channels?: Record<string, Partial<SyndicateChannelConfig>>; digest?: Partial<SyndicateConfig['digest']> } = {};
+  try { raw = JSON.parse(rawJson || '{}') ?? {}; } catch { raw = {}; }
+  const ch = (k: SyndicateChannelKey): SyndicateChannelConfig => ({ ...DEFAULT_SYNDICATE.channels[k], ...(raw.channels?.[k] ?? {}) });
+  return {
+    channels: { pinterest: ch('pinterest'), facebook: ch('facebook'), instagram: ch('instagram') },
+    digest: { ...DEFAULT_SYNDICATE.digest, ...(raw.digest ?? {}) }
+  };
+}
 // fulfilment mode 'manual' by default - Stage B never spends until set to 'pawscout'.
 export const DEFAULT_FULFIL: Fulfil = { mode: 'manual' };
 export const DEFAULT_TARGET = 12;

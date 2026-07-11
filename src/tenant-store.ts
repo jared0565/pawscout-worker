@@ -1,4 +1,4 @@
-import { DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, DEFAULT_SEMANTIC, DEFAULT_PROFIT, type TenantRow, type TenantConfig, type Fulfil, type ProfitConfig } from './types';
+import { DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, DEFAULT_SEMANTIC, DEFAULT_PROFIT, mergeSyndicate, type TenantRow, type TenantConfig, type Fulfil, type ProfitConfig, type SyndicateConfig } from './types';
 import type { LogisticsRoute } from './logistics';
 import { deriveModels } from './llm-migrate';
 import { DEFAULT_INBOX, type InboxConfig } from './inbox/types';
@@ -219,9 +219,9 @@ export class TenantStore {
 
   async getConfig(): Promise<TenantConfig | null> {
     const row = await this.db
-      .prepare(`SELECT collection_map, gates, pricing, floors, llm, addons, fulfil, inbox, semantic, target, profit FROM tenant_config WHERE shop = ?1`)
+      .prepare(`SELECT collection_map, gates, pricing, floors, llm, addons, fulfil, inbox, semantic, target, profit, syndicate FROM tenant_config WHERE shop = ?1`)
       .bind(this.shop)
-      .first<{ collection_map: string; gates: string; pricing: string; floors: string; llm: string; addons: string; fulfil: string; inbox: string; semantic: string; target: number; profit: string }>();
+      .first<{ collection_map: string; gates: string; pricing: string; floors: string; llm: string; addons: string; fulfil: string; inbox: string; semantic: string; target: number; profit: string; syndicate: string }>();
     if (!row) return null;
     return {
       collectionMap: JSON.parse(row.collection_map),
@@ -245,6 +245,7 @@ export class TenantStore {
       inbox: { ...DEFAULT_INBOX, ...JSON.parse(row.inbox || '{}') },
       semantic: { ...DEFAULT_SEMANTIC, ...JSON.parse(row.semantic || '{}') },
       profit: { ...DEFAULT_PROFIT, ...JSON.parse(row.profit || '{}') },
+      syndicate: mergeSyndicate(row.syndicate),
       target: row.target
     };
   }
@@ -270,6 +271,14 @@ export class TenantStore {
     await this.db
       .prepare(`UPDATE tenant_config SET profit = ?2, updated_at = ?3 WHERE shop = ?1`)
       .bind(this.shop, JSON.stringify(profit), new Date().toISOString())
+      .run();
+  }
+
+  /** Persist the blog syndication config block (channel toggles + digest mode). */
+  async saveSyndicate(syn: SyndicateConfig): Promise<void> {
+    await this.db
+      .prepare(`UPDATE tenant_config SET syndicate = ?2, updated_at = ?3 WHERE shop = ?1`)
+      .bind(this.shop, JSON.stringify(syn), new Date().toISOString())
       .run();
   }
 
@@ -2169,6 +2178,91 @@ export class TenantStore {
                 WHERE shop = ?1 AND shopify_article_id = ?2`)
       .bind(this.shop, shopifyArticleId, a.relatedHandlesJson ?? null, a.heroImageUrl ?? null, a.heroSourceHandle ?? null, new Date().toISOString())
       .run();
+  }
+
+  // --- Blog syndication (phase 1, 2026-07-11): creative packs + send ledger ---
+
+  async upsertSyndicationPack(p: {
+    postId: string; articleHandle: string | null; captionsJson: string;
+    pinImageUrl?: string | null; squareImageUrl?: string | null;
+  }): Promise<void> {
+    const now = new Date().toISOString();
+    await this.db
+      .prepare(`INSERT INTO syndication_packs (shop, post_id, article_handle, captions_json, pin_image_url, square_image_url, created_at, updated_at)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)
+                ON CONFLICT(shop, post_id) DO UPDATE SET article_handle = excluded.article_handle,
+                  captions_json = excluded.captions_json, pin_image_url = excluded.pin_image_url,
+                  square_image_url = excluded.square_image_url, updated_at = excluded.updated_at`)
+      .bind(this.shop, p.postId, p.articleHandle, p.captionsJson, p.pinImageUrl ?? null, p.squareImageUrl ?? null, now)
+      .run();
+  }
+
+  async getSyndicationPack(postId: string): Promise<{
+    post_id: string; article_handle: string | null; captions_json: string;
+    pin_image_url: string | null; square_image_url: string | null; updated_at: string;
+  } | null> {
+    return await this.db
+      .prepare(`SELECT post_id, article_handle, captions_json, pin_image_url, square_image_url, updated_at
+                FROM syndication_packs WHERE shop = ?1 AND post_id = ?2`)
+      .bind(this.shop, postId)
+      .first();
+  }
+
+  /** Idempotent enqueue: the (shop, post_id, channel) PK means a re-run can
+   * never create a second row. Returns true when a NEW row was created. */
+  async enqueueSyndication(postId: string, channel: string): Promise<boolean> {
+    const now = new Date().toISOString();
+    const r = await this.db
+      .prepare(`INSERT OR IGNORE INTO syndication_ledger (shop, post_id, channel, status, attempts, created_at, updated_at)
+                VALUES (?1, ?2, ?3, 'queued', 0, ?4, ?4)`)
+      .bind(this.shop, postId, channel, now)
+      .run();
+    return (r.meta?.changes ?? 0) > 0;
+  }
+
+  async listSyndicationLedger(limit = 300): Promise<{
+    post_id: string; channel: string; status: string; external_id: string | null;
+    error: string | null; attempts: number; sent_at: string | null; updated_at: string;
+  }[]> {
+    const rs = await this.db
+      .prepare(`SELECT post_id, channel, status, external_id, error, attempts, sent_at, updated_at
+                FROM syndication_ledger WHERE shop = ?1 ORDER BY updated_at DESC LIMIT ?2`)
+      .bind(this.shop, limit)
+      .all<{ post_id: string; channel: string; status: string; external_id: string | null; error: string | null; attempts: number; sent_at: string | null; updated_at: string }>();
+    return rs.results ?? [];
+  }
+
+  /** Partial ledger update. `error` is ALWAYS written (pass null to clear);
+   * status/externalId/sentAt/attempts only when provided. */
+  async markSyndication(postId: string, channel: string, patch: {
+    status?: string; externalId?: string | null; error?: string | null; sentAt?: string | null; attempts?: number;
+  }): Promise<void> {
+    await this.db
+      .prepare(`UPDATE syndication_ledger SET
+                  status = COALESCE(?4, status),
+                  external_id = COALESCE(?5, external_id),
+                  error = ?6,
+                  sent_at = COALESCE(?7, sent_at),
+                  attempts = COALESCE(?8, attempts),
+                  updated_at = ?3
+                WHERE shop = ?1 AND post_id = ?2 AND channel = ?9`)
+      .bind(this.shop, postId, new Date().toISOString(), patch.status ?? null, patch.externalId ?? null,
+            patch.error ?? null, patch.sentAt ?? null, patch.attempts ?? null, channel)
+      .run();
+  }
+
+  /** Optimistic send fence: bump attempts only if it still equals the value
+   * the caller read. Returns false when a concurrent actor (cron sweep vs a
+   * console click) claimed the send first - the loser must NOT post. This is
+   * the double-post guard for a public action; crash-safe (a crash after a
+   * claim just burns one attempt number, it never strands a status). */
+  async claimSyndicationAttempt(postId: string, channel: string, expectedAttempts: number): Promise<boolean> {
+    const r = await this.db
+      .prepare(`UPDATE syndication_ledger SET attempts = attempts + 1, updated_at = ?3
+                WHERE shop = ?1 AND post_id = ?2 AND channel = ?4 AND attempts = ?5`)
+      .bind(this.shop, postId, new Date().toISOString(), channel, expectedAttempts)
+      .run();
+    return (r.meta?.changes ?? 0) > 0;
   }
 
   /** Email-event heartbeat for the System states register: proof the tracking
