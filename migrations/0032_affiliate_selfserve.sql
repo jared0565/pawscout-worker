@@ -15,7 +15,7 @@ CREATE TABLE affiliate_applications (
   name          TEXT,
   channel_url   TEXT,                          -- where they promote (their channel/site)
   answers_json  TEXT,                          -- raw form answers, as submitted
-  stage         TEXT NOT NULL,                 -- funnel stage, e.g. submitted|screened|auto_issued|declined
+  stage         TEXT NOT NULL,                 -- funnel stage (see AFFILIATE_STAGE_* in tenant-store.ts): submitted|verified|judging|approved_pending_issue|approved|deflected|declined|owner_queue
   score         INTEGER,                       -- 0-N; nullable until screened
   facts_json    TEXT,                          -- deterministic facts gathered during screening
   flags_json    TEXT,                          -- risk/abuse flags raised during screening
@@ -34,7 +34,7 @@ CREATE INDEX idx_affiliate_applications_stage ON affiliate_applications (shop, s
 CREATE TABLE affiliate_tokens (
   shop        TEXT NOT NULL,
   token_hash  TEXT NOT NULL,
-  kind        TEXT NOT NULL,                   -- e.g. verify_email|claim_voucher
+  kind        TEXT NOT NULL,                   -- token kind: verify (email ownership) | login (portal session)
   subject_id  TEXT NOT NULL,                   -- the id a successful claim resolves to (application id, etc.)
   expires_at  TEXT NOT NULL,
   used_at     TEXT,                            -- NULL = unclaimed; set exactly once by claimToken
