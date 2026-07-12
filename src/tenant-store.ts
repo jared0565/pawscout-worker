@@ -2238,19 +2238,31 @@ export class TenantStore {
   /** Dedup check for a promoted channel: true if any LIVE partner or pending
    *  application already lists a channel_url containing this host. A loose
    *  substring match (host "example.com" also matches "notexample.com") -
-   *  acceptable for a funnel dedup nudge, not a security boundary. */
-  async channelUrlRegistered(host: string): Promise<boolean> {
+   *  acceptable for a funnel dedup nudge, not a security boundary.
+   *
+   *  `excludeEmail` (optional, backward-compatible - existing callers that
+   *  omit it get the exact prior behavior) excludes rows owned by that email
+   *  from the match. Callers that fall through a TERMINAL application stage
+   *  (approved/declined/deflected) and re-check this as a "genuinely new
+   *  applicant" MUST pass their own email here - otherwise this matches the
+   *  submitter's OWN prior terminal row and returns a distinguishable
+   *  "already linked" rejection instead of the uniform no-enumeration body,
+   *  which is itself an oracle (see src/affiliate/apply.ts step 8). */
+  async channelUrlRegistered(host: string, excludeEmail?: string): Promise<boolean> {
     const h = host.trim().toLowerCase();
     if (!h) return false;
     const needle = `%${h}%`;
+    const ex = excludeEmail ? excludeEmail.trim().toLowerCase() : null;
     const row = await this.db
       .prepare(
         `SELECT 1 AS hit FROM affiliate_partners WHERE shop = ?1 AND channel_url IS NOT NULL AND lower(channel_url) LIKE ?2
+           AND (?3 IS NULL OR lower(contact_email) <> ?3)
          UNION ALL
          SELECT 1 AS hit FROM affiliate_applications WHERE shop = ?1 AND channel_url IS NOT NULL AND lower(channel_url) LIKE ?2
+           AND (?3 IS NULL OR lower(email) <> ?3)
          LIMIT 1`
       )
-      .bind(this.shop, needle)
+      .bind(this.shop, needle, ex)
       .first<{ hit: number }>();
     return row !== null;
   }
@@ -2265,8 +2277,14 @@ export class TenantStore {
       sql += ` AND ip_hash = ?${binds.length + 1}`;
       binds.push(by.ipHash);
     } else if (by?.emailDomain) {
-      sql += ` AND email LIKE ?${binds.length + 1}`;
-      binds.push(`%@${by.emailDomain.trim().toLowerCase()}`);
+      // Escape LIKE wildcards (% and _, plus a literal backslash) in the
+      // domain before binding - an unescaped domain containing either
+      // becomes an uncontrolled wildcard. Self-DoS-only risk (it only ever
+      // widens the caller's OWN rate-limit bucket query), but a domain like
+      // "a%b.com" must not silently match unrelated rows.
+      const escapedDomain = by.emailDomain.trim().toLowerCase().replace(/[\\%_]/g, (c) => `\\${c}`);
+      sql += ` AND email LIKE ?${binds.length + 1} ESCAPE '\\'`;
+      binds.push(`%@${escapedDomain}`);
     }
     const row = await this.db.prepare(sql).bind(...binds).first<{ n: number }>();
     return row?.n ?? 0;

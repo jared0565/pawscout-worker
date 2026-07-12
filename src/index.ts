@@ -55,7 +55,7 @@ import { blotatoFromEnv } from './syndicate/blotato';
 import { parseOrderWebhook, validateOrder, FULFIL_GRACE_MINUTES } from './fulfil';
 import { attributePaidOrder } from './inbox/attribution';
 import { firecrawlCjSearch } from './firecrawl';
-import { handleAffiliateApply, renderApplyForm, type ApplyFields } from './affiliate/apply';
+import { handleAffiliateApply, renderApplyForm, GENERIC_APPLY_MESSAGE, type ApplyFields } from './affiliate/apply';
 
 export const app = new Hono<{ Bindings: Env }>();
 
@@ -1586,8 +1586,20 @@ app.post('/proxy/event', async (c) => {
 // routes are thin adapters over src/affiliate/apply.ts's testable core.
 app.get('/proxy/affiliate/apply', async (c) => {
   const p = await proxyCtx(c); if (p instanceof Response) return p;
-  const html = await renderApplyForm(p.cfg, c.env);
-  return c.html(html);
+  try {
+    const html = await renderApplyForm(p.cfg, c.env);
+    return c.html(html);
+  } catch (e) {
+    // Every /proxy/* response MUST be HTTP 200 - Shopify's App Proxy replaces
+    // any non-2xx response with a generic error page (see sibling routes
+    // /proxy/search, /proxy/product). Minimal 200 HTML fallback, same shape
+    // as renderApplyForm's own dark-state page.
+    console.warn(`affiliate apply form render failed: ${(e as Error).message}`);
+    return c.html(
+      `<!doctype html><html><head><meta charset="utf-8"><title>Active Paw Partner Program</title></head>` +
+      `<body><p>Applications are not currently open. Please check back soon.</p></body></html>`
+    );
+  }
 });
 
 app.post('/proxy/affiliate/apply', async (c) => {
@@ -1597,8 +1609,18 @@ app.post('/proxy/affiliate/apply', async (c) => {
   const fields: ApplyFields = {};
   for (const [k, v] of Object.entries(raw)) if (typeof v === 'string') (fields as Record<string, string>)[k] = v;
   const ip = c.req.header('cf-connecting-ip') ?? '';
-  const result = await handleAffiliateApply({ store: p.store, cfg: p.cfg, env: c.env, fields, ip });
-  return c.json(result.body);
+  try {
+    const result = await handleAffiliateApply({ store: p.store, cfg: p.cfg, env: c.env, fields, ip });
+    return c.json(result.body);
+  } catch (e) {
+    // Same 200-always contract as the GET handler above. CRITICAL: the catch
+    // body must be INDISTINGUISHABLE from the normal uniform success body
+    // (handleAffiliateApply's own GENERIC_OK) - a distinguishable error body
+    // here would itself be an enumeration/oracle leak (a D1 hiccup mid-flow
+    // must never read differently from a normal "check your email" outcome).
+    console.warn(`affiliate apply failed: ${(e as Error).message}`);
+    return c.json({ ok: true, message: GENERIC_APPLY_MESSAGE });
+  }
 });
 
 // --- uninstall webhook ---

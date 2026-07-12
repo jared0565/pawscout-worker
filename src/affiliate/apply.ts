@@ -327,8 +327,13 @@ export async function handleAffiliateApply(deps: ApplyDeps): Promise<ApplyResult
 
   // 8. Channel-registered DB check - ONLY reached for a genuinely new
   //    applicant (no former/live/in-flight record under their own email), so
-  //    a hit here means the channel belongs to SOMEONE ELSE.
-  if (await store.channelUrlRegistered(ch.host)) {
+  //    a hit here means the channel belongs to SOMEONE ELSE. This branch is
+  //    also reached via the terminal-stage fallthrough (step 7's "approved/
+  //    declined/deflected -> treat as new" comment) - excludeEmail=email
+  //    keeps that path from matching the submitter's OWN prior terminal row
+  //    (which would otherwise leak a distinguishable "already linked" body,
+  //    an enumeration oracle - see tenant-store.ts's channelUrlRegistered doc).
+  if (await store.channelUrlRegistered(ch.host, email)) {
     return { status: 200, body: { ok: false, error: 'This channel is already linked to another application.' } };
   }
 
@@ -352,10 +357,6 @@ export async function handleAffiliateApply(deps: ApplyDeps): Promise<ApplyResult
 }
 
 // --- GET: the worker-rendered apply form -------------------------------------
-
-function escAttr(s: string): string {
-  return escHtml(s);
-}
 
 /** Worker-rendered HTML string (no build step, no framework) - the Turnstile
  *  widget, honeypot field, and signed timestamp all live here. Always 200 -
@@ -391,8 +392,8 @@ export async function renderApplyForm(cfg: TenantConfig, env: Env, nowMs: number
   <div style="position:absolute;left:-9999px" aria-hidden="true">
     <label>Leave this field blank<input type="text" name="website" tabindex="-1" autocomplete="off"></label>
   </div>
-  <input type="hidden" name="ts" value="${escAttr(tsToken)}">
-  <div class="cf-turnstile" data-sitekey="${escAttr(siteKey)}"></div>
+  <input type="hidden" name="ts" value="${escHtml(tsToken)}">
+  <div class="cf-turnstile" data-sitekey="${escHtml(siteKey)}"></div>
   <p><button type="submit">Apply</button></p>
 </form>
 </body>

@@ -113,7 +113,11 @@ export function honeypotOk(fields: HoneypotFields, nowMs: number): boolean {
   return Number.isFinite(elapsed) && elapsed >= MIN_SUBMIT_MS;
 }
 
-// --- Signed form-render timestamp (anti-replay, anti-forgery) -----------
+// --- Signed form-render timestamp (anti-forgery) -------------------------
+// Anti-forgery only: the signed token is replayable within its window
+// (TIMESTAMP_MAX_AGE_MS below) - it proves the form was actually rendered by
+// this server, not that the request is a first-and-only use. Turnstile is
+// the real bot/replay-cost gate; this token's job is honeypot-timing proof.
 
 async function hmacHex(message: string, secret: string): Promise<string> {
   const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);

@@ -1,10 +1,10 @@
 /// <reference types="@cloudflare/vitest-pool-workers" />
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
 import { TenantStore } from '../src/tenant-store';
 import {
   DEFAULT_GATES, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, DEFAULT_INBOX,
-  type TenantConfig, type Env
+  DEFAULT_SELF_SERVE, type TenantConfig, type Env
 } from '../src/types';
 import { signTimestamp, MIN_SUBMIT_MS } from '../src/affiliate/gates';
 import { handleAffiliateApply, renderApplyForm, mxExists, verifyTurnstile, GENERIC_APPLY_MESSAGE, RESEND_COOLDOWN_MS, type ApplyFields } from '../src/affiliate/apply';
@@ -12,6 +12,7 @@ import { app } from '../src/index';
 import { signAppProxy } from '../src/proxy/verify';
 
 beforeEach(async () => { await applyD1Migrations(env.DB, env.TEST_MIGRATIONS); });
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 const SHOP = 'a.myshopify.com';
 const SECRET = 'test-shopify-secret';
@@ -338,6 +339,44 @@ describe('handleAffiliateApply: dedupe uniformity (no enumeration)', () => {
     expect(stillOne?.id).toBe(afterFirst!.id);
   });
 
+  it('a resubmission after a TERMINAL stage (declined) reaches the uniform body, not the channel-registered oracle', async () => {
+    // Regression for the latent enumeration oracle flagged in the security
+    // review of cd596b2: when the existing row is in a TERMINAL stage
+    // (approved/declined/deflected), apply.ts's step 7 deliberately falls
+    // through and treats the submission as a brand-new application (someone's
+    // circumstances may have changed), then step 8 runs
+    // channelUrlRegistered(host). That check does a global LIKE match across
+    // affiliate_partners.channel_url AND affiliate_applications.channel_url
+    // with no owner/stage filter, so - without excludeEmail - it matches the
+    // submitter's OWN prior terminal row and returns the distinguishable
+    // `{ok:false, error:'This channel is already linked to another
+    // application.'}` body instead of the uniform GENERIC_OK. That is itself
+    // a body-level enumeration oracle: an attacker whose earlier application
+    // was declined could tell their email+channel combination is already
+    // known to the system. Task 3 only ever writes 'submitted'/'owner_queue'
+    // stages, so this was latent (unreachable) at the time of that commit,
+    // but becomes live the moment any later stage (judging/review) writes a
+    // terminal stage - this test seeds one directly to prove the gate itself
+    // is closed regardless of what writes the terminal row.
+    const s = store();
+    await s.insertApplication({ email: 'declined@example.com', channelUrl: SHARED_CHANNEL, stage: 'declined' });
+
+    const calls: string[] = [];
+    const r = await handleAffiliateApply({
+      store: s, cfg: ENABLED_CFG, env: baseEnv(), ip: '11.11.11.11', nowMs: NOW,
+      fields: await validFields({ email: 'declined@example.com', channel_url: SHARED_CHANNEL }, NOW),
+      fetchImpl: fakeFetch({ calls })
+    });
+
+    expect(r.body).toEqual({ ok: true, message: GENERIC_APPLY_MESSAGE });
+    expect(r.body.error).toBeUndefined();
+    // A genuinely new application row was created (terminal -> treated as a
+    // fresh applicant), not silently rejected as "already linked" to itself.
+    const row = await s.applicationByEmail('declined@example.com');
+    expect(row?.stage).toBe('submitted');
+    expect(calls.filter((u) => u.includes('api.resend.com'))).toHaveLength(1);
+  });
+
   it('a resubmission within the resend cooldown does not send a second email', async () => {
     const s = store();
     await s.insertApplication({ email: 'cooldown@example.com', channelUrl: SHARED_CHANNEL, stage: 'submitted' }); // stamps updated_at with the real wall clock
@@ -499,5 +538,53 @@ describe('HTTP level: /proxy/affiliate/apply', () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { ok: boolean; error?: string };
     expect(body).toEqual({ ok: false, error: 'Applications are not currently open.' });
+  });
+});
+
+// --- HTTP level: fault isolation --------------------------------------------
+// Every /proxy/* response MUST be HTTP 200 (Shopify's App Proxy replaces any
+// non-2xx response with a generic error page - see /proxy/search and
+// /proxy/product's try/catch in src/index.ts). handleAffiliateApply makes
+// several raw D1 calls that can throw; the POST route must never let one of
+// those escape as an uncaught exception (which Hono's default error handler
+// turns into a 500). Reaching a D1 call requires selfServe.enabled=true,
+// which the real getConfig() path can't produce yet (see the block comment
+// above) - so this test forces it via a getConfig spy that calls through to
+// the real implementation and merges in selfServe.enabled=true, then makes
+// the FIRST D1 call inside handleAffiliateApply (partnerPoolState) throw.
+describe('HTTP level: /proxy/affiliate/apply - fault isolation', () => {
+  it('POST returns the uniform GENERIC_OK body, never a 500, when a D1 call inside handleAffiliateApply throws', async () => {
+    await seedActiveTenant(SHOP);
+
+    const origGetConfig = TenantStore.prototype.getConfig;
+    vi.spyOn(TenantStore.prototype, 'getConfig').mockImplementation(async function (this: TenantStore) {
+      const cfg = await origGetConfig.call(this);
+      return cfg ? { ...cfg, selfServe: { ...DEFAULT_SELF_SERVE, enabled: true } } : cfg;
+    });
+    const poolSpy = vi.spyOn(TenantStore.prototype, 'partnerPoolState').mockRejectedValue(new Error('D1 boom'));
+    vi.stubGlobal('fetch', fakeFetch({ turnstileOk: true }));
+
+    const nowMs = Date.now();
+    const ts = await signTimestamp(nowMs - MIN_SUBMIT_MS - 1000, PROXY_SECRET); // signed with THIS route's SHOPIFY_API_SECRET, not validFields()'s SECRET
+    const body = new URLSearchParams({
+      name: 'Jane Doe', email: 'jane@example.com', channel_url: 'https://mypetblog.com/reviews',
+      audience: 'A pet blog with real readers interested in dog care and grooming tips.',
+      plan: 'I will write reviews and share them with my newsletter subscribers.',
+      terms: 'on', website: '', ts, 'cf-turnstile-response': 'tok'
+    });
+    const url = await signedProxyUrl('/proxy/affiliate/apply');
+    const testEnv = { ...proxyEnv(), TURNSTILE_SECRET: 'test-turnstile-secret' } as unknown as Env;
+    const res = await app.request(url, { method: 'POST', body }, testEnv);
+
+    expect(res.status).toBe(200);
+    const parsed = (await res.json()) as { ok: boolean; error?: string; message?: string };
+    // CRITICAL: identical to the normal uniform success body (GENERIC_OK) -
+    // not a distinguishable ok:false error, which would itself be an
+    // enumeration/oracle leak (a D1 hiccup must never read differently from
+    // a normal "check your email" outcome).
+    expect(parsed).toEqual({ ok: true, message: GENERIC_APPLY_MESSAGE });
+    // Confirms the throw actually happened INSIDE handleAffiliateApply (not
+    // that some earlier gate silently short-circuited for an unrelated reason).
+    expect(poolSpy).toHaveBeenCalled();
   });
 });
