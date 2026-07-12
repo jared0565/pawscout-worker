@@ -55,14 +55,14 @@ export const inboxView = `  <section class="ibx" data-panel="inbox">
     </div>
   </section>
 
-  <section class="card" id="ans-card">
-    <h2>Answer library</h2>
-    <p class="sub" style="margin:0 0 10px">Every reply you approve is remembered as the customer's question and your vetted answer. When a similar question arrives - even reworded - the drafter is grounded with the closest approved answers so replies stay consistent; live facts always override them, and personal details are never copied across customers. Disable a pair to pull a bad or outdated answer out of recall; approving a new reply to the same question replaces and re-enables it. History imports automatically on the first sweep.</p>
+  <details class="card" id="ans-card">
+    <summary>Answer library</summary>
+    <p class="sub" style="margin:8px 0 10px">Every reply you approve is remembered as the customer's question and your vetted answer. When a similar question arrives - even reworded - the drafter is grounded with the closest approved answers so replies stay consistent; live facts always override them, and personal details are never copied across customers. Disable a pair to pull a bad or outdated answer out of recall; approving a new reply to the same question replaces and re-enables it. History imports automatically on the first sweep.</p>
     <p id="ans-count" class="muted" style="margin:0 0 8px;font-size:12.5px"></p>
     <div id="ans-list"><p class="muted">Loading…</p></div>
     <div class="row" style="margin-top:10px"><button type="button" class="ghost" onclick="ansLoad()">Refresh</button></div>
     <p id="ans-msg" class="msg muted"></p>
-  </section>`;
+  </details>`;
 
 // Namespaced (.ibx-*) workspace CSS. Composed AFTER shellCss in page.ts. The
 // console palette is FORCED DARK (merchant light-sensitivity), so the spec's
@@ -71,7 +71,7 @@ export const inboxView = `  <section class="ibx" data-panel="inbox">
 export const inboxCss = `
   /* --- Inbox workspace (Phase 2): 3-pane mail layout --- */
   #view-inbox.active{display:flex;flex-direction:column;height:100vh;padding:0;overflow:hidden}
-  .ibx{display:flex;flex-direction:column;flex:1 1 auto;min-height:0}
+  .ibx{display:flex;flex-direction:column;flex:1 1 auto;min-height:min(300px,60vh)}
   .ibx-head{display:flex;align-items:center;gap:10px;padding:12px 18px;border-bottom:1px solid var(--border);flex:0 0 auto}
   .ibx-head h2{font-size:16px;font-weight:650;margin:0}
   .ibx-spacer{flex:1 1 auto}
@@ -136,12 +136,17 @@ export const inboxCss = `
   .ibx-ctx-block h4{margin:0 0 8px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--subdued);display:flex;align-items:center;gap:8px}
   @media(max-width:1100px){.ibx-grid{grid-template-columns:292px minmax(0,1fr)}.ibx-context{display:none}}
   /* --- Answer library (approved-answers memory) --- */
-  /* Scoped by id, NOT the generic .card class used elsewhere: #view-inbox.active
-     is a fixed-height (100vh) flex column, and the day-one backfill can seed
-     ~100 rows into #ans-list. Without these two rules the card's min-content
-     height grows unbounded, crushing the 3-pane mail workspace above it and
-     clipping the card itself against the overflow:hidden container. */
-  #ans-card{flex:0 0 auto}
+  /* Scoped by id, NOT the generic .card class used elsewhere. #view-inbox.active
+     is a fixed-height (100vh, overflow:hidden) flex column, so the MAIL
+     WORKSPACE must own the viewport at every screen size: the card is a
+     collapsed-by-default <details> (~45px closed), and when OPENED it is the
+     element that shrinks and scrolls (flex:0 1 auto + overflow-y:auto) against
+     the .ibx min-height floor above. 2026-07-12 live regression lesson: an
+     always-open, non-shrinking (flex:0 0 auto) ~550px card left short browser
+     windows (~650px, common with Windows display scaling) with a 0px thread
+     list - the inbox looked deleted. Never let this card outrank the inbox. */
+  #ans-card{flex:0 1 auto;min-height:0;overflow-y:auto}
+  #ans-card summary{font-size:16px;font-weight:650;cursor:pointer;user-select:none}
   #ans-list{max-height:320px;overflow-y:auto}
   .ans-row{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1.6fr) 150px;gap:12px;padding:9px 0;border-bottom:1px solid var(--border);font-size:12.5px}
   .ans-row:last-child{border-bottom:none}

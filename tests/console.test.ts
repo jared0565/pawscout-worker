@@ -886,11 +886,16 @@ describe('consolePage', () => {
     expect(html).toContain('Answer library');
     expect(html).toContain('.ans-row'); // namespaced card CSS present
     expect(html).toContain('id="ans-card"'); // scoped id, not the generic .card class
-    // #ans-list must be a bounded scroll region and the card itself must not
-    // grow/shrink inside #view-inbox's 100vh flex column - otherwise a ~100-row
-    // backfill crushes the 3-pane mail workspace above it.
+    // The card is a COLLAPSED-BY-DEFAULT details block: inside #view-inbox's
+    // 100vh overflow:hidden column the mail workspace must own the viewport at
+    // every screen size (2026-07-12 live regression: an always-open ~550px card
+    // left a 650px-tall browser window with a 0px thread list). Open, the CARD
+    // is what shrinks and scrolls - never the workspace, which keeps a floor.
+    expect(html).toContain('<details class="card" id="ans-card">');
+    expect(html).toContain('<summary>Answer library</summary>');
     expect(html).toContain('#ans-list{max-height');
-    expect(html).toContain('#ans-card{flex:0 0 auto}');
+    expect(html).toContain('#ans-card{flex:0 1 auto;min-height:0;overflow-y:auto}');
+    expect(html).toContain('.ibx{display:flex;flex-direction:column;flex:1 1 auto;min-height:min(300px,60vh)}');
     const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
     expect(scripts).toContain('function ansLoad(');
     expect(scripts).toContain('function ansToggle(');
