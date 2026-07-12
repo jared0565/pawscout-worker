@@ -2032,7 +2032,23 @@ export class TenantStore {
    *  self-referral guard's output (task-2): buyerEmailHash is a keyed hash,
    *  never the raw email; selfReferral zeroes commission upstream (the caller
    *  passes commissionGbp already forced to 0 when true) but this row still
-   *  keeps gross/discount honest - the sale happened. */
+   *  keeps gross/discount honest - the sale happened.
+   *
+   *  self_referral is STICKY (monotonic) across re-upserts: the stored value
+   *  is MAX(existing self_referral, this call's selfReferral), never allowed
+   *  to fall back from 1 to 0. Order emails are protected customer data that
+   *  can come back null on a later poll (dashboard access revoked, a
+   *  transient field-access gap, etc.) even though the order itself has not
+   *  changed - that absence must never be read as "not a self-referral after
+   *  all" and used to restore a commission that was correctly denied.
+   *  commission_gbp follows the same effective (post-MAX) self_referral, so
+   *  once a row is flagged self-referral its commission can only ever be
+   *  read as 0 from then on, regardless of what a later poll computes. This
+   *  does not interfere with refund clawback: clawback only ever lowers
+   *  commission via the caller's own commissionGbp recompute, and a
+   *  non-self-referral row's self_referral stays MAX(0, 0) = 0 throughout,
+   *  so its commission still moves freely (down on refund, back up on a
+   *  later correction) exactly as before this guard existed. */
   async upsertAffiliateOrder(o: {
     shopifyOrderId: string; voucherId: string; orderName: string | null; grossGbp: number; discountGbp: number;
     commissionGbp: number; financialStatus: string | null; eligible: boolean; placedAt: string | null;
@@ -2044,8 +2060,10 @@ export class TenantStore {
         `INSERT INTO affiliate_orders (shop, shopify_order_id, voucher_id, order_name, gross_gbp, discount_gbp, commission_gbp, financial_status, eligible, placed_at, buyer_email_hash, self_referral, created_at, updated_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13)
          ON CONFLICT(shop, shopify_order_id, voucher_id) DO UPDATE SET
-           order_name = ?4, gross_gbp = ?5, discount_gbp = ?6, commission_gbp = ?7,
-           financial_status = ?8, eligible = ?9, placed_at = ?10, buyer_email_hash = ?11, self_referral = ?12, updated_at = ?13`
+           order_name = ?4, gross_gbp = ?5, discount_gbp = ?6,
+           commission_gbp = CASE WHEN MAX(affiliate_orders.self_referral, ?12) = 1 THEN 0 ELSE ?7 END,
+           financial_status = ?8, eligible = ?9, placed_at = ?10, buyer_email_hash = ?11,
+           self_referral = MAX(affiliate_orders.self_referral, ?12), updated_at = ?13`
       )
       .bind(
         this.shop, o.shopifyOrderId, o.voucherId, o.orderName, o.grossGbp, o.discountGbp, o.commissionGbp,

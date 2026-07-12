@@ -73,30 +73,24 @@ function round2(n: number): number { return Math.round(n * 100) / 100; }
 // Accepted as a speed bump, not a hard security boundary - the low usage
 // limit + tier review + revoke are the real controls.
 
-/** Normalize an email the SAME way GDPR redaction does (tenant-store.ts
- *  redactContact: `email.trim().toLowerCase()`), so the stored hash here and
- *  a later redaction call computing the hash from the same plain email
- *  actually collide and the row gets nulled. Deliberately NOT Gmail-folded -
- *  the stored hash's only contract is "equality with redaction's hash". */
-function normalizeEmailForHash(email: string): string {
-  return email.trim().toLowerCase();
-}
-
-/** Keyed hash (HMAC-SHA256) of the buyer's normalized email for
- *  `affiliate_orders.buyer_email_hash`. Never store the raw email. */
-export function hashBuyerEmail(email: string, secret: string): Promise<string> {
-  return hmacHex(normalizeEmailForHash(email), secret);
-}
-
 const GMAIL_DOMAINS = new Set(['gmail.com', 'googlemail.com']);
 
-/** Normalize an email for MATCHING purposes only (never for the stored
- *  hash): lowercase+trim, plus Gmail-specific alias folding - Gmail ignores
- *  dots and anything after a `+` in the local part, so two addresses that
- *  differ only that way are the same inbox. Folding is scoped to Gmail's own
- *  domains; other providers may treat dots/plus-tags as significant, so
- *  folding them too would risk a false self-referral match. */
-function normalizeEmailForMatch(email: string): string {
+/** Normalize an email for BOTH the self-referral match comparison AND the
+ *  stored `buyer_email_hash` - one shared function so the two can never
+ *  drift apart. Lowercase+trim, plus Gmail-specific alias folding: Gmail
+ *  ignores dots and anything after a `+` in the local part, so two addresses
+ *  that differ only that way are the same inbox and must both match AND
+ *  hash identically. That also means a future GDPR redaction keyed on a
+ *  person's canonical email nulls ALL of that inbox's order-hash rows, not
+ *  just rows that happen to have the literal alias string. Folding is
+ *  scoped to Gmail's own domains; other providers may treat dots/plus-tags
+ *  as significant, so folding them too would risk a false match. (Earlier
+ *  revision kept the hash plain-normalized on the theory that
+ *  `redactContact` needed to independently recompute the same hash from a
+ *  plain email to null a row - it does not: `redactContact` only compares
+ *  against whatever `emailHash` the caller supplies, so there is no
+ *  competing constraint here.) */
+function normalizeEmailForSelfReferral(email: string): string {
   const e = email.trim().toLowerCase();
   const at = e.indexOf('@');
   if (at < 0) return e;
@@ -104,6 +98,14 @@ function normalizeEmailForMatch(email: string): string {
   if (!GMAIL_DOMAINS.has(domain)) return e;
   const local = e.slice(0, at).split('+')[0].replace(/\./g, '');
   return `${local}@${domain}`;
+}
+
+/** Keyed hash (HMAC-SHA256) of the buyer's normalized (Gmail-alias-folded)
+ *  email for `affiliate_orders.buyer_email_hash`. Never store the raw
+ *  email. Uses the exact same normalization as the match comparison below,
+ *  so the stored hash and the self-referral decision can never disagree. */
+export function hashBuyerEmail(email: string, secret: string): Promise<string> {
+  return hmacHex(normalizeEmailForSelfReferral(email), secret);
 }
 
 /** Normalized shipping-address key: lowercase, punctuation/space-stripped
@@ -140,7 +142,7 @@ export interface SelfReferralCheck {
 export function classifySelfReferral(input: SelfReferralCheck): boolean {
   const buyer = (input.buyerEmail ?? '').trim();
   const partner = (input.partnerEmail ?? '').trim();
-  if (buyer && partner && normalizeEmailForMatch(buyer) === normalizeEmailForMatch(partner)) return true;
+  if (buyer && partner && normalizeEmailForSelfReferral(buyer) === normalizeEmailForSelfReferral(partner)) return true;
   if (input.partnerAddressKey) {
     const shipKey = normalizeShippingKey(input.shippingAddress?.address1, input.shippingAddress?.zip);
     if (shipKey && shipKey === input.partnerAddressKey) return true;

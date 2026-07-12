@@ -5,7 +5,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
 import { TenantStore } from '../src/tenant-store';
-import { attributeAffiliateOrders, AFFIL_CURSOR_KEY, classifySelfReferral, normalizeShippingKey } from '../src/affiliate-attribution';
+import { attributeAffiliateOrders, AFFIL_CURSOR_KEY, classifySelfReferral, normalizeShippingKey, hashBuyerEmail } from '../src/affiliate-attribution';
 import type { AdminGraphql } from '../src/shopify-admin';
 
 beforeEach(async () => { await applyD1Migrations(env.DB, env.TEST_MIGRATIONS); });
@@ -225,6 +225,111 @@ describe('attributeAffiliateOrders: self-referral guard', () => {
     const rows = await store.affiliateOrdersForVoucher(voucherId);
     expect(rows[0].self_referral).toBe(1);
     expect(rows[0].commission_gbp).toBe(0);
+  });
+
+  it('stays flagged self_referral and commission zero when a LATER poll of the same order returns no email (sticky, never restored)', async () => {
+    const { store, voucherId } = await seedVoucher(2, 'jane@x.com');
+    const first = adminReturning([[orderNode({ email: 'jane@x.com' })]]);
+    await attributeAffiliateOrders(store, first.admin, HMAC_SECRET);
+    let rows = await store.affiliateOrdersForVoucher(voucherId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].self_referral).toBe(1);
+    expect(rows[0].commission_gbp).toBe(0);
+
+    // Same order re-surfaces with a newer updated_at and protected order.email
+    // now coming back null - which on its own would recompute self_referral=0
+    // and a non-zero commission. Absence of protected data must never restore
+    // a commission that was already correctly denied.
+    const second = adminReturning([[orderNode({
+      email: null,
+      updatedAt: '2026-07-05T09:00:00Z',
+    })]]);
+    await attributeAffiliateOrders(store, second.admin, HMAC_SECRET);
+    rows = await store.affiliateOrdersForVoucher(voucherId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].self_referral).toBe(1); // still flagged - sticky
+    expect(rows[0].commission_gbp).toBe(0); // never restored
+  });
+});
+
+// Direct store-level coverage for upsertAffiliateOrder's sticky-self-referral
+// SQL (tenant-store.ts): self_referral is monotonic (MAX of stored vs new)
+// and commission_gbp follows the EFFECTIVE (post-max) self_referral, but a
+// normal non-self-referral row must keep updating commission freely in
+// either direction, exactly as before this guard existed.
+describe('upsertAffiliateOrder: sticky self_referral', () => {
+  it('never lets a non-self-referral re-upsert un-stick a self-referral row, even with commissionGbp/selfReferral omitted (defaults false/0)', async () => {
+    const { store, voucherId } = await seedVoucher(2, 'jane@x.com');
+    await store.upsertAffiliateOrder({
+      shopifyOrderId: 'gid://shopify/Order/501', voucherId, orderName: '#501', grossGbp: 100, discountGbp: 5,
+      commissionGbp: 0, financialStatus: 'PAID', eligible: true, placedAt: '2026-07-01T00:00:00Z',
+      selfReferral: true, buyerEmailHash: 'hash-1',
+    });
+    // Re-upsert omits selfReferral entirely (defaults to false/0 in the SQL
+    // bind) and supplies a non-zero commissionGbp, as a caller that forgot
+    // to recompute the guard would.
+    await store.upsertAffiliateOrder({
+      shopifyOrderId: 'gid://shopify/Order/501', voucherId, orderName: '#501', grossGbp: 100, discountGbp: 5,
+      commissionGbp: 2, financialStatus: 'PAID', eligible: true, placedAt: '2026-07-01T00:00:00Z',
+    });
+    const rows = await store.affiliateOrdersForVoucher(voucherId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].self_referral).toBe(1);
+    expect(rows[0].commission_gbp).toBe(0);
+  });
+
+  it('still updates commission freely (including upward) for a normal non-self-referral order on re-upsert', async () => {
+    const { store, voucherId } = await seedVoucher(2, 'jane@x.com');
+    await store.upsertAffiliateOrder({
+      shopifyOrderId: 'gid://shopify/Order/502', voucherId, orderName: '#502', grossGbp: 50, discountGbp: 2.5,
+      commissionGbp: 1, financialStatus: 'PAID', eligible: true, placedAt: '2026-07-01T00:00:00Z',
+      selfReferral: false, buyerEmailHash: null,
+    });
+    // A correction that raises the amounts (e.g. an edit reversing an earlier
+    // partial refund) - commission must move UP, not just clawback DOWN.
+    await store.upsertAffiliateOrder({
+      shopifyOrderId: 'gid://shopify/Order/502', voucherId, orderName: '#502', grossGbp: 100, discountGbp: 5,
+      commissionGbp: 2, financialStatus: 'PAID', eligible: true, placedAt: '2026-07-01T00:00:00Z',
+      selfReferral: false, buyerEmailHash: null,
+    });
+    const rows = await store.affiliateOrdersForVoucher(voucherId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].self_referral).toBe(0);
+    expect(rows[0].commission_gbp).toBe(2); // moved freely upward - not stuck by the sticky logic
+  });
+});
+
+// hashBuyerEmail (Fix 1): the stored buyer_email_hash must use the SAME
+// Gmail-alias-folded normalization as the match comparison, so they can
+// never disagree and a redaction keyed on the canonical form of an alias
+// nulls every row for that inbox.
+describe('hashBuyerEmail', () => {
+  it('hashes a Gmail dot/plus-tag alias identically to its canonical form', async () => {
+    const canonical = await hashBuyerEmail('janedoe@gmail.com', HMAC_SECRET);
+    const dotted = await hashBuyerEmail('jane.doe@gmail.com', HMAC_SECRET);
+    const plusTagged = await hashBuyerEmail('JaneDoe+promo@gmail.com', HMAC_SECRET);
+    const dottedAndPlusTagged = await hashBuyerEmail('Jane.Doe+promo@GMail.com', HMAC_SECRET);
+    expect(dotted).toBe(canonical);
+    expect(plusTagged).toBe(canonical);
+    expect(dottedAndPlusTagged).toBe(canonical);
+  });
+
+  it('does not fold dots/plus-tags on a non-Gmail domain (folding is Gmail-only, matching classifySelfReferral)', async () => {
+    const withDotsAndTag = await hashBuyerEmail('jane.doe+promo@example.com', HMAC_SECRET);
+    const canonical = await hashBuyerEmail('janedoe@example.com', HMAC_SECRET);
+    expect(withDotsAndTag).not.toBe(canonical); // different local-parts, non-Gmail domain: different hashes
+  });
+
+  it('stays consistent with the match decision: two emails classifySelfReferral treats as the same inbox hash identically, and vice versa', async () => {
+    const gmailAlias = await hashBuyerEmail('jane.doe+promo@gmail.com', HMAC_SECRET);
+    const gmailCanonical = await hashBuyerEmail('jane.doe@gmail.com', HMAC_SECRET);
+    expect(classifySelfReferral({ buyerEmail: 'jane.doe+promo@gmail.com', partnerEmail: 'jane.doe@gmail.com' })).toBe(true);
+    expect(gmailAlias).toBe(gmailCanonical);
+
+    const otherProviderAlias = await hashBuyerEmail('jane.doe+promo@example.com', HMAC_SECRET);
+    const otherProviderCanonical = await hashBuyerEmail('jane.doe@example.com', HMAC_SECRET);
+    expect(classifySelfReferral({ buyerEmail: 'jane.doe+promo@example.com', partnerEmail: 'jane.doe@example.com' })).toBe(false);
+    expect(otherProviderAlias).not.toBe(otherProviderCanonical);
   });
 });
 
