@@ -93,6 +93,21 @@ export interface ProfitActionRow {
   created_at: string;
 }
 
+/** One vetted Q-A pair of the inbox answer memory (approved-answers grounding). */
+export interface AnswerMemoryRow {
+  qhash: string;         // FNV-1a 64-bit hex of category + '|' + question_norm
+  category: string;
+  question_text: string;
+  question_norm: string; // canonical token string used for matching
+  answer_text: string;   // final SENT substance (salutation/footer stripped)
+  thread_id: string;
+  disabled: number;      // 1 = owner pulled this pair out of recall
+  used_count: number;
+  last_used_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface OrderRow {
   shop: string;
   shopify_order_id: string;
@@ -818,6 +833,77 @@ export class TenantStore {
       .bind(this.shop, sinceIso)
       .all<{ day: string; task: string; model: string; calls: number; cost_usd: number }>();
     return rs.results ?? [];
+  }
+
+  /** Upsert one vetted Q-A pair. Re-answering the same normalized question
+   * REPLACES the stored answer with the newest vetted one, re-enables a
+   * disabled pair (the new send is fresh vetted content), and preserves the
+   * usage history. `at` backdates backfilled pairs to their real send time. */
+  async upsertAnswerMemory(rec: { qhash: string; category: string; questionText: string; questionNorm: string; answerText: string; threadId: string; at?: string }): Promise<void> {
+    const now = rec.at ?? new Date().toISOString();
+    await this.db
+      .prepare(
+        `INSERT INTO answer_memory (shop, qhash, category, question_text, question_norm, answer_text, thread_id, disabled, used_count, last_used_at, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, 0, NULL, ?8, ?8)
+         ON CONFLICT(shop, qhash) DO UPDATE SET
+           question_text = ?4, answer_text = ?6, thread_id = ?7, disabled = 0, updated_at = ?8`
+      )
+      .bind(this.shop, rec.qhash, rec.category, rec.questionText, rec.questionNorm, rec.answerText, rec.threadId, now)
+      .run();
+  }
+
+  /** The Answer library card: pairs newest-first plus totals. */
+  async listAnswerMemory(limit = 100): Promise<{ total: number; disabled: number; rows: { qhash: string; category: string; question: string; answer: string; usedCount: number; lastUsedAt: string | null; updatedAt: string; disabled: number }[] }> {
+    const counts = await this.db
+      .prepare(`SELECT COUNT(*) AS total, COALESCE(SUM(disabled), 0) AS off FROM answer_memory WHERE shop = ?1`)
+      .bind(this.shop)
+      .first<{ total: number; off: number }>();
+    const rs = await this.db
+      .prepare(
+        `SELECT qhash, category, question_text, answer_text, used_count, last_used_at, updated_at, disabled
+         FROM answer_memory WHERE shop = ?1 ORDER BY updated_at DESC LIMIT ?2`
+      )
+      .bind(this.shop, Math.min(Math.max(limit, 1), 200))
+      .all<AnswerMemoryRow>();
+    return {
+      total: counts?.total ?? 0,
+      disabled: counts?.off ?? 0,
+      rows: (rs.results ?? []).map((r) => ({
+        qhash: r.qhash, category: r.category, question: r.question_text, answer: r.answer_text,
+        usedCount: r.used_count, lastUsedAt: r.last_used_at, updatedAt: r.updated_at, disabled: r.disabled,
+      })),
+    };
+  }
+
+  /** Owner Disable/Enable on one pair (recall skips disabled pairs). */
+  async setAnswerDisabled(qhash: string, disabled: boolean): Promise<boolean> {
+    const r = await this.db
+      .prepare(`UPDATE answer_memory SET disabled = ?3, updated_at = updated_at WHERE shop = ?1 AND qhash = ?2`)
+      .bind(this.shop, qhash, disabled ? 1 : 0)
+      .run();
+    return (r.meta.changes ?? 0) > 0;
+  }
+
+  /** Fresh enabled pairs for recall scoring (scored in JS by the caller). */
+  async listRecallCandidates(sinceIso: string, limit = 500): Promise<AnswerMemoryRow[]> {
+    const rs = await this.db
+      .prepare(
+        `SELECT qhash, category, question_text, question_norm, answer_text, thread_id, disabled, used_count, last_used_at, created_at, updated_at
+         FROM answer_memory WHERE shop = ?1 AND disabled = 0 AND updated_at >= ?2 ORDER BY updated_at DESC LIMIT ?3`
+      )
+      .bind(this.shop, sinceIso, limit)
+      .all<AnswerMemoryRow>();
+    return rs.results ?? [];
+  }
+
+  /** Mark pairs as recalled (usage stats on the library card). */
+  async bumpAnswerUsage(qhashes: string[]): Promise<void> {
+    if (!qhashes.length) return;
+    const placeholders = qhashes.map((_, i) => `?${i + 3}`).join(',');
+    await this.db
+      .prepare(`UPDATE answer_memory SET used_count = used_count + 1, last_used_at = ?2 WHERE shop = ?1 AND qhash IN (${placeholders})`)
+      .bind(this.shop, new Date().toISOString(), ...qhashes)
+      .run();
   }
 
   /**
