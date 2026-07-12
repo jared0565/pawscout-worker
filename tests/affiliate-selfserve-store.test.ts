@@ -1,7 +1,7 @@
 /// <reference types="@cloudflare/vitest-pool-workers" />
 import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
-import { TenantStore, AFFILIATE_SCREEN_LLM_TASK } from '../src/tenant-store';
+import { TenantStore, AFFILIATE_SCREEN_LLM_TASK, AFFILIATE_STAGE_APPROVED } from '../src/tenant-store';
 
 beforeEach(async () => { await applyD1Migrations(env.DB, env.TEST_MIGRATIONS); });
 
@@ -23,30 +23,30 @@ describe('affiliate self-serve store layer (migration 0032)', () => {
   describe('claimToken', () => {
     it('is single-use: the second claim of the same hash returns null', async () => {
       const s = store();
-      await s.insertToken({ tokenHash: 'h-abc', kind: 'verify_email', subjectId: 'app-1', expiresAt: '2099-01-01T00:00:00.000Z' });
-      const first = await s.claimToken('h-abc', 'verify_email');
+      await s.insertToken({ tokenHash: 'h-abc', kind: 'verify', subjectId: 'app-1', expiresAt: '2099-01-01T00:00:00.000Z' });
+      const first = await s.claimToken('h-abc', 'verify');
       expect(first).toBe('app-1');
-      const second = await s.claimToken('h-abc', 'verify_email');
+      const second = await s.claimToken('h-abc', 'verify');
       expect(second).toBeNull();
     });
 
     it('rejects an expired token', async () => {
       const s = store();
-      await s.insertToken({ tokenHash: 'h-old', kind: 'verify_email', subjectId: 'app-2', expiresAt: '2020-01-01T00:00:00.000Z' });
-      expect(await s.claimToken('h-old', 'verify_email')).toBeNull();
+      await s.insertToken({ tokenHash: 'h-old', kind: 'verify', subjectId: 'app-2', expiresAt: '2020-01-01T00:00:00.000Z' });
+      expect(await s.claimToken('h-old', 'verify')).toBeNull();
     });
 
     it('rejects a claim with the wrong kind', async () => {
       const s = store();
-      await s.insertToken({ tokenHash: 'h-kind', kind: 'verify_email', subjectId: 'app-3', expiresAt: '2099-01-01T00:00:00.000Z' });
-      expect(await s.claimToken('h-kind', 'claim_voucher')).toBeNull();
+      await s.insertToken({ tokenHash: 'h-kind', kind: 'verify', subjectId: 'app-3', expiresAt: '2099-01-01T00:00:00.000Z' });
+      expect(await s.claimToken('h-kind', 'login')).toBeNull();
       // the correct kind still claims it (proves the wrong-kind attempt above never consumed it)
-      expect(await s.claimToken('h-kind', 'verify_email')).toBe('app-3');
+      expect(await s.claimToken('h-kind', 'verify')).toBe('app-3');
     });
 
     it('returns null for an unknown token hash', async () => {
       const s = store();
-      expect(await s.claimToken('never-issued', 'verify_email')).toBeNull();
+      expect(await s.claimToken('never-issued', 'verify')).toBeNull();
     });
   });
 
@@ -64,9 +64,9 @@ describe('affiliate self-serve store layer (migration 0032)', () => {
       expect(row?.stage).toBe('submitted');
       expect(row?.score).toBeNull();
 
-      await s.updateApplicationStage(id, 'screened', { score: 9, factsJson: '{"f":1}', flagsJson: '[]' });
+      await s.updateApplicationStage(id, 'judging', { score: 9, factsJson: '{"f":1}', flagsJson: '[]' });
       row = await s.getApplication(id);
-      expect(row?.stage).toBe('screened');
+      expect(row?.stage).toBe('judging');
       expect(row?.score).toBe(9);
       expect(row?.facts_json).toBe('{"f":1}');
 
@@ -82,7 +82,7 @@ describe('affiliate self-serve store layer (migration 0032)', () => {
       const id1 = await s.insertApplication({ email: 'bob@x.com', stage: 'submitted' });
       await new Promise((r) => setTimeout(r, 2));
       const id2 = await s.insertApplication({ email: 'bob@x.com', stage: 'submitted' });
-      await s.updateApplicationStage(id2, 'screened');
+      await s.updateApplicationStage(id2, 'judging');
       const latest = await s.applicationByEmail('bob@x.com');
       expect(latest?.id).toBe(id2);
       expect(id1).not.toBe(id2);
@@ -92,12 +92,12 @@ describe('affiliate self-serve store layer (migration 0032)', () => {
       const s = store();
       const a = await s.insertApplication({ email: 'a@x.com', stage: 'submitted' });
       const b = await s.insertApplication({ email: 'b@x.com', stage: 'submitted' });
-      await s.updateApplicationStage(b, 'auto_issued');
+      await s.updateApplicationStage(b, AFFILIATE_STAGE_APPROVED);
 
       const submitted = await s.listApplicationsByStage('submitted');
       expect(submitted.map((r) => r.id)).toEqual([a]);
 
-      const issued = await s.listApplicationsByStage('auto_issued');
+      const issued = await s.listApplicationsByStage(AFFILIATE_STAGE_APPROVED);
       expect(issued.map((r) => r.id)).toEqual([b]);
 
       const all = await s.listApplicationsForConsole();
@@ -138,13 +138,13 @@ describe('affiliate self-serve store layer (migration 0032)', () => {
       expect(await s.countApplicationsToday('2099-01-01T00:00:00.000Z')).toBe(0);
     });
 
-    it('countAutoIssuedToday counts only auto_issued-stage applications since a cutoff', async () => {
+    it('countAutoIssuedToday counts only approved-stage (issued) applications since a cutoff', async () => {
       const s = store();
       const a = await s.insertApplication({ email: 'y1@foo.com', stage: 'submitted' });
       const b = await s.insertApplication({ email: 'y2@foo.com', stage: 'submitted' });
       await s.insertApplication({ email: 'y3@foo.com', stage: 'declined' });
-      await s.updateApplicationStage(a, 'auto_issued');
-      await s.updateApplicationStage(b, 'auto_issued');
+      await s.updateApplicationStage(a, AFFILIATE_STAGE_APPROVED);
+      await s.updateApplicationStage(b, AFFILIATE_STAGE_APPROVED);
 
       expect(await s.countAutoIssuedToday(DAY_START)).toBe(2);
       expect(await s.countAutoIssuedToday('2099-01-01T00:00:00.000Z')).toBe(0);
@@ -223,7 +223,7 @@ describe('affiliate self-serve store layer (migration 0032)', () => {
       const s = store();
       await s.upsertTenant({ accessTokenEnc: 't', dekWrapped: 'd', scopes: 's' });
       await s.insertApplication({ email: 'shop-redact@x.com', stage: 'submitted' });
-      await s.insertToken({ tokenHash: 'h-shop', kind: 'verify_email', subjectId: 'whatever', expiresAt: '2099-01-01T00:00:00.000Z' });
+      await s.insertToken({ tokenHash: 'h-shop', kind: 'verify', subjectId: 'whatever', expiresAt: '2099-01-01T00:00:00.000Z' });
 
       await s.redactShop();
 

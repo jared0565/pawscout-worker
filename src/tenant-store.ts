@@ -11,8 +11,17 @@ import type { ContactRow, ThreadRow, MessageRow, ThreadStatus, DraftRow, DraftSt
 const OPEN_THREAD_STATUSES_SQL = `NOT IN ('awaiting_customer', 'converted', 'closed', 'spam')`;
 
 /** llm_usage.task tag for affiliate self-serve screening calls - shared here so
- *  the (future) screening task and sumScreenSpendTodayGbp never drift apart. */
-export const AFFILIATE_SCREEN_LLM_TASK = 'affiliate-selfserve-screen';
+ *  the (future) screening task and sumScreenSpendTodayGbp never drift apart.
+ *  Value matches docs/superpowers/specs/2026-07-12-affiliate-self-serve-marketplace-design.md
+ *  ("Usage logged as `affiliate-screen`"). */
+export const AFFILIATE_SCREEN_LLM_TASK = 'affiliate-screen';
+
+/** affiliate_applications.stage value that means "voucher successfully issued" -
+ *  the terminal state after approved_pending_issue, per the design spec's stage
+ *  vocabulary (submitted|verified|judging|approved_pending_issue|approved|
+ *  deflected|declined|owner_queue). Exported so countAutoIssuedToday and the
+ *  (future) issuance task can never drift apart on the literal string. */
+export const AFFILIATE_STAGE_APPROVED = 'approved';
 
 interface SupplierCredRow {
   shop: string; supplier: string; api_key_enc: string; label: string | null; validated_at: string | null; created_at: string;
@@ -2205,12 +2214,12 @@ export class TenantStore {
     return row?.n ?? 0;
   }
 
-  /** Applications that reached auto_issued since `sinceIso` - the numerator
-   *  behind selfServe.autoIssueCapPerDay. */
+  /** Applications that reached AFFILIATE_STAGE_APPROVED (voucher issued) since
+   *  `sinceIso` - the numerator behind selfServe.autoIssueCapPerDay. */
   async countAutoIssuedToday(sinceIso: string): Promise<number> {
     const row = await this.db
-      .prepare(`SELECT COUNT(*) AS n FROM affiliate_applications WHERE shop = ?1 AND stage = 'auto_issued' AND updated_at >= ?2`)
-      .bind(this.shop, sinceIso)
+      .prepare(`SELECT COUNT(*) AS n FROM affiliate_applications WHERE shop = ?1 AND stage = ?2 AND updated_at >= ?3`)
+      .bind(this.shop, AFFILIATE_STAGE_APPROVED, sinceIso)
       .first<{ n: number }>();
     return row?.n ?? 0;
   }
