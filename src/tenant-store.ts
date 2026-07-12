@@ -1383,7 +1383,12 @@ export class TenantStore {
   }
 
   async listThreads(status: string | null, limit = 50): Promise<ThreadRow[]> {
-    const lim = Math.min(Math.max(limit, 1), 200);
+    // Cap raised 200 -> 500 (2026-07-12) so the one-time answer-memory backfill
+    // (src/inbox/answer-memory.ts, requests 500) doesn't silently skip older
+    // threads on shops past 200. Verified via graphite (callers listThreads):
+    // every other caller passes <= 100 or relies on the 50 default, so this is
+    // a strict widening with no behavior change for them.
+    const lim = Math.min(Math.max(limit, 1), 500);
     let rs;
     if (status === 'open') {
       // Default console view = threads still needing the merchant's attention, i.e.

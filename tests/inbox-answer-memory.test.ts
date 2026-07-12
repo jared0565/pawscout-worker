@@ -103,6 +103,9 @@ describe('stripAnswerSubstance', () => {
   it('passes through a body with no wrapper', () => {
     expect(stripAnswerSubstance('Just the substance.')).toBe('Just the substance.');
   });
+  it('strips a wrapper-only body (salutation immediately followed by footer) to empty', () => {
+    expect(stripAnswerSubstance('Hi Ben,\n\nBest Regards,\nActive Paw Sales Team')).toBe('');
+  });
 });
 
 describe('recallAnswers', () => {
@@ -178,7 +181,9 @@ describe('captureAnswerPair / captureAnswerFromSend', () => {
     expect(await captureAnswerPair(s, thread, 'q tokens here', sent, true, '2026-07-12T00:00:00.000Z')).toBe(false);
     expect(await captureAnswerPair(s, thread, '', sent, false, '2026-07-12T00:00:00.000Z')).toBe(false);
     expect(await captureAnswerPair(s, thread, 'thanks', sent, false, '2026-07-12T00:00:00.000Z')).toBe(false); // <2 tokens
-    expect(await captureAnswerPair(s, thread, 'q tokens here', 'Hi Ben,\n\nBest Regards,\nActive Paw Sales Team', false, '2026-07-12T00:00:00.000Z')).toBe(false); // empty substance
+    // 'ship worldwide today' normalizes to 3 usable tokens (clears the question
+    // gate), so this can ONLY return false via the empty-substance path below.
+    expect(await captureAnswerPair(s, thread, 'ship worldwide today', 'Hi Ben,\n\nBest Regards,\nActive Paw Sales Team', false, '2026-07-12T00:00:00.000Z')).toBe(false); // empty substance
     expect((await s.listAnswerMemory()).total).toBe(0);
   });
 

@@ -57,11 +57,21 @@ export function qhashOf(category: string, questionNorm: string): string {
 // applySalutation greeting ("Hi Name,\n\n") and the applyFooter block
 // ("Best Regards,\n<department>"), with the P.S. slot after the footer.
 // Only the substance between them is worth remembering.
-const LEADING_SALUTATION = /^\s*hi\s[^\n]{0,60},\s*\n+/i;
+//
+// Order matters: the footer must be stripped FIRST, while the blank line
+// after the salutation is still intact for FOOTER_ONWARD to anchor on. If
+// the salutation were stripped first, a wrapper-only body ("Hi Ben,\n\nBest
+// Regards,\n...") loses both newlines to the salutation's greedy trailing
+// \s* match, leaving "Best Regards,..." with no leading \n for FOOTER_ONWARD
+// to match - the footer boilerplate then survives the strip. Stripping the
+// footer first avoids that, and the salutation's trailing \s* (0 or more,
+// not 1 or more) lets it still fully consume "Hi Ben," even when nothing -
+// not even a newline - follows it once the footer is already gone.
+const LEADING_SALUTATION = /^\s*hi\s[^\n]{0,60},\s*/i;
 const FOOTER_ONWARD = /\n\s*best regards,\s*\n[\s\S]*$/i;
 
 export function stripAnswerSubstance(sentBody: string): string {
-  return (sentBody ?? '').replace(LEADING_SALUTATION, '').replace(FOOTER_ONWARD, '').trim();
+  return (sentBody ?? '').replace(FOOTER_ONWARD, '').replace(LEADING_SALUTATION, '').trim();
 }
 
 const RECALL_WINDOW_DAYS = 180;   // facts drift; older answers age out of recall
@@ -141,6 +151,12 @@ export const ANSWER_BACKFILL_FLAG = 'job:answer-backfill';
  * preceding inbound, backdated to the send time. Idempotent via the qhash PK. */
 export async function backfillAnswerMemory(store: TenantStore): Promise<number> {
   const threads = await store.listThreads(null, 500);
+  if (threads.length === 500) {
+    // Hit the request cap exactly: listThreads orders newest-first, so any
+    // shop with more than 500 threads has older ones silently excluded from
+    // this one-time import. Honest log rather than a silent gap.
+    console.warn('answer backfill hit the 500-thread cap; oldest threads were skipped');
+  }
   let imported = 0;
   for (const t of threads) {
     try {
