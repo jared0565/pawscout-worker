@@ -182,6 +182,11 @@ export interface TenantConfig {
   // Blog syndication config. Always populated by getConfig ('{}' default +
   // mergeSyndicate); optional on hand-built cfgs. Read via mergeSyndicate guard.
   syndicate?: SyndicateConfig;
+  // Affiliate self-serve marketplace config (2026-07-12). NOT wired into
+  // getConfig/tenant_config by this task - it is a type + default only, ready
+  // for a later task to persist and expose an owner toggle. Read via
+  // `cfg.selfServe ?? DEFAULT_SELF_SERVE`, same guard style as `profit`/`semantic`.
+  selfServe?: SelfServeConfig;
   target: number;
 }
 
@@ -310,6 +315,23 @@ export function mergeSyndicate(rawJson: string | null | undefined): SyndicateCon
 // fulfilment mode 'manual' by default - Stage B never spends until set to 'pawscout'.
 export const DEFAULT_FULFIL: Fulfil = { mode: 'manual' };
 export const DEFAULT_TARGET = 12;
+
+/**
+ * Affiliate self-serve marketplace config (2026-07-12): the fully-automated
+ * signup funnel (apply -> screen -> auto-issue) ships DARK behind `enabled`.
+ * The remaining knobs are daily safety caps + the screening bar, all owner-
+ * tunable once enabled. See docs/superpowers/sdd/task-1-brief.md.
+ */
+export interface SelfServeConfig {
+  enabled: boolean;                 // master switch; false = the whole funnel is dormant
+  autoIssueCapPerDay: number;       // max vouchers auto-issued per day, across all applicants
+  screenSpendCapGbpPerDay: number;  // max LLM screening spend per day, GBP
+  scoreThreshold: number;           // minimum screen score to qualify for auto-issue
+  starterUsageLimit: number;        // usage_limit set on an auto-issued starter voucher
+}
+export const DEFAULT_SELF_SERVE: SelfServeConfig = {
+  enabled: false, autoIssueCapPerDay: 5, screenSpendCapGbpPerDay: 2, scoreThreshold: 8, starterUsageLimit: 15,
+};
 
 export const ACTIVE_PAW_COLLECTION_MAP: TenantConfig['collectionMap'] = {
   'pet-cleaning': { handle: 'pet-cleaning', tag: 'cj-pet-cleaning' },

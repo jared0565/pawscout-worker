@@ -10,6 +10,10 @@ import type { ContactRow, ThreadRow, MessageRow, ThreadStatus, DraftRow, DraftSt
  * 2026-07-05: the badge always equals what opening the Inbox shows). */
 const OPEN_THREAD_STATUSES_SQL = `NOT IN ('awaiting_customer', 'converted', 'closed', 'spam')`;
 
+/** llm_usage.task tag for affiliate self-serve screening calls - shared here so
+ *  the (future) screening task and sumScreenSpendTodayGbp never drift apart. */
+export const AFFILIATE_SCREEN_LLM_TASK = 'affiliate-selfserve-screen';
+
 interface SupplierCredRow {
   shop: string; supplier: string; api_key_enc: string; label: string | null; validated_at: string | null; created_at: string;
 }
@@ -91,6 +95,25 @@ export interface ProfitActionRow {
   reason: string;
   dry_run: number;                    // 1 = previewed only, 0 = executed live
   created_at: string;
+}
+
+/** One self-serve affiliate signup, from submit through screen to auto-issue
+ *  or decline. DISTINCT from ApplicantRow (affiliate_applicants, the
+ *  thread-keyed inbox partnership lane) - see migrations/0032_affiliate_selfserve.sql. */
+export interface AffiliateApplicationRow {
+  shop: string;
+  id: string;
+  email: string;
+  name: string | null;
+  channel_url: string | null;
+  answers_json: string | null;
+  stage: string;
+  score: number | null;
+  facts_json: string | null;
+  flags_json: string | null;
+  ip_hash: string | null;
+  created_at: string;
+  updated_at: string;
 }
 
 /** One vetted Q-A pair of the inbox answer memory (approved-answers grounding). */
@@ -484,20 +507,32 @@ export class TenantStore {
     return removed;
   }
 
-  /** GDPR customers/redact: erase all inbox PII we hold for one contact email. */
-  async redactContact(email: string): Promise<number> {
+  /** GDPR customers/redact: erase all inbox PII we hold for one contact email.
+   *  Also purges the self-serve affiliate_applications for that email; when the
+   *  caller supplies emailHash (the same hash a later task uses to populate
+   *  affiliate_orders.buyer_email_hash - tenant-store has no secret and does
+   *  not compute it), the matching buyer hash on affiliate_orders is nulled
+   *  too. Omitting emailHash is a no-op on affiliate_orders, not an error. */
+  async redactContact(email: string, emailHash?: string | null): Promise<number> {
     const e = email.trim().toLowerCase();
     if (!e) return 0;
     const sub = `(SELECT id FROM inbox_threads WHERE shop = ?1 AND contact_email = ?2)`;
-    const res = await this.db.batch([
+    const statements = [
       this.db.prepare(`DELETE FROM inbox_thread_labels WHERE shop = ?1 AND thread_id IN ${sub}`).bind(this.shop, e),
       this.db.prepare(`DELETE FROM inbox_messages WHERE shop = ?1 AND thread_id IN ${sub}`).bind(this.shop, e),
       this.db.prepare(`DELETE FROM inbox_drafts WHERE shop = ?1 AND thread_id IN ${sub}`).bind(this.shop, e),
       this.db.prepare(`DELETE FROM inbox_invoices WHERE shop = ?1 AND thread_id IN ${sub}`).bind(this.shop, e),
       this.db.prepare(`DELETE FROM answer_memory WHERE shop = ?1 AND thread_id IN ${sub}`).bind(this.shop, e),
+      this.db.prepare(`DELETE FROM affiliate_applications WHERE shop = ?1 AND email = ?2`).bind(this.shop, e),
       this.db.prepare(`DELETE FROM inbox_threads WHERE shop = ?1 AND contact_email = ?2`).bind(this.shop, e),
       this.db.prepare(`DELETE FROM inbox_contacts WHERE shop = ?1 AND email = ?2`).bind(this.shop, e)
-    ]);
+    ];
+    if (emailHash) {
+      statements.push(
+        this.db.prepare(`UPDATE affiliate_orders SET buyer_email_hash = NULL WHERE shop = ?1 AND buyer_email_hash = ?2`).bind(this.shop, emailHash)
+      );
+    }
+    const res = await this.db.batch(statements);
     return res.reduce((n, r) => n + (r.meta.changes ?? 0), 0);
   }
 
@@ -528,6 +563,8 @@ export class TenantStore {
       this.db.prepare(`DELETE FROM inbox_drafts WHERE shop = ?1`).bind(this.shop),
       this.db.prepare(`DELETE FROM inbox_invoices WHERE shop = ?1`).bind(this.shop),
       this.db.prepare(`DELETE FROM answer_memory WHERE shop = ?1`).bind(this.shop),
+      this.db.prepare(`DELETE FROM affiliate_applications WHERE shop = ?1`).bind(this.shop),
+      this.db.prepare(`DELETE FROM affiliate_tokens WHERE shop = ?1`).bind(this.shop),
       this.db.prepare(`DELETE FROM inbox_threads WHERE shop = ?1`).bind(this.shop),
       this.db.prepare(`DELETE FROM inbox_contacts WHERE shop = ?1`).bind(this.shop),
       this.db.prepare(`DELETE FROM tenant_config WHERE shop = ?1`).bind(this.shop),
@@ -2063,6 +2100,161 @@ export class TenantStore {
       .prepare(`UPDATE affiliate_vouchers SET status = ?3, updated_at = ?4 WHERE shop = ?1 AND id = ?2`)
       .bind(this.shop, voucherId, status, new Date().toISOString())
       .run();
+  }
+
+  // --- Affiliate self-serve marketplace (2026-07-12): applications + claim tokens.
+  // Ships DARK behind tenant_config.selfServe.enabled (src/types.ts) - this store
+  // layer is inert plumbing until a later task turns the funnel on. ---
+
+  /** New self-serve signup. Returns the generated id. */
+  async insertApplication(a: {
+    email: string; name?: string | null; channelUrl?: string | null; answersJson?: string | null;
+    stage: string; score?: number | null; factsJson?: string | null; flagsJson?: string | null; ipHash?: string | null;
+  }): Promise<string> {
+    const id = crypto.randomUUID();
+    const now = new Date().toISOString();
+    await this.db
+      .prepare(
+        `INSERT INTO affiliate_applications (shop, id, email, name, channel_url, answers_json, stage, score, facts_json, flags_json, ip_hash, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12)`
+      )
+      .bind(this.shop, id, a.email.trim().toLowerCase(), a.name ?? null, a.channelUrl ?? null, a.answersJson ?? null,
+        a.stage, a.score ?? null, a.factsJson ?? null, a.flagsJson ?? null, a.ipHash ?? null, now)
+      .run();
+    return id;
+  }
+
+  getApplication(id: string): Promise<AffiliateApplicationRow | null> {
+    return this.db.prepare(`SELECT * FROM affiliate_applications WHERE shop = ?1 AND id = ?2`)
+      .bind(this.shop, id).first<AffiliateApplicationRow>();
+  }
+
+  /** Advance the funnel stage. score/factsJson/flagsJson are patched only when given (COALESCE). */
+  async updateApplicationStage(id: string, stage: string, fields?: { score?: number | null; factsJson?: string | null; flagsJson?: string | null }): Promise<void> {
+    await this.db
+      .prepare(
+        `UPDATE affiliate_applications SET stage = ?3,
+           score = COALESCE(?4, score), facts_json = COALESCE(?5, facts_json), flags_json = COALESCE(?6, flags_json),
+           updated_at = ?7
+         WHERE shop = ?1 AND id = ?2`
+      )
+      .bind(this.shop, id, stage, fields?.score ?? null, fields?.factsJson ?? null, fields?.flagsJson ?? null, new Date().toISOString())
+      .run();
+  }
+
+  /** Console/queue drill-down: one funnel stage, newest first. */
+  async listApplicationsByStage(stage: string, limit = 100): Promise<AffiliateApplicationRow[]> {
+    const rs = await this.db
+      .prepare(`SELECT * FROM affiliate_applications WHERE shop = ?1 AND stage = ?2 ORDER BY updated_at DESC LIMIT ?3`)
+      .bind(this.shop, stage, Math.min(Math.max(limit, 1), 500))
+      .all<AffiliateApplicationRow>();
+    return rs.results ?? [];
+  }
+
+  /** Console table: every application, any stage, newest first. */
+  async listApplicationsForConsole(limit = 100): Promise<AffiliateApplicationRow[]> {
+    const rs = await this.db
+      .prepare(`SELECT * FROM affiliate_applications WHERE shop = ?1 ORDER BY updated_at DESC LIMIT ?2`)
+      .bind(this.shop, Math.min(Math.max(limit, 1), 500))
+      .all<AffiliateApplicationRow>();
+    return rs.results ?? [];
+  }
+
+  /** Latest application for an email (case-insensitive), or null. */
+  applicationByEmail(email: string): Promise<AffiliateApplicationRow | null> {
+    return this.db
+      .prepare(`SELECT * FROM affiliate_applications WHERE shop = ?1 AND email = ?2 ORDER BY updated_at DESC LIMIT 1`)
+      .bind(this.shop, email.trim().toLowerCase())
+      .first<AffiliateApplicationRow>();
+  }
+
+  /** Dedup check for a promoted channel: true if any LIVE partner or pending
+   *  application already lists a channel_url containing this host. A loose
+   *  substring match (host "example.com" also matches "notexample.com") -
+   *  acceptable for a funnel dedup nudge, not a security boundary. */
+  async channelUrlRegistered(host: string): Promise<boolean> {
+    const h = host.trim().toLowerCase();
+    if (!h) return false;
+    const needle = `%${h}%`;
+    const row = await this.db
+      .prepare(
+        `SELECT 1 AS hit FROM affiliate_partners WHERE shop = ?1 AND channel_url IS NOT NULL AND lower(channel_url) LIKE ?2
+         UNION ALL
+         SELECT 1 AS hit FROM affiliate_applications WHERE shop = ?1 AND channel_url IS NOT NULL AND lower(channel_url) LIKE ?2
+         LIMIT 1`
+      )
+      .bind(this.shop, needle)
+      .first<{ hit: number }>();
+    return row !== null;
+  }
+
+  /** Applications submitted since `sinceIso`, optionally scoped to one abuse
+   *  signal (repeat IP, or a spam-domain flood) - the two throttle axes the
+   *  self-serve gate checks against selfServe.autoIssueCapPerDay's siblings. */
+  async countApplicationsToday(sinceIso: string, by?: { ipHash?: string; emailDomain?: string }): Promise<number> {
+    let sql = `SELECT COUNT(*) AS n FROM affiliate_applications WHERE shop = ?1 AND created_at >= ?2`;
+    const binds: (string | number)[] = [this.shop, sinceIso];
+    if (by?.ipHash) {
+      sql += ` AND ip_hash = ?${binds.length + 1}`;
+      binds.push(by.ipHash);
+    } else if (by?.emailDomain) {
+      sql += ` AND email LIKE ?${binds.length + 1}`;
+      binds.push(`%@${by.emailDomain.trim().toLowerCase()}`);
+    }
+    const row = await this.db.prepare(sql).bind(...binds).first<{ n: number }>();
+    return row?.n ?? 0;
+  }
+
+  /** Applications that reached auto_issued since `sinceIso` - the numerator
+   *  behind selfServe.autoIssueCapPerDay. */
+  async countAutoIssuedToday(sinceIso: string): Promise<number> {
+    const row = await this.db
+      .prepare(`SELECT COUNT(*) AS n FROM affiliate_applications WHERE shop = ?1 AND stage = 'auto_issued' AND updated_at >= ?2`)
+      .bind(this.shop, sinceIso)
+      .first<{ n: number }>();
+    return row?.n ?? 0;
+  }
+
+  /** Register a single-use claim token (email verification, voucher claim link,
+   *  etc). The token itself is hashed by the CALLER before it ever reaches here. */
+  async insertToken(t: { tokenHash: string; kind: string; subjectId: string; expiresAt: string }): Promise<void> {
+    await this.db
+      .prepare(`INSERT INTO affiliate_tokens (shop, token_hash, kind, subject_id, expires_at, used_at) VALUES (?1, ?2, ?3, ?4, ?5, NULL)`)
+      .bind(this.shop, t.tokenHash, t.kind, t.subjectId, t.expiresAt)
+      .run();
+  }
+
+  /** Atomic single-use claim: consumes the token and returns its subject_id,
+   *  or null if the hash is unknown, already used, the wrong kind, or expired.
+   *  The UPDATE's WHERE clause is the compare-and-swap - a second concurrent
+   *  claim of the same hash always loses (meta.changes !== 1). */
+  async claimToken(tokenHash: string, kind: string): Promise<string | null> {
+    const now = new Date().toISOString();
+    const r = await this.db
+      .prepare(
+        `UPDATE affiliate_tokens SET used_at = ?4
+         WHERE shop = ?1 AND token_hash = ?2 AND kind = ?3 AND used_at IS NULL AND expires_at > ?4`
+      )
+      .bind(this.shop, tokenHash, kind, now)
+      .run();
+    if ((r.meta.changes ?? 0) !== 1) return null;
+    const row = await this.db
+      .prepare(`SELECT subject_id FROM affiliate_tokens WHERE shop = ?1 AND token_hash = ?2 AND kind = ?3`)
+      .bind(this.shop, tokenHash, kind)
+      .first<{ subject_id: string }>();
+    return row?.subject_id ?? null;
+  }
+
+  /** Screening spend since `sinceIso`, converted to GBP by the caller-supplied
+   *  rate (tenant-store never does FX itself - see cfg.pricing.fxUsdToGbp
+   *  callers elsewhere). Reads the existing llm_usage ledger, scoped to the
+   *  AFFILIATE_SCREEN_LLM_TASK tag - the numerator behind selfServe.screenSpendCapGbpPerDay. */
+  async sumScreenSpendTodayGbp(sinceIso: string, fxUsdToGbp: number): Promise<number> {
+    const row = await this.db
+      .prepare(`SELECT COALESCE(SUM(cost_usd), 0) AS usd FROM llm_usage WHERE shop = ?1 AND task = ?2 AND created_at >= ?3`)
+      .bind(this.shop, AFFILIATE_SCREEN_LLM_TASK, sinceIso)
+      .first<{ usd: number }>();
+    return Math.round((row?.usd ?? 0) * fxUsdToGbp * 100) / 100;
   }
 
   // --- W-INBOX-3: invoices ---
