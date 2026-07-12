@@ -268,7 +268,7 @@ describe('competitorSignal (delivered price = item + delivery)', () => {
         mkCand('800ml Leakproof Portable Dog Water Bottle', 12.48)
       ])
     });
-    expect(r).toEqual({ estimateGbp: 11.49, confidence: 'high', sources: ['ebay.co.uk (3 matches)'] });
+    expect(r).toEqual({ estimateGbp: 12.48, confidence: 'high', sources: ['ebay.co.uk (3 matches)'] }); // median of 12.98/11.49/12.48
     expect(cached).toHaveLength(1);
   });
 
@@ -279,7 +279,7 @@ describe('competitorSignal (delivered price = item + delivery)', () => {
       market: marketOf([mkCand('Dog Travel Bottle Water Dispenser', 10.99), mkCand('Pet Bottle Water Feeder for Dogs', 12.49)])
     });
     expect(r?.confidence).toBe('medium');
-    expect(r?.estimateGbp).toBe(10.99);
+    expect(r?.estimateGbp).toBe(11.74); // median of the confirmed pair 10.99/12.49
     expect(r?.sources?.[0]).toMatch(/llm-matched 2/);
   });
 

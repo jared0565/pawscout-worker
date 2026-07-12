@@ -104,14 +104,19 @@ const STRONG_SIM = 0.6;
 const WEAK_SIM = 0.4;
 const SHORTLIST_MAX = 15;
 
-/** The credible market low: sort ascending, drop pathological outliers (below
- *  55% of the median - junk, parts, wrong item), take the first survivor. Our
- *  policy undercuts the lowest CREDIBLE delivered price, not the lowest scrap. */
-export function credibleMinGbp(delivered: number[]): number {
+/** The credible market reference: sort ascending, drop pathological outliers
+ *  (below 55% of the median - junk, parts, wrong item), take the MEDIAN of the
+ *  survivors (mean of the middle pair on an even count). Owner recalibration
+ *  2026-07-12: the reference is the TYPICAL credible delivered price, not the
+ *  single cheapest listing - eBay's cheapest credible seller proved a far
+ *  harsher reference than the shop competes against in practice. */
+export function credibleMarketGbp(delivered: number[]): number {
   const sorted = [...delivered].sort((x, y) => x - y);
-  const median = sorted[Math.floor(sorted.length / 2)];
-  const kept = sorted.filter((v) => v >= 0.55 * median);
-  return kept[0] ?? sorted[0];
+  const rawMedian = sorted[Math.floor(sorted.length / 2)];
+  const kept = sorted.filter((v) => v >= 0.55 * rawMedian);
+  const s = kept.length ? kept : sorted;
+  const mid = Math.floor(s.length / 2);
+  return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
 }
 
 /**
@@ -135,7 +140,7 @@ export function matchCandidates(ourTitle: string, ourRetailGbp: number, candidat
   if (strong.length >= 2) {
     return {
       kind: 'match',
-      estimateGbp: Math.round(credibleMinGbp(strong.map((c) => c.deliveredGbp)) * 100) / 100,
+      estimateGbp: Math.round(credibleMarketGbp(strong.map((c) => c.deliveredGbp)) * 100) / 100,
       confidence: strong.length >= 3 ? 'high' : 'medium',
       matched: strong.length
     };
@@ -154,7 +159,13 @@ interface EbayItemSummary {
   title?: string;
   price?: { value?: string; currency?: string };
   shippingOptions?: { shippingCost?: { value?: string; currency?: string } }[];
+  seller?: { username?: string };
 }
+
+/** Sellers whose listings are never a credible market reference (owner rule
+ *  2026-07-12: Temu's own eBay storefront undercuts below any price a real UK
+ *  shop competes against). Matched against the listing's seller username. */
+const BLOCKED_SELLERS = /temu/i;
 
 /** Module-level token cache: worker isolates persist between requests, so one
  *  token serves many sweeps. Refreshed 60s before expiry. */
@@ -209,6 +220,7 @@ export class EbaySource implements MarketSource {
       const out: MarketCandidate[] = [];
       for (const it of data.itemSummaries ?? []) {
         if (!it.title || it.price?.currency !== 'GBP') continue;
+        if (BLOCKED_SELLERS.test(it.seller?.username ?? '')) continue;
         const itemGbp = Number(it.price.value);
         if (!Number.isFinite(itemGbp) || itemGbp <= 0) continue;
         // First shipping option when priced in GBP; a missing/unpriced option is

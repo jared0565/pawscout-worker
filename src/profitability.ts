@@ -18,7 +18,7 @@ import type { AdminGraphql } from './shopify-admin';
 import { productInventoryItems, updateVariantPrices, archiveProduct } from './proxy/inventory';
 import type { Pricing, ProfitConfig, TenantConfig } from './types';
 import { DEFAULT_PROFIT } from './types';
-import { buildMarketQuery, matchCandidates, credibleMinGbp } from './market';
+import { buildMarketQuery, matchCandidates, credibleMarketGbp } from './market';
 import type { MarketSource, MarketCandidate } from './market';
 
 function round2(x: number): number { return Math.round(x * 100) / 100; }
@@ -173,7 +173,7 @@ export async function competitorSignal(
         const confirmed = await classifyShortlist(llm, store, cfg, arg.title, m.shortlist);
         if (confirmed.length >= 2) {
           const signal: CompetitorSignal = {
-            estimateGbp: Math.round(credibleMinGbp(confirmed.map((c) => c.deliveredGbp)) * 100) / 100,
+            estimateGbp: Math.round(credibleMarketGbp(confirmed.map((c) => c.deliveredGbp)) * 100) / 100,
             confidence: 'medium', // classifier-assisted never claims high
             sources: [`${arg.market.name} (llm-matched ${confirmed.length})`]
           };

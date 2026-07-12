@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
-  titleTokens, numericUnits, titleSimilarity, buildMarketQuery, matchCandidates, credibleMinGbp,
+  titleTokens, numericUnits, titleSimilarity, buildMarketQuery, matchCandidates, credibleMarketGbp,
   EbaySource, ebayFromEnv, type MarketCandidate
 } from '../src/market';
 
@@ -40,10 +40,10 @@ describe('matchCandidates (deterministic tiers)', () => {
     C('800ml Leakproof Portable Dog Water Bottle Drinking', 8.99, 3.49)
   ];
 
-  it('3+ strong matches -> high confidence at the credible minimum delivered price', () => {
+  it('3+ strong matches -> high confidence at the credible MEDIAN delivered price', () => {
     const m = matchCandidates(OURS, 12.99, GOOD);
-    expect(m).toEqual({ kind: 'match', estimateGbp: 11.49, confidence: 'high', matched: 3 });
-    // 9.99+2.99=12.98, 11.49, 8.99+3.49=12.48 -> min 11.49 (no outliers to drop)
+    expect(m).toEqual({ kind: 'match', estimateGbp: 12.48, confidence: 'high', matched: 3 });
+    // 9.99+2.99=12.98, 11.49, 8.99+3.49=12.48 -> median 12.48 (no outliers to drop)
   });
 
   it('2 strong matches -> medium confidence', () => {
@@ -52,9 +52,11 @@ describe('matchCandidates (deterministic tiers)', () => {
     if (m.kind === 'match') expect(m.confidence).toBe('medium');
   });
 
-  it('credibleMinGbp drops pathological lows (below 55% of median)', () => {
-    expect(credibleMinGbp([2.5, 11.99, 12.49, 12.99])).toBe(11.99); // 2.50 = junk/part
-    expect(credibleMinGbp([9.99])).toBe(9.99);
+  it('credibleMarketGbp = median of survivors after the junk drop (below 55% of median)', () => {
+    expect(credibleMarketGbp([2.5, 11.99, 12.49, 12.99])).toBe(12.49); // 2.50 = junk/part; median of the 3 survivors
+    expect(credibleMarketGbp([9.99])).toBe(9.99);
+    expect(credibleMarketGbp([10, 12])).toBe(11);                      // even count -> mean of the middle pair
+    expect(credibleMarketGbp([1, 1.2, 9.99, 10.49])).toBe(10.24);      // junk-heavy list still lands on the credible middle
   });
 
   it('implausible prices are filtered before matching (multipacks/parts)', () => {
@@ -97,6 +99,22 @@ describe('EbaySource (Browse API client)', () => {
     expect(browseCall[0]).toContain('item_summary/search?q=dog%20bottle%20800ml');
     expect(browseCall[0]).toContain('itemLocationCountry%3AGB');
     expect((browseCall[1] as any).headers['X-EBAY-C-MARKETPLACE-ID']).toBe('EBAY_GB');
+  });
+
+  it('skips listings sold by Temu (owner rule 2026-07-12: not a credible market reference)', async () => {
+    // URL-dispatched mock: the module-level token cache may already be warm
+    // from an earlier test, so the token call cannot be assumed to happen.
+    const fetchImpl = vi.fn(async (url: string) => url.includes('item_summary/search')
+      ? { ok: true, status: 200, json: async () => ({ itemSummaries: [
+          { title: 'Dog Bottle 800ml', price: { value: '4.99', currency: 'GBP' }, seller: { username: 'temu_official_uk' } },
+          { title: 'Dog Bottle 800ml Travel', price: { value: '3.99', currency: 'GBP' }, seller: { username: 'TEMU' } },
+          { title: 'Dog Bottle 800ml Leakproof', price: { value: '9.99', currency: 'GBP' }, seller: { username: 'petsupplies-gb' } },
+          { title: 'Dog Bottle 800ml No Seller Field', price: { value: '10.99', currency: 'GBP' } }
+        ] }) }
+      : tokenResp);
+    const src = new EbaySource('id', 'secret', fetchImpl as any);
+    const out = await src.search('dog bottle 800ml');
+    expect(out?.map((c) => c.title)).toEqual(['Dog Bottle 800ml Leakproof', 'Dog Bottle 800ml No Seller Field']);
   });
 
   it('returns null (source failure) on auth or HTTP errors - callers may fall back', async () => {
