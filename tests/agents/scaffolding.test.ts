@@ -104,6 +104,19 @@ describe('draftReply scaffolding invariants', () => {
     expect(on.system).toContain('UK delivery is currently free');
   });
 
+  it('grounds the one true store web address so the model never guesses activepaw.com', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const sink: { system?: string } = {};
+    const llm = capturingLlm({ bodyText: 'Hi.', confidence: 85, quotesPriceOrOrder: false }, sink);
+    await draftReply(llm, store, CFG, {
+      agent: stubAgent(false), grounding: GROUNDING,
+      subject: 'Store link', conversation: 'Could you send me the link to your store?'
+    });
+    expect(sink.system).toContain('https://activepaw.co.uk');
+    expect(sink.system).toContain('ONLY Active Paw web address');
+    expect(sink.system).toContain('there is no activepaw.com');
+  });
+
   it('includes COMMERCIAL_GUARDRAILS when agent.commercial is true', async () => {
     const store = new TenantStore(env.DB, 'a.myshopify.com');
     const sink: { system?: string } = {};

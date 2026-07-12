@@ -58,6 +58,41 @@ describe('sanitizeOutbound', () => {
   });
 });
 
+describe('sanitizeOutbound corrects a wrong store domain (the only store is activepaw.co.uk)', () => {
+  it('rewrites a hallucinated activepaw.com to activepaw.co.uk', () => {
+    expect(sanitizeOutbound('You can browse our full range and place your order directly at activepaw.com.'))
+      .toBe('You can browse our full range and place your order directly at activepaw.co.uk.');
+  });
+  it('rewrites other invented TLDs and keeps any path intact', () => {
+    expect(sanitizeOutbound('https://activepaw.net/products/dog-bed')).toBe('https://activepaw.co.uk/products/dog-bed');
+    expect(sanitizeOutbound('visit activepaw.shop today')).toBe('visit activepaw.co.uk today');
+    expect(sanitizeOutbound('at activepaw.uk')).toBe('at activepaw.co.uk');
+    expect(sanitizeOutbound('at activepaw.com.au')).toBe('at activepaw.co.uk');
+  });
+  it('collapses a www-prefixed wrong domain to the bare canonical host', () => {
+    expect(sanitizeOutbound('order at https://www.activepaw.com')).toBe('order at https://activepaw.co.uk');
+  });
+  it('completes a bare activepaw.co, including at the end of a sentence', () => {
+    expect(sanitizeOutbound('order at activepaw.co today')).toBe('order at activepaw.co.uk today');
+    expect(sanitizeOutbound('order at activepaw.co.')).toBe('order at activepaw.co.uk.');
+  });
+  it('corrects our own email domain when hallucinated', () => {
+    expect(sanitizeOutbound('write to support@activepaw.com')).toBe('write to support@activepaw.co.uk');
+  });
+  it('leaves the correct domain, its subdomains, and third-party names untouched', () => {
+    const ok = 'at activepaw.co.uk and https://activepaw.co.uk/products/x via pawscout.activepaw.co.uk';
+    expect(sanitizeOutbound(ok)).toBe(ok);
+    expect(sanitizeOutbound('www.activepaw.co.uk stays')).toBe('www.activepaw.co.uk stays');
+    expect(sanitizeOutbound('myactivepaw.com is not us')).toBe('myactivepaw.com is not us');
+  });
+  it('is case-insensitive and canonicalises to lowercase', () => {
+    expect(sanitizeOutbound('Visit ActivePaw.COM now')).toBe('Visit activepaw.co.uk now');
+  });
+  it('fixes a wrong domain and dashes in the same pass', () => {
+    expect(sanitizeOutbound(`shop at activepaw.com ${EM} we ship worldwide`)).toBe('shop at activepaw.co.uk - we ship worldwide');
+  });
+});
+
 describe('applySalutation strips dashes from the composed body', () => {
   it('the final customer-facing draft contains no em/en-dash', () => {
     const body = applySalutation(`Thanks for reaching out ${EM} we'd love to help, in 5${EN}7 days.`, 'Mary');

@@ -67,14 +67,24 @@ export function salutationName(rawName: string | null | undefined, email?: strin
 // and "Hello there,\n\n…" (own line) without eating a real sentence that opens with "Hi".
 const LEADING_GREETING = /^\s*(hi|hiya|hey|hello|dear|greetings|good (?:morning|afternoon|evening))\b[^\n,]{0,40}(?:,|\n)\s*/i;
 
-/** Strip dash glyphs that read as an AI tell from customer-facing copy: em-dash
- * (U+2014), en-dash (U+2013) and horizontal bar (U+2015) all collapse to a plain
- * hyphen. Spacing is preserved (a spaced "a, b" style dash becomes "a - b"). This is
- * the deterministic guarantee: every outbound body passes through it, so even if the
- * LLM or a template slips a dash in, the customer never sees one. (Escapes, not literal
- * glyphs, so the codebase-wide dash scrub never corrupts this matcher.) */
+// The one true store host. A drafting model that is never shown the URL guesses
+// "activepaw.com" from the brand name (it did: Ben Francis thread, 2026-07-11), so any
+// wrong-TLD variant of the brand host is rewritten to the canonical domain. The negative
+// lookahead protects the real host and its subdomains; an optional leading "www."
+// collapses so we never emit a www host we do not serve. Paths, query strings and email
+// local parts survive because the match covers only the host's TLD span.
+const WRONG_STORE_DOMAIN = /\b(?:www\.)?activepaw\.(?!co\.uk\b)[a-z]{2,6}(?:\.[a-z]{2,6})?\b/gi;
+
+/** Deterministic outbound guarantees - every customer-facing body passes through here,
+ * so even if the LLM or a template slips one of these in, the customer never sees it:
+ *  - dash glyphs that read as an AI tell (em-dash U+2014, en-dash U+2013, horizontal
+ *    bar U+2015) collapse to a plain hyphen, spacing preserved ("a, b" style stays
+ *    "a - b"). (Escapes, not literal glyphs, so the codebase-wide dash scrub never
+ *    corrupts this matcher.)
+ *  - a hallucinated store domain (activepaw.com and friends) becomes activepaw.co.uk,
+ *    the only domain we own. */
 export function sanitizeOutbound(text: string): string {
-  return text.replace(/[\u2014\u2013\u2015]/g, '-');
+  return text.replace(/[\u2014\u2013\u2015]/g, '-').replace(WRONG_STORE_DOMAIN, 'activepaw.co.uk');
 }
 
 /** Prepend a deterministic salutation. The model is told not to greet (so its name

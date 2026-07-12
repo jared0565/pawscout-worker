@@ -3,6 +3,7 @@
 /** Minimal baked-in store facts shared by every agent. Owner extends via cfg.inbox.replyGuidance. */
 export const STORE_FACTS =
   'Active Paw is a UK pet-care store (dogs and cats) that ships to the UK and internationally to most countries. ' +
+  'Our website is https://activepaw.co.uk and it is the ONLY Active Paw web address; when a customer asks for the store link, give exactly https://activepaw.co.uk, and never write any other domain (there is no activepaw.com). ' +
   'Orders are fulfilled through our supplier network. Never claim or imply Active Paw ships or dispatches from its own UK warehouse, and never name the dispatch country. ' +
   'Delivery time varies by item and destination; we email a tracking link when an order is dispatched. Do not state a specific delivery time or date unless it is provided to you as grounded facts. ' +
   'Never tell a customer we cannot ship to their country; if you do not have the exact rate, say we can ship there and offer to confirm the cost and timeframe. ' +
