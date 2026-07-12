@@ -7,8 +7,11 @@
 
 import type { AdminGraphql } from './shopify-admin';
 import type { TenantStore } from './tenant-store';
+import type { LlmClient } from './llm';
+import type { MarketSource } from './market';
 import type { TenantConfig } from './types';
 import { DEFAULT_PROFIT } from './types';
+import { judgeImportedLink, competitorCacheKey } from './profitability';
 
 export interface ProfitConsoleRow {
   cjPid: string;
@@ -32,6 +35,7 @@ export interface ProfitConsoleRow {
   fromGbp: number | null;        // from-price of the latest reprice
   toGbp: number | null;          // target of the latest reprice
   dryRun: number | null;         // 1 = previewed only, 0 = executed live
+  profitKeep: number;            // 1 = owner Keep override (the agent must not act)
 }
 
 export interface ProfitActionView {
@@ -93,6 +97,7 @@ export async function getProfitConsole(store: TenantStore, cfg: TenantConfig | n
       competitorGbp: r.competitor_gbp, competitorConfidence: r.competitor_confidence, sources: parseSources(r.competitor_sources),
       reason: r.reason, checkedAt: r.checked_at,
       action: r.action ?? null, fromGbp: r.from_gbp ?? null, toGbp: r.to_gbp ?? null, dryRun: r.dry_run ?? null,
+      profitKeep: r.profit_keep ?? 0,
     })),
     recentActions: actions.map((a) => ({
       cjPid: a.cj_pid, action: a.action, fromGbp: a.from_gbp, toGbp: a.to_gbp,
@@ -150,6 +155,60 @@ export async function clearProfitDecisions(
   const cleared = await store.clearProfitVerdicts();
   const cacheCleared = await store.clearCompetitorCache();
   return { ok: true, cleared, cacheCleared };
+}
+
+/** Owner Keep/Release on ONE product (2026-07-12). Keep = a durable "do not act"
+ *  override on the link row (the judge short-circuits on it); Release = resume
+ *  normal judging. Both re-judge immediately so the console row updates in place
+ *  instead of waiting for the sweep - note a Release in live mode can execute the
+ *  resulting action straight away (that is what releasing means). */
+export async function setProfitKeepAction(
+  store: TenantStore, admin: AdminGraphql, llm: LlmClient, cfg: TenantConfig,
+  cjPid: unknown, keep: unknown, market?: MarketSource | null
+): Promise<{ ok: true; keep: boolean; action: string; reason: string } | { ok: false; error: string }> {
+  if (typeof cjPid !== 'string' || !cjPid.trim()) return { ok: false, error: 'cjPid required' };
+  if (typeof keep !== 'boolean') return { ok: false, error: 'keep must be true or false' };
+  const link = await store.getLink(cjPid);
+  if (!link || !link.shopify_product_id) return { ok: false, error: 'No Shopify product for that item' };
+  if (link.state === 'archived') return { ok: false, error: 'Already archived' };
+  await store.setProfitKeep(cjPid, keep);
+  const dryRun = cfg.profit?.dryRun !== false;
+  try {
+    const judged = await judgeImportedLink(store, admin, llm, cfg,
+      { cj_pid: cjPid, shopify_product_id: link.shopify_product_id, profit_keep: keep ? 1 : 0 },
+      dryRun, { market: market ?? null });
+    return { ok: true, keep, action: judged.action, reason: judged.reason };
+  } catch (e) {
+    // The flag IS set; only the immediate re-judge failed (the sweep will catch up).
+    return { ok: true, keep, action: keep ? 'keep' : 'pending', reason: `saved; immediate re-judge failed (${(e as Error).message}) - the next sweep applies it` };
+  }
+}
+
+/** The competitor listing is NOT the same product (owner's call, 2026-07-12).
+ *  Writes an owner marker over the cached signal for 90 days - so the cheap
+ *  structured market sweep cannot re-adopt the same wrong match when the cache
+ *  would have expired - then re-judges immediately WITHOUT a market signal
+ *  (the cost-plus no-market rules apply). Deep check remains the way to
+ *  research a better comparable and overwrite the marker. */
+export async function rejectProfitMatch(
+  store: TenantStore, admin: AdminGraphql, llm: LlmClient, cfg: TenantConfig, cjPid: unknown
+): Promise<{ ok: true; action: string; reason: string } | { ok: false; error: string }> {
+  if (typeof cjPid !== 'string' || !cjPid.trim()) return { ok: false, error: 'cjPid required' };
+  const link = await store.getLink(cjPid);
+  if (!link || !link.shopify_product_id) return { ok: false, error: 'No Shopify product for that item' };
+  if (link.state === 'archived') return { ok: false, error: 'Already archived' };
+  const marker = { estimateGbp: 0, confidence: 'low', sources: ['owner: competitor item is not the same product'] };
+  await store.putSearchCache(competitorCacheKey(cjPid), JSON.stringify(marker), 90);
+  const dryRun = cfg.profit?.dryRun !== false;
+  try {
+    const judged = await judgeImportedLink(store, admin, llm, cfg,
+      { cj_pid: cjPid, shopify_product_id: link.shopify_product_id, profit_keep: link.profit_keep },
+      dryRun, { signalOverride: null });
+    return { ok: true, action: judged.action, reason: judged.reason };
+  } catch (e) {
+    // The marker IS stored; only the immediate re-judge failed (the sweep catches up).
+    return { ok: true, action: 'pending', reason: `match discarded; immediate re-judge failed (${(e as Error).message}) - the next sweep re-judges it` };
+  }
 }
 
 const ARCHIVE_PRODUCT = `mutation pawscoutProfitArchive($input: ProductInput!) {

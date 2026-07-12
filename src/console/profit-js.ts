@@ -40,8 +40,9 @@ function pfRowTr(r){
     +'<span class="pf-sku">'+(r.sku?esc(r.sku):'<span class="pf-none">no SKU</span>')+'</span>';
   if(r.reason) prod+='<div class="pf-why">'+esc(r.reason)+'</div>';
   prod+='</td>';
-  // Verdict colour chip (triage) + the specific action.
+  // Verdict colour chip (triage) + the specific action + the owner overrides.
   var act='<td class="pf-act-cell">'+pfChip(r.verdict)+' '+pfActionHtml(r);
+  if(r.profitKeep===1) act+=' <span class="pf-chip pf-kept" title="Owner override: the agent will not reprice, flag or drop this product until you release it.">kept</span>';
   if(r.linkState==='archived') act+=' <span class="pf-chip pf-arch">archived</span>';
   act+='</td>';
   // PDP: our storefront price, links to the product page (only when we have a handle).
@@ -77,14 +78,26 @@ function pfRowTr(r){
     +(r.netPct!==null?('<span class="pf-move">'+Math.round(r.netPct*100)+'%</span>'):'')+'</td>';
   var when='<td class="pf-when-c">'+esc(pfWhen(r.checkedAt))+'</td>';
   // Row actions (pids ride data- attributes; delegated click in the IIFE below,
-  // never inline code): Deep check = the thorough LLM+web market read (costs
-  // roughly 30p, so it is a button, not the cron), then an immediate re-judge.
+  // never inline code). Stacked vertically in their own column so no button is
+  // ever clipped (the 2026-07-12 cut-table fix). Keep = durable owner override
+  // (Release resumes judging). Wrong match = the competitor listing is not the
+  // same product: discard that market price for 90 days, re-judge on cost-plus.
+  // Deep check = the thorough LLM+web market read (~30p) + immediate re-judge.
   // Archive = manual fallback (non-pass, live, not-yet-archived).
-  var actionCell='<td>';
-  if(r.linkState&&r.linkState!=='archived'&&r.productId)
-    actionCell+='<button type="button" class="ghost" data-pf-deep="'+esc(r.cjPid)+'">Deep check</button> ';
-  if(r.verdict!=='pass'&&r.linkState&&r.linkState!=='archived'&&r.productId)
-    actionCell+='<button type="button" class="ghost" data-pf-pid="'+esc(r.cjPid)+'">Archive</button>';
+  var actionCell='<td class="pf-actions-c">';
+  var live=r.linkState&&r.linkState!=='archived'&&r.productId;
+  if(live){
+    if(r.profitKeep===1){
+      actionCell+='<button type="button" class="ghost" data-pf-release="'+esc(r.cjPid)+'" title="Resume judging: the agent reprices, flags or drops this product again on its normal rules.">Release</button>';
+    } else {
+      actionCell+='<button type="button" class="ghost" data-pf-keep="'+esc(r.cjPid)+'" title="Keep this product exactly as it is: the agent stops repricing, flagging or dropping it until you release it.">Keep</button>';
+      if(r.competitorGbp!==null&&r.competitorGbp>0)
+        actionCell+='<button type="button" class="ghost" data-pf-badmatch="'+esc(r.cjPid)+'" title="The competitor listing is NOT the same product. Discards that market price for 90 days and re-judges on cost-plus rules.">Wrong match</button>';
+      actionCell+='<button type="button" class="ghost" data-pf-deep="'+esc(r.cjPid)+'">Deep check</button>';
+      if(r.verdict!=='pass')
+        actionCell+='<button type="button" class="ghost" data-pf-pid="'+esc(r.cjPid)+'">Archive</button>';
+    }
+  }
   actionCell+='</td>';
   return '<tr>'+prod+act+pdp+cj+comp+net+when+actionCell+'</tr>';
 }
@@ -236,6 +249,31 @@ async function pfArchive(btn,pid){
     pfLoad();
   }catch(e){ setMsg('pf-msg','Could not archive.','no'); }
 }
+async function pfKeep(btn,pid,on){
+  // Keep/Release are reversible one-click actions (no arm): the flag is durable
+  // and the row re-judges immediately so the list updates in place.
+  btn.disabled=true;
+  setMsg('pf-msg',(on?'Keeping…':'Releasing…'),'muted');
+  try{
+    var r=await api('/profit/keep',{cjPid:pid,keep:!!on});
+    if(!r.ok){ setMsg('pf-msg',(on?'Keep':'Release')+' failed: '+(r.error||'unknown'),'no'); btn.disabled=false; return; }
+    if(on) setMsg('pf-msg','Kept. The agent will leave this product exactly as it is until you release it (the row moves to the passing list).','ok');
+    else setMsg('pf-msg','Released and re-judged: '+esc(r.action)+' - '+esc(r.reason),'ok');
+    pfLoad();
+  }catch(e){ setMsg('pf-msg','Could not save.','no'); btn.disabled=false; }
+}
+async function pfRejectMatch(btn,pid){
+  // Changes the judgment basis, so two-click armed like Archive/Deep check.
+  if(!prtArm(btn,'Click again to discard this market match')) return;
+  btn.disabled=true;
+  setMsg('pf-msg','Discarding the match and re-judging on cost-plus rules…','muted');
+  try{
+    var r=await api('/profit/reject-match',{cjPid:pid});
+    if(!r.ok){ setMsg('pf-msg','Failed: '+(r.error||'unknown'),'no'); btn.disabled=false; return; }
+    setMsg('pf-msg','Match discarded for 90 days and re-judged without it: '+esc(r.action)+' - '+esc(r.reason)+' (Deep check can research a better comparable.)','ok');
+    pfLoad();
+  }catch(e){ setMsg('pf-msg','Could not discard the match.','no'); btn.disabled=false; }
+}
 async function pfDeep(btn,pid){
   // Costs a real web read (~30p), so two-click confirm like the other actions.
   if(!prtArm(btn,'Costs ~30p - click again')) return;
@@ -253,9 +291,17 @@ async function pfDeep(btn,pid){
 (function(){
   var list=el('pf-list');
   if(list) list.addEventListener('click',function(e){
-    var deep=e.target&&e.target.closest?e.target.closest('[data-pf-deep]'):null;
+    var t=e.target;
+    if(!t||!t.closest) return;
+    var keep=t.closest('[data-pf-keep]');
+    if(keep){ pfKeep(keep,keep.getAttribute('data-pf-keep'),true); return; }
+    var rel=t.closest('[data-pf-release]');
+    if(rel){ pfKeep(rel,rel.getAttribute('data-pf-release'),false); return; }
+    var bad=t.closest('[data-pf-badmatch]');
+    if(bad){ pfRejectMatch(bad,bad.getAttribute('data-pf-badmatch')); return; }
+    var deep=t.closest('[data-pf-deep]');
     if(deep){ pfDeep(deep,deep.getAttribute('data-pf-deep')); return; }
-    var btn=e.target&&e.target.closest?e.target.closest('[data-pf-pid]'):null;
+    var btn=t.closest('[data-pf-pid]');
     if(!btn) return;
     pfArchive(btn,btn.getAttribute('data-pf-pid'));
   });

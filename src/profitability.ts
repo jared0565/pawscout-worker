@@ -406,7 +406,7 @@ export function decideProfitAction(input: {
  */
 export async function judgeImportedLink(
   store: TenantStore, admin: AdminGraphql, llm: LlmClient, cfg: TenantConfig,
-  link: { cj_pid: string; shopify_product_id: string }, dryRun: boolean,
+  link: { cj_pid: string; shopify_product_id: string; profit_keep?: number | null }, dryRun: boolean,
   opts: { market?: MarketSource | null; signalOverride?: CompetitorSignal | null } = {}
 ): Promise<{ action: 'keep' | 'reprice' | 'drop' | 'flag'; reason: string; signal: CompetitorSignal | null }> {
   const profit = cfg.profit as ProfitConfig;
@@ -416,6 +416,25 @@ export async function judgeImportedLink(
   // re-logging an identical mutation on every tick (dry-run re-previews the
   // same reprice each pass; steady-state repeats the same target).
   const prev = await store.getProfitVerdict(link.cj_pid);
+
+  // Owner "Keep" override (2026-07-12): the owner has reviewed this product and
+  // wants it left exactly as it is. Short-circuit BEFORE any Shopify read or
+  // market spend - verdict pass, action keep, the prior economics carried
+  // through so the row still shows its numbers. Released rows re-judge normally.
+  if ((link.profit_keep ?? 0) === 1) {
+    const reason = 'kept by owner - the agent will not reprice, flag or drop this product (Release on the row resumes judging)';
+    let prevSources: string[] | null = null;
+    if (prev?.competitor_sources) {
+      try { const a = JSON.parse(prev.competitor_sources); if (Array.isArray(a)) prevSources = a.map(String); } catch { /* keep null */ }
+    }
+    await store.upsertProfitVerdict({
+      cjPid: link.cj_pid, verdict: 'pass', netGbp: prev?.net_gbp ?? null, netPct: prev?.net_pct ?? null,
+      ourRetailGbp: prev?.our_retail_gbp ?? null, competitorGbp: prev?.competitor_gbp ?? null,
+      competitorConfidence: prev?.competitor_confidence ?? null, competitorSources: prevSources,
+      reason, action: 'keep', fromGbp: null, toGbp: null, dryRun,
+    });
+    return { action: 'keep', reason, signal: null };
+  }
 
   const inv = await productInventoryItems(admin, pid);
   const sellable = inv
@@ -515,7 +534,7 @@ export async function runProfitAgent(
     try {
       const r = await judgeImportedLink(
         store, admin, llm, cfg,
-        { cj_pid: link.cj_pid, shopify_product_id: link.shopify_product_id as string },
+        { cj_pid: link.cj_pid, shopify_product_id: link.shopify_product_id as string, profit_keep: link.profit_keep },
         dryRun, { market: opts.market }
       );
       if (r.action === 'reprice') repriced++;

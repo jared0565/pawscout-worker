@@ -370,15 +370,28 @@ describe('consolePage', () => {
     // The ad-share tuning field is wired (onchange in the view HTML, handler in JS).
     expect(html).toContain('pfSetAdShare(this.value)');
     expect(scripts).toContain('function pfSetAdShare(');
-    for (const route of ["'/profit'", "'/profit/config'", "'/profit/run'", "'/profit/archive'"]) {
+    for (const route of ["'/profit'", "'/profit/config'", "'/profit/run'", "'/profit/archive'", "'/profit/keep'", "'/profit/reject-match'"]) {
       expect(scripts).toContain(route); // api() prepends /api
     }
     expect(scripts).toContain('pfLoad();'); // loaded on startup
     // The pid rides an ESCAPED data attribute resolved by delegation (XSS discipline),
-    // never string-built into inline onclick JS.
+    // never string-built into inline onclick JS. Same for every row action.
     expect(scripts).toContain('data-pf-pid="\'+esc(');
-    // Archiving one product is two-click armed (prtArm), never automatic.
+    expect(scripts).toContain('data-pf-keep="\'+esc(');
+    expect(scripts).toContain('data-pf-release="\'+esc(');
+    expect(scripts).toContain('data-pf-badmatch="\'+esc(');
+    expect(scripts).toContain('function pfKeep(');
+    expect(scripts).toContain('function pfRejectMatch(');
+    // Archiving one product is two-click armed (prtArm), never automatic - and so
+    // is discarding a market match (it changes the judgment basis).
     expect(scripts).toContain('Click again to archive');
+    expect(scripts).toContain('Click again to discard this market match');
+    // The row-actions column stacks its buttons (the 2026-07-12 clipped-table fix:
+    // side-by-side buttons overflowed the fixed column and were cut off).
+    expect(html).toContain('.pf-actions-c .ghost{display:block');
+    expect(scripts).toContain('pf-actions-c');
+    // The kept override is visible on the row.
+    expect(scripts).toContain('pf-kept');
     // profitability is appended to ROUTES so the digit shortcuts stay stable.
     expect(scripts).toContain("'events','content','profitability'");
   });

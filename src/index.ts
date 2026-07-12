@@ -40,7 +40,7 @@ import { searchBackfill, normalizeKeyword } from './proxy/search';
 import { LlmClient, classifyKeyword, curateProduct, pickHeroImage, rewriteDescription } from './llm';
 import { buildPreview, getDetailPreferWarehouse, curateDetailImages, confirmAndImport, reconcileAddonVisibility, reconcileHeroImages, reconcileDescriptions, reconcileCategories } from './proxy/import';
 import { makeAdminGraphql } from './shopify-admin';
-import { getProfitConsole, saveProfitFlags, archiveProfitProduct, clearProfitDecisions } from './profit-console';
+import { getProfitConsole, saveProfitFlags, archiveProfitProduct, clearProfitDecisions, setProfitKeepAction, rejectProfitMatch } from './profit-console';
 import { runProfitAgent, competitorSignal, judgeImportedLink } from './profitability';
 import { ebayFromEnv } from './market';
 import { productInventoryItems } from './proxy/inventory';
@@ -656,6 +656,35 @@ app.post('/api/profit/archive', async (c) => {
   const admin = await adminForShop(c.env, store);
   if (!admin) return c.json({ ok: false, error: 'Shopify is not connected' });
   return c.json(await archiveProfitProduct(store, admin, body.cjPid));
+});
+// Owner row actions (2026-07-12). Keep/Release: a durable "do not act" override
+// on one product (the judge short-circuits on it until released). Reject-match:
+// the competitor listing is not the same product - discard that market signal
+// for 90 days and re-judge on the no-market (cost-plus) rules. Both re-judge
+// immediately so the console row updates in place.
+app.post('/api/profit/keep', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: { cjPid?: unknown; keep?: unknown } = {};
+  try { body = await c.req.json(); } catch {}
+  const store = new TenantStore(c.env.DB, s);
+  const cfg = await store.getConfig();
+  if (!cfg) return c.json({ ok: false, error: 'Connect the store first' });
+  const admin = await adminForShop(c.env, store);
+  if (!admin) return c.json({ ok: false, error: 'Shopify is not connected' });
+  const llm = new LlmClient({ openrouter: c.env.OPENROUTER_API_KEY, openai: c.env.OPENAI_API_KEY });
+  return c.json(await setProfitKeepAction(store, admin, llm, cfg, body.cjPid, body.keep, ebayFromEnv(c.env)));
+});
+app.post('/api/profit/reject-match', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: { cjPid?: unknown } = {};
+  try { body = await c.req.json(); } catch {}
+  const store = new TenantStore(c.env.DB, s);
+  const cfg = await store.getConfig();
+  if (!cfg) return c.json({ ok: false, error: 'Connect the store first' });
+  const admin = await adminForShop(c.env, store);
+  if (!admin) return c.json({ ok: false, error: 'Shopify is not connected' });
+  const llm = new LlmClient({ openrouter: c.env.OPENROUTER_API_KEY, openai: c.env.OPENAI_API_KEY });
+  return c.json(await rejectProfitMatch(store, admin, llm, cfg, body.cjPid));
 });
 
 // --- Privacy-policy wording keeper (2026-07-05): check + one-click apply ---

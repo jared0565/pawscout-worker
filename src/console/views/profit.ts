@@ -33,7 +33,7 @@ export const profitView = `  <section class="card">
 
   <section class="card">
     <h2>Products</h2>
-    <p class="sub" style="margin:0 0 10px">Worst first, and only what needs your eyes: <strong>passing products are hidden by default</strong> (a link under the table shows everything). Each row shows the product (name + SKU), the agent's decision and why, and three prices you can click to review: <strong>PDP</strong> (your storefront price, opens the product page), <strong>CJ</strong> (the supplier item price, opens the product in CJ) and <strong>Competitor</strong> (the market delivered price, opens a search; hover for the confidence and sources). <strong>Dropped</strong> = archived, cannot profit; <strong>Repriced</strong> = moved to just under the market; <strong>Flagged</strong> = your call. Archiving here is a manual one-click fallback and asks to confirm; it never deletes. <strong>Deep check</strong> runs the thorough LLM web read for one product (costs roughly 30p) and re-judges it immediately; the everyday sweep prices from free structured market data instead.</p>
+    <p class="sub" style="margin:0 0 10px">Worst first, and only what needs your eyes: <strong>passing products are hidden by default</strong> (a link under the table shows everything). Each row shows the product (name + SKU), the agent's decision and why, and three prices you can click to review: <strong>PDP</strong> (your storefront price, opens the product page), <strong>CJ</strong> (the supplier item price, opens the product in CJ) and <strong>Competitor</strong> (the market delivered price, opens a search; hover for the confidence and sources). <strong>Dropped</strong> = archived, cannot profit; <strong>Repriced</strong> = moved to just under the market; <strong>Flagged</strong> = your call. Your calls on a row: <strong>Keep</strong> pins the product exactly as it is - the agent stops repricing, flagging or dropping it until you Release it. <strong>Wrong match</strong> says the competitor listing is not the same product: that market price is discarded for 90 days and the product is re-judged on cost-plus rules. <strong>Deep check</strong> runs the thorough LLM web read for one product (costs roughly 30p) and re-judges it immediately; the everyday sweep prices from free structured market data instead. <strong>Archive</strong> is the manual one-click fallback and asks to confirm; it never deletes.</p>
     <div class="row" style="margin:0 0 10px">
       <button type="button" onclick="pfClearDecisions(this)">Clear list &amp; re-judge</button>
       <span class="muted" style="align-self:center;font-size:12px">Wipes every decision AND the cached market prices; the agent re-researches and re-judges the whole catalog over the next few hours. Nothing is archived or repriced by clearing; the action history below is kept.</span>
@@ -83,27 +83,35 @@ export const profitCss = `
   .pf-led .pf-when{color:var(--subdued);font-variant-numeric:tabular-nums;white-space:nowrap}
   .pf-led .pf-what{color:var(--ink);font-weight:600}
   /* --- Products review table: FIXED layout so a long name can never collide
-         with the next column (auto-layout ignores cell max-width). Wide content
-         scrolls inside .pf-tablewrap on a narrow console pane. --- */
+         with the next column (auto-layout ignores cell max-width). The column
+         budget is tuned to FIT the console pane (2026-07-12: the old 972px of
+         columns pushed the actions off the right edge, with the only scrollbar
+         at the very bottom of a tall table); .pf-tablewrap keeps overflow-x as
+         the safety net for genuinely narrow panes. --- */
   .pf-tablewrap{overflow-x:auto;margin-top:4px}
-  .pf-table{table-layout:fixed;width:100%;min-width:940px;border-collapse:collapse;font-size:13px}
-  .pf-table th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--subdued);font-weight:650;padding:8px 10px 6px;border-bottom:1px solid var(--border);white-space:nowrap}
-  .pf-table td{padding:9px 10px;border-bottom:1px solid var(--border);vertical-align:top;white-space:nowrap}
+  .pf-table{table-layout:fixed;width:100%;min-width:892px;border-collapse:collapse;font-size:13px}
+  .pf-table th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--subdued);font-weight:650;padding:8px 8px 6px;border-bottom:1px solid var(--border);white-space:nowrap}
+  .pf-table td{padding:9px 8px;border-bottom:1px solid var(--border);vertical-align:top;white-space:nowrap}
   .pf-table tbody tr:last-child td{border-bottom:none}
   .pf-table th.pf-num,.pf-table td.pf-num{text-align:right;font-variant-numeric:tabular-nums}
-  /* Fixed column widths (read from the header row). */
-  .pf-c-prod{width:242px}
-  .pf-c-act{width:118px}
-  .pf-c-price{width:90px}
-  .pf-c-comp{width:120px}
-  .pf-c-when{width:130px}
-  .pf-c-arch{width:92px}
+  /* Fixed column widths (read from the header row); they sum to the min-width. */
+  .pf-c-prod{width:200px}
+  .pf-c-act{width:112px}
+  .pf-c-price{width:86px}
+  .pf-c-comp{width:110px}
+  .pf-c-when{width:96px}
+  .pf-c-arch{width:116px}
   /* Cells that hold long text WRAP and break space-less tokens so nothing spills. */
   td.pf-prod,td.pf-act-cell{white-space:normal;overflow-wrap:anywhere;word-break:break-word}
+  /* Row actions stack vertically so every button stays fully visible. */
+  td.pf-actions-c{white-space:normal}
+  .pf-actions-c .ghost{display:block;width:100%;margin:0 0 6px;text-align:center}
+  .pf-actions-c .ghost:last-child{margin-bottom:0}
+  .pf-kept{background:rgba(88,166,255,.16);color:#58a6ff}
   .pf-pname{display:block;font-weight:600;color:var(--ink);overflow-wrap:anywhere}
   .pf-sku{display:block;margin-top:2px;font-family:ui-monospace,monospace;font-size:11.5px;color:var(--subdued);overflow-wrap:anywhere}
   .pf-why{margin-top:4px;color:var(--subdued);font-size:12px;line-height:1.35;white-space:normal;overflow-wrap:anywhere}
-  .pf-when-c{color:var(--subdued);font-size:12px}
+  .pf-when-c{color:var(--subdued);font-size:12px;white-space:normal}
   .pf-plink{color:#58a6ff;text-decoration:none;font-weight:600}
   .pf-plink:hover{text-decoration:underline}
   .pf-ext{font-size:10px;opacity:.7}

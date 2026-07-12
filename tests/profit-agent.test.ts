@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { runProfitAgent } from '../src/profitability';
+import { rejectProfitMatch, setProfitKeepAction } from '../src/profit-console';
 import { DEFAULT_PROFIT, type Pricing } from '../src/types';
 
 const PRICING: Pricing = { multiplier: 2.2, floor: 2.2, minMarginGbp: 6, fxUsdToGbp: 0.78, fxBufferPct: 2, maxMarginGbp: 30 };
@@ -8,31 +9,36 @@ type Prod = {
   variants: { variantId: string; price: string; cost: string }[];
   competitor?: { estimateGbp: number; confidence: 'high' | 'medium' | 'low' };
   nameEn?: string;
+  profitKeep?: number; // owner Keep override on the link row
 };
 
 /** Stateful fakes: a product_profit map (so getProfitVerdict reflects prior
  *  upserts, exercising the ledger dedup) + recorders for every mutation. */
 function makeFakes(products: Record<string, Prod>) {
-  const links = Object.keys(products).map((pid) => ({ cj_pid: pid, shopify_product_id: `gid://${pid}`, handle: pid, state: 'imported' }));
-  const productProfit = new Map<string, { action: string | null; to_gbp: number | null; dry_run: number | null; verdict: string }>();
+  const links = Object.keys(products).map((pid) => ({ cj_pid: pid, shopify_product_id: `gid://${pid}`, handle: pid, state: 'imported', profit_keep: products[pid]?.profitKeep ?? 0 }));
+  const productProfit = new Map<string, { action: string | null; to_gbp: number | null; dry_run: number | null; verdict: string; reason: string; competitorGbp: number | null }>();
   const ledger: { cjPid: string; action: string; fromGbp: number | null; toGbp: number | null; dryRun: boolean }[] = [];
   const priceCalls: { productId: string; updates: { id: string; price: string }[] }[] = [];
   const archiveCalls: string[] = [];
   const putLinkCalls: { cjPid: string; state: string }[] = [];
+  const cacheWrites: { key: string; payload: string; ttlDays: number }[] = [];
+  const keepCalls: { cjPid: string; keep: boolean }[] = [];
 
   const store = {
     listImportedLinks: async () => links,
+    getLink: async (pid: string) => links.find((l) => l.cj_pid === pid) ?? null,
+    setProfitKeep: async (pid: string, keep: boolean) => { keepCalls.push({ cjPid: pid, keep }); return true; },
     getWarehouseProduct: async (pid: string) => ({ detail: JSON.stringify({ nameEn: products[pid]?.nameEn ?? pid, variants: [] }) }),
     getSearchCache: async (key: string) => {
       const m = /^comp:(.+)$/.exec(key);
       if (m) { const c = products[m[1]]?.competitor; return c ? JSON.stringify({ estimateGbp: c.estimateGbp, confidence: c.confidence, sources: ['amazon.co.uk'] }) : null; }
       return null;
     },
-    putSearchCache: async () => {},
+    putSearchCache: async (key: string, payload: string, ttlDays: number) => { cacheWrites.push({ key, payload, ttlDays }); },
     logLlmUsage: async () => {},
     getProfitVerdict: async (pid: string) => productProfit.get(pid) ?? null,
-    upsertProfitVerdict: async (rec: { cjPid: string; verdict: string; action?: string | null; toGbp?: number | null; dryRun?: boolean | null }) => {
-      productProfit.set(rec.cjPid, { action: rec.action ?? null, to_gbp: rec.toGbp ?? null, dry_run: rec.dryRun == null ? null : (rec.dryRun ? 1 : 0), verdict: rec.verdict });
+    upsertProfitVerdict: async (rec: { cjPid: string; verdict: string; action?: string | null; toGbp?: number | null; dryRun?: boolean | null; reason: string; competitorGbp: number | null }) => {
+      productProfit.set(rec.cjPid, { action: rec.action ?? null, to_gbp: rec.toGbp ?? null, dry_run: rec.dryRun == null ? null : (rec.dryRun ? 1 : 0), verdict: rec.verdict, reason: rec.reason, competitorGbp: rec.competitorGbp });
     },
     logProfitAction: async (rec: { cjPid: string; action: string; fromGbp: number | null; toGbp: number | null; dryRun: boolean }) => { ledger.push(rec); },
     putLink: async (rec: { cjPid: string; state: string }) => { putLinkCalls.push(rec); },
@@ -50,7 +56,7 @@ function makeFakes(products: Record<string, Prod>) {
   }) as any;
 
   const llm = { available: false } as any;
-  return { store, admin, llm, ledger, priceCalls, archiveCalls, putLinkCalls, productProfit };
+  return { store, admin, llm, ledger, priceCalls, archiveCalls, putLinkCalls, productProfit, cacheWrites, keepCalls };
 }
 
 const cfg = (profit: Record<string, unknown>) =>
@@ -136,6 +142,19 @@ describe('runProfitAgent (active adjust-or-drop on live Shopify numbers)', () =>
     expect(f.productProfit.get('BLANK')?.action).toBe('keep');
   });
 
+  it('owner Keep short-circuits the judge: a clear-loss kept product is never touched', async () => {
+    // Without the override these numbers auto-archive live (high-confidence loss).
+    const f = makeFakes({ LOSS: { variants: [{ variantId: 'v', price: '10.00', cost: '8.00' }], competitor: { estimateGbp: 15, confidence: 'high' }, profitKeep: 1 } });
+    const r = await runProfitAgent(f.store, f.admin, f.llm, cfg({ dryRun: false }), {});
+    expect(f.archiveCalls.length).toBe(0);
+    expect(f.priceCalls.length).toBe(0);
+    expect(f.ledger.length).toBe(0);
+    expect(r.dropped).toBe(0);
+    expect(f.productProfit.get('LOSS')?.verdict).toBe('pass');
+    expect(f.productProfit.get('LOSS')?.action).toBe('keep');
+    expect(f.productProfit.get('LOSS')?.reason).toContain('kept by owner');
+  });
+
   it('rolls through the catalog via offset/limit and reports next', async () => {
     const f = makeFakes({
       A: { variants: [{ variantId: 'v', price: '20.00', cost: '5.00' }] },
@@ -148,5 +167,55 @@ describe('runProfitAgent (active adjust-or-drop on live Shopify numbers)', () =>
     expect(r.next).toBe(2);
     const r2 = await runProfitAgent(f.store, f.admin, f.llm, cfg({ dryRun: true }), { offset: 2, limit: 2 });
     expect(r2.next).toBeNull();
+  });
+});
+
+describe('owner row actions (Keep/Release + Wrong match)', () => {
+  it('setProfitKeepAction sets the flag and re-judges immediately to a kept pass row', async () => {
+    const f = makeFakes({ LOSS: { variants: [{ variantId: 'v', price: '10.00', cost: '8.00' }], competitor: { estimateGbp: 15, confidence: 'high' } } });
+    const r = await setProfitKeepAction(f.store, f.admin, f.llm, cfg({ dryRun: false }), 'LOSS', true, null);
+    expect(r.ok).toBe(true);
+    expect(f.keepCalls).toEqual([{ cjPid: 'LOSS', keep: true }]);
+    // The immediate re-judge honors the fresh flag even though the link row still says 0.
+    expect(f.productProfit.get('LOSS')?.verdict).toBe('pass');
+    expect(f.productProfit.get('LOSS')?.action).toBe('keep');
+    expect(f.archiveCalls.length).toBe(0);
+  });
+
+  it('rejectProfitMatch writes a 90-day owner marker over the cached signal and re-judges without a market', async () => {
+    // With the eBay match these numbers would drop; the owner says it is NOT the
+    // same product, so the judgment must fall back to the no-market rules.
+    const f = makeFakes({ LOSS: { variants: [{ variantId: 'v', price: '10.00', cost: '8.00' }], competitor: { estimateGbp: 15, confidence: 'high' } } });
+    const r = await rejectProfitMatch(f.store, f.admin, f.llm, cfg({ dryRun: false }), 'LOSS');
+    expect(r.ok).toBe(true);
+    expect(f.cacheWrites.length).toBe(1);
+    expect(f.cacheWrites[0].key).toBe('comp:LOSS');
+    expect(f.cacheWrites[0].ttlDays).toBe(90);
+    const marker = JSON.parse(f.cacheWrites[0].payload) as { estimateGbp: number; sources: string[] };
+    expect(marker.estimateGbp).toBe(0);
+    expect(marker.sources.join(' ')).toContain('owner');
+    // Re-judged with NO market signal: not archived on the discarded match.
+    expect(f.archiveCalls.length).toBe(0);
+    expect(f.productProfit.get('LOSS')?.competitorGbp).toBeNull();
+  });
+
+  it('the stored owner marker suppresses the cached market signal on later sweeps', async () => {
+    const f = makeFakes({ LOSS: { variants: [{ variantId: 'v', price: '10.00', cost: '8.00' }], competitor: { estimateGbp: 15, confidence: 'high' } } });
+    // Simulate the sweep AFTER a Wrong match: the cache now returns the owner marker.
+    f.store.getSearchCache = async (key: string) =>
+      key === 'comp:LOSS' ? JSON.stringify({ estimateGbp: 0, confidence: 'low', sources: ['owner: competitor item is not the same product'] }) : null;
+    const r = await runProfitAgent(f.store, f.admin, f.llm, cfg({ dryRun: false }), {});
+    expect(r.dropped).toBe(0);
+    expect(f.archiveCalls.length).toBe(0);
+    // The marker's 0 estimate is stored as-is: not a usable market (renders "no market").
+    expect(f.productProfit.get('LOSS')?.competitorGbp ?? 0).toBe(0);
+  });
+
+  it('setProfitKeepAction refuses an unknown or archived product', async () => {
+    const f = makeFakes({ LOSS: { variants: [{ variantId: 'v', price: '10.00', cost: '8.00' }] } });
+    const missing = await setProfitKeepAction(f.store, f.admin, f.llm, cfg({}), 'NOPE', true, null);
+    expect(missing.ok).toBe(false);
+    const badFlag = await setProfitKeepAction(f.store, f.admin, f.llm, cfg({}), 'LOSS', 'yes', null);
+    expect(badFlag.ok).toBe(false);
   });
 });

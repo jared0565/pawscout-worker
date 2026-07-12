@@ -24,6 +24,7 @@ export interface ProductLink {
   category: string | null;
   state: 'ghost' | 'importing' | 'imported' | 'archived' | 'failed' | 'draft';
   stock_paused: number; // 1 = inventory zeroed because CJ stock fell below floor
+  profit_keep: number;  // 1 = owner Keep override: the profit agent must not act on this product
   created_at: string;
   updated_at: string;
 }
@@ -69,6 +70,7 @@ export interface ProfitVerdictRow {
   handle?: string | null;
   shopify_product_id?: string | null;
   link_state?: string | null;
+  profit_keep?: number | null; // owner Keep override (1 = the agent must not act)
   // Joined from warehouse_products.detail (listProfitVerdicts only): the CJ
   // product name + variant SKU + CJ item price (USD) so the console table can
   // show a readable short name, the SKU, and the supplier price for review.
@@ -347,7 +349,7 @@ export class TenantStore {
       .prepare(
         `SELECT pp.cj_pid, pp.verdict, pp.net_gbp, pp.net_pct, pp.our_retail_gbp, pp.competitor_gbp, pp.competitor_confidence, pp.competitor_sources, pp.reason, pp.checked_at,
                 pp.action AS action, pp.from_gbp AS from_gbp, pp.to_gbp AS to_gbp, pp.acted_at AS acted_at, pp.dry_run AS dry_run,
-                pl.handle AS handle, pl.shopify_product_id AS shopify_product_id, pl.state AS link_state,
+                pl.handle AS handle, pl.shopify_product_id AS shopify_product_id, pl.state AS link_state, pl.profit_keep AS profit_keep,
                 json_extract(wp.detail, '$.variants[0].sku') AS sku,
                 json_extract(wp.detail, '$.nameEn') AS name,
                 json_extract(wp.detail, '$.variants[0].sellPriceUsd') AS cj_price_usd
@@ -813,6 +815,18 @@ export class TenantStore {
       .prepare(`UPDATE product_links SET stock_paused = ?3, updated_at = ?4 WHERE shop = ?1 AND cj_pid = ?2`)
       .bind(this.shop, cjPid, paused ? 1 : 0, new Date().toISOString())
       .run();
+  }
+
+  /** Owner "Keep" override (2026-07-12): 1 = the profitability agent must not
+   * reprice, flag or drop this product; the judge short-circuits to a pass
+   * verdict until the owner releases it from the console row. Returns false
+   * when no link row exists for the pid. */
+  async setProfitKeep(cjPid: string, keep: boolean): Promise<boolean> {
+    const r = await this.db
+      .prepare(`UPDATE product_links SET profit_keep = ?3, updated_at = ?4 WHERE shop = ?1 AND cj_pid = ?2`)
+      .bind(this.shop, cjPid, keep ? 1 : 0, new Date().toISOString())
+      .run();
+    return (r.meta.changes ?? 0) > 0;
   }
 
   async listImportedLinks(limit = 200): Promise<ProductLink[]> {
