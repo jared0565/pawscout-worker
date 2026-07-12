@@ -75,3 +75,167 @@ describe('answer_memory store layer', () => {
     await s.bumpAnswerUsage([]); // no-op, must not throw
   });
 });
+
+import { normalizeQuestion, fnv1a64, qhashOf, stripAnswerSubstance, recallAnswers, captureAnswerPair, captureAnswerFromSend, backfillAnswerMemory, ensureAnswerBackfill, ANSWER_BACKFILL_FLAG } from '../src/inbox/answer-memory';
+
+describe('normalizeQuestion', () => {
+  it('lowercases, drops stopwords/punctuation/1-char tokens, keeps numbers, sorts unique', () => {
+    expect(normalizeQuestion('Hi! Do you ship to Texas, USA? Thanks!')).toEqual(['ship', 'texas', 'usa']);
+    expect(normalizeQuestion('Is the 90x60 cm dog bed washable? washable??')).toEqual(['90x60', 'bed', 'cm', 'dog', 'washable']);
+    expect(normalizeQuestion('')).toEqual([]);
+  });
+});
+
+describe('fnv1a64 / qhashOf', () => {
+  it('is deterministic 16-hex and distinct across inputs and categories', () => {
+    expect(fnv1a64('ship worldwide')).toBe(fnv1a64('ship worldwide'));
+    expect(fnv1a64('ship worldwide')).toMatch(/^[0-9a-f]{16}$/);
+    expect(fnv1a64('ship worldwide')).not.toBe(fnv1a64('ship worldwid'));
+    expect(qhashOf('lead', 'ship worldwide')).not.toBe(qhashOf('other', 'ship worldwide'));
+  });
+});
+
+describe('stripAnswerSubstance', () => {
+  it('strips our salutation, footer and anything after it (the P.S. slot)', () => {
+    const sent = 'Hi Ben,\n\nYes, we ship worldwide.\nTracking follows.\n\nBest Regards,\nActive Paw Sales Team\n\nP.S. Try the search bar.';
+    expect(stripAnswerSubstance(sent)).toBe('Yes, we ship worldwide.\nTracking follows.');
+  });
+  it('passes through a body with no wrapper', () => {
+    expect(stripAnswerSubstance('Just the substance.')).toBe('Just the substance.');
+  });
+});
+
+describe('recallAnswers', () => {
+  const seed = async (s: TenantStore, qhash: string, category: string, question: string, answer: string, at = '2026-07-01T00:00:00.000Z') => {
+    const norm = normalizeQuestion(question).join(' ');
+    await s.upsertAnswerMemory({ qhash, category, questionText: question, questionNorm: norm, answerText: answer, threadId: 't-' + qhash, at });
+  };
+
+  it('matches a REWORDED question and bumps usage', async () => {
+    const s = store();
+    // Seed tokens {ship, worldwide, within, country}; query tokens {worldwide,
+    // shipping, country, possible}: overlap 2 -> 2/sqrt(16) = 0.5 (+0.1 same
+    // category). No stemming, so the reword must share 2 content tokens.
+    await seed(s, 'a1', 'shipping-returns', 'Do you ship worldwide or only within your country?', 'Yes, we ship internationally to most countries.');
+    const r = await recallAnswers(s, 'shipping-returns', 'Is worldwide shipping to my country possible?');
+    expect(r.length).toBe(1);
+    expect(r[0].answer).toContain('internationally');
+    expect((await s.listAnswerMemory()).rows[0].usedCount).toBe(1);
+  });
+
+  it('rejects an unrelated question, respects disabled + freshness, caps at top 2', async () => {
+    const s = store();
+    await seed(s, 'a1', 'lead', 'Worldwide shipping to any country?', 'A1: yes worldwide shipping.');
+    await seed(s, 'a2', 'lead', 'Worldwide shipping available for you?', 'A2: yes shipping worldwide.');
+    await seed(s, 'a3', 'lead', 'Is worldwide shipping possible anywhere?', 'A3: shipping worldwide yes.');
+    await seed(s, 'a4', 'lead', 'What food fits a kitten?', 'Kitten food answer.');
+    await seed(s, 'old', 'lead', 'Shipping worldwide soon?', 'Old.', '2025-01-01T00:00:00.000Z');
+    await s.setAnswerDisabled('a3', true);
+    const r = await recallAnswers(s, 'lead', 'do you offer worldwide shipping?');
+    expect(r.length).toBe(2); // a1+a2 (a3 disabled, old stale, a4 unrelated)
+    expect(r.every((x) => x.answer.includes('worldwide'))).toBe(true);
+    const none = await recallAnswers(s, 'lead', 'completely different topic entirely');
+    expect(none).toEqual([]);
+  });
+
+  it('same-category bonus counts toward the threshold', async () => {
+    const s = store();
+    // Sets sized 6 and 5 sharing 2 tokens (harness, walking): 2/sqrt(30) = 0.365
+    // cross-category (< 0.45, rejected); +0.1 same-category = 0.465 (accepted).
+    await seed(s, 'b1', 'lead', 'blue harness small dog walking set', 'Harness answer.');
+    const inCat = await recallAnswers(s, 'lead', 'harness walking large breed collie');
+    const outCat = await recallAnswers(s, 'product-question', 'harness walking large breed collie');
+    expect(inCat.length).toBe(1);
+    expect(outCat.length).toBe(0);
+  });
+
+  it('returns [] for questions with fewer than 2 usable tokens', async () => {
+    const s = store();
+    await seed(s, 'a1', 'lead', 'Do you ship worldwide?', 'Yes.');
+    expect(await recallAnswers(s, 'lead', 'thanks!')).toEqual([]);
+  });
+});
+
+describe('captureAnswerPair / captureAnswerFromSend', () => {
+  const thread = { id: 'th1', primary_category: 'lead' };
+  const sent = 'Hi Ben,\n\nYes, we ship worldwide to most countries.\n\nBest Regards,\nActive Paw Sales Team';
+
+  it('captures the stripped substance keyed by category+norm', async () => {
+    const s = store();
+    const ok = await captureAnswerPair(s, thread, 'Do you ship worldwide?', sent, false, '2026-07-12T00:00:00.000Z');
+    expect(ok).toBe(true);
+    const rows = (await s.listAnswerMemory()).rows;
+    expect(rows.length).toBe(1);
+    expect(rows[0].answer).toBe('Yes, we ship worldwide to most countries.');
+    expect(rows[0].category).toBe('lead');
+  });
+
+  it('skips excluded categories, partnership lane, and empty question/answer', async () => {
+    const s = store();
+    expect(await captureAnswerPair(s, { id: 't', primary_category: 'spam' }, 'q tokens here', sent, false, '2026-07-12T00:00:00.000Z')).toBe(false);
+    expect(await captureAnswerPair(s, { id: 't', primary_category: 'automated' }, 'q tokens here', sent, false, '2026-07-12T00:00:00.000Z')).toBe(false);
+    expect(await captureAnswerPair(s, { id: 't', primary_category: 'affiliate' }, 'q tokens here', sent, false, '2026-07-12T00:00:00.000Z')).toBe(false);
+    expect(await captureAnswerPair(s, thread, 'q tokens here', sent, true, '2026-07-12T00:00:00.000Z')).toBe(false);
+    expect(await captureAnswerPair(s, thread, '', sent, false, '2026-07-12T00:00:00.000Z')).toBe(false);
+    expect(await captureAnswerPair(s, thread, 'thanks', sent, false, '2026-07-12T00:00:00.000Z')).toBe(false); // <2 tokens
+    expect(await captureAnswerPair(s, thread, 'q tokens here', 'Hi Ben,\n\nBest Regards,\nActive Paw Sales Team', false, '2026-07-12T00:00:00.000Z')).toBe(false); // empty substance
+    expect((await s.listAnswerMemory()).total).toBe(0);
+  });
+
+  it('captureAnswerFromSend pairs with the LAST inbound, quote-stripped', async () => {
+    const s = store();
+    const messages = [
+      { direction: 'inbound', body_text: 'First question about beds?' },
+      { direction: 'outbound', body_text: 'Answer 1' },
+      { direction: 'inbound', body_text: 'How long is delivery to Texas?\n\nOn Fri Jul 10 Active Paw <support@activepaw.co.uk> wrote:\n> Answer 1' },
+    ];
+    const ok = await captureAnswerFromSend(s, thread, messages, sent, false, '2026-07-12T00:00:00.000Z');
+    expect(ok).toBe(true);
+    const rows = (await s.listAnswerMemory()).rows;
+    expect(rows[0].question).toContain('Texas');
+    expect(rows[0].question).not.toContain('wrote:');
+  });
+});
+
+describe('backfill', () => {
+  async function seedThread(id: string, category: string, msgs: { dir: 'inbound' | 'outbound'; body: string; at: string }[]) {
+    const now = '2026-07-01T00:00:00.000Z';
+    await env.DB.prepare(
+      `INSERT INTO inbox_threads (shop, id, contact_email, subject, status, primary_category, last_message_at, created_at, updated_at)
+       VALUES (?1, ?2, 'c@x.com', 's', 'awaiting_customer', ?3, ?4, ?4, ?4)`
+    ).bind(SHOP, id, category, now).run();
+    for (let i = 0; i < msgs.length; i++) {
+      await env.DB.prepare(
+        `INSERT INTO inbox_messages (shop, id, thread_id, direction, from_addr, body_text, received_at, created_at)
+         VALUES (?1, ?2, ?3, ?4, 'f@x.com', ?5, ?6, ?6)`
+      ).bind(SHOP, id + '-m' + i, id, msgs[i].dir, msgs[i].body, msgs[i].at).run();
+    }
+  }
+
+  it('imports pairs from history, skipping excluded categories, and is flag-guarded', async () => {
+    const s = store();
+    await seedThread('t1', 'lead', [
+      { dir: 'inbound', body: 'Do you ship worldwide or only domestically?', at: '2026-06-01T00:00:00.000Z' },
+      { dir: 'outbound', body: 'Hi Ben,\n\nYes, worldwide shipping is available.\n\nBest Regards,\nActive Paw Sales Team', at: '2026-06-01T01:00:00.000Z' },
+    ]);
+    await seedThread('t2', 'spam', [
+      { dir: 'inbound', body: 'Buy my SEO service for growth?', at: '2026-06-02T00:00:00.000Z' },
+      { dir: 'outbound', body: 'Hi there,\n\nNo thanks kindly.\n\nBest Regards,\nActive Paw Customer Support', at: '2026-06-02T01:00:00.000Z' },
+    ]);
+    const n = await backfillAnswerMemory(s);
+    expect(n).toBe(1);
+    const r = await s.listAnswerMemory();
+    expect(r.total).toBe(1);
+    expect(r.rows[0].answer).toBe('Yes, worldwide shipping is available.');
+    expect(r.rows[0].updatedAt).toBe('2026-06-01T01:00:00.000Z'); // backdated to the send
+
+    // ensureAnswerBackfill: first run sets the flag, second is a no-op even with new threads
+    await env.DB.prepare(`DELETE FROM answer_memory WHERE shop = ?1`).bind(SHOP).run();
+    await ensureAnswerBackfill(s);
+    expect((await s.listAnswerMemory()).total).toBe(1);
+    expect(await s.getSearchCache(ANSWER_BACKFILL_FLAG)).toBeTruthy();
+    await env.DB.prepare(`DELETE FROM answer_memory WHERE shop = ?1`).bind(SHOP).run();
+    await ensureAnswerBackfill(s); // flag set -> no re-import
+    expect((await s.listAnswerMemory()).total).toBe(0);
+  });
+});
