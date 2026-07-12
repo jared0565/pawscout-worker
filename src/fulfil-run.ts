@@ -380,7 +380,7 @@ export async function runOrderPipelineForShop(env: Env, vault: Vault, shop: stri
   // early-exits without a Shopify call when no vouchers are registered, and a
   // failure never affects the order pipeline result.
   try {
-    const a = await attributeAffiliateOrders(store, admin);
+    const a = await attributeAffiliateOrders(store, admin, env.SHOPIFY_API_SECRET);
     if (a.matched) console.log(`affiliate attribution for ${shop}: ${a.matched} matched of ${a.scanned} scanned`);
   } catch (e) {
     console.warn(`affiliate attribution failed for ${shop}: ${(e as Error).message}`);

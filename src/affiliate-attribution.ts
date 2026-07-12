@@ -9,6 +9,7 @@
 // Partners view.
 import type { AdminGraphql } from './shopify-admin';
 import type { TenantStore } from './tenant-store';
+import { hmacHex } from './retention';
 
 export const AFFIL_CURSOR_KEY = 'affil:orders-cursor';
 const CURSOR_TTL_DAYS = 90; // refreshed every run; expiry just forces a bounded re-scan
@@ -32,6 +33,8 @@ const ORDERS_QUERY = `query pawscoutAffiliateOrders($q: String!, $first: Int!, $
       cancelledAt
       displayFinancialStatus
       discountCodes
+      email
+      shippingAddress { address1 zip }
       currentSubtotalPriceSet { shopMoney { amount } }
       currentTotalDiscountsSet { shopMoney { amount } }
     }
@@ -46,6 +49,13 @@ interface OrderNode {
   cancelledAt?: string | null;
   displayFinancialStatus?: string | null;
   discountCodes?: (string | null)[] | null;
+  // Protected customer data: null unless the app dashboard grants field-level
+  // access to order email/shipping address. A null value here is NOT "no
+  // buyer" - it may just mean the field is unavailable - so the self-referral
+  // guard treats null as "no determination", never a false negative or a
+  // commission change (see classifySelfReferral / the call site below).
+  email?: string | null;
+  shippingAddress?: { address1?: string | null; zip?: string | null } | null;
   currentSubtotalPriceSet?: { shopMoney?: { amount?: string | null } | null } | null;
   currentTotalDiscountsSet?: { shopMoney?: { amount?: string | null } | null } | null;
 }
@@ -57,12 +67,98 @@ interface OrdersConnection {
 
 function round2(n: number): number { return Math.round(n * 100) / 100; }
 
+// --- Self-referral guard (independent of signup; applies to ALL partners) ---
+// When the order's buyer is really the partner behind the voucher, the sale
+// still happened (gross/discount stay honest) but no commission is paid.
+// Accepted as a speed bump, not a hard security boundary - the low usage
+// limit + tier review + revoke are the real controls.
+
+/** Normalize an email the SAME way GDPR redaction does (tenant-store.ts
+ *  redactContact: `email.trim().toLowerCase()`), so the stored hash here and
+ *  a later redaction call computing the hash from the same plain email
+ *  actually collide and the row gets nulled. Deliberately NOT Gmail-folded -
+ *  the stored hash's only contract is "equality with redaction's hash". */
+function normalizeEmailForHash(email: string): string {
+  return email.trim().toLowerCase();
+}
+
+/** Keyed hash (HMAC-SHA256) of the buyer's normalized email for
+ *  `affiliate_orders.buyer_email_hash`. Never store the raw email. */
+export function hashBuyerEmail(email: string, secret: string): Promise<string> {
+  return hmacHex(normalizeEmailForHash(email), secret);
+}
+
+const GMAIL_DOMAINS = new Set(['gmail.com', 'googlemail.com']);
+
+/** Normalize an email for MATCHING purposes only (never for the stored
+ *  hash): lowercase+trim, plus Gmail-specific alias folding - Gmail ignores
+ *  dots and anything after a `+` in the local part, so two addresses that
+ *  differ only that way are the same inbox. Folding is scoped to Gmail's own
+ *  domains; other providers may treat dots/plus-tags as significant, so
+ *  folding them too would risk a false self-referral match. */
+function normalizeEmailForMatch(email: string): string {
+  const e = email.trim().toLowerCase();
+  const at = e.indexOf('@');
+  if (at < 0) return e;
+  const domain = e.slice(at + 1);
+  if (!GMAIL_DOMAINS.has(domain)) return e;
+  const local = e.slice(0, at).split('+')[0].replace(/\./g, '');
+  return `${local}@${domain}`;
+}
+
+/** Normalized shipping-address key: lowercase, punctuation/space-stripped
+ *  address1 + zip. Returns null when either half is missing - there is
+ *  nothing usable to compare. */
+export function normalizeShippingKey(address1?: string | null, zip?: string | null): string | null {
+  const a = (address1 ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  const z = (zip ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (!a || !z) return null;
+  return `${a}|${z}`;
+}
+
+export interface SelfReferralCheck {
+  buyerEmail?: string | null;
+  shippingAddress?: { address1?: string | null; zip?: string | null } | null;
+  // Nullable: attributionVouchers() LEFT JOINs affiliate_partners, so a
+  // voucher whose partner row is ever missing still reaches this guard with
+  // no email to compare - that must degrade to "no determination", not drop
+  // the voucher from the sweep (see tenant-store.ts attributionVouchers).
+  partnerEmail?: string | null;
+  // Normalized (normalizeShippingKey form) key for the partner's own known
+  // shipping address, when one is on file. No data source populates this
+  // today - affiliate_partners has no address column - so this is always
+  // null/undefined in production; the comparison stays real and tested so
+  // nothing else has to change once such a column exists. See task-2-report.md.
+  partnerAddressKey?: string | null;
+}
+
+/** Pure self-referral decision: true when the buyer's email or shipping
+ *  address matches the voucher's partner. A missing/empty buyerEmail (or
+ *  partnerEmail) can never cause a match on its own - callers must treat
+ *  that as "no determination", not evidence either way (see
+ *  attributeAffiliateOrders). */
+export function classifySelfReferral(input: SelfReferralCheck): boolean {
+  const buyer = (input.buyerEmail ?? '').trim();
+  const partner = (input.partnerEmail ?? '').trim();
+  if (buyer && partner && normalizeEmailForMatch(buyer) === normalizeEmailForMatch(partner)) return true;
+  if (input.partnerAddressKey) {
+    const shipKey = normalizeShippingKey(input.shippingAddress?.address1, input.shippingAddress?.zip);
+    if (shipKey && shipKey === input.partnerAddressKey) return true;
+  }
+  return false;
+}
+
 /** Poll recently-updated orders and refresh the affiliate ledger. Returns the
  *  scan/match counts for logging. Early-exits (no Shopify call) when the shop
- *  has no registered vouchers, so uninvolved tenants pay nothing for this. */
+ *  has no registered vouchers, so uninvolved tenants pay nothing for this.
+ *  `hmacSecret` keys the buyer_email_hash written to affiliate_orders (the
+ *  caller passes env.SHOPIFY_API_SECRET - the same secret already used for
+ *  other keyed hashes in this codebase, e.g. retention.ts's unsubscribe
+ *  token). */
 export async function attributeAffiliateOrders(
   store: TenantStore,
-  admin: AdminGraphql
+  admin: AdminGraphql,
+  hmacSecret: string
 ): Promise<{ scanned: number; matched: number }> {
   const vouchers = await store.attributionVouchers();
   if (!vouchers.length) return { scanned: 0, matched: 0 };
@@ -81,6 +177,7 @@ export async function attributeAffiliateOrders(
   let scanned = 0;
   let matched = 0;
   let maxUpdated = '';
+  let noEmailCount = 0; // matched orders where protected order.email came back null
 
   for (let page = 0; page < MAX_PAGES; page++) {
     const data = await admin(ORDERS_QUERY, { q, first: PAGE_SIZE, after });
@@ -103,16 +200,38 @@ export async function attributeAffiliateOrders(
         const discounts = Number(n.currentTotalDiscountsSet?.shopMoney?.amount ?? 0) || 0;
         const gross = round2(subtotal + discounts);
         const eligible = !n.cancelledAt && ELIGIBLE_STATUSES.has(n.displayFinancialStatus ?? '');
+
+        // Self-referral guard: order.email/shippingAddress are protected
+        // customer data and come back null unless the app dashboard grants
+        // field-level access. A null email is "no determination" - it must
+        // never be read as "no buyer" and never changes commission on its
+        // own. Counted (not logged per-order - up to 250 orders/run would
+        // spam the log while access is ungranted) and summarized once below.
+        const buyerEmail = n.email ?? null;
+        if (!buyerEmail) noEmailCount++;
+        const selfReferral = classifySelfReferral({
+          buyerEmail,
+          shippingAddress: n.shippingAddress ?? null,
+          partnerEmail: v.partner_email,
+          partnerAddressKey: null, // no partner-address data source yet; see classifySelfReferral doc
+        });
+        const buyerEmailHash = buyerEmail ? await hashBuyerEmail(buyerEmail, hmacSecret) : null;
+
         await store.upsertAffiliateOrder({
           shopifyOrderId: n.id,
           voucherId: v.id,
           orderName: n.name ?? null,
           grossGbp: gross,
           discountGbp: round2(discounts),
-          commissionGbp: eligible ? round2((gross * v.commission_pct) / 100) : 0,
+          // The sale still happened (gross/discount stay honest above), but a
+          // self-referral order earns no commission - even one that would
+          // otherwise be eligible.
+          commissionGbp: selfReferral ? 0 : (eligible ? round2((gross * v.commission_pct) / 100) : 0),
           financialStatus: n.displayFinancialStatus ?? null,
           eligible,
           placedAt: n.createdAt ?? null,
+          buyerEmailHash,
+          selfReferral,
         });
         matched++;
       }
@@ -125,5 +244,8 @@ export async function attributeAffiliateOrders(
   // `updated_at:>=` so the boundary order is re-read once - the upsert makes
   // that idempotent - and nothing can fall in a gap.
   if (maxUpdated) await store.putSearchCache(AFFIL_CURSOR_KEY, maxUpdated, CURSOR_TTL_DAYS);
+  if (noEmailCount) {
+    console.warn(`affiliate attribution: ${noEmailCount} of ${matched} matched order(s) had no email (protected customer data access likely not granted) - self-referral guard is inert for those rows, commission unaffected`);
+  }
   return { scanned, matched };
 }

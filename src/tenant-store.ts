@@ -211,11 +211,19 @@ export interface AffiliateOrderRow {
   gross_gbp: number; discount_gbp: number; commission_gbp: number;
   financial_status: string | null; eligible: number;
   placed_at: string | null; paid_out_at: string | null; payout_id: string | null;
+  buyer_email_hash: string | null; self_referral: number;
 }
 
-/** Voucher fields the attribution sweep needs for code matching. */
+/** Voucher fields the attribution sweep needs for code matching, plus the
+ *  partner's contact_email (joined in) so the self-referral guard has
+ *  something to compare the buyer against. partner_email is nullable - the
+ *  join is a LEFT JOIN on purpose (see attributionVouchers) so a voucher
+ *  whose partner row is ever missing still attributes orders exactly as
+ *  before; the guard just has nothing to compare and degrades to "no
+ *  determination" instead of dropping the voucher from the sweep. */
 export interface AttributionVoucherRow {
   id: string; code: string; commission_pct: number; status: string; created_at: string;
+  partner_email: string | null;
 }
 
 export class TenantStore {
@@ -1998,10 +2006,21 @@ export class TenantStore {
 
   /** All registered vouchers (any status) for the attribution sweep's code map.
    *  Revoked/expired codes still record matches: if Shopify honoured the code,
-   *  the discount was really given and the ledger reflects reality. */
+   *  the discount was really given and the ledger reflects reality. LEFT JOINs
+   *  affiliate_partners for contact_email (the self-referral guard's compare
+   *  target) - deliberately a LEFT JOIN, not INNER: a voucher whose partner
+   *  row is ever missing must still attribute orders exactly as before
+   *  (partner_email just comes back null and the guard has no determination),
+   *  never silently drop out of the sweep. */
   async attributionVouchers(): Promise<AttributionVoucherRow[]> {
     const rs = await this.db
-      .prepare(`SELECT id, code, commission_pct, status, created_at FROM affiliate_vouchers WHERE shop = ?1`)
+      .prepare(
+        `SELECT v.id AS id, v.code AS code, v.commission_pct AS commission_pct, v.status AS status, v.created_at AS created_at,
+                p.contact_email AS partner_email
+         FROM affiliate_vouchers v
+         LEFT JOIN affiliate_partners p ON p.shop = v.shop AND p.id = v.partner_id
+         WHERE v.shop = ?1`
+      )
       .bind(this.shop)
       .all<AttributionVoucherRow>();
     return rs.results ?? [];
@@ -2009,18 +2028,29 @@ export class TenantStore {
 
   /** Upsert one attributed order. Re-upserts on later order updates (refunds,
    *  edits) refresh the money columns but NEVER touch paid_out_at, so payouts
-   *  already made stay stamped. */
-  async upsertAffiliateOrder(o: { shopifyOrderId: string; voucherId: string; orderName: string | null; grossGbp: number; discountGbp: number; commissionGbp: number; financialStatus: string | null; eligible: boolean; placedAt: string | null }): Promise<void> {
+   *  already made stay stamped. buyerEmailHash/selfReferral are the
+   *  self-referral guard's output (task-2): buyerEmailHash is a keyed hash,
+   *  never the raw email; selfReferral zeroes commission upstream (the caller
+   *  passes commissionGbp already forced to 0 when true) but this row still
+   *  keeps gross/discount honest - the sale happened. */
+  async upsertAffiliateOrder(o: {
+    shopifyOrderId: string; voucherId: string; orderName: string | null; grossGbp: number; discountGbp: number;
+    commissionGbp: number; financialStatus: string | null; eligible: boolean; placedAt: string | null;
+    buyerEmailHash?: string | null; selfReferral?: boolean;
+  }): Promise<void> {
     const now = new Date().toISOString();
     await this.db
       .prepare(
-        `INSERT INTO affiliate_orders (shop, shopify_order_id, voucher_id, order_name, gross_gbp, discount_gbp, commission_gbp, financial_status, eligible, placed_at, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)
+        `INSERT INTO affiliate_orders (shop, shopify_order_id, voucher_id, order_name, gross_gbp, discount_gbp, commission_gbp, financial_status, eligible, placed_at, buyer_email_hash, self_referral, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13)
          ON CONFLICT(shop, shopify_order_id, voucher_id) DO UPDATE SET
            order_name = ?4, gross_gbp = ?5, discount_gbp = ?6, commission_gbp = ?7,
-           financial_status = ?8, eligible = ?9, placed_at = ?10, updated_at = ?11`
+           financial_status = ?8, eligible = ?9, placed_at = ?10, buyer_email_hash = ?11, self_referral = ?12, updated_at = ?13`
       )
-      .bind(this.shop, o.shopifyOrderId, o.voucherId, o.orderName, o.grossGbp, o.discountGbp, o.commissionGbp, o.financialStatus, o.eligible ? 1 : 0, o.placedAt, now)
+      .bind(
+        this.shop, o.shopifyOrderId, o.voucherId, o.orderName, o.grossGbp, o.discountGbp, o.commissionGbp,
+        o.financialStatus, o.eligible ? 1 : 0, o.placedAt, o.buyerEmailHash ?? null, o.selfReferral ? 1 : 0, now
+      )
       .run();
   }
 
@@ -2028,7 +2058,7 @@ export class TenantStore {
   async affiliateOrdersForVoucher(voucherId: string, limit = 100): Promise<AffiliateOrderRow[]> {
     const rs = await this.db
       .prepare(
-        `SELECT shopify_order_id, order_name, gross_gbp, discount_gbp, commission_gbp, financial_status, eligible, placed_at, paid_out_at, payout_id
+        `SELECT shopify_order_id, order_name, gross_gbp, discount_gbp, commission_gbp, financial_status, eligible, placed_at, paid_out_at, payout_id, buyer_email_hash, self_referral
          FROM affiliate_orders WHERE shop = ?1 AND voucher_id = ?2
          ORDER BY placed_at DESC LIMIT ?3`
       )
