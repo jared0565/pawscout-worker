@@ -122,9 +122,16 @@ describe('GDPR redaction', () => {
     await store.upsertTenant({ accessTokenEnc: 't', dekWrapped: 'd', scopes: 's' });
     await store.putLink({ cjPid: 'P1', state: 'imported', shopifyProductId: 'gid://1', handle: 'h', category: 'pet-toys' });
     await seedOrder(store, 'o1');
+    // GDPR: answer_memory stores customers' verbatim question text and must
+    // be wiped along with everything else on a shop/redact.
+    await store.upsertAnswerMemory({
+      qhash: 'qh1', category: 'other', questionText: 'Do you ship worldwide?', questionNorm: 'ship worldwide',
+      answerText: 'Yes.', threadId: 't1', at: '2026-06-18T11:05:00Z'
+    });
     await store.redactShop();
     expect(await store.getOrder('o1')).toBeNull();
     expect(await store.getLink('P1')).toBeNull();
     expect(await store.getTenant()).toBeNull();
+    expect((await store.listAnswerMemory()).total).toBe(0);
   });
 });

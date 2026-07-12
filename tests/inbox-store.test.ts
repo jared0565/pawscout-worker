@@ -137,6 +137,12 @@ describe('inbox store', () => {
       headersJson: '{}', receivedAt: '2026-06-18T11:00:00Z'
     });
     await store.setThreadLabels(janeTid, ['returns', 'priority']);
+    // GDPR: answer_memory stores the customer's verbatim question text keyed
+    // by thread_id, so redactContact must purge it too.
+    await store.upsertAnswerMemory({
+      qhash: 'jane-qh', category: 'other', questionText: 'Can I return this?', questionNorm: 'return',
+      answerText: 'Yes, within 30 days.', threadId: janeTid, at: '2026-06-18T11:05:00Z'
+    });
 
     // seed bob on the same primary shop
     await store.upsertContact({ email: 'bob@x.com', name: 'Bob', phone: null });
@@ -178,6 +184,9 @@ describe('inbox store', () => {
 
     const janeLabels = await env.DB.prepare('SELECT * FROM inbox_thread_labels WHERE shop=?1 AND thread_id=?2').bind(SHOP, janeTid).all();
     expect(janeLabels.results).toHaveLength(0);
+
+    const janeAnswerMemory = await env.DB.prepare('SELECT * FROM answer_memory WHERE shop=?1 AND thread_id=?2').bind(SHOP, janeTid).all();
+    expect(janeAnswerMemory.results).toHaveLength(0);
 
     // bob on primary shop is intact
     const bobContact = await env.DB.prepare('SELECT * FROM inbox_contacts WHERE shop=?1 AND email=?2').bind(SHOP, 'bob@x.com').first();
