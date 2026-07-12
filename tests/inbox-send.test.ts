@@ -110,4 +110,38 @@ describe('sendReply', () => {
     expect(r.ok).toBe(true);
     expect((await s.getThreadWithMessages(tid))!.thread.status).toBe('converted'); // not downgraded to awaiting_customer
   });
+
+  it('a successful send captures the FINAL text into answer memory (owner edits included)', async () => {
+    const s = new TenantStore(env.DB, 'd.myshopify.com');
+    await s.upsertContact({ email: 'jane@x.com', name: null, phone: null });
+    const tid = await s.createThread({ contactEmail: 'jane@x.com', subject: 'Ship?', subjectNorm: 'ship?', receivedAt: '2026-06-18T10:00:00Z', initialStatus: 'needs_reply' });
+    await s.setThreadClassification(tid, { status: 'needs_reply', primaryCategory: 'lead', intentScore: 50, summary: null, classifiedAt: '2026-06-18T10:00:01Z' });
+    await s.insertInboundMessageIfNew({ threadId: tid, messageId: '<c1@x>', inReplyTo: null, references: [], from: 'jane@x.com', to: 'support@activepaw.co.uk', subject: 'Ship?', bodyText: 'Do you ship worldwide from your shop?', bodyHtml: null, headersJson: '{}', receivedAt: '2026-06-18T10:00:00Z' });
+    const did = await s.insertDraft({ threadId: tid, bodyText: 'Draft answer.', bodyHtml: '<p>Draft answer.</p>', confidence: 95, quotesPriceOrder: false, holdReasons: [], model: 'm', status: 'pending' });
+    const thread = (await s.getThreadWithMessages(tid))!.thread;
+    const draft = (await s.getDraft(did))!;
+    const r = await sendReply({ ...env, RESEND_API_KEY: 'rk' } as any, s, CFG, thread, draft,
+      'Hi Jane,\n\nYes, we ship worldwide to most countries.\n\nBest Regards,\nActive Paw Sales Team', okFetch);
+    expect(r.ok).toBe(true);
+    const mem = await s.listAnswerMemory();
+    expect(mem.total).toBe(1);
+    expect(mem.rows[0].question).toBe('Do you ship worldwide from your shop?');
+    expect(mem.rows[0].answer).toBe('Yes, we ship worldwide to most countries.'); // owner-edited FINAL text, wrapper stripped
+    expect(mem.rows[0].category).toBe('lead');
+  });
+
+  it('a capture failure never fails the send', async () => {
+    const s = new TenantStore(env.DB, 'e.myshopify.com');
+    await s.upsertContact({ email: 'jane@x.com', name: null, phone: null });
+    const tid = await s.createThread({ contactEmail: 'jane@x.com', subject: 'Ship?', subjectNorm: 'ship?', receivedAt: '2026-06-18T10:00:00Z', initialStatus: 'needs_reply' });
+    await s.setThreadClassification(tid, { status: 'needs_reply', primaryCategory: 'lead', intentScore: 50, summary: null, classifiedAt: '2026-06-18T10:00:01Z' });
+    await s.insertInboundMessageIfNew({ threadId: tid, messageId: '<c2@x>', inReplyTo: null, references: [], from: 'jane@x.com', to: 'support@activepaw.co.uk', subject: 'Ship?', bodyText: 'Do you ship worldwide from your shop?', bodyHtml: null, headersJson: '{}', receivedAt: '2026-06-18T10:00:00Z' });
+    const did = await s.insertDraft({ threadId: tid, bodyText: 'Yes we do ship worldwide.', bodyHtml: '<p>x</p>', confidence: 95, quotesPriceOrder: false, holdReasons: [], model: 'm', status: 'pending' });
+    (s as any).upsertAnswerMemory = async () => { throw new Error('boom'); };
+    const thread = (await s.getThreadWithMessages(tid))!.thread;
+    const draft = (await s.getDraft(did))!;
+    const r = await sendReply({ ...env, RESEND_API_KEY: 'rk' } as any, s, CFG, thread, draft, undefined, okFetch);
+    expect(r.ok).toBe(true);
+    expect((await s.getDraft(did))?.status).toBe('sent');
+  });
 });

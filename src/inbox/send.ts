@@ -6,6 +6,7 @@ import { sendEmail } from '../email';
 import { renderReplyHtml, sanitizeOutbound } from './draft';
 import { defaultFetch } from '../safe-fetch';
 import { isPartnershipLane, resolveFromAddress } from './partnership';
+import { captureAnswerFromSend } from './answer-memory';
 
 /** Send a drafted reply (HITL approve OR Auto). To = the contact; threads via a
  * controlled Message-ID we store; records outbound + flips draft/thread. */
@@ -40,6 +41,11 @@ export async function sendReply(
 
   const sentAt = new Date().toISOString();
   await store.insertOutboundMessage({ threadId: thread.id, messageId: r.messageId, from: 'support@activepaw.co.uk', to: thread.contact_email, subject: `Re: ${subject}`, bodyText, bodyHtml, sentAt });
+  // Answer memory (2026-07-12): the FINAL sent text (owner edits included)
+  // becomes a vetted Q->A pair for future recall. Never blocks the send.
+  try {
+    await captureAnswerFromSend(store, thread, got?.messages ?? [], bodyText, partnershipLane, sentAt);
+  } catch (e) { console.warn(`answer capture failed for ${thread.id}: ${(e as Error).message}`); }
   await store.setDraftStatus(draft.id, _cfg.inbox.autosend && bodyTextOverride === undefined ? 'auto_sent' : 'sent', { sentMessageId: r.messageId, sentAt });
   // Intelligent thread bookkeeping on send (HITL approve OR Auto):
   //  - Status: a sent reply puts the ball in the customer's court → awaiting_customer.

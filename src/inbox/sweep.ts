@@ -18,6 +18,7 @@ import { createDraftOrder } from '../shopify-drafts';
 import { sendInvoice } from './send-invoice';
 import { hasScope } from './scopes';
 import { stripQuotedReply } from './quote';
+import { recallAnswers, ensureAnswerBackfill } from './answer-memory';
 import { agentFor } from './agents/registry';
 import { resolveAgents } from './agents/config';
 import type { AgentContext, Department } from './agents/types';
@@ -46,6 +47,8 @@ export async function runInboxClassifySweep(env: Env, fetchImpl: typeof fetch = 
     try {
       const cfg = await store.getConfig();
       if (!cfg || !cfg.inbox.enabled) continue;
+      // One-time import of historical Q->A pairs (flag-guarded, never throws).
+      await ensureAnswerBackfill(store);
       for (const thread of await store.unclassifiedThreads(SWEEP_BATCH)) {
         await classifyOne(env, store, cfg, shop, thread, fetchImpl);
       }
@@ -369,9 +372,16 @@ export async function composeDraftForThread(
   };
   const grounding = await agent.ground(ctx); // never throws; miss => { confident:false }
 
+  // Approved-answers recall (2026-07-12): ground the drafter with vetted past
+  // answers to similar questions. Failure degrades to no recall, never blocks.
+  let recall: { question: string; answer: string }[] = [];
+  try {
+    recall = await recallAnswers(store, thread.primary_category ?? null, latestInbound);
+  } catch (e) { console.warn(`answer recall failed for ${thread.id}: ${(e as Error).message}`); }
+
   const draft = await draftReply(llm, store, cfg, {
     agent, grounding, subject: thread.subject ?? '', conversation, latestMessage: latestInbound,
-    customerName: contact?.name ?? null, customerEmail: thread.contact_email
+    customerName: contact?.name ?? null, customerEmail: thread.contact_email, recall
   });
   if (!draft) return null; // degrade: retry next sweep
 

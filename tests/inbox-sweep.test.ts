@@ -3,6 +3,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
 import { TenantStore } from '../src/tenant-store';
 import { runInboxClassifySweep, composeAgentDraft } from '../src/inbox/sweep';
+import { normalizeQuestion, ANSWER_BACKFILL_FLAG } from '../src/inbox/answer-memory';
 import { DEFAULT_INBOX } from '../src/inbox/types';
 import { ACTIVE_PAW_COLLECTION_MAP, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL } from '../src/types';
 
@@ -230,6 +231,36 @@ describe('runInboxClassifySweep', () => {
     await runInboxClassifySweep({ ...env, OPENROUTER_API_KEY: 'k', RESEND_API_KEY: 'rk' } as any, fetchImpl);
     expect(sent).toBe(true);
     expect((await store.getThreadWithMessages(tid))?.thread.status).toBe('awaiting_customer');
+  });
+
+  it('drafting grounds with recalled approved answers, and the sweep runs the one-time backfill', async () => {
+    await seedShopWithThread();
+    const store = new TenantStore(env.DB, SHOP);
+    await store.upsertAnswerMemory({
+      qhash: 'seed1', category: 'lead',
+      questionText: 'Can I buy the large bed?', questionNorm: normalizeQuestion('Can I buy the large bed?').join(' '),
+      answerText: 'The large bed is available on our website.', threadId: 'prior-thread',
+    });
+    let draftSystem = '';
+    const fetchImpl = (async (url: string, init: RequestInit) => {
+      if (String(url).includes('openrouter')) {
+        const body = JSON.parse(init.body as string) as { messages: { role: string; content: string }[] };
+        const system = body.messages.find((m) => m.role === 'system')?.content ?? '';
+        if (system.includes('customer-service email reply')) { // the drafter (vs the classifier)
+          draftSystem = system;
+          return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ customerAsks: ['buy the large bed'], bodyText: 'Yes, the large bed is available.', confidence: 90, quotesPriceOrOrder: false, commercialIntent: false }) } }], usage: { cost: 0.0001 } }), { status: 200 });
+        }
+        return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ isHuman: true, category: 'lead', intentScore: 60, summary: 'Wants the large bed', labels: ['lead'] }) } }], usage: { cost: 0.0001 } }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ id: 'em_1' }), { status: 200 });
+    }) as unknown as typeof fetch;
+
+    await runInboxClassifySweep({ ...env, OPENROUTER_API_KEY: 'k', RESEND_API_KEY: 'rk' } as any, fetchImpl);
+
+    expect(draftSystem).toContain('Previously approved answers to similar past questions');
+    expect(draftSystem).toContain('The large bed is available on our website.');
+    // The flag-guarded one-time backfill ran during this sweep.
+    expect(await store.getSearchCache(ANSWER_BACKFILL_FLAG)).toBeTruthy();
   });
 });
 
