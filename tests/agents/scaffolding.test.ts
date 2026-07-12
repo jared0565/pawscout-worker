@@ -163,4 +163,29 @@ describe('draftReply scaffolding invariants', () => {
     });
     expect(sink.system).not.toContain('Owner guidance - follow exactly');
   });
+
+  it('injects previously approved answers with the override and no-personal-details rules', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const sink: { system?: string } = {};
+    const llm = capturingLlm({ bodyText: 'Hi.', confidence: 85, quotesPriceOrOrder: false }, sink);
+    await draftReply(llm, store, CFG, {
+      agent: stubAgent(false), grounding: GROUNDING,
+      subject: 'Shipping', conversation: 'Do you deliver worldwide?',
+      recall: [{ question: 'Do you ship worldwide?', answer: 'Yes, we ship internationally to most countries.' }],
+    });
+    expect(sink.system).toContain('Previously approved answers to similar past questions');
+    expect(sink.system).toContain('the facts above WIN');
+    expect(sink.system).toContain('NEVER copy personal details');
+    expect(sink.system).toContain('[Q: Do you ship worldwide? A: Yes, we ship internationally to most countries.]');
+  });
+
+  it('omits the recall block when no recall is provided', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const sink: { system?: string } = {};
+    const llm = capturingLlm({ bodyText: 'Hi.', confidence: 85, quotesPriceOrOrder: false }, sink);
+    await draftReply(llm, store, CFG, {
+      agent: stubAgent(false), grounding: GROUNDING, subject: 'Shipping', conversation: 'Do you deliver worldwide?'
+    });
+    expect(sink.system).not.toContain('Previously approved answers');
+  });
 });

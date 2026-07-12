@@ -149,13 +149,17 @@ function validateDraft(v: unknown): DraftResult | null {
  * rewrites its previous reply to clear the quality reviewer's specific objections. */
 function buildDraftSystem(
   agent: CategoryAgent, grounding: Grounding,
-  opts: { hasLatest: boolean; guidance?: string; shippingFact?: string; revisionIssues?: string[] }
+  opts: { hasLatest: boolean; guidance?: string; shippingFact?: string; revisionIssues?: string[]; recall?: { question: string; answer: string }[] }
 ): string {
   return (
     SHARED_SCAFFOLDING + ' ' + STORE_FACTS + ' ' +
     (opts.shippingFact ? opts.shippingFact + ' ' : '') +
     agent.promptFragment(grounding) + ' ' +
     (grounding.facts ? `Grounded facts you MAY rely on for this reply: ${grounding.facts} ` : '') +
+    (opts.recall?.length
+      ? 'Previously approved answers to similar past questions - use them to stay consistent in facts, policy and voice. If anything in them conflicts with the store facts or grounded facts above, the facts above WIN (past answers can be out of date). NEVER copy personal details from them: names, destinations, addresses, quantities, prices or order numbers belong to OTHER customers. ' +
+        opts.recall.map((r) => `[Q: ${r.question} A: ${r.answer}]`).join(' ') + ' '
+      : '') +
     (agent.commercial ? COMMERCIAL_GUARDRAILS + ' ' : '') +
     (opts.hasLatest
       ? 'Reply to the customer\'s MOST RECENT message specifically (provided as latestMessage); earlier conversation is background. If the latest message has no new question (only a quote, thank-you, or acknowledgement), reply with a short warm acknowledgement, do not re-answer a previous turn. '
@@ -174,9 +178,10 @@ function buildDraftSystem(
 async function reviseDraft(
   llm: LlmClient, store: TenantStore, chain: ReturnType<typeof resolveChain>,
   agent: CategoryAgent, grounding: Grounding, guidance: string | undefined,
-  latest: string, baseUser: string, previousBody: string, issues: string[], shippingFact: string
+  latest: string, baseUser: string, previousBody: string, issues: string[], shippingFact: string,
+  recall: { question: string; answer: string }[] | undefined
 ): Promise<DraftResult | null> {
-  const system = buildDraftSystem(agent, grounding, { hasLatest: !!latest, guidance, shippingFact, revisionIssues: issues });
+  const system = buildDraftSystem(agent, grounding, { hasLatest: !!latest, guidance, shippingFact, revisionIssues: issues, recall });
   const user = JSON.stringify({ ...JSON.parse(baseUser), previousReply: previousBody.slice(0, 2000) });
   const result = await llm.jsonChain<DraftResult>({ chain, maxTokens: 700, system, user, validate: validateDraft });
   if (!result.ok) { console.warn(`inbox revise failed: ${result.error}`); return null; }
@@ -192,7 +197,7 @@ async function reviseDraft(
  * until it passes - the worker self-corrects in production, no dev tuning needed. */
 export async function draftReply(
   llm: LlmClient, store: TenantStore, cfg: TenantConfig,
-  input: { agent: CategoryAgent; grounding: Grounding; subject: string; conversation: string; latestMessage?: string; customerName?: string | null; customerEmail?: string | null }
+  input: { agent: CategoryAgent; grounding: Grounding; subject: string; conversation: string; latestMessage?: string; customerName?: string | null; customerEmail?: string | null; recall?: { question: string; answer: string }[] }
 ): Promise<DraftResult | null> {
   if (!llm.available || !cfg.inbox.enabled) return null;
   const chain = resolveChain(cfg, 'text');
@@ -207,7 +212,7 @@ export async function draftReply(
     ? 'UK delivery is currently free (checkout charges GBP 0 to UK addresses); you MAY state that UK delivery is free. For all other destinations, shipping is calculated by location and shown at checkout before payment.'
     : '';
 
-  const system = buildDraftSystem(agent, grounding, { hasLatest: !!latest, guidance, shippingFact });
+  const system = buildDraftSystem(agent, grounding, { hasLatest: !!latest, guidance, shippingFact, recall: input.recall });
   const baseUser = JSON.stringify({ subject: input.subject.slice(0, 200), category: agent.category, latestMessage: latest.slice(0, 2000), conversation: input.conversation.slice(0, 4000) });
 
   const result = await llm.jsonChain<DraftResult>({ chain, maxTokens: 700, system, user: baseUser, validate: validateDraft });
@@ -220,7 +225,7 @@ export async function draftReply(
   const qctx: DraftQualityContext = { maxWords: DRAFT_MAX_WORDS, askedDelivery: asksDoYouDeliver(latest) };
   const refined = await refineUntilClean(
     result.value,
-    (prev, issues) => reviseDraft(llm, store, chain, agent, grounding, guidance, latest, baseUser, prev.bodyText, issues, shippingFact),
+    (prev, issues) => reviseDraft(llm, store, chain, agent, grounding, guidance, latest, baseUser, prev.bodyText, issues, shippingFact, input.recall),
     qctx, 2
   );
 
