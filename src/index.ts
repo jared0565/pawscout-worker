@@ -572,6 +572,26 @@ app.post('/api/traffic/delete', async (c) => {
   return c.json(gone ? { ok: true } : { ok: false, error: 'Channel not found' });
 });
 
+// --- Inbox answer memory (2026-07-12): the Answer library card. List is
+// read-only; toggle flips one pair's disabled flag (recall skips disabled).
+app.post('/api/inbox/answers', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: { limit?: unknown } = {};
+  try { body = await c.req.json(); } catch {}
+  const limit = Number.isFinite(Number(body.limit)) ? Math.floor(Number(body.limit)) : 100;
+  const r = await new TenantStore(c.env.DB, s).listAnswerMemory(limit);
+  return c.json({ ok: true, ...r });
+});
+app.post('/api/inbox/answers/toggle', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: { qhash?: unknown; disabled?: unknown } = {};
+  try { body = await c.req.json(); } catch {}
+  if (typeof body.qhash !== 'string' || !body.qhash) return c.json({ ok: false, error: 'qhash required' }, 400);
+  if (typeof body.disabled !== 'boolean') return c.json({ ok: false, error: 'disabled must be true or false' }, 400);
+  const ok = await new TenantStore(c.env.DB, s).setAnswerDisabled(body.qhash, body.disabled);
+  return c.json(ok ? { ok: true } : { ok: false, error: 'Pair not found' });
+});
+
 // --- Profitability agent (2026-07-09): the active adjust-or-drop agent's console.
 // Ships dormant; /config flips Enabled/Preview(dryRun)/Enforce, /run drains one
 // agent batch (dry-run previews, live executes), /archive is a manual one-product

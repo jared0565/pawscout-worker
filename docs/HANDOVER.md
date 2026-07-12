@@ -135,6 +135,17 @@ docs/superpowers/specs/2026-07-11-blog-distribution-design.md (90-day Blotato
 earn-it review; native-API exit path). Phases 2 (composed creatives) and 3
 (email digest + partner packs) are specced, not built.
 
+## Inbox answer memory (2026-07-12)
+
+Every approved/auto-sent reply is captured as a vetted Q->A pair (`answer_memory`,
+migration 0031; salutation/footer stripped; spam/automated/affiliate and the
+partnership lane excluded). Drafting recalls the top 2 matching pairs
+(deterministic token overlap, 180-day window, zero LLM) and injects them into the
+system prompt as consistency grounding - live facts always override, personal
+details are never copied. One-time history backfill runs flag-guarded on the first
+sweep (`search_cache` key `job:answer-backfill`). Console: Inbox -> Answer library
+(per-pair Disable). Auto-send gates are untouched by design.
+
 ## 7. Where to look
 
 - `TASKS.md` - prioritized, granular checklist (PS vs You ownership).

@@ -53,6 +53,15 @@ export const inboxView = `  <section class="ibx" data-panel="inbox">
         <div id="ibx-context-body"><p class="muted" style="font-size:13px;margin:0">Thread details appear here.</p></div>
       </aside>
     </div>
+  </section>
+
+  <section class="card">
+    <h2>Answer library</h2>
+    <p class="sub" style="margin:0 0 10px">Every reply you approve is remembered as the customer's question and your vetted answer. When a similar question arrives - even reworded - the drafter is grounded with the closest approved answers so replies stay consistent; live facts always override them, and personal details are never copied across customers. Disable a pair to pull a bad or outdated answer out of recall; approving a new reply to the same question replaces and re-enables it. History imports automatically on the first sweep.</p>
+    <p id="ans-count" class="muted" style="margin:0 0 8px;font-size:12.5px"></p>
+    <div id="ans-list"><p class="muted">Loading…</p></div>
+    <div class="row" style="margin-top:10px"><button type="button" class="ghost" onclick="ansLoad()">Refresh</button></div>
+    <p id="ans-msg" class="msg muted"></p>
   </section>`;
 
 // Namespaced (.ibx-*) workspace CSS. Composed AFTER shellCss in page.ts. The
@@ -126,4 +135,13 @@ export const inboxCss = `
   .ibx-ctx-block:first-child{border-top:0;padding-top:0}
   .ibx-ctx-block h4{margin:0 0 8px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--subdued);display:flex;align-items:center;gap:8px}
   @media(max-width:1100px){.ibx-grid{grid-template-columns:292px minmax(0,1fr)}.ibx-context{display:none}}
+  /* --- Answer library (approved-answers memory) --- */
+  .ans-row{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1.6fr) 150px;gap:12px;padding:9px 0;border-bottom:1px solid var(--border);font-size:12.5px}
+  .ans-row:last-child{border-bottom:none}
+  .ans-q{color:var(--ink);font-weight:550;overflow-wrap:anywhere}
+  .ans-a{color:var(--subdued);overflow-wrap:anywhere;white-space:pre-line}
+  .ans-meta{color:var(--subdued);font-size:11.5px}
+  .ans-cat{display:inline-block;font-size:10.5px;font-weight:650;border-radius:8px;padding:1px 7px;background:rgba(88,166,255,.16);color:#58a6ff;margin-bottom:4px}
+  .ans-row.off .ans-q,.ans-row.off .ans-a{opacity:.45;text-decoration:line-through}
+  @media(max-width:820px){.ans-row{grid-template-columns:1fr}}
 `;

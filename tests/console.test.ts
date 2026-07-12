@@ -879,4 +879,19 @@ describe('consolePage', () => {
     expect(scripts).not.toMatch(/'\s*\+\s*inv\.\s*title\s*\+\s*'/);
     expect(scripts).not.toMatch(/'\s*\+\s*inv\.\s*status\s*\+\s*'/);
   });
+
+  it('Inbox carries the Answer library card wired to /inbox/answers with delegated toggles', async () => {
+    const html = await consolePage('test-api-key').text();
+    for (const id of ['ans-list', 'ans-count', 'ans-msg']) expect(html).toContain('id="' + id + '"');
+    expect(html).toContain('Answer library');
+    expect(html).toContain('.ans-row'); // namespaced card CSS present
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+    expect(scripts).toContain('function ansLoad(');
+    expect(scripts).toContain('function ansToggle(');
+    expect(scripts).toContain("'/inbox/answers'");
+    expect(scripts).toContain("'/inbox/answers/toggle'");
+    // qhash rides an ESCAPED data attribute resolved by delegation, never inline onclick JS.
+    expect(scripts).toContain('data-ans-toggle="\'+esc(');
+    expect(scripts).toContain('ansLoad();'); // loaded on startup
+  });
 });

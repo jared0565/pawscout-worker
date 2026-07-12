@@ -33,6 +33,7 @@ SELECT inbox, fulfil, gates, pricing, llm, addons, target FROM tenant_config WHE
 | `inbox.autoConfidenceThreshold` | `tenant_config.inbox.autoConfidenceThreshold` | inbox column dump |
 | `inbox.intentThreshold` | `tenant_config.inbox.intentThreshold` | inbox column dump |
 | `inbox.alertEmail` | `tenant_config.inbox.alertEmail`, falls back to `fulfil.alertEmail` | inbox + fulfil dumps |
+| Answer memory (approved-answers grounding) | pairs + disabled: `npx wrangler d1 execute pawscout --remote --command "SELECT COUNT(*), SUM(disabled) FROM answer_memory"`; backfill flag: `SELECT cache_key FROM search_cache WHERE cache_key='job:answer-backfill'` | capture on every sent reply; recall into every draft; no config switch (inert until pairs exist) |
 
 ## Invoicing
 
