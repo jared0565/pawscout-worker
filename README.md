@@ -359,7 +359,8 @@ Tests run in real workerd via `@cloudflare/vitest-pool-workers` with migrations 
 
 Current status (July 2026):
 
-- Store **live and taking orders**: catalogue, fulfilment, and pricing pipelines all in production; protected-customer-data scopes granted.
+- Storefront live, unpassworded, and fully catalogued: catalogue, fulfilment, and pricing pipelines all in production; protected-customer-data scopes granted.
+- **Shopify Payments is still in test mode** (verified 2026-07-12: "Accepting test payments only" in Settings -> Payments) - real card checkouts are not yet processed. Exactly one order exists in the system's history (2026-06-14, cancelled), consistent with a test transaction rather than a real sale. PayPal shows Active as an additional provider but its live-vs-sandbox credential state is unverified. **Turning off Shopify Payments test mode is the actual remaining go-live blocker**, not a pipeline gap.
 - Customer inbox live in human-approval mode, with answer-memory grounding on every draft.
 - Profitability engine live full-auto: eBay median-market judging (Temu excluded) with owner brakes (Preview, Keep/Release, Wrong match, Recalibrate & rescue).
 - Blog channel live (worker drafts, owner publishes); distribution rail built and dormant pending channel enables.
@@ -368,6 +369,7 @@ Current status (July 2026):
 
 Next up:
 
+- **Turn off Shopify Payments test mode** so real orders can flow through the fulfilment pipeline that's already built and waiting.
 - Publish new imports to the Google channel automatically at import time (imports currently publish to Online Store only).
 - Blog distribution phase 1 enablement (Blotato key + channel toggles), then phases 2-3 (composed creatives, digest/partner packs).
 - **W6** - automated CJ damage/claims pipeline.
