@@ -42,6 +42,16 @@ export interface Env {
   // a separate explicit go, and only after checkout marketing-consent capture
   // is confirmed (we send only to emailMarketingConsent SUBSCRIBED regardless).
   RETENTION_REORDER_ENABLED?: string;
+  // Cloudflare Turnstile (affiliate self-serve marketplace, Stage 0 bot gate) -
+  // optional, like FIRECRAWL_API_KEY. Server-side secret for siteverify.
+  // MANDATORY once cfg.selfServe.enabled is true: the apply route hard-fails
+  // (never silently skips) when this is unset - see src/affiliate/apply.ts.
+  TURNSTILE_SECRET?: string;
+  // Turnstile's client-side widget key - PUBLIC, not sensitive (safe to ship in
+  // rendered HTML). Absent = the apply form renders with an empty sitekey (the
+  // widget will not validate) until the owner sets it, same dark-by-default
+  // posture as the rest of selfServe.
+  TURNSTILE_SITE_KEY?: string;
 }
 
 export interface TenantRow {

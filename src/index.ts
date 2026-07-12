@@ -55,6 +55,7 @@ import { blotatoFromEnv } from './syndicate/blotato';
 import { parseOrderWebhook, validateOrder, FULFIL_GRACE_MINUTES } from './fulfil';
 import { attributePaidOrder } from './inbox/attribution';
 import { firecrawlCjSearch } from './firecrawl';
+import { handleAffiliateApply, renderApplyForm, type ApplyFields } from './affiliate/apply';
 
 export const app = new Hono<{ Bindings: Env }>();
 
@@ -1578,6 +1579,26 @@ app.post('/proxy/event', async (c) => {
   if (!(await p.store.getLink(pid))) return c.json({ ok: false, error: 'Unknown product' });
   await p.store.recordEvent(pid, event);
   return c.json({ ok: true });
+});
+
+// Affiliate self-serve marketplace, Stage 0 (2026-07-12): public, unauthenticated
+// apply form. Ships DARK behind cfg.selfServe.enabled (default false) - both
+// routes are thin adapters over src/affiliate/apply.ts's testable core.
+app.get('/proxy/affiliate/apply', async (c) => {
+  const p = await proxyCtx(c); if (p instanceof Response) return p;
+  const html = await renderApplyForm(p.cfg, c.env);
+  return c.html(html);
+});
+
+app.post('/proxy/affiliate/apply', async (c) => {
+  const p = await proxyCtx(c); if (p instanceof Response) return p;
+  let raw: Record<string, string | File>;
+  try { raw = await c.req.parseBody(); } catch { raw = {}; }
+  const fields: ApplyFields = {};
+  for (const [k, v] of Object.entries(raw)) if (typeof v === 'string') (fields as Record<string, string>)[k] = v;
+  const ip = c.req.header('cf-connecting-ip') ?? '';
+  const result = await handleAffiliateApply({ store: p.store, cfg: p.cfg, env: c.env, fields, ip });
+  return c.json(result.body);
 });
 
 // --- uninstall webhook ---

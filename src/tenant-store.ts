@@ -16,12 +16,22 @@ const OPEN_THREAD_STATUSES_SQL = `NOT IN ('awaiting_customer', 'converted', 'clo
  *  ("Usage logged as `affiliate-screen`"). */
 export const AFFILIATE_SCREEN_LLM_TASK = 'affiliate-screen';
 
-/** affiliate_applications.stage value that means "voucher successfully issued" -
- *  the terminal state after approved_pending_issue, per the design spec's stage
- *  vocabulary (submitted|verified|judging|approved_pending_issue|approved|
- *  deflected|declined|owner_queue). Exported so countAutoIssuedToday and the
- *  (future) issuance task can never drift apart on the literal string. */
+/** affiliate_applications.stage vocabulary (design spec: submitted | verified |
+ *  judging | approved_pending_issue | approved | deflected | declined |
+ *  owner_queue). Exported in full so every stage-writing/reading task (Stage 0
+ *  apply route, Stage 1 verify, the screen lane, the console) shares the exact
+ *  literal strings and can never drift apart on a typo. */
+export const AFFILIATE_STAGE_SUBMITTED = 'submitted';
+export const AFFILIATE_STAGE_VERIFIED = 'verified';
+export const AFFILIATE_STAGE_JUDGING = 'judging';
+export const AFFILIATE_STAGE_APPROVED_PENDING_ISSUE = 'approved_pending_issue';
+/** "voucher successfully issued" - the terminal state after approved_pending_issue. */
 export const AFFILIATE_STAGE_APPROVED = 'approved';
+export const AFFILIATE_STAGE_DEFLECTED = 'deflected';
+export const AFFILIATE_STAGE_DECLINED = 'declined';
+/** Routed for mandatory human review; the auto-funnel must never advance an
+ *  application past this stage on its own (former-partner gate, over-cap). */
+export const AFFILIATE_STAGE_OWNER_QUEUE = 'owner_queue';
 
 interface SupplierCredRow {
   shop: string; supplier: string; api_key_enc: string; label: string | null; validated_at: string | null; created_at: string;
