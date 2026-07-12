@@ -93,7 +93,7 @@ export const profitCss = `
          at the very bottom of a tall table); .pf-tablewrap keeps overflow-x as
          the safety net for genuinely narrow panes. --- */
   .pf-tablewrap{overflow-x:auto;margin-top:4px}
-  .pf-table{table-layout:fixed;width:100%;min-width:892px;border-collapse:collapse;font-size:13px}
+  .pf-table{table-layout:fixed;width:100%;min-width:872px;border-collapse:collapse;font-size:13px}
   .pf-table th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--subdued);font-weight:650;padding:8px 8px 6px;border-bottom:1px solid var(--border);white-space:nowrap}
   .pf-table td{padding:9px 8px;border-bottom:1px solid var(--border);vertical-align:top;white-space:nowrap}
   .pf-table tbody tr:last-child td{border-bottom:none}
@@ -104,13 +104,18 @@ export const profitCss = `
   .pf-c-price{width:86px}
   .pf-c-comp{width:110px}
   .pf-c-when{width:96px}
-  .pf-c-arch{width:116px}
+  .pf-c-arch{width:96px}
   /* Cells that hold long text WRAP and break space-less tokens so nothing spills. */
   td.pf-prod,td.pf-act-cell{white-space:normal;overflow-wrap:anywhere;word-break:break-word}
-  /* Row actions stack vertically so every button stays fully visible. */
+  /* Row actions: one Actions trigger per row; the items live in the fixed-
+     position dropdown below (owner ask 2026-07-12 - cleaner than stacked buttons). */
   td.pf-actions-c{white-space:normal}
-  .pf-actions-c .ghost{display:block;width:100%;margin:0 0 6px;text-align:center}
-  .pf-actions-c .ghost:last-child{margin-bottom:0}
+  .pf-actions-c .ghost{display:block;width:100%;text-align:center}
+  /* position:fixed + viewport clamping in pfOpenMenu keep the menu clear of the
+     .pf-tablewrap overflow clip; no console ancestor creates a transform/filter
+     containing block, so fixed = viewport here. */
+  .pf-menu{position:fixed;z-index:60;min-width:150px;background:var(--surface);border:1px solid var(--border);border-radius:9px;padding:6px;box-shadow:0 10px 28px rgba(0,0,0,.45);display:flex;flex-direction:column;gap:4px}
+  .pf-menu .ghost{display:block;width:100%;text-align:left}
   .pf-kept{background:rgba(88,166,255,.16);color:#58a6ff}
   .pf-pname{display:block;font-weight:600;color:var(--ink);overflow-wrap:anywhere}
   .pf-sku{display:block;margin-top:2px;font-family:ui-monospace,monospace;font-size:11.5px;color:var(--subdued);overflow-wrap:anywhere}

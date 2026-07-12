@@ -386,9 +386,14 @@ describe('consolePage', () => {
     // is discarding a market match (it changes the judgment basis).
     expect(scripts).toContain('Click again to archive');
     expect(scripts).toContain('Click again to discard this market match');
-    // The row-actions column stacks its buttons (the 2026-07-12 clipped-table fix:
-    // side-by-side buttons overflowed the fixed column and were cut off).
-    expect(html).toContain('.pf-actions-c .ghost{display:block');
+    // Row actions live behind a per-row Actions dropdown (owner ask 2026-07-12:
+    // cleaner table than stacked buttons). The menu is rebuilt per open with the
+    // same escaped data-* delegation as before, positioned FIXED so the table's
+    // overflow-x wrapper cannot clip it, and closes on outside click / Escape.
+    expect(scripts).toContain('data-pf-menu="\'+esc(');
+    expect(scripts).toContain('function pfOpenMenu(');
+    expect(scripts).toContain('function pfCloseMenu(');
+    expect(html).toContain('.pf-menu{position:fixed');
     expect(scripts).toContain('pf-actions-c');
     // The kept override is visible on the row.
     expect(scripts).toContain('pf-kept');

@@ -77,27 +77,12 @@ function pfRowTr(r){
   var net='<td class="pf-num"><span class="'+(neg?'pf-nneg':'pf-npos')+'">'+esc(pfMoney(r.netGbp))+'</span>'
     +(r.netPct!==null?('<span class="pf-move">'+Math.round(r.netPct*100)+'%</span>'):'')+'</td>';
   var when='<td class="pf-when-c">'+esc(pfWhen(r.checkedAt))+'</td>';
-  // Row actions (pids ride data- attributes; delegated click in the IIFE below,
-  // never inline code). Stacked vertically in their own column so no button is
-  // ever clipped (the 2026-07-12 cut-table fix). Keep = durable owner override
-  // (Release resumes judging). Wrong match = the competitor listing is not the
-  // same product: discard that market price for 90 days, re-judge on cost-plus.
-  // Deep check = the thorough LLM+web market read (~30p) + immediate re-judge.
-  // Archive = manual fallback (non-pass, live, not-yet-archived).
+  // Row actions live behind ONE Actions dropdown per row (owner ask 2026-07-12:
+  // cleaner table than stacked buttons). The menu itself is built in pfOpenMenu
+  // with the same data-* delegation; the trigger only carries the pid.
   var actionCell='<td class="pf-actions-c">';
   var live=r.linkState&&r.linkState!=='archived'&&r.productId;
-  if(live){
-    if(r.profitKeep===1){
-      actionCell+='<button type="button" class="ghost" data-pf-release="'+esc(r.cjPid)+'" title="Resume judging: the agent reprices, flags or drops this product again on its normal rules.">Release</button>';
-    } else {
-      actionCell+='<button type="button" class="ghost" data-pf-keep="'+esc(r.cjPid)+'" title="Keep this product exactly as it is: the agent stops repricing, flagging or dropping it until you release it.">Keep</button>';
-      if(r.competitorGbp!==null&&r.competitorGbp>0)
-        actionCell+='<button type="button" class="ghost" data-pf-badmatch="'+esc(r.cjPid)+'" title="The competitor listing is NOT the same product. Discards that market price for 90 days and re-judges on cost-plus rules.">Wrong match</button>';
-      actionCell+='<button type="button" class="ghost" data-pf-deep="'+esc(r.cjPid)+'">Deep check</button>';
-      if(r.verdict!=='pass')
-        actionCell+='<button type="button" class="ghost" data-pf-pid="'+esc(r.cjPid)+'">Archive</button>';
-    }
-  }
+  if(live) actionCell+='<button type="button" class="ghost" data-pf-menu="'+esc(r.cjPid)+'">Actions &#9662;</button>';
   actionCell+='</td>';
   return '<tr>'+prod+act+pdp+cj+comp+net+when+actionCell+'</tr>';
 }
@@ -317,11 +302,54 @@ async function pfDeep(btn,pid){
   }catch(e){ setMsg('pf-msg','Could not run the deep check.','no'); }
   btn.disabled=false;
 }
+// --- Row-actions dropdown. The menu node lives INSIDE #pf-list so the same
+// delegated listener below handles its items (and any pfLoad re-render wipes
+// it, closing the menu after an action completes). It is position:FIXED and
+// viewport-clamped so the table's overflow-x wrapper can never clip it; the
+// two-click arm (prtArm) still happens on the menu item itself.
+function pfCloseMenu(){ var m=el('pf-menu'); if(m&&m.parentNode) m.parentNode.removeChild(m); }
+function pfOpenMenu(btn,pid){
+  var prev=el('pf-menu');
+  var same=prev&&prev.getAttribute('data-pf-menu-for')===pid;
+  pfCloseMenu();
+  if(same) return; // clicking the trigger again toggles the menu closed
+  var r=null;
+  for(var i=0;i<pfState.rows.length;i++){ if(pfState.rows[i].cjPid===pid){ r=pfState.rows[i]; break; } }
+  if(!r) return;
+  // Keep = durable owner override (Release resumes judging). Wrong match = the
+  // competitor listing is not the same product: discard that price for 90 days,
+  // re-judge on cost-plus. Deep check = thorough LLM+web read (~30p) + re-judge.
+  // Archive = manual fallback (non-pass rows only).
+  var s='';
+  if(r.profitKeep===1){
+    s+='<button type="button" class="ghost" data-pf-release="'+esc(pid)+'" title="Resume judging: the agent reprices, flags or drops this product again on its normal rules.">Release</button>';
+  } else {
+    s+='<button type="button" class="ghost" data-pf-keep="'+esc(pid)+'" title="Keep this product exactly as it is: the agent stops repricing, flagging or dropping it until you release it.">Keep</button>';
+    if(r.competitorGbp!==null&&r.competitorGbp>0)
+      s+='<button type="button" class="ghost" data-pf-badmatch="'+esc(pid)+'" title="The competitor listing is NOT the same product. Discards that market price for 90 days and re-judges on cost-plus rules.">Wrong match</button>';
+    s+='<button type="button" class="ghost" data-pf-deep="'+esc(pid)+'">Deep check</button>';
+    if(r.verdict!=='pass')
+      s+='<button type="button" class="ghost" data-pf-pid="'+esc(pid)+'">Archive</button>';
+  }
+  var box=el('pf-list'); if(!box) return;
+  var m=document.createElement('div');
+  m.id='pf-menu'; m.className='pf-menu';
+  m.setAttribute('data-pf-menu-for',pid);
+  m.innerHTML=s;
+  box.appendChild(m);
+  var rect=btn.getBoundingClientRect();
+  var top=rect.bottom+4;
+  if(top+m.offsetHeight>window.innerHeight-8) top=Math.max(8,rect.top-m.offsetHeight-4);
+  var left=Math.max(8,Math.min(rect.right-m.offsetWidth,window.innerWidth-m.offsetWidth-8));
+  m.style.top=top+'px'; m.style.left=left+'px';
+}
 (function(){
   var list=el('pf-list');
   if(list) list.addEventListener('click',function(e){
     var t=e.target;
     if(!t||!t.closest) return;
+    var trg=t.closest('[data-pf-menu]');
+    if(trg){ pfOpenMenu(trg,trg.getAttribute('data-pf-menu')); return; }
     var keep=t.closest('[data-pf-keep]');
     if(keep){ pfKeep(keep,keep.getAttribute('data-pf-keep'),true); return; }
     var rel=t.closest('[data-pf-release]');
@@ -334,5 +362,13 @@ async function pfDeep(btn,pid){
     if(!btn) return;
     pfArchive(btn,btn.getAttribute('data-pf-pid'));
   });
+  // Outside click / Escape closes the dropdown (clicks on the trigger or
+  // inside the menu are handled above and stay open for the two-click arm).
+  document.addEventListener('click',function(e){
+    var t=e.target;
+    if(t&&t.closest&&(t.closest('#pf-menu')||t.closest('[data-pf-menu]'))) return;
+    pfCloseMenu();
+  });
+  document.addEventListener('keydown',function(e){ if(e.key==='Escape') pfCloseMenu(); });
 })();
 `;
