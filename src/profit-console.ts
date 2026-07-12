@@ -211,7 +211,7 @@ export async function rejectProfitMatch(
   }
 }
 
-const ARCHIVE_PRODUCT = `mutation pawscoutProfitArchive($input: ProductInput!) {
+const SET_PRODUCT_STATUS = `mutation pawscoutProfitStatus($input: ProductInput!) {
   productUpdate(input: $input) { product { id } userErrors { field message } }
 }`;
 
@@ -225,9 +225,67 @@ export async function archiveProfitProduct(
   const link = await store.getLink(cjPid);
   if (!link || !link.shopify_product_id) return { ok: false, error: 'No Shopify product for that item' };
   if (link.state === 'archived') return { ok: false, error: 'Already archived' };
-  const data = await admin(ARCHIVE_PRODUCT, { input: { id: link.shopify_product_id, status: 'ARCHIVED' } });
+  const data = await admin(SET_PRODUCT_STATUS, { input: { id: link.shopify_product_id, status: 'ARCHIVED' } });
   const errs = (data.productUpdate as { userErrors?: { message: string }[] } | undefined)?.userErrors ?? [];
   if (errs.length) return { ok: false, error: errs.map((e) => e.message).join('; ') };
   await store.putLink({ cjPid, state: 'archived' });
   return { ok: true };
+}
+
+export interface RecalibrateResult {
+  ok: true;
+  total: number;          // rescue candidates in the CURRENT list
+  scanned: number;
+  rescued: number;        // re-judged clean -> un-archived (or would be, in preview)
+  stillDropped: number;   // re-judged and still a clear loss - stays archived
+  failed: number;
+  cacheCleared: number | null; // non-owner comp caches wiped (first batch only)
+  next: number | null;    // cursor for the console loop; null = done
+  dryRun: boolean;
+}
+
+/** Owner "Recalibrate & rescue" (2026-07-12): after a judging-rule change (e.g.
+ *  the median market reference), re-judge everything the agent archived and
+ *  un-archive whatever now clears the rules; what still fails stays archived.
+ *  The FIRST batch also wipes every cached competitor signal except owner
+ *  Wrong-match markers, so live products re-reference the market on their next
+ *  sweep too. Batched like the agent run (the console loops on `next`); in
+ *  Preview nothing is un-archived - the counts show what WOULD be rescued.
+ *  NOTE the moving list: a live rescue leaves the candidate list, so the cursor
+ *  only advances past items that STAYED in it. */
+export async function recalibrateProfitDrops(
+  store: TenantStore, admin: AdminGraphql, llm: LlmClient, cfg: TenantConfig,
+  opts: { offset?: number; limit?: number; market?: MarketSource | null } = {}
+): Promise<RecalibrateResult | { ok: false; error: string }> {
+  if (!cfg.profit?.enabled) return { ok: false, error: 'The profitability agent is off' };
+  const offset = Math.max(0, Math.floor(opts.offset ?? 0));
+  const limit = Math.max(1, Math.floor(opts.limit ?? 10));
+  const dryRun = cfg.profit.dryRun !== false;
+  const cacheCleared = offset === 0 ? await store.clearCompetitorCacheExceptOwner() : null;
+  const pids = await store.listArchivedDroppedPids();
+  const batch = pids.slice(offset, offset + limit);
+  let rescued = 0, stillDropped = 0, failed = 0;
+
+  for (const cjPid of batch) {
+    try {
+      const link = await store.getLink(cjPid);
+      if (!link?.shopify_product_id) { failed++; continue; }
+      const judged = await judgeImportedLink(store, admin, llm, cfg,
+        { cj_pid: cjPid, shopify_product_id: link.shopify_product_id, profit_keep: link.profit_keep },
+        dryRun, { market: opts.market ?? null });
+      if (judged.action === 'drop') { stillDropped++; continue; }
+      if (!dryRun) {
+        const data = await admin(SET_PRODUCT_STATUS, { input: { id: link.shopify_product_id, status: 'ACTIVE' } });
+        const errs = (data.productUpdate as { userErrors?: { message: string }[] } | undefined)?.userErrors ?? [];
+        if (errs.length) { failed++; console.warn(`recalibrate un-archive failed for ${cjPid}: ${errs.map((e) => e.message).join('; ')}`); continue; }
+        await store.putLink({ cjPid, state: 'imported' });
+      }
+      rescued++;
+    } catch (e) { failed++; console.warn(`recalibrate failed for ${cjPid}: ${(e as Error).message}`); }
+  }
+
+  const done = offset + batch.length >= pids.length;
+  // Live rescues vanished from the list; everything else kept its position.
+  const next = done ? null : offset + batch.length - (dryRun ? 0 : rescued);
+  return { ok: true, total: pids.length, scanned: batch.length, rescued, stillDropped, failed, cacheCleared, next, dryRun };
 }

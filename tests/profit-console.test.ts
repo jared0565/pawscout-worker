@@ -69,3 +69,35 @@ describe('clearProfitDecisions (clear list & re-judge)', () => {
     expect(await clearProfitDecisions(s)).toEqual({ ok: true, cleared: 0, cacheCleared: 0 });
   });
 });
+
+describe('recalibration store methods (2026-07-12 median recalibration)', () => {
+  beforeEach(async () => { await applyD1Migrations(env.DB, env.TEST_MIGRATIONS); });
+  const SHOP = 'a.myshopify.com';
+  const drop = (cjPid: string, dryRun: boolean) =>
+    ({ cjPid, action: 'drop', fromGbp: null, toGbp: null, competitorGbp: 10, competitorConfidence: 'high', reason: 'x', dryRun });
+
+  it('listArchivedDroppedPids: distinct archived links with a LIVE drop action only', async () => {
+    const s = new TenantStore(env.DB, SHOP);
+    await s.putLink({ cjPid: 'A', shopifyProductId: 'gid://A', state: 'archived' });
+    await s.putLink({ cjPid: 'B', shopifyProductId: 'gid://B', state: 'archived' });
+    await s.putLink({ cjPid: 'C', shopifyProductId: 'gid://C', state: 'imported' });  // rescued/live again - not a candidate
+    await s.putLink({ cjPid: 'D', shopifyProductId: 'gid://D', state: 'archived' }); // archived but never agent-dropped (owner Archive)
+    await s.logProfitAction(drop('A', false));
+    await s.logProfitAction(drop('A', false)); // second live drop -> still one candidate (DISTINCT)
+    await s.logProfitAction(drop('B', false));
+    await s.logProfitAction(drop('C', false));
+    await s.logProfitAction(drop('E', true));  // preview-only drop, and no archived link
+    expect(await s.listArchivedDroppedPids()).toEqual(['A', 'B']);
+  });
+
+  it('clearCompetitorCacheExceptOwner wipes market signals but keeps owner Wrong-match markers + other caches', async () => {
+    const s = new TenantStore(env.DB, SHOP);
+    await s.putSearchCache('comp:p1', JSON.stringify({ estimateGbp: 12, confidence: 'high', sources: ['ebay.co.uk (3 matches)'] }), 14);
+    await s.putSearchCache('comp:p2', JSON.stringify({ estimateGbp: 0, confidence: 'low', sources: ['owner: competitor item is not the same product'] }), 90);
+    await s.putSearchCache('pid:p1', '{"pid":"p1"}', 30); // NOT a competitor signal - must survive
+    expect(await s.clearCompetitorCacheExceptOwner()).toBe(1);
+    expect(await s.getSearchCache('comp:p1')).toBeNull();     // re-researched under the new rules
+    expect(await s.getSearchCache('comp:p2')).not.toBeNull(); // the owner's call outlives a recalibration
+    expect(await s.getSearchCache('pid:p1')).not.toBeNull();
+  });
+});

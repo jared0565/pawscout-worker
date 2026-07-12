@@ -38,6 +38,10 @@ export const profitView = `  <section class="card">
       <button type="button" onclick="pfClearDecisions(this)">Clear list &amp; re-judge</button>
       <span class="muted" style="align-self:center;font-size:12px">Wipes every decision AND the cached market prices; the agent re-researches and re-judges the whole catalog over the next few hours. Nothing is archived or repriced by clearing; the action history below is kept.</span>
     </div>
+    <div class="row" style="margin:0 0 10px">
+      <button type="button" onclick="pfRecalibrate(this)">Recalibrate &amp; rescue drops</button>
+      <span class="muted" style="align-self:center;font-size:12px">After a judging-rule change: re-checks every product the agent archived against fresh market prices under the CURRENT rules and brings back whatever now clears them (repriced if needed). What still fails stays archived. Also refreshes the cached market prices for live products (your Wrong-match calls are kept). In Preview it only reports what WOULD come back.</span>
+    </div>
     <div id="pf-list">Turn on the agent and run it to see decisions.</div>
   </section>
 

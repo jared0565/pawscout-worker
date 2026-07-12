@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { runProfitAgent } from '../src/profitability';
-import { rejectProfitMatch, setProfitKeepAction } from '../src/profit-console';
+import { rejectProfitMatch, setProfitKeepAction, recalibrateProfitDrops } from '../src/profit-console';
 import { DEFAULT_PROFIT, type Pricing } from '../src/types';
 
 const PRICING: Pricing = { multiplier: 2.2, floor: 2.2, minMarginGbp: 6, fxUsdToGbp: 0.78, fxBufferPct: 2, maxMarginGbp: 30 };
@@ -10,12 +10,14 @@ type Prod = {
   competitor?: { estimateGbp: number; confidence: 'high' | 'medium' | 'low' };
   nameEn?: string;
   profitKeep?: number; // owner Keep override on the link row
+  state?: string;      // link state (default 'imported'; 'archived' for recalibration fixtures)
+  dropped?: boolean;   // has a LIVE drop in the profit_actions history (recalibration candidate)
 };
 
 /** Stateful fakes: a product_profit map (so getProfitVerdict reflects prior
  *  upserts, exercising the ledger dedup) + recorders for every mutation. */
 function makeFakes(products: Record<string, Prod>) {
-  const links = Object.keys(products).map((pid) => ({ cj_pid: pid, shopify_product_id: `gid://${pid}`, handle: pid, state: 'imported', profit_keep: products[pid]?.profitKeep ?? 0 }));
+  const links = Object.keys(products).map((pid) => ({ cj_pid: pid, shopify_product_id: `gid://${pid}`, handle: pid, state: products[pid]?.state ?? 'imported', profit_keep: products[pid]?.profitKeep ?? 0 }));
   const productProfit = new Map<string, { action: string | null; to_gbp: number | null; dry_run: number | null; verdict: string; reason: string; competitorGbp: number | null }>();
   const ledger: { cjPid: string; action: string; fromGbp: number | null; toGbp: number | null; dryRun: boolean }[] = [];
   const priceCalls: { productId: string; updates: { id: string; price: string }[] }[] = [];
@@ -23,6 +25,8 @@ function makeFakes(products: Record<string, Prod>) {
   const putLinkCalls: { cjPid: string; state: string }[] = [];
   const cacheWrites: { key: string; payload: string; ttlDays: number }[] = [];
   const keepCalls: { cjPid: string; keep: boolean }[] = [];
+  const statusCalls: { id: string; status: string }[] = [];
+  const cacheClears: number[] = []; // one entry per clearCompetitorCacheExceptOwner call
 
   const store = {
     listImportedLinks: async () => links,
@@ -41,7 +45,13 @@ function makeFakes(products: Record<string, Prod>) {
       productProfit.set(rec.cjPid, { action: rec.action ?? null, to_gbp: rec.toGbp ?? null, dry_run: rec.dryRun == null ? null : (rec.dryRun ? 1 : 0), verdict: rec.verdict, reason: rec.reason, competitorGbp: rec.competitorGbp });
     },
     logProfitAction: async (rec: { cjPid: string; action: string; fromGbp: number | null; toGbp: number | null; dryRun: boolean }) => { ledger.push(rec); },
-    putLink: async (rec: { cjPid: string; state: string }) => { putLinkCalls.push(rec); },
+    putLink: async (rec: { cjPid: string; state: string }) => {
+      putLinkCalls.push(rec);
+      const l = links.find((x) => x.cj_pid === rec.cjPid); if (l) l.state = rec.state; // faithful: rescues leave the archived pool
+    },
+    // Recalibration surface (mirrors the real SQL: distinct LIVE-dropped pids whose link is STILL archived).
+    listArchivedDroppedPids: async () => links.filter((l) => products[l.cj_pid]?.dropped && l.state === 'archived').map((l) => l.cj_pid),
+    clearCompetitorCacheExceptOwner: async () => { cacheClears.push(1); return 7; },
   } as any;
 
   const admin = (async (query: string, vars: any) => {
@@ -52,11 +62,12 @@ function makeFakes(products: Record<string, Prod>) {
     }
     if (query.includes('pawscoutPrices')) { priceCalls.push({ productId: vars.productId, updates: vars.variants }); return { productVariantsBulkUpdate: { userErrors: [] } }; }
     if (query.includes('pawscoutArchiveOne')) { archiveCalls.push(vars.input.id); return { productUpdate: { userErrors: [] } }; }
+    if (query.includes('pawscoutProfitStatus')) { statusCalls.push({ id: vars.input.id, status: vars.input.status }); return { productUpdate: { userErrors: [] } }; }
     return {};
   }) as any;
 
   const llm = { available: false } as any;
-  return { store, admin, llm, ledger, priceCalls, archiveCalls, putLinkCalls, productProfit, cacheWrites, keepCalls };
+  return { store, admin, llm, ledger, priceCalls, archiveCalls, putLinkCalls, productProfit, cacheWrites, keepCalls, statusCalls, cacheClears };
 }
 
 const cfg = (profit: Record<string, unknown>) =>
@@ -217,5 +228,76 @@ describe('owner row actions (Keep/Release + Wrong match)', () => {
     expect(missing.ok).toBe(false);
     const badFlag = await setProfitKeepAction(f.store, f.admin, f.llm, cfg({}), 'LOSS', 'yes', null);
     expect(badFlag.ok).toBe(false);
+  });
+});
+
+describe('recalibrateProfitDrops (owner recalibration rescue, 2026-07-12)', () => {
+  // GOOD re-judges to a profitable reprice (rescue); BAD re-judges to a clear loss (stays archived).
+  const RESCUE_FIXTURES = {
+    GOOD: { variants: [{ variantId: 'v', price: '15.00', cost: '5.00' }], competitor: { estimateGbp: 25, confidence: 'high' as const }, state: 'archived', dropped: true },
+    BAD: { variants: [{ variantId: 'v', price: '10.00', cost: '8.00' }], competitor: { estimateGbp: 15, confidence: 'high' as const }, state: 'archived', dropped: true },
+  };
+
+  it('re-judges archived drops under the CURRENT rules: rescues the survivor, leaves the loser archived', async () => {
+    const f = makeFakes(structuredClone(RESCUE_FIXTURES));
+    const r = await recalibrateProfitDrops(f.store, f.admin, f.llm, cfg({ dryRun: false }), {});
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r).toMatchObject({ scanned: 2, rescued: 1, stillDropped: 1, failed: 0, next: null, dryRun: false });
+    expect(r.cacheCleared).toBe(7); // first batch re-references the whole catalog
+    // GOOD went live again: Shopify status ACTIVE + link back to imported (+ the judge repriced it).
+    expect(f.statusCalls).toEqual([{ id: 'gid://GOOD', status: 'ACTIVE' }]);
+    expect(f.putLinkCalls).toContainEqual({ cjPid: 'GOOD', state: 'imported' });
+    expect(f.priceCalls.length).toBe(1);
+    // BAD never got an ACTIVE flip and is still archived.
+    expect(f.putLinkCalls.filter((c) => c.cjPid === 'BAD' && c.state === 'imported')).toEqual([]);
+  });
+
+  it('preview (dryRun) reports what WOULD be rescued but un-archives nothing', async () => {
+    const f = makeFakes(structuredClone(RESCUE_FIXTURES));
+    const r = await recalibrateProfitDrops(f.store, f.admin, f.llm, cfg({ dryRun: true }), {});
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r).toMatchObject({ scanned: 2, rescued: 1, stillDropped: 1, dryRun: true });
+    expect(f.statusCalls).toEqual([]);
+    expect(f.putLinkCalls).toEqual([]);
+    expect(f.priceCalls).toEqual([]); // the judge also only previews
+  });
+
+  it('only the FIRST batch clears the competitor cache; later batches leave it alone', async () => {
+    const f = makeFakes(structuredClone(RESCUE_FIXTURES));
+    const r1 = await recalibrateProfitDrops(f.store, f.admin, f.llm, cfg({ dryRun: false }), { offset: 0, limit: 1 });
+    expect(r1.ok && r1.cacheCleared).toBe(7);
+    const r2 = await recalibrateProfitDrops(f.store, f.admin, f.llm, cfg({ dryRun: false }), { offset: 1, limit: 1 });
+    expect(r2.ok && r2.cacheCleared).toBe(null);
+    expect(f.cacheClears.length).toBe(1);
+  });
+
+  it('pagination survives the shrinking list: rescued items do not advance the cursor past unprocessed ones', async () => {
+    const f = makeFakes({
+      X1: structuredClone(RESCUE_FIXTURES.GOOD),
+      X2: structuredClone(RESCUE_FIXTURES.BAD),
+      X3: structuredClone(RESCUE_FIXTURES.GOOD),
+    });
+    // Batch 1 (offset 0, limit 1): X1 rescued -> it leaves the list, cursor stays at 0.
+    const r1 = await recalibrateProfitDrops(f.store, f.admin, f.llm, cfg({ dryRun: false }), { offset: 0, limit: 1 });
+    expect(r1.ok && r1.rescued).toBe(1);
+    expect(r1.ok ? r1.next : -1).toBe(0);
+    // Batch 2 (offset 0 over [X2, X3]): X2 still dropped -> stays in the list, cursor advances to 1.
+    const r2 = await recalibrateProfitDrops(f.store, f.admin, f.llm, cfg({ dryRun: false }), { offset: 0, limit: 1 });
+    expect(r2.ok && r2.stillDropped).toBe(1);
+    expect(r2.ok ? r2.next : -1).toBe(1);
+    // Batch 3 (offset 1 over [X2, X3]): X3 rescued, list exhausted.
+    const r3 = await recalibrateProfitDrops(f.store, f.admin, f.llm, cfg({ dryRun: false }), { offset: 1, limit: 1 });
+    expect(r3.ok && r3.rescued).toBe(1);
+    expect(r3.ok ? r3.next : -1).toBe(null);
+    // Every product was processed exactly once.
+    expect(f.statusCalls.map((c) => c.id).sort()).toEqual(['gid://X1', 'gid://X3']);
+  });
+
+  it('refuses to run while the profit agent is disabled', async () => {
+    const f = makeFakes(structuredClone(RESCUE_FIXTURES));
+    const r = await recalibrateProfitDrops(f.store, f.admin, f.llm, cfg({ enabled: false }), {});
+    expect(r.ok).toBe(false);
   });
 });

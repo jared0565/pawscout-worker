@@ -240,6 +240,35 @@ async function pfClearDecisions(btn){
   btn.textContent=btn.getAttribute('data-orig')||'Clear list & re-judge';
   pfLoad();
 }
+async function pfRecalibrate(btn){
+  // Re-judges every agent-archived product under the current rules and brings
+  // back what now clears them - a bulk action, so two-click armed like Clear.
+  if(!pfState.config||!pfState.config.enabled){ setMsg('pf-msg','Turn on the agent first.','no'); return; }
+  if(!prtArm(btn,'Click again to recalibrate')) return;
+  btn.disabled=true;
+  var offset=0, rescued=0, still=0, failed=0, guard=0;
+  setMsg('pf-msg','Recalibrating: fresh market prices, then re-judging every archived drop…','muted');
+  try{
+    while(guard++<200){
+      var r=await api('/profit/recalibrate',{offset:offset});
+      if(!r.ok){ setMsg('pf-msg','Recalibrate failed: '+(r.error||'unknown'),'no'); break; }
+      rescued+=r.rescued; still+=r.stillDropped; failed+=r.failed;
+      btn.textContent='Recalibrating… '+(rescued+still+failed)+'/'+r.total;
+      await pfLoad();
+      if(r.next===null||r.next===undefined){
+        var m=(r.dryRun?('Preview: '+rescued+' of '+(rescued+still)+' archived drops WOULD come back under the current rules.')
+          :('Recalibrated: '+rescued+' product'+(rescued===1?'':'s')+' brought back live (repriced where needed); '+still+' stayed archived.'))
+          +(failed?(' '+failed+' failed - run again to retry.'):'');
+        setMsg('pf-msg',m,(failed?'no':'ok'));
+        break;
+      }
+      offset=r.next;
+    }
+  }catch(e){ setMsg('pf-msg','Recalibrate stopped.','no'); }
+  btn.disabled=false; btn.removeAttribute('data-armed');
+  btn.textContent=btn.getAttribute('data-orig')||'Recalibrate & rescue drops';
+  pfLoad();
+}
 async function pfArchive(btn,pid){
   if(!prtArm(btn,'Click again to archive')) return;
   try{

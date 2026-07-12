@@ -383,6 +383,36 @@ export class TenantStore {
     return r.meta.changes ?? 0;
   }
 
+  /** clearCompetitorCache, but the owner's Wrong-match markers survive (their
+   *  payload carries the 'owner:' source sentinel written by rejectProfitMatch).
+   *  Used by the recalibration sweep: every product re-references the market
+   *  under the CURRENT judging rules without forgetting the owner's calls. */
+  async clearCompetitorCacheExceptOwner(): Promise<number> {
+    const r = await this.db
+      .prepare(`DELETE FROM search_cache WHERE shop = ?1 AND cache_key LIKE 'comp:%' AND payload NOT LIKE '%"owner:%'`)
+      .bind(this.shop)
+      .run();
+    return r.meta.changes ?? 0;
+  }
+
+  /** Distinct products the agent dropped FOR REAL (dry_run = 0) whose link is
+   *  still archived - the candidate list for a recalibration rescue. Owner
+   *  console archives are deliberately absent (they never log a profit action):
+   *  the owner's explicit call is not the agent's to reverse. */
+  async listArchivedDroppedPids(): Promise<string[]> {
+    const { results } = await this.db
+      .prepare(
+        `SELECT DISTINCT pa.cj_pid FROM profit_actions pa
+         JOIN product_links pl ON pl.shop = pa.shop AND pl.cj_pid = pa.cj_pid
+         WHERE pa.shop = ?1 AND pa.action = 'drop' AND pa.dry_run = 0
+           AND pl.state = 'archived' AND pl.shopify_product_id IS NOT NULL
+         ORDER BY pa.cj_pid`
+      )
+      .bind(this.shop)
+      .all<{ cj_pid: string }>();
+    return (results ?? []).map((r) => r.cj_pid);
+  }
+
   async getProfitVerdict(cjPid: string): Promise<ProfitVerdictRow | null> {
     return await this.db
       .prepare(

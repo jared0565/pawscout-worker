@@ -40,7 +40,7 @@ import { searchBackfill, normalizeKeyword } from './proxy/search';
 import { LlmClient, classifyKeyword, curateProduct, pickHeroImage, rewriteDescription } from './llm';
 import { buildPreview, getDetailPreferWarehouse, curateDetailImages, confirmAndImport, reconcileAddonVisibility, reconcileHeroImages, reconcileDescriptions, reconcileCategories } from './proxy/import';
 import { makeAdminGraphql } from './shopify-admin';
-import { getProfitConsole, saveProfitFlags, archiveProfitProduct, clearProfitDecisions, setProfitKeepAction, rejectProfitMatch } from './profit-console';
+import { getProfitConsole, saveProfitFlags, archiveProfitProduct, clearProfitDecisions, setProfitKeepAction, rejectProfitMatch, recalibrateProfitDrops } from './profit-console';
 import { runProfitAgent, competitorSignal, judgeImportedLink } from './profitability';
 import { ebayFromEnv } from './market';
 import { productInventoryItems } from './proxy/inventory';
@@ -685,6 +685,23 @@ app.post('/api/profit/reject-match', async (c) => {
   if (!admin) return c.json({ ok: false, error: 'Shopify is not connected' });
   const llm = new LlmClient({ openrouter: c.env.OPENROUTER_API_KEY, openai: c.env.OPENAI_API_KEY });
   return c.json(await rejectProfitMatch(store, admin, llm, cfg, body.cjPid));
+});
+// Recalibrate & rescue (2026-07-12): after a judging-rule change, wipe the
+// non-owner competitor caches (first batch) and re-judge everything the agent
+// archived under the CURRENT rules, un-archiving whatever now clears them.
+// Batched; the console loops on the returned next cursor.
+app.post('/api/profit/recalibrate', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: { offset?: unknown } = {};
+  try { body = await c.req.json(); } catch {}
+  const store = new TenantStore(c.env.DB, s);
+  const cfg = await store.getConfig();
+  if (!cfg) return c.json({ ok: false, error: 'Connect the store first' });
+  const admin = await adminForShop(c.env, store);
+  if (!admin) return c.json({ ok: false, error: 'Shopify is not connected' });
+  const offset = Number.isFinite(Number(body.offset)) ? Math.max(0, Math.floor(Number(body.offset))) : 0;
+  const llm = new LlmClient({ openrouter: c.env.OPENROUTER_API_KEY, openai: c.env.OPENAI_API_KEY });
+  return c.json(await recalibrateProfitDrops(store, admin, llm, cfg, { offset, market: ebayFromEnv(c.env) }));
 });
 
 // --- Privacy-policy wording keeper (2026-07-05): check + one-click apply ---
