@@ -360,7 +360,6 @@ Tests run in real workerd via `@cloudflare/vitest-pool-workers` with migrations 
 Current status (July 2026):
 
 - **Store live and taking real orders** (2026-07-12): Shopify Payments test mode turned off, PayPal confirmed live - catalogue, fulfilment, and pricing pipelines all in production; protected-customer-data scopes granted; unpassworded, fully catalogued.
-- **Cookie-consent banner not yet enabled** (verified 2026-07-12: none present on the live storefront) - a real PECR/GDPR gap now that real traffic and GA4 are both live. Fix: Settings -> Customer privacy -> Cookie banner.
 - Customer inbox live in human-approval mode, with answer-memory grounding on every draft.
 - Profitability engine live full-auto: eBay median-market judging (Temu excluded) with owner brakes (Preview, Keep/Release, Wrong match, Recalibrate & rescue).
 - Blog channel live (worker drafts, owner publishes); distribution rail built and dormant pending channel enables.
@@ -369,7 +368,6 @@ Current status (July 2026):
 
 Next up:
 
-- Enable the cookie-consent banner (Settings -> Customer privacy) - the one remaining compliance gap now that real traffic is live.
 - Publish new imports to the Google channel automatically at import time (imports currently publish to Online Store only).
 - Blog distribution phase 1 enablement (Blotato key + channel toggles), then phases 2-3 (composed creatives, digest/partner packs).
 - **W6** - automated CJ damage/claims pipeline.
