@@ -2237,6 +2237,17 @@ export class TenantStore {
     return (r.meta?.changes ?? 0) > 0;
   }
 
+  /** Engagement events for ONE thread's outbound emails, newest first (the
+   * Inbox context rail's Email engagement block). thread_id arrives as a
+   * send-time tag on replies/invoices, echoed back in every webhook event. */
+  async listThreadEmailEvents(threadId: string, limit = 12): Promise<{ eventType: string; occurredAt: string; link: string | null }[]> {
+    const { results } = await this.db
+      .prepare(`SELECT event_type, occurred_at, link FROM email_events WHERE shop = ?1 AND thread_id = ?2 ORDER BY occurred_at DESC LIMIT ?3`)
+      .bind(this.shop, threadId, Math.min(Math.max(limit, 1), 50))
+      .all<{ event_type: string; occurred_at: string; link: string | null }>();
+    return (results ?? []).map((r) => ({ eventType: r.event_type, occurredAt: r.occurred_at, link: r.link }));
+  }
+
   /** Per-campaign engagement rollup: UNIQUE RECIPIENTS per event type (one
    * person opening five times counts once), keyed by campaign id. Only real
    * campaign sends count - [Test] sends carry kind=campaign_test and are

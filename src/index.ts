@@ -766,7 +766,12 @@ app.post('/api/email-tracking/setup', async (c) => {
     await store.putSupplierCredential('resend-webhook', await vault.seal(tenant.dek_wrapped, wh.signingSecret), 'resend-webhook');
     secretStored = true;
   }
-  return c.json({ ok: true, tracking: true, webhookCreated: wh.created, secretStored, endpoint });
+  // Re-read AFTER any enable so the response reports the VERIFIED state, not
+  // an assumption (2026-07-12 lesson: 93 delivered / 0 opened events pointed
+  // at an enable that never stuck - the button must prove itself).
+  const after = await getTrackingStatus(c.env.RESEND_API_KEY, SENDING_DOMAIN);
+  const verified = after.ok ? { openTracking: after.status.openTracking, clickTracking: after.status.clickTracking } : null;
+  return c.json({ ok: true, tracking: !!(verified && verified.openTracking && verified.clickTracking), verified, webhookCreated: wh.created, secretStored, endpoint });
 });
 app.post('/api/campaigns/create', async (c) => {
   const s = await shopOf(c); if (typeof s !== 'string') return s;

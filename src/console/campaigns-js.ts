@@ -144,7 +144,12 @@ async function cmpEnableTracking(){
     var r=await api('/email-tracking/setup',{});
     if(!r.ok){ setMsg('cmp-tracking-msg','Setup failed: '+(r.error||'unknown error'),'no'); return; }
     if(!r.secretStored){ setMsg('cmp-tracking-msg','Tracking is on, but an event webhook already exists in Resend and its secret is not stored here. Delete that webhook in the Resend dashboard, then click again.','no'); }
-    else{ setMsg('cmp-tracking-msg','Done. Every email from now on reports delivery, opens and clicks back to this page.','ok'); }
+    else{
+      // r.verified is Resend's answer AFTER the enable - proof, not assumption.
+      var v=r.verified;
+      if(v&&v.openTracking&&v.clickTracking) setMsg('cmp-tracking-msg','Verified with Resend: open and click tracking are ON. Every email from now on reports delivery, opens and clicks back here (and per thread in the Inbox).','ok');
+      else setMsg('cmp-tracking-msg','Setup ran but Resend still reports tracking off (open: '+((v&&v.openTracking)?'on':'off')+', click: '+((v&&v.clickTracking)?'on':'off')+'). Check the domain settings in the Resend dashboard, then click again.','no');
+    }
     cmpLoadTracking();
   }catch(e){ setMsg('cmp-tracking-msg','Setup failed.','no'); }
 }

@@ -44,7 +44,10 @@ export async function getInboxThread(db: D1Database, shop: string, threadId: str
   const contact = await store.getContactByEmail(got.thread.contact_email);
   const partnerPool = await store.partnerPoolState(got.thread.contact_email);
   const partnerConsent = await store.partnerConsentByEmail(got.thread.contact_email);
-  return { ok: true as const, thread: got.thread, messages: got.messages, labels: got.labels, draft, invoice, applicant, contact, partnerPool, partnerConsent };
+  // Email engagement (2026-07-12): this thread's delivery/open/click events,
+  // matched by the send-time thread_id tag - the rail's engagement block.
+  const events = await store.listThreadEmailEvents(threadId);
+  return { ok: true as const, thread: got.thread, messages: got.messages, labels: got.labels, draft, invoice, applicant, contact, partnerPool, partnerConsent, events };
 }
 
 /** Marketing opt-in flipped from the sender's own thread (2026-07-06): the

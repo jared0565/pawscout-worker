@@ -131,9 +131,13 @@ describe('consolePage', () => {
   it('renderInboxThread accepts + renders the partnership applicant panel', async () => {
     const html = await consolePage('test-api-key').text();
     const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
-    expect(scripts).toContain('function renderInboxThread(thread,messages,labels,draft,invoice,applicant,contact,partnerPool,partnerConsent)');
+    expect(scripts).toContain('function renderInboxThread(thread,messages,labels,draft,invoice,applicant,contact,partnerPool,partnerConsent,events)');
     expect(scripts).toContain('Partnership screening');
     expect(scripts).toContain('r.applicant||null');
+    // Email engagement rail block (2026-07-12): per-thread delivered/opened/
+    // clicked events from email_events, threaded through the same payload.
+    expect(scripts).toContain('Email engagement');
+    expect(scripts).toContain('r.events||[]');
   });
 
   it('esc() renders a crafted <script> payload as HTML-escaped text (not raw tags)', async () => {
@@ -444,6 +448,9 @@ describe('consolePage', () => {
     expect(scripts).toContain('function cmpEnableTracking(');
     expect(scripts).toContain("'/email-tracking'");
     expect(scripts).toContain("'/email-tracking/setup'");
+    // Setup reports the VERIFIED post-enable state (2026-07-12: 93 delivered /
+    // 0 opened - the button must prove the enable stuck, not assume it).
+    expect(scripts).toContain('r.verified');
     // Metrics render per campaign row when the rollup is present.
     expect(scripts).toContain('if(cp.metrics){');
     expect(scripts).toContain('Delivered <strong>');

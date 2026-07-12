@@ -134,6 +134,12 @@ export const inboxCss = `
   .ibx-ctx-block{padding:12px 0;border-top:1px solid var(--border)}
   .ibx-ctx-block:first-child{border-top:0;padding-top:0}
   .ibx-ctx-block h4{margin:0 0 8px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--subdued);display:flex;align-items:center;gap:8px}
+  /* Email engagement rows (delivered / opened / clicked / bounced per send) */
+  .ibx-ev{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;padding:3px 0;font-size:12.5px}
+  .ibx-ev-what{font-weight:600;color:var(--ink)}
+  .ibx-ev.bad .ibx-ev-what{color:var(--no-ink)}
+  .ibx-ev-when{color:var(--subdued);font-size:11.5px}
+  .ibx-ev-link{flex-basis:100%;color:var(--subdued);font-size:11.5px;overflow-wrap:anywhere}
   @media(max-width:1100px){.ibx-grid{grid-template-columns:292px minmax(0,1fr)}.ibx-context{display:none}}
   /* --- Answer library (approved-answers memory) --- */
   /* Scoped by id, NOT the generic .card class used elsewhere. #view-inbox.active

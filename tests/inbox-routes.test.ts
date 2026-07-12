@@ -109,6 +109,24 @@ describe('inbox routes', () => {
     const r = await getInboxThread(env.DB, SHOP, 'no-such-id');
     expect(r.ok).toBe(false);
   });
+  // Email engagement (2026-07-12): the thread payload carries this thread's
+  // delivery/open/click events (send-time thread_id tag), newest first and
+  // thread-scoped - the context rail's Email engagement block reads them.
+  it('returns the thread email events newest-first, scoped to the thread', async () => {
+    const s = new TenantStore(env.DB, SHOP);
+    const tid = await seed();
+    const ev = (svixId: string, threadId: string, eventType: string, occurredAt: string, link: string | null = null) =>
+      s.insertEmailEvent({ svixId, resendId: 're_1', email: 'jane@x.com', eventType, kind: 'reply', campaignId: null, threadId, link, occurredAt }, occurredAt);
+    await ev('sv1', tid, 'delivered', '2026-07-12T08:00:00Z');
+    await ev('sv2', tid, 'opened', '2026-07-12T09:00:00Z');
+    await ev('sv3', tid, 'clicked', '2026-07-12T09:05:00Z', 'https://activepaw.co.uk/products/x');
+    await ev('sv4', 'other-thread', 'delivered', '2026-07-12T10:00:00Z');
+    const r = await getInboxThread(env.DB, SHOP, tid);
+    expect(r.ok).toBe(true);
+    expect(r.events!.map((e: { eventType: string }) => e.eventType)).toEqual(['clicked', 'opened', 'delivered']);
+    expect(r.events![0].link).toBe('https://activepaw.co.uk/products/x');
+    expect(r.events![0].occurredAt).toBe('2026-07-12T09:05:00Z');
+  });
   // 2026-07-04 stale-draft fix: dismissing a thread retires its pending draft.
   // Phase 2 removed the standalone draft-Discard button, so without this the
   // draft would stay 'pending' forever and inflate the rail badge.

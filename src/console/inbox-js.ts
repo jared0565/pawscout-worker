@@ -154,10 +154,10 @@ async function openInboxThread(id){
   try{
     var r=await api('/inbox/thread',{id:id});
     if(!r.ok){ if(tl) tl.innerHTML='<div class="ibx-empty"><p class="msg no">'+esc(r.error||'Failed to load thread')+'</p></div>'; return; }
-    renderInboxThread(r.thread,r.messages||[],r.labels||[],r.draft||null,r.invoice||null,r.applicant||null,r.contact||null,r.partnerPool||'none',(r.partnerConsent===true||r.partnerConsent===false)?r.partnerConsent:null);
+    renderInboxThread(r.thread,r.messages||[],r.labels||[],r.draft||null,r.invoice||null,r.applicant||null,r.contact||null,r.partnerPool||'none',(r.partnerConsent===true||r.partnerConsent===false)?r.partnerConsent:null,r.events||[]);
   }catch(e){ if(tl) tl.innerHTML='<div class="ibx-empty"><p class="msg no">'+esc(errText(e))+'</p></div>'; }
 }
-function renderInboxThread(thread,messages,labels,draft,invoice,applicant,contact,partnerPool,partnerConsent){
+function renderInboxThread(thread,messages,labels,draft,invoice,applicant,contact,partnerPool,partnerConsent,events){
   var head=el('ibx-convo-head'), tl=el('ibx-timeline');
   if(!head||!tl) return;
   inboxInvoiceItems=[];
@@ -243,12 +243,12 @@ function renderInboxThread(thread,messages,labels,draft,invoice,applicant,contac
   }
   var tplEl=el('inbox-tpl-sel');
   if(tplEl) tplEl.onchange=function(){ if(tplEl.value) applyTemplateAction(tplEl.value,tid); };
-  renderInboxContext(thread,labels,draft,invoice,applicant,contact,partnerPool,partnerConsent);
+  renderInboxContext(thread,labels,draft,invoice,applicant,contact,partnerPool,partnerConsent,events);
 }
 // Context rail: ONLY data the thread GET actually returns (thread fields, labels,
 // contact row, draft hold reasons, applicant screening, invoice, partner pool
-// state + marketing consent) - nothing fabricated.
-function renderInboxContext(thread,labels,draft,invoice,applicant,contact,partnerPool,partnerConsent){
+// state + marketing consent, email events) - nothing fabricated.
+function renderInboxContext(thread,labels,draft,invoice,applicant,contact,partnerPool,partnerConsent,events){
   var ctx=el('ibx-context-body'); if(!ctx) return;
   var tid=thread.id;
   var cust='<div class="ibx-ctx-block"><h4>Customer</h4>'
@@ -272,6 +272,23 @@ function renderInboxContext(thread,labels,draft,invoice,applicant,contact,partne
   labSel+='</select>';
   var labBlock='<div class="ibx-ctx-block"><h4>Labels</h4>'+labSel
     +'<div class="row" style="margin-top:8px"><button id="inbox-save-labels" class="ghost" type="button">Save labels</button></div></div>';
+  // Email engagement: what happened to OUR sends on this thread (delivered /
+  // opened / clicked / bounced), newest first. Events arrive via the Resend
+  // webhook keyed by the send-time thread_id tag; block omitted when none.
+  var evBlock='';
+  if(events&&events.length){
+    var evRows='';
+    for(var ei=0;ei<events.length;ei++){
+      var ev=events[ei];
+      var bad=(ev.eventType==='bounced'||ev.eventType==='complained');
+      var what=ev.eventType.charAt(0).toUpperCase()+ev.eventType.slice(1);
+      evRows+='<div class="ibx-ev'+(bad?' bad':'')+'"><span class="ibx-ev-what">'+esc(what)+'</span>'
+        +'<span class="ibx-ev-when">'+esc(ibxRelAge(ev.occurredAt))+' ago</span>'
+        +(ev.link?('<span class="ibx-ev-link">'+esc(ev.link)+'</span>'):'')
+        +'</div>';
+    }
+    evBlock='<div class="ibx-ctx-block"><h4>Email engagement</h4>'+evRows+'</div>';
+  }
   var holdBlock='';
   if(draft&&draft.id){
     var holds=ibxHoldReasons(draft);
@@ -346,7 +363,7 @@ function renderInboxContext(thread,labels,draft,invoice,applicant,contact,partne
       +'<p id="inbox-invoice-msg" class="msg muted"></p>'
       +'</div>';
   }
-  ctx.innerHTML=cust+labBlock+holdBlock+partnerBlock+invoiceBlock;
+  ctx.innerHTML=cust+evBlock+labBlock+holdBlock+partnerBlock+invoiceBlock;
   var slb=el('inbox-save-labels'); if(slb) slb.onclick=function(){ saveInboxLabels(tid); };
   var qb=el('inbox-queue-btn'); if(qb) qb.onclick=function(){ queuePartnerAction(tid); };
   var cb=el('inbox-consent-btn'); if(cb) cb.onclick=function(){ threadConsentAction(tid,cb.getAttribute('data-consent-on')==='1'); };
