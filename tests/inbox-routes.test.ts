@@ -1,11 +1,13 @@
 /// <reference types="@cloudflare/vitest-pool-workers" />
 import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
+import { SignJWT } from 'jose';
 import { TenantStore } from '../src/tenant-store';
 import { listInboxThreads, getInboxThread, setInboxStatus, setInboxLabels, regenerateDraft, applyDraftTemplate, DRAFT_TEMPLATES } from '../src/inbox/routes';
 import { QUALIFYING_MARKER } from '../src/inbox/partnership';
 import { DEFAULT_INBOX } from '../src/inbox/types';
 import { ACTIVE_PAW_COLLECTION_MAP, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, type Env } from '../src/types';
+import { app } from '../src/index';
 
 beforeEach(async () => { await applyD1Migrations(env.DB, env.TEST_MIGRATIONS); });
 const SHOP = 'a.myshopify.com';
@@ -292,6 +294,82 @@ describe('applyDraftTemplate', () => {
       expect((d?.body_text ?? '').length, t.key).toBeGreaterThan(50);
       expect(d?.model, t.key).toBe('template');
     }
+  });
+});
+
+// HTTP-level contract test for the /api/inbox/answers routes (added 01ced64).
+// These two handlers are inline in src/index.ts (no extracted pure function
+// to call directly), so this drives the real Hono app through shopOf's
+// session-token auth, unlike the direct-function tests above.
+const ANSWERS_SHOP = 'answers.myshopify.com';
+const ANSWERS_SECRET = 'test-shopify-secret';
+
+async function answersBearerToken(shop: string): Promise<string> {
+  const key = new TextEncoder().encode(ANSWERS_SECRET);
+  return new SignJWT({ dest: `https://${shop}`, sub: '1' })
+    .setProtectedHeader({ alg: 'HS256' })
+    .setAudience(env.SHOPIFY_API_KEY)
+    .setIssuedAt()
+    .setExpirationTime('5m')
+    .sign(key);
+}
+
+function answersEnv(): Env {
+  return { ...env, SHOPIFY_API_SECRET: ANSWERS_SECRET } as unknown as Env;
+}
+
+async function callAnswersRoute(path: string, body: unknown, token: string) {
+  return app.request(path, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+    body: JSON.stringify(body)
+  }, answersEnv());
+}
+
+describe('POST /api/inbox/answers routes (HTTP level)', () => {
+  it('list returns {ok, total, disabled, rows}; toggle flips disabled and 400s bad input', async () => {
+    const s = new TenantStore(env.DB, ANSWERS_SHOP);
+    await s.upsertTenant({ accessTokenEnc: 'tok', dekWrapped: 'd', scopes: 's' });
+    await s.upsertAnswerMemory({
+      qhash: 'h1', category: 'lead', questionText: 'Do you ship worldwide?',
+      questionNorm: 'ship worldwide', answerText: 'Yes.', threadId: 't1'
+    });
+    const token = await answersBearerToken(ANSWERS_SHOP);
+
+    // list
+    const listRes = await callAnswersRoute('/api/inbox/answers', {}, token);
+    expect(listRes.status).toBe(200);
+    const listBody = await listRes.json() as { ok: boolean; total: number; disabled: number; rows: { qhash: string }[] };
+    expect(listBody.ok).toBe(true);
+    expect(listBody.total).toBe(1);
+    expect(listBody.disabled).toBe(0);
+    expect(listBody.rows[0].qhash).toBe('h1');
+
+    // toggle: unknown qhash
+    const unknownRes = await callAnswersRoute('/api/inbox/answers/toggle', { qhash: 'nope', disabled: true }, token);
+    expect(unknownRes.status).toBe(200);
+    const unknownBody = await unknownRes.json() as { ok: boolean; error?: string };
+    expect(unknownBody.ok).toBe(false);
+    expect(unknownBody.error).toBeTruthy();
+
+    // toggle: missing qhash -> 400
+    const missingQhashRes = await callAnswersRoute('/api/inbox/answers/toggle', { disabled: true }, token);
+    expect(missingQhashRes.status).toBe(400);
+
+    // toggle: non-boolean disabled -> 400
+    const badDisabledRes = await callAnswersRoute('/api/inbox/answers/toggle', { qhash: 'h1', disabled: 'yes' }, token);
+    expect(badDisabledRes.status).toBe(400);
+
+    // toggle: real flip
+    const toggleRes = await callAnswersRoute('/api/inbox/answers/toggle', { qhash: 'h1', disabled: true }, token);
+    expect(toggleRes.status).toBe(200);
+    const toggleBody = await toggleRes.json() as { ok: boolean };
+    expect(toggleBody.ok).toBe(true);
+
+    // subsequent list shows disabled:1
+    const listAfterRes = await callAnswersRoute('/api/inbox/answers', {}, token);
+    const listAfterBody = await listAfterRes.json() as { rows: { qhash: string; disabled: number }[] };
+    expect(listAfterBody.rows.find((r) => r.qhash === 'h1')?.disabled).toBe(1);
   });
 });
 
