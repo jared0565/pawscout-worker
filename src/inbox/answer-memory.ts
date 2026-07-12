@@ -158,7 +158,12 @@ export async function backfillAnswerMemory(store: TenantStore): Promise<number> 
     console.warn('answer backfill hit the 500-thread cap; oldest threads were skipped');
   }
   let imported = 0;
-  for (const t of threads) {
+  // listThreads orders newest-first, but upsertAnswerMemory REPLACES on a
+  // qhash conflict, so the pair processed LAST wins; reverse to oldest-first
+  // here so the newest thread's answer/timestamp is the one left standing
+  // when two threads share the same normalized question.
+  const oldestFirst = [...threads].reverse();
+  for (const t of oldestFirst) {
     try {
       const got = await store.getThreadWithMessages(t.id);
       if (!got) continue;

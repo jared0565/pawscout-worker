@@ -203,12 +203,11 @@ describe('captureAnswerPair / captureAnswerFromSend', () => {
 });
 
 describe('backfill', () => {
-  async function seedThread(id: string, category: string, msgs: { dir: 'inbound' | 'outbound'; body: string; at: string }[]) {
-    const now = '2026-07-01T00:00:00.000Z';
+  async function seedThread(id: string, category: string, msgs: { dir: 'inbound' | 'outbound'; body: string; at: string }[], lastMessageAt = '2026-07-01T00:00:00.000Z') {
     await env.DB.prepare(
       `INSERT INTO inbox_threads (shop, id, contact_email, subject, status, primary_category, last_message_at, created_at, updated_at)
        VALUES (?1, ?2, 'c@x.com', 's', 'awaiting_customer', ?3, ?4, ?4, ?4)`
-    ).bind(SHOP, id, category, now).run();
+    ).bind(SHOP, id, category, lastMessageAt).run();
     for (let i = 0; i < msgs.length; i++) {
       await env.DB.prepare(
         `INSERT INTO inbox_messages (shop, id, thread_id, direction, from_addr, body_text, received_at, created_at)
@@ -242,5 +241,30 @@ describe('backfill', () => {
     await env.DB.prepare(`DELETE FROM answer_memory WHERE shop = ?1`).bind(SHOP).run();
     await ensureAnswerBackfill(s); // flag set -> no re-import
     expect((await s.listAnswerMemory()).total).toBe(0);
+  });
+
+  it('processes threads oldest-first so the NEWEST thread wins a duplicate question', async () => {
+    const s = store();
+    // Same normalized question ("ship worldwide domestically") in both
+    // threads -> same qhash. t-old is the earlier thread with a stale
+    // answer; t-new is more recent with the current one. listThreads orders
+    // newest-first, so without the oldest-first fix t-old's upsert would run
+    // last and clobber t-new's answer.
+    await seedThread('t-old', 'lead', [
+      { dir: 'inbound', body: 'Do you ship worldwide or only domestically?', at: '2026-05-01T00:00:00.000Z' },
+      { dir: 'outbound', body: 'Hi Ben,\n\nOld answer that is no longer accurate.\n\nBest Regards,\nActive Paw Sales Team', at: '2026-05-01T01:00:00.000Z' },
+    ], '2026-05-01T01:00:00.000Z');
+    await seedThread('t-new', 'lead', [
+      { dir: 'inbound', body: 'Do you ship worldwide or only domestically?', at: '2026-06-01T00:00:00.000Z' },
+      { dir: 'outbound', body: 'Hi Ben,\n\nYes, worldwide shipping is available and it is fast.\n\nBest Regards,\nActive Paw Sales Team', at: '2026-06-01T01:00:00.000Z' },
+    ], '2026-06-01T01:00:00.000Z');
+
+    const n = await backfillAnswerMemory(s);
+    expect(n).toBe(2); // both pairs captured; the shared qhash keeps only one row
+
+    const r = await s.listAnswerMemory();
+    expect(r.total).toBe(1);
+    expect(r.rows[0].answer).toBe('Yes, worldwide shipping is available and it is fast.');
+    expect(r.rows[0].updatedAt).toBe('2026-06-01T01:00:00.000Z');
   });
 });

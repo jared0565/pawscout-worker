@@ -55,7 +55,7 @@ export const inboxView = `  <section class="ibx" data-panel="inbox">
     </div>
   </section>
 
-  <section class="card">
+  <section class="card" id="ans-card">
     <h2>Answer library</h2>
     <p class="sub" style="margin:0 0 10px">Every reply you approve is remembered as the customer's question and your vetted answer. When a similar question arrives - even reworded - the drafter is grounded with the closest approved answers so replies stay consistent; live facts always override them, and personal details are never copied across customers. Disable a pair to pull a bad or outdated answer out of recall; approving a new reply to the same question replaces and re-enables it. History imports automatically on the first sweep.</p>
     <p id="ans-count" class="muted" style="margin:0 0 8px;font-size:12.5px"></p>
@@ -136,6 +136,13 @@ export const inboxCss = `
   .ibx-ctx-block h4{margin:0 0 8px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--subdued);display:flex;align-items:center;gap:8px}
   @media(max-width:1100px){.ibx-grid{grid-template-columns:292px minmax(0,1fr)}.ibx-context{display:none}}
   /* --- Answer library (approved-answers memory) --- */
+  /* Scoped by id, NOT the generic .card class used elsewhere: #view-inbox.active
+     is a fixed-height (100vh) flex column, and the day-one backfill can seed
+     ~100 rows into #ans-list. Without these two rules the card's min-content
+     height grows unbounded, crushing the 3-pane mail workspace above it and
+     clipping the card itself against the overflow:hidden container. */
+  #ans-card{flex:0 0 auto}
+  #ans-list{max-height:320px;overflow-y:auto}
   .ans-row{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1.6fr) 150px;gap:12px;padding:9px 0;border-bottom:1px solid var(--border);font-size:12.5px}
   .ans-row:last-child{border-bottom:none}
   .ans-q{color:var(--ink);font-weight:550;overflow-wrap:anywhere}

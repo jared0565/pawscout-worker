@@ -885,6 +885,12 @@ describe('consolePage', () => {
     for (const id of ['ans-list', 'ans-count', 'ans-msg']) expect(html).toContain('id="' + id + '"');
     expect(html).toContain('Answer library');
     expect(html).toContain('.ans-row'); // namespaced card CSS present
+    expect(html).toContain('id="ans-card"'); // scoped id, not the generic .card class
+    // #ans-list must be a bounded scroll region and the card itself must not
+    // grow/shrink inside #view-inbox's 100vh flex column - otherwise a ~100-row
+    // backfill crushes the 3-pane mail workspace above it.
+    expect(html).toContain('#ans-list{max-height');
+    expect(html).toContain('#ans-card{flex:0 0 auto}');
     const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
     expect(scripts).toContain('function ansLoad(');
     expect(scripts).toContain('function ansToggle(');
