@@ -57,6 +57,35 @@ describe('renderReplyHtml', () => {
     expect(h).not.toContain('<script>');
     expect(h).toContain('<p>');
   });
+
+  // Owner ask 2026-07-12: URLs in replies must be REAL anchors - client-side
+  // auto-linking of bare text is unreliable (Outlook desktop often renders
+  // dead text). Linkify runs on the raw text with per-segment escaping, so
+  // the no-raw-HTML guarantee above is unchanged.
+  it('turns http(s) URLs into anchors, leaving trailing prose punctuation outside', () => {
+    const h = renderReplyHtml('See https://activepaw.co.uk/products/dog-bed. More at https://example.com/a?b=1&c=2 today.');
+    expect(h).toContain('<a href="https://activepaw.co.uk/products/dog-bed">https://activepaw.co.uk/products/dog-bed</a>.');
+    expect(h).toContain('<a href="https://example.com/a?b=1&amp;c=2">https://example.com/a?b=1&amp;c=2</a> today.');
+    expect(h).not.toContain('b=1&c'); // ampersands entity-escaped inside href and text
+  });
+
+  it('links a BARE store-domain mention with an https href', () => {
+    const h = renderReplyHtml('Browse activepaw.co.uk/collections/pet-toys or just activepaw.co.uk today');
+    expect(h).toContain('<a href="https://activepaw.co.uk/collections/pet-toys">activepaw.co.uk/collections/pet-toys</a>');
+    expect(h).toContain('<a href="https://activepaw.co.uk">activepaw.co.uk</a> today');
+  });
+
+  it('never mangles email addresses on the store domain', () => {
+    const h = renderReplyHtml('Contact support@activepaw.co.uk anytime');
+    expect(h).not.toContain('<a');
+    expect(h).toContain('support@activepaw.co.uk');
+  });
+
+  it('still neutralizes raw HTML around and inside URLs', () => {
+    const h = renderReplyHtml('click <a href="https://evil.com">here</a>');
+    expect(h).toContain('&lt;a href=');
+    expect(h).not.toContain('<a href="https://evil.com">here'); // the injected tag never survives as markup
+  });
 });
 
 describe('draftReply', () => {

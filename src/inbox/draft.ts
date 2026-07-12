@@ -13,11 +13,35 @@ function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
-/** Build the SENT html from the drafter's plain text - escaped + paragraph-wrapped.
- * No LLM-produced HTML ever reaches the wire. */
+// Owner rule (2026-07-12): URLs in outbound replies must be REAL anchors -
+// recipient-side auto-linking of bare text is unreliable (Outlook desktop
+// often renders dead text). Matches full http(s) URLs plus BARE mentions of
+// the store domain (optionally www./pathed); the lookbehind keeps email
+// addresses (support@activepaw.co.uk) out of it. Runs on the RAW text with
+// per-segment escaping, so no LLM-produced HTML ever reaches the wire.
+const LINKIFY_RE = /(https?:\/\/[^\s<>"']+)|((?<![\w.@-])(?:www\.)?activepaw\.co\.uk(?:\/[^\s<>"']*)?)/g;
+
+function linkifySegment(raw: string): string {
+  let out = '';
+  let last = 0;
+  for (const m of raw.matchAll(LINKIFY_RE)) {
+    out += escapeHtml(raw.slice(last, m.index));
+    let url = m[0];
+    // Trailing punctuation is prose, not URL ("...see https://x.com/a.")
+    const trail = /[.,;:!?)]+$/.exec(url);
+    if (trail) url = url.slice(0, -trail[0].length);
+    const href = /^https?:\/\//i.test(url) ? url : `https://${url}`;
+    out += `<a href="${escapeHtml(href)}">${escapeHtml(url)}</a>${escapeHtml(trail ? trail[0] : '')}`;
+    last = m.index + m[0].length;
+  }
+  return out + escapeHtml(raw.slice(last));
+}
+
+/** Build the SENT html from the drafter's plain text - escaped + paragraph-wrapped,
+ * with URLs (and bare store-domain mentions) as real clickable anchors. */
 export function renderReplyHtml(text: string): string {
   const paras = text.split(/\n{2,}/).map((p) => p.trim()).filter(Boolean);
-  return paras.map((p) => `<p>${escapeHtml(p).replace(/\n/g, '<br>')}</p>`).join('\n');
+  return paras.map((p) => `<p>${linkifySegment(p).replace(/\n/g, '<br>')}</p>`).join('\n');
 }
 
 // Display names come from untrusted From headers - never these (role inboxes, not people).
