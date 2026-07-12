@@ -306,9 +306,11 @@ const ANSWERS_SECRET = 'test-shopify-secret';
 
 async function answersBearerToken(shop: string): Promise<string> {
   const key = new TextEncoder().encode(ANSWERS_SECRET);
+  // SHOPIFY_API_KEY is a wrangler.toml var (present at runtime) that the
+  // ProvidedEnv type does not declare; cast through Env like REGEN_ENV above.
   return new SignJWT({ dest: `https://${shop}`, sub: '1' })
     .setProtectedHeader({ alg: 'HS256' })
-    .setAudience(env.SHOPIFY_API_KEY)
+    .setAudience((env as unknown as Env).SHOPIFY_API_KEY)
     .setIssuedAt()
     .setExpirationTime('5m')
     .sign(key);
