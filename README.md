@@ -58,7 +58,27 @@ When a Shopify order is paid, the worker:
 
 ### Merchant console (embedded in Shopify)
 
-A full-featured admin UI, embedded via App Bridge, shows the supplier connection status, live catalogue stats, top search keywords with fill rates, and controls for every config value. Fulfilment mode, pricing rule, AI settings, collection map, and alert email are all set here - no config files to edit manually.
+A full-featured admin UI, embedded via App Bridge. What started as connection status and config controls now spans the whole operation: Overview (catalogue stats, search keywords, fill rates), Inbox (customer email with AI drafts and the answer library), Content (blog pipeline and distribution), Profitability (market judge, per-row actions, recalibrate), Campaigns (email marketing and tracking), Traffic (acquisition channel board), Orders, and Settings (gates, pricing, AI config, AI-spend ledger, fulfilment mode). No config files to edit manually.
+
+### Customer inbox (AI-drafted, human-approved)
+
+All mail to the store address lands in the console Inbox as categorised threads (order status, product questions, shipping, wholesale, partnerships, spam). A per-category agent drafts a reply grounded in store facts and live order/catalogue data, runs it through a self-correcting quality loop, and holds it for owner approval (auto-send exists behind per-category gates). An **answer memory** captures every approved reply and grounds similar future questions with it, so facts, policy, and voice stay consistent over time - pairs are listed in an Answer library with per-pair disable, and GDPR redaction covers them. Outbound mail is sanitised deterministically: URLs linkified into real anchors, one canonical store domain, no unsupportable claims. Delivered/opened/clicked/bounced events show per thread in the context rail.
+
+### Profitability engine (adjust-or-drop)
+
+A recurring agent judges every imported product against the real market. eBay Browse supplies credible delivered prices for the same item (deterministic matching, near-zero LLM cost; listings sold by Temu are excluded), and the judge compares our achievable price to the **median** credible price. Policy: at least GBP 2 net per unit after fees - verdicts are pass, reprice (just under market), or drop (archive, never delete). Owner brakes: a Preview mode that reports without acting, durable per-product Keep/Release overrides, a "Wrong match" marker that forces cost-plus re-judging when the matched competitor is a different item, and a "Recalibrate & rescue" sweep that re-judges all archived drops after a policy change and un-archives whatever now passes. An AI-spend daily ledger in Settings shows what the LLM layer costs.
+
+### Blog content system + distribution
+
+The worker authors research-grounded buying guides as Shopify **draft** articles: briefs start from real web demand, facts are web-verified, every post carries a quick answer, a visible FAQ backed by FAQPage schema, a congruence-vetted hero image, and a "Shop this guide" product block. The owner publishes; status syncs back automatically. A distribution rail (Blotato: Pinterest, Facebook, Instagram) builds gated creative packs per post with a per-channel ledger and a double-post fence - dormant until a channel is toggled on.
+
+### Email campaigns + engagement
+
+Consented-buyer campaigns (compliance footer, one-click unsubscribe) send through Resend. A signed webhook stores delivery/open/click/bounce events, domain-level open/click tracking is enabled and re-verified through the console, and engagement is visible per campaign and per inbox thread.
+
+### Traffic board
+
+A console card tracks acquisition channels (Google Shopping feed, SEO, email, partner/affiliate trial, short-video) with status, rationale, and next action per channel - the demand-side operating plan, kept where the data lives.
 
 ---
 
@@ -76,7 +96,7 @@ The project started as a basic search backfill - pad the grid when the store run
 
 5. **"54% of orders would have errored"** - during fulfilment testing, only 32 of 69 imported products had a local warehouse row, and the fulfilment resolver read the supplier variant ID from there. The rest would have silently failed. Fixed with a live `cj.detail()` fallback: when the warehouse row is missing, the resolver fetches the variant ID from the supplier API in real time.
 
-The running test suite (262 tests, all run inside a real Cloudflare `workerd` runtime against in-memory D1) catches regressions from all of the above.
+The running test suite (all of it runs inside a real Cloudflare `workerd` runtime against in-memory D1) catches regressions from all of the above.
 
 ---
 
@@ -132,7 +152,7 @@ Products that never reach a preview are **never imported** - no catalog pollutio
 - **Router:** [Hono](https://hono.dev)
 - **Shopify:** [`@shopify/shopify-api`](https://github.com/Shopify/shopify-api-js) v11 (cf-worker adapter), App Bridge v4, Admin GraphQL, App Proxy
 - **Database:** [D1](https://developers.cloudflare.com/d1/) (SQLite), migrations in `migrations/`
-- **Tests:** [Vitest](https://vitest.dev) with [`@cloudflare/vitest-pool-workers`](https://developers.cloudflare.com/workers/testing/vitest-integration/) - 262 tests run inside workerd against an in-memory D1 with real migrations
+- **Tests:** [Vitest](https://vitest.dev) with [`@cloudflare/vitest-pool-workers`](https://developers.cloudflare.com/workers/testing/vitest-integration/) - the suites run inside workerd against an in-memory D1 with real migrations
 
 ## Project layout
 
@@ -149,14 +169,27 @@ src/
   validate.ts           Request-body validation for the console API
   webhooks.ts           app/uninstalled webhook registration (idempotent)
   jobs.ts               Daily crons: retention purge, performance cull, demand refill
+  market.ts             eBay Browse competitor pricing (zero-LLM credible-price matching)
+  profitability.ts      Adjust-or-drop judge: median-market policy, reprice/drop verdicts
+  profit-console.ts     Profit console actions incl. the recalibrate & rescue sweep
+  campaigns.ts          Consented-buyer email campaigns
+  resend-events.ts      Resend webhook -> email_events (delivered/opened/clicked/bounced)
+  traffic.ts            Traffic board: acquisition channels, status, next actions
+  debrand.ts            Maker-brand removal on all customer-facing text
   auth/                 OAuth begin/callback, managed-install token exchange, uninstall
-  console/              Embedded merchant console (page, session, API handlers)
+  console/              Embedded merchant console (page, views, per-view browser JS)
+  inbox/                Customer email: ingest, category agents, drafts, quality loop,
+                        answer memory, gates, auto-send, invoices, partnerships
+  blog/                 Guide authoring: research, brief, draft, ground, hero vetting,
+                        combo merchandising, quality, publish-status sync
+  syndicate/            Blog distribution rail (Blotato), creative packs, ledger, fences
+  shipping/             Nearest-warehouse shipping formula, market catalogs/exclusion
   proxy/
     verify.ts           Shopify App Proxy HMAC verification (constant-time, replay window)
     search.ts           Search backfill: cache → gates → pricing → dedupe → ghost cards
     import.ts           Preview builder + import-on-click (productSet, publish, revive)
 migrations/             D1 schema migrations
-tests/                  Vitest suites (262 tests) incl. an architectural guard test
+tests/                  Vitest suites incl. an architectural guard test
 wrangler.toml           Worker config, D1 binding, cron trigger, public vars
 ```
 
@@ -249,6 +282,8 @@ Sales arriving through the on-site search flywheel carry near-zero acquisition c
 | `POST` | `/api/fulfil-run` | On-demand fulfilment pipeline run (no cron wait) |
 | `POST` | `/api/test-email` | Send a test alert email to the configured address |
 
+The table above is the original core. The console API has since grown along with the console itself - inbox (threads, drafts, approve/send, answer library), blog content + syndication, profitability (judge, keep/release, wrong-match, recalibrate), campaigns + email-tracking setup, traffic board, and AI-spend routes all follow the same session-token pattern; `src/index.ts` is the single routing map.
+
 ### Storefront (Shopify App Proxy, HMAC-signed)
 
 | Method | Path | Description |
@@ -267,7 +302,7 @@ Sales arriving through the on-site search flywheel carry near-zero acquisition c
 | `POST` | `/webhooks/uninstall` | HMAC-validated; marks uninstalled + purges secrets |
 | `POST` | `/webhooks/orders-paid` | Order paid → validate → queue (60-min grace) |
 | cron | `17 4 * * *` daily | Retention purge → cull → refill (capped, CJ-rate-paced) |
-| cron | `*/15 * * * *` every 15 min | Fulfilment pipeline: submit queued orders → poll tracking |
+| cron | `*/15 * * * *` every 15 min | Fulfilment pipeline, inbox sweep (ingest + draft), profit agent, blog pipeline + distribution stages |
 
 ## Development
 
@@ -322,23 +357,19 @@ Tests run in real workerd via `@cloudflare/vitest-pool-workers` with migrations 
 
 **The active task list is [`docs/TASKS.md`](docs/TASKS.md)** (what's next, in priority order) and the full technical plan is [`docs/WAREHOUSE_PLAN.md`](docs/WAREHOUSE_PLAN.md).
 
-Current status (June 2026):
+Current status (July 2026):
 
-- Catalogue pipeline fully live: search backfill, import-on-click, 30-day cull, nightly replenishment, LLM curation, vision image vetting, dedupe, category re-audit, description sweep.
-- Fulfilment pipeline live: `orders/paid` webhook → validate → queue → CJ order creation → tracking → Shopify fulfilment. `awaiting-payment` mode with owner email alerts active while CJ wallet is being funded.
-- Pricing locked at **2.7×** in tenant config.
+- Store **live and taking orders**: catalogue, fulfilment, and pricing pipelines all in production; protected-customer-data scopes granted.
+- Customer inbox live in human-approval mode, with answer-memory grounding on every draft.
+- Profitability engine live full-auto: eBay median-market judging (Temu excluded) with owner brakes (Preview, Keep/Release, Wrong match, Recalibrate & rescue).
+- Blog channel live (worker drafts, owner publishes); distribution rail built and dormant pending channel enables.
+- Email campaigns live with verified open/click tracking and per-thread engagement.
+- Google stack connected under one account (2026-07-12): Merchant Center feed syncing, Search Console verified + sitemap submitted, GA4 wired via the Shopify channel app.
 
-Remaining before full go-live:
+Next up:
 
-- Fund CJ wallet (PayPal via CJ support, or wire) to enable automated order payments.
-- Remove store password + activate payment provider.
-- Cookie-consent banner (PECR/GDPR).
-- Shopify protected-customer-data approval + `read_orders` scope re-mint.
-
-Post-launch pipeline:
-
+- Publish new imports to the Google channel automatically at import time (imports currently publish to Online Store only).
+- Blog distribution phase 1 enablement (Blotato key + channel toggles), then phases 2-3 (composed creatives, digest/partner packs).
 - **W6** - automated CJ damage/claims pipeline.
-- **W5** - Resend email marketing (GDPR opt-in).
-- **W4** - weekly intelligence digest (needs ≥2 weeks of live order data).
-- **Per-category pricing multipliers** (commodity vs problem-solver).
-- **Automated FX rate refresh**.
+- **W4** - weekly intelligence digest.
+- Per-category pricing multipliers; automated FX rate refresh.
