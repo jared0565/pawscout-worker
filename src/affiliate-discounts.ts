@@ -205,6 +205,64 @@ export async function createVoucherDiscount(
   }
 }
 
+export interface VoucherLookupResult {
+  found: boolean;
+  discountId?: string;
+  startsAt?: string;
+  endsAt?: string;
+  pctOff?: number;
+  usageLimit?: number | null;
+}
+
+const VOUCHER_LOOKUP_QUERY = `query pawscoutVoucherLookup($code: String!) {
+  codeDiscountNodeByCode(code: $code) {
+    id
+    codeDiscount {
+      __typename
+      ... on DiscountCodeBasic {
+        startsAt
+        endsAt
+        usageLimit
+        customerGets { value { __typename ... on DiscountPercentage { percentage } } }
+      }
+    }
+  }
+}`;
+
+/**
+ * Read-only lookup: does a code discount with this EXACT code already exist
+ * in Shopify? Used by the screen lane's double-mint recovery guard (Task 4
+ * follow-up) - a prior tick's `createVoucherDiscount` can succeed in Shopify
+ * while the D1 write that follows it throws, leaving a live, untracked code.
+ * Retrying with the same deterministic `genVoucherCode` output would collide
+ * and fall through to a SALTED second mint (two live codes for one
+ * applicant, the first untracked forever). The caller looks this up BEFORE
+ * issuing and reconciles the missing D1 row instead. Best-effort: any lookup
+ * failure (network, scope) reports not-found so the caller falls through to
+ * its normal issuance path rather than blocking on this.
+ */
+export async function findVoucherDiscountByCode(admin: AdminGraphql, code: string): Promise<VoucherLookupResult> {
+  try {
+    const data = await admin(VOUCHER_LOOKUP_QUERY, { code });
+    const node = data.codeDiscountNodeByCode as { id?: string; codeDiscount?: RawPromo | null } | null;
+    if (!node?.id || !node.codeDiscount) return { found: false };
+    const cd = node.codeDiscount;
+    const pctOff = cd.customerGets?.value?.__typename === 'DiscountPercentage' && typeof cd.customerGets.value.percentage === 'number'
+      ? cd.customerGets.value.percentage * 100
+      : undefined;
+    return {
+      found: true,
+      discountId: node.id,
+      startsAt: cd.startsAt ?? undefined,
+      endsAt: cd.endsAt ?? undefined,
+      usageLimit: (cd as { usageLimit?: number | null }).usageLimit ?? null,
+      pctOff
+    };
+  } catch {
+    return { found: false };
+  }
+}
+
 export interface IssueResult {
   ok: true;
   code: string;

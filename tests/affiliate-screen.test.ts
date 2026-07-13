@@ -15,6 +15,8 @@ import { sha256Hex } from '../src/affiliate/apply';
 import { handleAffiliateVerify, EXPIRED_HTML, VERIFIED_HTML } from '../src/affiliate/verify';
 import { app } from '../src/index';
 import type { AdminGraphql } from '../src/shopify-admin';
+import { genVoucherCode } from '../src/affiliate-discounts';
+import { TRIAL_PCT_OFF_DEFAULT } from '../src/inbox/partnership';
 
 beforeEach(async () => { await applyD1Migrations(env.DB, env.TEST_MIGRATIONS); });
 
@@ -345,6 +347,36 @@ describe('screenOneApplication', () => {
     expect(await s.listAffiliateVouchers()).toHaveLength(0);
     expect(sentEmails.some((e) => e.to === 'refuser@example.com')).toBe(true);
   });
+
+  it('a throw AFTER the judging write resets the application back to verified, never stranded (Fix 1)', async () => {
+    const s = store();
+    const application = await seedApp(s, { email: 'crashy@example.com' });
+    const sentEmails: SentEmail[] = [];
+    const fetchImpl = fakeFetch({ judgeVerdict: 'pass', factsRaw: STRONG_FACTS, sentEmails });
+    const llm = new LlmClient({ openrouter: 'k' }, fetchImpl);
+    // Inject a store whose SECOND logLlmUsage call - the one extractScreenFacts
+    // makes right after a successful fact-extraction LLM call - throws. The
+    // FIRST call (from judgeChannel, which must succeed first to even reach
+    // fact extraction) passes through to the real store untouched.
+    let logCalls = 0;
+    const originalLog = s.logLlmUsage.bind(s);
+    (s as unknown as { logLlmUsage: TenantStore['logLlmUsage'] }).logLlmUsage = async (...args: Parameters<TenantStore['logLlmUsage']>) => {
+      logCalls++;
+      if (logCalls === 2) throw new Error('simulated fact-extractor crash');
+      return originalLog(...args);
+    };
+    let adminCalled = false;
+    const admin: AdminGraphql = (async () => { adminCalled = true; return {}; }) as unknown as AdminGraphql;
+    const deps: ScreenDeps = { env: baseEnv(), store: s, cfg: CFG, llm, admin, fetchImpl };
+
+    await expect(screenOneApplication(deps, application)).rejects.toThrow('simulated fact-extractor crash');
+
+    const updated = await s.getApplication(application.id);
+    expect(updated!.stage).toBe(AFFILIATE_STAGE_VERIFIED); // not stranded at 'judging'
+    expect(adminCalled).toBe(false);
+    expect(await s.listAffiliateVouchers()).toHaveLength(0);
+    expect(sentEmails.some((e) => e.to === 'crashy@example.com')).toBe(false);
+  });
 });
 
 describe('retryPendingIssue (stranded approved_pending_issue rows)', () => {
@@ -412,6 +444,133 @@ describe('retryPendingIssue (stranded approved_pending_issue rows)', () => {
     const approval = sentEmails.find((e) => e.to === 'stranded@example.com');
     expect(approval).toBeTruthy();
     expect(approval!.text).toContain('ACTIVEPAW-STRANDED5');
+  });
+
+  it('never bypasses the daily auto-issue cap on retry (Fix 2)', async () => {
+    const s = store();
+    // 5 applications already reached 'approved' today (== the configured cap).
+    for (let i = 0; i < CFG.selfServe!.autoIssueCapPerDay; i++) {
+      await seedApp(s, { email: `capped${i}@example.com`, stage: AFFILIATE_STAGE_APPROVED });
+    }
+    const application = await seedApp(s, { email: 'pending-capped@example.com', stage: AFFILIATE_STAGE_APPROVED_PENDING_ISSUE });
+    const sentEmails: SentEmail[] = [];
+    const fetchImpl = fakeFetch({ sentEmails });
+    const llm = new LlmClient({ openrouter: 'k' }, fetchImpl);
+    let adminCalled = false;
+    const admin: AdminGraphql = (async () => { adminCalled = true; return {}; }) as unknown as AdminGraphql;
+    const deps: ScreenDeps = { env: baseEnv(), store: s, cfg: CFG, llm, admin, fetchImpl };
+
+    await retryPendingIssue(deps, application);
+
+    expect(adminCalled).toBe(false); // no voucher issued this tick
+    const updated = await s.getApplication(application.id);
+    expect(updated!.stage).toBe(AFFILIATE_STAGE_APPROVED_PENDING_ISSUE); // left for a later day
+    expect(await s.listAffiliateVouchers()).toHaveLength(0);
+    expect(sentEmails.some((e) => e.to === 'pending-capped@example.com')).toBe(false);
+  });
+
+  it('never silently re-issues a former partner on retry - routes to owner_queue instead (Fix 2)', async () => {
+    const s = store();
+    const partnerId = await s.upsertAffiliatePartner({ contactEmail: 'oldpartner-retry@example.com', name: 'Old Partner' });
+    const voucherId = await s.createAffiliateVoucher({
+      partnerId, code: 'ACTIVEPAW-OLDRETRY5', pctOff: 5, commissionPct: 2, endsAt: new Date(Date.now() - 86_400_000).toISOString(), usageLimit: 15
+    });
+    await s.setAffiliateVoucherStatus(voucherId, 'revoked');
+    const application = await seedApp(s, { email: 'oldpartner-retry@example.com', stage: AFFILIATE_STAGE_APPROVED_PENDING_ISSUE });
+    const sentEmails: SentEmail[] = [];
+    const fetchImpl = fakeFetch({ sentEmails });
+    const llm = new LlmClient({ openrouter: 'k' }, fetchImpl);
+    let adminCalled = false;
+    const admin: AdminGraphql = (async () => { adminCalled = true; return {}; }) as unknown as AdminGraphql;
+    const deps: ScreenDeps = { env: baseEnv(), store: s, cfg: CFG, llm, admin, fetchImpl };
+
+    await retryPendingIssue(deps, application);
+
+    expect(adminCalled).toBe(false);
+    const updated = await s.getApplication(application.id);
+    expect(updated!.stage).toBe(AFFILIATE_STAGE_OWNER_QUEUE);
+    expect(await s.listAffiliateVouchers()).toHaveLength(1); // still just the original (revoked) one
+    expect(sentEmails.some((e) => e.to === 'owner@example.com')).toBe(true);
+  });
+
+  it('reconciles a genuinely-live but untracked Shopify code instead of minting a second one (Fix 3)', async () => {
+    const s = store();
+    const application = await seedApp(s, { email: 'ghost@example.com', name: 'Ghost Star', stage: AFFILIATE_STAGE_APPROVED_PENDING_ISSUE });
+    // Simulate: a PRIOR tick's issueVoucher succeeded creating the Shopify
+    // code (deterministic, no salt) but the D1 write that follows it threw -
+    // no partner row, no D1 voucher row exist for this applicant at all.
+    const existingCode = genVoucherCode('Ghost Star', 'ghost@example.com', TRIAL_PCT_OFF_DEFAULT);
+    const startsAt = new Date().toISOString();
+    const endsAt = new Date(Date.now() + 30 * 86_400_000).toISOString();
+    const sentEmails: SentEmail[] = [];
+    const fetchImpl = fakeFetch({ sentEmails });
+    const llm = new LlmClient({ openrouter: 'k' }, fetchImpl);
+    let createCalled = false;
+    const admin: AdminGraphql = (async (q: string, vars?: Record<string, unknown>) => {
+      if (q.includes('pawscoutVoucherLookup')) {
+        return vars?.code === existingCode
+          ? {
+              codeDiscountNodeByCode: {
+                id: 'gid://shopify/DiscountCodeNode/existing',
+                codeDiscount: {
+                  __typename: 'DiscountCodeBasic', startsAt, endsAt, usageLimit: 15,
+                  customerGets: { value: { __typename: 'DiscountPercentage', percentage: 0.05 } }
+                }
+              }
+            }
+          : { codeDiscountNodeByCode: null };
+      }
+      if (q.includes('pawscoutVoucherCreate')) {
+        createCalled = true;
+        return { discountCodeBasicCreate: { codeDiscountNode: { id: 'gid://shopify/DiscountCodeNode/new' }, userErrors: [] } };
+      }
+      return {};
+    }) as unknown as AdminGraphql;
+    const deps: ScreenDeps = { env: baseEnv(), store: s, cfg: CFG, llm, admin, fetchImpl };
+
+    await retryPendingIssue(deps, application);
+
+    expect(createCalled).toBe(false); // never minted a SECOND (salted) code
+    const vouchers = await s.listAffiliateVouchers();
+    expect(vouchers).toHaveLength(1); // exactly one live code
+    expect(vouchers[0].code).toBe(existingCode);
+    expect(vouchers[0].contact_email).toBe('ghost@example.com');
+    const updated = await s.getApplication(application.id);
+    expect(updated!.stage).toBe(AFFILIATE_STAGE_APPROVED);
+    const approvalEmails = sentEmails.filter((e) => e.to === 'ghost@example.com');
+    expect(approvalEmails).toHaveLength(1); // approval email sent exactly once
+    expect(approvalEmails[0].text).toContain(existingCode);
+  });
+});
+
+describe('persistent (no-end-date) issue-failure owner alert gating (Fix 4)', () => {
+  it('alerts on attempt 1, then only every 24th tick after that - never every tick forever', async () => {
+    const s = store();
+    const admin = fakeAdmin({ blockNoEndDate: true });
+
+    /** One retry tick for a fresh application seeded with `priorAttempts`
+     *  already recorded in its flags - returns whether the owner was alerted
+     *  on THIS tick (attempts becomes priorAttempts + 1). */
+    async function tick(email: string, priorAttempts: number): Promise<boolean> {
+      const application = await seedApp(s, { email, stage: AFFILIATE_STAGE_APPROVED_PENDING_ISSUE });
+      if (priorAttempts > 0) {
+        await s.updateApplicationStage(application.id, AFFILIATE_STAGE_APPROVED_PENDING_ISSUE, {
+          flagsJson: JSON.stringify({ issueAttempts: priorAttempts, lastIssueError: 'no end date' })
+        });
+      }
+      const refreshed = await s.getApplication(application.id);
+      const sentEmails: SentEmail[] = [];
+      const fetchImpl = fakeFetch({ sentEmails });
+      const llm = new LlmClient({ openrouter: 'k' }, fetchImpl);
+      const deps: ScreenDeps = { env: baseEnv(), store: s, cfg: CFG, llm, admin, fetchImpl };
+      await retryPendingIssue(deps, refreshed!);
+      return sentEmails.some((e) => e.to === 'owner@example.com');
+    }
+
+    expect(await tick('tick1@example.com', 0)).toBe(true);     // attempts -> 1: alert
+    expect(await tick('tick2@example.com', 1)).toBe(false);    // attempts -> 2: no repeat
+    expect(await tick('tick23@example.com', 22)).toBe(false);  // attempts -> 23: still no repeat
+    expect(await tick('tick24@example.com', 23)).toBe(true);   // attempts -> 24 (~6h later): alerts again
   });
 });
 

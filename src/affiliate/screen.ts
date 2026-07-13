@@ -41,7 +41,7 @@ import {
 } from '../inbox/partnership';
 import { applySalutation, renderReplyHtml, sanitizeOutbound } from '../inbox/draft';
 import { sendEmail } from '../email';
-import { issueVoucher, voucherDateLabel } from '../affiliate-discounts';
+import { issueVoucher, voucherDateLabel, genVoucherCode, findVoucherDiscountByCode } from '../affiliate-discounts';
 import { firecrawlScrape } from '../firecrawl';
 import { adminForShop } from '../inbox/invoice-routes';
 import { defaultFetch } from '../safe-fetch';
@@ -57,6 +57,12 @@ export const PER_TICK_CAP = 5;
  *  attempt instead, since retrying that one can never succeed on its own. */
 const ISSUE_RETRY_ALERT_THRESHOLD = 3;
 const NO_END_DATE_RE = /no end date/i;
+
+/** A PERSISTENT (no-end-date) block alerts on attempt 1, then only every Nth
+ *  tick after that - the 15-minute sweep would otherwise re-alert on EVERY
+ *  tick forever (attempts only ever grows, so a plain `persistent` check is
+ *  always true). 24 ticks at 15 minutes each is roughly once every 6 hours. */
+const PERSISTENT_ALERT_REPEAT_EVERY_TICKS = 24;
 
 interface AppFlags { spendCapHit?: boolean; issueAttempts?: number; lastIssueError?: string; channelJudge?: string; reason?: string }
 
@@ -210,76 +216,91 @@ export async function screenOneApplication(deps: ScreenDeps, app: AffiliateAppli
 
   await store.updateApplicationStage(app.id, AFFILIATE_STAGE_JUDGING);
 
-  // 2. Channel judge - PASS or DEFLECT only (see file header). No scrape, or
-  //    no LLM available, or an invalid/unparseable judge output -> DEFLECT.
-  //    Never guess, never approve on missing evidence.
-  const scrapedText = app.channel_url ? await firecrawlScrape(env, app.channel_url, fetchImpl) : null;
-  const judge = scrapedText ? await judgeChannel(llm, store, cfg, scrapedText) : null;
-  if (!judge || judge.verdict === 'deflect') {
-    await deflect(env, store, app, fetchImpl, {
-      flagsJson: JSON.stringify({
-        ...parseFlags(app.flags_json),
-        channelJudge: judge?.reason ?? (scrapedText ? 'judge unavailable' : 'scrape unavailable')
-      })
+  // Everything below can throw (scrape/LLM/store/Shopify calls). Nothing else
+  // ever queries the `judging` stage, so an uncaught throw here would strand
+  // the row there forever - no retry, no alert, silently lost. Reset back to
+  // `verified` on ANY throw so the next sweep tick reprocesses it from the
+  // top; a deterministic repeated failure simply retries (and stays
+  // log-visible via the sweep's own per-application catch) every tick rather
+  // than vanishing.
+  try {
+    // 2. Channel judge - PASS or DEFLECT only (see file header). No scrape, or
+    //    no LLM available, or an invalid/unparseable judge output -> DEFLECT.
+    //    Never guess, never approve on missing evidence.
+    const scrapedText = app.channel_url ? await firecrawlScrape(env, app.channel_url, fetchImpl) : null;
+    const judge = scrapedText ? await judgeChannel(llm, store, cfg, scrapedText) : null;
+    if (!judge || judge.verdict === 'deflect') {
+      await deflect(env, store, app, fetchImpl, {
+        flagsJson: JSON.stringify({
+          ...parseFlags(app.flags_json),
+          channelJudge: judge?.reason ?? (scrapedText ? 'judge unavailable' : 'scrape unavailable')
+        })
+      });
+      return;
+    }
+
+    // 3. Fact extraction, grounded in the applicant's OWN answers plus the
+    //    scraped channel page as separate, clearly-labelled evidence. Null
+    //    (unavailable / unfaithful output) -> DEFLECT.
+    const facts = await extractScreenFacts(llm, store, cfg, buildAnswersText(app), {
+      channelEvidence: scrapedText ?? undefined, usageLabel: AFFILIATE_SCREEN_LLM_TASK
     });
-    return;
+    if (!facts) {
+      await deflect(env, store, app, fetchImpl, {
+        flagsJson: JSON.stringify({ ...parseFlags(app.flags_json), reason: 'facts_unavailable' })
+      });
+      return;
+    }
+
+    // 4. Deterministic gate + score. `scoreScreen` is never modified by this
+    //    lane; the voucher-variant gating (only G2/G4/G5 hard-decline) is
+    //    applied here, plus OUR OWN threshold check on top of its computed
+    //    score - the LLM's classification feeds the score, but never decides
+    //    the outcome directly.
+    const verdict = scoreScreen(facts, { variant: 'voucher' });
+    const factsJson = JSON.stringify(facts);
+
+    if (verdict.decision === 'decline') {
+      await store.updateApplicationStage(app.id, AFFILIATE_STAGE_DECLINED, { score: verdict.score, factsJson });
+      const body = buildPartnershipDecline(app.name);
+      await sendApplicantEmail(env, app.email, { subject: DECLINE_SUBJECT, html: renderReplyHtml(body), text: body }, fetchImpl);
+      return;
+    }
+
+    if ((verdict.score ?? 0) < sc.scoreThreshold) {
+      await deflect(env, store, app, fetchImpl, { score: verdict.score, factsJson });
+      return;
+    }
+
+    // 5. Passing score. Defence in depth: Stage 0 (apply.ts) already routes a
+    //    former partner straight to owner_queue at submission, so this
+    //    application should never structurally reach here as a former partner -
+    //    but this is the CRITICAL "never silently auto-issue" invariant, so it
+    //    gets an independent, redundant check rather than relying on the apply
+    //    route never being bypassed or changed later. Same treatment for the
+    //    daily auto-issue cap.
+    const [poolState, issuedTodayCount] = await Promise.all([
+      store.partnerPoolState(app.email),
+      store.countAutoIssuedToday(sinceIso)
+    ]);
+    if (poolState === 'former' || issuedTodayCount >= sc.autoIssueCapPerDay) {
+      await store.updateApplicationStage(app.id, AFFILIATE_STAGE_OWNER_QUEUE, { score: verdict.score, factsJson });
+      await alertOwner(env, cfg, `Affiliate self-serve application needs review: ${app.email}`,
+        poolState === 'former'
+          ? `${app.email} passed screening (score ${verdict.score}/12) but is a former partner - review in the console before issuing.`
+          : `${app.email} passed screening (score ${verdict.score}/12) but today's auto-issue cap (${sc.autoIssueCapPerDay}) is already reached - review in the console.`,
+        fetchImpl);
+      return;
+    }
+
+    await issueOrQueue(deps, app, { score: verdict.score, factsJson });
+  } catch (e) {
+    // Never leave a row stranded at `judging` - reprocess from `verified` on
+    // the next tick. score/facts/flags from an earlier successful pass (if
+    // any) are left untouched (updateApplicationStage COALESCEs).
+    await store.updateApplicationStage(app.id, AFFILIATE_STAGE_VERIFIED);
+    throw e;
   }
-
-  // 3. Fact extraction, grounded in the applicant's OWN answers plus the
-  //    scraped channel page as separate, clearly-labelled evidence. Null
-  //    (unavailable / unfaithful output) -> DEFLECT.
-  const facts = await extractScreenFacts(llm, store, cfg, buildAnswersText(app), {
-    channelEvidence: scrapedText ?? undefined, usageLabel: AFFILIATE_SCREEN_LLM_TASK
-  });
-  if (!facts) {
-    await deflect(env, store, app, fetchImpl, {
-      flagsJson: JSON.stringify({ ...parseFlags(app.flags_json), reason: 'facts_unavailable' })
-    });
-    return;
-  }
-
-  // 4. Deterministic gate + score. `scoreScreen` is never modified by this
-  //    lane; the voucher-variant gating (only G2/G4/G5 hard-decline) is
-  //    applied here, plus OUR OWN threshold check on top of its computed
-  //    score - the LLM's classification feeds the score, but never decides
-  //    the outcome directly.
-  const verdict = scoreScreen(facts, { variant: 'voucher' });
-  const factsJson = JSON.stringify(facts);
-
-  if (verdict.decision === 'decline') {
-    await store.updateApplicationStage(app.id, AFFILIATE_STAGE_DECLINED, { score: verdict.score, factsJson });
-    const body = buildPartnershipDecline(app.name);
-    await sendApplicantEmail(env, app.email, { subject: DECLINE_SUBJECT, html: renderReplyHtml(body), text: body }, fetchImpl);
-    return;
-  }
-
-  if ((verdict.score ?? 0) < sc.scoreThreshold) {
-    await deflect(env, store, app, fetchImpl, { score: verdict.score, factsJson });
-    return;
-  }
-
-  // 5. Passing score. Defence in depth: Stage 0 (apply.ts) already routes a
-  //    former partner straight to owner_queue at submission, so this
-  //    application should never structurally reach here as a former partner -
-  //    but this is the CRITICAL "never silently auto-issue" invariant, so it
-  //    gets an independent, redundant check rather than relying on the apply
-  //    route never being bypassed or changed later. Same treatment for the
-  //    daily auto-issue cap.
-  const [poolState, issuedTodayCount] = await Promise.all([
-    store.partnerPoolState(app.email),
-    store.countAutoIssuedToday(sinceIso)
-  ]);
-  if (poolState === 'former' || issuedTodayCount >= sc.autoIssueCapPerDay) {
-    await store.updateApplicationStage(app.id, AFFILIATE_STAGE_OWNER_QUEUE, { score: verdict.score, factsJson });
-    await alertOwner(env, cfg, `Affiliate self-serve application needs review: ${app.email}`,
-      poolState === 'former'
-        ? `${app.email} passed screening (score ${verdict.score}/12) but is a former partner - review in the console before issuing.`
-        : `${app.email} passed screening (score ${verdict.score}/12) but today's auto-issue cap (${sc.autoIssueCapPerDay}) is already reached - review in the console.`,
-      fetchImpl);
-    return;
-  }
-
-  await issueOrQueue(deps, app, { score: verdict.score, factsJson });
 }
 
 /**
@@ -331,7 +352,14 @@ async function issueOrQueue(
       flagsJson: JSON.stringify({ ...flags, issueAttempts: attempts, lastIssueError: issued.error })
     });
     // Never email the applicant here - the voucher does not exist yet.
-    if (persistent || attempts >= ISSUE_RETRY_ALERT_THRESHOLD) {
+    // Persistent (no-end-date) blocks alert on attempt 1, then only every
+    // Nth tick after that - it cannot resolve on its own, so a plain
+    // "persistent" check would otherwise re-alert on EVERY 15-minute tick
+    // forever and flood the owner inbox for one stuck promotion.
+    const alertDue = persistent
+      ? (attempts === 1 || attempts % PERSISTENT_ALERT_REPEAT_EVERY_TICKS === 0)
+      : attempts >= ISSUE_RETRY_ALERT_THRESHOLD;
+    if (alertDue) {
       await alertOwner(env, cfg, `Voucher issue ${persistent ? 'blocked' : 'failing'}: ${app.email}`,
         `Cannot issue ${app.email}'s trial code: ${issued.error}` +
         (persistent ? ' This will not resolve on retry - owner action required.' : ` (attempt ${attempts})`),
@@ -356,14 +384,38 @@ async function issueOrQueue(
  * issue never completed). Re-attempts issuance ONLY - never re-scrapes,
  * re-judges, or re-scores (see `issueOrQueue`'s doc comment).
  *
- * Recovery guard: if a LIVE voucher already exists for this email (the prior
- * tick's `issueVoucher` actually succeeded in Shopify, but the stage write or
- * the email send that follows it threw before completing), do NOT mint a
- * second code - recover by sending the existing code instead. Without this
- * guard, retrying would silently double-issue a real, usage-capped discount.
+ * Guards applied BEFORE issuing, in order:
+ *  1. Recovery guard - if a LIVE D1 voucher already exists for this email
+ *     (the prior tick's `issueVoucher` succeeded in Shopify AND its D1 write
+ *     completed, but the stage write/email after it threw), do NOT mint a
+ *     second code - recover by sending the existing code instead.
+ *  2. Former-partner / daily-cap guard - the SAME defence-in-depth check
+ *     `screenOneApplication` applies to a fresh pass (its step 5), applied
+ *     here too: a retry must never bypass the daily auto-issue cap or
+ *     silently re-approve a former partner just because the row is already
+ *     `approved_pending_issue`. A former partner routes to `owner_queue`; a
+ *     blown cap simply leaves the row at `approved_pending_issue` for a
+ *     later day (it will be retried again next tick, cap permitting).
+ *  3. Double-mint recovery guard - covers the gap guard 1 misses: a prior
+ *     tick's Shopify `createVoucherDiscount` can succeed while the FOLLOWING
+ *     D1 write throws, leaving no `live` D1 voucher (so guard 1 finds
+ *     nothing) but a genuinely live, untracked code sitting in Shopify.
+ *     `genVoucherCode` is deterministic, so re-issuing would collide on the
+ *     SAME code, get "already exists" from Shopify, and fall through to a
+ *     SALTED second mint - two live codes for one applicant, the first
+ *     untracked forever. Look the deterministic code up read-only first and
+ *     reconcile the missing D1 row instead of minting a new one.
+ * Only once all three find nothing to recover does this fall through to a
+ * normal `issueOrQueue` call.
  */
 export async function retryPendingIssue(deps: ScreenDeps, app: AffiliateApplicationRow): Promise<void> {
-  const { env, store, fetchImpl } = deps;
+  const { env, store, cfg, admin, fetchImpl } = deps;
+  const sc = cfg.selfServe ?? DEFAULT_SELF_SERVE;
+  const sinceIso = new Date(Date.now() - 86_400_000).toISOString();
+  const scored = { score: app.score, factsJson: app.facts_json ?? '{}' };
+
+  // Guard 1: a live D1 voucher already exists (issueVoucher's D1 write also
+  // completed on the earlier tick) - recover, never re-issue.
   const poolState = await store.partnerPoolState(app.email);
   if (poolState === 'live') {
     const mine = (await store.listAffiliateVouchers())
@@ -379,7 +431,49 @@ export async function retryPendingIssue(deps: ScreenDeps, app: AffiliateApplicat
       return;
     }
   }
-  await issueOrQueue(deps, app, { score: app.score, factsJson: app.facts_json ?? '{}' });
+
+  // Guard 2: former-partner / daily auto-issue cap, same invariant as
+  // screenOneApplication's step 5 - a retry gets no special exemption.
+  if (poolState === 'former') {
+    await store.updateApplicationStage(app.id, AFFILIATE_STAGE_OWNER_QUEUE, scored);
+    await alertOwner(env, cfg, `Affiliate self-serve application needs review: ${app.email}`,
+      `${app.email} passed screening earlier but is now a former partner - review in the console before issuing.`, fetchImpl);
+    return;
+  }
+  if ((await store.countAutoIssuedToday(sinceIso)) >= sc.autoIssueCapPerDay) {
+    // Leave at approved_pending_issue - today's cap is reached; retried again
+    // once the rolling 24h window has room (a later tick or a later day).
+    return;
+  }
+
+  // Guard 3: double-mint recovery - a genuinely live but UNTRACKED code
+  // sitting in Shopify (see doc comment above). Read-only, best-effort: any
+  // lookup failure or missing admin falls through to the normal issue path.
+  if (admin) {
+    const candidateCode = genVoucherCode(app.name, app.email, TRIAL_PCT_OFF_DEFAULT);
+    const lookup = await findVoucherDiscountByCode(admin, candidateCode);
+    if (lookup.found && lookup.startsAt && lookup.endsAt) {
+      const alreadyTracked = (await store.listAffiliateVouchers()).some((v) => v.code === candidateCode);
+      if (!alreadyTracked) {
+        const pctOff = lookup.pctOff ?? TRIAL_PCT_OFF_DEFAULT;
+        const partnerId = await store.upsertAffiliatePartner({ contactEmail: app.email, name: app.name, channelUrl: app.channel_url });
+        await store.createAffiliateVoucher({
+          partnerId, code: candidateCode, pctOff, commissionPct: STANDARD_COMMISSION_PCT,
+          startsAt: lookup.startsAt, endsAt: lookup.endsAt, usageLimit: lookup.usageLimit ?? sc.starterUsageLimit
+        });
+        await store.updateApplicationStage(app.id, AFFILIATE_STAGE_APPROVED, scored);
+        const body = buildVoucherInviteWithCode(app.name, {
+          code: candidateCode, pctOff, commissionPct: STANDARD_COMMISSION_PCT,
+          startsAtLabel: voucherDateLabel(lookup.startsAt), endsAtLabel: voucherDateLabel(lookup.endsAt),
+          deferred: Date.parse(lookup.startsAt) > Date.now()
+        });
+        await sendApplicantEmail(env, app.email, { subject: APPROVAL_SUBJECT, html: renderReplyHtml(body), text: body }, fetchImpl);
+        return;
+      }
+    }
+  }
+
+  await issueOrQueue(deps, app, scored);
 }
 
 /**
