@@ -39,7 +39,18 @@ import { defaultFetch } from '../safe-fetch';
 // expiry in the SIGNED payload (not just the cookie's Max-Age attribute) so
 // expiry is enforced server-side regardless of what a client does with the
 // cookie - this is what makes "an expired cookie is rejected" actually
-// testable/verifiable, not just advisory. -----------------------------------
+// testable/verifiable, not just advisory.
+//
+// NO IN-WINDOW REVOCATION: this is a stateless signed cookie, not a DB-backed
+// session - once minted, it stays valid until its embedded expiry (7 days)
+// no matter what happens to the partner row afterwards (deactivated,
+// redacted, etc). Accepted per the design spec ("acceptable, documented") -
+// the blast radius is bounded to read-only aggregates for a single partner,
+// for at most 7 days, and a compromised link can still be invalidated at the
+// token layer (it is single-use before it's ever claimed). A future task
+// that needs earlier revocation would have to move to a DB-backed session
+// (e.g. a session id looked up against a revocable table) instead of this
+// self-contained signed value. -----------------------------------
 
 export const SESSION_COOKIE_NAME = 'pawscout_partner';
 export const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days

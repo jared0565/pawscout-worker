@@ -351,6 +351,8 @@ describe('HTTP level: enabled - full login -> session -> dashboard round trip', 
     expect(setCookieHeader).toContain('HttpOnly');
     expect(setCookieHeader).toContain('Secure');
     expect(setCookieHeader).toContain('SameSite=Lax');
+    expect(setCookieHeader).toContain('Path=/affiliate/portal');
+    expect(setCookieHeader).toContain('Max-Age=604800');
 
     const second = await app.request(`/affiliate/portal?token=${rawToken}`, {}, httpEnv());
     expect(second.status).toBe(200); // not another redirect - the token is already spent
