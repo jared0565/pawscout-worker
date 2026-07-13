@@ -56,6 +56,8 @@ import { parseOrderWebhook, validateOrder, FULFIL_GRACE_MINUTES } from './fulfil
 import { attributePaidOrder } from './inbox/attribution';
 import { firecrawlCjSearch } from './firecrawl';
 import { handleAffiliateApply, renderApplyForm, GENERIC_APPLY_MESSAGE, type ApplyFields } from './affiliate/apply';
+import { handleAffiliateVerify, EXPIRED_HTML as AFFILIATE_VERIFY_EXPIRED_HTML } from './affiliate/verify';
+import { runAffiliateScreenSweep } from './affiliate/screen';
 
 export const app = new Hono<{ Bindings: Env }>();
 
@@ -1623,6 +1625,29 @@ app.post('/proxy/affiliate/apply', async (c) => {
   }
 });
 
+// Affiliate self-serve marketplace, Stage 1 (Task 4): the magic-link click
+// target. On the WORKER's own domain (NOT /proxy - see apply.ts's
+// issueVerifyLink, which points straight at `${SHOPIFY_APP_URL}/affiliate/verify`),
+// so there is no App Proxy signature to verify here. No shop is encoded in the
+// link (same single-active-shop resolution as /webhooks/resend and
+// handleInboundEmail above). `Referrer-Policy: no-referrer` on every response -
+// the page must never leak the (now-spent) token URL via a Referer header.
+app.get('/affiliate/verify', async (c) => {
+  const headers = { 'Referrer-Policy': 'no-referrer' } as const;
+  try {
+    const shops = await listActiveShops(c.env.DB);
+    const shop = shops[0];
+    if (!shop) return c.html(AFFILIATE_VERIFY_EXPIRED_HTML, 200, headers);
+    const store = new TenantStore(c.env.DB, shop);
+    const token = c.req.query('token') ?? '';
+    const r = await handleAffiliateVerify(store, token);
+    return c.html(r.html, 200, headers);
+  } catch (e) {
+    console.warn(`affiliate verify failed: ${(e as Error).message}`);
+    return c.html(AFFILIATE_VERIFY_EXPIRED_HTML, 200, headers);
+  }
+});
+
 // --- uninstall webhook ---
 app.post('/webhooks/uninstall', async (c) => {
   const shopify = makeShopify(c.env);
@@ -1806,7 +1831,7 @@ const worker: ExportedHandler<Env> = {
     ctx.waitUntil(
       controller.cron === DAILY_CRON
         ? runDailyMaintenance(env)
-        : Promise.all([runOrderPipeline(env), runInboxClassifySweep(env), runMarketVisibilityReconcile(env), runProfitAgentSweep(env), runSyndicationSweep(env), resumeDailyMaintenance(env)]).then(() => undefined)
+        : Promise.all([runOrderPipeline(env), runInboxClassifySweep(env), runMarketVisibilityReconcile(env), runProfitAgentSweep(env), runSyndicationSweep(env), runAffiliateScreenSweep(env), resumeDailyMaintenance(env)]).then(() => undefined)
     );
   },
   email: (message, env, ctx) => handleInboundEmail(message, env, ctx)

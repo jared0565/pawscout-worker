@@ -1,4 +1,5 @@
 import { defaultFetch } from './safe-fetch';
+import type { Env } from './types';
 
 export interface FcProduct {
   title: string;
@@ -57,4 +58,36 @@ export async function firecrawlCjSearch(
   const data = (await resp.json()) as { data?: { json?: { products?: FcProduct[] } } };
   const products = data?.data?.json?.products;
   return Array.isArray(products) ? products : [];
+}
+
+/**
+ * Generic single-page scrape (affiliate self-serve channel screening, Task 4):
+ * renders JS, waits for content, returns the page's markdown text - or null on
+ * any failure (missing key, non-2xx, empty body, network throw). Deliberately
+ * dumb: no site-specific structured extraction like `firecrawlCjSearch` above -
+ * the caller (the channel judge) reads the raw text itself. Never throws past
+ * the caller; a dead/unscrapable URL just means "we could not verify this
+ * channel", which the downgrade-only screening lane treats as a DEFLECT, never
+ * an approval.
+ */
+export async function firecrawlScrape(
+  env: Env,
+  url: string,
+  fetchImpl: typeof fetch = defaultFetch
+): Promise<string | null> {
+  const apiKey = env.FIRECRAWL_API_KEY;
+  if (!apiKey || !url) return null;
+  try {
+    const resp = await fetchImpl('https://api.firecrawl.dev/v1/scrape', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url, formats: ['markdown'], waitFor: 4000, timeout: 30000 })
+    });
+    if (!resp.ok) return null;
+    const data = (await resp.json()) as { data?: { markdown?: string } };
+    const text = data?.data?.markdown;
+    return typeof text === 'string' && text.trim() ? text : null;
+  } catch {
+    return null;
+  }
 }
