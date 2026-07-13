@@ -2,6 +2,10 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
 import { TenantStore, AFFILIATE_SCREEN_LLM_TASK, AFFILIATE_STAGE_APPROVED } from '../src/tenant-store';
+import {
+  DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, DEFAULT_INBOX,
+  DEFAULT_SELF_SERVE, type TenantConfig
+} from '../src/types';
 
 beforeEach(async () => { await applyD1Migrations(env.DB, env.TEST_MIGRATIONS); });
 
@@ -231,6 +235,43 @@ describe('affiliate self-serve store layer (migration 0032)', () => {
       expect(apps.results ?? []).toHaveLength(0);
       const tokens = await env.DB.prepare(`SELECT * FROM affiliate_tokens WHERE shop = ?1`).bind(SHOP).all();
       expect(tokens.results ?? []).toHaveLength(0);
+    });
+  });
+
+  describe('selfServe config persistence (Task 6: migration 0033 + saveSelfServe)', () => {
+    const BASE: TenantConfig = {
+      collectionMap: {}, gates: { popularityFloor: 1, priceMin: 5, priceMax: 80, relevance: 'title' },
+      pricing: DEFAULT_PRICING, floors: DEFAULT_FLOORS, llm: DEFAULT_LLM, addons: DEFAULT_ADDONS,
+      fulfil: DEFAULT_FULFIL, inbox: DEFAULT_INBOX, target: 12
+    };
+
+    it('getConfig merges in DEFAULT_SELF_SERVE when no selfserve row has ever been saved', async () => {
+      const s = store();
+      await s.upsertTenant({ accessTokenEnc: 't', dekWrapped: 'd', scopes: 's' });
+      await s.seedConfig(BASE);
+      const cfg = await s.getConfig();
+      expect(cfg?.selfServe).toEqual(DEFAULT_SELF_SERVE);
+    });
+
+    it('saveSelfServe persists a full round trip and overrides the default on the next getConfig', async () => {
+      const s = store();
+      await s.upsertTenant({ accessTokenEnc: 't', dekWrapped: 'd', scopes: 's' });
+      await s.seedConfig(BASE);
+      await s.saveSelfServe({ enabled: true, autoIssueCapPerDay: 9, screenSpendCapGbpPerDay: 3.5, scoreThreshold: 6, starterUsageLimit: 40 });
+      const cfg = await s.getConfig();
+      expect(cfg?.selfServe).toEqual({ enabled: true, autoIssueCapPerDay: 9, screenSpendCapGbpPerDay: 3.5, scoreThreshold: 6, starterUsageLimit: 40 });
+    });
+
+    it('saveSelfServe is scoped to its own shop', async () => {
+      const a = store();
+      const b = new TenantStore(env.DB, 'b.myshopify.com');
+      await a.upsertTenant({ accessTokenEnc: 't', dekWrapped: 'd', scopes: 's' });
+      await b.upsertTenant({ accessTokenEnc: 't', dekWrapped: 'd', scopes: 's' });
+      await a.seedConfig(BASE);
+      await b.seedConfig(BASE);
+      await a.saveSelfServe({ enabled: true, autoIssueCapPerDay: 1, screenSpendCapGbpPerDay: 1, scoreThreshold: 1, starterUsageLimit: 1 });
+      const cfgB = await b.getConfig();
+      expect(cfgB?.selfServe).toEqual(DEFAULT_SELF_SERVE);
     });
   });
 

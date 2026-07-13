@@ -192,6 +192,61 @@ export interface ScreenDeps {
 }
 
 /**
+ * Owner-initiated decline (Task 6 console Applications card), distinct from
+ * the automatic `deflect` path above: same terminal state (DECLINED vs
+ * DEFLECTED) and the same applicant-facing copy (`buildPartnershipDecline`,
+ * already used - and owner-validated - on the automatic hard-gate decline
+ * path in `screenOneApplication`), but reachable from ANY non-terminal stage,
+ * not just a scored verdict. `deps.admin`/`deps.llm` are unused here (never
+ * called) - callers may pass `admin: null`; kept on `ScreenDeps` only so the
+ * console route can build one shared deps object for both approve and
+ * decline.
+ */
+export async function declineApplication(deps: ScreenDeps, app: AffiliateApplicationRow): Promise<void> {
+  const { env, store, fetchImpl } = deps;
+  await store.updateApplicationStage(app.id, AFFILIATE_STAGE_DECLINED, { score: app.score, factsJson: app.facts_json });
+  const body = buildPartnershipDecline(app.name);
+  await sendApplicantEmail(env, app.email, { subject: DECLINE_SUBJECT, html: renderReplyHtml(body), text: body }, fetchImpl);
+}
+
+/** One self-serve application, shaped for the console (Task 6): the raw
+ *  D1 row's snake_case columns mapped to camelCase, plus a short human-
+ *  readable summary of flags_json (channel-judge reason, spend-cap hit,
+ *  a stuck-issuance error, etc.) so the owner does not have to read raw JSON. */
+export interface ApplicationForConsole {
+  id: string;
+  email: string;
+  name: string | null;
+  channelUrl: string | null;
+  stage: string;
+  score: number | null;
+  flagsSummary: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Renders AppFlags (whatever screening/issuance wrote to flags_json) as one
+ *  short line for the console - never raw JSON. Unknown/empty -> ''. */
+export function summarizeApplicationFlags(flagsJson: string | null): string {
+  const f = parseFlags(flagsJson);
+  const parts: string[] = [];
+  if (f.channelJudge) parts.push(`Channel judge: ${f.channelJudge}`);
+  if (f.reason) parts.push(`Reason: ${f.reason}`);
+  if (f.spendCapHit) parts.push('Daily screen-spend cap hit');
+  if (f.lastIssueError) parts.push(`Issue error: ${f.lastIssueError}`);
+  if (f.issueAttempts) parts.push(`Issue attempts: ${f.issueAttempts}`);
+  return parts.join(' · ');
+}
+
+export function applicationForConsole(a: AffiliateApplicationRow): ApplicationForConsole {
+  return {
+    id: a.id, email: a.email, name: a.name, channelUrl: a.channel_url,
+    stage: a.stage, score: a.score, flagsSummary: summarizeApplicationFlags(a.flags_json),
+    createdAt: a.created_at, updatedAt: a.updated_at
+  };
+}
+
+/**
  * Screen ONE application, start to finish: spend-cap check -> judging ->
  * channel judge -> fact extraction -> deterministic score/gate -> auto-issue
  * or deflect or owner_queue. Every exit either advances the stage or leaves it
@@ -311,7 +366,7 @@ export async function screenOneApplication(deps: ScreenDeps, app: AffiliateAppli
  * failure can never flip an already-approved applicant to `deflected` on a
  * fresh (possibly different) LLM roll, and never burns extra screening spend.
  */
-async function issueOrQueue(
+export async function issueOrQueue(
   deps: ScreenDeps, app: AffiliateApplicationRow, scored: { score: number | null; factsJson: string }
 ): Promise<void> {
   const { env, store, cfg, admin, fetchImpl } = deps;

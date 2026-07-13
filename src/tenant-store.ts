@@ -1,4 +1,4 @@
-import { DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, DEFAULT_SEMANTIC, DEFAULT_PROFIT, mergeSyndicate, type TenantRow, type TenantConfig, type Fulfil, type ProfitConfig, type SyndicateConfig } from './types';
+import { DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, DEFAULT_SEMANTIC, DEFAULT_PROFIT, DEFAULT_SELF_SERVE, mergeSyndicate, type TenantRow, type TenantConfig, type Fulfil, type ProfitConfig, type SyndicateConfig, type SelfServeConfig } from './types';
 import type { LogisticsRoute } from './logistics';
 import { deriveModels } from './llm-migrate';
 import { DEFAULT_INBOX, type InboxConfig } from './inbox/types';
@@ -310,9 +310,9 @@ export class TenantStore {
 
   async getConfig(): Promise<TenantConfig | null> {
     const row = await this.db
-      .prepare(`SELECT collection_map, gates, pricing, floors, llm, addons, fulfil, inbox, semantic, target, profit, syndicate FROM tenant_config WHERE shop = ?1`)
+      .prepare(`SELECT collection_map, gates, pricing, floors, llm, addons, fulfil, inbox, semantic, target, profit, syndicate, selfserve FROM tenant_config WHERE shop = ?1`)
       .bind(this.shop)
-      .first<{ collection_map: string; gates: string; pricing: string; floors: string; llm: string; addons: string; fulfil: string; inbox: string; semantic: string; target: number; profit: string; syndicate: string }>();
+      .first<{ collection_map: string; gates: string; pricing: string; floors: string; llm: string; addons: string; fulfil: string; inbox: string; semantic: string; target: number; profit: string; syndicate: string; selfserve: string | null }>();
     if (!row) return null;
     return {
       collectionMap: JSON.parse(row.collection_map),
@@ -337,6 +337,7 @@ export class TenantStore {
       semantic: { ...DEFAULT_SEMANTIC, ...JSON.parse(row.semantic || '{}') },
       profit: { ...DEFAULT_PROFIT, ...JSON.parse(row.profit || '{}') },
       syndicate: mergeSyndicate(row.syndicate),
+      selfServe: { ...DEFAULT_SELF_SERVE, ...JSON.parse(row.selfserve || '{}') },
       target: row.target
     };
   }
@@ -370,6 +371,16 @@ export class TenantStore {
     await this.db
       .prepare(`UPDATE tenant_config SET syndicate = ?2, updated_at = ?3 WHERE shop = ?1`)
       .bind(this.shop, JSON.stringify(syn), new Date().toISOString())
+      .run();
+  }
+
+  /** Persist the affiliate self-serve marketplace config block (Task 6: the
+   *  missing DB wiring flagged by Task 1 - without this, selfServe.enabled
+   *  could never actually be flipped on from the console). */
+  async saveSelfServe(sc: SelfServeConfig): Promise<void> {
+    await this.db
+      .prepare(`UPDATE tenant_config SET selfserve = ?2, updated_at = ?3 WHERE shop = ?1`)
+      .bind(this.shop, JSON.stringify(sc), new Date().toISOString())
       .run();
   }
 

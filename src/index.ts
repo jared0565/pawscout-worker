@@ -24,12 +24,13 @@ import { ensureRecurringDiscount, retireRecurringDiscount, refreshPublicEventFee
 import { runBlogPipeline, enrichBlogPost, proposeBlogTopics, listPostsSynced } from './blog/pipeline';
 import type { BlogBrief } from './blog/types';
 import { issueVoucher, fetchActiveOrderPromos, voucherDateLabel, deactivateVoucherDiscount } from './affiliate-discounts';
+import { hashBuyerEmail } from './affiliate-attribution';
 import { buildVoucherInviteWithCode } from './inbox/partnership';
 import { renderReplyHtml } from './inbox/draft';
 import { consolePage } from './console/page';
 import { validateCjKey, CjClient, CjTokenManager, cjFetchFromEnv, chooseOrigin } from './cj';
 import { registerWebhooks, type RegisterWebhook } from './webhooks';
-import { validateGatesPayload, validatePricingPayload, validateLlmPayload, validateAddonsPayload, validateCollectionMap, validatePartnerPayload } from './validate';
+import { validateGatesPayload, validatePricingPayload, validateLlmPayload, validateAddonsPayload, validateCollectionMap, validatePartnerPayload, validateSelfServePayload } from './validate';
 import { sendEmail, SENDING_DOMAIN } from './email';
 import { verifySvixSignature, parseResendEvent, applyResendEvent, getTrackingStatus, enableTracking, ensureEventsWebhook } from './resend-events';
 import { checkPrivacyPolicy, applyPrivacyPolicy } from './legal-policy';
@@ -58,6 +59,8 @@ import { firecrawlCjSearch } from './firecrawl';
 import { handleAffiliateApply, renderApplyForm, GENERIC_APPLY_MESSAGE, type ApplyFields } from './affiliate/apply';
 import { handleAffiliateVerify, EXPIRED_HTML as AFFILIATE_VERIFY_EXPIRED_HTML } from './affiliate/verify';
 import { runAffiliateScreenSweep } from './affiliate/screen';
+import { getApplicationsConsole, approveApplicationAnyway, declineApplicationById } from './affiliate/console';
+import { defaultFetch } from './safe-fetch';
 import { handlePortalLogin, handlePortalGet, handlePortalData, SESSION_COOKIE_NAME, SESSION_COOKIE_PATH, SESSION_MAX_AGE_SECONDS, PORTAL_DARK_HTML, GENERIC_LOGIN_HTML } from './affiliate/portal';
 import { getCookie, setCookie } from 'hono/cookie';
 
@@ -520,6 +523,60 @@ app.post('/api/partners/consent', async (c) => {
   if (typeof body.partnerId !== 'string' || !body.partnerId) return c.json({ ok: false, error: 'partnerId required' }, 400);
   const changed = await new TenantStore(c.env.DB, s).setPartnerMarketingConsent(body.partnerId, body.on === true);
   return c.json(changed ? { ok: true } : { ok: false, error: 'Partner not found' });
+});
+
+// --- Self-serve affiliate marketplace (Task 6, 2026-07-12): the Applications
+// card (owner review of what the automated apply -> screen -> auto-issue
+// funnel could not decide on its own) + the selfServe config toggles. These
+// console routes work regardless of selfServe.enabled - manual review/action
+// on applications the funnel already produced (or an owner override before
+// the funnel is even switched on). Logic lives in src/affiliate/console.ts
+// (directly testable, no session-token HTTP test needed - same split as
+// saveProfitFlags/getPartners); these handlers stay thin.
+app.post('/api/affiliate/applications', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  const store = new TenantStore(c.env.DB, s);
+  const cfg = await store.getConfig();
+  return c.json({ ok: true, ...(await getApplicationsConsole(store, cfg)) });
+});
+app.post('/api/affiliate/applications/approve', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: { id?: unknown } = {};
+  try { body = await c.req.json(); } catch { return c.json({ ok: false, error: 'Invalid JSON body' }, 400); }
+  const id = typeof body.id === 'string' && body.id ? body.id : '';
+  if (!id) return c.json({ ok: false, error: 'id required' }, 400);
+  const store = new TenantStore(c.env.DB, s);
+  const cfg = await store.getConfig();
+  if (!cfg) return c.json({ ok: false, error: 'Tenant not found' }, 400);
+  const admin = await adminForShop(c.env, store);
+  const llm = new LlmClient({ openrouter: c.env.OPENROUTER_API_KEY, openai: c.env.OPENAI_API_KEY });
+  const r = await approveApplicationAnyway({ env: c.env, store, cfg, llm, admin, fetchImpl: defaultFetch }, id);
+  return c.json(r);
+});
+app.post('/api/affiliate/applications/decline', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: { id?: unknown } = {};
+  try { body = await c.req.json(); } catch { return c.json({ ok: false, error: 'Invalid JSON body' }, 400); }
+  const id = typeof body.id === 'string' && body.id ? body.id : '';
+  if (!id) return c.json({ ok: false, error: 'id required' }, 400);
+  const store = new TenantStore(c.env.DB, s);
+  const cfg = await store.getConfig();
+  if (!cfg) return c.json({ ok: false, error: 'Tenant not found' }, 400);
+  const llm = new LlmClient({ openrouter: c.env.OPENROUTER_API_KEY, openai: c.env.OPENAI_API_KEY });
+  const r = await declineApplicationById({ env: c.env, store, cfg, llm, admin: null, fetchImpl: defaultFetch }, id);
+  return c.json(r);
+});
+// The master switch + the four daily safety caps. Ships off (DEFAULT_SELF_SERVE.enabled
+// = false); this is the ONLY way to flip it on - see Task 1's own flagged gap
+// ("selfServe remains fully dark until Task 6 wires D1 persistence").
+app.post('/api/affiliate/config', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: unknown;
+  try { body = await c.req.json(); } catch { return c.json({ ok: false, error: 'Invalid JSON body' }, 400); }
+  const v = validateSelfServePayload(body);
+  if (!v.ok) return c.json({ ok: false, error: v.error }, 400);
+  await new TenantStore(c.env.DB, s).saveSelfServe(v.value);
+  return c.json({ ok: true, selfServe: v.value });
 });
 
 // --- Campaigns (2026-07-05): owner-composed marketing broadcasts. HITL only -
@@ -1809,7 +1866,12 @@ app.post('/webhooks/customers-redact', (c) =>
     const ids = Array.isArray(p.orders_to_redact) ? p.orders_to_redact.map(String) : [];
     const n = await store.redactOrders(ids);
     const email = ((p.customer as { email?: string } | undefined)?.email ?? '').toString();
-    const inboxRemoved = email ? await store.redactContact(email) : 0;
+    // The affiliate self-serve buyer hash (affiliate_orders.buyer_email_hash,
+    // written by attributeAffiliateOrders via hashBuyerEmail) can only be
+    // found/nulled by redactContact when the SAME hash is supplied - compute
+    // it here the identical way the attribution sweep does (Task 2 built the
+    // hash, Task 1 built the optional param; this is the missing wire).
+    const inboxRemoved = email ? await store.redactContact(email, await hashBuyerEmail(email, c.env.SHOPIFY_API_SECRET)) : 0;
     console.log(`customers/redact: erased ${n} order row(s) + ${inboxRemoved} inbox row(s)`);
   }));
 // Purge ALL data for the shop (~48h after uninstall).

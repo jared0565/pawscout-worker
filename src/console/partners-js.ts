@@ -153,6 +153,95 @@ async function loadDiscountStatus(){
     box.innerHTML='Storewide promotions: '+esc(parts.join(' · '))+'. New voucher codes are automatically scheduled to start after the last one ends.';
   }catch(e){ box.textContent='Store promotion check unavailable.'; }
 }
+// --- Self-serve applications (Task 6): the funnel's own owner-review queue.
+// Most applications never appear here - only stages a human must decide
+// (owner_queue: former partner or over-cap; deflected: screened out but the
+// owner may still want to override). Approve anyway routes through the SAME
+// issueVoucher call as the automatic path (bounded starter tier); Decline
+// sends the standard decline email. Both are two-click armed (prtArm), and
+// every dynamic field is escaped before it reaches innerHTML.
+function prtAppStageLabel(stage){
+  var m={submitted:'Submitted',verified:'Verified',judging:'Judging',approved_pending_issue:'Issuing…',approved:'Approved',deflected:'Deflected',declined:'Declined',owner_queue:'Needs review'};
+  return m[stage]||esc(stage);
+}
+function prtAppStageChipClass(stage){
+  if(stage==='approved') return 'prt-live';
+  if(stage==='declined') return 'prt-revoked';
+  return 'prt-expired';
+}
+function prtAppRowHtml(a){
+  var items='';
+  if(a.stage==='owner_queue'||a.stage==='deflected') items+='<button type="button" data-prt-app-approve="'+esc(a.id)+'">Approve anyway</button>';
+  if(a.stage!=='approved'&&a.stage!=='declined') items+='<button type="button" data-prt-app-decline="'+esc(a.id)+'">Decline</button>';
+  var channelSafe=a.channelUrl&&/^https?:\/\//i.test(a.channelUrl);
+  var channel=a.channelUrl
+    ?(channelSafe?('<a href="'+esc(a.channelUrl)+'" target="_blank" rel="noopener noreferrer">'+esc(a.channelUrl)+'</a>'):esc(a.channelUrl))
+    :'<span class="muted">no channel</span>';
+  return '<tr>'
+    +'<td class="prt-cell-who"><span class="prt-who">'+esc(a.name||a.email)+'</span>'+(a.name?'<span class="prt-mail">'+esc(a.email)+'</span>':'')+'</td>'
+    +'<td>'+prtChipHtml(prtAppStageLabel(a.stage),prtAppStageChipClass(a.stage))+'</td>'
+    +'<td class="prt-num">'+(a.score==null?'-':(esc(a.score)+'/12'))+'</td>'
+    +'<td>'+channel+'</td>'
+    +'<td class="muted">'+esc(a.flagsSummary||'')+'</td>'
+    +'<td class="prt-actions-cell">'+(items||'<span class="muted">-</span>')+'</td>'
+    +'</tr>';
+}
+function prtRenderSelfServeConfig(sc){
+  if(!sc) return;
+  var en=el('prt-ss-enabled'); if(en) en.checked=!!sc.enabled;
+  var cap=el('prt-ss-cap'); if(cap) cap.value=sc.autoIssueCapPerDay;
+  var sp=el('prt-ss-spend'); if(sp) sp.value=sc.screenSpendCapGbpPerDay;
+  var sco=el('prt-ss-score'); if(sco) sco.value=sc.scoreThreshold;
+  var us=el('prt-ss-usage'); if(us) us.value=sc.starterUsageLimit;
+}
+async function loadApplications(){
+  try{
+    var r=await api('/affiliate/applications',{});
+    if(!r.ok){ setMsg('prt-app-msg','Failed: '+(r.error||'unknown error'),'no'); return; }
+    prtRenderSelfServeConfig(r.selfServe);
+    var box=el('prt-app-list'); if(!box) return;
+    var rows='';
+    for(var i=0;i<r.applications.length;i++) rows+=prtAppRowHtml(r.applications[i]);
+    box.innerHTML=rows
+      ?('<div class="prt-tablewrap"><table class="prt-table"><thead><tr><th>Applicant</th><th>Stage</th><th class="prt-num">Score</th><th>Channel</th><th>Notes</th><th aria-label="Actions"></th></tr></thead><tbody>'+rows+'</tbody></table></div>')
+      :'<p class="muted">No self-serve applications yet.</p>';
+  }catch(e){ setMsg('prt-app-msg','Could not load applications.','no'); }
+}
+async function prtApproveApplication(btn){
+  try{
+    var r=await api('/affiliate/applications/approve',{id:btn.getAttribute('data-prt-app-approve')});
+    if(!r.ok){ setMsg('prt-app-msg','Failed: '+(r.error||'unknown error'),'no'); return; }
+    setMsg('prt-app-msg','Approved. The starter code has been issued and emailed.','ok');
+    loadApplications(); loadPartners();
+  }catch(e){ setMsg('prt-app-msg','Could not approve the application.','no'); }
+}
+async function prtDeclineApplication(btn){
+  try{
+    var r=await api('/affiliate/applications/decline',{id:btn.getAttribute('data-prt-app-decline')});
+    if(!r.ok){ setMsg('prt-app-msg','Failed: '+(r.error||'unknown error'),'no'); return; }
+    setMsg('prt-app-msg','Declined.','ok');
+    loadApplications();
+  }catch(e){ setMsg('prt-app-msg','Could not decline the application.','no'); }
+}
+// --- Self-serve config (selfServe block): master enable + the four daily
+// safety caps/thresholds. Saved as one full object (validateSelfServePayload
+// rejects a NaN/negative/out-of-range value with a 400, never silently clamps).
+async function saveSelfServeConfig(){
+  var body={
+    enabled:!!(el('prt-ss-enabled')&&el('prt-ss-enabled').checked),
+    autoIssueCapPerDay:Number(el('prt-ss-cap').value),
+    screenSpendCapGbpPerDay:Number(el('prt-ss-spend').value),
+    scoreThreshold:Number(el('prt-ss-score').value),
+    starterUsageLimit:Number(el('prt-ss-usage').value)
+  };
+  setMsg('prt-ss-msg','Saving…','muted');
+  try{
+    var r=await api('/affiliate/config',body);
+    if(!r.ok){ setMsg('prt-ss-msg','Failed: '+(r.error||'unknown error'),'no'); return; }
+    setMsg('prt-ss-msg','Saved.','ok');
+    prtRenderSelfServeConfig(r.selfServe);
+  }catch(e){ setMsg('prt-ss-msg','Could not save settings.','no'); }
+}
 // Success copy shared by the form issue and the per-row reissue: what the code
 // is, when it runs (promo-deferred or immediate), and where the invite went.
 function prtIssuedText(r){
@@ -378,6 +467,9 @@ var __prtOrdersData=null; // last drill-down response, feeding the CSV exports
 function prtOrderRowHtml(o){
   var chips=o.eligible?prtChipHtml('counted','prt-live'):prtChipHtml((o.financialStatus||'not counted').toLowerCase(),'prt-expired');
   if(o.paidOutAt) chips+=prtChipHtml('paid out','prt-expired');
+  // Task 2's self-referral guard already zeroes commission on this row -
+  // this badge makes that visible instead of a silent £0.
+  if(o.selfReferral) chips+=prtChipHtml('self-referral','prt-revoked');
   return '<div class="prt-order-row">'
     +'<strong>'+esc(o.name||o.id)+'</strong>'+chips
     +'<span class="muted">'+prtWhen(o.placedAt)+'</span>'
@@ -482,5 +574,18 @@ function closePartnerOrders(){
   var ends=el('prt-ends');
   if(ends&&!ends.value){ var d=new Date(Date.now()+30*86400000); ends.value=d.toISOString().slice(0,10); }
   loadDiscountStatus();
+  // Self-serve Applications card: its own delegated listener, separate from
+  // #prt-list above (a different container, a different id namespace).
+  var applist=el('prt-app-list');
+  if(applist) applist.addEventListener('click',function(e){
+    var t=e.target;
+    if(!t||!t.getAttribute) return;
+    var id=t.getAttribute('data-prt-app-approve');
+    if(id&&prtArm(t,'Click again to approve')){ prtApproveApplication(t); return; }
+    if(id) return;
+    id=t.getAttribute('data-prt-app-decline');
+    if(id&&prtArm(t,'Click again to decline')){ prtDeclineApplication(t); return; }
+  });
+  loadApplications();
 })();
 `;

@@ -1,13 +1,16 @@
 /// <reference types="@cloudflare/vitest-pool-workers" />
 // Task 5: partner self-serve portal (worker domain, NOT /proxy). Ships DARK
 // behind cfg.selfServe.enabled - exactly like Task 4's verify route and Task
-// 0's apply route, cfg.selfServe is NOT wired into the real getConfig() path
-// yet (a later task owns that DB column), so every "enabled=true" scenario
-// below drives it through app.request via the same TenantStore.prototype
-// .getConfig spy trick tests/affiliate-apply.test.ts already established
-// (see its "HTTP level: /proxy/affiliate/apply - fault isolation" block).
-// The dark-state (enabled=false) tests need no spy: the real path can only
-// ever be disabled today, so a plain app.request already exercises it.
+// 0's apply route. Task 6 later wired cfg.selfServe into the real
+// getConfig()/saveSelfServe path, but this file's tests never call
+// saveSelfServe, so a plain seeded tenant still merges to
+// DEFAULT_SELF_SERVE (enabled: false) - every "enabled=true" scenario below
+// still needs to drive it through app.request via the same
+// TenantStore.prototype.getConfig spy trick tests/affiliate-apply.test.ts
+// already established (see its "HTTP level: /proxy/affiliate/apply - fault
+// isolation" block). The dark-state (enabled=false) tests need no spy: an
+// untouched config is dark by default, so a plain app.request already
+// exercises it.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
 import { TenantStore } from '../src/tenant-store';
@@ -244,8 +247,9 @@ describe('handlePortalGet (core) + handlePortalData (core)', () => {
 
 // ---------------------------------------------------------------------------
 // HTTP level: app.request against the real Hono app. Point 5 (dark -> refuse)
-// needs no mocking - the real getConfig() path can only ever be disabled
-// today (selfServe is not DB-wired yet - see Task 1/apply.ts). Points 1-4
+// needs no mocking - seedActiveTenant() below never calls saveSelfServe, so
+// the real getConfig() path merges to DEFAULT_SELF_SERVE (enabled: false)
+// even though Task 6 wired the column (see Task 1/apply.ts). Points 1-4
 // and 6 need the same TenantStore.prototype.getConfig spy tests/
 // affiliate-apply.test.ts already established to reach selfServe.enabled=true
 // through the real route wiring.

@@ -481,14 +481,15 @@ describe('renderApplyForm', () => {
 });
 
 // --- HTTP level: app.request + a signed App Proxy signature ---------------
-// The real, currently-dark path: proxyCtx() always sources cfg via
-// store.getConfig(), which does not persist selfServe (Task 1's decision -
-// a later task owns that DB wiring/console toggle). So through this real
-// path, selfServe.enabled can only ever be its default (false) today: these
-// two tests cover exactly what that live wiring can exercise. The
-// selfServe.enabled=true scenarios above are exercised directly against the
-// exported core (handleAffiliateApply/renderApplyForm), per the same
-// dependency-injection pattern already used by sendEmail/mxExists/etc.
+// The real, currently-dark path: proxyCtx() sources cfg via store.getConfig(),
+// which DOES now persist selfServe (Task 6 wired the DB column + saveSelfServe),
+// but this test seeds the tenant via seedConfig() only, never calling
+// saveSelfServe - so selfServe merges to DEFAULT_SELF_SERVE (enabled: false),
+// same dark-by-default outcome as before Task 6. These two tests cover
+// exactly that untouched-config path. The selfServe.enabled=true scenarios
+// above are exercised directly against the exported core
+// (handleAffiliateApply/renderApplyForm), per the same dependency-injection
+// pattern already used by sendEmail/mxExists/etc.
 
 const PROXY_SECRET = 'shpss_proxy_secret';
 
@@ -522,7 +523,7 @@ describe('HTTP level: /proxy/affiliate/apply', () => {
     expect(body.ok).toBe(false);
   });
 
-  it('GET returns the dark-state 200 page (selfServe.enabled defaults false; not DB-wired yet)', async () => {
+  it('GET returns the dark-state 200 page (selfServe.enabled defaults false; no saveSelfServe call in this test)', async () => {
     await seedActiveTenant(SHOP);
     const url = await signedProxyUrl('/proxy/affiliate/apply');
     const res = await app.request(url, {}, proxyEnv());

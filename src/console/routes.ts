@@ -328,7 +328,11 @@ export async function getPartnerOrders(db: D1Database, shop: string, voucherId: 
       id: o.shopify_order_id, name: o.order_name ?? null,
       gross: o.gross_gbp, discount: o.discount_gbp, commission: o.commission_gbp,
       financialStatus: o.financial_status ?? null, eligible: o.eligible === 1,
-      placedAt: o.placed_at ?? null, paidOutAt: o.paid_out_at ?? null, payoutId: o.payout_id ?? null
+      placedAt: o.placed_at ?? null, paidOutAt: o.paid_out_at ?? null, payoutId: o.payout_id ?? null,
+      // Task 2's self-referral guard (buyer email/address matches the
+      // partner) already zeroes commission on the row; this flag just makes
+      // that visible in the owner's Orders drill-down instead of a silent 0.
+      selfReferral: o.self_referral === 1
     })),
     payouts: payouts.map((p) => {
       let orders: unknown[] = [];

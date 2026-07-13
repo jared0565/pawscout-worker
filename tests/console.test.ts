@@ -710,6 +710,55 @@ describe('consolePage', () => {
     expect(scripts).toContain('__modalOpen');
   });
 
+  // --- Self-serve affiliate marketplace (Task 6, 2026-07-12): Applications
+  // card, self-referral order flag, and the selfServe config section ---
+
+  it('renders the self-serve Applications card wired to /affiliate/applications with two-click armed owner actions', async () => {
+    const html = await consolePage('test-api-key').text();
+    expect(html).toContain('id="prt-app-list"');
+    expect(html).toContain('id="prt-app-msg"');
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+    expect(scripts).toContain('function loadApplications(');
+    expect(scripts).toContain("'/affiliate/applications'");           // api() prepends /api
+    expect(scripts).toContain("'/affiliate/applications/approve'");
+    expect(scripts).toContain("'/affiliate/applications/decline'");
+    expect(scripts).toContain('loadApplications();');                 // loaded on startup
+    // Approve/decline ids ride in ESCAPED data attributes resolved by
+    // delegation, never string-built into inline onclick JS.
+    expect(scripts).toContain('data-prt-app-approve="\'+esc(');
+    expect(scripts).toContain('data-prt-app-decline="\'+esc(');
+    expect(scripts).not.toContain("prtApproveApplication('\"+");
+    expect(scripts).not.toContain("prtDeclineApplication('\"+");
+    // Two-click armed (prtArm), never window.confirm.
+    expect(scripts).toContain('Click again to approve');
+    expect(scripts).toContain('Click again to decline');
+    // Every dynamic application field is escaped before it reaches innerHTML.
+    expect(scripts).toContain('esc(a.email)');
+    expect(scripts).toContain('esc(a.channelUrl)');
+    expect(scripts).toContain('esc(a.flagsSummary');
+  });
+
+  it('flags a self-referral order in the Partners orders drill-down', async () => {
+    const html = await consolePage('test-api-key').text();
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+    const orderRowFn = scripts.slice(scripts.indexOf('function prtOrderRowHtml('), scripts.indexOf('function prtOrderRowHtml(') + 800);
+    expect(orderRowFn).toContain('o.selfReferral');
+    expect(orderRowFn.toLowerCase()).toContain('self-referral');
+  });
+
+  it('renders the self-serve config section wired to /affiliate/config, saving all five fields', async () => {
+    const html = await consolePage('test-api-key').text();
+    for (const id of ['prt-ss-enabled', 'prt-ss-cap', 'prt-ss-spend', 'prt-ss-score', 'prt-ss-usage', 'prt-ss-msg']) {
+      expect(html).toContain('id="' + id + '"');
+    }
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+    expect(scripts).toContain('function saveSelfServeConfig(');
+    expect(scripts).toContain("'/affiliate/config'");
+    for (const field of ['enabled', 'autoIssueCapPerDay', 'screenSpendCapGbpPerDay', 'scoreThreshold', 'starterUsageLimit']) {
+      expect(scripts).toContain(field);
+    }
+  });
+
   // --- Audit view v2 (2026-07-04 owner redesign): contact list + conversation modal ---
 
   it('renders the Audit view: contact list, category filter, conversation modal', async () => {

@@ -120,4 +120,18 @@ describe('ledger roll-up + actions', () => {
     expect(paid.paidOutAt).not.toBeNull();
     expect(paid.commission).toBe(2);
   });
+
+  it('carries the self_referral flag through to the console order shape (Task 6)', async () => {
+    const { store, voucherId } = await seedWithOrders();
+    await store.upsertAffiliateOrder({
+      shopifyOrderId: 'o4', voucherId, orderName: '#4', grossGbp: 30, discountGbp: 1.5, commissionGbp: 0,
+      financialStatus: 'PAID', eligible: true, placedAt: '2026-07-04T10:00:00Z', selfReferral: true,
+    });
+    const r = await getPartnerOrders(env.DB, SHOP, voucherId);
+    if (!r.ok) throw new Error('orders fetch failed');
+    const self = r.orders.find((o) => o.name === '#4');
+    expect(self?.selfReferral).toBe(true);
+    const others = r.orders.filter((o) => o.name !== '#4');
+    for (const o of others) expect(o.selfReferral).toBe(false);
+  });
 });

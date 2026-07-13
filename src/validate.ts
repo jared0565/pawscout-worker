@@ -1,4 +1,4 @@
-import type { Addons, Gates, LlmConfig, Pricing, TenantConfig } from './types';
+import type { Addons, Gates, LlmConfig, Pricing, TenantConfig, SelfServeConfig } from './types';
 import { DEFAULT_SEMANTIC, type SemanticConfig } from './types';
 import { DEFAULT_INBOX, INBOX_LABELS, AFFILIATE_MODES, type AffiliateMode, type InboxConfig, type ThreadStatus } from './inbox/types';
 
@@ -155,6 +155,41 @@ export function validateLlmPayload(body: unknown): Validation<LlmConfig> {
     models[k] = v;
   }
   return { ok: true, value: { enabled: b.enabled, scoreThreshold: b.scoreThreshold as number, models } };
+}
+
+/** Validate the /api/affiliate/config body (selfServe toggles: the master
+ *  switch + the four daily safety caps/thresholds). All fields required, same
+ *  all-or-nothing shape as validateAddonsPayload - the console settings card
+ *  always sends the whole block. Rejects (never clamps) an out-of-range or
+ *  non-finite value, so a NaN/negative cap can never silently persist. */
+export function validateSelfServePayload(body: unknown): Validation<SelfServeConfig> {
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+    return { ok: false, error: 'Body must be a JSON object' };
+  }
+  const b = body as Record<string, unknown>;
+  if (typeof b.enabled !== 'boolean') return { ok: false, error: 'enabled must be true or false' };
+  const ranges: [keyof Omit<SelfServeConfig, 'enabled'>, number, number][] = [
+    ['autoIssueCapPerDay', 0, 1000],
+    ['screenSpendCapGbpPerDay', 0, 1000],
+    ['scoreThreshold', 0, 12],
+    ['starterUsageLimit', 1, 10000]
+  ];
+  for (const [field, min, max] of ranges) {
+    const v = b[field];
+    if (!finite(v) || v < min || v > max) {
+      return { ok: false, error: `${field} must be a number between ${min} and ${max}` };
+    }
+  }
+  return {
+    ok: true,
+    value: {
+      enabled: b.enabled,
+      autoIssueCapPerDay: b.autoIssueCapPerDay as number,
+      screenSpendCapGbpPerDay: b.screenSpendCapGbpPerDay as number,
+      scoreThreshold: b.scoreThreshold as number,
+      starterUsageLimit: b.starterUsageLimit as number
+    }
+  };
 }
 
 /** Validate the semantic-library config. Missing fields fall back to defaults. */

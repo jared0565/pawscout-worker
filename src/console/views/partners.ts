@@ -21,6 +21,50 @@ export const partnersView = `  <section class="card">
   </section>
 
   <section class="card">
+    <h2>Self-serve applications <button type="button" class="prt-info" onclick="openPartnerInfo(this)" data-prt-help="prt-help-apps" data-prt-help-title="How self-serve applications work" aria-label="How self-serve applications work">?</button></h2>
+    <div id="prt-help-apps" hidden>
+      <p>People who apply through the self-serve form (below) are screened automatically when the funnel is enabled: a channel check plus a scored questionnaire. Most outcomes need no action from you - a strong application auto-issues a starter trial code and a weak one gets a polite decline email. Anything listed here needed a human decision: a former partner, today's auto-issue cap already reached, or a borderline score.</p>
+      <p>Approve anyway issues the exact same bounded starter trial as the automatic path (a percentage-off code with a usage cap), never an unlimited code. Decline sends the applicant the standard decline email and closes the application; it does not touch any code already issued to them.</p>
+    </div>
+    <div id="prt-app-list"></div>
+    <p id="prt-app-msg" class="msg muted"></p>
+  </section>
+
+  <section class="card">
+    <h2>Self-serve settings <button type="button" class="prt-info" onclick="openPartnerInfo(this)" data-prt-help="prt-help-selfserve" data-prt-help-title="Self-serve settings" aria-label="How self-serve settings work">?</button></h2>
+    <div id="prt-help-selfserve" hidden>
+      <p>The self-serve marketplace is a fully automated apply, screen, then auto-issue funnel. It ships off by default - leave it off until the apply page and terms copy have been reviewed, then switch it on here. The caps below bound the worst case: at most this many vouchers auto-issued per day across every applicant, at most this much LLM screening spend per day, and the minimum score out of 12 an application needs to qualify. The usage limit sets how many times one auto-issued starter code can be redeemed.</p>
+    </div>
+    <div class="row" style="align-items:center">
+      <label style="display:flex;align-items:center;gap:8px;font-weight:600">
+        <input id="prt-ss-enabled" type="checkbox"> Self-serve funnel enabled
+      </label>
+    </div>
+    <div class="row">
+      <div class="grow">
+        <label for="prt-ss-cap">Auto-issue cap / day</label>
+        <input id="prt-ss-cap" type="number" min="0" max="1000" step="1">
+      </div>
+      <div class="grow">
+        <label for="prt-ss-spend">Screening spend cap (£/day)</label>
+        <input id="prt-ss-spend" type="number" min="0" max="1000" step="0.1">
+      </div>
+      <div class="grow">
+        <label for="prt-ss-score">Score threshold (0-12)</label>
+        <input id="prt-ss-score" type="number" min="0" max="12" step="1">
+      </div>
+      <div class="grow">
+        <label for="prt-ss-usage">Starter code usage limit</label>
+        <input id="prt-ss-usage" type="number" min="1" max="10000" step="1">
+      </div>
+    </div>
+    <div class="row">
+      <button type="button" onclick="saveSelfServeConfig()">Save settings</button>
+    </div>
+    <p id="prt-ss-msg" class="msg muted"></p>
+  </section>
+
+  <section class="card">
     <h2>Issue or register a voucher <button type="button" class="prt-info" onclick="openPartnerInfo(this)" data-prt-help="prt-help-issue" data-prt-help-title="Issuing a voucher" aria-label="How issuing works">?</button></h2>
     <div id="prt-help-issue" hidden>
       <p><strong>Issue automatically</strong> creates the discount code in Shopify for you (percentage off, once per customer, no combining, a usage cap and an end date), registers it here, and, if this person has an inbox conversation, stages the invite email carrying the code for your approval. Leave the code field blank to auto-generate one.</p>
