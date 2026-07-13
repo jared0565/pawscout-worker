@@ -56,7 +56,7 @@ import { blotatoFromEnv } from './syndicate/blotato';
 import { parseOrderWebhook, validateOrder, FULFIL_GRACE_MINUTES } from './fulfil';
 import { attributePaidOrder } from './inbox/attribution';
 import { firecrawlCjSearch } from './firecrawl';
-import { handleAffiliateApply, renderApplyForm, GENERIC_APPLY_MESSAGE, type ApplyFields } from './affiliate/apply';
+import { handleAffiliateApply, renderApplyForm, renderTermsPage, GENERIC_APPLY_MESSAGE, type ApplyFields } from './affiliate/apply';
 import { handleAffiliateVerify, EXPIRED_HTML as AFFILIATE_VERIFY_EXPIRED_HTML } from './affiliate/verify';
 import { runAffiliateScreenSweep } from './affiliate/screen';
 import { getApplicationsConsole, approveApplicationAnyway, declineApplicationById } from './affiliate/console';
@@ -1661,6 +1661,15 @@ app.get('/proxy/affiliate/apply', async (c) => {
       `<body><p>Applications are not currently open. Please check back soon.</p></body></html>`
     );
   }
+});
+
+// Static terms page linked from the apply form's checkbox. Not gated on
+// cfg.selfServe.enabled - see renderTermsPage's doc comment - so it stays
+// reachable (for owner review, and for anyone who bookmarks the link) even
+// while the funnel itself is dark.
+app.get('/proxy/affiliate/terms', async (c) => {
+  const p = await proxyCtx(c); if (p instanceof Response) return p;
+  return c.html(renderTermsPage(p.cfg));
 });
 
 app.post('/proxy/affiliate/apply', async (c) => {

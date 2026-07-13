@@ -7,7 +7,7 @@ import {
   DEFAULT_SELF_SERVE, type TenantConfig, type Env
 } from '../src/types';
 import { signTimestamp, MIN_SUBMIT_MS } from '../src/affiliate/gates';
-import { handleAffiliateApply, renderApplyForm, mxExists, verifyTurnstile, GENERIC_APPLY_MESSAGE, RESEND_COOLDOWN_MS, type ApplyFields } from '../src/affiliate/apply';
+import { handleAffiliateApply, renderApplyForm, renderTermsPage, mxExists, verifyTurnstile, GENERIC_APPLY_MESSAGE, RESEND_COOLDOWN_MS, type ApplyFields } from '../src/affiliate/apply';
 import { app } from '../src/index';
 import { signAppProxy } from '../src/proxy/verify';
 import { hmacHex } from '../src/retention';
@@ -536,6 +536,37 @@ describe('renderApplyForm', () => {
     expect(html).not.toContain('id="applyForm"');
     expect(html).not.toContain('<script>');
   });
+
+  it('links the terms checkbox to /apps/pawscout/affiliate/terms', async () => {
+    const html = await renderApplyForm(ENABLED_CFG, baseEnv(), NOW);
+    expect(html).toContain('href="/apps/pawscout/affiliate/terms"');
+  });
+});
+
+describe('renderTermsPage', () => {
+  it('states the real commission/tier/trial figures from src/inbox/partnership.ts, not invented numbers', () => {
+    const html = renderTermsPage(ENABLED_CFG);
+    expect(html).toContain('2%');   // STANDARD_COMMISSION_PCT
+    expect(html).toContain('5%');   // TRIAL_PCT_OFF_DEFAULT and TIER_MAX_PCT
+    expect(html).toContain('25 tracked orders in a 30-day window');
+    expect(html).toContain('15 times'); // ENABLED_CFG.selfServe.starterUsageLimit
+  });
+
+  it('reads starterUsageLimit from the passed-in config, not a hardcoded default', () => {
+    const custom: TenantConfig = { ...ENABLED_CFG, selfServe: { ...ENABLED_CFG.selfServe!, starterUsageLimit: 42 } };
+    const html = renderTermsPage(custom);
+    expect(html).toContain('42 times');
+  });
+
+  it('falls back to DEFAULT_SELF_SERVE when cfg.selfServe is unset', () => {
+    const noSelfServe: TenantConfig = { ...ENABLED_CFG, selfServe: undefined };
+    const html = renderTermsPage(noSelfServe);
+    expect(html).toContain(`${DEFAULT_SELF_SERVE.starterUsageLimit} times`);
+  });
+
+  it('carries no <script> (static informational page)', () => {
+    expect(renderTermsPage(ENABLED_CFG)).not.toContain('<script>');
+  });
 });
 
 // --- HTTP level: app.request + a signed App Proxy signature ---------------
@@ -597,6 +628,25 @@ describe('HTTP level: /proxy/affiliate/apply', () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { ok: boolean; error?: string };
     expect(body).toEqual({ ok: false, error: 'Applications are not currently open.' });
+  });
+});
+
+describe('HTTP level: /proxy/affiliate/terms', () => {
+  it('GET rejects a bad/missing proxy signature', async () => {
+    await seedActiveTenant(SHOP);
+    const res = await app.request(`https://pawscout.example.com/proxy/affiliate/terms?shop=${SHOP}`, {}, proxyEnv());
+    const body = (await res.json()) as { ok: boolean; error?: string };
+    expect(body.ok).toBe(false);
+  });
+
+  it('GET returns 200 with the real terms content, independent of selfServe.enabled', async () => {
+    await seedActiveTenant(SHOP); // seedConfig only - selfServe merges to DEFAULT_SELF_SERVE (enabled: false)
+    const url = await signedProxyUrl('/proxy/affiliate/terms');
+    const res = await app.request(url, {}, proxyEnv());
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain('Active Paw Partner Program - Terms');
+    expect(html).not.toContain('not currently open'); // terms are not gated dark like the form
   });
 });
 

@@ -23,7 +23,10 @@ import {
 import { defaultFetch } from '../safe-fetch';
 import { sendEmail } from '../email';
 import { sanitizeOutbound } from '../inbox/draft';
-import { PARTNERSHIP_FROM } from '../inbox/partnership';
+import {
+  PARTNERSHIP_FROM, PARTNERSHIP_ADDRESS, STANDARD_COMMISSION_PCT, TIER_REVIEW_ORDERS, TIER_MAX_PCT,
+  TRIAL_PCT_OFF_DEFAULT
+} from '../inbox/partnership';
 import { hmacHex } from '../retention';
 import {
   validEmailSyntax, isDisposableDomain, isMainstreamEmailDomain, channelHostAllowed,
@@ -410,7 +413,7 @@ export async function renderApplyForm(cfg: TenantConfig, env: Env, nowMs: number
   <p><label>Channel URL (blog, YouTube, Instagram, etc.)<br><input type="url" name="channel_url" maxlength="500" required></label></p>
   <p><label>Tell us about your audience<br><textarea name="audience" maxlength="2000" required></textarea></label></p>
   <p><label>How would you promote Active Paw?<br><textarea name="plan" maxlength="2000" required></textarea></label></p>
-  <p><label><input type="checkbox" name="terms" required> I agree to the Active Paw Partner Program terms.</label></p>
+  <p><label><input type="checkbox" name="terms" required> I agree to the <a href="/apps/pawscout/affiliate/terms" target="_blank" rel="noopener">Active Paw Partner Program terms</a>.</label></p>
   <div style="position:absolute;left:-9999px" aria-hidden="true">
     <label>Leave this field blank<input type="text" name="website" tabindex="-1" autocomplete="off"></label>
   </div>
@@ -442,6 +445,60 @@ export async function renderApplyForm(cfg: TenantConfig, env: Env, nowMs: number
   });
 })();
 </script>
+</body>
+</html>`;
+}
+
+/** Static terms page linked from the apply form's checkbox
+ *  (`/apps/pawscout/affiliate/terms`, App Proxy). Every figure here is a real
+ *  code constant (STANDARD_COMMISSION_PCT/TIER_REVIEW_ORDERS/TIER_MAX_PCT/
+ *  TRIAL_PCT_OFF_DEFAULT from ../inbox/partnership, the SAME values the
+ *  earned-tier reminder in a live approval email quotes) or a read of the
+ *  applicant-facing config (`starterUsageLimit`) - never an invented number.
+ *  No CSS, matching every other public page in this funnel. Not gated on
+ *  cfg.selfServe.enabled: showing the terms is harmless pre-launch and the
+ *  owner needs to review this exact page before flipping the funnel on. */
+export function renderTermsPage(cfg: TenantConfig): string {
+  const sc = cfg.selfServe ?? DEFAULT_SELF_SERVE;
+  return `<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Active Paw Partner Program - Terms</title>
+</head>
+<body>
+<h1>Active Paw Partner Program - Terms</h1>
+<p>These are the terms for the Active Paw Partner Program. By applying, you agree to them.</p>
+
+<h2>How commission works</h2>
+<p>Once approved, you get a unique discount code. When a customer enters it at checkout, we track the order against your account. Commission is ${escHtml(String(STANDARD_COMMISSION_PCT))}% of the order's goods value (before your code's discount, excluding shipping). Cancelled and fully refunded orders earn no commission; partial refunds reduce it proportionally.</p>
+
+<h2>Your starter code</h2>
+<p>Your first code gives customers ${escHtml(String(TRIAL_PCT_OFF_DEFAULT))}% off and can be used up to ${escHtml(String(sc.starterUsageLimit))} times.</p>
+
+<h2>Growing your rate</h2>
+<p>After your first ${escHtml(String(TIER_REVIEW_ORDERS))} tracked orders in a 30-day window we review your rate, up to ${escHtml(String(TIER_MAX_PCT))}%.</p>
+
+<h2>Orders you place yourself</h2>
+<p>An order placed using your own name, email, or address earns no commission, even if it uses your code.</p>
+
+<h2>Who can't apply</h2>
+<p>Coupon, deal, and cashback-aggregator sites are not eligible for the program.</p>
+
+<h2>Ending the partnership</h2>
+<p>Active Paw may deactivate a partner code at any time, for any reason, including suspected misuse.</p>
+
+<h2>Getting paid</h2>
+<p>Your commission is tracked automatically in your partner dashboard. To request a payout, contact us at ${escHtml(PARTNERSHIP_ADDRESS)} or reply to any partner email.</p>
+
+<h2>Your data</h2>
+<p>We use your application and order data only to run the program. You can ask us to delete your account data at any time by emailing ${escHtml(PARTNERSHIP_ADDRESS)}.</p>
+
+<h2>Changes</h2>
+<p>We may update these terms from time to time. Continuing to use your partner code after a change means you accept the update.</p>
+
+<p>Questions? Email ${escHtml(PARTNERSHIP_ADDRESS)}.</p>
 </body>
 </html>`;
 }
