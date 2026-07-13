@@ -125,6 +125,71 @@ describe('partnership scoring branch (funnel_voucher mode, live default)', () =>
   });
 });
 
+// Accepted-partner support (2026-07-14): once we have GENUINELY accepted a
+// partner (a live voucher exists), their further replies must get a context-aware
+// acknowledgement, NOT the stale "reviewing the fit" holding ack. The carve-out
+// keys on partnerPoolState === 'live', never on the stage, so an escalated or
+// awaiting-issue applicant still gets the (accurate) holding ack.
+describe('accepted-partner replies (live voucher) get a context-aware draft, not the holding ack', () => {
+  async function seedAcceptedPartner(shop: string, opts: { withLiveVoucher: boolean; stage?: 'passed_to_form' | 'escalated' } = { withLiveVoucher: true }) {
+    const s = new TenantStore(env.DB, shop);
+    await s.upsertContact({ email: 'amjad@x.com', name: 'Amjad', phone: null });
+    const tid = await s.createThread({ contactEmail: 'amjad@x.com', subject: 'Partnership', subjectNorm: 'partnership', receivedAt: '2026-07-13T07:00:00Z', initialStatus: 'needs_reply' });
+    await s.setThreadClassification(tid, { status: 'needs_reply', primaryCategory: 'affiliate', intentScore: 60, summary: null, classifiedAt: '2026-07-13T07:00:01Z' });
+    await s.insertInboundMessageIfNew({ threadId: tid, messageId: '<p1@x>', inReplyTo: null, references: [], from: 'amjad@x.com', to: 'sales@activepaw.co.uk', subject: 'Partnership', bodyText: 'I run a dog IG and want to promote you', bodyHtml: null, headersJson: '{}', receivedAt: '2026-07-13T07:00:00Z' });
+    await s.insertOutboundMessage({ threadId: tid, messageId: '<q@ap>', from: 'sales@activepaw.co.uk', to: 'amjad@x.com', subject: 'Re: Partnership', bodyText: buildQualifyingEmail('Amjad', 'voucher'), bodyHtml: '<p>q</p>', sentAt: '2026-07-13T07:05:00Z' });
+    // We already issued and sent the code (our outbound), and the partner replies with a thank-you.
+    await s.insertOutboundMessage({ threadId: tid, messageId: '<code@ap>', from: 'sales@activepaw.co.uk', to: 'amjad@x.com', subject: 'Re: Partnership', bodyText: 'Great news - your trial is set up. Your code is ACTIVEPAW-AMJAD5.', bodyHtml: '<p>x</p>', sentAt: '2026-07-13T09:00:00Z' });
+    await s.insertInboundMessageIfNew({ threadId: tid, messageId: '<ty@x>', inReplyTo: null, references: [], from: 'amjad@x.com', to: 'sales@activepaw.co.uk', subject: 'Partnership', bodyText: 'Thank you so much for the great news!', bodyHtml: null, headersJson: '{}', receivedAt: '2026-07-13T10:00:00Z' });
+    await s.upsertApplicant({ threadId: tid, contactEmail: 'amjad@x.com', stage: opts.stage ?? 'passed_to_form' });
+    if (opts.withLiveVoucher) {
+      const partnerId = await s.upsertAffiliatePartner({ contactEmail: 'amjad@x.com', name: 'Amjad' });
+      // Deferred code (starts_at in the future) - partnerPoolState still 'live' because it filters on ends_at.
+      await s.createAffiliateVoucher({ partnerId, code: 'ACTIVEPAW-AMJAD5', pctOff: 5, commissionPct: 2, startsAt: '2099-07-19T00:00:00.000Z', endsAt: '2099-08-18T00:00:00.000Z' });
+      expect(await s.partnerPoolState('amjad@x.com')).toBe('live');
+    }
+    return { s, tid };
+  }
+
+  const draftJson = JSON.stringify({ bodyText: 'You are very welcome, we are thrilled to have you on board and cannot wait to see how it goes.', confidence: 82, quotesPriceOrOrder: false });
+
+  it('live partner + thank-you -> context-aware LLM draft (not the holding ack), send:false, model partner-support', async () => {
+    const { s, tid } = await seedAcceptedPartner('acc.myshopify.com');
+    const r = await runFunnel(s, tid, llmReturning(draftJson), 'funnel_voucher');
+    expect(r!.send).toBe(false);
+    const d = (await s.getPendingDraft(tid))!;
+    expect(d.model).toBe('partner-support');
+    expect(d.body_text).toMatch(/on board/i);            // the LLM's own words reached the draft
+    expect(d.body_text).toMatch(/Active Paw Partnerships/); // partnership footer applied
+    expect(d.body_text).not.toMatch(/reviewing the fit|taking a look/i); // NOT the stale holding ack
+  });
+
+  it('live partner + LLM failure -> neutral accepted-partner acknowledgement, still not the holding ack', async () => {
+    const { s, tid } = await seedAcceptedPartner('accf.myshopify.com');
+    await runFunnel(s, tid, llmReturning('not json'), 'funnel_voucher');
+    const d = (await s.getPendingDraft(tid))!;
+    expect(d.model).toBe('partner-support');
+    expect(d.body_text).toMatch(/welcome to the Active Paw partner programme/i);
+    expect(d.body_text).not.toMatch(/reviewing the fit|taking a look/i);
+  });
+
+  it('passed_to_form WITHOUT a live voucher (awaiting owner to issue) keeps the holding ack', async () => {
+    const { s, tid } = await seedAcceptedPartner('await.myshopify.com', { withLiveVoucher: false });
+    await runFunnel(s, tid, llmReturning(draftJson), 'funnel_voucher');
+    const d = (await s.getPendingDraft(tid))!;
+    expect(d.model).toBe('partnership-screen');
+    expect(d.body_text).toMatch(/reviewing|taking a look/i);
+  });
+
+  it('escalated WITHOUT a live voucher keeps the holding ack (owner may still decline)', async () => {
+    const { s, tid } = await seedAcceptedPartner('esc.myshopify.com', { withLiveVoucher: false, stage: 'escalated' });
+    await runFunnel(s, tid, llmReturning(draftJson), 'funnel_voucher');
+    const d = (await s.getPendingDraft(tid))!;
+    expect(d.model).toBe('partnership-screen');
+    expect(d.body_text).toMatch(/reviewing|taking a look/i);
+  });
+});
+
 describe('decline_all toggle (config-driven) intercepts in-flight applicants too', () => {
   it('an answered screen under decline_all gets the decline, applicant declined', async () => {
     const { s, tid } = await seedAnswered('live.myshopify.com');

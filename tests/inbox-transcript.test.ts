@@ -1,6 +1,6 @@
 /// <reference types="@cloudflare/vitest-pool-workers" />
 import { describe, it, expect } from 'vitest';
-import { buildDraftTranscript, neutralizeRoleMarkers } from '../src/inbox/sweep';
+import { buildDraftTranscript, neutralizeRoleMarkers } from '../src/inbox/draft';
 import type { MessageRow } from '../src/inbox/types';
 
 // buildDraftTranscript/neutralizeRoleMarkers are pure - no D1 needed. Only

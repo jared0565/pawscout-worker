@@ -1,6 +1,7 @@
 import type { AffiliateMode, ScreenFacts, ScreenVerdict, ThreadRow, MessageRow } from './types';
-import { applySalutation, renderReplyHtml } from './draft';
+import { applySalutation, renderReplyHtml, applyFooter, draftReply, buildDraftTranscript } from './draft';
 import { stripQuotedReply } from './quote';
+import type { CategoryAgent, Grounding } from './agents/types';
 import type { TenantStore } from '../tenant-store';
 import type { Env, TenantConfig } from '../types';
 import { LlmClient } from '../llm';
@@ -361,6 +362,77 @@ export function buildVoucherInvite(name: string | null): string { return applySa
 export function buildHoldingAck(name: string | null): string { return applySalutation(HOLDING_ACK_BODY, name); }
 export function buildKeepToEmail(name: string | null): string { return applySalutation(KEEP_TO_EMAIL_BODY, name); }
 
+// --- Accepted-partner support reply (2026-07-14) ----------------------------
+// buildHoldingAck ("reviewing the fit, in touch shortly") is CORRECT for an
+// applicant still awaiting the owner's decision, but WRONG once we have actually
+// accepted them and issued their code: a partner who just says "thank you for
+// the great news!" should be acknowledged and encouraged, not told we are still
+// reviewing. A genuinely accepted partner (partnerPoolState === 'live') gets a
+// context-aware LLM reply instead (draftAcceptedPartnerReply). It cannot reuse
+// the generic drafter's affiliateAgent, which by owner policy DECLINES every
+// partnership approach - it would decline someone we already accepted.
+
+const ACCEPTED_PARTNER_ACK_BODY =
+`Thank you for your message, and welcome to the Active Paw partner programme.
+
+Your trial discount code is all set up and ready for your audience. If you have any questions as you get going, just reply here and we will be glad to help.`;
+
+/** Neutral, always-safe acknowledgement for an accepted partner. Used as the
+ * LLM-failure fallback for draftAcceptedPartnerReply - deliberately NOT
+ * buildHoldingAck, whose "still reviewing the fit" wording is wrong for someone
+ * we have already accepted and issued a code to. */
+export function buildAcceptedPartnerAck(name: string | null): string {
+  return applyFooter(applySalutation(ACCEPTED_PARTNER_ACK_BODY, name), 'partnership');
+}
+
+// The drafter prompt for an accepted partner: never decline, never commit to new
+// terms, acknowledge + encourage, answer real questions grounded. Overrides the
+// shared scaffolding's decline-on-pitch instinct (this partner is approved, and
+// promoting Active Paw is their job) and the COMMERCIAL_GUARDRAILS-style rule
+// against inventing terms.
+const PARTNER_SUPPORT_PROMPT =
+  'This message is from a KNOWN, APPROVED Active Paw affiliate partner - NOT a cold enquiry and NOT a pitch to evaluate. Their partnership is already accepted and their trial discount code is set up. NEVER decline their message or treat it as a marketing, SEO, or traffic pitch to refuse, even if it mentions promoting, driving traffic, or sales - promoting Active Paw is their role as our partner. Be warm, supportive and encouraging. If they ask a question you can answer from the facts you are given, answer it directly. If their latest message is only a thank-you or acknowledgement with no question, reply with a brief, warm acknowledgement and a little genuine encouragement about the partnership, then stop - do not manufacture a question to answer. Do NOT invent, promise, change, or agree to any NEW commission rate, discount, bonus, free product, exclusivity, quota, or terms; if they ask for any change to their arrangement, say warmly that you will pass it to the team to look at, without committing to anything.';
+
+// A non-registry agent (never classified into): the accepted-partner drafting
+// mode. Reuses draftReply's machinery (two-sided transcript, quality loop,
+// salutation) but supplies the partner-support prompt and its own grounding.
+const partnerSupportAgent: CategoryAgent = {
+  category: 'affiliate', displayName: 'Partner support', description: 'Approved-partner support; never declines',
+  department: 'partnership', commercial: false,
+  async ground(): Promise<Grounding> { return { confident: true, facts: '', quotesFigure: false }; },
+  promptFragment(): string { return PARTNER_SUPPORT_PROMPT; },
+  deterministicAppendix(): string | null { return null; },
+};
+
+/** Context-aware reply for a GENUINELY accepted partner (a live voucher exists).
+ * Grounds on the full two-sided thread (buildDraftTranscript) plus the partner's
+ * own EXISTING live-code facts, and never declines (partnerSupportAgent). HITL
+ * only (the caller always sets send:false). On any LLM failure returns the
+ * neutral buildAcceptedPartnerAck - never buildHoldingAck. */
+async function draftAcceptedPartnerReply(
+  env: Env, store: TenantStore, cfg: TenantConfig, thread: ThreadRow,
+  got: { messages: MessageRow[] }, name: string | null, latestText: string, fetchImpl: typeof fetch, nowMs = Date.now()
+): Promise<string> {
+  try {
+    const llm = new LlmClient({ openrouter: env.OPENROUTER_API_KEY, openai: env.OPENAI_API_KEY }, fetchImpl);
+    const voucher = (await store.listAffiliateVouchers())
+      .find((v) => v.status === 'live' && v.contact_email === thread.contact_email.trim().toLowerCase());
+    const facts = voucher
+      ? `This partner is already approved and onboarded. Their trial discount code ${voucher.code} gives their audience ${voucher.pct_off}% off at activepaw.co.uk and ${Date.parse(voucher.starts_at) > nowMs ? `goes live on ${voucherDateLabel(voucher.starts_at)}` : 'is live now'}; they earn ${voucher.commission_pct}% commission on tracked orders. These are their EXISTING terms - you may state them if asked, but never promise any change to them.`
+      : 'This partner is already approved and onboarded, with their trial discount code set up.';
+    const draft = await draftReply(llm, store, cfg, {
+      agent: partnerSupportAgent,
+      grounding: { confident: true, facts, quotesFigure: false },
+      subject: thread.subject ?? '', conversation: buildDraftTranscript(got.messages),
+      latestMessage: latestText, customerName: name, customerEmail: thread.contact_email,
+    });
+    if (draft) return applyFooter(draft.bodyText, 'partnership');
+  } catch (e) {
+    console.warn(`accepted-partner draft failed for ${thread.id}: ${(e as Error).message}`);
+  }
+  return buildAcceptedPartnerAck(name);
+}
+
 const ENUMS = {
   disqualifier: ['coupon_cashback', 'brand_bidding', 'prohibited_tactics', 'none'],
   audienceRelevance: ['pet_uk', 'partial', 'off', 'unknown'],
@@ -671,9 +743,28 @@ export async function maybePartnershipDraft(
   // agent's warm decline matches that state, and it answers what they actually
   // said). But an applicant we PASSED or ESCALATED must never fall through - in
   // funnel mode the generic affiliate agent would decline someone we just
-  // accepted. Deterministic holding ack + owner alert instead (HITL; the owner
-  // is steering from here, e.g. issuing the voucher in Partners).
+  // accepted. Two sub-cases, distinguished by whether we have GENUINELY accepted
+  // them (a live voucher exists), NOT by the stage:
   if (applicant.stage === 'passed_to_form' || applicant.stage === 'escalated') {
+    // Genuinely accepted + onboarded (partnerPoolState 'live' = a voucher row is
+    // status='live' with ends_at in the future; true even for a code deferred
+    // behind a promo). Their "thank you for the great news!" deserves a
+    // context-aware acknowledgement, not the stale "still reviewing the fit"
+    // holding ack. draftAcceptedPartnerReply grounds on the real thread + their
+    // own code and never declines. HITL.
+    if ((await store.partnerPoolState(thread.contact_email)) === 'live') {
+      const body = await draftAcceptedPartnerReply(env, store, cfg, thread, got, name, latestNewText, _fetchImpl);
+      const draftId = await store.insertDraft({
+        threadId: thread.id, bodyText: body, bodyHtml: renderReplyHtml(body),
+        confidence: null, quotesPriceOrder: false, holdReasons: [], model: 'partner-support', status: 'pending',
+      });
+      await maybeAlertOwner(env, cfg, thread.shop, thread,
+        'An approved partner replied - a context-aware draft is ready for your review.', 'affiliate', _fetchImpl);
+      return { draftId, send: false };
+    }
+    // NOT yet accepted: 'escalated' (owner may still decline) or 'passed_to_form'
+    // still awaiting the owner to issue the code in Partners. For them the
+    // holding ack IS accurate, so it is unchanged. Deterministic + owner alert.
     const body = buildHoldingAck(name);
     const draftId = await store.insertDraft({
       threadId: thread.id, bodyText: body, bodyHtml: renderReplyHtml(body),

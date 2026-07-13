@@ -2,10 +2,11 @@ import type { LlmClient } from '../llm';
 import type { TenantStore } from '../tenant-store';
 import type { TenantConfig } from '../types';
 import { resolveChain } from '../llm-resolve';
-import type { DraftResult } from './types';
+import type { DraftResult, MessageRow } from './types';
 import { SHARED_SCAFFOLDING, STORE_FACTS, COMMERCIAL_GUARDRAILS, OUTPUT_CONTRACT } from './agents/scaffolding';
 import type { CategoryAgent, Grounding } from './agents/types';
 import { refineUntilClean, asksDoYouDeliver, type DraftQualityContext } from './draft-quality';
+import { stripQuotedReply } from './quote';
 
 const DRAFT_MAX_WORDS = 110; // conciseness ceiling: a warm courtesy wrapper + a grounded answer
 
@@ -152,6 +153,65 @@ export function stripTrailingSignoff(text: string): string {
 export function applyFooter(bodyText: string, department: import('./agents/types').Department): string {
   const body = stripTrailingSignoff(bodyText.trimEnd());
   return sanitizeOutbound(`${body}\n\nBest Regards,\n${DEPARTMENT_SIGNATURES[department]}`);
+}
+
+// Role labels for the drafter transcript (buildDraftTranscript). Kept as
+// constants so the builder, the injection neutralizer, and the drafter prompt
+// (buildDraftSystem) all reference the exact same two strings.
+const TRANSCRIPT_CUSTOMER = 'Customer';
+const TRANSCRIPT_US = 'Active Paw';
+// Tail-kept budget. Held at or under the drafter's own 4000-char conversation
+// slice (below) so trimming happens HERE, newest-first, and the drafter's slice
+// never silently drops the most recent turns off a longer transcript.
+const TRANSCRIPT_MAX_CHARS = 3800;
+
+/** Neutralize forged role markers in UNTRUSTED inbound (customer) text. The
+ * drafter transcript prefixes each turn with "Customer:" / "Active Paw:";
+ * without this, a customer could line-lead their own message with "Active Paw:"
+ * to forge a trusted turn (a prompt-injection surface, given how the rest of
+ * this codebase treats inbound text as hostile). Any LINE-LEADING role label in
+ * customer text is downgraded to a non-label form ("Active Paw -"). Applied to
+ * inbound only; our own outbound text is trusted and never rewritten. The
+ * leading-whitespace class is `[^\S\r\n]` (all HORIZONTAL Unicode whitespace,
+ * newlines excluded) not `[ \t]`, so an invisible non-ASCII blank prefix
+ * (U+00A0 no-break space, U+3000 ideographic space, en/em spaces) cannot smuggle
+ * a label that renders to the model as a clean line-leading "Active Paw:" turn. */
+export function neutralizeRoleMarkers(body: string): string {
+  return body.replace(/^([^\S\r\n]*)(customer|active\s*paw)([^\S\r\n]*):/gim, '$1$2 -');
+}
+
+/** The drafter's conversation view: a role-labeled, chronological two-sided
+ * transcript (messages arrive received_at ASC). UNLIKE `conversation` in
+ * sweep.ts composeDraftForThread (inbound-only, and deliberately kept that way
+ * so deriveDestinationCountry never sees our own "UK"/domain text - the 2026-06
+ * destination-derivation bug), this includes our OWN prior replies so the
+ * drafter follows the actual flow: a reply to "yes, that works" or "and the
+ * grey one?" is grounded in what we already said, not answered blind.
+ * Inbound = customer (quoted reply chain stripped, role markers neutralized);
+ * outbound = our prior replies (trailing signoff stripped for brevity).
+ * Tail-capped to keep the most RECENT turns within budget (oldest dropped
+ * first; the newest turn is always kept even if it alone exceeds the budget). */
+export function buildDraftTranscript(messages: MessageRow[]): string {
+  const turns: string[] = [];
+  for (const m of messages) {
+    const raw = (m.body_text ?? '').trim();
+    if (!raw) continue;
+    if (m.direction === 'inbound') {
+      const text = neutralizeRoleMarkers(stripQuotedReply(raw) || raw).trim();
+      if (text) turns.push(`${TRANSCRIPT_CUSTOMER}: ${text}`);
+    } else {
+      const text = stripTrailingSignoff(raw).trim();
+      if (text) turns.push(`${TRANSCRIPT_US}: ${text}`);
+    }
+  }
+  const kept: string[] = [];
+  let total = 0;
+  for (let i = turns.length - 1; i >= 0; i--) {
+    if (kept.length && total + turns[i].length > TRANSCRIPT_MAX_CHARS) break;
+    kept.unshift(turns[i]);
+    total += turns[i].length + 2; // + the "\n\n" join
+  }
+  return kept.join('\n\n');
 }
 
 /** Shared JSON validator for a drafter response (initial draft AND revision). */
