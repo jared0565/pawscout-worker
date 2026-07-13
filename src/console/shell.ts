@@ -40,6 +40,7 @@ export const railHtml = `<nav class="rail" aria-label="Console sections">
   <div class="rail__wordmark">PawScout</div>
   <button type="button" class="rail-btn" data-route="glance" onclick="location.hash='#/glance'">Glance</button>
   <button type="button" class="rail-btn" data-route="inbox" onclick="location.hash='#/inbox'">Inbox<span class="rail-badge" id="rail-inbox-badge" hidden>0</span></button>
+  <button type="button" class="rail-btn" data-route="answers" onclick="location.hash='#/answers'">Answers</button>
   <button type="button" class="rail-btn" data-route="catalog" onclick="location.hash='#/catalog'">Catalog</button>
   <button type="button" class="rail-btn" data-route="ops" onclick="location.hash='#/ops'">Operations</button>
   <button type="button" class="rail-btn" data-route="profitability" onclick="location.hash='#/profitability'">Profitability</button>
@@ -59,11 +60,11 @@ export const routerJs = `
 // #/help, #/events. Toggles .active on the .view containers and rail buttons
 // on hashchange and on load; a missing or unknown hash falls back to glance.
 // Hash-only navigation so it works inside the Shopify embedded iframe.
-// 'events' and 'content' are deliberately LAST: digits 1-9 and 0 map to the
-// first ten routes, so appending keeps every existing keyboard shortcut stable
-// (they have no digit key; the rail buttons sit in HTML order, not ROUTES
-// order - Content sits under Traffic in the rail).
-var ROUTES=['glance','inbox','catalog','ops','audit','partners','campaigns','traffic','settings','help','events','content','profitability'];
+// 'events', 'content', 'profitability', 'answers' are deliberately LAST: digits
+// 1-9 and 0 map to the first ten routes, so appending keeps every existing
+// keyboard shortcut stable (they have no digit key; the rail buttons sit in
+// HTML order, not ROUTES order - Answers sits under Inbox in the rail).
+var ROUTES=['glance','inbox','catalog','ops','audit','partners','campaigns','traffic','settings','help','events','content','profitability','answers'];
 function currentRoute(){
   var h=location.hash||'';
   if(h.indexOf('#/')===0) h=h.slice(2); else if(h.indexOf('#')===0) h=h.slice(1);

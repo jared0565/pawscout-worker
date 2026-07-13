@@ -53,16 +53,7 @@ export const inboxView = `  <section class="ibx" data-panel="inbox">
         <div id="ibx-context-body"><p class="muted" style="font-size:13px;margin:0">Thread details appear here.</p></div>
       </aside>
     </div>
-  </section>
-
-  <details class="card" id="ans-card">
-    <summary>Answer library</summary>
-    <p class="sub" style="margin:8px 0 10px">Every reply you approve is remembered as the customer's question and your vetted answer. When a similar question arrives - even reworded - the drafter is grounded with the closest approved answers so replies stay consistent; live facts always override them, and personal details are never copied across customers. Disable a pair to pull a bad or outdated answer out of recall; approving a new reply to the same question replaces and re-enables it. History imports automatically on the first sweep.</p>
-    <p id="ans-count" class="muted" style="margin:0 0 8px;font-size:12.5px"></p>
-    <div id="ans-list"><p class="muted">Loading…</p></div>
-    <div class="row" style="margin-top:10px"><button type="button" class="ghost" onclick="ansLoad()">Refresh</button></div>
-    <p id="ans-msg" class="msg muted"></p>
-  </details>`;
+  </section>`;
 
 // Namespaced (.ibx-*) workspace CSS. Composed AFTER shellCss in page.ts. The
 // console palette is FORCED DARK (merchant light-sensitivity), so the spec's
@@ -141,25 +132,4 @@ export const inboxCss = `
   .ibx-ev-when{color:var(--subdued);font-size:11.5px}
   .ibx-ev-link{flex-basis:100%;color:var(--subdued);font-size:11.5px;overflow-wrap:anywhere}
   @media(max-width:1100px){.ibx-grid{grid-template-columns:292px minmax(0,1fr)}.ibx-context{display:none}}
-  /* --- Answer library (approved-answers memory) --- */
-  /* Scoped by id, NOT the generic .card class used elsewhere. #view-inbox.active
-     is a fixed-height (100vh, overflow:hidden) flex column, so the MAIL
-     WORKSPACE must own the viewport at every screen size: the card is a
-     collapsed-by-default <details> (~45px closed), and when OPENED it is the
-     element that shrinks and scrolls (flex:0 1 auto + overflow-y:auto) against
-     the .ibx min-height floor above. 2026-07-12 live regression lesson: an
-     always-open, non-shrinking (flex:0 0 auto) ~550px card left short browser
-     windows (~650px, common with Windows display scaling) with a 0px thread
-     list - the inbox looked deleted. Never let this card outrank the inbox. */
-  #ans-card{flex:0 1 auto;min-height:0;overflow-y:auto}
-  #ans-card summary{font-size:16px;font-weight:650;cursor:pointer;user-select:none}
-  #ans-list{max-height:320px;overflow-y:auto}
-  .ans-row{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1.6fr) 150px;gap:12px;padding:9px 0;border-bottom:1px solid var(--border);font-size:12.5px}
-  .ans-row:last-child{border-bottom:none}
-  .ans-q{color:var(--ink);font-weight:550;overflow-wrap:anywhere}
-  .ans-a{color:var(--subdued);overflow-wrap:anywhere;white-space:pre-line}
-  .ans-meta{color:var(--subdued);font-size:11.5px}
-  .ans-cat{display:inline-block;font-size:10.5px;font-weight:650;border-radius:8px;padding:1px 7px;background:rgba(88,166,255,.16);color:#58a6ff;margin-bottom:4px}
-  .ans-row.off .ans-q,.ans-row.off .ans-a{opacity:.45;text-decoration:line-through}
-  @media(max-width:820px){.ans-row{grid-template-columns:1fr}}
 `;

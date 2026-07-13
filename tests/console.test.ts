@@ -234,14 +234,15 @@ describe('consolePage', () => {
 
   // Phase 1 shell (extended in Phase 3): left rail + always-in-DOM views
   // toggled by a hash router; Glance is the landing view.
-  it('renders the nine view containers, the rail, and the hash router', async () => {
+  it('renders the view containers, the rail, and the hash router', async () => {
     const html = await consolePage('test-api-key').text();
-    for (const v of ['view-glance', 'view-inbox', 'view-catalog', 'view-ops', 'view-audit', 'view-partners', 'view-campaigns', 'view-settings', 'view-help']) {
+    for (const v of ['view-glance', 'view-inbox', 'view-answers', 'view-catalog', 'view-ops', 'view-audit', 'view-partners', 'view-campaigns', 'view-settings', 'view-help']) {
       expect(html).toContain('id="' + v + '"');
     }
     expect(html).toContain('class="rail"');
     expect(html).toContain('data-route="glance"');
     expect(html).toContain('data-route="inbox"');
+    expect(html).toContain('data-route="answers"');
     expect(html).toContain('data-route="audit"');
     expect(html).toContain('data-route="partners"');
     expect(html).toContain('data-route="campaigns"');
@@ -250,8 +251,9 @@ describe('consolePage', () => {
     expect(scripts).toContain("window.addEventListener('hashchange',applyRoute)");
     expect(scripts).toContain('applyRoute();'); // applied on load too
     // Glance is the default route: unknown/missing hash falls back to it.
-    // 'events' is appended LAST so digits 1-9 and 0 keep their existing routes.
-    expect(scripts).toContain("var ROUTES=['glance','inbox','catalog','ops','audit','partners','campaigns','traffic','settings','help','events','content','profitability']");
+    // 'events','content','profitability','answers' are appended LAST so digits
+    // 1-9 and 0 keep their existing routes.
+    expect(scripts).toContain("var ROUTES=['glance','inbox','catalog','ops','audit','partners','campaigns','traffic','settings','help','events','content','profitability','answers']");
     expect(scripts).toContain(":'glance'");
   });
 
@@ -941,29 +943,30 @@ describe('consolePage', () => {
     expect(scripts).not.toMatch(/'\s*\+\s*inv\.\s*status\s*\+\s*'/);
   });
 
-  it('Inbox carries the Answer library card wired to /inbox/answers with delegated toggles', async () => {
+  it('Answer library is its own page (view-answers) wired to /inbox/answers with search + delegated toggles', async () => {
     const html = await consolePage('test-api-key').text();
-    for (const id of ['ans-list', 'ans-count', 'ans-msg']) expect(html).toContain('id="' + id + '"');
-    expect(html).toContain('Answer library');
-    expect(html).toContain('.ans-row'); // namespaced card CSS present
-    expect(html).toContain('id="ans-card"'); // scoped id, not the generic .card class
-    // The card is a COLLAPSED-BY-DEFAULT details block: inside #view-inbox's
-    // 100vh overflow:hidden column the mail workspace must own the viewport at
-    // every screen size (2026-07-12 live regression: an always-open ~550px card
-    // left a 650px-tall browser window with a 0px thread list). Open, the CARD
-    // is what shrinks and scrolls - never the workspace, which keeps a floor.
-    expect(html).toContain('<details class="card" id="ans-card">');
-    expect(html).toContain('<summary>Answer library</summary>');
-    expect(html).toContain('#ans-list{max-height');
-    expect(html).toContain('#ans-card{flex:0 1 auto;min-height:0;overflow-y:auto}');
+    for (const id of ['ans-list', 'ans-count', 'ans-msg', 'ans-search']) expect(html).toContain('id="' + id + '"');
+    expect(html).toContain('<h1>Answer library</h1>');
+    expect(html).toContain('.ansp-card'); // full-page stacked card CSS present
+    // Promoted OUT of the cramped inbox <details> (2026-07-13): the old scoped
+    // card and its 320px max-height clamp are gone, and the mail workspace no
+    // longer carries the library markup.
+    expect(html).not.toContain('id="ans-card"');
+    expect(html).not.toContain('<details class="card" id="ans-card">');
+    expect(html).not.toContain('#ans-list{max-height');
+    expect(html).not.toContain('.ans-row{display:grid'); // old 3-col grid retired
+    // Inbox workspace still owns its viewport floor (unrelated, unchanged).
     expect(html).toContain('.ibx{display:flex;flex-direction:column;flex:1 1 auto;min-height:min(300px,60vh)}');
     const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
     expect(scripts).toContain('function ansLoad(');
     expect(scripts).toContain('function ansToggle(');
+    expect(scripts).toContain('function ansFilter(');
     expect(scripts).toContain("'/inbox/answers'");
     expect(scripts).toContain("'/inbox/answers/toggle'");
     // qhash rides an ESCAPED data attribute resolved by delegation, never inline onclick JS.
     expect(scripts).toContain('data-ans-toggle="\'+esc(');
-    expect(scripts).toContain('ansLoad();'); // loaded on startup
+    // Lazy-loaded on first open of #/answers, NOT on every console boot.
+    expect(scripts).not.toContain('\nansLoad();');
+    expect(scripts).toContain("window.addEventListener('hashchange',ansMaybe)");
   });
 });

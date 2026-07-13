@@ -569,45 +569,4 @@ function showReconnectBanner(){
   banner.style.display='';
   banner.innerHTML='Re-authorisation required. <a href="'+esc(href)+'" style="color:var(--no-ink);font-weight:600">Click here to reconnect ↗</a>';
 }
-// --- Answer library (approved-answers memory) ---
-function ansSnip(t,n){ t=String(t==null?'':t); return t.length>n?(t.slice(0,n)+'…'):t; }
-async function ansLoad(){
-  var box=el('ans-list'); if(!box) return;
-  try{
-    var r=await api('/inbox/answers',{});
-    if(!r.ok){ setMsg('ans-msg','Failed to load.','no'); return; }
-    var cnt=el('ans-count');
-    if(cnt) cnt.textContent=r.total+' remembered answer'+(r.total===1?'':'s')+(r.disabled?(' ('+r.disabled+' disabled)'):'');
-    if(!r.rows.length){ box.innerHTML='<p class="muted">Nothing remembered yet - pairs appear as you approve replies (history imports automatically on the first sweep).</p>'; return; }
-    var s='';
-    for(var i=0;i<r.rows.length;i++){
-      var a=r.rows[i];
-      s+='<div class="ans-row'+(a.disabled?' off':'')+'">'
-        +'<div><span class="ans-cat">'+esc(a.category)+'</span><div class="ans-q">'+esc(ansSnip(a.question,180))+'</div></div>'
-        +'<div class="ans-a">'+esc(ansSnip(a.answer,260))+'</div>'
-        +'<div class="ans-meta">Used '+esc(String(a.usedCount))+'x'
-        +(a.lastUsedAt?('<br>last '+esc(new Date(a.lastUsedAt).toLocaleDateString())):'')
-        +'<br><button type="button" class="ghost" data-ans-toggle="'+esc(a.qhash)+'" data-ans-off="'+(a.disabled?'0':'1')+'">'+(a.disabled?'Enable':'Disable')+'</button></div>'
-        +'</div>';
-    }
-    box.innerHTML=s;
-  }catch(e){ setMsg('ans-msg','Could not load.','no'); }
-}
-async function ansToggle(btn,qhash,off){
-  btn.disabled=true;
-  try{
-    var r=await api('/inbox/answers/toggle',{qhash:qhash,disabled:off});
-    if(!r.ok){ setMsg('ans-msg','Failed: '+(r.error||'unknown'),'no'); btn.disabled=false; return; }
-    setMsg('ans-msg',off?'Disabled - this answer will not be recalled.':'Enabled again.','ok');
-    ansLoad();
-  }catch(e){ setMsg('ans-msg','Could not save.','no'); btn.disabled=false; }
-}
-(function(){
-  var box=el('ans-list');
-  if(box) box.addEventListener('click',function(e){
-    var b=e.target&&e.target.closest?e.target.closest('[data-ans-toggle]'):null;
-    if(!b) return;
-    ansToggle(b,b.getAttribute('data-ans-toggle'),b.getAttribute('data-ans-off')==='1');
-  });
-})();
 `;

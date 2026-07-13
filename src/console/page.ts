@@ -27,6 +27,8 @@
 
 import { inboxView, inboxCss } from './views/inbox';
 import { inboxJs } from './inbox-js';
+import { answersView, answersCss } from './views/answers';
+import { answersJs } from './answers-js';
 import { glanceView, glanceCss } from './views/glance';
 import { glanceJs } from './glance-js';
 import { auditJs } from './audit-js';
@@ -151,6 +153,7 @@ export function consolePage(apiKey: string): Response {
   .agents-row.is-disabled{opacity:.5}
 ${shellCss}
 ${inboxCss}
+${answersCss}
 ${glanceCss}
 ${auditCss}
 ${partnersCss}
@@ -168,6 +171,9 @@ ${glanceView}
 </main>
 <main class="view" id="view-inbox">
 ${inboxView}
+</main>
+<main class="view" id="view-answers">
+${answersView}
 </main>
 <main class="view" id="view-catalog">
 ${catalogView}
@@ -981,6 +987,7 @@ async function saveInboxSettings(){
   }catch(e){ setMsg('inboxcfgmsg','Failed: '+errText(e),'no'); return false; }
 }
 ${inboxJs}
+${answersJs}
 ${glanceJs}
 ${auditJs}
 ${partnersJs}
@@ -994,7 +1001,6 @@ loadInsights();
 loadGlance();
 loadInboxThreads();
 loadInboxSettings();
-ansLoad();
 loadAudit();
 loadPartners();
 loadCampaigns();
