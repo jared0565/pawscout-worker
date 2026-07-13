@@ -32,6 +32,7 @@ import {
   validEmailSyntax, isDisposableDomain, isMainstreamEmailDomain, channelHostAllowed,
   honeypotOk, signTimestamp, verifyTimestamp, validateFields, type ApplicationFieldsInput
 } from './gates';
+import { LIQUID_STYLE, liquidHero } from './pages';
 
 // --- Rate-limit + token-lifetime constants --------------------------------
 
@@ -374,16 +375,30 @@ export async function handleAffiliateApply(deps: ApplyDeps): Promise<ApplyResult
 /** Worker-rendered HTML string (no build step, no framework) - the Turnstile
  *  widget, honeypot field, and signed timestamp all live here. Always 200 -
  *  Shopify's App Proxy replaces any non-2xx response with a generic error page. */
-export async function renderApplyForm(cfg: TenantConfig, env: Env, nowMs: number = Date.now()): Promise<string> {
+export interface RenderApplyOpts {
+  /** Render the real form even while selfServe.enabled is false, so the owner
+   *  can review the page before launch (`?preview=1` on the GET route).
+   *  GET-only and harmless by construction: the POST route stays strictly
+   *  gated on cfg.selfServe.enabled, so a previewed form cannot submit. */
+  preview?: boolean;
+}
+
+/** BODY FRAGMENT (no doctype/head/body): served as `application/liquid` so
+ *  Shopify renders it inside the live theme layout - see pages.ts's module
+ *  doc for the brand/Liquid-safety contract. */
+export async function renderApplyForm(cfg: TenantConfig, env: Env, nowMs: number = Date.now(), opts: RenderApplyOpts = {}): Promise<string> {
   const sc = cfg.selfServe ?? DEFAULT_SELF_SERVE;
-  if (!sc.enabled) {
-    return (
-      `<!doctype html><html><head><meta charset="utf-8"><title>Active Paw Partner Program</title></head>` +
-      `<body><p>Applications are not currently open. Please check back soon.</p></body></html>`
-    );
+  if (!sc.enabled && !opts.preview) {
+    return `${LIQUID_STYLE}
+<div class="apaff">
+${liquidHero('Active Paw Partner Program', 'Applications open soon', 'Applications are not currently open. Please check back soon.')}
+</div>`;
   }
   const tsToken = await signTimestamp(nowMs, env.SHOPIFY_API_SECRET);
   const siteKey = env.TURNSTILE_SITE_KEY ?? '';
+  const previewBanner = !sc.enabled && opts.preview
+    ? `<p class="apaff-preview">Preview - applications are not open to the public yet; submitting is disabled.</p>\n`
+    : '';
   // Fix 5 (2026-07-13 final review): the POST route's contract is (and stays)
   // c.json({ok,...}) - required by the App Proxy / any future non-browser
   // caller - but a plain <form method="post"> with no JS navigated a real
@@ -395,32 +410,44 @@ export async function renderApplyForm(cfg: TenantConfig, env: Env, nowMs: number
   // this whole function body is itself a TS template literal (see
   // docs/superpowers's console-page-template-literal-gotcha note / this
   // repo's own src/console/page.ts convention).
-  return `<!doctype html>
-<html>
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Active Paw Partner Program</title>
+  return `${LIQUID_STYLE}
 <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
-</head>
-<body>
-<h1>Join the Active Paw Partner Program</h1>
-<p>Tell us about your channel and how you would promote Active Paw. We review every application automatically, then by email.</p>
-<div id="applyResult" role="status" aria-live="polite"></div>
-<form method="post" id="applyForm">
-  <p><label>Your name<br><input type="text" name="name" maxlength="120" required></label></p>
-  <p><label>Email address<br><input type="email" name="email" maxlength="254" required></label></p>
-  <p><label>Channel URL (blog, YouTube, Instagram, etc.)<br><input type="url" name="channel_url" maxlength="500" required></label></p>
-  <p><label>Tell us about your audience<br><textarea name="audience" maxlength="2000" required></textarea></label></p>
-  <p><label>How would you promote Active Paw?<br><textarea name="plan" maxlength="2000" required></textarea></label></p>
-  <p><label><input type="checkbox" name="terms" required> I agree to the <a href="/apps/pawscout/affiliate/terms" target="_blank" rel="noopener">Active Paw Partner Program terms</a>.</label></p>
+<div class="apaff">
+${previewBanner}${liquidHero(
+    'Active Paw Partner Program',
+    'Earn with Active Paw',
+    'Recommend pet products you love and earn commission on every tracked order from your audience.',
+    `<ul class="apaff-chips">
+    <li>${escHtml(String(STANDARD_COMMISSION_PCT))}% commission, up to ${escHtml(String(TIER_MAX_PCT))}%</li>
+    <li>${escHtml(String(TRIAL_PCT_OFF_DEFAULT))}% off for your audience</li>
+    <li>Your own results dashboard</li>
+  </ul>`
+  )}
+<ol class="apaff-steps">
+  <li><h3>Apply in two minutes</h3><p>Tell us about your channel and how you would promote Active Paw.</p></li>
+  <li><h3>Verify your email</h3><p>Click the link we send you. We review every application automatically, then by email.</p></li>
+  <li><h3>Get your code</h3><p>Approved partners receive a discount code for their audience and a live results dashboard.</p></li>
+</ol>
+<section class="apaff-card">
+<h2>Apply now</h2>
+<div id="applyResult" class="apaff-result" role="status" aria-live="polite"></div>
+<form method="post" id="applyForm" class="apaff-form">
+  <div class="apaff-field"><label for="apaff-name">Your name</label><input id="apaff-name" type="text" name="name" maxlength="120" required></div>
+  <div class="apaff-field"><label for="apaff-email">Email address</label><input id="apaff-email" type="email" name="email" maxlength="254" required></div>
+  <div class="apaff-field"><label for="apaff-channel">Channel URL (blog, YouTube, Instagram, etc.)</label><input id="apaff-channel" type="url" name="channel_url" maxlength="500" required></div>
+  <div class="apaff-field"><label for="apaff-audience">Tell us about your audience</label><textarea id="apaff-audience" name="audience" maxlength="2000" required></textarea></div>
+  <div class="apaff-field"><label for="apaff-plan">How would you promote Active Paw?</label><textarea id="apaff-plan" name="plan" maxlength="2000" required></textarea></div>
+  <label class="apaff-agree"><input type="checkbox" name="terms" required> <span>I agree to the <a href="/apps/pawscout/affiliate/terms" target="_blank" rel="noopener">Active Paw Partner Program terms</a>.</span></label>
   <div style="position:absolute;left:-9999px" aria-hidden="true">
     <label>Leave this field blank<input type="text" name="website" tabindex="-1" autocomplete="off"></label>
   </div>
   <input type="hidden" name="ts" value="${escHtml(tsToken)}">
   <div class="cf-turnstile" data-sitekey="${escHtml(siteKey)}"></div>
-  <p><button type="submit">Apply</button></p>
+  <p><button type="submit" class="button button-primary">Apply</button></p>
 </form>
+</section>
+<p class="apaff-foot">Questions? Email ${escHtml(PARTNERSHIP_ADDRESS)}.</p>
+</div>
 <noscript><p>JavaScript is required to see a confirmation message here - your application is still received and processed normally either way.</p></noscript>
 <script>
 (function(){
@@ -436,69 +463,73 @@ export async function renderApplyForm(cfg: TenantConfig, env: Env, nowMs: number
       var ok = !!(body && body.ok);
       var text = ok ? (body.message || 'Thanks - check your email for next steps.') : (body && body.error) || 'Something went wrong. Please try again.';
       result.textContent = text;
-      result.className = ok ? 'ok' : 'error';
+      result.className = ok ? 'apaff-result ok' : 'apaff-result error';
       if (ok) { form.style.display = 'none'; }
     }).catch(function(){
       result.textContent = 'Something went wrong. Please try again.';
-      result.className = 'error';
+      result.className = 'apaff-result error';
     });
   });
 })();
-</script>
-</body>
-</html>`;
+</script>`;
 }
 
-/** Static terms page linked from the apply form's checkbox
- *  (`/apps/pawscout/affiliate/terms`, App Proxy). Every figure here is a real
- *  code constant (STANDARD_COMMISSION_PCT/TIER_REVIEW_ORDERS/TIER_MAX_PCT/
+/** Terms page linked from the apply form's checkbox
+ *  (`/apps/pawscout/affiliate/terms`, App Proxy). BODY FRAGMENT served as
+ *  `application/liquid` - see pages.ts. Every figure here is a real code
+ *  constant (STANDARD_COMMISSION_PCT/TIER_REVIEW_ORDERS/TIER_MAX_PCT/
  *  TRIAL_PCT_OFF_DEFAULT from ../inbox/partnership, the SAME values the
  *  earned-tier reminder in a live approval email quotes) or a read of the
  *  applicant-facing config (`starterUsageLimit`) - never an invented number.
- *  No CSS, matching every other public page in this funnel. Not gated on
- *  cfg.selfServe.enabled: showing the terms is harmless pre-launch and the
- *  owner needs to review this exact page before flipping the funnel on. */
+ *  Not gated on cfg.selfServe.enabled: showing the terms is harmless
+ *  pre-launch and the owner needs to review this exact page before flipping
+ *  the funnel on. */
 export function renderTermsPage(cfg: TenantConfig): string {
   const sc = cfg.selfServe ?? DEFAULT_SELF_SERVE;
-  return `<!doctype html>
-<html>
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Active Paw Partner Program - Terms</title>
-</head>
-<body>
-<h1>Active Paw Partner Program - Terms</h1>
-<p>These are the terms for the Active Paw Partner Program. By applying, you agree to them.</p>
-
+  return `${LIQUID_STYLE}
+<div class="apaff">
+${liquidHero('Active Paw', 'Partner Program Terms', 'Plain-language terms with real numbers - the same ones our system enforces automatically. By applying, you agree to them.')}
+<section class="apaff-card">
 <h2>How commission works</h2>
 <p>Once approved, you get a unique discount code. When a customer enters it at checkout, we track the order against your account. Commission is ${escHtml(String(STANDARD_COMMISSION_PCT))}% of the order's goods value (before your code's discount, excluding shipping). Cancelled and fully refunded orders earn no commission; partial refunds reduce it proportionally.</p>
-
+</section>
+<section class="apaff-card">
 <h2>Your starter code</h2>
 <p>Your first code gives customers ${escHtml(String(TRIAL_PCT_OFF_DEFAULT))}% off and can be used up to ${escHtml(String(sc.starterUsageLimit))} times.</p>
-
+</section>
+<section class="apaff-card">
 <h2>Growing your rate</h2>
 <p>After your first ${escHtml(String(TIER_REVIEW_ORDERS))} tracked orders in a 30-day window we review your rate, up to ${escHtml(String(TIER_MAX_PCT))}%.</p>
-
+</section>
+<section class="apaff-card">
 <h2>Orders you place yourself</h2>
 <p>An order placed using your own name, email, or address earns no commission, even if it uses your code.</p>
-
+</section>
+<section class="apaff-card">
 <h2>Who can't apply</h2>
 <p>Coupon, deal, and cashback-aggregator sites are not eligible for the program.</p>
-
+</section>
+<section class="apaff-card">
 <h2>Ending the partnership</h2>
 <p>Active Paw may deactivate a partner code at any time, for any reason, including suspected misuse.</p>
-
+</section>
+<section class="apaff-card">
 <h2>Getting paid</h2>
 <p>Your commission is tracked automatically in your partner dashboard. To request a payout, contact us at ${escHtml(PARTNERSHIP_ADDRESS)} or reply to any partner email.</p>
-
+</section>
+<section class="apaff-card">
 <h2>Your data</h2>
 <p>We use your application and order data only to run the program. You can ask us to delete your account data at any time by emailing ${escHtml(PARTNERSHIP_ADDRESS)}.</p>
-
+</section>
+<section class="apaff-card">
 <h2>Changes</h2>
 <p>We may update these terms from time to time. Continuing to use your partner code after a change means you accept the update.</p>
-
-<p>Questions? Email ${escHtml(PARTNERSHIP_ADDRESS)}.</p>
-</body>
-</html>`;
+</section>
+<section class="apaff-card apaff-cta">
+<h2>Ready to join?</h2>
+<p class="apaff-lede">The application takes about two minutes.</p>
+<p><a class="button button-primary" href="/apps/pawscout/affiliate/apply">Apply now</a></p>
+</section>
+<p class="apaff-foot">Questions? Email ${escHtml(PARTNERSHIP_ADDRESS)}.</p>
+</div>`;
 }

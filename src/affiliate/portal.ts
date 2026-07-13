@@ -31,6 +31,7 @@ import type { Env, TenantConfig } from '../types';
 import { DEFAULT_SELF_SERVE } from '../types';
 import type { TenantStore, PartnerPortalSummary } from '../tenant-store';
 import { sha256Hex, issueLoginLink, RESEND_COOLDOWN_MS } from './apply';
+import { workerShell } from './pages';
 import { defaultFetch } from '../safe-fetch';
 
 // --- Session cookie: HMAC(partnerId|expiry), keyed with the worker's own
@@ -115,33 +116,33 @@ function money(n: number): string {
   return `£${n.toFixed(2)}`;
 }
 
-export const PORTAL_DARK_HTML =
-  `<!doctype html><html><head><meta charset="utf-8"><title>Active Paw Partner Portal</title></head>` +
-  `<body><p>The partner portal is not currently available. Please check back soon.</p></body></html>`;
+export const PORTAL_DARK_HTML = workerShell('Active Paw Partner Portal',
+  `<span class="apw-kicker">Active Paw Partner Portal</span>
+<h1>Check back soon</h1>
+<p>The partner portal is not currently available. Please check back soon.</p>`);
 
 /** Uniform (no-enumeration) response body for POST /affiliate/portal/login -
  *  EXPORTED so tests can assert byte-identity against it directly. */
-export const GENERIC_LOGIN_HTML =
-  `<!doctype html><html><head><meta charset="utf-8"><title>Active Paw Partner Portal</title></head>` +
-  `<body><p>If that email is a registered partner, we have sent a login link. It is valid for 48 hours.</p></body></html>`;
+export const GENERIC_LOGIN_HTML = workerShell('Active Paw Partner Portal',
+  `<span class="apw-kicker">Active Paw Partner Portal</span>
+<h1>Check your email</h1>
+<p>If that email is a registered partner, we have sent a login link. It is valid for 48 hours.</p>`);
 
-export const SESSION_EXPIRED_HTML =
-  `<!doctype html><html><head><meta charset="utf-8"><title>Active Paw Partner Portal</title></head>` +
-  `<body><p>This link has expired or has already been used. Please request a new login link.</p></body></html>`;
+export const SESSION_EXPIRED_HTML = workerShell('Active Paw Partner Portal',
+  `<span class="apw-kicker">Active Paw Partner Portal</span>
+<h1>This link has expired</h1>
+<p>This link has expired or has already been used. Please request a new login link.</p>`);
 
 function renderLoginForm(): string {
-  return `<!doctype html>
-<html>
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Active Paw Partner Portal</title></head>
-<body>
+  return workerShell('Active Paw Partner Portal',
+    `<span class="apw-kicker">Active Paw Partner Portal</span>
 <h1>Partner login</h1>
 <p>Enter the email address you applied with and we will send you a login link.</p>
 <form method="post" action="/affiliate/portal/login">
-  <p><label>Email address<br><input type="email" name="email" maxlength="254" required></label></p>
-  <p><button type="submit">Send login link</button></p>
-</form>
-</body>
-</html>`;
+  <label class="apw-label" for="apw-email">Email address</label>
+  <input class="apw-input" id="apw-email" type="email" name="email" maxlength="254" required>
+  <p><button type="submit" class="apw-button">Send login link</button></p>
+</form>`);
 }
 
 /** Live/scheduled/revoked display status: a 'live' voucher whose starts_at is
@@ -153,30 +154,32 @@ function voucherDisplayStatus(v: { status: string; starts_at: string }, nowMs: n
 }
 
 function renderDashboard(summary: PartnerPortalSummary, nowMs: number): string {
+  // Dates display as YYYY-MM-DD: the full ISO strings are unbreakable
+  // 24-char tokens that overflow the card on narrow phones (review finding,
+  // 2026-07-13), and time-of-day carries no meaning for a voucher window.
+  const day = (iso: string) => iso.slice(0, 10);
   const rows = summary.vouchers.length
     ? summary.vouchers.map((v) =>
         `<tr><td>${escHtml(v.code)}</td><td>${escHtml(voucherDisplayStatus(v, nowMs))}</td>` +
-        `<td>${escHtml(v.starts_at)}</td><td>${escHtml(v.ends_at)}</td></tr>`
+        `<td>${escHtml(day(v.starts_at))}</td><td>${escHtml(day(v.ends_at))}</td></tr>`
       ).join('')
     : `<tr><td colspan="4">No codes issued yet.</td></tr>`;
-  const lastOrder = summary.last_order_at ? escHtml(summary.last_order_at) : 'None yet';
-  return `<!doctype html>
-<html>
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Active Paw Partner Portal</title></head>
-<body>
+  const lastOrder = summary.last_order_at ? escHtml(day(summary.last_order_at)) : 'None yet';
+  return workerShell('Active Paw Partner Portal',
+    `<span class="apw-kicker">Active Paw Partner Portal</span>
 <h1>Your Active Paw Partner dashboard</h1>
-<table>
+<table class="apw-table">
   <thead><tr><th>Code</th><th>Status</th><th>Starts</th><th>Ends</th></tr></thead>
   <tbody>${rows}</tbody>
 </table>
-<p>Orders tracked: ${summary.orders_count}</p>
-<p>Gross face value: ${money(summary.gross_gbp)}</p>
-<p>Commission earned: ${money(summary.commission_gbp)}</p>
-<p>Paid out: ${money(summary.paid_gbp)}</p>
-<p>Pending: ${money(summary.pending_gbp)}</p>
-<p>Last order: ${lastOrder}</p>
-</body>
-</html>`;
+<div class="apw-stats">
+  <div class="apw-stat"><b>Orders tracked</b><span>${summary.orders_count}</span></div>
+  <div class="apw-stat"><b>Gross face value</b><span>${money(summary.gross_gbp)}</span></div>
+  <div class="apw-stat"><b>Commission earned</b><span>${money(summary.commission_gbp)}</span></div>
+  <div class="apw-stat"><b>Paid out</b><span>${money(summary.paid_gbp)}</span></div>
+  <div class="apw-stat"><b>Pending</b><span>${money(summary.pending_gbp)}</span></div>
+</div>
+<p class="apw-muted">Last order: ${lastOrder}</p>`);
 }
 
 // --- POST /affiliate/portal/login -------------------------------------------

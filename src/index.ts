@@ -1645,31 +1645,37 @@ app.post('/proxy/event', async (c) => {
 // Affiliate self-serve marketplace, Stage 0 (2026-07-12): public, unauthenticated
 // apply form. Ships DARK behind cfg.selfServe.enabled (default false) - both
 // routes are thin adapters over src/affiliate/apply.ts's testable core.
+// GET pages under /proxy/affiliate are served as `Content-Type:
+// application/liquid`: Shopify renders the returned BODY FRAGMENT inside the
+// live theme's layout (real Active Paw header/nav/footer) - see
+// src/affiliate/pages.ts for the fragment + Liquid-injection contract. The
+// POST route below keeps its plain-JSON contract untouched.
+const LIQUID_CT = { 'Content-Type': 'application/liquid' } as const;
+
 app.get('/proxy/affiliate/apply', async (c) => {
   const p = await proxyCtx(c); if (p instanceof Response) return p;
   try {
-    const html = await renderApplyForm(p.cfg, c.env);
-    return c.html(html);
+    // ?preview=1: owner review of the real form while the funnel is dark.
+    // GET-only by construction - the POST route stays gated on enabled.
+    const html = await renderApplyForm(p.cfg, c.env, Date.now(), { preview: c.req.query('preview') === '1' });
+    return c.body(html, 200, LIQUID_CT);
   } catch (e) {
     // Every /proxy/* response MUST be HTTP 200 - Shopify's App Proxy replaces
     // any non-2xx response with a generic error page (see sibling routes
-    // /proxy/search, /proxy/product). Minimal 200 HTML fallback, same shape
-    // as renderApplyForm's own dark-state page.
+    // /proxy/search, /proxy/product). Minimal 200 fallback, same fragment
+    // shape as renderApplyForm's own dark-state page.
     console.warn(`affiliate apply form render failed: ${(e as Error).message}`);
-    return c.html(
-      `<!doctype html><html><head><meta charset="utf-8"><title>Active Paw Partner Program</title></head>` +
-      `<body><p>Applications are not currently open. Please check back soon.</p></body></html>`
-    );
+    return c.body(`<p>Applications are not currently open. Please check back soon.</p>`, 200, LIQUID_CT);
   }
 });
 
-// Static terms page linked from the apply form's checkbox. Not gated on
+// Terms page linked from the apply form's checkbox. Not gated on
 // cfg.selfServe.enabled - see renderTermsPage's doc comment - so it stays
 // reachable (for owner review, and for anyone who bookmarks the link) even
 // while the funnel itself is dark.
 app.get('/proxy/affiliate/terms', async (c) => {
   const p = await proxyCtx(c); if (p instanceof Response) return p;
-  return c.html(renderTermsPage(p.cfg));
+  return c.body(renderTermsPage(p.cfg), 200, LIQUID_CT);
 });
 
 app.post('/proxy/affiliate/apply', async (c) => {

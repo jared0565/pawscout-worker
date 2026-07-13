@@ -20,16 +20,18 @@
 import type { TenantStore } from '../tenant-store';
 import { AFFILIATE_STAGE_SUBMITTED, AFFILIATE_STAGE_VERIFIED } from '../tenant-store';
 import { sha256Hex } from './apply';
+import { workerShell } from './pages';
 
-export const EXPIRED_HTML =
-  `<!doctype html><html><head><meta charset="utf-8"><title>Active Paw Partner Program</title></head>` +
-  `<body><p>This link has expired or has already been used. If you are still trying to verify your ` +
-  `application, please apply again.</p></body></html>`;
+export const EXPIRED_HTML = workerShell('Active Paw Partner Program',
+  `<span class="apw-kicker">Active Paw Partner Program</span>
+<h1>This link has expired</h1>
+<p>This link has expired or has already been used. If you are still trying to verify your application, please apply again.</p>`);
 
-export const VERIFIED_HTML =
-  `<!doctype html><html><head><meta charset="utf-8"><title>Active Paw Partner Program</title></head>` +
-  `<body><h1>Email verified</h1><p>Thanks - your email is verified. We are reviewing your application ` +
-  `and will be in touch by email soon.</p></body></html>`;
+export const VERIFIED_HTML = workerShell('Active Paw Partner Program',
+  `<span class="apw-kicker">Active Paw Partner Program</span>
+<h1>Email verified</h1>
+<p>Thanks - your email is verified. We are reviewing your application and will be in touch by email soon.</p>
+<p class="apw-muted">You can close this page.</p>`);
 
 export interface VerifyResult { status: number; html: string }
 

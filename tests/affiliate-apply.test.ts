@@ -483,7 +483,12 @@ describe('renderApplyForm', () => {
   it('renders the dark-state page when selfServe.enabled is false', async () => {
     const html = await renderApplyForm(DISABLED_CFG, baseEnv(), NOW);
     expect(html).toContain('not currently open');
-    expect(html).not.toContain('cf-turnstile');
+    // No Turnstile WIDGET or script on the dark page. Assert on the element
+    // attribute + script host, not the class name - the shared stylesheet
+    // (pages.ts LIQUID_STYLE) legitimately mentions `.cf-turnstile` in a CSS
+    // selector on every page, so a bare class-name substring proves nothing.
+    expect(html).not.toContain('data-sitekey');
+    expect(html).not.toContain('challenges.cloudflare.com');
   });
 
   it('renders the form with the Turnstile widget, the honeypot field, and a signed timestamp', async () => {
@@ -540,6 +545,46 @@ describe('renderApplyForm', () => {
   it('links the terms checkbox to /apps/pawscout/affiliate/terms', async () => {
     const html = await renderApplyForm(ENABLED_CFG, baseEnv(), NOW);
     expect(html).toContain('href="/apps/pawscout/affiliate/terms"');
+  });
+
+  // Liquid-fragment contract (2026-07-13 redesign): these pages are served as
+  // Content-Type: application/liquid, so Shopify renders them INSIDE the live
+  // theme layout. Two invariants follow: (1) they must be BODY FRAGMENTS (a
+  // nested <!doctype>/<html> inside the theme layout would be broken markup),
+  // and (2) they must contain NO Liquid tags - Shopify would EXECUTE `{{ }}`/
+  // `{% %}` in the storefront context, so their absence is a security
+  // invariant, not a style choice (see src/affiliate/pages.ts).
+  it('renders Liquid-safe body fragments in every state (no doctype, no Liquid tags)', async () => {
+    const fragments = [
+      await renderApplyForm(ENABLED_CFG, baseEnv(), NOW),
+      await renderApplyForm(DISABLED_CFG, baseEnv(), NOW),
+      await renderApplyForm(DISABLED_CFG, baseEnv(), NOW, { preview: true }),
+      renderTermsPage(ENABLED_CFG),
+    ];
+    for (const html of fragments) {
+      expect(html).not.toContain('<!doctype');
+      expect(html).not.toContain('<html');
+      expect(html).not.toContain('{{');
+      expect(html).not.toContain('{%');
+    }
+  });
+
+  // ?preview=1: the owner can see the real form while the funnel is dark.
+  // Banner assertions target the element markup / copy, never the bare class
+  // name (which the shared stylesheet mentions on every page - see above).
+  it('preview renders the real form when disabled, with a preview banner; POST stays gated elsewhere', async () => {
+    const html = await renderApplyForm(DISABLED_CFG, baseEnv(), NOW, { preview: true });
+    expect(html).toContain('id="applyForm"');
+    expect(html).toContain('data-sitekey');
+    expect(html).toContain('<p class="apaff-preview">');
+    expect(html).toContain('not open to the public yet');
+  });
+
+  it('preview banner is absent when the funnel is genuinely enabled', async () => {
+    const html = await renderApplyForm(ENABLED_CFG, baseEnv(), NOW, { preview: true });
+    expect(html).toContain('id="applyForm"');
+    expect(html).not.toContain('<p class="apaff-preview">');
+    expect(html).not.toContain('not open to the public yet');
   });
 });
 
@@ -612,11 +657,12 @@ describe('HTTP level: /proxy/affiliate/apply', () => {
     expect(body.ok).toBe(false);
   });
 
-  it('GET returns the dark-state 200 page (selfServe.enabled defaults false; no saveSelfServe call in this test)', async () => {
+  it('GET returns the dark-state 200 page as application/liquid (selfServe.enabled defaults false; no saveSelfServe call in this test)', async () => {
     await seedActiveTenant(SHOP);
     const url = await signedProxyUrl('/proxy/affiliate/apply');
     const res = await app.request(url, {}, proxyEnv());
     expect(res.status).toBe(200);
+    expect(res.headers.get('Content-Type')).toBe('application/liquid');
     const html = await res.text();
     expect(html).toContain('not currently open');
   });
@@ -624,6 +670,33 @@ describe('HTTP level: /proxy/affiliate/apply', () => {
   it('POST returns the same dark-state refusal as JSON', async () => {
     await seedActiveTenant(SHOP);
     const url = await signedProxyUrl('/proxy/affiliate/apply');
+    const res = await app.request(url, { method: 'POST', body: new URLSearchParams({ name: 'X' }) }, proxyEnv());
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: boolean; error?: string };
+    expect(body).toEqual({ ok: false, error: 'Applications are not currently open.' });
+  });
+
+  // Route-level preview wiring (review finding, 2026-07-13): the three
+  // renderApplyForm({preview}) unit tests above bypass src/index.ts entirely,
+  // so without these two tests (a) the GET route could silently drop/rename
+  // the ?preview=1 read and the owner's review URL would show the dark page
+  // with everything still green, and (b) a future edit could wire preview
+  // into the POST gate - a public bypass of the dark funnel - that the plain
+  // dark POST test above cannot catch.
+  it('GET ?preview=1 renders the real form through the route while the funnel is dark', async () => {
+    await seedActiveTenant(SHOP);
+    const url = await signedProxyUrl('/proxy/affiliate/apply', { preview: '1' });
+    const res = await app.request(url, {}, proxyEnv());
+    expect(res.status).toBe(200);
+    expect(res.headers.get('Content-Type')).toBe('application/liquid');
+    const html = await res.text();
+    expect(html).toContain('id="applyForm"');
+    expect(html).toContain('<p class="apaff-preview">');
+  });
+
+  it('POST with ?preview=1 still returns the dark-state refusal (preview can never unlock submits)', async () => {
+    await seedActiveTenant(SHOP);
+    const url = await signedProxyUrl('/proxy/affiliate/apply', { preview: '1' });
     const res = await app.request(url, { method: 'POST', body: new URLSearchParams({ name: 'X' }) }, proxyEnv());
     expect(res.status).toBe(200);
     const body = (await res.json()) as { ok: boolean; error?: string };
@@ -639,13 +712,14 @@ describe('HTTP level: /proxy/affiliate/terms', () => {
     expect(body.ok).toBe(false);
   });
 
-  it('GET returns 200 with the real terms content, independent of selfServe.enabled', async () => {
+  it('GET returns 200 with the real terms content as application/liquid, independent of selfServe.enabled', async () => {
     await seedActiveTenant(SHOP); // seedConfig only - selfServe merges to DEFAULT_SELF_SERVE (enabled: false)
     const url = await signedProxyUrl('/proxy/affiliate/terms');
     const res = await app.request(url, {}, proxyEnv());
     expect(res.status).toBe(200);
+    expect(res.headers.get('Content-Type')).toBe('application/liquid');
     const html = await res.text();
-    expect(html).toContain('Active Paw Partner Program - Terms');
+    expect(html).toContain('Partner Program Terms');
     expect(html).not.toContain('not currently open'); // terms are not gated dark like the form
   });
 });
