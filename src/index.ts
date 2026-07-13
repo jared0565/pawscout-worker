@@ -58,6 +58,8 @@ import { firecrawlCjSearch } from './firecrawl';
 import { handleAffiliateApply, renderApplyForm, GENERIC_APPLY_MESSAGE, type ApplyFields } from './affiliate/apply';
 import { handleAffiliateVerify, EXPIRED_HTML as AFFILIATE_VERIFY_EXPIRED_HTML } from './affiliate/verify';
 import { runAffiliateScreenSweep } from './affiliate/screen';
+import { handlePortalLogin, handlePortalGet, handlePortalData, SESSION_COOKIE_NAME, SESSION_COOKIE_PATH, SESSION_MAX_AGE_SECONDS, PORTAL_DARK_HTML, GENERIC_LOGIN_HTML } from './affiliate/portal';
+import { getCookie, setCookie } from 'hono/cookie';
 
 export const app = new Hono<{ Bindings: Env }>();
 
@@ -1645,6 +1647,79 @@ app.get('/affiliate/verify', async (c) => {
   } catch (e) {
     console.warn(`affiliate verify failed: ${(e as Error).message}`);
     return c.html(AFFILIATE_VERIFY_EXPIRED_HTML, 200, headers);
+  }
+});
+
+// Affiliate self-serve marketplace, Task 5: the partner self-serve portal.
+// On the WORKER's own domain (NOT /proxy - the App Proxy strips Cookie/
+// Set-Cookie, so a real httpOnly session cookie only works here), same
+// single-active-shop resolution as /affiliate/verify above. GET /affiliate/
+// portal does triple duty (see src/affiliate/portal.ts's module doc): a
+// `token` query param claims a login link and mints the session cookie
+// (this is the SAME URL apply.ts's issueLoginLink already emails to an
+// existing live partner who tries to re-apply); otherwise a valid session
+// cookie renders the dashboard; otherwise the login form.
+app.get('/affiliate/portal', async (c) => {
+  try {
+    const shops = await listActiveShops(c.env.DB);
+    const shop = shops[0];
+    if (!shop) return c.html(PORTAL_DARK_HTML, 200, { 'Referrer-Policy': 'no-referrer' });
+    const store = new TenantStore(c.env.DB, shop);
+    const cfg = await store.getConfig();
+    const token = c.req.query('token') ?? '';
+    const sessionCookie = getCookie(c, SESSION_COOKIE_NAME);
+    const r = await handlePortalGet({ store, cfg, secret: c.env.SHOPIFY_API_SECRET, token, sessionCookie });
+    if (r.redirect) {
+      if (r.setCookie) {
+        setCookie(c, SESSION_COOKIE_NAME, r.setCookie, {
+          httpOnly: true, secure: true, sameSite: 'Lax', path: SESSION_COOKIE_PATH, maxAge: SESSION_MAX_AGE_SECONDS
+        });
+      }
+      c.header('Referrer-Policy', r.headers['Referrer-Policy']);
+      return c.redirect(r.redirect, 302);
+    }
+    return c.html(r.html, 200, r.headers);
+  } catch (e) {
+    console.warn(`affiliate portal failed: ${(e as Error).message}`);
+    return c.html(PORTAL_DARK_HTML, 200, { 'Referrer-Policy': 'no-referrer' });
+  }
+});
+
+app.post('/affiliate/portal/login', async (c) => {
+  try {
+    const shops = await listActiveShops(c.env.DB);
+    const shop = shops[0];
+    if (!shop) return c.html(PORTAL_DARK_HTML, 200);
+    const store = new TenantStore(c.env.DB, shop);
+    const cfg = await store.getConfig();
+    let raw: Record<string, string | File>;
+    try { raw = await c.req.parseBody(); } catch { raw = {}; }
+    const email = typeof raw.email === 'string' ? raw.email : '';
+    const r = await handlePortalLogin({ store, cfg, env: c.env, email });
+    return c.html(r.html, 200);
+  } catch (e) {
+    // Same uniformity rule as /proxy/affiliate/apply's POST catch: the body
+    // here must be INDISTINGUISHABLE from the normal uniform response - a
+    // D1 hiccup mid-flow must never read differently from a normal "check
+    // your email" outcome.
+    console.warn(`affiliate portal login failed: ${(e as Error).message}`);
+    return c.html(GENERIC_LOGIN_HTML, 200);
+  }
+});
+
+app.get('/affiliate/portal/data', async (c) => {
+  try {
+    const shops = await listActiveShops(c.env.DB);
+    const shop = shops[0];
+    if (!shop) return c.json({ ok: false, error: 'The partner portal is not currently available.' });
+    const store = new TenantStore(c.env.DB, shop);
+    const cfg = await store.getConfig();
+    const sessionCookie = getCookie(c, SESSION_COOKIE_NAME);
+    const r = await handlePortalData({ store, cfg, secret: c.env.SHOPIFY_API_SECRET, sessionCookie });
+    return c.json(r.body, r.status as 200 | 401);
+  } catch (e) {
+    console.warn(`affiliate portal data failed: ${(e as Error).message}`);
+    return c.json({ ok: false, error: 'The partner portal is not currently available.' });
   }
 });
 

@@ -236,6 +236,30 @@ export interface AttributionVoucherRow {
   partner_email: string | null;
 }
 
+/** One voucher line of the self-serve partner portal (Task 5) - code + status
+ *  + validity window only, never the underlying partner/order rows. */
+export interface PartnerPortalVoucher {
+  code: string; status: string; starts_at: string; ends_at: string;
+}
+
+/** The partner portal's ENTIRE payload (`partnerPortalSummary`): counts and
+ *  amounts only, aggregated across every voucher this partner has ever held.
+ *  Deliberately has NO per-order fields (no shopify_order_id/order_name/
+ *  buyer_email_hash) - that is the whole point of this being an aggregate
+ *  query rather than a reuse of affiliateOrdersForVoucher, which returns
+ *  buyer-linkable rows and must never be reachable from this unauthenticated-
+ *  by-anything-but-the-portal-session surface. */
+export interface PartnerPortalSummary {
+  partner_id: string;
+  vouchers: PartnerPortalVoucher[];
+  orders_count: number;
+  gross_gbp: number;
+  commission_gbp: number;
+  paid_gbp: number;
+  pending_gbp: number;
+  last_order_at: string | null;
+}
+
 export class TenantStore {
   constructor(private readonly db: D1Database, readonly shop: string) {}
 
@@ -2160,6 +2184,52 @@ export class TenantStore {
       .bind(this.shop, voucherId)
       .all<{ id: string; amount_gbp: number; orders_count: number; method: string | null; reference: string | null; note: string | null; orders_json: string; created_at: string }>();
     return rs.results ?? [];
+  }
+
+  /** Self-serve partner portal aggregate (Task 5, 2026-07-12): ONLY this
+   *  partner's own numbers, across every voucher they have ever held - never
+   *  a per-order list, so no buyer PII (order name, buyer email/address) can
+   *  ever reach the portal surface (see PartnerPortalSummary's doc). Uses the
+   *  same ELIGIBLE-only filter as listAffiliateVouchers' uses/gross columns;
+   *  paid comes from the frozen affiliate_payouts total (what actually left,
+   *  immune to a later refund recompute), pending is the live unpaid
+   *  commission on eligible rows - same owed/paid split as listAffiliateVouchers. */
+  async partnerPortalSummary(partnerId: string): Promise<PartnerPortalSummary> {
+    const vouchersRs = await this.db
+      .prepare(
+        `SELECT code, status, starts_at, ends_at FROM affiliate_vouchers
+         WHERE shop = ?1 AND partner_id = ?2 ORDER BY created_at DESC`
+      )
+      .bind(this.shop, partnerId)
+      .all<PartnerPortalVoucher>();
+    const agg = await this.db
+      .prepare(
+        `SELECT
+           COALESCE(SUM(CASE WHEN o.eligible = 1 THEN 1 ELSE 0 END), 0) AS orders_count,
+           COALESCE(SUM(CASE WHEN o.eligible = 1 THEN o.gross_gbp ELSE 0 END), 0) AS gross_gbp,
+           COALESCE(SUM(CASE WHEN o.eligible = 1 THEN o.commission_gbp ELSE 0 END), 0) AS commission_gbp,
+           COALESCE(SUM(CASE WHEN o.eligible = 1 AND o.paid_out_at IS NULL THEN o.commission_gbp ELSE 0 END), 0) AS pending_gbp,
+           MAX(o.placed_at) AS last_order_at
+         FROM affiliate_orders o
+         JOIN affiliate_vouchers v ON v.shop = o.shop AND v.id = o.voucher_id
+         WHERE o.shop = ?1 AND v.partner_id = ?2`
+      )
+      .bind(this.shop, partnerId)
+      .first<{ orders_count: number; gross_gbp: number; commission_gbp: number; pending_gbp: number; last_order_at: string | null }>();
+    const paidRow = await this.db
+      .prepare(`SELECT COALESCE(SUM(amount_gbp), 0) AS paid_gbp FROM affiliate_payouts WHERE shop = ?1 AND partner_id = ?2`)
+      .bind(this.shop, partnerId)
+      .first<{ paid_gbp: number }>();
+    return {
+      partner_id: partnerId,
+      vouchers: vouchersRs.results ?? [],
+      orders_count: agg?.orders_count ?? 0,
+      gross_gbp: agg?.gross_gbp ?? 0,
+      commission_gbp: agg?.commission_gbp ?? 0,
+      paid_gbp: paidRow?.paid_gbp ?? 0,
+      pending_gbp: agg?.pending_gbp ?? 0,
+      last_order_at: agg?.last_order_at ?? null
+    };
   }
 
   async setAffiliateVoucherStatus(voucherId: string, status: 'live' | 'revoked'): Promise<void> {

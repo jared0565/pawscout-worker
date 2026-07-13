@@ -185,7 +185,12 @@ async function issueVerifyLink(
   await sendApplicantEmail(env, email, buildVerifyEmail(name, url), fetchImpl);
 }
 
-async function issueLoginLink(
+/** Exported so src/affiliate/portal.ts's `POST /affiliate/portal/login` (Task 5)
+ *  can issue the exact same 'login' token + magic-link email as the
+ *  "existing live partner tries to re-apply" branch above - one token
+ *  lifetime, one email template, one URL shape
+ *  (`${SHOPIFY_APP_URL}/affiliate/portal?token=...`), never duplicated. */
+export async function issueLoginLink(
   store: TenantStore, env: Env, partnerId: string, name: string, email: string, fetchImpl: typeof fetch, nowMs: number
 ): Promise<void> {
   const raw = randomTokenHex();
