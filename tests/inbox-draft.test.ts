@@ -114,6 +114,25 @@ describe('draftReply', () => {
     expect(sink.system).toContain('STUB-FRAGMENT');
   });
 
+  it('teaches the drafter the conversation is a two-sided role-labeled transcript, and passes it through', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const sink: { system?: string; user?: string } = {};
+    const llm = capturingLlm({ bodyText: 'Around 5-7 days.', confidence: 85, quotesPriceOrOrder: false }, sink);
+    const transcript =
+      'Customer: Do you deliver to Spain?\n\n' +
+      'Active Paw: Yes, we ship to Spain; cost shows at checkout.\n\n' +
+      'Customer: Great, and how long does it take?';
+    await draftReply(llm, store, CFG, {
+      ...base, subject: 'Shipping', conversation: transcript, latestMessage: 'Great, and how long does it take?',
+    });
+    // Prompt now frames the transcript and its trust boundary.
+    expect(sink.system).toMatch(/role-labeled transcript/i);
+    expect(sink.system).toMatch(/"Active Paw:" are our own earlier replies/i);
+    expect(sink.system).toMatch(/UNTRUSTED/);
+    // Our own prior reply actually reaches the model, so the follow-up is answerable.
+    expect(sink.user).toContain('Active Paw: Yes, we ship to Spain');
+  });
+
   it('self-corrects a filler-padded first draft via the runtime revise loop', async () => {
     const store = new TenantStore(env.DB, 'a.myshopify.com');
     const padded = { bodyText: 'Thank you for getting in touch! We do ship to Ireland.', confidence: 80, quotesPriceOrOrder: false };

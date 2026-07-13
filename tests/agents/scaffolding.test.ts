@@ -59,7 +59,8 @@ describe('draftReply scaffolding invariants', () => {
       agent: stubAgent(false), grounding: GROUNDING,
       subject: 'Test', conversation: 'Earlier message', latestMessage: 'Latest message'
     });
-    expect(sink.system).toContain("Reply to the customer's MOST RECENT message specifically");
+    expect(sink.system).toContain("MOST RECENT message specifically");
+    expect(sink.system).toMatch(/role-labeled transcript/i);
   });
 
   it('excludes MOST RECENT grounding when latestMessage is absent', async () => {
@@ -70,7 +71,8 @@ describe('draftReply scaffolding invariants', () => {
       agent: stubAgent(false), grounding: GROUNDING,
       subject: 'Test', conversation: 'Only message'
     });
-    expect(sink.system).not.toContain("Reply to the customer's MOST RECENT message specifically");
+    expect(sink.system).not.toContain("MOST RECENT message specifically");
+    expect(sink.system).not.toMatch(/role-labeled transcript/i);
   });
 
   it('states shipping is destination-calculated / shown at checkout, with NO stale flat figures', async () => {

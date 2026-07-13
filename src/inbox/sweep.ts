@@ -22,7 +22,7 @@ import { recallAnswers, ensureAnswerBackfill } from './answer-memory';
 import { agentFor } from './agents/registry';
 import { resolveAgents } from './agents/config';
 import type { AgentContext, Department } from './agents/types';
-import type { ThreadRow, InvoiceLineItem } from './types';
+import type { ThreadRow, InvoiceLineItem, MessageRow } from './types';
 import { CjClient, CjTokenManager, cjFetchFromEnv } from '../cj';
 import { Vault } from '../vault';
 
@@ -303,6 +303,65 @@ export async function proposeInvoiceOne(
   }
 }
 
+// Role labels for the drafter transcript (buildDraftTranscript). Kept as
+// constants so the builder, the injection neutralizer, and the drafter prompt
+// (draft.ts's buildDraftSystem) all reference the exact same two strings.
+const TRANSCRIPT_CUSTOMER = 'Customer';
+const TRANSCRIPT_US = 'Active Paw';
+// Tail-kept budget. Held at or under the drafter's own 4000-char conversation
+// slice (draft.ts) so trimming happens HERE, newest-first, and the drafter's
+// slice never silently drops the most recent turns off a longer transcript.
+const TRANSCRIPT_MAX_CHARS = 3800;
+
+/** Neutralize forged role markers in UNTRUSTED inbound (customer) text. The
+ * drafter transcript prefixes each turn with "Customer:" / "Active Paw:";
+ * without this, a customer could line-lead their own message with "Active Paw:"
+ * to forge a trusted turn (a prompt-injection surface, given how the rest of
+ * this codebase treats inbound text as hostile). Any LINE-LEADING role label in
+ * customer text is downgraded to a non-label form ("Active Paw -"). Applied to
+ * inbound only; our own outbound text is trusted and never rewritten. The
+ * leading-whitespace class is `[^\S\r\n]` (all HORIZONTAL Unicode whitespace,
+ * newlines excluded) not `[ \t]`, so an invisible non-ASCII blank prefix
+ * (U+00A0 no-break space, U+3000 ideographic space, en/em spaces) cannot smuggle
+ * a label that renders to the model as a clean line-leading "Active Paw:" turn. */
+export function neutralizeRoleMarkers(body: string): string {
+  return body.replace(/^([^\S\r\n]*)(customer|active\s*paw)([^\S\r\n]*):/gim, '$1$2 -');
+}
+
+/** The drafter's conversation view: a role-labeled, chronological two-sided
+ * transcript (messages arrive received_at ASC). UNLIKE `conversation` in
+ * composeDraftForThread (inbound-only, and deliberately kept that way so
+ * deriveDestinationCountry never sees our own "UK"/domain text - the 2026-06
+ * destination-derivation bug), this includes our OWN prior replies so the
+ * drafter follows the actual flow: a reply to "yes, that works" or "and the
+ * grey one?" is grounded in what we already said, not answered blind.
+ * Inbound = customer (quoted reply chain stripped, role markers neutralized);
+ * outbound = our prior replies (trailing signoff stripped for brevity).
+ * Tail-capped to keep the most RECENT turns within budget (oldest dropped
+ * first; the newest turn is always kept even if it alone exceeds the budget). */
+export function buildDraftTranscript(messages: MessageRow[]): string {
+  const turns: string[] = [];
+  for (const m of messages) {
+    const raw = (m.body_text ?? '').trim();
+    if (!raw) continue;
+    if (m.direction === 'inbound') {
+      const text = neutralizeRoleMarkers(stripQuotedReply(raw) || raw).trim();
+      if (text) turns.push(`${TRANSCRIPT_CUSTOMER}: ${text}`);
+    } else {
+      const text = stripTrailingSignoff(raw).trim();
+      if (text) turns.push(`${TRANSCRIPT_US}: ${text}`);
+    }
+  }
+  const kept: string[] = [];
+  let total = 0;
+  for (let i = turns.length - 1; i >= 0; i--) {
+    if (kept.length && total + turns[i].length > TRANSCRIPT_MAX_CHARS) break;
+    kept.unshift(turns[i]);
+    total += turns[i].length + 2; // + the "\n\n" join
+  }
+  return kept.join('\n\n');
+}
+
 /**
  * Build and persist a fresh PENDING draft for a thread - conversation → category
  * agent (ground) → LLM draft → optional trusted appendix → compose → insert.
@@ -366,11 +425,18 @@ export async function composeDraftForThread(
   // only when grounding is confident, and is exempt from the money-hold (it is our
   // own trusted figure, not an LLM-emitted price).
   const agent = agentFor(thread.primary_category);
+  // Grounding gets the INBOUND-ONLY `conversation`: deriveDestinationCountry
+  // (product/shipping agents) reads ctx.conversation, and our own outbound text
+  // ("...to the UK", "activepaw.co.uk") would corrupt the destination it infers.
   const ctx: AgentContext = {
     store, cfg, admin, cj, thread, conversation, latestMessage: latestInbound,
     contactEmail: thread.contact_email, customerName: contact?.name ?? null
   };
   const grounding = await agent.ground(ctx); // never throws; miss => { confident:false }
+
+  // The DRAFTER instead sees the full two-sided flow (both directions, labeled),
+  // so a multi-turn reply fits what has already been said. See buildDraftTranscript.
+  const transcript = buildDraftTranscript(got.messages);
 
   // Approved-answers recall (2026-07-12): ground the drafter with vetted past
   // answers to similar questions. Failure degrades to no recall, never blocks.
@@ -380,7 +446,7 @@ export async function composeDraftForThread(
   } catch (e) { console.warn(`answer recall failed for ${thread.id}: ${(e as Error).message}`); }
 
   const draft = await draftReply(llm, store, cfg, {
-    agent, grounding, subject: thread.subject ?? '', conversation, latestMessage: latestInbound,
+    agent, grounding, subject: thread.subject ?? '', conversation: transcript, latestMessage: latestInbound,
     customerName: contact?.name ?? null, customerEmail: thread.contact_email, recall
   });
   if (!draft) return null; // degrade: retry next sweep
