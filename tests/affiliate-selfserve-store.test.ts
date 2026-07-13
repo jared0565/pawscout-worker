@@ -1,7 +1,9 @@
 /// <reference types="@cloudflare/vitest-pool-workers" />
 import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
-import { TenantStore, AFFILIATE_SCREEN_LLM_TASK, AFFILIATE_STAGE_APPROVED } from '../src/tenant-store';
+import {
+  TenantStore, AFFILIATE_SCREEN_LLM_TASK, AFFILIATE_STAGE_APPROVED, AFFILIATE_STAGE_DECLINED, AFFILIATE_STAGE_OWNER_QUEUE
+} from '../src/tenant-store';
 import {
   DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, DEFAULT_INBOX,
   DEFAULT_SELF_SERVE, type TenantConfig
@@ -106,6 +108,41 @@ describe('affiliate self-serve store layer (migration 0032)', () => {
 
       const all = await s.listApplicationsForConsole();
       expect(all.length).toBe(2);
+    });
+
+    it('listApplicationsForConsole never evicts an actionable row behind >100 more-recently-updated terminal rows', async () => {
+      const s = store();
+      // Seed via raw INSERTs (batched, not the store API) so updated_at is
+      // explicit and strictly increasing - insertApplication only stamps
+      // "now", which can't guarantee the owner_queue row sorts oldest when
+      // called in a tight loop. The owner_queue row is planted first, with
+      // an updated_at strictly older than every terminal row that follows;
+      // under the old `ORDER BY updated_at DESC LIMIT 100` it would rank
+      // 106th and fall off the list entirely.
+      const ownerQueueId = crypto.randomUUID();
+      const baseMs = Date.parse('2026-01-01T00:00:00.000Z');
+      const stmts = [
+        env.DB.prepare(
+          `INSERT INTO affiliate_applications (shop, id, email, name, channel_url, answers_json, stage, score, facts_json, flags_json, ip_hash, created_at, updated_at)
+           VALUES (?1, ?2, ?3, NULL, NULL, NULL, ?4, NULL, NULL, NULL, NULL, ?5, ?5)`
+        ).bind(SHOP, ownerQueueId, 'stuck@x.com', AFFILIATE_STAGE_OWNER_QUEUE, new Date(baseMs).toISOString())
+      ];
+      for (let i = 0; i < 105; i++) {
+        const ts = new Date(baseMs + 1000 + i * 1000).toISOString(); // strictly newer than the owner_queue row
+        stmts.push(
+          env.DB.prepare(
+            `INSERT INTO affiliate_applications (shop, id, email, name, channel_url, answers_json, stage, score, facts_json, flags_json, ip_hash, created_at, updated_at)
+             VALUES (?1, ?2, ?3, NULL, NULL, NULL, ?4, NULL, NULL, NULL, NULL, ?5, ?5)`
+          ).bind(SHOP, crypto.randomUUID(), `terminal${i}@x.com`, i % 2 === 0 ? AFFILIATE_STAGE_APPROVED : AFFILIATE_STAGE_DECLINED, ts)
+        );
+      }
+      await env.DB.batch(stmts);
+
+      const all = await s.listApplicationsForConsole(); // default limit 100
+      expect(all.length).toBe(100);
+      expect(all.map((r) => r.id)).toContain(ownerQueueId);
+      // The owner_queue row is the sole priority-0 row, so it sorts first.
+      expect(all[0].id).toBe(ownerQueueId);
     });
   });
 

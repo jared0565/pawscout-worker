@@ -115,6 +115,18 @@ describe('validateSelfServePayload', () => {
     expect(validateSelfServePayload({ ...VALID, scoreThreshold: -1 }).ok).toBe(false);
   });
 
+  it('rejects caps above the tightened ceilings (never clamps)', () => {
+    // Ceilings are well above the defaults (5 / GBP2 / 15) but far short of
+    // the old 1000/1000/10000, which left the daily auto-issue rate and LLM
+    // screening spend effectively unbounded.
+    expect(validateSelfServePayload({ ...VALID, autoIssueCapPerDay: 51 }).ok).toBe(false);
+    expect(validateSelfServePayload({ ...VALID, autoIssueCapPerDay: 50 }).ok).toBe(true);
+    expect(validateSelfServePayload({ ...VALID, screenSpendCapGbpPerDay: 21 }).ok).toBe(false);
+    expect(validateSelfServePayload({ ...VALID, screenSpendCapGbpPerDay: 20 }).ok).toBe(true);
+    expect(validateSelfServePayload({ ...VALID, starterUsageLimit: 101 }).ok).toBe(false);
+    expect(validateSelfServePayload({ ...VALID, starterUsageLimit: 100 }).ok).toBe(true);
+  });
+
   it('rejects a non-object body', () => {
     expect(validateSelfServePayload(null).ok).toBe(false);
     expect(validateSelfServePayload('nope').ok).toBe(false);

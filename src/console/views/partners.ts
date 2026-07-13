@@ -23,7 +23,7 @@ export const partnersView = `  <section class="card">
   <section class="card">
     <h2>Self-serve applications <button type="button" class="prt-info" onclick="openPartnerInfo(this)" data-prt-help="prt-help-apps" data-prt-help-title="How self-serve applications work" aria-label="How self-serve applications work">?</button></h2>
     <div id="prt-help-apps" hidden>
-      <p>People who apply through the self-serve form (below) are screened automatically when the funnel is enabled: a channel check plus a scored questionnaire. Most outcomes need no action from you - a strong application auto-issues a starter trial code and a weak one gets a polite decline email. Anything listed here needed a human decision: a former partner, today's auto-issue cap already reached, or a borderline score.</p>
+      <p>People who apply through the self-serve form (below) are screened automatically when the funnel is enabled: a channel check plus a scored questionnaire. Most outcomes need no action from you - a strong application auto-issues a starter trial code and a weak one gets a polite decline email. Applications awaiting a decision appear first (a former partner, today's auto-issue cap already reached, or a borderline score); recent processed applications follow.</p>
       <p>Approve anyway issues the exact same bounded starter trial as the automatic path (a percentage-off code with a usage cap), never an unlimited code. Decline sends the applicant the standard decline email and closes the application; it does not touch any code already issued to them.</p>
     </div>
     <div id="prt-app-list"></div>
@@ -43,11 +43,11 @@ export const partnersView = `  <section class="card">
     <div class="row">
       <div class="grow">
         <label for="prt-ss-cap">Auto-issue cap / day</label>
-        <input id="prt-ss-cap" type="number" min="0" max="1000" step="1">
+        <input id="prt-ss-cap" type="number" min="0" max="50" step="1">
       </div>
       <div class="grow">
         <label for="prt-ss-spend">Screening spend cap (£/day)</label>
-        <input id="prt-ss-spend" type="number" min="0" max="1000" step="0.1">
+        <input id="prt-ss-spend" type="number" min="0" max="20" step="0.1">
       </div>
       <div class="grow">
         <label for="prt-ss-score">Score threshold (0-12)</label>
@@ -55,7 +55,7 @@ export const partnersView = `  <section class="card">
       </div>
       <div class="grow">
         <label for="prt-ss-usage">Starter code usage limit</label>
-        <input id="prt-ss-usage" type="number" min="1" max="10000" step="1">
+        <input id="prt-ss-usage" type="number" min="1" max="100" step="1">
       </div>
     </div>
     <div class="row">

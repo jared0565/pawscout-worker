@@ -168,11 +168,14 @@ export function validateSelfServePayload(body: unknown): Validation<SelfServeCon
   }
   const b = body as Record<string, unknown>;
   if (typeof b.enabled !== 'boolean') return { ok: false, error: 'enabled must be true or false' };
+  // Ceilings sit close to the blast-radius defaults (5 / GBP2 / 8 / 15), not
+  // the old 1000/1000/10000 - those left the daily auto-issue rate and LLM
+  // screening spend effectively unbounded for a typo or a malicious PATCH.
   const ranges: [keyof Omit<SelfServeConfig, 'enabled'>, number, number][] = [
-    ['autoIssueCapPerDay', 0, 1000],
-    ['screenSpendCapGbpPerDay', 0, 1000],
+    ['autoIssueCapPerDay', 0, 50],
+    ['screenSpendCapGbpPerDay', 0, 20],
     ['scoreThreshold', 0, 12],
-    ['starterUsageLimit', 1, 10000]
+    ['starterUsageLimit', 1, 100]
   ];
   for (const [field, min, max] of ranges) {
     const v = b[field];

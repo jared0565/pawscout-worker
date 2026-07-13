@@ -2299,11 +2299,28 @@ export class TenantStore {
     return rs.results ?? [];
   }
 
-  /** Console table: every application, any stage, newest first. */
+  /** Console table: every application, any stage, actionable stages first.
+   *  A plain `ORDER BY updated_at DESC LIMIT n` would let a still-pending
+   *  owner_queue/deflected/approved_pending_issue row silently fall off the
+   *  list once >n OTHER (terminal) applications had updated more recently -
+   *  those rows are static (updated_at stops bumping until acted on), so they
+   *  age out even though nothing about them changed. Sorting actionable
+   *  stages to priority 0 keeps them visible for as long as their own count
+   *  stays under the limit; terminal stages (approved/declined/everything
+   *  else) fill the remaining slots as recent history, newest first. */
   async listApplicationsForConsole(limit = 100): Promise<AffiliateApplicationRow[]> {
     const rs = await this.db
-      .prepare(`SELECT * FROM affiliate_applications WHERE shop = ?1 ORDER BY updated_at DESC LIMIT ?2`)
-      .bind(this.shop, Math.min(Math.max(limit, 1), 500))
+      .prepare(
+        `SELECT * FROM affiliate_applications WHERE shop = ?1
+           ORDER BY
+             CASE stage WHEN ?3 THEN 0 WHEN ?4 THEN 0 WHEN ?5 THEN 0 ELSE 1 END ASC,
+             updated_at DESC
+           LIMIT ?2`
+      )
+      .bind(
+        this.shop, Math.min(Math.max(limit, 1), 500),
+        AFFILIATE_STAGE_OWNER_QUEUE, AFFILIATE_STAGE_DEFLECTED, AFFILIATE_STAGE_APPROVED_PENDING_ISSUE
+      )
       .all<AffiliateApplicationRow>();
     return rs.results ?? [];
   }
