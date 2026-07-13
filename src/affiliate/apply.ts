@@ -24,6 +24,7 @@ import { defaultFetch } from '../safe-fetch';
 import { sendEmail } from '../email';
 import { sanitizeOutbound } from '../inbox/draft';
 import { PARTNERSHIP_FROM } from '../inbox/partnership';
+import { hmacHex } from '../retention';
 import {
   validEmailSyntax, isDisposableDomain, isMainstreamEmailDomain, channelHostAllowed,
   honeypotOk, signTimestamp, verifyTimestamp, validateFields, type ApplicationFieldsInput
@@ -281,7 +282,11 @@ export async function handleAffiliateApply(deps: ApplyDeps): Promise<ApplyResult
   const ch = channelHostAllowed(channelUrlRaw);
   if (!ch.ok || !ch.host) return { status: 200, body: { ok: false, error: 'Please enter a valid channel URL.' } };
 
-  const ipHash = deps.ip ? await sha256Hex(deps.ip) : null;
+  // Minor fix (2026-07-13 final review): keyed HMAC, not a bare SHA-256 - a
+  // raw hash of an IP is brute-forceable offline (the whole IPv4 space is
+  // ~4 billion guesses) back to the plaintext address; keying with the
+  // worker's own Shopify app secret makes that infeasible without it.
+  const ipHash = deps.ip ? await hmacHex(deps.ip, env.SHOPIFY_API_SECRET) : null;
   const answersJson = JSON.stringify({ audience: fields.audience!.trim(), plan: fields.plan!.trim() });
   const flagsJson = JSON.stringify(dohFailOpen ? { doh_failopen: true } : {});
 
@@ -376,6 +381,17 @@ export async function renderApplyForm(cfg: TenantConfig, env: Env, nowMs: number
   }
   const tsToken = await signTimestamp(nowMs, env.SHOPIFY_API_SECRET);
   const siteKey = env.TURNSTILE_SITE_KEY ?? '';
+  // Fix 5 (2026-07-13 final review): the POST route's contract is (and stays)
+  // c.json({ok,...}) - required by the App Proxy / any future non-browser
+  // caller - but a plain <form method="post"> with no JS navigated a real
+  // applicant's browser straight to that raw JSON after submitting. This
+  // inline script intercepts the submit and renders the SAME body.message /
+  // body.error into #applyResult instead; the <noscript> fallback documents
+  // what still happens (a working, if unstyled, JSON response) if JS is off.
+  // Plain string concatenation, no backticks/${} inside the emitted script -
+  // this whole function body is itself a TS template literal (see
+  // docs/superpowers's console-page-template-literal-gotcha note / this
+  // repo's own src/console/page.ts convention).
   return `<!doctype html>
 <html>
 <head>
@@ -387,7 +403,8 @@ export async function renderApplyForm(cfg: TenantConfig, env: Env, nowMs: number
 <body>
 <h1>Join the Active Paw Partner Program</h1>
 <p>Tell us about your channel and how you would promote Active Paw. We review every application automatically, then by email.</p>
-<form method="post">
+<div id="applyResult" role="status" aria-live="polite"></div>
+<form method="post" id="applyForm">
   <p><label>Your name<br><input type="text" name="name" maxlength="120" required></label></p>
   <p><label>Email address<br><input type="email" name="email" maxlength="254" required></label></p>
   <p><label>Channel URL (blog, YouTube, Instagram, etc.)<br><input type="url" name="channel_url" maxlength="500" required></label></p>
@@ -401,6 +418,30 @@ export async function renderApplyForm(cfg: TenantConfig, env: Env, nowMs: number
   <div class="cf-turnstile" data-sitekey="${escHtml(siteKey)}"></div>
   <p><button type="submit">Apply</button></p>
 </form>
+<noscript><p>JavaScript is required to see a confirmation message here - your application is still received and processed normally either way.</p></noscript>
+<script>
+(function(){
+  var form = document.getElementById('applyForm');
+  var result = document.getElementById('applyResult');
+  if (!form || !result) { return; }
+  form.addEventListener('submit', function(evt){
+    evt.preventDefault();
+    var fd = new FormData(form);
+    fetch(window.location.href, { method: 'POST', body: fd }).then(function(r){
+      return r.json();
+    }).then(function(body){
+      var ok = !!(body && body.ok);
+      var text = ok ? (body.message || 'Thanks - check your email for next steps.') : (body && body.error) || 'Something went wrong. Please try again.';
+      result.textContent = text;
+      result.className = ok ? 'ok' : 'error';
+      if (ok) { form.style.display = 'none'; }
+    }).catch(function(){
+      result.textContent = 'Something went wrong. Please try again.';
+      result.className = 'error';
+    });
+  });
+})();
+</script>
 </body>
 </html>`;
 }

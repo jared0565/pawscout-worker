@@ -1691,6 +1691,10 @@ app.post('/proxy/affiliate/apply', async (c) => {
 // link (same single-active-shop resolution as /webhooks/resend and
 // handleInboundEmail above). `Referrer-Policy: no-referrer` on every response -
 // the page must never leak the (now-spent) token URL via a Referer header.
+// Gated on cfg.selfServe.enabled (minor fix, 2026-07-13 final review) for
+// symmetry with /affiliate/portal and /proxy/affiliate/apply, which already
+// refuse when the funnel is dark - this route previously did not check cfg
+// at all and would happily claim a token even with the funnel switched off.
 app.get('/affiliate/verify', async (c) => {
   const headers = { 'Referrer-Policy': 'no-referrer' } as const;
   try {
@@ -1698,6 +1702,8 @@ app.get('/affiliate/verify', async (c) => {
     const shop = shops[0];
     if (!shop) return c.html(AFFILIATE_VERIFY_EXPIRED_HTML, 200, headers);
     const store = new TenantStore(c.env.DB, shop);
+    const cfg = await store.getConfig();
+    if (!cfg?.selfServe?.enabled) return c.html(AFFILIATE_VERIFY_EXPIRED_HTML, 200, headers);
     const token = c.req.query('token') ?? '';
     const r = await handleAffiliateVerify(store, token);
     return c.html(r.html, 200, headers);

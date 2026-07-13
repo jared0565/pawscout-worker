@@ -159,6 +159,63 @@ describe('handlePortalLogin (core): no-enumeration', () => {
   });
 });
 
+// Fix 4 (2026-07-13 final review): the portal login route had no cooldown/
+// bot-gate at all - every POST for a live partner minted + emailed a fresh
+// 'login' token, unlike Task 3's apply route (which reuses RESEND_COOLDOWN_MS).
+describe('handlePortalLogin (core): cooldown (Fix 4)', () => {
+  it('two rapid logins for the same live partner send only ONE email; both responses are identical', async () => {
+    const s = store();
+    await s.upsertAffiliatePartner({ contactEmail: 'cooldown@example.com', name: 'Cooldown Partner' });
+    const sentEmails: { to: string; subject: string; text?: string }[] = [];
+    const nowMs = Date.now();
+
+    const first = await handlePortalLogin({
+      store: s, cfg: ENABLED_CFG, env: baseEnv(), email: 'cooldown@example.com',
+      fetchImpl: fakeFetch({ sentEmails }), nowMs
+    });
+    const second = await handlePortalLogin({
+      store: s, cfg: ENABLED_CFG, env: baseEnv(), email: 'cooldown@example.com',
+      fetchImpl: fakeFetch({ sentEmails }), nowMs: nowMs + 1000 // 1s later, well inside the cooldown window
+    });
+
+    expect(first.status).toBe(second.status);
+    expect(first.html).toBe(second.html);
+    expect(first.html).toBe(GENERIC_LOGIN_HTML);
+    expect(sentEmails).toHaveLength(1); // the second POST skipped issuing/emailing entirely
+  });
+
+  it('a login AFTER the cooldown window elapses issues a second token/email', async () => {
+    const s = store();
+    await s.upsertAffiliatePartner({ contactEmail: 'cooldown2@example.com', name: 'Cooldown Two' });
+    const sentEmails: { to: string; subject: string; text?: string }[] = [];
+    const nowMs = Date.now();
+
+    await handlePortalLogin({ store: s, cfg: ENABLED_CFG, env: baseEnv(), email: 'cooldown2@example.com', fetchImpl: fakeFetch({ sentEmails }), nowMs });
+    await handlePortalLogin({
+      store: s, cfg: ENABLED_CFG, env: baseEnv(), email: 'cooldown2@example.com',
+      fetchImpl: fakeFetch({ sentEmails }), nowMs: nowMs + 6 * 60_000 // 6 minutes later, past the ~5 min cooldown
+    });
+
+    expect(sentEmails).toHaveLength(2);
+  });
+
+  it('a non-partner still gets the identical uniform response and no email, even on a rapid repeat', async () => {
+    const s = store();
+    const sentEmails: { to: string; subject: string; text?: string }[] = [];
+    const nowMs = Date.now();
+
+    const first = await handlePortalLogin({ store: s, cfg: ENABLED_CFG, env: baseEnv(), email: 'nobody@example.com', fetchImpl: fakeFetch({ sentEmails }), nowMs });
+    const second = await handlePortalLogin({
+      store: s, cfg: ENABLED_CFG, env: baseEnv(), email: 'nobody@example.com',
+      fetchImpl: fakeFetch({ sentEmails }), nowMs: nowMs + 1000
+    });
+
+    expect(first.html).toBe(second.html);
+    expect(first.html).toBe(GENERIC_LOGIN_HTML);
+    expect(sentEmails).toHaveLength(0);
+  });
+});
+
 describe('handlePortalGet (core) + handlePortalData (core)', () => {
   async function seedPartner(email: string, code: string, opts: { gross: number; commission: number; paid?: number }) {
     const s = store();

@@ -10,6 +10,7 @@ import { signTimestamp, MIN_SUBMIT_MS } from '../src/affiliate/gates';
 import { handleAffiliateApply, renderApplyForm, mxExists, verifyTurnstile, GENERIC_APPLY_MESSAGE, RESEND_COOLDOWN_MS, type ApplyFields } from '../src/affiliate/apply';
 import { app } from '../src/index';
 import { signAppProxy } from '../src/proxy/verify';
+import { hmacHex } from '../src/retention';
 
 beforeEach(async () => { await applyD1Migrations(env.DB, env.TEST_MIGRATIONS); });
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
@@ -402,8 +403,11 @@ describe('handleAffiliateApply: rate limits (uniform response)', () => {
     const s = store();
     const now = Date.now();
     const ip = '77.77.77.77';
-    const ipHashBuf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(ip));
-    const ipHash = [...new Uint8Array(ipHashBuf)].map((b) => b.toString(16).padStart(2, '0')).join('');
+    // Minor fix (2026-07-13 final review): ip_hash is now a KEYED HMAC
+    // (hmacHex(ip, SHOPIFY_API_SECRET)), not a bare SHA-256 - a raw hash of
+    // an IP is brute-forceable offline back to the plaintext address across
+    // the whole IPv4 space. baseEnv()'s SHOPIFY_API_SECRET is SECRET.
+    const ipHash = await hmacHex(ip, SECRET);
     for (let i = 0; i < 5; i++) {
       await s.insertApplication({ email: `bulk${i}@example.com`, stage: 'submitted', ipHash });
     }
@@ -458,6 +462,21 @@ describe('handleAffiliateApply: happy path', () => {
     const dohCalls = calls.filter((u) => u.includes('cloudflare-dns.com'));
     expect(dohCalls).toHaveLength(1);
   });
+
+  // Minor fix (2026-07-13 final review): ip_hash is a keyed HMAC now, not a
+  // bare (brute-forceable) SHA-256 of the raw IP.
+  it('stores ip_hash as HMAC(ip, SHOPIFY_API_SECRET), not a bare SHA-256', async () => {
+    const s = store();
+    const ip = '9.9.9.9';
+    const fields = await validFields({ email: 'iphash@example.com' });
+    await handleAffiliateApply({ store: s, cfg: ENABLED_CFG, env: baseEnv(), fields, ip, nowMs: NOW, fetchImpl: fakeFetch() });
+
+    const row = await s.applicationByEmail('iphash@example.com');
+    expect(row?.ip_hash).toBe(await hmacHex(ip, SECRET));
+    const bareSha256Buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(ip));
+    const bareSha256 = [...new Uint8Array(bareSha256Buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
+    expect(row?.ip_hash).not.toBe(bareSha256);
+  });
 });
 
 describe('renderApplyForm', () => {
@@ -477,6 +496,45 @@ describe('renderApplyForm', () => {
     expect(match).toBeTruthy();
     const [tsMs] = match![1].split('.');
     expect(Number(tsMs)).toBe(NOW);
+  });
+
+  // Fix 5 (2026-07-13 final review): a plain <form method="post"> with no JS
+  // navigated the applicant's browser straight to the POST route's raw JSON
+  // body ({"ok":true,...}). The form now carries an id, a result container,
+  // an inline interceptor script, and a <noscript> fallback - WITHOUT
+  // changing the POST route's own JSON contract (the App Proxy needs 200
+  // {ok}; tests/affiliate-apply.test.ts's HTTP-level POST tests already cover
+  // that unchanged contract).
+  it('carries a submit-interceptor script, a result container, and a <noscript> fallback (no raw-JSON navigation)', async () => {
+    const html = await renderApplyForm(ENABLED_CFG, baseEnv(), NOW);
+    expect(html).toContain('id="applyForm"');
+    expect(html).toContain('id="applyResult"');
+    expect(html).toContain('<noscript>');
+    // The interceptor: prevents the default navigation, POSTs via fetch, and
+    // reads body.ok / body.message / body.error - never lets the browser
+    // navigate to the raw JSON response.
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).filter((s) => s.trim());
+    expect(scripts.length).toBeGreaterThan(0);
+    const body = scripts.join('\n');
+    expect(body).toContain('preventDefault');
+    expect(body).toContain("addEventListener('submit'");
+    expect(body).toContain('body.message');
+    expect(body).toContain('body.error');
+    // No backticks/${} in the emitted script (this repo's console/browser-JS
+    // convention - see src/console/page.ts) - plain string concatenation only.
+    expect(body).not.toContain('`');
+    expect(body).not.toMatch(/\$\{/);
+    // Syntactically valid JS (same guard tests/console.test.ts applies to
+    // src/console/page.ts's own inline script).
+    for (const s of scripts) {
+      expect(() => new Function('return (async function(){' + s + '\n})')).not.toThrow();
+    }
+  });
+
+  it('the dark-state page carries no interceptor script (no form to intercept)', async () => {
+    const html = await renderApplyForm(DISABLED_CFG, baseEnv(), NOW);
+    expect(html).not.toContain('id="applyForm"');
+    expect(html).not.toContain('<script>');
   });
 });
 

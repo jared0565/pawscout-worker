@@ -18,7 +18,7 @@
 // leaks the (now-spent) token URL to an external page via the Referer header.
 
 import type { TenantStore } from '../tenant-store';
-import { AFFILIATE_STAGE_VERIFIED } from '../tenant-store';
+import { AFFILIATE_STAGE_SUBMITTED, AFFILIATE_STAGE_VERIFIED } from '../tenant-store';
 import { sha256Hex } from './apply';
 
 export const EXPIRED_HTML =
@@ -39,6 +39,19 @@ export interface VerifyResult { status: number; html: string }
  * Always resolves - never throws past the caller - so the route can always
  * return 200 with the generic expired page on any unexpected failure (D1
  * hiccup, malformed token), matching the no-enumeration contract.
+ *
+ * The stage advance is CONDITIONAL (submitted -> verified only, Fix 1 -
+ * 2026-07-13 final review): apply.ts's resend path can mint a SECOND valid
+ * verify token for an application that has already left `submitted`
+ * (verified/judging/approved_pending_issue are all resendable stages). If
+ * that older token is later claimed - after the application has since been
+ * screened all the way to `approved` (a live voucher already issued and
+ * emailed) - claiming it must NEVER demote the row back to `verified` and
+ * queue it for reprocessing (a second, salted voucher mint). The token is
+ * still consumed (single-use) either way, and the SAME success page is
+ * always shown - whether this claim genuinely verified the email or was a
+ * no-op against an already-advanced row is never distinguishable to the
+ * caller.
  */
 export async function handleAffiliateVerify(store: TenantStore, tokenRaw: string): Promise<VerifyResult> {
   try {
@@ -47,7 +60,7 @@ export async function handleAffiliateVerify(store: TenantStore, tokenRaw: string
     const tokenHash = await sha256Hex(token);
     const applicationId = await store.claimToken(tokenHash, 'verify');
     if (!applicationId) return { status: 200, html: EXPIRED_HTML };
-    await store.updateApplicationStage(applicationId, AFFILIATE_STAGE_VERIFIED);
+    await store.advanceApplicationStage(applicationId, AFFILIATE_STAGE_SUBMITTED, AFFILIATE_STAGE_VERIFIED);
     return { status: 200, html: VERIFIED_HTML };
   } catch (e) {
     console.warn(`[affiliate-verify] failed: ${(e as Error).message}`);

@@ -2,15 +2,18 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
 import {
-  TenantStore, AFFILIATE_STAGE_VERIFIED, AFFILIATE_STAGE_APPROVED, AFFILIATE_STAGE_APPROVED_PENDING_ISSUE,
-  AFFILIATE_STAGE_DEFLECTED, AFFILIATE_STAGE_DECLINED, AFFILIATE_STAGE_OWNER_QUEUE, type AffiliateApplicationRow
+  TenantStore, AFFILIATE_STAGE_SUBMITTED, AFFILIATE_STAGE_VERIFIED, AFFILIATE_STAGE_JUDGING, AFFILIATE_STAGE_APPROVED,
+  AFFILIATE_STAGE_APPROVED_PENDING_ISSUE, AFFILIATE_STAGE_DEFLECTED, AFFILIATE_STAGE_DECLINED, AFFILIATE_STAGE_OWNER_QUEUE,
+  type AffiliateApplicationRow
 } from '../src/tenant-store';
 import {
   DEFAULT_GATES, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, DEFAULT_INBOX,
   type TenantConfig, type Env
 } from '../src/types';
 import { LlmClient } from '../src/llm';
-import { screenOneApplication, retryPendingIssue, judgeChannel, type ScreenDeps } from '../src/affiliate/screen';
+import {
+  screenOneApplication, retryPendingIssue, issueOrQueue, judgeChannel, runAffiliateScreenSweep, type ScreenDeps
+} from '../src/affiliate/screen';
 import { sha256Hex } from '../src/affiliate/apply';
 import { handleAffiliateVerify, EXPIRED_HTML, VERIFIED_HTML } from '../src/affiliate/verify';
 import { app } from '../src/index';
@@ -194,7 +197,8 @@ describe('screenOneApplication', () => {
     expect(vouchers[0].contact_email).toBe('happy@example.com');
     expect(vouchers[0].pct_off).toBe(5);
     expect(vouchers[0].commission_pct).toBe(2);
-    // upsertAffiliatePartner({..., channelUrl}) ran BEFORE issueVoucher.
+    // upsertAffiliatePartner({..., channelUrl}) ran AFTER issueVoucher
+    // succeeded (Fix 2, 2026-07-13 final review) - still attached either way.
     expect(vouchers[0].channel_url).toBe('https://instagram.com/happystar');
     const approval = sentEmails.find((e) => e.to === 'happy@example.com');
     expect(approval).toBeTruthy();
@@ -376,6 +380,156 @@ describe('screenOneApplication', () => {
     expect(adminCalled).toBe(false);
     expect(await s.listAffiliateVouchers()).toHaveLength(0);
     expect(sentEmails.some((e) => e.to === 'crashy@example.com')).toBe(false);
+  });
+
+  // Fix 1b + Fix 3 (2026-07-13 final review), working together: a throw
+  // AFTER issueVoucher has already succeeded (the Shopify code + D1 voucher
+  // genuinely exist) but BEFORE the application row reaches 'approved' must
+  // (a) leave the row reprocessable at 'verified', not stranded and not
+  // wrongly marked 'approved' (Fix 3's CONDITIONAL catch-reset - the row was
+  // still 'judging' at the moment of the throw), and (b) never mint a SECOND
+  // salted code when that row is reprocessed on a later tick (Fix 1b's
+  // shared reconcileLiveVoucher guard, now baked into issueOrQueue itself).
+  it('a throw after a successful mint (but before the approved write) never double-mints on reprocessing', async () => {
+    const s = store();
+    const application = await seedApp(s, { email: 'postissue@example.com', name: 'Post Issue' });
+    const sentEmails: SentEmail[] = [];
+    const fetchImpl = fakeFetch({ judgeVerdict: 'pass', factsRaw: STRONG_FACTS, sentEmails });
+    const llm = new LlmClient({ openrouter: 'k' }, fetchImpl);
+    let createCalls = 0;
+    const innerAdmin = fakeAdmin();
+    const admin: AdminGraphql = (async (q: string, vars?: Record<string, unknown>) => {
+      if (q.includes('pawscoutVoucherCreate')) createCalls++;
+      return (innerAdmin as unknown as (q: string, vars?: Record<string, unknown>) => Promise<Record<string, unknown>>)(q, vars);
+    }) as unknown as AdminGraphql;
+
+    // Make issueOrQueue's POST-issuance upsertAffiliatePartner call (Fix 2 -
+    // the one that attaches channel_url after a successful mint) throw on its
+    // SECOND invocation - the FIRST is issueVoucher's own internal upsert,
+    // which must succeed for the voucher to be created at all.
+    let upsertCalls = 0;
+    const originalUpsert = s.upsertAffiliatePartner.bind(s);
+    (s as unknown as { upsertAffiliatePartner: TenantStore['upsertAffiliatePartner'] }).upsertAffiliatePartner =
+      async (...args: Parameters<TenantStore['upsertAffiliatePartner']>) => {
+        upsertCalls++;
+        if (upsertCalls === 2) throw new Error('simulated D1 hiccup after issuance');
+        return originalUpsert(...args);
+      };
+    const deps: ScreenDeps = { env: baseEnv(), store: s, cfg: CFG, llm, admin, fetchImpl };
+
+    await expect(screenOneApplication(deps, application)).rejects.toThrow('simulated D1 hiccup after issuance');
+
+    // Tick 1: the voucher genuinely exists (Shopify + D1), but the app row is
+    // back at 'verified' - not stranded, and NOT wrongly marked 'approved'.
+    const afterTick1 = await s.getApplication(application.id);
+    expect(afterTick1!.stage).toBe(AFFILIATE_STAGE_VERIFIED);
+    expect(await s.listAffiliateVouchers()).toHaveLength(1);
+    expect(createCalls).toBe(1);
+    expect(sentEmails.some((e) => e.to === 'postissue@example.com')).toBe(false); // no approval email yet
+
+    // Tick 2: restore normal upsert behaviour and reprocess the SAME row from
+    // scratch (the acknowledged cost of the conditional reset re-scrapes/
+    // re-judges/re-scores) - Fix 1b's guard must find the live voucher FIRST
+    // and reconcile, never touching Shopify's create mutation again.
+    (s as unknown as { upsertAffiliatePartner: TenantStore['upsertAffiliatePartner'] }).upsertAffiliatePartner = originalUpsert;
+    const deps2: ScreenDeps = { env: baseEnv(), store: s, cfg: CFG, llm, admin, fetchImpl };
+    await screenOneApplication(deps2, afterTick1!);
+
+    const afterTick2 = await s.getApplication(application.id);
+    expect(afterTick2!.stage).toBe(AFFILIATE_STAGE_APPROVED);
+    expect(await s.listAffiliateVouchers()).toHaveLength(1); // still exactly one - never double-minted
+    expect(createCalls).toBe(1); // Shopify's createVoucherDiscount was NEVER called again
+    const approvals = sentEmails.filter((e) => e.to === 'postissue@example.com');
+    expect(approvals).toHaveLength(1); // approval email sent exactly once, on the reconcile tick
+  });
+});
+
+describe('issueOrQueue (Fix 1b: shared live-voucher reconcile guard)', () => {
+  it('reconciles instead of minting a second code when a live voucher already exists for this email', async () => {
+    const s = store();
+    const partnerId = await s.upsertAffiliatePartner({ contactEmail: 'guard0@example.com', name: 'Guard Zero' });
+    await s.createAffiliateVoucher({
+      partnerId, code: 'ACTIVEPAW-GUARD05', pctOff: 5, commissionPct: 2,
+      endsAt: new Date(Date.now() + 30 * 86_400_000).toISOString(), usageLimit: 15
+    });
+    const application = await seedApp(s, { email: 'guard0@example.com', name: 'Guard Zero', stage: AFFILIATE_STAGE_VERIFIED });
+    const sentEmails: SentEmail[] = [];
+    const fetchImpl = fakeFetch({ sentEmails });
+    let createCalled = false;
+    const admin: AdminGraphql = (async (q: string) => {
+      if (q.includes('pawscoutVoucherCreate')) createCalled = true;
+      return {};
+    }) as unknown as AdminGraphql;
+    const deps: ScreenDeps = { env: baseEnv(), store: s, cfg: CFG, llm: new LlmClient({}, fetchImpl), admin, fetchImpl };
+
+    await issueOrQueue(deps, application, { score: 10, factsJson: '{}' });
+
+    expect(createCalled).toBe(false); // never even attempted a Shopify create
+    expect(await s.listAffiliateVouchers()).toHaveLength(1); // still just one code
+    const updated = await s.getApplication(application.id);
+    expect(updated!.stage).toBe(AFFILIATE_STAGE_APPROVED);
+    const approval = sentEmails.find((e) => e.to === 'guard0@example.com');
+    expect(approval).toBeTruthy();
+    expect(approval!.text).toContain('ACTIVEPAW-GUARD05');
+  });
+
+  it('proceeds with normal issuance when no live voucher exists for this email', async () => {
+    const s = store();
+    const application = await seedApp(s, { email: 'guard0-fresh@example.com', stage: AFFILIATE_STAGE_VERIFIED });
+    const sentEmails: SentEmail[] = [];
+    const fetchImpl = fakeFetch({ sentEmails });
+    const admin = fakeAdmin();
+    const deps: ScreenDeps = { env: baseEnv(), store: s, cfg: CFG, llm: new LlmClient({}, fetchImpl), admin, fetchImpl };
+
+    await issueOrQueue(deps, application, { score: 10, factsJson: '{}' });
+
+    const vouchers = await s.listAffiliateVouchers();
+    expect(vouchers).toHaveLength(1);
+    expect(vouchers[0].contact_email).toBe('guard0-fresh@example.com');
+    const updated = await s.getApplication(application.id);
+    expect(updated!.stage).toBe(AFFILIATE_STAGE_APPROVED);
+  });
+});
+
+describe('issueOrQueue / retryPendingIssue (Fix 2: partner upsert deferred until AFTER a successful mint)', () => {
+  it('a transient issueVoucher failure creates NO partner row - partnerPoolState never reads "former", and a later working retry actually issues (not owner_queue)', async () => {
+    const s = store();
+    const application = await seedApp(s, { email: 'transient@example.com', name: 'Transient Star' });
+    const sentEmails: SentEmail[] = [];
+    const fetchImpl = fakeFetch({ judgeVerdict: 'pass', factsRaw: STRONG_FACTS, sentEmails });
+    const llm = new LlmClient({ openrouter: 'k' }, fetchImpl);
+    const failingAdmin = fakeAdmin({ createError: 'Shopify temporarily unavailable' });
+    const deps: ScreenDeps = { env: baseEnv(), store: s, cfg: CFG, llm, admin: failingAdmin, fetchImpl };
+
+    await screenOneApplication(deps, application);
+
+    const afterTick1 = await s.getApplication(application.id);
+    expect(afterTick1!.stage).toBe(AFFILIATE_STAGE_APPROVED_PENDING_ISSUE);
+    expect(JSON.parse(afterTick1!.flags_json ?? '{}').lastIssueError).toBe('Shopify temporarily unavailable');
+    expect(await s.listAffiliateVouchers()).toHaveLength(0);
+    // The bug this fix closes: pre-fix, upsertAffiliatePartner ran BEFORE
+    // issueVoucher, so a failed attempt still left a 0-voucher partner row
+    // behind - partnerPoolState() then read THAT as 'former' (status !=
+    // 'queued', live count 0), and the next tick's retryPendingIssue bounced
+    // straight to owner_queue on a false "former partner" alert instead of
+    // actually retrying.
+    expect(await s.partnerPoolState('transient@example.com')).toBe('none'); // no partner row at all yet
+    expect(await s.partnerPoolState('transient@example.com')).not.toBe('former');
+
+    // Tick 2: a WORKING admin now - retryPendingIssue must actually retry and
+    // succeed, reaching 'approved', not bounce to owner_queue.
+    const workingAdmin = fakeAdmin();
+    const deps2: ScreenDeps = { env: baseEnv(), store: s, cfg: CFG, llm, admin: workingAdmin, fetchImpl };
+    await retryPendingIssue(deps2, afterTick1!);
+
+    const afterTick2 = await s.getApplication(application.id);
+    expect(afterTick2!.stage).toBe(AFFILIATE_STAGE_APPROVED);
+    const vouchers = await s.listAffiliateVouchers();
+    expect(vouchers).toHaveLength(1);
+    expect(vouchers[0].contact_email).toBe('transient@example.com');
+    expect(vouchers[0].channel_url).toBe('https://petstar.example.com'); // seedApp's default, still attached post-issuance
+    const approval = sentEmails.find((e) => e.to === 'transient@example.com');
+    expect(approval).toBeTruthy();
   });
 });
 
@@ -587,10 +741,20 @@ describe('judgeChannel', () => {
   });
 });
 
+/** upsertTenant + a persisted, selfServe.enabled=true config - the route
+ *  (src/index.ts's /affiliate/verify) now gates on cfg.selfServe.enabled
+ *  (minor fix, 2026-07-13 final review), so every HTTP-level test that
+ *  expects the route to actually run needs this. */
+async function seedActiveEnabledTenant(s: TenantStore): Promise<void> {
+  await s.upsertTenant({ accessTokenEnc: 'tok', dekWrapped: 'd', scopes: 's' });
+  await s.seedConfig(CFG);
+  await s.saveSelfServe(CFG.selfServe!);
+}
+
 describe('GET /affiliate/verify (HTTP level)', () => {
   it('a valid, unused token verifies the application and sets Referrer-Policy: no-referrer', async () => {
     const s = store();
-    await s.upsertTenant({ accessTokenEnc: 'tok', dekWrapped: 'd', scopes: 's' });
+    await seedActiveEnabledTenant(s);
     const application = await seedApp(s, { email: 'link@example.com' });
     const raw = 'a'.repeat(64);
     const tokenHash = await sha256Hex(raw);
@@ -608,7 +772,7 @@ describe('GET /affiliate/verify (HTTP level)', () => {
 
   it('a used or unknown token renders the generic expired page (no enumeration)', async () => {
     const s = store();
-    await s.upsertTenant({ accessTokenEnc: 'tok', dekWrapped: 'd', scopes: 's' });
+    await seedActiveEnabledTenant(s);
     const application = await seedApp(s, { email: 'used@example.com' });
     const raw = 'b'.repeat(64);
     const tokenHash = await sha256Hex(raw);
@@ -626,6 +790,26 @@ describe('GET /affiliate/verify (HTTP level)', () => {
     const unknown = await app.request(`/affiliate/verify?token=${'c'.repeat(64)}`, {}, baseEnv());
     expect(await unknown.text()).toBe(EXPIRED_HTML);
   });
+
+  // Minor fix (2026-07-13 final review): gated on cfg.selfServe.enabled, for
+  // symmetry with /affiliate/portal and /proxy/affiliate/apply.
+  it('refuses (generic expired page) when selfServe.enabled is false, even for a valid token', async () => {
+    const s = store();
+    await s.upsertTenant({ accessTokenEnc: 'tok', dekWrapped: 'd', scopes: 's' });
+    await s.seedConfig(CFG); // no saveSelfServe -> merges to DEFAULT_SELF_SERVE (enabled: false)
+    const application = await seedApp(s, { email: 'dark@example.com' });
+    const raw = 'e'.repeat(64);
+    const tokenHash = await sha256Hex(raw);
+    await s.insertToken({ tokenHash, kind: 'verify', subjectId: application.id, expiresAt: new Date(Date.now() + 3600_000).toISOString() });
+
+    const res = await app.request(`/affiliate/verify?token=${raw}`, {}, baseEnv());
+
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe(EXPIRED_HTML);
+    // The token was never claimed - still unused, and the application untouched.
+    const updated = await s.getApplication(application.id);
+    expect(updated!.stage).toBe(AFFILIATE_STAGE_VERIFIED); // seedApp's own default, unchanged
+  });
 });
 
 describe('handleAffiliateVerify (core)', () => {
@@ -642,5 +826,68 @@ describe('handleAffiliateVerify (core)', () => {
     const s = store();
     const r = await handleAffiliateVerify(s, '');
     expect(r).toEqual({ status: 200, html: EXPIRED_HTML });
+  });
+
+  // Fix 1 (2026-07-13 final review): the stage advance is CONDITIONAL
+  // (submitted -> verified only). apply.ts's resend path can mint a SECOND
+  // valid verify token for an application that has already left 'submitted'
+  // (see NON_TERMINAL_RESEND_STAGES); claiming that older token AFTER the
+  // application has since been screened all the way to 'approved' (a live
+  // voucher already issued and emailed) must never demote it back to
+  // 'verified' for reprocessing.
+  it('a valid token claimed against an ALREADY-ADVANCED application (e.g. approved) does not demote it', async () => {
+    const s = store();
+    const partnerId = await s.upsertAffiliatePartner({ contactEmail: 'already-approved@example.com', name: 'Already Approved' });
+    await s.createAffiliateVoucher({
+      partnerId, code: 'ACTIVEPAW-ALREADY5', pctOff: 5, commissionPct: 2,
+      endsAt: new Date(Date.now() + 30 * 86_400_000).toISOString(), usageLimit: 15
+    });
+    const application = await seedApp(s, { email: 'already-approved@example.com', stage: AFFILIATE_STAGE_APPROVED });
+    await s.updateApplicationStage(application.id, AFFILIATE_STAGE_APPROVED, { score: 11 });
+    const raw = 'f'.repeat(64);
+    const tokenHash = await sha256Hex(raw);
+    // A genuinely unclaimed, unexpired token (e.g. a duplicate resend from
+    // before the application progressed) still pointing at this application.
+    await s.insertToken({ tokenHash, kind: 'verify', subjectId: application.id, expiresAt: new Date(Date.now() + 3600_000).toISOString() });
+
+    const r = await handleAffiliateVerify(s, raw);
+
+    // Same success page either way - never a distinguishable response.
+    expect(r).toEqual({ status: 200, html: VERIFIED_HTML });
+    const updated = await s.getApplication(application.id);
+    expect(updated!.stage).toBe(AFFILIATE_STAGE_APPROVED); // NOT demoted to 'verified'
+    expect(updated!.score).toBe(11); // untouched
+    expect(await s.listAffiliateVouchers()).toHaveLength(1); // still just the one voucher
+    // The token itself is still consumed (single-use) - a replay of the SAME
+    // raw token is now the ordinary "already used" outcome.
+    expect(await handleAffiliateVerify(s, raw)).toEqual({ status: 200, html: EXPIRED_HTML });
+  });
+});
+
+describe('runAffiliateScreenSweep (Fix 3: judging reclaim wiring)', () => {
+  it('reclaims a stale judging row back to verified and reprocesses it within the SAME tick', async () => {
+    const s = store();
+    await s.upsertTenant({ accessTokenEnc: 'tok', dekWrapped: 'd', scopes: 's' });
+    await s.seedConfig(CFG);
+    await s.saveSelfServe(CFG.selfServe!);
+    // No channel_url -> screenOneApplication skips the scrape entirely (see
+    // step 2's `app.channel_url ? ... : null`) -> no judge -> deflects. No
+    // RESEND_API_KEY/FIRECRAWL_API_KEY below -> zero outbound network calls
+    // anywhere in this tick, so a real (unmocked) global fetch is safe here -
+    // this test proves the WIRING (the sweep actually calls
+    // reclaimStaleJudging and the reclaimed row is picked up THE SAME tick),
+    // not the store method's own SQL (covered directly in
+    // tests/affiliate-selfserve-store.test.ts).
+    const application = await seedApp(s, { email: 'stuck-judging@example.com', channelUrl: '', stage: AFFILIATE_STAGE_JUDGING });
+    await env.DB.prepare(`UPDATE affiliate_applications SET updated_at = ?3 WHERE shop = ?1 AND id = ?2`)
+      .bind(SHOP, application.id, '2020-01-01T00:00:00.000Z').run();
+
+    const sweepEnv = baseEnv({ RESEND_API_KEY: undefined, FIRECRAWL_API_KEY: undefined });
+    await runAffiliateScreenSweep(sweepEnv);
+
+    const updated = await s.getApplication(application.id);
+    // Reclaimed out of 'judging' AND reprocessed within this same tick
+    // (never left sitting at 'verified' waiting for a follow-up tick).
+    expect(updated!.stage).toBe(AFFILIATE_STAGE_DEFLECTED);
   });
 });

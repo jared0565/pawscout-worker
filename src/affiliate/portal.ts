@@ -30,7 +30,7 @@
 import type { Env, TenantConfig } from '../types';
 import { DEFAULT_SELF_SERVE } from '../types';
 import type { TenantStore, PartnerPortalSummary } from '../tenant-store';
-import { sha256Hex, issueLoginLink } from './apply';
+import { sha256Hex, issueLoginLink, RESEND_COOLDOWN_MS } from './apply';
 import { defaultFetch } from '../safe-fetch';
 
 // --- Session cookie: HMAC(partnerId|expiry), keyed with the worker's own
@@ -194,6 +194,17 @@ export interface PortalLoginResult { status: number; html: string }
  * email a magic link. ALWAYS returns the exact same 200 body regardless of
  * whether the email matched a partner, was empty, or the D1/email call
  * threw - no-enumeration contract, identical to handleAffiliateApply's own.
+ *
+ * COOLDOWN (Fix 4, 2026-07-13 final review): unlike apply.ts's verify-token
+ * resend (Task 3), this route had no cooldown/bot-gate at all - every POST
+ * for a live partner minted+emailed a fresh token. Before issuing, check for
+ * an unexpired UNCLAIMED 'login' token issued within the last
+ * RESEND_COOLDOWN_MS (reusing apply.ts's own constant - one cooldown window
+ * for the whole self-serve funnel) for this partner; if one exists, skip
+ * re-issuing/re-emailing entirely but STILL return the identical uniform
+ * response, so a rapid double-submit (or a scripted hammer) is silently
+ * absorbed rather than flooding the partner's inbox or acting as an
+ * enumeration oracle.
  */
 export async function handlePortalLogin(deps: PortalLoginDeps): Promise<PortalLoginResult> {
   const sc = deps.cfg?.selfServe ?? DEFAULT_SELF_SERVE;
@@ -206,7 +217,11 @@ export async function handlePortalLogin(deps: PortalLoginDeps): Promise<PortalLo
     if (email) {
       const partnerId = await deps.store.partnerIdByEmail(email);
       if (partnerId) {
-        await issueLoginLink(deps.store, deps.env, partnerId, '', email, fetchImpl, nowMs);
+        const sinceIso = new Date(nowMs - RESEND_COOLDOWN_MS).toISOString();
+        const recent = await deps.store.recentUnclaimedToken(partnerId, 'login', sinceIso);
+        if (!recent) {
+          await issueLoginLink(deps.store, deps.env, partnerId, '', email, fetchImpl, nowMs);
+        }
       }
     }
   } catch (e) {

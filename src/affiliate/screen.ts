@@ -64,6 +64,13 @@ const NO_END_DATE_RE = /no end date/i;
  *  always true). 24 ticks at 15 minutes each is roughly once every 6 hours. */
 const PERSISTENT_ALERT_REPEAT_EVERY_TICKS = 24;
 
+/** Isolate-death reclaim window (Fix 3, 2026-07-13 final review) - see
+ *  TenantStore.reclaimStaleJudging's doc comment. 2h is comfortably longer
+ *  than any single screen pass (scrape + 2 LLM calls + Shopify writes) could
+ *  legitimately take, so a row still at `judging` past this age can only be
+ *  an orphan (the isolate that set it died before its own catch could run). */
+const JUDGING_RECLAIM_MS = 2 * 60 * 60 * 1000;
+
 interface AppFlags { spendCapHit?: boolean; issueAttempts?: number; lastIssueError?: string; channelJudge?: string; reason?: string }
 
 function parseFlags(raw: string | null): AppFlags {
@@ -353,18 +360,72 @@ export async function screenOneApplication(deps: ScreenDeps, app: AffiliateAppli
     // Never leave a row stranded at `judging` - reprocess from `verified` on
     // the next tick. score/facts/flags from an earlier successful pass (if
     // any) are left untouched (updateApplicationStage COALESCEs).
-    await store.updateApplicationStage(app.id, AFFILIATE_STAGE_VERIFIED);
+    //
+    // CONDITIONAL reset (Fix 3, 2026-07-13 final review): only reset when the
+    // row is STILL at `judging`. If the throw happened AFTER issueOrQueue
+    // already advanced the row past `judging` (e.g. to `approved`, or
+    // `approved_pending_issue` on a partial issuance failure, or a later
+    // unrelated throw), an unconditional reset here would demote an
+    // already-approved application back to `verified` and cause the next
+    // tick to reprocess (and, pre-Fix-1b, mint a second salted voucher) an
+    // application that already succeeded. advanceApplicationStage's CAS
+    // (WHERE stage = 'judging') makes this a no-op in that case - reconciling
+    // any residual double-processing risk falls to issueOrQueue's own
+    // reconcileLiveVoucher guard (Fix 1b) if a reprocessed row still somehow
+    // gets this far.
+    await store.advanceApplicationStage(app.id, AFFILIATE_STAGE_JUDGING, AFFILIATE_STAGE_VERIFIED);
     throw e;
   }
 }
 
 /**
+ * Shared "a live D1 voucher already exists for this applicant" recovery
+ * (Fix 1b, 2026-07-13 final review - previously only reachable via
+ * `retryPendingIssue`'s own "guard 1"): if one is found, reconcile the
+ * application row to `approved` and (re)send the SAME existing code -
+ * NEVER mint a second, salted code. Returns true when it handled the
+ * application (the caller must return immediately without touching Shopify);
+ * false means no live voucher was found and the caller should proceed with
+ * its own issuance flow.
+ *
+ * Called as the very first step of `issueOrQueue` itself, so EVERY caller -
+ * a fresh pass (`screenOneApplication`), a stranded-row retry
+ * (`retryPendingIssue`'s own fallthrough), AND the console's owner-override
+ * "approve anyway" (`declineApplication`'s sibling in console.ts) - is
+ * protected, closing the gap where only the retry path had this defence.
+ * `retryPendingIssue` ALSO calls this explicitly, before its own former-
+ * partner/cap/double-mint guards (unchanged ordering from before this fix) -
+ * recovering bookkeeping for an already-live voucher must never be blocked by
+ * the daily auto-issue cap, and must never fall through to the double-mint
+ * guard's own Shopify lookup.
+ */
+async function reconcileLiveVoucher(
+  deps: ScreenDeps, app: AffiliateApplicationRow, scored: { score: number | null; factsJson: string | null }
+): Promise<boolean> {
+  const { env, store, fetchImpl } = deps;
+  const poolState = await store.partnerPoolState(app.email);
+  if (poolState !== 'live') return false;
+  const mine = (await store.listAffiliateVouchers())
+    .find((v) => v.status === 'live' && v.contact_email === app.email.trim().toLowerCase());
+  if (!mine) return false;
+  await store.updateApplicationStage(app.id, AFFILIATE_STAGE_APPROVED, { score: scored.score, factsJson: scored.factsJson });
+  const body = buildVoucherInviteWithCode(app.name, {
+    code: mine.code, pctOff: mine.pct_off, commissionPct: mine.commission_pct,
+    startsAtLabel: voucherDateLabel(mine.starts_at), endsAtLabel: voucherDateLabel(mine.ends_at),
+    deferred: Date.parse(mine.starts_at) > Date.now()
+  });
+  await sendApplicantEmail(env, app.email, { subject: APPROVAL_SUBJECT, html: renderReplyHtml(body), text: body }, fetchImpl);
+  return true;
+}
+
+/**
  * The issuance step, shared by the first pass (fresh, just-scored
- * applications) and `retryPendingIssue` (a later tick retrying a stranded
- * `approved_pending_issue` row). Deliberately narrow: it never re-scrapes,
- * re-judges, or re-scores - only Shopify issuance is retried, so a transient
- * failure can never flip an already-approved applicant to `deflected` on a
- * fresh (possibly different) LLM roll, and never burns extra screening spend.
+ * applications), `retryPendingIssue` (a later tick retrying a stranded
+ * `approved_pending_issue` row), and the console's owner-override
+ * "approve anyway". Deliberately narrow: it never re-scrapes, re-judges, or
+ * re-scores - only Shopify issuance is retried, so a transient failure can
+ * never flip an already-approved applicant to `deflected` on a fresh
+ * (possibly different) LLM roll, and never burns extra screening spend.
  */
 export async function issueOrQueue(
   deps: ScreenDeps, app: AffiliateApplicationRow, scored: { score: number | null; factsJson: string }
@@ -372,6 +433,9 @@ export async function issueOrQueue(
   const { env, store, cfg, admin, fetchImpl } = deps;
   const sc = cfg.selfServe ?? DEFAULT_SELF_SERVE;
   const { score, factsJson } = scored;
+
+  // Guard 0 (Fix 1b) - see reconcileLiveVoucher's doc comment above.
+  if (await reconcileLiveVoucher(deps, app, scored)) return;
 
   if (!admin) {
     const flags = parseFlags(app.flags_json);
@@ -387,12 +451,14 @@ export async function issueOrQueue(
     return;
   }
 
-  // Register the partner (with channelUrl) BEFORE issuing - issueVoucher's own
-  // internal upsert only ever sets {contactEmail, name}, so this is the one
-  // place channel_url reaches the partner row. issueVoucher's later upsert
-  // re-matches the same row by email and COALESCEs channel_url, leaving it
-  // untouched.
-  await store.upsertAffiliatePartner({ contactEmail: app.email, name: app.name, channelUrl: app.channel_url });
+  // Fix 2 (2026-07-13 final review): do NOT register the partner row before
+  // issuing. upsertAffiliatePartner previously ran here, before issueVoucher -
+  // on ANY issuance failure (ok:false), that left a partner row behind with
+  // ZERO vouchers, which partnerPoolState() then reads as 'former' (status
+  // not 'queued', live count 0). The NEXT tick's retryPendingIssue immediately
+  // hit its own "never silently re-issue a former partner" guard and bounced
+  // the row to owner_queue with a false "former partner" alert - the real
+  // retry path was structurally unreachable for every transient failure.
   const issued = await issueVoucher(store, admin, {
     email: app.email, name: app.name, pctOff: TRIAL_PCT_OFF_DEFAULT, commissionPct: STANDARD_COMMISSION_PCT,
     usageLimit: sc.starterUsageLimit
@@ -406,7 +472,8 @@ export async function issueOrQueue(
       score, factsJson,
       flagsJson: JSON.stringify({ ...flags, issueAttempts: attempts, lastIssueError: issued.error })
     });
-    // Never email the applicant here - the voucher does not exist yet.
+    // Never email the applicant here - the voucher does not exist yet, and
+    // (Fix 2) no partner row was created either.
     // Persistent (no-end-date) blocks alert on attempt 1, then only every
     // Nth tick after that - it cannot resolve on its own, so a plain
     // "persistent" check would otherwise re-alert on EVERY 15-minute tick
@@ -423,7 +490,12 @@ export async function issueOrQueue(
     return;
   }
 
-  // The voucher now genuinely exists - only now is it safe to email the code.
+  // The voucher now genuinely exists - only now is it safe to register the
+  // partner (with channelUrl - issueVoucher's own internal upsert only ever
+  // sets {contactEmail, name}, so this is the one place channel_url reaches
+  // the partner row; COALESCEs, leaving an existing value untouched) and
+  // email the code.
+  await store.upsertAffiliatePartner({ contactEmail: app.email, name: app.name, channelUrl: app.channel_url });
   await store.updateApplicationStage(app.id, AFFILIATE_STAGE_APPROVED, { score, factsJson });
   const body = buildVoucherInviteWithCode(app.name, {
     code: issued.code, pctOff: issued.pctOff, commissionPct: issued.commissionPct,
@@ -440,10 +512,14 @@ export async function issueOrQueue(
  * re-judges, or re-scores (see `issueOrQueue`'s doc comment).
  *
  * Guards applied BEFORE issuing, in order:
- *  1. Recovery guard - if a LIVE D1 voucher already exists for this email
- *     (the prior tick's `issueVoucher` succeeded in Shopify AND its D1 write
- *     completed, but the stage write/email after it threw), do NOT mint a
- *     second code - recover by sending the existing code instead.
+ *  1. Recovery guard (Fix 1b, 2026-07-13 final review: now the SHARED
+ *     `reconcileLiveVoucher` helper, also called as `issueOrQueue`'s own
+ *     first step - see its doc comment) - if a LIVE D1 voucher already
+ *     exists for this email (the prior tick's `issueVoucher` succeeded in
+ *     Shopify AND its D1 write completed, but the stage write/email after it
+ *     threw), do NOT mint a second code - recover by sending the existing
+ *     code instead. Called explicitly here, before guards 2/3, so recovering
+ *     an already-live voucher never touches Shopify or the daily cap.
  *  2. Former-partner / daily-cap guard - the SAME defence-in-depth check
  *     `screenOneApplication` applies to a fresh pass (its step 5), applied
  *     here too: a retry must never bypass the daily auto-issue cap or
@@ -461,7 +537,8 @@ export async function issueOrQueue(
  *     untracked forever. Look the deterministic code up read-only first and
  *     reconcile the missing D1 row instead of minting a new one.
  * Only once all three find nothing to recover does this fall through to a
- * normal `issueOrQueue` call.
+ * normal `issueOrQueue` call (which itself re-runs guard 1's check as its
+ * own first step - harmless/cheap when guard 1 already ran here).
  */
 export async function retryPendingIssue(deps: ScreenDeps, app: AffiliateApplicationRow): Promise<void> {
   const { env, store, cfg, admin, fetchImpl } = deps;
@@ -469,26 +546,12 @@ export async function retryPendingIssue(deps: ScreenDeps, app: AffiliateApplicat
   const sinceIso = new Date(Date.now() - 86_400_000).toISOString();
   const scored = { score: app.score, factsJson: app.facts_json ?? '{}' };
 
-  // Guard 1: a live D1 voucher already exists (issueVoucher's D1 write also
-  // completed on the earlier tick) - recover, never re-issue.
-  const poolState = await store.partnerPoolState(app.email);
-  if (poolState === 'live') {
-    const mine = (await store.listAffiliateVouchers())
-      .find((v) => v.status === 'live' && v.contact_email === app.email.trim().toLowerCase());
-    if (mine) {
-      await store.updateApplicationStage(app.id, AFFILIATE_STAGE_APPROVED, { score: app.score, factsJson: app.facts_json });
-      const body = buildVoucherInviteWithCode(app.name, {
-        code: mine.code, pctOff: mine.pct_off, commissionPct: mine.commission_pct,
-        startsAtLabel: voucherDateLabel(mine.starts_at), endsAtLabel: voucherDateLabel(mine.ends_at),
-        deferred: Date.parse(mine.starts_at) > Date.now()
-      });
-      await sendApplicantEmail(env, app.email, { subject: APPROVAL_SUBJECT, html: renderReplyHtml(body), text: body }, fetchImpl);
-      return;
-    }
-  }
+  // Guard 1 (shared with issueOrQueue - see reconcileLiveVoucher's doc comment).
+  if (await reconcileLiveVoucher(deps, app, scored)) return;
 
   // Guard 2: former-partner / daily auto-issue cap, same invariant as
   // screenOneApplication's step 5 - a retry gets no special exemption.
+  const poolState = await store.partnerPoolState(app.email);
   if (poolState === 'former') {
     await store.updateApplicationStage(app.id, AFFILIATE_STAGE_OWNER_QUEUE, scored);
     await alertOwner(env, cfg, `Affiliate self-serve application needs review: ${app.email}`,
@@ -563,6 +626,10 @@ export async function runAffiliateScreenSweep(env: Env): Promise<void> {
       const store = new TenantStore(env.DB, shop);
       const cfg = await store.getConfig();
       if (!cfg?.selfServe?.enabled) continue; // dark by default: no admin, no spend
+      // Isolate-death reclaim (Fix 3): runs BEFORE the verified-stage query
+      // below, so a row just reclaimed this tick is immediately eligible for
+      // reprocessing rather than waiting a full extra tick.
+      await store.reclaimStaleJudging(new Date(Date.now() - JUDGING_RECLAIM_MS).toISOString());
       const verifiedApps = await store.listApplicationsByStage(AFFILIATE_STAGE_VERIFIED, budget);
       const pendingIssueApps = await store.listApplicationsByStage(AFFILIATE_STAGE_APPROVED_PENDING_ISSUE, budget);
       if (!verifiedApps.length && !pendingIssueApps.length) continue; // cheap early exit, admin never resolved

@@ -627,6 +627,17 @@ export class TenantStore {
       this.db.prepare(`DELETE FROM answer_memory WHERE shop = ?1`).bind(this.shop),
       this.db.prepare(`DELETE FROM affiliate_applications WHERE shop = ?1`).bind(this.shop),
       this.db.prepare(`DELETE FROM affiliate_tokens WHERE shop = ?1`).bind(this.shop),
+      // Fix 7 (2026-07-13 final review): these five PRE-DATE the self-serve
+      // funnel (migrations 0015/0019/0024) but were missed when the funnel's
+      // own affiliate_applications/affiliate_tokens were added above - a
+      // shop/redact request left every partner, voucher, order (including
+      // buyer_email_hash), payout, and inbox-partnership-applicant record
+      // behind. All five are shop-scoped directly (no join needed).
+      this.db.prepare(`DELETE FROM affiliate_orders WHERE shop = ?1`).bind(this.shop),
+      this.db.prepare(`DELETE FROM affiliate_payouts WHERE shop = ?1`).bind(this.shop),
+      this.db.prepare(`DELETE FROM affiliate_vouchers WHERE shop = ?1`).bind(this.shop),
+      this.db.prepare(`DELETE FROM affiliate_partners WHERE shop = ?1`).bind(this.shop),
+      this.db.prepare(`DELETE FROM affiliate_applicants WHERE shop = ?1`).bind(this.shop),
       this.db.prepare(`DELETE FROM inbox_threads WHERE shop = ?1`).bind(this.shop),
       this.db.prepare(`DELETE FROM inbox_contacts WHERE shop = ?1`).bind(this.shop),
       this.db.prepare(`DELETE FROM tenant_config WHERE shop = ?1`).bind(this.shop),
@@ -2290,6 +2301,58 @@ export class TenantStore {
       .run();
   }
 
+  /** The CAS (compare-and-swap) counterpart to updateApplicationStage: advances
+   *  the stage ONLY when the row is currently at `fromStage`, otherwise a
+   *  no-op. Returns whether the row actually changed. Two call sites (final
+   *  review, 2026-07-13):
+   *   - src/affiliate/verify.ts: a claimed 'verify' token only ever advances
+   *     submitted -> verified. A duplicate/resent token (apply.ts's resend
+   *     path can mint a SECOND valid verify token for an application that has
+   *     already moved past 'submitted') claimed AFTER the application has
+   *     since reached e.g. 'approved' must never demote it back to
+   *     'verified' for reprocessing (Fix 1).
+   *   - src/affiliate/screen.ts's screenOneApplication catch: only reset
+   *     judging -> verified when the row is STILL at 'judging' - a throw
+   *     AFTER a successful issueVoucher (post-approval) must not demote an
+   *     already-approved row (Fix 3).
+   *  fields are COALESCEd the same way updateApplicationStage's are. */
+  async advanceApplicationStage(
+    id: string, fromStage: string, toStage: string,
+    fields?: { score?: number | null; factsJson?: string | null; flagsJson?: string | null }
+  ): Promise<boolean> {
+    const r = await this.db
+      .prepare(
+        `UPDATE affiliate_applications SET stage = ?4,
+           score = COALESCE(?5, score), facts_json = COALESCE(?6, facts_json), flags_json = COALESCE(?7, flags_json),
+           updated_at = ?8
+         WHERE shop = ?1 AND id = ?2 AND stage = ?3`
+      )
+      .bind(this.shop, id, fromStage, toStage, fields?.score ?? null, fields?.factsJson ?? null, fields?.flagsJson ?? null, new Date().toISOString())
+      .run();
+    return (r.meta.changes ?? 0) > 0;
+  }
+
+  /** Isolate-death recovery (Fix 3, 2026-07-13 final review): nothing else
+   *  ever re-reads the `judging` stage - only screenOneApplication's own
+   *  catch resets it, and only if the isolate survives long enough to run
+   *  that catch. An isolate that dies mid-screen (OOM, eviction, a killed
+   *  request) leaves the row stranded at `judging` forever: no retry, no
+   *  alert, silently lost. Called once per shop per sweep tick
+   *  (runAffiliateScreenSweep): any `judging` row whose updated_at is older
+   *  than `beforeIso` is reset back to `verified` so the SAME tick's
+   *  `verified`-stage query can pick it straight back up. Returns the count
+   *  reclaimed. */
+  async reclaimStaleJudging(beforeIso: string): Promise<number> {
+    const r = await this.db
+      .prepare(
+        `UPDATE affiliate_applications SET stage = ?3, updated_at = ?5
+         WHERE shop = ?1 AND stage = ?2 AND updated_at < ?4`
+      )
+      .bind(this.shop, AFFILIATE_STAGE_JUDGING, AFFILIATE_STAGE_VERIFIED, beforeIso, new Date().toISOString())
+      .run();
+    return r.meta.changes ?? 0;
+  }
+
   /** Console/queue drill-down: one funnel stage, newest first. */
   async listApplicationsByStage(stage: string, limit = 100): Promise<AffiliateApplicationRow[]> {
     const rs = await this.db
@@ -2399,12 +2462,35 @@ export class TenantStore {
   }
 
   /** Register a single-use claim token (email verification, voucher claim link,
-   *  etc). The token itself is hashed by the CALLER before it ever reaches here. */
+   *  etc). The token itself is hashed by the CALLER before it ever reaches here.
+   *  created_at (migration 0034) backs recentUnclaimedToken's cooldown check. */
   async insertToken(t: { tokenHash: string; kind: string; subjectId: string; expiresAt: string }): Promise<void> {
     await this.db
-      .prepare(`INSERT INTO affiliate_tokens (shop, token_hash, kind, subject_id, expires_at, used_at) VALUES (?1, ?2, ?3, ?4, ?5, NULL)`)
-      .bind(this.shop, t.tokenHash, t.kind, t.subjectId, t.expiresAt)
+      .prepare(`INSERT INTO affiliate_tokens (shop, token_hash, kind, subject_id, expires_at, used_at, created_at) VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6)`)
+      .bind(this.shop, t.tokenHash, t.kind, t.subjectId, t.expiresAt, new Date().toISOString())
       .run();
+  }
+
+  /** True if an UNCLAIMED token of this kind, for this subject, was issued on
+   *  or after sinceIso - the cooldown check behind src/affiliate/portal.ts's
+   *  handlePortalLogin (Fix 4, 2026-07-13 final review): without it, a rapid
+   *  double POST to /affiliate/portal/login for the same live partner mints
+   *  and emails a second 'login' token before the first has even had a
+   *  chance to be used. Expired-but-unclaimed tokens still count (they were
+   *  still ISSUED recently, even if since expired) - only used_at (claimed)
+   *  excludes a row, matching the "do not re-issue while one is already
+   *  outstanding" intent. Pre-migration rows (created_at NULL) never match a
+   *  sinceIso filter, the safe direction (never falsely suppress). */
+  async recentUnclaimedToken(subjectId: string, kind: string, sinceIso: string): Promise<boolean> {
+    const row = await this.db
+      .prepare(
+        `SELECT 1 AS hit FROM affiliate_tokens
+         WHERE shop = ?1 AND subject_id = ?2 AND kind = ?3 AND used_at IS NULL AND created_at >= ?4
+         LIMIT 1`
+      )
+      .bind(this.shop, subjectId, kind, sinceIso)
+      .first<{ hit: number }>();
+    return row !== null;
   }
 
   /** Atomic single-use claim: consumes the token and returns its subject_id,

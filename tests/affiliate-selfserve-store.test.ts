@@ -2,7 +2,8 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
 import {
-  TenantStore, AFFILIATE_SCREEN_LLM_TASK, AFFILIATE_STAGE_APPROVED, AFFILIATE_STAGE_DECLINED, AFFILIATE_STAGE_OWNER_QUEUE
+  TenantStore, AFFILIATE_SCREEN_LLM_TASK, AFFILIATE_STAGE_APPROVED, AFFILIATE_STAGE_DECLINED, AFFILIATE_STAGE_OWNER_QUEUE,
+  AFFILIATE_STAGE_SUBMITTED, AFFILIATE_STAGE_VERIFIED, AFFILIATE_STAGE_JUDGING
 } from '../src/tenant-store';
 import {
   DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, DEFAULT_INBOX,
@@ -272,6 +273,130 @@ describe('affiliate self-serve store layer (migration 0032)', () => {
       expect(apps.results ?? []).toHaveLength(0);
       const tokens = await env.DB.prepare(`SELECT * FROM affiliate_tokens WHERE shop = ?1`).bind(SHOP).all();
       expect(tokens.results ?? []).toHaveLength(0);
+    });
+
+    // Fix 7 (2026-07-13 final review): redactShop purged the NEW self-serve
+    // tables (affiliate_applications/affiliate_tokens, above) but missed the
+    // five PRE-EXISTING affiliate tables (migrations 0015/0019/0024) - a
+    // shop/redact request left every partner, voucher, order (including
+    // buyer_email_hash), payout, and inbox-partnership-applicant record
+    // behind. Seed one row in each of the five and confirm all are gone.
+    it('also clears affiliate_partners, affiliate_vouchers, affiliate_orders, affiliate_payouts, and affiliate_applicants', async () => {
+      const s = store();
+      await s.upsertTenant({ accessTokenEnc: 't', dekWrapped: 'd', scopes: 's' });
+      const partnerId = await s.upsertAffiliatePartner({ contactEmail: 'redact-all@x.com', name: 'Redact Me' });
+      const voucherId = await s.createAffiliateVoucher({
+        partnerId, code: 'ACTIVEPAW-REDACT5', pctOff: 5, commissionPct: 2,
+        endsAt: new Date(Date.now() + 30 * 86_400_000).toISOString(), usageLimit: 15
+      });
+      await s.upsertAffiliateOrder({
+        shopifyOrderId: 'gid://shopify/Order/1', voucherId, orderName: '#1001', grossGbp: 50, discountGbp: 2.5,
+        commissionGbp: 1, financialStatus: 'paid', eligible: true, placedAt: new Date().toISOString(), buyerEmailHash: 'hash-redact-all'
+      });
+      const payout = await s.createAffiliatePayout(voucherId);
+      expect(payout).not.toBeNull(); // sanity: the payout row genuinely exists before redaction
+      await s.upsertApplicant({ threadId: 'thread-redact-all', contactEmail: 'redact-all@x.com', stage: 'screen_sent' });
+
+      const tables = ['affiliate_partners', 'affiliate_vouchers', 'affiliate_orders', 'affiliate_payouts', 'affiliate_applicants'];
+      for (const t of tables) {
+        const before = await env.DB.prepare(`SELECT * FROM ${t} WHERE shop = ?1`).bind(SHOP).all();
+        expect((before.results ?? []).length, `${t} should be seeded before redaction`).toBeGreaterThan(0);
+      }
+
+      await s.redactShop();
+
+      for (const t of tables) {
+        const after = await env.DB.prepare(`SELECT * FROM ${t} WHERE shop = ?1`).bind(SHOP).all();
+        expect((after.results ?? []), `${t} should be empty after redactShop`).toHaveLength(0);
+      }
+    });
+  });
+
+  describe('advanceApplicationStage (CAS - Fix 1 / Fix 3)', () => {
+    it('advances when the row IS at fromStage, and COALESCEs the optional fields', async () => {
+      const s = store();
+      const id = await s.insertApplication({ email: 'cas-ok@x.com', stage: AFFILIATE_STAGE_SUBMITTED });
+      const changed = await s.advanceApplicationStage(id, AFFILIATE_STAGE_SUBMITTED, AFFILIATE_STAGE_VERIFIED, { score: 7 });
+      expect(changed).toBe(true);
+      const row = await s.getApplication(id);
+      expect(row?.stage).toBe(AFFILIATE_STAGE_VERIFIED);
+      expect(row?.score).toBe(7);
+    });
+
+    it('is a no-op (returns false, changes nothing) when the row is NOT at fromStage', async () => {
+      const s = store();
+      const id = await s.insertApplication({ email: 'cas-noop@x.com', stage: AFFILIATE_STAGE_APPROVED, score: 11 });
+      const changed = await s.advanceApplicationStage(id, AFFILIATE_STAGE_SUBMITTED, AFFILIATE_STAGE_VERIFIED, { score: 1 });
+      expect(changed).toBe(false);
+      const row = await s.getApplication(id);
+      expect(row?.stage).toBe(AFFILIATE_STAGE_APPROVED); // unchanged - never demoted
+      expect(row?.score).toBe(11); // unchanged - the (would-be) new score was never written
+    });
+  });
+
+  describe('reclaimStaleJudging (Fix 3 - isolate-death recovery)', () => {
+    it('resets a judging row older than the cutoff back to verified, and returns the count reset', async () => {
+      const s = store();
+      const staleId = await s.insertApplication({ email: 'stale-judging@x.com', stage: AFFILIATE_STAGE_JUDGING });
+      const oldTs = '2020-01-01T00:00:00.000Z';
+      await env.DB.prepare(`UPDATE affiliate_applications SET updated_at = ?3 WHERE shop = ?1 AND id = ?2`)
+        .bind(SHOP, staleId, oldTs).run();
+
+      const n = await s.reclaimStaleJudging(new Date(Date.now() - 60_000).toISOString());
+      expect(n).toBe(1);
+      const row = await s.getApplication(staleId);
+      expect(row?.stage).toBe(AFFILIATE_STAGE_VERIFIED);
+    });
+
+    it('leaves a FRESH judging row (updated_at after the cutoff) untouched', async () => {
+      const s = store();
+      const freshId = await s.insertApplication({ email: 'fresh-judging@x.com', stage: AFFILIATE_STAGE_JUDGING });
+      const n = await s.reclaimStaleJudging(new Date(Date.now() - 60_000).toISOString());
+      expect(n).toBe(0);
+      const row = await s.getApplication(freshId);
+      expect(row?.stage).toBe(AFFILIATE_STAGE_JUDGING);
+    });
+
+    it('never touches a row at any OTHER stage', async () => {
+      const s = store();
+      const id = await s.insertApplication({ email: 'not-judging@x.com', stage: AFFILIATE_STAGE_VERIFIED });
+      await env.DB.prepare(`UPDATE affiliate_applications SET updated_at = ?3 WHERE shop = ?1 AND id = ?2`)
+        .bind(SHOP, id, '2020-01-01T00:00:00.000Z').run();
+      const n = await s.reclaimStaleJudging(new Date().toISOString());
+      expect(n).toBe(0);
+      expect((await s.getApplication(id))?.stage).toBe(AFFILIATE_STAGE_VERIFIED);
+    });
+  });
+
+  describe('recentUnclaimedToken (Fix 4 - portal login cooldown)', () => {
+    it('finds an unexpired, unclaimed token of the right kind+subject issued since the cutoff', async () => {
+      const s = store();
+      await s.insertToken({ tokenHash: 'h-recent', kind: 'login', subjectId: 'partner-1', expiresAt: '2099-01-01T00:00:00.000Z' });
+      const sinceIso = new Date(Date.now() - 5 * 60_000).toISOString();
+      expect(await s.recentUnclaimedToken('partner-1', 'login', sinceIso)).toBe(true);
+    });
+
+    it('ignores a CLAIMED token even if recently issued', async () => {
+      const s = store();
+      await s.insertToken({ tokenHash: 'h-claimed', kind: 'login', subjectId: 'partner-2', expiresAt: '2099-01-01T00:00:00.000Z' });
+      await s.claimToken('h-claimed', 'login');
+      const sinceIso = new Date(Date.now() - 5 * 60_000).toISOString();
+      expect(await s.recentUnclaimedToken('partner-2', 'login', sinceIso)).toBe(false);
+    });
+
+    it('ignores a token of the wrong kind or subject', async () => {
+      const s = store();
+      await s.insertToken({ tokenHash: 'h-wrongkind', kind: 'verify', subjectId: 'partner-3', expiresAt: '2099-01-01T00:00:00.000Z' });
+      const sinceIso = new Date(Date.now() - 5 * 60_000).toISOString();
+      expect(await s.recentUnclaimedToken('partner-3', 'login', sinceIso)).toBe(false);
+      expect(await s.recentUnclaimedToken('someone-else', 'verify', sinceIso)).toBe(false);
+    });
+
+    it('ignores a token issued before the cutoff', async () => {
+      const s = store();
+      await s.insertToken({ tokenHash: 'h-old-issue', kind: 'login', subjectId: 'partner-4', expiresAt: '2099-01-01T00:00:00.000Z' });
+      const futureSinceIso = new Date(Date.now() + 60_000).toISOString(); // "since" a moment in the future
+      expect(await s.recentUnclaimedToken('partner-4', 'login', futureSinceIso)).toBe(false);
     });
   });
 
