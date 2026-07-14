@@ -710,6 +710,11 @@ export async function reconcileHeroImages(
       if (p?.metafield?.value === sig) continue; // already vision-checked at this media state (sig carries VET_VERSION) - no LLM call
       const hero = await pickHero(p?.title ?? '', nodes.map((n) => n.image.url));
       if (!hero.ok) continue; // couldn't decide (LLM down/failed) - don't cache, retry next run
+      // All-overlay set: deleting overlays here would strip the gallery toward a
+      // single still-overlaid image, and recording a signature would make the
+      // catalog re-image sweep skip it. Leave it entirely for that sweep, which
+      // injects a clean supplier shot (no delete). Don't record the signature.
+      if (hero.heroClean === false) continue;
 
       // 1) Delete incongruent media (wrong animal vs title, etc.) so it never
       // shows in the store. Never empties the gallery; the hero is never dropped.

@@ -393,6 +393,18 @@ describe('hero-image QA (vision)', () => {
     expect(calls.some((c) => c.query.includes('metafieldsSet'))).toBe(false); // not cached → retried next run
   });
 
+  it('reconcileHeroImages leaves an all-overlay product untouched (no delete, no signature) for the re-image sweep', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    await store.putLink({ cjPid: 'P1', state: 'imported', shopifyProductId: 'gid://shopify/Product/1', handle: 'h1', category: 'pet-toys' });
+    const calls: Call[] = [];
+    const admin = heroAdmin(calls, 'gid://m/0', [{ id: 'gid://m/0', url: 'https://i/0.jpg' }, { id: 'gid://m/1', url: 'https://i/1.jpg' }, { id: 'gid://m/2', url: 'https://i/2.jpg' }]);
+    // heroClean:false with a drop list that WOULD strip the gallery - must be ignored.
+    const r = await reconcileHeroImages(store, admin, CFG, async () => ({ ok: true, index: null, drop: [1, 2], heroClean: false }));
+    expect(r).toEqual({ scanned: 1, fixed: 0, total: 1, next: null });
+    expect(calls.some((c) => c.query.includes('productDeleteMedia'))).toBe(false); // no strip-to-one
+    expect(calls.some((c) => c.query.includes('metafieldsSet'))).toBe(false); // no sig claim → catalog sweep re-images it
+  });
+
   it('reconcileHeroImages records the signature even when no reorder is needed (index already featured)', async () => {
     const store = new TenantStore(env.DB, 'a.myshopify.com');
     await store.putLink({ cjPid: 'P1', state: 'imported', shopifyProductId: 'gid://shopify/Product/1', handle: 'h1', category: 'pet-toys' });
