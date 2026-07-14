@@ -512,6 +512,25 @@ async function heroImagesNow(){
   }catch(e){ syncBar('off'); setMsg('heromsg','Failed: '+errText(e),'no'); }
   finally{ btn.disabled=false; }
 }
+async function catalogImagesNow(){
+  var btn=el('reimgbtn'); btn.disabled=true;
+  try{
+    setMsg('reimgmsg','Scanning the whole catalog for Google image issues…','muted');
+    syncBar('pulse');
+    var cursor=null, scanned=0, titles=0, primaries=0, reimaged=0, worklist=0;
+    for(;;){
+      var r=await api('/catalog-images',{cursor:cursor});
+      if(!r.ok){ syncBar('off'); setMsg('reimgmsg','Failed: '+(r.error||'unknown error'),'no'); return; }
+      scanned+=r.scanned; titles+=r.titleFixed; primaries+=r.reordered; reimaged+=r.reimaged; worklist+=r.worklisted;
+      setMsg('reimgmsg','Scanned '+scanned+'… '+reimaged+' re-imaged, '+primaries+' primary swaps, '+titles+' titles trimmed, '+worklist+' need a photo','muted');
+      if(r.nextCursor==null) break;
+      cursor=r.nextCursor;
+    }
+    syncBar('off');
+    setMsg('reimgmsg','Done ✓ scanned '+scanned+' - '+reimaged+' re-imaged from supplier, '+primaries+' clean primaries set, '+titles+' titles trimmed, '+worklist+' still need a hand-sourced photo.','ok');
+  }catch(e){ syncBar('off'); setMsg('reimgmsg','Failed: '+errText(e),'no'); }
+  finally{ btn.disabled=false; }
+}
 async function rewriteDescsNow(){
   var btn=el('descbtn'); btn.disabled=true;
   try{

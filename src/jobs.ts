@@ -38,7 +38,7 @@ export const MARKET_SEED_LANES: {
   { countryCode: 'US', maxDraftsPerNight: 15, keywords: US_SEED_KEYWORDS, gateOverrides: { priceMin: 25, priceMax: 200 } },
 ];
 import { getExpansions, seedTerm } from './semantic/library';
-import { confirmAndImport, getCachedDetail, resolveCategory, reconcileAddonVisibility, reconcileHeroImages, reconcileDescriptions, reconcileCategories, setProductTags, ADDON_CATEGORY } from './proxy/import';
+import { confirmAndImport, getCachedDetail, resolveCategory, reconcileAddonVisibility, reconcileHeroImages, reconcileCatalogImages, reconcileDescriptions, reconcileCategories, setProductTags, ADDON_CATEGORY } from './proxy/import';
 import { runProfitAgent, competitorSignal, type CompetitorSignal } from './profitability';
 import { ebayFromEnv } from './market';
 import { AFFILIATE_ELIGIBLE_TAG, productAffiliateEligible, ensureAffiliateCollection } from './affiliate';
@@ -1201,6 +1201,10 @@ export async function runMarketVisibilityReconcile(env: Env): Promise<void> {
 
 /** Checkpoint key for the profit agent's rolling catalog cursor (per shop). */
 export const PROFIT_AGENT_OFFSET_KEY = 'job:profit-agent-offset';
+// Opaque Shopify products cursor for the full-catalog image/title reconcile
+// (catalog-images stage). Unlike the numeric stage offset, this is a GraphQL
+// cursor persisted across ticks; cleared to null when a full pass completes.
+export const CATALOG_IMAGE_CURSOR_KEY = 'job:catalog-images-cursor';
 
 /**
  * 15-min cron lane for the ACTIVE profitability agent. Rolling batches of 8 across
@@ -1302,7 +1306,7 @@ export interface DailyShopCtx {
   cj: CjClient | null; // null when the shop has no CJ credential
   llm: LlmClient;
   curate?: (detail: CjDetail, context: string) => ReturnType<typeof curateProduct>;
-  pickHero?: (title: string, urls: string[]) => ReturnType<typeof pickHeroImage>;
+  pickHero?: (title: string, urls: string[], opts?: { maxImages?: number }) => ReturnType<typeof pickHeroImage>;
   /** Entry competition check for the import gate (confirmAndImport); only
    *  consulted when profit.competitionCheckOnImport is on. Cached per pid. */
   competitorCheck?: (detail: CjDetail, ourRetailGbp: number) => Promise<CompetitorSignal | null>;
@@ -1454,6 +1458,32 @@ export const DAILY_SHOP_STAGES: DailyStage[] = [
     }
   },
   {
+    // Full-catalog image/title reconcile: walks the ENTIRE live catalog by cursor
+    // (not just product_links), clearing Google Merchant "promotional overlay" and
+    // truncated-title issues across the bulk-imported products. Own string cursor
+    // in a checkpoint (the numeric stage offset is unused); returns a number to
+    // resume next tick, void when a full pass completes (then the cursor is cleared,
+    // so the next night re-walks cheaply - all products sig-cached).
+    name: 'catalog-images', maxMs: 8 * MIN_MS,
+    async run(ctx, _offset, deadline) {
+      if (!ctx.pickHero || !ctx.cfg.llm.enabled) return; // dormant without vision
+      const pickHero = ctx.pickHero;
+      const ttl = JOB_STAMP_TTL_DAYS * 86400_000;
+      let cursor = (await readJobCheckpoint(ctx.env.DB, ctx.shop, CATALOG_IMAGE_CURSOR_KEY)) || null;
+      for (let i = 0; i < 40; i++) {
+        if (Date.now() >= deadline) {
+          await writeJobCheckpoint(ctx.env.DB, ctx.shop, CATALOG_IMAGE_CURSOR_KEY, cursor, ttl);
+          return 1; // more remains - resume next tick
+        }
+        const r = await reconcileCatalogImages(ctx.admin, ctx.cj, pickHero, { after: cursor });
+        cursor = r.nextCursor;
+        if (!cursor) { await writeJobCheckpoint(ctx.env.DB, ctx.shop, CATALOG_IMAGE_CURSOR_KEY, null, ttl); return; } // full pass done
+      }
+      await writeJobCheckpoint(ctx.env.DB, ctx.shop, CATALOG_IMAGE_CURSOR_KEY, cursor, ttl);
+      return 1;
+    }
+  },
+  {
     name: 'descriptions', maxMs: 5 * MIN_MS,
     async run(ctx, offset, deadline) {
       if (!ctx.llm.available || !ctx.cfg.llm.enabled) return;
@@ -1486,7 +1516,7 @@ async function buildDailyShopCtx(env: Env, vault: Vault, shop: string): Promise<
     ? (detail: CjDetail, context: string) => curateProduct(llm, store, cfg, detail, context)
     : undefined;
   const pickHero = llm.available && cfg.llm.enabled
-    ? (title: string, urls: string[]) => pickHeroImage(llm, store, cfg, title, urls)
+    ? (title: string, urls: string[], o?: { maxImages?: number }) => pickHeroImage(llm, store, cfg, title, urls, o)
     : undefined;
   const nightlyMarket = ebayFromEnv(env);
   const competitorCheck = llm.available && cfg.llm.enabled

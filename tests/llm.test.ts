@@ -259,7 +259,7 @@ describe('pickHeroImage (vision)', () => {
     }) as unknown as typeof fetch;
     const llm = new LlmClient({ openrouter: 'k' },fetchImpl);
     const pick = await pickHeroImage(llm, store, CFG, 'Pet Grooming Scissors Set with Comb', URLS);
-    expect(pick).toEqual({ ok: true, index: 2, drop: [] });
+    expect(pick).toEqual({ ok: true, index: 2, drop: [], heroClean: true });
     const content = body.messages[1].content;
     expect(Array.isArray(content)).toBe(true);
     expect(content.filter((c: any) => c.type === 'image_url').map((c: any) => c.image_url.url)).toEqual(URLS);
@@ -270,7 +270,7 @@ describe('pickHeroImage (vision)', () => {
   it('is ok with index null when the model picks image 0 (already correct - cacheable)', async () => {
     const store = new TenantStore(env.DB, SHOP);
     const llm = new LlmClient({ openrouter: 'k' },llmFetch({ index: 0, reason: 'fine' }));
-    expect(await pickHeroImage(llm, store, CFG, 'Dog Toy', URLS)).toEqual({ ok: true, index: null, drop: [] });
+    expect(await pickHeroImage(llm, store, CFG, 'Dog Toy', URLS)).toEqual({ ok: true, index: null, drop: [], heroClean: true });
   });
 
   it('is ok with index null for fewer than 2 images, without calling the LLM', async () => {
@@ -285,14 +285,39 @@ describe('pickHeroImage (vision)', () => {
   it('returns the indices of incongruent images to drop (e.g. a cat on a dog listing)', async () => {
     const store = new TenantStore(env.DB, SHOP);
     const llm = new LlmClient({ openrouter: 'k' },llmFetch({ index: 2, drop: [0, 1], reason: 'cats; dog at 2' }));
-    expect(await pickHeroImage(llm, store, CFG, 'Dog Grooming Earmuffs', URLS)).toEqual({ ok: true, index: 2, drop: [0, 1] });
+    expect(await pickHeroImage(llm, store, CFG, 'Dog Grooming Earmuffs', URLS)).toEqual({ ok: true, index: 2, drop: [0, 1], heroClean: true });
   });
 
   it('never drops the chosen hero, and ignores out-of-range drop indices', async () => {
     const store = new TenantStore(env.DB, SHOP);
     const llm = new LlmClient({ openrouter: 'k' },llmFetch({ index: 1, drop: [1, 9, 0], reason: 'x' }));
     // 1 == hero (excluded), 9 out of range (excluded) → only 0 survives
-    expect(await pickHeroImage(llm, store, CFG, 'Dog Toy', URLS)).toEqual({ ok: true, index: 1, drop: [0] });
+    expect(await pickHeroImage(llm, store, CFG, 'Dog Toy', URLS)).toEqual({ ok: true, index: 1, drop: [0], heroClean: true });
+  });
+
+  it('passes heroClean:false through when even the best image is overlaid (all-overlay set)', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const llm = new LlmClient({ openrouter: 'k' }, llmFetch({ index: 0, heroClean: false, reason: 'all overlaid' }));
+    // index 0 collapses to null, but heroClean:false is preserved → drives CJ re-image
+    expect(await pickHeroImage(llm, store, CFG, 'Dog Toy', URLS)).toEqual({ ok: true, index: null, drop: [], heroClean: false });
+  });
+
+  it('honours a larger maxImages cap so the CJ re-pick can see a clean shot past the default 8', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const many = Array.from({ length: 20 }, (_, i) => `https://i/${i}.jpg`);
+    let body: any;
+    const fetchImpl = (async (_url: string, init: RequestInit) => {
+      body = JSON.parse(init.body as string);
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: JSON.stringify({ index: 9, heroClean: true, reason: 'clean at 9' }) } }],
+        usage: { prompt_tokens: 80, completion_tokens: 10, cost: 0.0003 }
+      }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const llm = new LlmClient({ openrouter: 'k' }, fetchImpl);
+    const pick = await pickHeroImage(llm, store, CFG, 'Dog Toy', many, { maxImages: 16 });
+    expect(pick).toEqual({ ok: true, index: 9, drop: [], heroClean: true });
+    const imgBlocks = body.messages[1].content.filter((c: any) => c.type === 'image_url');
+    expect(imgBlocks.length).toBe(16); // 16 (the cap), not the default 8
   });
 
   it('is NOT ok (retryable) on an out-of-range index from the model', async () => {

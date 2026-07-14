@@ -582,6 +582,57 @@ const DELETE_MEDIA = `mutation pawscoutDeleteMedia($productId: ID!, $mediaIds: [
   }
 }`;
 
+// One page of the whole live catalog for the image/title reconcile. Fetches the
+// tags (cj-pid-<pid> is our universal supplier mapping - set by both the worker
+// import and the legacy scripts app), current media, and both pawscout markers
+// in a single request so a page needs no per-product round trips.
+const CATALOG_PAGE = `query pawscoutCatalogPage($cursor: String) {
+  products(first: 8, after: $cursor, query: "status:active", sortKey: ID) {
+    pageInfo { hasNextPage endCursor }
+    nodes {
+      id
+      title
+      tags
+      featuredMedia { ... on MediaImage { id } }
+      heroSig: metafield(namespace: "pawscout", key: "hero_sig") { value }
+      reimaged: metafield(namespace: "pawscout", key: "cj_reimaged") { value }
+      media(first: 15) { nodes { ... on MediaImage { id image { url } } } }
+    }
+  }
+}`;
+
+// Append a supplier image to an existing product (used to inject a clean shot
+// when the current gallery is all promotional overlays). Shopify re-hosts the
+// image at its own CDN, so the returned media id - not the source URL - is the
+// durable handle; a cj_reimaged marker (not a URL match) prevents re-adding.
+const CREATE_MEDIA = `mutation pawscoutCreateMedia($productId: ID!, $media: [CreateMediaInput!]!) {
+  productCreateMedia(productId: $productId, media: $media) {
+    media { ... on MediaImage { id } }
+    mediaUserErrors { field message }
+  }
+}`;
+
+const TAGS_ADD = `mutation pawscoutTagsAdd($id: ID!, $tags: [String!]!) {
+  tagsAdd(id: $id, tags: $tags) { userErrors { field message } }
+}`;
+
+/** Owner worklist: an all-overlay product whose supplier gallery also has no
+ *  clean shot (or that carries no cj-pid mapping). Filter this tag in Shopify
+ *  admin to find the products that need a real image sourced by hand. */
+export const NEEDS_IMAGE_TAG = 'needs-clean-image';
+
+/** The universal CJ product-id mapping: both the worker import and the legacy
+ *  scripts app tag every CJ-sourced product `cj-pid-<pid>`. */
+export function cjPidFromTags(tags: string[] | undefined): string | null {
+  for (const t of tags ?? []) {
+    if (typeof t === 'string' && t.startsWith('cj-pid-')) {
+      const pid = t.slice('cj-pid-'.length).trim();
+      if (pid) return pid;
+    }
+  }
+  return null;
+}
+
 // Bump when the vision logic changes meaning (v1 only reordered the hero; v2
 // also DROPS incongruent images; v3 also drops PROMOTIONAL-OVERLAY images -
 // baked-in marketing/price banners, watermarks, heavy borders - that the
@@ -689,6 +740,140 @@ export async function reconcileHeroImages(
     }
   }
   return { scanned, fixed, total, next: offset + limit < total ? offset + limit : null };
+}
+
+export interface CatalogImageResult {
+  scanned: number; titleFixed: number; reordered: number; reimaged: number; worklisted: number;
+  nextCursor: string | null;
+}
+
+/** Injected hero picker (the same closure the import path builds), extended with
+ *  the optional larger cap the CJ re-pick needs. */
+export type PickHeroFn = (title: string, urls: string[], opts?: { maxImages?: number }) => Promise<HeroPick>;
+
+/**
+ * Full-catalog image/title reconcile (vision) - the sibling of reconcileHeroImages
+ * that walks the ENTIRE live Shopify catalog by cursor, not just the ~worker-tracked
+ * product_links. Its job is to clear Google Merchant "promotional overlay on image"
+ * and "value truncated [title]" across the bulk-imported catalog:
+ *
+ *   1) capTitle in place (fixes truncated titles) - always, cheap, no vision.
+ *   2) If a clean product photo exists in the CURRENT gallery, promote it to the
+ *      primary slot (Google keys the overlay disapproval on the PRIMARY image only).
+ *   3) If the current gallery is ALL overlays (no clean shot), re-fetch the FULL
+ *      supplier gallery via the cj-pid tag and inject a clean shot the import
+ *      missed (CJ buries the clean one past the import's #8 cap). A cj_reimaged
+ *      marker makes this once-only; the next pass promotes the now-present clean
+ *      image to primary and records the signature.
+ *   4) If neither the gallery nor the supplier has a clean shot (or there is no
+ *      cj-pid), tag `needs-clean-image` so the owner can source one by hand.
+ *
+ * NO deletes - unattended deletion across thousands of live products is the wrong
+ * blast radius; promote/add only. Idempotent + resumable via the pawscout.hero_sig
+ * fingerprint: a product already handled at its current media state costs one cheap
+ * catalog read and no vision call. One page per call; the caller loops with
+ * nextCursor and the nightly stage drains it against the deadline. Best-effort per
+ * product; one failure never aborts the page.
+ */
+export async function reconcileCatalogImages(
+  admin: AdminGraphql,
+  cj: Pick<CjClient, 'detail'> | null,
+  pickHero: PickHeroFn,
+  opts: { after?: string | null; pageSize?: number } = {}
+): Promise<CatalogImageResult> {
+  const page = await admin(CATALOG_PAGE, { cursor: opts.after ?? null }) as {
+    products?: {
+      pageInfo?: { hasNextPage?: boolean; endCursor?: string | null };
+      nodes?: {
+        id: string; title?: string; tags?: string[];
+        featuredMedia?: { id?: string } | null;
+        heroSig?: { value?: string } | null;
+        reimaged?: { value?: string } | null;
+        media?: { nodes?: { id?: string; image?: { url?: string } }[] };
+      }[];
+    };
+  };
+  const nodes = page.products?.nodes ?? [];
+  const pageInfo = page.products?.pageInfo ?? {};
+  const nextCursor = pageInfo.hasNextPage ? (pageInfo.endCursor ?? null) : null;
+  let scanned = 0, titleFixed = 0, reordered = 0, reimaged = 0, worklisted = 0;
+
+  const setMeta = (id: string, key: string, value: string) =>
+    admin(SET_HERO_SIG, { mf: [{ ownerId: id, namespace: 'pawscout', key, type: 'single_line_text_field', value }] });
+
+  for (const p of nodes) {
+    scanned++;
+    const id = p.id;
+    try {
+      // 1) Title cap - independent of any image work.
+      const curTitle = p.title ?? '';
+      const capped = capTitle(curTitle);
+      if (capped && capped !== curTitle) {
+        const u = await admin(UPDATE_DESC, { input: { id, title: capped } }) as { productUpdate?: { userErrors?: { message: string }[] } };
+        if (!(u.productUpdate?.userErrors ?? []).length) titleFixed++;
+      }
+
+      const media = (p.media?.nodes ?? []).filter(
+        (n): n is { id: string; image: { url: string } } => !!n?.id && !!n?.image?.url
+      );
+      if (media.length < 2) continue; // single/no image: nothing to reorder; leave as-is
+      const sig = mediaSignature(media.map((n) => n.id));
+      if (p.heroSig?.value === sig) continue; // already vetted at this media state
+
+      // Judge the WHOLE fetched gallery (the page query caps media at 15) so a
+      // clean shot appended by a prior pass's CJ re-image is always seen here and
+      // promoted, never stranded past a smaller cap.
+      const pick = await pickHero(p.title ?? '', media.map((n) => n.image.url), { maxImages: 15 });
+      if (!pick.ok) continue; // LLM down/failed - don't record; retry next pass
+
+      if (pick.heroClean !== false) {
+        // A clean shot exists in the current gallery - make it primary if it isn't.
+        if (pick.index !== null && pick.index < media.length && p.featuredMedia?.id !== media[pick.index].id) {
+          const r = await admin(REORDER_MEDIA, { id, moves: [{ id: media[pick.index].id, newPosition: '0' }] }) as {
+            productReorderMedia?: { mediaUserErrors?: { message: string }[]; userErrors?: { message: string }[] };
+          };
+          const errs = [...(r.productReorderMedia?.mediaUserErrors ?? []), ...(r.productReorderMedia?.userErrors ?? [])];
+          if (errs.length) throw new Error(errs.map((e) => e.message).join('; '));
+          reordered++;
+        }
+        await setMeta(id, 'hero_sig', sig);
+        continue;
+      }
+
+      // All-overlay gallery: try to inject a clean supplier shot the import missed.
+      const cjPid = cjPidFromTags(p.tags);
+      const alreadyReimaged = !!p.reimaged?.value;
+      if (cjPid && cj && !alreadyReimaged) {
+        const detail = await cj.detail(cjPid).catch(() => null);
+        const cjImgs = (detail?.images ?? []).filter((u): u is string => typeof u === 'string' && !!u);
+        if (cjImgs.length) {
+          const cjPick = await pickHero(p.title ?? '', cjImgs, { maxImages: 16 });
+          if (cjPick.ok && cjPick.heroClean) {
+            const url = cjImgs[cjPick.index ?? 0];
+            const c = await admin(CREATE_MEDIA, { productId: id, media: [{ originalSource: url, alt: capTitle(p.title ?? ''), mediaContentType: 'IMAGE' }] }) as {
+              productCreateMedia?: { media?: { id?: string }[]; mediaUserErrors?: { message: string }[] };
+            };
+            const cerrs = c.productCreateMedia?.mediaUserErrors ?? [];
+            if (!cerrs.length) {
+              await setMeta(id, 'cj_reimaged', '1'); // once-only; next pass promotes the now-present clean image
+              reimaged++;
+              // Do NOT record hero_sig: the media set changed, so the next pass
+              // re-vets the enlarged gallery, finds the clean shot, and promotes it.
+              continue;
+            }
+          }
+        }
+      }
+
+      // No clean shot anywhere (or no cj-pid): surface for a hand-sourced image.
+      await admin(TAGS_ADD, { id, tags: [NEEDS_IMAGE_TAG] });
+      await setMeta(id, 'hero_sig', sig); // nothing more to do here - stop re-vetting
+      worklisted++;
+    } catch (e) {
+      console.warn(`catalog-image reconcile failed for ${id}: ${(e as Error).message}`);
+    }
+  }
+  return { scanned, titleFixed, reordered, reimaged, worklisted, nextCursor };
 }
 
 const PRODUCT_DESC = `query pawscoutDesc($id: ID!) { product(id: $id) { title descriptionHtml } }`;

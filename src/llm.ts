@@ -233,7 +233,13 @@ const MAX_HERO_IMAGES = 8; // cap vision cost; CJ rarely puts the set shot past 
  * different animal than the title names, an unrelated product, or a duplicate)
  * and should be removed so they never surface in Shopify. The hero is never in
  * `drop`; `drop` is `[]` when nothing should be removed. */
-export interface HeroPick { ok: boolean; index: number | null; drop?: number[] }
+export interface HeroPick { ok: boolean; index: number | null; drop?: number[];
+  /** True when the CHOSEN hero is a clean product photo with no promotional
+   *  overlay; false when even the best available image carries an overlay (an
+   *  all-overlay set). Undefined when we couldn't decide (ok:false / <2 images).
+   *  Drives the catalog re-image flow: false + a CJ mapping -> re-fetch a clean
+   *  shot from the supplier gallery. */
+  heroClean?: boolean }
 
 /**
  * Vision pass: given a product TITLE and its images (in current order, index 0
@@ -252,14 +258,18 @@ export async function pickHeroImage(
   store: TenantStore,
   cfg: TenantConfig,
   title: string,
-  imageUrls: string[]
+  imageUrls: string[],
+  opts: { maxImages?: number } = {}
 ): Promise<HeroPick> {
   if (!llm.available || !cfg.llm.enabled) return { ok: false, index: null, drop: [] };
-  const urls = imageUrls.slice(0, MAX_HERO_IMAGES);
+  // The catalog re-image flow passes a larger cap so the whole supplier gallery
+  // is seen: CJ often buries the one clean shot past the default #8 (the reason
+  // it was missed at import), and re-picking a clean hero requires seeing it.
+  const urls = imageUrls.slice(0, Math.max(2, opts.maxImages ?? MAX_HERO_IMAGES));
   if (urls.length < 2) return { ok: true, index: null, drop: [] }; // nothing to choose/vet - definitively fine
   const chain = resolveChain(cfg, 'image');
 
-  const result = await llm.jsonChain<{ index: number; drop: number[]; reason: string }>({
+  const result = await llm.jsonChain<{ index: number; drop: number[]; reason: string; heroClean: boolean }>({
     chain,
     maxTokens: 200,
     images: urls,
@@ -276,7 +286,9 @@ export async function pickHeroImage(
       '(b) PROMOTIONAL OVERLAY - it has marketing graphics ADDED on top of the photo: a promo/discount/"sale"/"hot"/price banner or badge, a shop or brand watermark stamped across the image, or a heavy decorative border or collage frame. The shopping feed disallows these. Do NOT drop an image merely because the PRODUCT or its packaging naturally shows text or a logo; only drop marketing graphics added on top of the photo. ' +
       'The hero must NOT be in drop, and never drop so many that nothing would remain - if every image carries an overlay, keep the cleanest one as hero and drop the others. ' +
       'If the title names an animal, the hero MUST feature that animal when any image does.\n' +
-      'Respond with ONLY JSON: {"index": <0-based hero index>, "drop": [<0-based indices to remove>], "reason": <short phrase, max 12 words>}.',
+      '3) heroClean: true if the image you chose as HERO is a clean product photo with NO promotional overlay, watermark, banner, or heavy added border on top of it; ' +
+      'false if even your best hero choice still carries such an overlay (i.e. every image in the set is overlaid and there is no clean shot). Product/packaging text that is naturally part of the item does NOT make it unclean.\n' +
+      'Respond with ONLY JSON: {"index": <0-based hero index>, "drop": [<0-based indices to remove>], "heroClean": <true|false>, "reason": <short phrase, max 12 words>}.',
     user: JSON.stringify({ title, imageCount: urls.length, note: 'Images follow in order; the first image is index 0.' }),
     validate: (v) => {
       const o = v as Record<string, unknown>;
@@ -286,7 +298,9 @@ export async function pickHeroImage(
       const drop = Array.isArray(o.drop)
         ? [...new Set(o.drop.map(Number).filter((n) => Number.isInteger(n) && n >= 0 && n < urls.length && n !== idx))]
         : [];
-      return { index: idx, drop, reason: typeof o.reason === 'string' ? clip(o.reason, 120) : '' };
+      // Absent -> assume clean (conservative: don't trigger a supplier re-fetch on a maybe).
+      const heroClean = typeof o.heroClean === 'boolean' ? o.heroClean : true;
+      return { index: idx, drop, reason: typeof o.reason === 'string' ? clip(o.reason, 120) : '', heroClean };
     }
   });
 
@@ -295,7 +309,7 @@ export async function pickHeroImage(
     return { ok: false, index: null, drop: [] };
   }
   await store.logLlmUsage('hero-image', result.usage.model, result.usage.promptTokens, result.usage.completionTokens, result.usage.costUsd);
-  return { ok: true, index: result.value.index > 0 ? result.value.index : null, drop: result.value.drop };
+  return { ok: true, index: result.value.index > 0 ? result.value.index : null, drop: result.value.drop, heroClean: result.value.heroClean };
 }
 
 // --- Description rewrite: clean a raw/legacy supplier description ---

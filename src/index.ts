@@ -39,7 +39,7 @@ import { verifyAppProxy } from './proxy/verify';
 import { verifyUnsubToken } from './retention';
 import { searchBackfill, normalizeKeyword } from './proxy/search';
 import { LlmClient, classifyKeyword, curateProduct, pickHeroImage, rewriteDescription } from './llm';
-import { buildPreview, getDetailPreferWarehouse, curateDetailImages, confirmAndImport, reconcileAddonVisibility, reconcileHeroImages, reconcileDescriptions, reconcileCategories } from './proxy/import';
+import { buildPreview, getDetailPreferWarehouse, curateDetailImages, confirmAndImport, reconcileAddonVisibility, reconcileHeroImages, reconcileCatalogImages, reconcileDescriptions, reconcileCategories } from './proxy/import';
 import { makeAdminGraphql } from './shopify-admin';
 import { getProfitConsole, saveProfitFlags, archiveProfitProduct, clearProfitDecisions, setProfitKeepAction, rejectProfitMatch, recalibrateProfitDrops } from './profit-console';
 import { runProfitAgent, competitorSignal, judgeImportedLink } from './profitability';
@@ -1239,6 +1239,44 @@ app.post('/api/hero-images', async (c) => {
     return c.json({ ok: true, ...r });
   } catch (e) {
     console.warn(`hero-image sweep failed: ${(e as Error).message}`);
+    return c.json({ ok: false, error: `Sweep failed: ${(e as Error).message}` }, 500);
+  }
+});
+// Full-catalog image/title reconcile on demand (the manual fast-clear for the
+// nightly catalog-images stage): walks the WHOLE live catalog by cursor, promotes
+// a clean shot to primary, re-images all-overlay products from CJ, caps titles,
+// and worklist-tags the unfixable. Runs a bounded burst of pages per call and
+// returns the opaque cursor; the console loops until nextCursor is null.
+app.post('/api/catalog-images', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: { cursor?: string | null } = {};
+  try { body = await c.req.json(); } catch { /* defaults */ }
+  const store = new TenantStore(c.env.DB, s);
+  const tenant = await store.getTenant();
+  const cfg = await store.getConfig();
+  if (!tenant?.access_token_enc || !cfg) return c.json({ ok: false, error: 'Not configured' }, 400);
+  const llm = new LlmClient({ openrouter: c.env.OPENROUTER_API_KEY, openai: c.env.OPENAI_API_KEY });
+  if (!llm.available || !cfg.llm.enabled) return c.json({ ok: false, error: 'LLM not configured' }, 400);
+  const vault = await Vault.fromMasterKey(c.env.PAWSCOUT_MASTER_KEY);
+  const accessToken = await vault.open(tenant.dek_wrapped, tenant.access_token_enc);
+  const admin = makeAdminGraphql(s, accessToken);
+  const f = cjFetchFromEnv(c.env);
+  const cj = new CjClient(() => new CjTokenManager(store, vault, f).getToken(), f);
+  const pickHero = (title: string, urls: string[], o?: { maxImages?: number }) => pickHeroImage(llm, store, cfg, title, urls, o);
+  let cursor: string | null = typeof body.cursor === 'string' && body.cursor ? body.cursor : null;
+  const tally = { scanned: 0, titleFixed: 0, reordered: 0, reimaged: 0, worklisted: 0 };
+  const budgetUntil = Date.now() + 25_000; // bounded burst; console re-calls with the cursor
+  try {
+    for (let i = 0; i < 12; i++) {
+      const r = await reconcileCatalogImages(admin, cj, pickHero, { after: cursor });
+      tally.scanned += r.scanned; tally.titleFixed += r.titleFixed; tally.reordered += r.reordered;
+      tally.reimaged += r.reimaged; tally.worklisted += r.worklisted;
+      cursor = r.nextCursor;
+      if (!cursor || Date.now() >= budgetUntil) break;
+    }
+    return c.json({ ok: true, ...tally, nextCursor: cursor });
+  } catch (e) {
+    console.warn(`catalog-image sweep failed: ${(e as Error).message}`);
     return c.json({ ok: false, error: `Sweep failed: ${(e as Error).message}` }, 500);
   }
 });

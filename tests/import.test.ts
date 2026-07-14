@@ -1,11 +1,12 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
-import { importProduct, buildPreview, stripHtml, resolveCategory, confirmAndImport, curateDetailImages, vetOrder, reconcileHeroImages, reconcileDescriptions, needsDescriptionRewrite, mediaSignature, reconcileCategories } from '../src/proxy/import';
+import { importProduct, buildPreview, stripHtml, resolveCategory, confirmAndImport, curateDetailImages, vetOrder, reconcileHeroImages, reconcileCatalogImages, cjPidFromTags, NEEDS_IMAGE_TAG, reconcileDescriptions, needsDescriptionRewrite, mediaSignature, reconcileCategories, type PickHeroFn } from '../src/proxy/import';
 import { capTitle } from '../src/debrand';
 import { TenantStore } from '../src/tenant-store';
 import { DEFAULT_GATES, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, DEFAULT_INBOX, DEFAULT_PROFIT, type TenantConfig } from '../src/types';
 import type { CjClient, CjDetail } from '../src/cj';
 import type { AdminGraphql } from '../src/shopify-admin';
+import type { HeroPick } from '../src/llm';
 
 beforeEach(async () => { await applyD1Migrations(env.DB, env.TEST_MIGRATIONS); });
 
@@ -421,6 +422,155 @@ describe('hero-image QA (vision)', () => {
     };
     const r = await reconcileHeroImages(store, admin, CFG, async () => ({ ok: true, index: 1 }));
     expect(r).toEqual({ scanned: 2, fixed: 1, total: 2, next: null }); // bad product swallowed, ok product fixed
+  });
+});
+
+describe('reconcileCatalogImages (full-catalog re-image)', () => {
+  type Node = { id: string; title?: string; tags?: string[]; featuredMedia?: { id: string } | null; heroSig?: string | null; reimaged?: string | null; media: { id: string; url: string }[] };
+  function node(over: Partial<Node> & { id: string }): Node {
+    return { title: 'Pet Dental Wipes', tags: ['cj-pid-PID1'], featuredMedia: { id: over.media?.[0]?.id ?? 'gid://m/0' }, heroSig: null, reimaged: null, media: [], ...over };
+  }
+  function catalogAdmin(calls: Call[], nodes: Node[], hasNextPage = false, endCursor: string | null = null): AdminGraphql {
+    return async (query, variables) => {
+      calls.push({ query, variables });
+      if (query.includes('pawscoutCatalogPage')) {
+        return { products: { pageInfo: { hasNextPage, endCursor }, nodes: nodes.map((n) => ({
+          id: n.id, title: n.title, tags: n.tags, featuredMedia: n.featuredMedia,
+          heroSig: n.heroSig ? { value: n.heroSig } : null,
+          reimaged: n.reimaged ? { value: n.reimaged } : null,
+          media: { nodes: n.media.map((m) => ({ id: m.id, image: { url: m.url } })) },
+        })) } };
+      }
+      if (query.includes('productUpdate')) return { productUpdate: { product: { id: 'x' }, userErrors: [] } };
+      if (query.includes('productReorderMedia')) return { productReorderMedia: { mediaUserErrors: [], userErrors: [] } };
+      if (query.includes('productCreateMedia')) return { productCreateMedia: { media: [{ id: 'gid://m/new' }], mediaUserErrors: [] } };
+      if (query.includes('tagsAdd')) return { tagsAdd: { userErrors: [] } };
+      if (query.includes('metafieldsSet')) return { metafieldsSet: { userErrors: [] } };
+      throw new Error(`unexpected query: ${query.slice(0, 40)}`);
+    };
+  }
+  // A pickHero stub that returns queued results and records how it was called.
+  function pickStub(results: HeroPick[]): { fn: PickHeroFn; calls: { title: string; urls: string[]; opts?: { maxImages?: number } }[] } {
+    const calls: { title: string; urls: string[]; opts?: { maxImages?: number } }[] = [];
+    let i = 0;
+    const fn: PickHeroFn = async (title, urls, opts) => { calls.push({ title, urls, opts }); return results[Math.min(i++, results.length - 1)]; };
+    return { fn, calls };
+  }
+  const cjWith = (images: string[]): Pick<CjClient, 'detail'> => ({ detail: async () => ({ images } as unknown as CjDetail) });
+  const media3 = [{ id: 'gid://m/0', url: 'https://i/0.jpg' }, { id: 'gid://m/1', url: 'https://i/1.jpg' }, { id: 'gid://m/2', url: 'https://i/2.jpg' }];
+
+  it('promotes a clean shot already in the gallery to primary (no CJ fetch)', async () => {
+    const calls: Call[] = [];
+    const admin = catalogAdmin(calls, [node({ id: 'gid://shopify/Product/1', featuredMedia: { id: 'gid://m/0' }, media: media3 })]);
+    const cj = cjWith(['should-not-be-used']);
+    let cjHits = 0;
+    const wrapped: Pick<CjClient, 'detail'> = { detail: async (p) => { cjHits++; return cj.detail(p); } };
+    const pick = pickStub([{ ok: true, index: 2, heroClean: true }]);
+    const r = await reconcileCatalogImages(admin, wrapped, pick.fn, {});
+    expect(r.reordered).toBe(1);
+    expect(r.reimaged).toBe(0);
+    expect(cjHits).toBe(0); // clean shot present → supplier never consulted
+    expect(calls.some((c) => c.query.includes('productReorderMedia'))).toBe(true);
+    expect(calls.some((c) => c.query.includes('metafieldsSet'))).toBe(true); // sig recorded
+  });
+
+  it('re-images an all-overlay product from the supplier gallery and marks it', async () => {
+    const calls: Call[] = [];
+    const admin = catalogAdmin(calls, [node({ id: 'gid://shopify/Product/1', tags: ['cj-pid-PID1'], featuredMedia: { id: 'gid://m/0' }, media: media3 })]);
+    // current-media pick: all overlay (heroClean false) → CJ pick: clean at index 9
+    const pick = pickStub([{ ok: true, index: null, heroClean: false }, { ok: true, index: 9, heroClean: true }]);
+    const cjImgs = Array.from({ length: 13 }, (_, i) => `https://cj/${i}.jpg`);
+    const r = await reconcileCatalogImages(admin, cjWith(cjImgs), pick.fn, {});
+    expect(r.reimaged).toBe(1);
+    expect(r.worklisted).toBe(0);
+    const created = calls.find((c) => c.query.includes('productCreateMedia'));
+    expect(created).toBeTruthy();
+    expect((created!.variables!.media as { originalSource: string }[])[0].originalSource).toBe('https://cj/9.jpg');
+    // the CJ re-pick must be given the larger cap so it can see image #9 (past the default 8)
+    expect(pick.calls[1].opts?.maxImages).toBe(16);
+    // cj_reimaged marker set; hero_sig NOT recorded (media changed → re-vet next pass)
+    const metas = calls.filter((c) => c.query.includes('metafieldsSet')).map((c) => (c.variables!.mf as { key: string }[])[0].key);
+    expect(metas).toContain('cj_reimaged');
+    expect(metas).not.toContain('hero_sig');
+  });
+
+  it('worklist-tags an all-overlay product when the supplier has no clean shot either', async () => {
+    const calls: Call[] = [];
+    const admin = catalogAdmin(calls, [node({ id: 'gid://shopify/Product/1', media: media3 })]);
+    const pick = pickStub([{ ok: true, index: null, heroClean: false }, { ok: true, index: 0, heroClean: false }]);
+    const r = await reconcileCatalogImages(admin, cjWith(['https://cj/0.jpg', 'https://cj/1.jpg']), pick.fn, {});
+    expect(r.worklisted).toBe(1);
+    expect(r.reimaged).toBe(0);
+    const tag = calls.find((c) => c.query.includes('tagsAdd'));
+    expect((tag!.variables!.tags as string[])).toContain(NEEDS_IMAGE_TAG);
+    expect(calls.some((c) => c.query.includes('productCreateMedia'))).toBe(false);
+  });
+
+  it('worklist-tags an all-overlay product with no cj-pid tag (no re-image possible)', async () => {
+    const calls: Call[] = [];
+    const admin = catalogAdmin(calls, [node({ id: 'gid://shopify/Product/1', tags: ['cj-import'], media: media3 })]);
+    const pick = pickStub([{ ok: true, index: null, heroClean: false }]);
+    const r = await reconcileCatalogImages(admin, cjWith(['x', 'y']), pick.fn, {});
+    expect(r.worklisted).toBe(1);
+    expect(calls.some((c) => c.query.includes('productCreateMedia'))).toBe(false);
+  });
+
+  it('does not re-add when the product is already cj_reimaged (all-overlay marker set)', async () => {
+    const calls: Call[] = [];
+    const admin = catalogAdmin(calls, [node({ id: 'gid://shopify/Product/1', reimaged: '1', media: media3 })]);
+    const pick = pickStub([{ ok: true, index: null, heroClean: false }]);
+    const r = await reconcileCatalogImages(admin, cjWith(['x', 'y', 'z']), pick.fn, {});
+    expect(calls.some((c) => c.query.includes('productCreateMedia'))).toBe(false);
+    expect(r.worklisted).toBe(1);
+  });
+
+  it('caps an over-long title in place regardless of image state', async () => {
+    const calls: Call[] = [];
+    const longTitle = ('Durable Dog Chew Toy ').repeat(12).trim(); // > 150
+    const admin = catalogAdmin(calls, [node({ id: 'gid://shopify/Product/1', title: longTitle, heroSig: mediaSignature(['gid://m/0', 'gid://m/1', 'gid://m/2']), media: media3 })]);
+    const pick = pickStub([{ ok: true, index: 1, heroClean: true }]);
+    const r = await reconcileCatalogImages(admin, cjWith([]), pick.fn, {});
+    expect(r.titleFixed).toBe(1);
+    const upd = calls.find((c) => c.query.includes('productUpdate'));
+    expect((upd!.variables!.input as { title: string }).title).toBe(capTitle(longTitle));
+  });
+
+  it('skips vision when the stored signature already matches the current media', async () => {
+    const calls: Call[] = [];
+    const sig = mediaSignature(['gid://m/0', 'gid://m/1', 'gid://m/2']);
+    const admin = catalogAdmin(calls, [node({ id: 'gid://shopify/Product/1', title: 'Short Toy', heroSig: sig, media: media3 })]);
+    const pick = pickStub([{ ok: true, index: 2, heroClean: true }]);
+    let vision = 0;
+    const spy: PickHeroFn = async (t, u, o) => { vision++; return pick.fn(t, u, o); };
+    await reconcileCatalogImages(admin, cjWith([]), spy, {});
+    expect(vision).toBe(0); // sig match → no vision, no reorder
+    expect(calls.some((c) => c.query.includes('productReorderMedia'))).toBe(false);
+  });
+
+  it('returns the endCursor as nextCursor only when another page remains', async () => {
+    const more = catalogAdmin([], [node({ id: 'gid://shopify/Product/1', media: media3 })], true, 'CURSOR2');
+    const last = catalogAdmin([], [node({ id: 'gid://shopify/Product/1', media: media3 })], false, null);
+    const pick = pickStub([{ ok: true, index: null, heroClean: true }]);
+    expect((await reconcileCatalogImages(more, cjWith([]), pick.fn, {})).nextCursor).toBe('CURSOR2');
+    expect((await reconcileCatalogImages(last, cjWith([]), pick.fn, {})).nextCursor).toBe(null);
+  });
+
+  it('leaves single-image products untouched (nothing to reorder)', async () => {
+    const calls: Call[] = [];
+    const admin = catalogAdmin(calls, [node({ id: 'gid://shopify/Product/1', title: 'Short', media: [{ id: 'gid://m/0', url: 'https://i/0.jpg' }] })]);
+    const pick = pickStub([{ ok: true, index: 0, heroClean: false }]);
+    let vision = 0;
+    const spy: PickHeroFn = async (t, u, o) => { vision++; return pick.fn(t, u, o); };
+    const r = await reconcileCatalogImages(admin, cjWith(['x', 'y']), spy, {});
+    expect(vision).toBe(0);
+    expect(r.reimaged).toBe(0);
+    expect(r.worklisted).toBe(0);
+  });
+
+  it('cjPidFromTags reads the universal cj-pid-<pid> tag', () => {
+    expect(cjPidFromTags(['cj-import', 'cj-pid-123456', 'x'])).toBe('123456');
+    expect(cjPidFromTags(['cj-import'])).toBe(null);
+    expect(cjPidFromTags(undefined)).toBe(null);
   });
 });
 

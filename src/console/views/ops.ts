@@ -33,12 +33,14 @@ export const opsView = `  <section class="card">
     <div class="row">
       <button id="syncbtn" onclick="syncNow()">Sync now</button>
       <button class="ghost" id="herobtn" onclick="heroImagesNow()">Fix default images</button>
+      <button class="ghost" id="reimgbtn" onclick="catalogImagesNow()">Fix Google image issues</button>
       <button class="ghost" id="descbtn" onclick="rewriteDescsNow()">Rewrite legacy descriptions</button>
       <button class="ghost" id="catbtn" onclick="fixCategoriesNow()">Re-file categories</button>
     </div>
     <div class="bar" id="syncbar"><i></i></div>
     <p id="syncmsg" class="msg muted"></p>
     <p id="heromsg" class="msg muted"></p>
+    <p id="reimgmsg" class="msg muted"></p>
     <p id="descmsg" class="msg muted"></p>
     <p id="catmsg" class="msg muted"></p>
   </section>
