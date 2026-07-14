@@ -104,7 +104,7 @@ describe('detectOffPlatformRequest', () => {
 describe('buildQualifyingEmail earned-tier terms', () => {
   it('appends the ladder (numbers from the exported constants) only when asked', () => {
     const withTiers = buildQualifyingEmail('Sam', 'voucher', { volumePitch: true });
-    expect(withTiers).toContain(`${STANDARD_COMMISSION_PCT}% of the face value`);
+    expect(withTiers).toContain(`${STANDARD_COMMISSION_PCT}% of the goods value`);
     expect(withTiers).toContain(`${TIER_REVIEW_ORDERS} tracked orders`);
     expect(withTiers).toContain(`up to ${TIER_MAX_PCT}%`);
     expect(withTiers).toContain('No rush'); // paragraph anchored BEFORE the sign-off, not appended blindly

@@ -238,7 +238,7 @@ Active Paw Partnerships`;
 // through the attribution ledger, never promised. Numbers interpolate from the
 // exported constants so copy and code cannot drift.
 const EARNED_TIERS_PARAGRAPH =
-`One thing worth being clear on, since you raised commission terms: every partnership starts at our standard rate - ${STANDARD_COMMISSION_PCT}% of the face value of each paid order tracked to you, on top of the discount your audience gets. We do not negotiate rates against promised volume, but rates are earned on delivered volume: after your first ${TIER_REVIEW_ORDERS} tracked orders in a 30-day window we review your tier, and consistent performers earn up to ${TIER_MAX_PCT}%. Your tracked results do the negotiating for you.`;
+`One thing worth being clear on, since you raised commission terms: every partnership starts at our standard rate - ${STANDARD_COMMISSION_PCT}% of the goods value of each paid order tracked to you, that is the price of the items before your code's discount and not counting shipping. We do not negotiate rates against promised volume, but rates are earned on delivered volume: after your first ${TIER_REVIEW_ORDERS} tracked orders in a 30-day window we review your tier, and consistent performers earn up to ${TIER_MAX_PCT}%. Your tracked results do the negotiating for you.`;
 
 // Vendors (site-speed/SEO/listing services) are not partnership candidates:
 // polite, final, and does not invite a budget follow-up.
