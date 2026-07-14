@@ -189,7 +189,7 @@ export function scoreScreen(
 // LINK variant: the original programme's wording, preserved verbatim for when
 // the owner pursues the full link-tracked partnership programme.
 const QUALIFYING_BODY_LINK =
-`Thanks for reaching out about working together - we'd genuinely like to learn more. We partner with a small number of creators, so we ask everyone the same few questions first. If it looks like a fit, we'll send you our partner application.
+`Thanks for reaching out about working together - we'd genuinely like to learn more. Our partner programme is open to creators of any size, and we ask everyone the same few questions first so we can set you up properly. If it's a fit, we'll send you our partner application.
 
 1. Where would you promote Active Paw? Please share the link(s) to the channel(s) or site where you'd feature us.
 2. Tell us about your audience - roughly how many followers/visitors, your typical engagement (likes/comments/views on a recent post), and which country most of them are in.
@@ -206,7 +206,7 @@ Active Paw Partnerships`;
 // asks WHEN the first post would go live - the trial window starts at the
 // post, not the handshake, so timing decides when the owner issues the code.
 const QUALIFYING_BODY_VOUCHER =
-`Thanks for reaching out about working together - we'd genuinely like to learn more. We partner with a small number of creators, so we ask everyone the same few questions first. If it looks like a fit, we'll set you up with your own discount code for a trial.
+`Thanks for reaching out about working together - we'd genuinely like to learn more. Our partner programme is open to creators of any size, and we ask everyone the same few questions first so we can set you up properly. If it's a fit, we'll set you up with your own discount code for a trial.
 
 1. Where would you promote Active Paw? Please share the link(s) to the channel(s) or site where you'd feature us.
 2. Tell us about your audience - roughly how many followers/visitors, your typical engagement (likes/comments/views on a recent post), and which country most of them are in.
@@ -231,7 +231,9 @@ const EARNED_TIERS_PARAGRAPH =
 const SERVICE_DECLINE_BODY =
 `Thank you for reaching out, and for the offer - we appreciate you taking the time to write.
 
-We keep our store's development, product listings and marketing in-house as a matter of policy, so we will not be taking up the service. It is a settled decision rather than a budget or timing question, so we would rather be straight with you than leave it open.
+We keep our store's development, product listings and marketing in-house with our own team, so it is not a service we take up from outside. For the same reason we do not grant store, admin, or collaborator access to anyone outside the team. It is a settled policy rather than a budget or timing question, so we would rather be straight with you than leave it open.
+
+If you run a channel or audience and would like to promote Active Paw as an affiliate, that programme is open to anyone - just let us know and we will send you the details.
 
 Wishing you and your work every success.
 
