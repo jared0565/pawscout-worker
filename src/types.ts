@@ -343,6 +343,18 @@ export const DEFAULT_SELF_SERVE: SelfServeConfig = {
   enabled: false, autoIssueCapPerDay: 5, screenSpendCapGbpPerDay: 2, scoreThreshold: 8, starterUsageLimit: 15,
 };
 
+// Affiliate commission clearance hold (owner decision 2026-07-14): a tracked
+// order's commission only becomes RELEASABLE (payable, and shown as "available"
+// to the partner) once this many days have passed since the order, so it has
+// cleared the customer's return window and can no longer be refunded. Refunds
+// during the hold already zero the commission via the live recompute, so
+// anything that survives to its clearance date is a genuinely cleared sale.
+// Single source of truth for BOTH the payout/portal/console gating (tenant-store)
+// and the customer-facing copy (partnership.ts, affiliate/apply.ts), so the
+// number and the promise can never drift. ~45 days comfortably covers supplier
+// delivery time plus the 30-day faulty-return window.
+export const COMMISSION_CLEARANCE_DAYS = 45;
+
 export const ACTIVE_PAW_COLLECTION_MAP: TenantConfig['collectionMap'] = {
   'pet-cleaning': { handle: 'pet-cleaning', tag: 'cj-pet-cleaning' },
   'pet-accessories': { handle: 'pet-accessories', tag: 'cj-pet-accessories' },

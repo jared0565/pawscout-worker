@@ -29,7 +29,7 @@ function prtVoucherRowHtml(p,live){
   var title=(p.name||p.email)+' · '+p.code;
   var sub='Discount given '+prtMoney(p.discount)+' · Paid out '+prtMoney(p.paid)+(p.lastOrderAt?(' · Last order '+prtWhen(p.lastOrderAt)):'');
   var items='<button type="button" data-prt-orders="'+esc(p.voucherId)+'" data-prt-title="'+esc(title)+'" data-prt-sub="'+esc(sub)+'">Orders</button>';
-  if(p.owed>0) items+='<button type="button" data-prt-paid="'+esc(p.voucherId)+'" data-prt-title="'+esc(title)+'" data-prt-owed="'+prtMoney(p.owed)+'">Mark commission paid ('+prtMoney(p.owed)+')</button>';
+  if(p.owedCleared>0) items+='<button type="button" data-prt-paid="'+esc(p.voucherId)+'" data-prt-title="'+esc(title)+'" data-prt-owed="'+prtMoney(p.owedCleared)+'">Mark cleared commission paid ('+prtMoney(p.owedCleared)+')</button>';
   if(p.status==='live') items+='<button type="button" data-prt-revoke="'+esc(p.voucherId)+'">Revoke</button>';
   // One-click reissue on a finished row: same partner, same terms, fresh code
   // through the normal issue flow (promo-aware timing, invite staged in the
@@ -48,7 +48,7 @@ function prtVoucherRowHtml(p,live){
     +'<td class="muted">'+esc(p.pctOff)+'% / '+esc(p.commissionPct)+'%</td>'
     +'<td class="prt-num">'+esc(p.uses||0)+'</td>'
     +'<td class="prt-num">'+prtMoney(p.gross)+'</td>'
-    +'<td class="prt-num">'+prtMoney(p.owed)+'</td>'
+    +'<td class="prt-num">'+prtMoney(p.owedCleared)+(p.owedMaturing>0?'<div class="muted" style="font-size:11px;font-weight:400">+'+prtMoney(p.owedMaturing)+' maturing</div>':'')+'</td>'
     +'<td class="muted">'+prtWhen(p.endsAt)+'</td>'
     +'<td class="prt-actions-cell"><button class="ghost prt-menu-btn" type="button" data-prt-menu="v'+esc(p.voucherId)+'">Actions</button><div class="prt-menu-src" hidden>'+items+'</div></td>'
     +'</tr>';
@@ -124,7 +124,7 @@ async function loadPartners(){
     var rows='';
     for(var i=0;i<r.partners.length;i++) rows+=prtVoucherRowHtml(r.partners[i],live);
     var table=rows
-      ?'<div class="prt-tablewrap"><table class="prt-table"><thead><tr><th>Partner</th><th>Code</th><th>Status</th><th>Terms</th><th class="prt-num">Orders</th><th class="prt-num">Gross</th><th class="prt-num">Owed</th><th>Ends</th><th aria-label="Actions"></th></tr></thead><tbody>'+rows+'</tbody></table></div>'
+      ?'<div class="prt-tablewrap"><table class="prt-table"><thead><tr><th>Partner</th><th>Code</th><th>Status</th><th>Terms</th><th class="prt-num">Orders</th><th class="prt-num">Gross</th><th class="prt-num">Payable</th><th>Ends</th><th aria-label="Actions"></th></tr></thead><tbody>'+rows+'</tbody></table></div>'
       :'';
     var h=prtQueueHtml(r.queued)+table;
     box.innerHTML=(h||'<p class="muted">No partners yet. Create a discount code in Shopify admin, then register it below to start a trial.</p>')

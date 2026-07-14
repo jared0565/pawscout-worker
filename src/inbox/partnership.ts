@@ -3,7 +3,7 @@ import { applySalutation, renderReplyHtml, applyFooter, draftReply, buildDraftTr
 import { stripQuotedReply } from './quote';
 import type { CategoryAgent, Grounding } from './agents/types';
 import type { TenantStore } from '../tenant-store';
-import type { Env, TenantConfig } from '../types';
+import { COMMISSION_CLEARANCE_DAYS, type Env, type TenantConfig } from '../types';
 import { LlmClient } from '../llm';
 import { resolveChain } from '../llm-resolve';
 import { maybeAlertOwner } from './alert';
@@ -28,6 +28,20 @@ export const TIER_MAX_PCT = 5;
 /** Customer-facing discount on an auto-issued trial code (the owner's manual
  * register form stays free-form; auto-issue uses this default). */
 export const TRIAL_PCT_OFF_DEFAULT = 5;
+
+// Single source of truth for the two customer-facing sentences about how
+// commission is computed and when it is released, so the emails (this file),
+// the self-serve terms page (affiliate/apply.ts) and any future surface can
+// never drift from each other or from the actual clearance-hold gate
+// (COMMISSION_CLEARANCE_DAYS drives both the copy here and the payout math in
+// tenant-store). Computation states the exact base; the timing sentence states
+// the hold + the monthly cadence the owner backs with the monthly reminder.
+export const COMMISSION_COMPUTATION_SENTENCE =
+  `You earn ${STANDARD_COMMISSION_PCT}% of the goods value of every paid order placed with your code - that is the price of the items before your code's discount, and not counting shipping. Cancelled and fully refunded orders earn nothing, and a partial refund reduces the commission in proportion.`;
+export const COMMISSION_TIMING_SENTENCE =
+  `Commission is confirmed once an order has cleared our returns window, about ${COMMISSION_CLEARANCE_DAYS} days after the order, so it is only ever paid on a sale that has fully settled. Confirmed commission is then paid out monthly.`;
+export const COMMISSION_TIERS_SENTENCE =
+  `Everyone starts at ${STANDARD_COMMISSION_PCT}%; after your first ${TIER_REVIEW_ORDERS} tracked orders in a 30-day window we review your rate, and consistent performers earn up to ${TIER_MAX_PCT}%.`;
 
 /** Mode comes from cfg.inbox.affiliateMode (owner-set in Settings, 2026-07-04):
  *  'funnel_voucher' (default) screens candidates for a discount-code trial and
@@ -212,7 +226,7 @@ const QUALIFYING_BODY_VOUCHER =
 2. Tell us about your audience - roughly how many followers/visitors, your typical engagement (likes/comments/views on a recent post), and which country most of them are in.
 3. How would you plan to promote our products - for example a review or video, a "best for dogs" feature, or everyday content? And roughly when would your first post go live if we went ahead?
 4. Have you partnered with brands before? If so, a couple of examples or links we can look at (pet-related especially welcome).
-5. How we work, briefly: partnerships start with a voucher trial - you get your own discount code to share with your audience, and you earn commission on the face value of every paid order placed with it, paid monthly. We ask for a clear #ad label, no bidding on our brand name, and no posting the code to coupon or deal sites. Does that suit how you operate?
+5. How we work, briefly: partnerships start with a voucher trial - you get your own discount code to share with your audience, and you earn commission on every paid order placed with it. ${COMMISSION_TIMING_SENTENCE} We ask for a clear #ad label, no bidding on our brand name, and no posting the code to coupon or deal sites. Does that suit how you operate?
 
 No rush - whenever you've got a few minutes. We read every reply.
 
@@ -331,7 +345,7 @@ export function buildVoucherInviteWithCode(
 
 Your personal discount code is ${v.code}. It gives your audience ${v.pctOff}% off everything at activepaw.co.uk, once per customer. ${liveLine}
 
-You earn ${v.commissionPct}% of the face value of every paid order placed with your code, paid monthly. ${EARNED_TIERS_SHORT}
+You earn ${v.commissionPct}% of the goods value of every paid order placed with your code - the price of the items before your code's discount, not counting shipping. ${EARNED_TIERS_SHORT} ${COMMISSION_TIMING_SENTENCE}
 
 A few ground rules we ask every partner to keep: a clear #ad disclosure when you post, no bidding on our brand name, and never post the code to coupon or deal sites (that ends the trial immediately).
 

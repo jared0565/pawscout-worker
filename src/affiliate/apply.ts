@@ -25,7 +25,7 @@ import { sendEmail } from '../email';
 import { sanitizeOutbound } from '../inbox/draft';
 import {
   PARTNERSHIP_FROM, PARTNERSHIP_ADDRESS, STANDARD_COMMISSION_PCT, TIER_REVIEW_ORDERS, TIER_MAX_PCT,
-  TRIAL_PCT_OFF_DEFAULT
+  TRIAL_PCT_OFF_DEFAULT, COMMISSION_COMPUTATION_SENTENCE, COMMISSION_TIMING_SENTENCE, COMMISSION_TIERS_SENTENCE
 } from '../inbox/partnership';
 import { hmacHex } from '../retention';
 import {
@@ -418,9 +418,9 @@ ${previewBanner}${liquidHero(
     'Earn with Active Paw',
     'Recommend pet products you love and earn commission on every tracked order from your audience.',
     `<ul class="apaff-chips">
-    <li>${escHtml(String(STANDARD_COMMISSION_PCT))}% commission, up to ${escHtml(String(TIER_MAX_PCT))}%</li>
+    <li>Earn ${escHtml(String(STANDARD_COMMISSION_PCT))}%, rising to ${escHtml(String(TIER_MAX_PCT))}% for performers</li>
     <li>${escHtml(String(TRIAL_PCT_OFF_DEFAULT))}% off for your audience</li>
-    <li>Your own results dashboard</li>
+    <li>Open to creators of any size</li>
   </ul>`
   )}
 <ol class="apaff-steps">
@@ -491,7 +491,7 @@ export function renderTermsPage(cfg: TenantConfig): string {
 ${liquidHero('Active Paw', 'Partner Program Terms', 'Plain-language terms with real numbers - the same ones our system enforces automatically. By applying, you agree to them.')}
 <section class="apaff-card">
 <h2>How commission works</h2>
-<p>Once approved, you get a unique discount code. When a customer enters it at checkout, we track the order against your account. Commission is ${escHtml(String(STANDARD_COMMISSION_PCT))}% of the order's goods value (before your code's discount, excluding shipping). Cancelled and fully refunded orders earn no commission; partial refunds reduce it proportionally.</p>
+<p>Once approved, you get a unique discount code. When a customer enters it at checkout, we track the order against your account. ${escHtml(COMMISSION_COMPUTATION_SENTENCE)}</p>
 </section>
 <section class="apaff-card">
 <h2>Your starter code</h2>
@@ -499,7 +499,7 @@ ${liquidHero('Active Paw', 'Partner Program Terms', 'Plain-language terms with r
 </section>
 <section class="apaff-card">
 <h2>Growing your rate</h2>
-<p>After your first ${escHtml(String(TIER_REVIEW_ORDERS))} tracked orders in a 30-day window we review your rate, up to ${escHtml(String(TIER_MAX_PCT))}%.</p>
+<p>${escHtml(COMMISSION_TIERS_SENTENCE)}</p>
 </section>
 <section class="apaff-card">
 <h2>Orders you place yourself</h2>
@@ -515,7 +515,7 @@ ${liquidHero('Active Paw', 'Partner Program Terms', 'Plain-language terms with r
 </section>
 <section class="apaff-card">
 <h2>Getting paid</h2>
-<p>Your commission is tracked automatically in your partner dashboard. To request a payout, contact us at ${escHtml(PARTNERSHIP_ADDRESS)} or reply to any partner email.</p>
+<p>${escHtml(COMMISSION_TIMING_SENTENCE)} You can see what has cleared and what is still maturing any time in your partner dashboard. Questions about a payment? Email ${escHtml(PARTNERSHIP_ADDRESS)} or reply to any partner email.</p>
 </section>
 <section class="apaff-card">
 <h2>Your data</h2>

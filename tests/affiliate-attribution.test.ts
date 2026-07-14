@@ -110,7 +110,11 @@ describe('attributeAffiliateOrders', () => {
     const { store, voucherId } = await seedVoucher(2);
     const first = adminReturning([[orderNode()]]);
     await attributeAffiliateOrders(store, first.admin, HMAC_SECRET);
-    expect((await store.createAffiliatePayout(voucherId))?.ordersCovered).toBe(1);
+    // Pay out with a `now` past the clearance hold so the (fixed-date) order is
+    // payable - this test is about the payout stamp surviving a later refund,
+    // not about the hold (which has its own tests).
+    const clearedNow = Date.now() + 60 * 86400000;
+    expect((await store.createAffiliatePayout(voucherId, {}, clearedNow))?.ordersCovered).toBe(1);
 
     // The refund re-surfaces the order with a newer updated_at and zeroed
     // CURRENT amounts; the re-upsert must zero commission but keep paid_out_at.

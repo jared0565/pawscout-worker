@@ -1,8 +1,18 @@
-import { DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, DEFAULT_SEMANTIC, DEFAULT_PROFIT, DEFAULT_SELF_SERVE, mergeSyndicate, type TenantRow, type TenantConfig, type Fulfil, type ProfitConfig, type SyndicateConfig, type SelfServeConfig } from './types';
+import { DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, DEFAULT_SEMANTIC, DEFAULT_PROFIT, DEFAULT_SELF_SERVE, COMMISSION_CLEARANCE_DAYS, mergeSyndicate, type TenantRow, type TenantConfig, type Fulfil, type ProfitConfig, type SyndicateConfig, type SelfServeConfig } from './types';
 import type { LogisticsRoute } from './logistics';
 import { deriveModels } from './llm-migrate';
 import { DEFAULT_INBOX, type InboxConfig } from './inbox/types';
 import type { ContactRow, ThreadRow, MessageRow, ThreadStatus, DraftRow, DraftStatus, InvoiceRow, InvoiceLineItem, InvoiceStatus, ApplicantRow, PartnershipStage, ScreenVerdict } from './inbox/types';
+
+/** ISO cutoff for the commission clearance hold: an order whose age basis
+ *  (placed_at, or its insert timestamp created_at when placed_at is missing, so
+ *  a null placed_at can never strand commission) is <= this instant has cleared
+ *  the return window and its commission is releasable. Computed server-side from
+ *  an injectable now so it can never be shifted by a stale client, and so the
+ *  three readers (payout, console owed, portal) all gate on the SAME boundary. */
+function clearanceCutoffIso(nowMs: number): string {
+  return new Date(nowMs - COMMISSION_CLEARANCE_DAYS * 86_400_000).toISOString();
+}
 
 /** The Open (unprocessed) status set - ONE definition shared by the Inbox
  * default list, the open-queue count behind the rail badge, and the
@@ -196,7 +206,10 @@ export interface AffiliateVoucherListRow {
   partner_id: string; contact_email: string; name: string | null;
   channel_url: string | null; notes: string | null;
   marketing_consent: number;
-  uses: number; gross: number; discount: number; owed: number; paid: number;
+  // owed = ALL unpaid eligible commission (total). owed_cleared = the payable
+  // portion (past the clearance hold); owed_maturing = still in the hold window.
+  // owed === owed_cleared + owed_maturing. The owner pays owed_cleared.
+  uses: number; gross: number; discount: number; owed: number; owed_cleared: number; owed_maturing: number; paid: number;
   last_order_at: string | null;
 }
 
@@ -256,7 +269,12 @@ export interface PartnerPortalSummary {
   gross_gbp: number;
   commission_gbp: number;
   paid_gbp: number;
+  // pending_gbp = ALL unpaid eligible commission (total, unchanged meaning).
+  // available_gbp = the cleared, payable portion; maturing_gbp = still in the
+  // clearance hold. pending_gbp === available_gbp + maturing_gbp.
   pending_gbp: number;
+  available_gbp: number;
+  maturing_gbp: number;
   last_order_at: string | null;
 }
 
@@ -2027,13 +2045,18 @@ export class TenantStore {
   /** Partners view list: one row per voucher (newest first) with its partner and
    *  ledger roll-up. Uses/gross/discount count ELIGIBLE (paid, uncancelled)
    *  orders; owed/paid split commission by the payout stamp. */
-  async listAffiliateVouchers(): Promise<AffiliateVoucherListRow[]> {
+  async listAffiliateVouchers(nowMs: number = Date.now()): Promise<AffiliateVoucherListRow[]> {
+    // owed splits into owed_cleared (past the clearance hold, payable now) and
+    // owed_maturing (still in the return-window hold) on the same cutoff the
+    // payout uses, so the owner only ever pays what has genuinely cleared.
+    const cutoff = clearanceCutoffIso(nowMs);
     const rs = await this.db
       .prepare(
         `SELECT v.id AS voucher_id, v.code, v.pct_off, v.commission_pct, v.starts_at, v.ends_at, v.status, v.created_at,
                 p.id AS partner_id, p.contact_email, p.name, p.channel_url, p.notes, p.marketing_consent,
                 COALESCE(o.uses, 0) AS uses, COALESCE(o.gross, 0) AS gross, COALESCE(o.discount, 0) AS discount,
-                COALESCE(o.owed, 0) AS owed, COALESCE(po.paid, 0) AS paid, o.last_order_at
+                COALESCE(o.owed, 0) AS owed, COALESCE(o.owed_cleared, 0) AS owed_cleared,
+                COALESCE(o.owed_maturing, 0) AS owed_maturing, COALESCE(po.paid, 0) AS paid, o.last_order_at
          FROM affiliate_vouchers v
          JOIN affiliate_partners p ON p.shop = v.shop AND p.id = v.partner_id
          LEFT JOIN (
@@ -2042,6 +2065,8 @@ export class TenantStore {
                   SUM(CASE WHEN eligible = 1 THEN gross_gbp ELSE 0 END) AS gross,
                   SUM(CASE WHEN eligible = 1 THEN discount_gbp ELSE 0 END) AS discount,
                   SUM(CASE WHEN paid_out_at IS NULL THEN commission_gbp ELSE 0 END) AS owed,
+                  SUM(CASE WHEN paid_out_at IS NULL AND COALESCE(placed_at, created_at) <= ?2 THEN commission_gbp ELSE 0 END) AS owed_cleared,
+                  SUM(CASE WHEN paid_out_at IS NULL AND COALESCE(placed_at, created_at) >  ?2 THEN commission_gbp ELSE 0 END) AS owed_maturing,
                   MAX(placed_at) AS last_order_at
            FROM affiliate_orders WHERE shop = ?1 GROUP BY voucher_id
          ) o ON o.voucher_id = v.id
@@ -2055,7 +2080,7 @@ export class TenantStore {
          WHERE v.shop = ?1
          ORDER BY v.created_at DESC`
       )
-      .bind(this.shop)
+      .bind(this.shop, cutoff)
       .all<AffiliateVoucherListRow>();
     return rs.results ?? [];
   }
@@ -2147,15 +2172,20 @@ export class TenantStore {
    *  exact rows paid_out_at + payout_id. Later refunds still recompute the
    *  live ledger honestly, but what was actually paid can never be rewritten.
    *  Returns null when nothing is owed. */
-  async createAffiliatePayout(voucherId: string, opts?: { method?: string | null; reference?: string | null; note?: string | null }): Promise<{ payoutId: string; amount: number; ordersCovered: number; createdAt: string } | null> {
+  async createAffiliatePayout(voucherId: string, opts?: { method?: string | null; reference?: string | null; note?: string | null }, nowMs: number = Date.now()): Promise<{ payoutId: string; amount: number; ordersCovered: number; createdAt: string } | null> {
+    // Only CLEARED rows are payable: an order still inside its return window can
+    // still be refunded, so paying its commission early risks paying on a sale
+    // that reverses (and the frozen payout record can never be rewritten).
+    const cutoff = clearanceCutoffIso(nowMs);
     const rs = await this.db
       .prepare(
         `SELECT shopify_order_id, order_name, placed_at, gross_gbp, discount_gbp, commission_gbp
          FROM affiliate_orders
          WHERE shop = ?1 AND voucher_id = ?2 AND paid_out_at IS NULL AND eligible = 1 AND commission_gbp > 0
+           AND COALESCE(placed_at, created_at) <= ?3
          ORDER BY placed_at ASC`
       )
-      .bind(this.shop, voucherId)
+      .bind(this.shop, voucherId, cutoff)
       .all<{ shopify_order_id: string; order_name: string | null; placed_at: string | null; gross_gbp: number; discount_gbp: number; commission_gbp: number }>();
     const rows = rs.results ?? [];
     if (!rows.length) return null;
@@ -2216,7 +2246,8 @@ export class TenantStore {
    *  paid comes from the frozen affiliate_payouts total (what actually left,
    *  immune to a later refund recompute), pending is the live unpaid
    *  commission on eligible rows - same owed/paid split as listAffiliateVouchers. */
-  async partnerPortalSummary(partnerId: string): Promise<PartnerPortalSummary> {
+  async partnerPortalSummary(partnerId: string, nowMs: number = Date.now()): Promise<PartnerPortalSummary> {
+    const cutoff = clearanceCutoffIso(nowMs);
     const vouchersRs = await this.db
       .prepare(
         `SELECT code, status, starts_at, ends_at FROM affiliate_vouchers
@@ -2231,13 +2262,15 @@ export class TenantStore {
            COALESCE(SUM(CASE WHEN o.eligible = 1 THEN o.gross_gbp ELSE 0 END), 0) AS gross_gbp,
            COALESCE(SUM(CASE WHEN o.eligible = 1 THEN o.commission_gbp ELSE 0 END), 0) AS commission_gbp,
            COALESCE(SUM(CASE WHEN o.eligible = 1 AND o.paid_out_at IS NULL THEN o.commission_gbp ELSE 0 END), 0) AS pending_gbp,
+           COALESCE(SUM(CASE WHEN o.eligible = 1 AND o.paid_out_at IS NULL AND COALESCE(o.placed_at, o.created_at) <= ?3 THEN o.commission_gbp ELSE 0 END), 0) AS available_gbp,
+           COALESCE(SUM(CASE WHEN o.eligible = 1 AND o.paid_out_at IS NULL AND COALESCE(o.placed_at, o.created_at) >  ?3 THEN o.commission_gbp ELSE 0 END), 0) AS maturing_gbp,
            MAX(o.placed_at) AS last_order_at
          FROM affiliate_orders o
          JOIN affiliate_vouchers v ON v.shop = o.shop AND v.id = o.voucher_id
          WHERE o.shop = ?1 AND v.partner_id = ?2`
       )
-      .bind(this.shop, partnerId)
-      .first<{ orders_count: number; gross_gbp: number; commission_gbp: number; pending_gbp: number; last_order_at: string | null }>();
+      .bind(this.shop, partnerId, cutoff)
+      .first<{ orders_count: number; gross_gbp: number; commission_gbp: number; pending_gbp: number; available_gbp: number; maturing_gbp: number; last_order_at: string | null }>();
     const paidRow = await this.db
       .prepare(`SELECT COALESCE(SUM(amount_gbp), 0) AS paid_gbp FROM affiliate_payouts WHERE shop = ?1 AND partner_id = ?2`)
       .bind(this.shop, partnerId)
@@ -2250,6 +2283,8 @@ export class TenantStore {
       commission_gbp: agg?.commission_gbp ?? 0,
       paid_gbp: paidRow?.paid_gbp ?? 0,
       pending_gbp: agg?.pending_gbp ?? 0,
+      available_gbp: agg?.available_gbp ?? 0,
+      maturing_gbp: agg?.maturing_gbp ?? 0,
       last_order_at: agg?.last_order_at ?? null
     };
   }

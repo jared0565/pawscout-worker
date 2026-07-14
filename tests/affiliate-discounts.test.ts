@@ -216,8 +216,12 @@ describe('buildVoucherInviteWithCode', () => {
     expect(body.startsWith('Hi Sam,')).toBe(true);
     expect(body).toContain('ACTIVEPAW-SAM5');
     expect(body).toContain('5% off');
-    expect(body).toContain('2% of the face value');
+    expect(body).toContain('2% of the goods value');
     expect(body).toContain('25 tracked orders');
+    // Clearance hold + monthly cadence (2026-07-14): the invite states when
+    // commission is confirmed and paid, not just the rate.
+    expect(body).toContain('cleared our returns window');
+    expect(body).toContain('paid out monthly');
     expect(body).toContain('coupon or deal sites');
     expect(body).not.toMatch(/[—–]/);
   });

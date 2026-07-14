@@ -28,7 +28,7 @@
 // dashboard, for a cookie-authenticated partner only.
 
 import type { Env, TenantConfig } from '../types';
-import { DEFAULT_SELF_SERVE } from '../types';
+import { DEFAULT_SELF_SERVE, COMMISSION_CLEARANCE_DAYS } from '../types';
 import type { TenantStore, PartnerPortalSummary } from '../tenant-store';
 import { sha256Hex, issueLoginLink, RESEND_COOLDOWN_MS } from './apply';
 import { workerShell } from './pages';
@@ -174,12 +174,12 @@ function renderDashboard(summary: PartnerPortalSummary, nowMs: number): string {
 </table>
 <div class="apw-stats">
   <div class="apw-stat"><b>Orders tracked</b><span>${summary.orders_count}</span></div>
-  <div class="apw-stat"><b>Gross face value</b><span>${money(summary.gross_gbp)}</span></div>
   <div class="apw-stat"><b>Commission earned</b><span>${money(summary.commission_gbp)}</span></div>
+  <div class="apw-stat"><b>Available for payout</b><span>${money(summary.available_gbp)}</span></div>
+  <div class="apw-stat"><b>Maturing</b><span>${money(summary.maturing_gbp)}</span></div>
   <div class="apw-stat"><b>Paid out</b><span>${money(summary.paid_gbp)}</span></div>
-  <div class="apw-stat"><b>Pending</b><span>${money(summary.pending_gbp)}</span></div>
 </div>
-<p class="apw-muted">Last order: ${lastOrder}</p>`);
+<p class="apw-muted">"Available for payout" is commission from orders that have cleared our ${COMMISSION_CLEARANCE_DAYS}-day return window; "Maturing" is still within it. Last order: ${lastOrder}</p>`);
 }
 
 // --- POST /affiliate/portal/login -------------------------------------------

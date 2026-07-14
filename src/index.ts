@@ -49,6 +49,7 @@ import { readDeliveryConfig, syncSignatureProfiles } from './shipping/delivery-p
 import { resolveShipConfig } from './shipping/ship-config';
 import { resolveLogistics } from './logistics';
 import { runDailyMaintenance, resumeDailyMaintenance, runMarketVisibilityReconcile, runProfitAgentSweep, syncStoreInventory, refillCollections } from './jobs';
+import { maybeAffiliatePayoutReminder } from './affiliate-payout-reminder';
 import { debrandCatalog } from './catalog-debrand';
 import { runOrderPipeline, runOrderPipelineForShop } from './fulfil-run';
 import { runSyndicationSweep, ensurePack, sendChannel, runSyndicationForShop } from './syndicate/run';
@@ -1988,7 +1989,7 @@ const worker: ExportedHandler<Env> = {
     // 15-minute invocation, so it completes across ticks).
     ctx.waitUntil(
       controller.cron === DAILY_CRON
-        ? runDailyMaintenance(env)
+        ? Promise.all([runDailyMaintenance(env), maybeAffiliatePayoutReminder(env)]).then(() => undefined)
         : Promise.all([runOrderPipeline(env), runInboxClassifySweep(env), runMarketVisibilityReconcile(env), runProfitAgentSweep(env), runSyndicationSweep(env), runAffiliateScreenSweep(env), resumeDailyMaintenance(env)]).then(() => undefined)
     );
   },
