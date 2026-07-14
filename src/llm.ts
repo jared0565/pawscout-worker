@@ -271,8 +271,10 @@ export async function pickHeroImage(
       'STRONGLY prefer a clean, well-lit photo of the product ITSELF with NO overlaid marketing/banner text baked into the image, NO watermarks, and NO cartoon or illustrated mascots - ' +
       'over packaging-only, a size chart, any text/infographic/promotional graphic, a lifestyle-only scene, or an extreme close-up of one detail. ' +
       'A photo with large overlaid promo text or a cartoon mascot looks unprofessional; choose it as hero ONLY if no cleaner plain product photo exists in the set.\n' +
-      '2) DROP: list the indices of images that DO NOT BELONG to this listing - an image showing a DIFFERENT animal than the title names (e.g. the title says "dog" but the image shows a cat), an unrelated product, or a near-duplicate. ' +
-      'Be CONSERVATIVE: only drop an image you are confident is incongruent with the title; when unsure, KEEP it (do not drop). The hero must NOT be in drop. ' +
+      '2) DROP: list the indices of images that must NOT appear in the store, for either of two reasons. ' +
+      '(a) INCONGRUENT - it shows a DIFFERENT animal than the title names (title says "dog" but the image shows a cat), an unrelated product, or a near-duplicate; be CONSERVATIVE here, only drop when you are confident, and when unsure KEEP it. ' +
+      '(b) PROMOTIONAL OVERLAY - it has marketing graphics ADDED on top of the photo: a promo/discount/"sale"/"hot"/price banner or badge, a shop or brand watermark stamped across the image, or a heavy decorative border or collage frame. The shopping feed disallows these. Do NOT drop an image merely because the PRODUCT or its packaging naturally shows text or a logo; only drop marketing graphics added on top of the photo. ' +
+      'The hero must NOT be in drop, and never drop so many that nothing would remain - if every image carries an overlay, keep the cleanest one as hero and drop the others. ' +
       'If the title names an animal, the hero MUST feature that animal when any image does.\n' +
       'Respond with ONLY JSON: {"index": <0-based hero index>, "drop": [<0-based indices to remove>], "reason": <short phrase, max 12 words>}.',
     user: JSON.stringify({ title, imageCount: urls.length, note: 'Images follow in order; the first image is index 0.' }),

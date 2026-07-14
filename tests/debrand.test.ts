@@ -1,5 +1,31 @@
 import { describe, it, expect } from 'vitest';
-import { debrandTitle, debrandText, BRAND_TOKENS } from '../src/debrand';
+import { debrandTitle, debrandText, capTitle, MAX_TITLE_LEN, BRAND_TOKENS } from '../src/debrand';
+
+describe('capTitle', () => {
+  it('leaves a title within the limit unchanged', () => {
+    const t = 'Stainless Steel Cat Litter Box with Lid and Scoop';
+    expect(capTitle(t)).toBe(t);
+    expect(capTitle('').length).toBe(0);
+  });
+
+  it('caps an over-long title to <= 150 chars on a word boundary, no trailing separator', () => {
+    const long = ('Durable Dog Chew Toy ').repeat(12).trim(); // 251 chars
+    const out = capTitle(long);
+    expect(out.length).toBeLessThanOrEqual(MAX_TITLE_LEN);
+    expect(out).not.toMatch(/[\s,;:.\-|/]$/); // no dangling separator
+    expect(out.endsWith('Toy')).toBe(true);   // clean word boundary, not mid-word
+    expect(long.startsWith(out)).toBe(true);  // a true prefix (no invented text)
+  });
+
+  it('hard-caps a single over-long token that has no word boundary', () => {
+    const token = 'x'.repeat(200);
+    expect(capTitle(token).length).toBe(MAX_TITLE_LEN);
+  });
+
+  it('respects a custom max', () => {
+    expect(capTitle('one two three four five', 7)).toBe('one two');
+  });
+});
 
 describe('debrandTitle', () => {
   // The exact 9 live titles that carried the PawHut brand (scanned 2026-07-08).

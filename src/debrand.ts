@@ -49,6 +49,24 @@ export function debrandTitle(title: string, brands: string[] = BRAND_TOKENS): st
   return out || title;
 }
 
+/** Google's product-title feed attribute is limited to 150 characters; a longer
+ *  title is flagged "Value truncated [title]" and shown clipped. CJ titles are
+ *  routinely keyword-stuffed well past that. Cap on a word boundary (never mid-
+ *  word, unless a single token already exceeds the limit) and trim any trailing
+ *  separator so the visible title stays clean. Idempotent: a title already within
+ *  the limit is returned unchanged. */
+export const MAX_TITLE_LEN = 150;
+export function capTitle(title: string, max: number = MAX_TITLE_LEN): string {
+  if (!title) return title;
+  const t = title.trim();
+  if (t.length <= max) return t;
+  const slice = t.slice(0, max);
+  const lastSpace = slice.lastIndexOf(' ');
+  // Prefer a word boundary, but not if it discards most of the allowance.
+  const cut = lastSpace >= Math.floor(max * 0.6) ? slice.slice(0, lastSpace) : slice;
+  return cut.replace(/[\s,;:.\-|/]+$/, '').trim() || slice.trim();
+}
+
 /**
  * De-brand a block of customer-facing TEXT or HTML (e.g. an article body).
  * Case-SENSITIVE: only the proper-case visible brand word is removed, so a

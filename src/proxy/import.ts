@@ -8,7 +8,7 @@ import { AFFILIATE_ELIGIBLE_TAG, productAffiliateEligible } from '../affiliate';
 import { isLikelyPetProduct, signaledCategory } from './search';
 import { getPrimaryLocationId, setSupplierMetafields, MAX_TRACKED_QTY } from './inventory';
 import { bestLocalQty, HOME_MARKET_WAREHOUSES } from '../local-markets';
-import { debrandTitle } from '../debrand';
+import { debrandTitle, capTitle } from '../debrand';
 import { productNetAfterAds, undercutTarget, liveNetGbp, type CompetitorSignal } from '../profitability';
 
 export const IMPORT_TAG = 'cj-import';
@@ -406,7 +406,7 @@ export async function importProduct(
     const input = {
       // De-brand incoming titles: strip manufacturer/supplier brands (e.g.
       // PawHut) so we never list stock under a competitor's name. See src/debrand.ts.
-      title: debrandTitle(detail.nameEn),
+      title: capTitle(debrandTitle(detail.nameEn)),
       descriptionHtml: detail.descriptionHtml,
       status: publish ? 'ACTIVE' : 'DRAFT',
       tags: [IMPORT_TAG, `cj-pid-${detail.pid}`, ...(opts.marketTag ? [opts.marketTag] : []), ...(opts.extraTags ?? []), ...(isAddon ? [ADDON_TAG] : []), ...(detail.petClass ? [`cj-species-${detail.petClass}`] : []), ...(browseCat && cfg.collectionMap[browseCat] ? [cfg.collectionMap[browseCat].tag] : []), ...(!isAddon && productAffiliateEligible(variants, cfg.pricing, detail.freightUsd) ? [AFFILIATE_ELIGIBLE_TAG] : [])],
@@ -582,10 +582,12 @@ const DELETE_MEDIA = `mutation pawscoutDeleteMedia($productId: ID!, $mediaIds: [
   }
 }`;
 
-// Bump when the vision logic changes meaning (e.g. v1 only reordered the hero;
-// v2 also DROPS incongruent images) so every product is re-checked once under
-// the new rules instead of being skipped by a stale cached signature.
-const VET_VERSION = 'v2';
+// Bump when the vision logic changes meaning (v1 only reordered the hero; v2
+// also DROPS incongruent images; v3 also drops PROMOTIONAL-OVERLAY images -
+// baked-in marketing/price banners, watermarks, heavy borders - that the
+// shopping feed disapproves) so every product is re-checked once under the new
+// rules instead of being skipped by a stale cached signature.
+const VET_VERSION = 'v3';
 
 /**
  * Order-independent fingerprint of a product's media set, prefixed with the
@@ -638,12 +640,23 @@ export async function reconcileHeroImages(
         };
       };
       const p = data.product;
+      // Title-length cap (independent of the image checks below): Google truncates
+      // a title past MAX_TITLE_LEN ("Value truncated [title]"). Fix an over-long
+      // one in place, whatever the image count or vet state.
+      const curTitle = p?.title ?? '';
+      const capped = capTitle(curTitle);
+      if (capped && capped !== curTitle) {
+        const u = await admin(UPDATE_DESC, { input: { id: link.shopify_product_id, title: capped } }) as {
+          productUpdate?: { userErrors?: { message: string }[] };
+        };
+        if (!(u.productUpdate?.userErrors ?? []).length) fixed++;
+      }
       const nodes = (p?.media?.nodes ?? []).filter(
         (n): n is { id: string; image: { url: string } } => !!n?.id && !!n?.image?.url
       );
       if (nodes.length < 2) continue;
       const sig = mediaSignature(nodes.map((n) => n.id));
-      if (p?.metafield?.value === sig) continue; // already vision-checked at this media state - no LLM call
+      if (p?.metafield?.value === sig) continue; // already vision-checked at this media state (sig carries VET_VERSION) - no LLM call
       const hero = await pickHero(p?.title ?? '', nodes.map((n) => n.image.url));
       if (!hero.ok) continue; // couldn't decide (LLM down/failed) - don't cache, retry next run
 
