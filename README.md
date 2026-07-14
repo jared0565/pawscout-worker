@@ -58,11 +58,11 @@ When a Shopify order is paid, the worker:
 
 ### Merchant console (embedded in Shopify)
 
-A full-featured admin UI, embedded via App Bridge. What started as connection status and config controls now spans the whole operation: Overview (catalogue stats, search keywords, fill rates), Inbox (customer email with AI drafts and the answer library), Content (blog pipeline and distribution), Profitability (market judge, per-row actions, recalibrate), Campaigns (email marketing and tracking), Traffic (acquisition channel board), Orders, and Settings (gates, pricing, AI config, AI-spend ledger, fulfilment mode). No config files to edit manually.
+A full-featured admin UI, embedded via App Bridge. What started as connection status and config controls now spans the whole operation: Overview (catalogue stats, search keywords, fill rates), Inbox (customer email with AI drafts), Answers (the approved-reply library on its own page), Content (blog pipeline and distribution), Profitability (market judge, per-row actions, recalibrate), Partners (the self-serve affiliate marketplace: applications, vouchers, orders, payouts), Campaigns (email marketing and tracking), Traffic (acquisition channel board), Orders, and Settings (gates, pricing, AI config, AI-spend ledger, fulfilment mode). No config files to edit manually.
 
 ### Customer inbox (AI-drafted, human-approved)
 
-All mail to the store address lands in the console Inbox as categorised threads (order status, product questions, shipping, wholesale, partnerships, spam). A per-category agent drafts a reply grounded in store facts and live order/catalogue data, runs it through a self-correcting quality loop, and holds it for owner approval (auto-send exists behind per-category gates). An **answer memory** captures every approved reply and grounds similar future questions with it, so facts, policy, and voice stay consistent over time - pairs are listed in an Answer library with per-pair disable, and GDPR redaction covers them. Outbound mail is sanitised deterministically: URLs linkified into real anchors, one canonical store domain, no unsupportable claims. Delivered/opened/clicked/bounced events show per thread in the context rail.
+All mail to the store address lands in the console Inbox as categorised threads (order status, product questions, shipping, wholesale, partnerships, spam). A per-category agent drafts a reply grounded in store facts and live order/catalogue data, runs it through a self-correcting quality loop, and holds it for owner approval (auto-send exists behind per-category gates). An **answer memory** captures every approved reply and grounds similar future questions with it, so facts, policy, and voice stay consistent over time - pairs are listed on a dedicated Answer library page (its own console route, roomy enough to actually read) with per-pair disable, and GDPR redaction covers them. Outbound mail is sanitised deterministically: URLs linkified into real anchors, one canonical store domain, no unsupportable claims. Delivered/opened/clicked/bounced events show per thread in the context rail.
 
 ### Profitability engine (adjust-or-drop)
 
@@ -79,6 +79,16 @@ Consented-buyer campaigns (compliance footer, one-click unsubscribe) send throug
 ### Traffic board
 
 A console card tracks acquisition channels (Google Shopping feed, SEO, email, partner/affiliate trial, short-video) with status, rationale, and next action per channel - the demand-side operating plan, kept where the data lives.
+
+### Affiliate marketplace (self-serve, screened)
+
+Anyone can apply to promote Active Paw for commission. A branded application form and a partner-terms page render inside the live storefront (the worker serves them over the App Proxy as Liquid, so they carry the real theme header and footer); the theme footer links to the application form, which in turn links to the terms. A Cloudflare Turnstile gate keeps bots out of the form.
+
+Applications are screened automatically: a scored LLM pass, bounded by a daily spend cap and a qualifying-score threshold, checks the applicant and the channel they promote on, then either auto-issues a unique starter discount code, routes a borderline case to the owner queue, or declines - no manual triage in the common path. Approved partners get a magic-link dashboard showing their code, their tracked orders, and their commission split into "Available for payout" and still-"Maturing".
+
+The core commission maths is fixed in code and stated to partners up front, so the promise never drifts from what actually runs: **2% of the goods value of every paid order placed with a partner's code** (the item price before their code's discount, shipping excluded). Cancelled and fully refunded orders earn nothing, and a partial refund reduces the commission in proportion - all recomputed automatically from Shopify's current order state on each poll. The published rate **rises to 5% for consistent performers**, but that tier is a stated policy the owner applies by hand (review after roughly the first 25 tracked orders, then re-issue at a higher rate) - the code does not itself count volume or change a live voucher's rate.
+
+Commission is then held until it clears: it only becomes payable **45 days after the order**, once the customer's return window has closed, so it is paid solely on a fully settled sale. A self-referral flag catches an "affiliate" buying through their own code. Payout is owner-triggered - the console records each payment and the owner sends the money externally - and a reminder on the 1st of each month lists the cleared commission awaiting payout. The whole public funnel ships behind one switch (`selfServe.enabled`); the owner-side Partners console (applications, vouchers, orders, payouts) works whether or not that switch is on.
 
 ---
 
@@ -175,6 +185,9 @@ src/
   campaigns.ts          Consented-buyer email campaigns
   resend-events.ts      Resend webhook -> email_events (delivered/opened/clicked/bounced)
   traffic.ts            Traffic board: acquisition channels, status, next actions
+  affiliate-discounts.ts   Affiliate voucher issue / deactivation via Admin API
+  affiliate-attribution.ts Buyer-email hashing + self-referral attribution
+  affiliate-payout-reminder.ts  Monthly (1st) owner reminder: cleared commission awaiting payout
   debrand.ts            Maker-brand removal on all customer-facing text
   auth/                 OAuth begin/callback, managed-install token exchange, uninstall
   console/              Embedded merchant console (page, views, per-view browser JS)
@@ -183,6 +196,9 @@ src/
   blog/                 Guide authoring: research, brief, draft, ground, hero vetting,
                         combo merchandising, quality, publish-status sync
   syndicate/            Blog distribution rail (Blotato), creative packs, ledger, fences
+  affiliate/            Self-serve partner marketplace: apply form + terms (Liquid),
+                        Turnstile gate, LLM screening, magic-link portal/dashboard,
+                        commission model + 45-day clearance hold
   shipping/             Nearest-warehouse shipping formula, market catalogs/exclusion
   proxy/
     verify.ts           Shopify App Proxy HMAC verification (constant-time, replay window)
@@ -260,6 +276,8 @@ Sales arriving through the on-site search flywheel carry near-zero acquisition c
 | `llm_usage` | **W3**: per-call OpenRouter tokens + cost (curation/keyword tasks), 90-day retention |
 | `orders` | Fulfilment queue: Shopify order → CJ order mapping, status, shipping address |
 
+The table above is the storefront/fulfilment core. Later subsystems each add their own tables under `migrations/`. The affiliate marketplace is backed by `affiliate_partners`, `affiliate_vouchers`, and `affiliate_orders`, plus `affiliate_applications` (the self-serve funnel's own record) and `affiliate_tokens` (single-use, pre-hashed verify/login claims); the inbox answer memory, blog, profitability, and syndication subsystems likewise carry their own tables.
+
 ## HTTP API
 
 ### Merchant console (App Bridge session token)
@@ -282,7 +300,7 @@ Sales arriving through the on-site search flywheel carry near-zero acquisition c
 | `POST` | `/api/fulfil-run` | On-demand fulfilment pipeline run (no cron wait) |
 | `POST` | `/api/test-email` | Send a test alert email to the configured address |
 
-The table above is the original core. The console API has since grown along with the console itself - inbox (threads, drafts, approve/send, answer library), blog content + syndication, profitability (judge, keep/release, wrong-match, recalibrate), campaigns + email-tracking setup, traffic board, and AI-spend routes all follow the same session-token pattern; `src/index.ts` is the single routing map.
+The table above is the original core. The console API has since grown along with the console itself - inbox (threads, drafts, approve/send, answer library), blog content + syndication, profitability (judge, keep/release, wrong-match, recalibrate), the affiliate marketplace (partner vouchers/orders, self-serve applications with approve/decline, and the funnel config toggle), campaigns + email-tracking setup, traffic board, and AI-spend routes all follow the same session-token pattern; `src/index.ts` is the single routing map.
 
 ### Storefront (Shopify App Proxy, HMAC-signed)
 
@@ -292,6 +310,9 @@ The table above is the original core. The console API has since grown along with
 | `GET` | `/proxy/product?pid=` | Instant preview + qualifying view + background import |
 | `GET` | `/proxy/import-status?pid=` | `{state, url}` - the theme polls this to flip the CTA |
 | `POST` | `/proxy/event` | `{pid, event: view\|atc}` performance beacons |
+| `GET` | `/proxy/affiliate/apply` | Partner application form, rendered inside the theme (Liquid) |
+| `POST` | `/proxy/affiliate/apply` | Submit an application (Cloudflare Turnstile gated) |
+| `GET` | `/proxy/affiliate/terms` | Partner programme terms |
 
 ### System
 
@@ -299,10 +320,12 @@ The table above is the original core. The console API has since grown along with
 |---|---|---|
 | `GET` | `/auth`, `/auth/callback` | Legacy OAuth |
 | `GET` | `/app` | Embedded merchant console |
+| `GET` | `/affiliate/portal` | Partner dashboard (magic-link session) |
+| `GET` | `/affiliate/verify` | Applicant email verification / claim link |
 | `POST` | `/webhooks/uninstall` | HMAC-validated; marks uninstalled + purges secrets |
 | `POST` | `/webhooks/orders-paid` | Order paid → validate → queue (60-min grace) |
-| cron | `17 4 * * *` daily | Retention purge → cull → refill (capped, CJ-rate-paced) |
-| cron | `*/15 * * * *` every 15 min | Fulfilment pipeline, inbox sweep (ingest + draft), profit agent, blog pipeline + distribution stages |
+| cron | `17 4 * * *` daily | Retention purge → cull → refill (capped, CJ-rate-paced); affiliate payout reminder on the 1st |
+| cron | `*/15 * * * *` every 15 min | Fulfilment pipeline, inbox sweep (ingest + draft), profit agent, blog pipeline + distribution stages, affiliate application screening |
 
 ## Development
 
@@ -318,7 +341,7 @@ npm run dev
 
 | Command | What it does |
 |---|---|
-| `npm test` | 262 tests inside workerd |
+| `npm test` | Full suite, inside workerd |
 | `npm run typecheck` | `tsc --noEmit` (strict) |
 | `npm run migrate:local` / `migrate:remote` | Apply D1 migrations |
 | `npm run deploy` | Deploy to Cloudflare |
@@ -363,6 +386,7 @@ Current status (July 2026):
 - Customer inbox live in human-approval mode, with answer-memory grounding on every draft.
 - Profitability engine live full-auto: eBay median-market judging (Temu excluded) with owner brakes (Preview, Keep/Release, Wrong match, Recalibrate & rescue).
 - Blog channel live (worker drafts, owner publishes); distribution rail built and dormant pending channel enables.
+- Self-serve affiliate marketplace live (2026-07-14): public apply form, Turnstile bot gate, automated LLM screening, and auto-issued starter codes feed a magic-link partner dashboard. Commission is 2% rising to 5% for consistent performers, held 45 days to clear the returns window, then paid out monthly on an owner-triggered basis.
 - Email campaigns live with verified open/click tracking and per-thread engagement.
 - Google stack connected under one account (2026-07-12): Merchant Center feed syncing, Search Console verified + sitemap submitted, GA4 wired via the Shopify channel app.
 
