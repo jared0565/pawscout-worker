@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { RequestedTokenType } from '@shopify/shopify-api';
-import { type Env, type TenantConfig, type TenantRow, SYNDICATE_CHANNEL_KEYS, mergeSyndicate, type SyndicateChannelKey, type SyndicateChannelConfig } from './types';
+import { type Env, type TenantConfig, type TenantRow, SYNDICATE_CHANNEL_KEYS, mergeSyndicate, type SyndicateChannelConfig } from './types';
 import { makeShopify } from './shopify';
 import { Vault } from './vault';
 import { TenantStore, listActiveShops } from './tenant-store';

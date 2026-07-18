@@ -47,6 +47,12 @@ describe('syndication copy gates', () => {
     expect(validateCopy({ ...GOOD_COPY, caption: 'Fountains from £12.99 in stock now' })).toBeNull();
     expect(copyGateErrors({ ...GOOD_COPY, pinDesc: 'now only 9.99 GBP' } as SyndicationCopy).join(' ')).toContain('price');
   });
+  it('rejects currency-code-first prices (GBP 9.99)', () => {
+    expect(validateCopy({ ...GOOD_COPY, caption: 'Bowls from GBP 9.99 while stocks last' })).toBeNull();
+    expect(copyGateErrors({ ...GOOD_COPY, pinDesc: 'USD 12 well spent' } as SyndicationCopy).join(' ')).toContain('price');
+    // Words merely containing the code letters must not trip the gate.
+    expect(validateCopy({ ...GOOD_COPY, caption: 'A guide to gear upgrades for eager pups' })).not.toBeNull();
+  });
   it('rejects supplier brand tokens', () => {
     expect(validateCopy({ ...GOOD_COPY, caption: 'Our PawHut fountain guide' })).toBeNull();
   });
@@ -182,6 +188,21 @@ describe('channel payloads', () => {
     expect(p.target).toEqual({ targetType: 'instagram' });
   });
 
+  it('instagram: a near-cap caption is trimmed so caption + link suffix stays within the cap', () => {
+    const ch: SyndicateChannelConfig = { enabled: true, auto: false, accountId: 'a3' };
+    // A caption AT the gate cap: legal per copyGateErrors, but the link suffix
+    // would push the final text past Instagram's hard limit without the budget.
+    const nearCap = ('Hydration matters for every cat in the house. ').repeat(60).slice(0, COPY_CAPS.caption);
+    const p = blotatoPostFor('instagram', ch, { copy: { ...copy, caption: nearCap }, articleHandle: 'cat-hydration', imageUrl: IMG });
+    if ('error' in p) throw new Error(p.error);
+    expect(p.text.length).toBeLessThanOrEqual(COPY_CAPS.caption);
+    expect(p.text.endsWith(utmUrl('cat-hydration', 'instagram'))).toBe(true); // the LINK is never truncated
+    expect(p.text).toContain('\n\nRead the guide: ');
+    // The trimmed caption is a true prefix of the original (word-boundary
+    // behavior itself is capTitle's contract, unit-tested in debrand.test.ts).
+    expect(nearCap.startsWith(p.text.split('\n\n')[0])).toBe(true);
+  });
+
   it('hard errors: no accountId, and no image where an image is required', () => {
     expect(blotatoPostFor('pinterest', { enabled: true, auto: false, boardId: 'b' }, { copy, articleHandle: 'h', imageUrl: IMG }))
       .toEqual({ error: 'channel has no connected accountId' });
@@ -301,6 +322,33 @@ describe('runSyndicationForShop', () => {
     const r2 = await runSyndicationForShop(okLlmEnv, store as never, cfg, deps(store, fakeBlotato(sent)));
     expect(r2.confirmed).toBe(1);
     expect(store.ledger.get('post-1|pinterest')!.status).toBe('published');
+  });
+
+  it('confirm: a Blotato-reported failure marks the row failed with the message', async () => {
+    const store = fakeSynStore();
+    const cfg = synCfg({ pinterest: { enabled: true, auto: true, accountId: 'a', boardId: 'b' } });
+    await runSyndicationForShop(okLlmEnv, store as never, cfg, deps(store, fakeBlotato([]))); // sweep 1: row goes 'sent'
+    const failing = { ...fakeBlotato([]), pollStatus: async () => ({ status: 'failed' as const, errorMessage: 'image rejected by platform' }) };
+    const r = await runSyndicationForShop(okLlmEnv, store as never, cfg, deps(store, failing));
+    expect(r.failed).toBe(1);
+    expect(r.confirmed).toBe(0);
+    const row = store.ledger.get('post-1|pinterest')!;
+    expect(row.status).toBe('failed');
+    expect(row.error).toBe('image rejected by platform');
+  });
+
+  it('confirm: in-progress or unreachable submissions stay sent and uncounted', async () => {
+    const store = fakeSynStore();
+    const cfg = synCfg({ pinterest: { enabled: true, auto: true, accountId: 'a', boardId: 'b' } });
+    await runSyndicationForShop(okLlmEnv, store as never, cfg, deps(store, fakeBlotato([]))); // sweep 1: row goes 'sent'
+    const pending = { ...fakeBlotato([]), pollStatus: async () => ({ status: 'in-progress' as const }) };
+    const r1 = await runSyndicationForShop(okLlmEnv, store as never, cfg, deps(store, pending));
+    expect(r1.confirmed + r1.failed).toBe(0);
+    expect(store.ledger.get('post-1|pinterest')!.status).toBe('sent');
+    const unreachable = { ...fakeBlotato([]), pollStatus: async () => null };
+    const r2 = await runSyndicationForShop(okLlmEnv, store as never, cfg, deps(store, unreachable));
+    expect(r2.confirmed + r2.failed).toBe(0);
+    expect(store.ledger.get('post-1|pinterest')!.status).toBe('sent'); // retried next sweep, never guessed
   });
 
   it('copy failure leaves rows queued with the error recorded', async () => {

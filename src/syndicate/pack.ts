@@ -27,8 +27,9 @@ export const COPY_CAPS: Record<keyof SyndicationCopy, number> = {
   pinTitle: 100, pinDesc: 500, caption: 2200, teaser: 300, altText: 500
 };
 
-/** Currency amounts are banned in syndicated copy. */
-const PRICE_RE = /[£$€]\s?\d|\b\d+(?:\.\d{1,2})?\s?(?:gbp|usd|eur|pounds?|quid|dollars?)\b/i;
+/** Currency amounts are banned in syndicated copy. Three shapes: symbol-first
+ * (£9.99), amount-then-unit (9.99 GBP / 10 pounds), and code-first (GBP 9.99). */
+const PRICE_RE = /[£$€]\s?\d|\b\d+(?:\.\d{1,2})?\s?(?:gbp|usd|eur|pounds?|quid|dollars?)\b|\b(?:gbp|usd|eur)\s?\d/i;
 
 export function copyGateErrors(c: SyndicationCopy, brands: string[] = BRAND_TOKENS): string[] {
   const errs: string[] = [];

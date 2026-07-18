@@ -8,6 +8,12 @@
 // GET /v2/posts/:id -> {status: in-progress|published|failed, errorMessage?,
 // publicUrl?}; account/board lists return {items: [...]}. Post creation is
 // rate-limited 30/min (far above our few posts a week).
+// Idempotency: VERIFIED ABSENT (help.blotato.com/api/publish-post, checked
+// 2026-07-18) - createPost accepts no Idempotency-Key header or dedupe field
+// (body is only {post, scheduledTime?, useNextFreeSlot?}). The ledger's CAS
+// attempts-claim is therefore the ONLY double-post fence; a createPost whose
+// response is lost after server-side acceptance remains an accepted
+// at-least-once tail (retry may double-post). Re-check if Blotato adds one.
 import { defaultFetch } from '../safe-fetch';
 import type { Env } from '../types';
 

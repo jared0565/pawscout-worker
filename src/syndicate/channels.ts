@@ -5,10 +5,11 @@
 // skip. UTM discipline: every link carries source/medium/campaign so Shopify
 // analytics can attribute sessions and sales per channel per guide (the data
 // the 90-day Blotato review reads).
-import type { SyndicationCopy } from './pack';
+import { COPY_CAPS, type SyndicationCopy } from './pack';
 import type { BlotatoPostInput } from './blotato';
 import type { SyndicateChannelConfig, SyndicateChannelKey } from '../types';
 import { BLOG_HANDLE } from '../blog/pipeline';
+import { capTitle } from '../debrand';
 
 export const STORE_URL = 'https://activepaw.co.uk';
 
@@ -44,8 +45,15 @@ export function blotatoPostFor(
   }
   // instagram: feed posts carry no clickable link; the URL rides in the caption.
   if (!input.imageUrl) return { error: 'no image available for an instagram post' };
+  // Caption budget: the copy gate caps caption at COPY_CAPS.caption (Instagram's
+  // hard 2200), but the appended link suffix would push a near-cap caption over
+  // it and the post would be rejected at publish time. Budget the suffix first
+  // and word-boundary-trim the caption into what remains (never the link - a
+  // truncated URL is worthless).
+  const suffix = `\n\nRead the guide: ${link}`;
+  const caption = capTitle(input.copy.caption, COPY_CAPS.caption - suffix.length);
   return {
-    accountId: ch.accountId, text: `${input.copy.caption}\n\nRead the guide: ${link}`, mediaUrls: [input.imageUrl], platform: 'instagram',
+    accountId: ch.accountId, text: `${caption}${suffix}`, mediaUrls: [input.imageUrl], platform: 'instagram',
     target: { targetType: 'instagram' }
   };
 }

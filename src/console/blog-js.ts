@@ -231,7 +231,11 @@ async function sydRegen(btn,postId){
   if(btn) btn.disabled=false;
 }
 (function(){
-  document.addEventListener('click',function(ev){
+  // Scoped to the Content view container (all views coexist in the DOM; a
+  // document-level listener would run on every click console-wide and could
+  // catch a stray data-syd-* attribute from another view).
+  var scope=el('view-content'); if(!scope) return;
+  scope.addEventListener('click',function(ev){
     var t=ev.target;
     if(!t||!t.getAttribute) return;
     var wire=t.getAttribute('data-syd-wire');
