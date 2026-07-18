@@ -42,6 +42,10 @@ export const profitView = `  <section class="card">
       <button type="button" onclick="pfRecalibrate(this)">Recalibrate &amp; rescue drops</button>
       <span class="muted" style="align-self:center;font-size:12px">After a judging-rule change: re-checks every product the agent archived against fresh market prices under the CURRENT rules and brings back whatever now clears them (repriced if needed). What still fails stays archived. Also refreshes the cached market prices for live products (your Wrong-match calls are kept). In Preview it only reports what WOULD come back.</span>
     </div>
+    <div class="row" style="margin:0 0 10px">
+      <button type="button" class="ghost" onclick="pfRestoreCulled(this)">Restore no-traffic culls</button>
+      <span class="muted" style="align-self:center;font-size:12px">Brings back products the 30-day inactivity cull archived while the store had almost no visitors to measure them by (the cull now stands down automatically in low-traffic windows). Products the agent dropped for economics, or that you archived yourself, are not touched. Restored products are re-judged by the agent as normal.</span>
+    </div>
     <div id="pf-list">Turn on the agent and run it to see decisions.</div>
   </section>
 

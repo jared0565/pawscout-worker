@@ -283,6 +283,46 @@ describe('competitorSignal (delivered price = item + delivery)', () => {
     expect(r?.sources?.[0]).toMatch(/llm-matched 2/);
   });
 
+  it('CN/HK-registered sellers are excluded from the reference (owner rule 2026-07-18)', async () => {
+    const cached: string[] = [];
+    const sellerLookups: string[][] = [];
+    const market = {
+      name: 'ebay.co.uk',
+      search: async () => [
+        { ...mkCand('Portable Dog Water Bottle 800ml Leakproof', 8.99), itemId: 'v1|cn1|0' },  // CN bottom-feeder
+        { ...mkCand('Dog Water Bottle 800ml Portable Travel Leakproof', 12.49), itemId: 'v1|gb1|0' },
+        { ...mkCand('800ml Leakproof Portable Dog Water Bottle', 13.98), itemId: 'v1|gb2|0' }
+      ],
+      sellerCountries: async (ids: string[]) => {
+        sellerLookups.push(ids);
+        return new Map<string, string | null>([['v1|cn1|0', 'CN'], ['v1|gb1|0', 'GB'], ['v1|gb2|0', null]]); // null = individual seller, kept
+      }
+    };
+    const r = await competitorSignal(neverLlm, storeOf(cached), CFG, {
+      pid: 'z9', title: '800ml Dog Water Bottle Portable Leakproof', ourRetailGbp: 12.99, market
+    });
+    // The CN 8.99 is out; survivors 12.49/13.98 -> median 13.24, 2 credible -> medium.
+    expect(r?.estimateGbp).toBe(13.24);
+    expect(r?.confidence).toBe('medium');
+    expect(r?.sources?.[0]).toContain('CN-seller excluded');
+    expect(sellerLookups).toHaveLength(1); // one batched lookup for the matched set
+  });
+
+  it('fewer than 2 credible sellers after the CN exclusion -> null (no defensible market; cost-plus branch)', async () => {
+    const market = {
+      name: 'ebay.co.uk',
+      search: async () => [
+        { ...mkCand('Portable Dog Water Bottle 800ml Leakproof', 8.99), itemId: 'i1' },
+        { ...mkCand('Dog Water Bottle 800ml Portable Travel Leakproof', 9.49), itemId: 'i2' }
+      ],
+      sellerCountries: async () => new Map<string, string | null>([['i1', 'CN'], ['i2', 'HK']])
+    };
+    const r = await competitorSignal(neverLlm, storeOf([]), CFG, {
+      pid: 'z10', title: '800ml Dog Water Bottle Portable Leakproof', ourRetailGbp: 12.99, market
+    });
+    expect(r).toBeNull(); // never a market action priced off bottom-feeders alone
+  });
+
   it('market answered NOTHING comparable -> null, and the expensive legacy path is NOT taken', async () => {
     const r = await competitorSignal(neverLlm, storeOf([]), CFG, {
       pid: 'z3', title: 'Cat Water Fountain Stainless 3.2L', ourRetailGbp: 39.99,

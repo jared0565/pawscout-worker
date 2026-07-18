@@ -58,6 +58,13 @@ import { rotateRecurringEvents } from './recurring-events';
 import { debrandCatalog } from './catalog-debrand';
 
 export const CULL_WINDOW_DAYS = 30; // grace period AND inactivity window
+/** Engagement gate for the cull (2026-07-18): "zero events for this product"
+ * is only evidence when the STORE had traffic to give. Below this many
+ * catalog-wide qualifying events in the window, the cull stands down entirely -
+ * it must never mow down a catalog for the crime of an unvisited storefront
+ * (live incident: 48 products culled in a week on ~2 events/day store-wide
+ * while Google listings were suspended). */
+export const CULL_MIN_WINDOW_EVENTS = 100;
 const LOG_RETENTION_DAYS = 90;
 const MAX_IMPORTS_PER_RUN = 30; // W2: promotions cost 1 CJ stock-check each - well within budget
 const CJ_CALL_GAP_MS = 1100; // CJ allows ~1 request/second
@@ -107,6 +114,13 @@ export async function cullStaleProducts(
   now: () => number = Date.now
 ): Promise<number> {
   const cutoff = new Date(now() - CULL_WINDOW_DAYS * 86400_000).toISOString();
+  // Engagement gate: with next to no store-wide traffic in the window, a
+  // product's zero events carry no signal - stand down rather than archive.
+  const windowEvents = await store.countProductEventsSince(cutoff);
+  if (windowEvents < CULL_MIN_WINDOW_EVENTS) {
+    console.log(`cull: standing down - only ${windowEvents} store-wide events in ${CULL_WINDOW_DAYS}d (< ${CULL_MIN_WINDOW_EVENTS})`);
+    return 0;
+  }
   const stale = await store.linksEligibleForArchive(cutoff);
   let archived = 0;
   for (const link of stale) {
@@ -122,6 +136,36 @@ export async function cullStaleProducts(
     }
   }
   return archived;
+}
+
+/**
+ * Undo a no-traffic cull wave (2026-07-18): restore archived products whose
+ * archive is attributable to the CULL - archived since `sinceIso` with NO real
+ * agent drop on record (agent drops are economics, the owner's console archives
+ * are the owner's call; neither is ours to reverse here). Restored products
+ * re-enter the profit agent's walk, so a genuine loser is re-judged on
+ * evidence, not resurrected permanently. Owner-triggered (console).
+ */
+export async function restoreCulledProducts(
+  store: TenantStore,
+  admin: AdminGraphql,
+  sinceIso: string
+): Promise<{ restored: number; failed: number }> {
+  const links = await store.listCulledArchivedLinks(sinceIso);
+  let restored = 0, failed = 0;
+  for (const link of links) {
+    try {
+      const data = await admin(ARCHIVE, { input: { id: link.shopify_product_id, status: 'ACTIVE' } });
+      const errs = (data.productUpdate as { userErrors?: { message: string }[] } | undefined)?.userErrors ?? [];
+      if (errs.length) throw new Error(errs.map((e) => e.message).join('; '));
+      await store.putLink({ cjPid: link.cj_pid, state: 'imported' });
+      restored++;
+    } catch (e) {
+      failed++;
+      console.warn(`restore-culled: failed for ${link.cj_pid}: ${(e as Error).message}`);
+    }
+  }
+  return { restored, failed };
 }
 
 /**
@@ -1214,7 +1258,12 @@ export const CATALOG_IMAGE_CURSOR_KEY = 'job:catalog-images-cursor';
  * costs one config read and never builds an admin client or spends a token. In
  * dry-run the agent records what it WOULD do; only live mode touches prices/listings.
  */
-export async function runProfitAgentSweep(env: Env): Promise<void> {
+export async function runProfitAgentSweep(env: Env, nowMs: number = Date.now()): Promise<void> {
+  // Hourly cadence (owner decision 2026-07-18, was every 15 min): the ride
+  // stays on the quarter-hour cron but only the top-of-hour tick proceeds.
+  // The competitor signal is cached 14 days and reprices are dead-banded, so
+  // sub-hourly passes only ever re-derived the same answer.
+  if (new Date(nowMs).getUTCMinutes() >= 15) return;
   const vault = await Vault.fromMasterKey(env.PAWSCOUT_MASTER_KEY);
   const llm = new LlmClient({ openrouter: env.OPENROUTER_API_KEY, openai: env.OPENAI_API_KEY });
   for (const shop of await listActiveShops(env.DB)) {

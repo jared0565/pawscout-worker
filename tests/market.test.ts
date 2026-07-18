@@ -42,8 +42,9 @@ describe('matchCandidates (deterministic tiers)', () => {
 
   it('3+ strong matches -> high confidence at the credible MEDIAN delivered price', () => {
     const m = matchCandidates(OURS, 12.99, GOOD);
-    expect(m).toEqual({ kind: 'match', estimateGbp: 12.48, confidence: 'high', matched: 3 });
+    expect(m).toMatchObject({ kind: 'match', estimateGbp: 12.48, confidence: 'high', matched: 3 });
     // 9.99+2.99=12.98, 11.49, 8.99+3.49=12.48 -> median 12.48 (no outliers to drop)
+    if (m.kind === 'match') expect(m.candidates.length).toBe(3); // matched set exposed for the seller-credibility pass
   });
 
   it('2 strong matches -> medium confidence', () => {

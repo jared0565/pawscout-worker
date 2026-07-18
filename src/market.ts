@@ -24,6 +24,7 @@ export interface MarketCandidate {
   itemGbp: number;
   deliveryGbp: number;   // 0 when the listing is free-postage (or none listed)
   deliveredGbp: number;  // itemGbp + deliveryGbp
+  itemId?: string;       // source listing id (drives the seller-credibility lookup)
 }
 
 /** A structured market source. `search` returns null when the SOURCE failed
@@ -32,6 +33,13 @@ export interface MarketCandidate {
 export interface MarketSource {
   name: string; // e.g. 'ebay.co.uk'
   search(query: string): Promise<MarketCandidate[] | null>;
+  /** Registered-country lookup for listing sellers (owner rule 2026-07-18:
+   *  China-registered direct traders are not a credible market reference even
+   *  when their stock sits in a GB warehouse). Returns itemId -> ISO country
+   *  of the seller's registered legal address, or null per item when the
+   *  source does not disclose it (individual sellers). Optional: sources
+   *  without seller data simply skip the exclusion. */
+  sellerCountries?(itemIds: string[]): Promise<Map<string, string | null>>;
 }
 
 // --- Title normalisation + similarity (pure, deterministic, tested) ---
@@ -96,7 +104,7 @@ export function buildMarketQuery(title: string): string {
 // --- Deterministic candidate matching ---
 
 export type MarketMatch =
-  | { kind: 'match'; estimateGbp: number; confidence: 'high' | 'medium'; matched: number }
+  | { kind: 'match'; estimateGbp: number; confidence: 'high' | 'medium'; matched: number; candidates: MarketCandidate[] }
   | { kind: 'ambiguous'; shortlist: MarketCandidate[] }
   | { kind: 'none' };
 
@@ -142,7 +150,8 @@ export function matchCandidates(ourTitle: string, ourRetailGbp: number, candidat
       kind: 'match',
       estimateGbp: Math.round(credibleMarketGbp(strong.map((c) => c.deliveredGbp)) * 100) / 100,
       confidence: strong.length >= 3 ? 'high' : 'medium',
-      matched: strong.length
+      matched: strong.length,
+      candidates: strong
     };
   }
   const weak = scored.filter((s) => s.sim >= WEAK_SIM).map((s) => s.c);
@@ -156,6 +165,7 @@ const EBAY_TOKEN_URL = 'https://api.ebay.com/identity/v1/oauth2/token';
 const EBAY_BROWSE_URL = 'https://api.ebay.com/buy/browse/v1/item_summary/search';
 
 interface EbayItemSummary {
+  itemId?: string;
   title?: string;
   price?: { value?: string; currency?: string };
   shippingOptions?: { shippingCost?: { value?: string; currency?: string } }[];
@@ -232,7 +242,8 @@ export class EbaySource implements MarketSource {
           title: it.title,
           itemGbp: Math.round(itemGbp * 100) / 100,
           deliveryGbp: Math.round(deliveryGbp * 100) / 100,
-          deliveredGbp: Math.round((itemGbp + deliveryGbp) * 100) / 100
+          deliveredGbp: Math.round((itemGbp + deliveryGbp) * 100) / 100,
+          ...(it.itemId ? { itemId: it.itemId } : {})
         });
       }
       return out;
@@ -240,6 +251,34 @@ export class EbaySource implements MarketSource {
       console.warn(`ebay search error: ${(e as Error).message}`);
       return null;
     }
+  }
+
+  /** Registered-country per listing seller via the full-item read: UK/EU law
+   *  obliges BUSINESS sellers to disclose a registered legal address, exposed
+   *  as sellerLegalInfo.sellerProvidedLegalAddress.country on getItem. An
+   *  individual seller (no legal info) or a failed read maps to null (unknown,
+   *  never excluded). Called only for the handful of MATCHED candidates, so
+   *  the extra reads stay tiny against the Browse quota. */
+  async sellerCountries(itemIds: string[]): Promise<Map<string, string | null>> {
+    const out = new Map<string, string | null>();
+    const tok = await this.token();
+    for (const id of itemIds) {
+      if (!tok) { out.set(id, null); continue; }
+      try {
+        const resp = await this.fetchImpl(`https://api.ebay.com/buy/browse/v1/item/${encodeURIComponent(id)}`, {
+          headers: { Authorization: `Bearer ${tok}`, 'X-EBAY-C-MARKETPLACE-ID': 'EBAY_GB' }
+        });
+        if (!resp.ok) { out.set(id, null); continue; }
+        const data = (await resp.json().catch(() => null)) as {
+          sellerLegalInfo?: { sellerProvidedLegalAddress?: { country?: string } };
+        } | null;
+        const c = data?.sellerLegalInfo?.sellerProvidedLegalAddress?.country;
+        out.set(id, typeof c === 'string' && c ? c.toUpperCase() : null);
+      } catch {
+        out.set(id, null);
+      }
+    }
+    return out;
   }
 }
 

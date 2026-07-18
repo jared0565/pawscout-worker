@@ -48,7 +48,7 @@ import { productInventoryItems } from './proxy/inventory';
 import { readDeliveryConfig, syncSignatureProfiles } from './shipping/delivery-profile';
 import { resolveShipConfig } from './shipping/ship-config';
 import { resolveLogistics } from './logistics';
-import { runDailyMaintenance, resumeDailyMaintenance, runMarketVisibilityReconcile, runProfitAgentSweep, syncStoreInventory, refillCollections } from './jobs';
+import { runDailyMaintenance, resumeDailyMaintenance, runMarketVisibilityReconcile, runProfitAgentSweep, restoreCulledProducts, syncStoreInventory, refillCollections } from './jobs';
 import { maybeAffiliatePayoutReminder } from './affiliate-payout-reminder';
 import { debrandCatalog } from './catalog-debrand';
 import { runOrderPipeline, runOrderPipelineForShop } from './fulfil-run';
@@ -785,6 +785,23 @@ app.post('/api/profit/recalibrate', async (c) => {
   const offset = Number.isFinite(Number(body.offset)) ? Math.max(0, Math.floor(Number(body.offset))) : 0;
   const llm = new LlmClient({ openrouter: c.env.OPENROUTER_API_KEY, openai: c.env.OPENAI_API_KEY });
   return c.json(await recalibrateProfitDrops(store, admin, llm, cfg, { offset, market: ebayFromEnv(c.env) }));
+});
+
+// Undo a no-traffic cull wave: restore products the 30-day performance cull
+// archived while the store had essentially no traffic to measure them by
+// (2026-07-18 incident). Only cull-attributable archives are touched - agent
+// drops and owner archives are excluded by the store query. Owner click.
+app.post('/api/profit/restore-culled', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: { since?: unknown } = {};
+  try { body = await c.req.json(); } catch { /* defaults */ }
+  const store = new TenantStore(c.env.DB, s);
+  const admin = await adminForShop(c.env, store);
+  if (!admin) return c.json({ ok: false, error: 'Shopify is not connected' });
+  // Default window: the post-recalibration cull waves (agent drops stopped 07-12).
+  const since = typeof body.since === 'string' && /^\d{4}-\d{2}-\d{2}/.test(body.since) ? body.since : '2026-07-13';
+  const r = await restoreCulledProducts(store, admin, since);
+  return c.json({ ok: true, ...r });
 });
 
 // --- Privacy-policy wording keeper (2026-07-05): check + one-click apply ---

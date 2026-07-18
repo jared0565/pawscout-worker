@@ -102,6 +102,49 @@ export interface CompetitorSignal { estimateGbp: number; confidence: 'high' | 'm
 
 export function competitorCacheKey(pid: string): string { return `comp:${pid}`; }
 
+/** Seller registered countries whose listings are never a credible market
+ *  reference (owner rule 2026-07-18, generalising the Temu username block):
+ *  China-registered direct traders sell CJ-class goods at near-cost even from
+ *  GB warehouses - a price a real UK shop neither meets nor should chase. */
+const BLOCKED_SELLER_COUNTRIES = new Set(['CN', 'HK']);
+const SELLER_COUNTRY_TTL_DAYS = 30;
+
+/**
+ * Drop candidates whose seller is registered in a blocked country. Countries
+ * come from the market source's full-item read, cached per listing id so a
+ * listing that appears for many products costs one read a month. Unknown
+ * (individual seller, no itemId, lookup failure) is NEVER excluded - the rule
+ * only removes sellers we can positively place in a blocked country.
+ */
+async function filterCredibleSellers(
+  store: TenantStore, market: MarketSource, cands: MarketCandidate[]
+): Promise<MarketCandidate[]> {
+  if (!market.sellerCountries) return cands;
+  const ids = [...new Set(cands.map((c) => c.itemId).filter((id): id is string => !!id))];
+  if (!ids.length) return cands;
+  const countries = new Map<string, string | null>();
+  const misses: string[] = [];
+  for (const id of ids) {
+    const cached = await store.getSearchCache(`ebayseller:${id}`);
+    if (cached !== null) countries.set(id, cached === '?' ? null : cached);
+    else misses.push(id);
+  }
+  if (misses.length) {
+    try {
+      const fresh = await market.sellerCountries(misses);
+      for (const id of misses) {
+        const c = fresh.get(id) ?? null;
+        countries.set(id, c);
+        await store.putSearchCache(`ebayseller:${id}`, c ?? '?', SELLER_COUNTRY_TTL_DAYS);
+      }
+    } catch { /* lookup failure -> unknown -> keep (never exclude blind) */ }
+  }
+  return cands.filter((c) => {
+    const country = c.itemId ? countries.get(c.itemId) ?? null : null;
+    return !(country && BLOCKED_SELLER_COUNTRIES.has(country));
+  });
+}
+
 /**
  * Tiny LLM title-classifier for AMBIGUOUS structured shortlists: which of these
  * eBay titles are the same kind of product as ours? ~1k tokens of TITLES, never
@@ -162,20 +205,31 @@ export async function competitorSignal(
     if (candidates !== null) {
       const m = matchCandidates(arg.title, arg.ourRetailGbp, candidates);
       if (m.kind === 'match') {
-        const signal: CompetitorSignal = {
-          estimateGbp: m.estimateGbp, confidence: m.confidence,
-          sources: [`${arg.market.name} (${m.matched} matches)`]
-        };
-        await store.putSearchCache(competitorCacheKey(arg.pid), JSON.stringify(signal), profit.cacheTtlDays);
-        return signal;
+        // Seller-credibility pass (2026-07-18): China-registered direct traders
+        // are excluded from the reference AFTER matching (only the survivors'
+        // sellers are read - a handful of full-item calls, cached 30d each).
+        // Fewer than 2 credible sellers left = no defensible market: cost-plus
+        // branch, never a market-driven action off bottom-feeder prices.
+        const credible = await filterCredibleSellers(store, arg.market, m.candidates);
+        if (credible.length >= 2) {
+          const signal: CompetitorSignal = {
+            estimateGbp: Math.round(credibleMarketGbp(credible.map((c) => c.deliveredGbp)) * 100) / 100,
+            confidence: credible.length >= 3 ? 'high' : 'medium',
+            sources: [`${arg.market.name} (${credible.length} matches${credible.length < m.matched ? `, ${m.matched - credible.length} CN-seller excluded` : ''})`]
+          };
+          await store.putSearchCache(competitorCacheKey(arg.pid), JSON.stringify(signal), profit.cacheTtlDays);
+          return signal;
+        }
+        return null; // matched, but no credible (non-blocked) market remains
       }
       if (m.kind === 'ambiguous') {
         const confirmed = await classifyShortlist(llm, store, cfg, arg.title, m.shortlist);
-        if (confirmed.length >= 2) {
+        const credible = confirmed.length >= 2 ? await filterCredibleSellers(store, arg.market, confirmed) : confirmed;
+        if (credible.length >= 2) {
           const signal: CompetitorSignal = {
-            estimateGbp: Math.round(credibleMarketGbp(confirmed.map((c) => c.deliveredGbp)) * 100) / 100,
+            estimateGbp: Math.round(credibleMarketGbp(credible.map((c) => c.deliveredGbp)) * 100) / 100,
             confidence: 'medium', // classifier-assisted never claims high
-            sources: [`${arg.market.name} (llm-matched ${confirmed.length})`]
+            sources: [`${arg.market.name} (llm-matched ${credible.length})`]
           };
           await store.putSearchCache(competitorCacheKey(arg.pid), JSON.stringify(signal), profit.cacheTtlDays);
           return signal;

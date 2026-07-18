@@ -531,6 +531,38 @@ export class TenantStore {
     return (results ?? []).map((r) => r.cj_pid);
   }
 
+  /** Catalog-wide qualifying-engagement count in a window - the cull's signal
+   *  gate: "zero events for this product" only means anything when the STORE
+   *  had events to give. */
+  async countProductEventsSince(sinceIso: string): Promise<number> {
+    const row = await this.db
+      .prepare(`SELECT COUNT(*) AS n FROM product_events WHERE shop = ?1 AND created_at >= ?2`)
+      .bind(this.shop, sinceIso)
+      .first<{ n: number }>();
+    return row?.n ?? 0;
+  }
+
+  /** Archived links attributable to the performance CULL, not the profit agent
+   *  and not the owner: archived since `sinceIso` with NO real (dry_run = 0)
+   *  agent drop on record. The owner's console archives predate the cutoff the
+   *  caller passes; agent drops are excluded here explicitly. */
+  async listCulledArchivedLinks(sinceIso: string): Promise<ProductLink[]> {
+    const { results } = await this.db
+      .prepare(
+        `SELECT * FROM product_links pl
+         WHERE pl.shop = ?1 AND pl.state = 'archived' AND pl.updated_at >= ?2
+           AND pl.shopify_product_id IS NOT NULL
+           AND NOT EXISTS (
+             SELECT 1 FROM profit_actions pa
+             WHERE pa.shop = pl.shop AND pa.cj_pid = pl.cj_pid AND pa.action = 'drop' AND pa.dry_run = 0
+           )
+         ORDER BY pl.updated_at ASC`
+      )
+      .bind(this.shop, sinceIso)
+      .all<ProductLink>();
+    return results ?? [];
+  }
+
   async getProfitVerdict(cjPid: string): Promise<ProfitVerdictRow | null> {
     return await this.db
       .prepare(

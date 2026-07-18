@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
-import { cullStaleProducts, refillCollections, syncStoreInventory, resyncLowStockInventory, seedSemanticLibrary, sellableQty, LOW_STOCK_BAND, LOW_STOCK_RESERVE } from '../src/jobs';
+import { cullStaleProducts, restoreCulledProducts, runProfitAgentSweep, refillCollections, syncStoreInventory, resyncLowStockInventory, seedSemanticLibrary, sellableQty, CULL_MIN_WINDOW_EVENTS, LOW_STOCK_BAND, LOW_STOCK_RESERVE } from '../src/jobs';
 import { TenantStore } from '../src/tenant-store';
 import { DEFAULT_GATES, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, DEFAULT_INBOX, DEFAULT_SEMANTIC, DEFAULT_PROFIT, type TenantConfig } from '../src/types';
 import type { CjClient, CjDetail } from '../src/cj';
@@ -87,6 +87,12 @@ function stockCj(stock: number, counters = { search: 0, stock: 0 }): CjClient {
   } as unknown as CjClient;
 }
 
+/** Clear the cull's engagement gate: the window must show real store traffic
+ *  before "zero events for this product" means anything. */
+async function seedWindowTraffic(count = CULL_MIN_WINDOW_EVENTS): Promise<void> {
+  for (let i = 0; i < count; i++) await insertEvent('traffic-donor', 'view', 10);
+}
+
 describe('cullStaleProducts', () => {
   it('archives only old products with no qualifying events in the window', async () => {
     await insertLink('stale', 'imported', 45);          // old, silent → archive
@@ -97,6 +103,7 @@ describe('cullStaleProducts', () => {
     await insertEvent('sold', 'atc', 20);
     await insertLink('ghost', 'ghost', 45);             // never imported → not cull's business
     await insertLink('paused', 'imported', 45, 1);      // W2: stock-paused → exempt
+    await seedWindowTraffic();                          // the store HAD traffic → the cull may judge
 
     const store = new TenantStore(env.DB, SHOP);
     const archived: string[] = [];
@@ -110,6 +117,71 @@ describe('cullStaleProducts', () => {
     expect(archived).toEqual(['gid://shopify/Product/stale']);
     expect((await store.getLink('paused'))?.state).toBe('imported'); // exempt while unsellable
     expect((await store.getLink('active'))?.state).toBe('imported');
+  });
+
+  it('stands down entirely when the store had almost no traffic in the window (no signal, no cull)', async () => {
+    await insertLink('stale', 'imported', 45);   // would be culled under normal traffic
+    await insertEvent('other', 'view', 5);       // a handful of events, far below the gate
+    const store = new TenantStore(env.DB, SHOP);
+    const archived: string[] = [];
+    const admin: AdminGraphql = async (query, variables) => {
+      archived.push((variables!.input as { id: string }).id);
+      return { productUpdate: { product: { id: 'x' }, userErrors: [] } };
+    };
+    const n = await cullStaleProducts(store, admin);
+    expect(n).toBe(0);
+    expect(archived).toEqual([]); // zero-traffic window proves nothing about any product
+    expect((await store.getLink('stale'))?.state).toBe('imported');
+  });
+});
+
+describe('restoreCulledProducts', () => {
+  it('restores cull-attributable archives only - never agent drops', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await insertLink('culled', 'archived', 2);      // archived recently, no drop action → restore
+    await insertLink('dropped', 'archived', 2);     // archived recently, agent-dropped → leave
+    await env.DB.prepare(
+      `INSERT INTO profit_actions (shop, cj_pid, action, reason, dry_run, created_at) VALUES (?1, 'dropped', 'drop', 'loss', 0, ?2)`
+    ).bind(SHOP, new Date().toISOString()).run();
+    await insertLink('old-archive', 'archived', 40); // before the window → leave (owner-era archives)
+
+    const calls: Call[] = [];
+    const admin: AdminGraphql = async (query, variables) => {
+      calls.push({ query, variables });
+      return { productUpdate: { product: { id: 'x' }, userErrors: [] } };
+    };
+    const since = new Date(Date.now() - 7 * DAY).toISOString();
+    const r = await restoreCulledProducts(store, admin, since);
+    expect(r).toEqual({ restored: 1, failed: 0 });
+    expect(calls.length).toBe(1);
+    expect((calls[0].variables!.input as { id: string; status: string })).toEqual({ id: 'gid://shopify/Product/culled', status: 'ACTIVE' });
+    expect((await store.getLink('culled'))?.state).toBe('imported');
+    expect((await store.getLink('dropped'))?.state).toBe('archived');
+    expect((await store.getLink('old-archive'))?.state).toBe('archived');
+  });
+
+  it('a Shopify failure counts failed and leaves the link archived (retryable)', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await insertLink('culled', 'archived', 2);
+    const admin: AdminGraphql = async () => ({ productUpdate: { product: null, userErrors: [{ message: 'boom' }] } });
+    const r = await restoreCulledProducts(store, admin, new Date(Date.now() - 7 * DAY).toISOString());
+    expect(r).toEqual({ restored: 0, failed: 1 });
+    expect((await store.getLink('culled'))?.state).toBe('archived');
+  });
+});
+
+describe('runProfitAgentSweep hourly gate', () => {
+  it('only the top-of-hour tick proceeds (mid-hour ticks return before touching anything)', async () => {
+    // A mid-hour tick must return BEFORE the vault/env are touched: an empty
+    // env would throw if the sweep proceeded past the gate.
+    const mid = Date.UTC(2026, 6, 18, 12, 30, 0);
+    await expect(runProfitAgentSweep({} as never, mid)).resolves.toBeUndefined();
+    const quarter = Date.UTC(2026, 6, 18, 12, 45, 0);
+    await expect(runProfitAgentSweep({} as never, quarter)).resolves.toBeUndefined();
+    // The top-of-hour tick DOES proceed - with the empty env it must now fail
+    // at the vault, proving the gate opened.
+    const top = Date.UTC(2026, 6, 18, 12, 0, 0);
+    await expect(runProfitAgentSweep({} as never, top)).rejects.toThrow();
   });
 });
 

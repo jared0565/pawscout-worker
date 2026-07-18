@@ -254,6 +254,21 @@ async function pfRecalibrate(btn){
   btn.textContent=btn.getAttribute('data-orig')||'Recalibrate & rescue drops';
   pfLoad();
 }
+async function pfRestoreCulled(btn){
+  // Brings back no-traffic cull archives (never agent drops or owner archives).
+  // Bulk action -> two-click armed like Recalibrate.
+  if(!prtArm(btn,'Click again to restore')) return;
+  btn.disabled=true;
+  setMsg('pf-msg','Restoring products archived by the no-traffic cull…','muted');
+  try{
+    var r=await api('/profit/restore-culled',{});
+    if(!r.ok){ setMsg('pf-msg','Restore failed: '+(r.error||'unknown'),'no'); }
+    else{ setMsg('pf-msg','Restored '+r.restored+' product'+(r.restored===1?'':'s')+' to live'+(r.failed?(' ('+r.failed+' failed - run again to retry)'):'')+'. The agent re-judges them on its next pass.',(r.failed?'no':'ok')); }
+  }catch(e){ setMsg('pf-msg','Restore failed: '+errText(e),'no'); }
+  btn.disabled=false; btn.removeAttribute('data-armed');
+  btn.textContent=btn.getAttribute('data-orig')||'Restore no-traffic culls';
+  pfLoad();
+}
 async function pfArchive(btn,pid){
   if(!prtArm(btn,'Click again to archive')) return;
   try{
