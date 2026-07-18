@@ -257,7 +257,7 @@ export function validateInboxPayload(body: unknown): Validation<InboxConfig> {
   if (b.invoiceValueCeiling !== undefined && (typeof b.invoiceValueCeiling !== 'number' || !Number.isFinite(b.invoiceValueCeiling) || b.invoiceValueCeiling <= 0)) return { ok: false, error: 'invoiceValueCeiling must be a positive number' };
   if (b.invoiceRateLimit !== undefined && (typeof b.invoiceRateLimit !== 'number' || !Number.isInteger(b.invoiceRateLimit) || b.invoiceRateLimit < 1)) return { ok: false, error: 'invoiceRateLimit must be a positive integer' };
   if (b.affiliateMode !== undefined && !(AFFILIATE_MODES as readonly string[]).includes(b.affiliateMode as string)) {
-    return { ok: false, error: 'affiliateMode must be funnel_voucher, funnel_link or decline_all' };
+    return { ok: false, error: 'affiliateMode must be signup_page, funnel_voucher, funnel_link or decline_all' };
   }
   if (b.autoIssueVoucher !== undefined && typeof b.autoIssueVoucher !== 'boolean') {
     return { ok: false, error: 'autoIssueVoucher must be true or false' };

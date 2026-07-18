@@ -57,7 +57,8 @@ export const settingsView = `  <section class="card">
     <div class="agents-panel" id="affiliate-mode-panel">
       <div class="agents-panel__head">Partnership approaches <span class="sub">(affiliate and collaboration pitches)</span></div>
       <select id="affiliate-mode" aria-label="Partnership handling" onchange="saveInboxSettings()">
-        <option value="funnel_voucher">Qualify for a voucher trial - send the screening questions (default)</option>
+        <option value="signup_page">Point them to the affiliate application page (self-serve screening)</option>
+        <option value="funnel_voucher">Qualify for a voucher trial over email - send the screening questions</option>
         <option value="funnel_link">Qualify for a link partnership - future programme</option>
         <option value="decline_all">Politely decline every approach</option>
       </select>

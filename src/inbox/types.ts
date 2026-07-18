@@ -8,12 +8,16 @@ export type ThreadStatus =
   | 'new' | 'needs_reply' | 'awaiting_customer' | 'converted' | 'closed' | 'spam';
 
 /** How affiliate/partnership approaches are handled (owner-set, 2026-07-04):
- *  'funnel_voucher' (default) screens candidates for a discount-code trial;
- *  'funnel_link' is the preserved link-partnership funnel for the future full
- *  programme; 'decline_all' politely declines everything (the 2026-07-03
- *  policy, kept behind this toggle). All funnel emails stay HITL. */
-export type AffiliateMode = 'funnel_voucher' | 'funnel_link' | 'decline_all';
-export const AFFILIATE_MODES: readonly AffiliateMode[] = ['funnel_voucher', 'funnel_link', 'decline_all'];
+ *  'signup_page' (owner policy 2026-07-18, now that the self-serve marketplace
+ *  is live) points new approaches at the public application form, where
+ *  screening, terms and code issuance run on the standard rails; in-flight
+ *  email-funnel applicants continue on the legacy machine. 'funnel_voucher'
+ *  screens candidates over email for a discount-code trial; 'funnel_link' is
+ *  the preserved link-partnership funnel; 'decline_all' politely declines
+ *  everything (the 2026-07-03 policy, kept behind this toggle). All funnel
+ *  emails stay HITL. */
+export type AffiliateMode = 'signup_page' | 'funnel_voucher' | 'funnel_link' | 'decline_all';
+export const AFFILIATE_MODES: readonly AffiliateMode[] = ['signup_page', 'funnel_voucher', 'funnel_link', 'decline_all'];
 
 export interface InboxConfig {
   enabled: boolean;

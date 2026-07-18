@@ -286,6 +286,27 @@ Active Paw Partnerships`;
 const MARKETING_OPTIN_ASK =
 `One optional thing: would you like occasional partner updates from us - new products, promotions we are running, things worth featuring? Just say yes in your reply and we'll add you; leaving it unanswered simply means no.`;
 
+/** The live self-serve application form (footer "Affiliates" link target).
+ * Absolute URL because it rides in email bodies. */
+export const AFFILIATE_APPLY_URL = 'https://activepaw.co.uk/apps/pawscout/affiliate/apply';
+
+// signup_page mode (owner policy 2026-07-18): new partnership approaches are
+// pointed at the self-serve application page instead of the email screening
+// questions. The form carries Turnstile, the screener, the terms and code
+// issuance, so email stops duplicating that flow. No terms or numbers here -
+// the page is the single source of truth for both.
+const SIGNUP_INVITE_BODY =
+`Thank you for your interest in partnering with Active Paw.
+
+Our affiliate partnerships all start with a short application on our partner page: ${AFFILIATE_APPLY_URL}
+
+It only takes a few minutes - tell us where you would promote Active Paw and a little about your audience. If it is a fit, your personal discount code and terms are set up from there, and your tracked orders and commission all live in one place.
+
+We look forward to seeing your application.
+
+Best Regards,
+Active Paw Partnerships`;
+
 const FORM_INVITE_BODY =
 `Thank you - this looks like a great potential fit, and we'd love to take it further.
 
@@ -371,6 +392,7 @@ export function buildQualifyingEmail(
   return applySalutation(body, name);
 }
 export function buildPartnershipDecline(name: string | null): string { return applySalutation(DECLINE_BODY, name); }
+export function buildSignupInvite(name: string | null): string { return applySalutation(SIGNUP_INVITE_BODY, name); }
 export function buildServiceDecline(name: string | null): string { return applySalutation(SERVICE_DECLINE_BODY, name); }
 export function buildOperationsDecline(name: string | null): string { return applySalutation(OPERATIONS_DECLINE_BODY, name); }
 export function buildFormInvite(name: string | null): string { return applySalutation(FORM_INVITE_BODY, name); }
@@ -642,14 +664,18 @@ export async function maybePartnershipDraft(
   // rides the qualifying email when the pitch preceded a nudge.
   const volumePitch = volumePitchNow || detectVolumePitch(inboundText);
 
-  // First touch: send the qualifying email, record the applicant.
+  // First touch: point them at the flow. signup_page mode (2026-07-18) sends
+  // the application-page invite and stages them 'passed_to_form' directly (the
+  // same stage the legacy form-invite verdict used - the FORM now does the
+  // screening); funnel modes send the email screening questions as before.
   if (!applicant) {
-    const body = buildQualifyingEmail(name, variant, { volumePitch });
+    const signup = mode === 'signup_page';
+    const body = signup ? buildSignupInvite(name) : buildQualifyingEmail(name, variant, { volumePitch });
     const draftId = await store.insertDraft({
       threadId: thread.id, bodyText: body, bodyHtml: renderReplyHtml(body),
       confidence: null, quotesPriceOrder: false, holdReasons: [], model: 'partnership-screen', status: 'pending',
     });
-    await store.upsertApplicant({ threadId: thread.id, contactEmail: thread.contact_email, stage: 'screen_sent' });
+    await store.upsertApplicant({ threadId: thread.id, contactEmail: thread.contact_email, stage: signup ? 'passed_to_form' : 'screen_sent' });
     return { draftId, send: false };
   }
 
@@ -668,6 +694,19 @@ export async function maybePartnershipDraft(
       (m) => m.direction === 'outbound' && (m.body_text ?? '').includes(QUALIFYING_MARKER)
     );
     if (!askedAlready) {
+      // signup_page mode: the questions never actually went out, so this thread
+      // has not truly entered the email funnel - send the application-page
+      // invite instead and move the stage, or the next reply would land back
+      // here and re-send it forever (no QUALIFYING_MARKER ever appears).
+      if (mode === 'signup_page') {
+        const body = buildSignupInvite(name);
+        const draftId = await store.insertDraft({
+          threadId: thread.id, bodyText: body, bodyHtml: renderReplyHtml(body),
+          confidence: null, quotesPriceOrder: false, holdReasons: [], model: 'partnership-screen', status: 'pending',
+        });
+        await store.setApplicantStage(thread.id, 'passed_to_form', null);
+        return { draftId, send: false };
+      }
       const body = buildQualifyingEmail(name, variant, { volumePitch });
       const draftId = await store.insertDraft({
         threadId: thread.id, bodyText: body, bodyHtml: renderReplyHtml(body),

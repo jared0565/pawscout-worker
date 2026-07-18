@@ -3,7 +3,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
 import { TenantStore } from '../src/tenant-store';
 import { composeDraftForThread } from '../src/inbox/sweep';
-import { maybePartnershipDraft } from '../src/inbox/partnership';
+import { maybePartnershipDraft, AFFILIATE_APPLY_URL } from '../src/inbox/partnership';
 import { DEFAULT_INBOX } from '../src/inbox/types';
 import { DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, type TenantConfig } from '../src/types';
 
@@ -85,6 +85,52 @@ describe('partnership first-touch, LIVE default (funnel_voucher, owner policy 20
     const draft = await s.getPendingDraft(tid);
     expect(draft!.body_text).toMatch(/reviewing|taking a look/i);
     expect(draft!.body_text).not.toMatch(/not taking on new partnerships/i);
+  });
+});
+
+describe('partnership first-touch, signup_page mode (owner policy 2026-07-18: self-serve form)', () => {
+  const SIGNUP_CFG: TenantConfig = { ...CFG, inbox: { ...DEFAULT_INBOX, affiliateMode: 'signup_page' } };
+
+  it('drafts the application-page invite (no screening questions), applicant passed_to_form', async () => {
+    const { s, tid } = await seedFirstTouch('sp.myshopify.com');
+    const thread = (await s.getThreadWithMessages(tid))!.thread;
+    const r = await composeDraftForThread({ ...env } as any, s, SIGNUP_CFG, thread, noFetch);
+    expect(r).not.toBeNull();
+    expect(r!.send).toBe(false); // HITL like every funnel email
+    const draft = await s.getPendingDraft(tid);
+    expect(draft!.body_text).toContain(AFFILIATE_APPLY_URL);
+    expect(draft!.body_text).not.toMatch(/where would you promote/i);   // no email screening
+    expect(draft!.body_text).not.toMatch(/not taking on new partnerships/i);
+    expect(draft!.body_text).not.toMatch(/\d+\s?%/);                    // terms live on the page, never in email
+    expect(draft!.body_text).toContain('Best Regards,\nActive Paw Partnerships');
+    expect((await s.getApplicantByThread(tid))!.stage).toBe('passed_to_form');
+  });
+
+  it('a screen_sent applicant whose questions never actually went out gets the invite once, stage moves (no re-send loop)', async () => {
+    const { s, tid } = await seedFirstTouch('sq.myshopify.com');
+    await s.upsertApplicant({ threadId: tid, contactEmail: 'kasim@x.com', stage: 'screen_sent' });
+    const got = (await s.getThreadWithMessages(tid))!;
+    const r = await maybePartnershipDraft({ ...env } as any, s, SIGNUP_CFG, got.thread, got, noFetch);
+    expect(r).not.toBeNull();
+    expect(r!.send).toBe(false);
+    const draft = await s.getPendingDraft(tid);
+    expect(draft!.body_text).toContain(AFFILIATE_APPLY_URL);
+    expect(draft!.body_text).not.toMatch(/where would you promote/i);
+    expect((await s.getApplicantByThread(tid))!.stage).toBe('passed_to_form'); // next reply gets partner handling, not another invite
+  });
+
+  it('a pure service pitch still gets the vendor decline, never the application invite', async () => {
+    const s = new TenantStore(env.DB, 'sv.myshopify.com');
+    await s.upsertContact({ email: 'seo@x.com', name: 'Sam', phone: null });
+    const tid = await s.createThread({ contactEmail: 'seo@x.com', subject: 'Site speed', subjectNorm: 'site speed', receivedAt: '2026-06-22T10:00:00Z', initialStatus: 'needs_reply' });
+    await s.setThreadClassification(tid, { status: 'needs_reply', primaryCategory: 'other', intentScore: 40, summary: null, classifiedAt: '2026-06-22T10:00:01Z' });
+    await s.insertInboundMessageIfNew({ threadId: tid, messageId: '<sv1@sv.myshopify.com>', inReplyTo: null, references: [], from: 'seo@x.com', to: 'contact@activepaw.co.uk', subject: 'Site speed', bodyText: 'I am a freelance SEO specialist and I offer search engine optimization for your store', bodyHtml: null, headersJson: '{}', receivedAt: '2026-06-22T10:00:00Z' });
+    const got = (await s.getThreadWithMessages(tid))!;
+    const r = await maybePartnershipDraft({ ...env } as any, s, SIGNUP_CFG, got.thread, got, noFetch);
+    expect(r).not.toBeNull();
+    const draft = await s.getPendingDraft(tid);
+    expect(draft!.body_text).not.toContain(AFFILIATE_APPLY_URL); // vendors are not invited to the affiliate form
+    expect((await s.getApplicantByThread(tid))!.stage).toBe('declined');
   });
 });
 
