@@ -379,6 +379,14 @@ describe('consolePage', () => {
     expect(scripts).toContain('function pfSearch(');
     expect(html).toContain('id="pf-search"');
     expect(scripts).not.toContain('pfToggleAll');
+    // Explanations live in "?" info popovers (2026-07-19, reusing the Partners
+    // overlay): hidden help divs wired to openPartnerInfo, and the old inline
+    // explanation spans next to the three action buttons are gone.
+    expect(html).toContain('data-prt-help="pf-help-agent"');
+    expect(html).toContain('id="pf-help-agent"');
+    expect(html).toContain('data-prt-help="pf-help-products"');
+    expect(html).toContain('id="pf-help-products"');
+    expect(html).not.toContain('style="align-self:center;font-size:12px">Wipes every decision');
     // The ad-share tuning field is wired (onchange in the view HTML, handler in JS).
     expect(html).toContain('pfSetAdShare(this.value)');
     expect(scripts).toContain('function pfSetAdShare(');

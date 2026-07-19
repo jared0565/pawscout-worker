@@ -6,17 +6,25 @@
 // thresholds live in tenant_config.profit (documented here). Same *-js
 // template-literal rules as the other views.
 export const profitView = `  <section class="card">
-    <h2>Profitability agent</h2>
-    <p class="sub" style="margin:0 0 12px">A background agent that runs every 15 minutes. For each product it reads your LIVE Shopify price and landed cost, researches the typical delivered price at UK sellers (item + postage), then acts on real numbers: it RAISES or lowers your price to sit just under the market while keeping at least the net-profit floor, and DROPS (archives, never deletes) anything that cannot clear the floor at any sensible price. Every move is logged below.</p>
+    <h2>Profitability agent <button type="button" class="prt-info" onclick="openPartnerInfo(this)" data-prt-help="pf-help-agent" data-prt-help-title="How the profitability agent works" aria-label="How the profitability agent works">?</button></h2>
+    <div id="pf-help-agent" hidden>
+      <p>A background agent that runs every 15 minutes. For each product it reads your LIVE Shopify price and landed cost, researches the typical delivered price at UK sellers (item + postage), then acts on real numbers: it RAISES or lowers your price to sit just under the market while keeping at least the net-profit floor, and DROPS (archives, never deletes) anything that cannot clear the floor at any sensible price. Every move is logged in Recent actions.</p>
+      <p><strong>Enabled</strong> - run the agent. Off = fully dormant, nothing changes.</p>
+      <p><strong>Preview only</strong> - show what it WOULD do without touching prices or listings. Uncheck to go full auto.</p>
+      <p><strong>Enforce at import</strong> - also hard-reject a per-unit money-loser when a NEW product is imported.</p>
+      <p><strong>Competition check at import</strong> - before a NEW product enters, also research the market's delivered price and stop anything that could only compete below the net floor (one cached lookup per import; the agent reuses it later, so this costs nothing extra overall).</p>
+      <p><strong>Ad share</strong> - the blended % of revenue spent on ads across ALL traffic (organic, repeat and affiliate sales carry no ad cost, so they pull this down). This is the biggest lever on what counts as profitable.</p>
+    </div>
+    <p class="sub" style="margin:0 0 12px">Runs every 15 minutes on your live prices, costs and the market; every move is logged below.</p>
 
     <div class="pf-switches">
-      <label class="pf-switch"><input type="checkbox" id="pf-enabled" onchange="pfSetFlag('enabled',this.checked)"> <span><strong>Enabled</strong> - run the agent (off = fully dormant, nothing changes)</span></label>
-      <label class="pf-switch"><input type="checkbox" id="pf-dryrun" checked onchange="pfSetFlag('dryRun',this.checked)"> <span><strong>Preview only</strong> - show what it WOULD do without touching prices or listings. Uncheck to go full auto.</span></label>
-      <label class="pf-switch"><input type="checkbox" id="pf-hardblock" onchange="pfSetFlag('hardBlock',this.checked)"> <span><strong>Enforce at import</strong> - also hard-reject a per-unit money-loser when a NEW product is imported</span></label>
-      <label class="pf-switch"><input type="checkbox" id="pf-compimport" onchange="pfSetFlag('competitionCheckOnImport',this.checked)"> <span><strong>Competition check at import</strong> - before a NEW product enters, also research the market's delivered price and stop anything that could only compete below the net floor (one cached lookup per import; the agent reuses it later, so this costs nothing extra overall)</span></label>
+      <label class="pf-switch"><input type="checkbox" id="pf-enabled" onchange="pfSetFlag('enabled',this.checked)"> <span><strong>Enabled</strong> - run the agent</span></label>
+      <label class="pf-switch"><input type="checkbox" id="pf-dryrun" checked onchange="pfSetFlag('dryRun',this.checked)"> <span><strong>Preview only</strong> - log, don't act</span></label>
+      <label class="pf-switch"><input type="checkbox" id="pf-hardblock" onchange="pfSetFlag('hardBlock',this.checked)"> <span><strong>Enforce at import</strong></span></label>
+      <label class="pf-switch"><input type="checkbox" id="pf-compimport" onchange="pfSetFlag('competitionCheckOnImport',this.checked)"> <span><strong>Competition check at import</strong></span></label>
     </div>
     <div class="pf-tune">
-      <label for="pf-adshare"><strong>Ad share</strong> - the blended % of revenue spent on ads across ALL traffic (organic, repeat and affiliate sales carry no ad cost, so they pull this down). This is the biggest lever on what counts as profitable.</label>
+      <label for="pf-adshare"><strong>Ad share</strong> - blended % of revenue spent on ads (the biggest lever)</label>
       <div class="pf-tune-row">
         <input type="number" id="pf-adshare" min="0" max="60" step="1" onchange="pfSetAdShare(this.value)"> <span class="pf-unit">% of revenue</span>
         <span id="pf-adshare-hint" class="muted"></span>
@@ -32,19 +40,18 @@ export const profitView = `  <section class="card">
   </section>
 
   <section class="card">
-    <h2>Products</h2>
-    <p class="sub" style="margin:0 0 10px">Worst first, and only what needs your eyes: <strong>passing products are hidden by default</strong> (a link under the table shows everything). Each row shows the product (name + SKU), the agent's decision and why, and three prices you can click to review: <strong>PDP</strong> (your storefront price, opens the product page), <strong>CJ</strong> (the supplier item price, opens the product in CJ) and <strong>Competitor</strong> (the market delivered price, opens a search; hover for the confidence and sources). <strong>Dropped</strong> = archived, cannot profit; <strong>Repriced</strong> = moved to just under the market; <strong>Flagged</strong> = your call. Your calls on a row: <strong>Keep</strong> pins the product exactly as it is - the agent stops repricing, flagging or dropping it until you Release it. <strong>Wrong match</strong> says the competitor listing is not the same product: that market price is discarded for 90 days and the product is re-judged on cost-plus rules. <strong>Deep check</strong> runs the thorough LLM web read for one product (costs roughly 30p) and re-judges it immediately; the everyday sweep prices from free structured market data instead. <strong>Archive</strong> is the manual one-click fallback and asks to confirm; it never deletes.</p>
+    <h2>Products <button type="button" class="prt-info" onclick="openPartnerInfo(this)" data-prt-help="pf-help-products" data-prt-help-title="How to read this list" aria-label="How to read this list">?</button></h2>
+    <div id="pf-help-products" hidden>
+      <p>Grouped worst first: <strong>Rejected</strong>, then <strong>Flagged</strong>, with <strong>Passing</strong> collapsed underneath (click a section header to open or close it). Each row shows the product (name + SKU), the agent's decision and why, and three prices you can click to review: <strong>PDP</strong> (your storefront price, opens the product page), <strong>CJ</strong> (the supplier item price, opens the product in CJ) and <strong>Competitor</strong> (the market delivered price, opens a search; hover for the confidence and sources). <strong>Dropped</strong> = archived, cannot profit; <strong>Repriced</strong> = moved to just under the market; <strong>Flagged</strong> = your call.</p>
+      <p>Your calls on a row: <strong>Keep</strong> pins the product exactly as it is - the agent stops repricing, flagging or dropping it until you Release it. <strong>Wrong match</strong> says the competitor listing is not the same product: that market price is discarded for 90 days and the product is re-judged on cost-plus rules. <strong>Deep check</strong> runs the thorough LLM web read for one product (costs roughly 30p) and re-judges it immediately; the everyday sweep prices from free structured market data instead. <strong>Archive</strong> is the manual one-click fallback and asks to confirm; it never deletes.</p>
+      <p><strong>Clear list &amp; re-judge</strong> - wipes every decision AND the cached market prices; the agent re-researches and re-judges the whole catalog over the next few hours. Nothing is archived or repriced by clearing; the action history below is kept.</p>
+      <p><strong>Recalibrate &amp; rescue drops</strong> - after a judging-rule change: re-checks every product the agent archived against fresh market prices under the CURRENT rules and brings back whatever now clears them (repriced if needed). What still fails stays archived. Also refreshes the cached market prices for live products (your Wrong-match calls are kept). In Preview it only reports what WOULD come back.</p>
+      <p><strong>Restore no-traffic culls</strong> - brings back products the 30-day inactivity cull archived while the store had almost no visitors to measure them by (the cull now stands down automatically in low-traffic windows). Products the agent dropped for economics, or that you archived yourself, are not touched. Restored products are re-judged by the agent as normal.</p>
+    </div>
     <div class="row" style="margin:0 0 10px">
       <button type="button" onclick="pfClearDecisions(this)">Clear list &amp; re-judge</button>
-      <span class="muted" style="align-self:center;font-size:12px">Wipes every decision AND the cached market prices; the agent re-researches and re-judges the whole catalog over the next few hours. Nothing is archived or repriced by clearing; the action history below is kept.</span>
-    </div>
-    <div class="row" style="margin:0 0 10px">
       <button type="button" onclick="pfRecalibrate(this)">Recalibrate &amp; rescue drops</button>
-      <span class="muted" style="align-self:center;font-size:12px">After a judging-rule change: re-checks every product the agent archived against fresh market prices under the CURRENT rules and brings back whatever now clears them (repriced if needed). What still fails stays archived. Also refreshes the cached market prices for live products (your Wrong-match calls are kept). In Preview it only reports what WOULD come back.</span>
-    </div>
-    <div class="row" style="margin:0 0 10px">
       <button type="button" class="ghost" onclick="pfRestoreCulled(this)">Restore no-traffic culls</button>
-      <span class="muted" style="align-self:center;font-size:12px">Brings back products the 30-day inactivity cull archived while the store had almost no visitors to measure them by (the cull now stands down automatically in low-traffic windows). Products the agent dropped for economics, or that you archived yourself, are not touched. Restored products are re-judged by the agent as normal.</span>
     </div>
     <div class="row" style="margin:0 0 8px">
       <input type="search" id="pf-search" placeholder="Search product, SKU or handle" oninput="pfSearch(this.value)" style="max-width:320px">
