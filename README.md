@@ -51,10 +51,11 @@ Supplier cost (USD) is converted to GBP retail via a configurable multiplier (Ac
 ### Fulfilment pipeline (W-FULFIL)
 
 When a Shopify order is paid, the worker:
-1. Receives the `orders/paid` webhook, validates the order (address complete, items mapped to supplier variant IDs, not high-risk, not over £100, fully paid), and queues it with a 60-minute grace window.
-2. Creates the corresponding CJ order via API, linking each line item to its exact supplier variant.
-3. Polls for the tracking number and writes it back to Shopify as a fulfilment with a direct tracking URL.
-4. If the CJ wallet is unfunded, the order enters `awaiting-payment`: the owner receives an email with the CJ order ID and a payment link, and tracking polling continues once the payment clears.
+1. Receives the `orders/paid` webhook, validates the order (address complete, items mapped to supplier variant IDs, not over £100, fully paid), and queues it with a 60-minute grace window.
+2. Runs the **pre-spend fraud gate**: Shopify's fraud recommendation is fetched fresh just before any supplier money moves. A CANCEL recommendation always holds the order; INVESTIGATE holds it above £40; the check fails open (an unreadable risk never blocks fulfilment - the £100 cap and the operator queue bound the worst case).
+3. Creates the corresponding CJ order via API, linking each line item to its exact supplier variant.
+4. Polls for the tracking number and writes it back to Shopify as a fulfilment with a direct tracking URL.
+5. If the CJ wallet is unfunded, the order enters `awaiting-payment`: the owner receives an email with the CJ order ID and a payment link, and tracking polling continues once the payment clears.
 
 ### Merchant console (embedded in Shopify)
 
@@ -66,11 +67,16 @@ All mail to the store address lands in the console Inbox as categorised threads 
 
 ### Profitability engine (adjust-or-drop)
 
-A recurring agent judges every imported product against the real market. eBay Browse supplies credible delivered prices for the same item (deterministic matching, near-zero LLM cost; listings sold by Temu are excluded), and the judge compares our achievable price to the **median** credible price. Policy: at least GBP 2 net per unit after fees - verdicts are pass, reprice (just under market), or drop (archive, never delete). Owner brakes: a Preview mode that reports without acting, durable per-product Keep/Release overrides, a "Wrong match" marker that forces cost-plus re-judging when the matched competitor is a different item, and a "Recalibrate & rescue" sweep that re-judges all archived drops after a policy change and un-archives whatever now passes. An AI-spend daily ledger in Settings shows what the LLM layer costs.
+A recurring agent judges every imported product against the real market. eBay Browse supplies credible delivered prices for the same item (deterministic matching, near-zero LLM cost; listings sold by Temu are excluded, and so are China/Hong Kong-based sellers - their prices are not a reference a UK store can meet), and the judge compares our achievable price to the **median** credible price. Policy: at least GBP 2 net per unit after fees - verdicts are pass, reprice (just under market), or drop (archive, never delete). Owner brakes: a Preview mode that reports without acting, durable per-product Keep/Release overrides, a "Wrong match" marker that forces cost-plus re-judging when the matched competitor is a different item, a "Recalibrate & rescue" sweep that re-judges all archived drops after a policy change and un-archives whatever now passes, and a "Restore no-traffic culls" action for engagement-cull reversals. The console products list groups by verdict (Rejected / Flagged / Passing, searchable), and every control explains itself through "?" info popovers. An AI-spend daily ledger in Settings shows what the LLM layer costs.
 
 ### Blog content system + distribution
 
 The worker authors research-grounded buying guides as Shopify **draft** articles: briefs start from real web demand, facts are web-verified, every post carries a quick answer, a visible FAQ backed by FAQPage schema, a congruence-vetted hero image, and a "Shop this guide" product block. The owner publishes; status syncs back automatically. A distribution rail (Blotato: Pinterest, Facebook, Instagram) builds gated creative packs per post with a per-channel ledger and a double-post fence - dormant until a channel is toggled on.
+
+Two deterministic guards keep published guides working for the store, not against it:
+
+- **Approved-source gate** (`src/blog/sources.ts`): an external link may only point at a non-commercial authority (vet bodies, welfare charities, `.gov`/`.gov.uk`/`.nhs.uk`/`.ac.uk`/`.edu`). Facts from any other domain are dropped before the drafter sees them, every draft body is scrubbed, and the nightly sweep scrubs already-published posts - a competitor or retailer link cannot ship, no matter what the LLM writes.
+- **Article health** (`src/blog/article-health.ts`): the profit agent archives stock continuously, so published guides rot. A nightly pass (plus an Ops console button) checks every product link against the live catalog and heals dead ones - a caged LLM relinks to a congruent live product (the pick must come from the grounded candidate list), falling back to the guide's collection. Stale "Shop this guide" picks are re-merchandised, and the theme independently recomposes the block at render time from live, in-stock products only.
 
 ### Email campaigns + engagement
 
@@ -189,12 +195,15 @@ src/
   affiliate-attribution.ts Buyer-email hashing + self-referral attribution
   affiliate-payout-reminder.ts  Monthly (1st) owner reminder: cleared commission awaiting payout
   debrand.ts            Maker-brand removal on all customer-facing text
+  catalog-debrand.ts    Nightly sweep: de-brand titles/article bodies + scrub
+                        non-approved external links from published guides
   auth/                 OAuth begin/callback, managed-install token exchange, uninstall
   console/              Embedded merchant console (page, views, per-view browser JS)
   inbox/                Customer email: ingest, category agents, drafts, quality loop,
                         answer memory, gates, auto-send, invoices, partnerships
   blog/                 Guide authoring: research, brief, draft, ground, hero vetting,
-                        combo merchandising, quality, publish-status sync
+                        combo merchandising, quality, publish-status sync, the
+                        approved-source gate (sources.ts), article health
   syndicate/            Blog distribution rail (Blotato), creative packs, ledger, fences
   affiliate/            Self-serve partner marketplace: apply form + terms (Liquid),
                         Turnstile gate, LLM screening, magic-link portal/dashboard,
@@ -324,7 +333,7 @@ The table above is the original core. The console API has since grown along with
 | `GET` | `/affiliate/verify` | Applicant email verification / claim link |
 | `POST` | `/webhooks/uninstall` | HMAC-validated; marks uninstalled + purges secrets |
 | `POST` | `/webhooks/orders-paid` | Order paid → validate → queue (60-min grace) |
-| cron | `17 4 * * *` daily | Retention purge → cull → refill (capped, CJ-rate-paced); affiliate payout reminder on the 1st |
+| cron | `17 4 * * *` daily | Retention purge → cull → refill (capped, CJ-rate-paced) → de-brand + link scrub → article health; affiliate payout reminder on the 1st |
 | cron | `*/15 * * * *` every 15 min | Fulfilment pipeline, inbox sweep (ingest + draft), profit agent, blog pipeline + distribution stages, affiliate application screening |
 
 ## Development
@@ -385,7 +394,8 @@ Current status (July 2026):
 - **Store live and taking real orders** (2026-07-12): Shopify Payments test mode turned off, PayPal confirmed live - catalogue, fulfilment, and pricing pipelines all in production; protected-customer-data scopes granted; unpassworded, fully catalogued.
 - Customer inbox live in human-approval mode, with answer-memory grounding on every draft.
 - Profitability engine live full-auto: eBay median-market judging (Temu excluded) with owner brakes (Preview, Keep/Release, Wrong match, Recalibrate & rescue).
-- Blog channel live (worker drafts, owner publishes); distribution rail built and dormant pending channel enables.
+- Blog channel live (worker drafts, owner publishes) with deterministic guards (2026-07-19): external citations restricted to non-commercial authorities, and a nightly article-health pass that keeps every product link and Shop-this-guide bundle pointing at live stock. Distribution rail built and dormant pending channel enables.
+- Pre-spend fraud gate live (2026-07-19): Shopify's fraud recommendation is checked just before supplier spend; CANCEL always holds, INVESTIGATE holds above £40.
 - Self-serve affiliate marketplace live (2026-07-14): public apply form, Turnstile bot gate, automated LLM screening, and auto-issued starter codes feed a magic-link partner dashboard. Commission is 2% rising to 5% for consistent performers, held 45 days to clear the returns window, then paid out monthly on an owner-triggered basis.
 - Email campaigns live with verified open/click tracking and per-thread engagement.
 - Google stack connected under one account (2026-07-12): Merchant Center feed syncing, Search Console verified + sitemap submitted, GA4 wired via the Shopify channel app.

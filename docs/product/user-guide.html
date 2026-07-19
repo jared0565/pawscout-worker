@@ -63,7 +63,7 @@
   <h1>PawScout + Active Paw</h1>
   <p class="sub">Onboarding, installation and day-to-day operation</p>
   <div class="doc-type">Product User Guide</div>
-  <p class="meta">Document version 1.0 &middot; July 2026<br>For new tenants of the PawScout platform</p>
+  <p class="meta">Document version 1.1 &middot; July 2026<br>For new tenants of the PawScout platform</p>
 </div>
 
 <div class="toc">
@@ -138,17 +138,21 @@
 <p>In Campaigns &gt; <em>Email analytics</em>, click <em>Turn on tracking</em> once. From then on every email reports delivery, opens and clicks, and bad addresses are suppressed automatically.</p>
 
 <h2><span class="num">5</span>A tour of the console</h2>
-<p>Ten views, reachable from the left rail or the number keys <span class="kbd">1</span>-<span class="kbd">8</span>, <span class="kbd">9</span> for Settings, <span class="kbd">0</span> for Help.</p>
+<p>Fourteen views, reachable from the left rail. The longest-standing ten also have number keys: <span class="kbd">1</span>-<span class="kbd">8</span> for Glance through Traffic, <span class="kbd">9</span> for Settings, <span class="kbd">0</span> for Help.</p>
 <table>
   <tr><th>View</th><th>What you do there</th></tr>
   <tr><td><strong>Glance</strong></td><td>Start here each day: counts, the attention queue (what needs a human), recent automation activity, and health stamps for the scheduled jobs.</td></tr>
   <tr><td><strong>Inbox</strong></td><td>Customer conversations. Open a thread, read the drafted reply, approve or regenerate it. Wholesale threads can become priced draft orders from here. The banner at the top always shows your current reply mode.</td></tr>
+  <tr><td><strong>Answers</strong></td><td>The approved-reply library: every reply you have approved, kept as the reference your future drafts are grounded in, with per-pair disable.</td></tr>
   <tr><td><strong>Catalog</strong></td><td>Import products by category, watch the pipeline (draft, published, paused), and see pricing and stock decisions.</td></tr>
-  <tr><td><strong>Operations</strong></td><td>The order pipeline: what came in, what was pushed to the supplier, what is in transit.</td></tr>
+  <tr><td><strong>Operations</strong></td><td>The order pipeline: what came in, what was pushed to the supplier, what is in transit. Also the run-now buttons for catalogue hygiene, including guide link healing.</td></tr>
+  <tr><td><strong>Profitability</strong></td><td>The market judge: every product compared with real competitor prices, grouped Rejected / Flagged / Passing, with per-product actions and the recalibrate and restore controls.</td></tr>
   <tr><td><strong>Audit</strong></td><td>The automation's decision log: what changed, when, and why. Your first stop when something looks surprising.</td></tr>
   <tr><td><strong>Partners</strong></td><td>Affiliate applications, voucher issuance and revocation, per-partner order attribution, and each partner's marketing consent.</td></tr>
   <tr><td><strong>Campaigns</strong></td><td>Compose and send broadcasts, watch per-campaign engagement, manage sender details and the policy keeper. Covered in section 7.</td></tr>
+  <tr><td><strong>Events</strong></td><td>The promotion calendar: pre-built yearly retail moments and one-off events, each running its discount, storefront pop-up and announcement email as one unit.</td></tr>
   <tr><td><strong>Traffic</strong></td><td>Your acquisition strategy board: one row per channel with status, priority and a single next action. It arrives pre-seeded with a starter strategy.</td></tr>
+  <tr><td><strong>Content</strong></td><td>The blog channel: research-grounded buying guides drafted for your review, publish-status tracking, and the social distribution rail (off until you enable a channel).</td></tr>
   <tr><td><strong>Settings</strong></td><td>Supplier connection, AI models, reply mode, inbox configuration.</td></tr>
   <tr><td><strong>Help</strong></td><td>The built-in knowledge base. Everything in this guide, and more, lives there in searchable topic form.</td></tr>
 </table>
@@ -156,9 +160,9 @@
 <h2><span class="num">6</span>Running the store day to day</h2>
 <h3>What happens without you</h3>
 <ul>
-  <li><strong>Every night:</strong> stock levels sync from the supplier into Shopify, prices re-check against cost rules, delivery estimates restamp from the live logistics matrix, shipping profiles and market availability reconcile, and thin collections refill from the import pipeline.</li>
-  <li><strong>Every 15 minutes:</strong> new orders move through the pipeline, new email is classified and drafted, and any in-flight nightly work resumes.</li>
-  <li><strong>Continuously:</strong> email engagement events flow in; hard bounces and complaints go straight to the suppression list.</li>
+  <li><strong>Every night:</strong> stock levels sync from the supplier into Shopify, prices re-check against cost rules, delivery estimates restamp from the live logistics matrix, shipping profiles and market availability reconcile, thin collections refill from the import pipeline, supplier brand names are stripped from customer-facing text, and published buying guides are reconciled against the live catalogue so they never link a retired product.</li>
+  <li><strong>Every 15 minutes:</strong> new orders move through the pipeline (each checked against Shopify's fraud recommendation just before any supplier money moves), new email is classified and drafted, and any in-flight nightly work resumes.</li>
+  <li><strong>Through the day:</strong> the profitability judge compares products with real market prices and reprices or retires what cannot earn (archives only, never deletes; everything it does is reversible from the console). Email engagement events flow in continuously; hard bounces and complaints go straight to the suppression list.</li>
 </ul>
 <h3>What needs you</h3>
 <ul>
@@ -166,6 +170,7 @@
   <li><strong>Campaign sends.</strong> Nothing broadcasts without your click, ever.</li>
   <li><strong>Partner decisions.</strong> Approving applications and flipping marketing consent when a partner opts in.</li>
   <li><strong>Catalog taste.</strong> Reviewing imported drafts before they publish keeps the shop's voice yours.</li>
+  <li><strong>Guide publishing.</strong> Buying guides are drafted for you in Shopify with a quick answer, an FAQ and a shoppable product strip; you read, adjust and publish. Their outside links are restricted to non-commercial authorities (vet bodies, charities, government and academic pages) and their product links are healed automatically as the catalogue changes, so a published guide keeps selling for you without upkeep.</li>
 </ul>
 <div class="note"><strong>A good weekly rhythm:</strong> Monday, read Glance and the Audit view; midweek, review campaign metrics and partner performance; Friday, update the Traffic board's next actions from what the week's numbers said.</div>
 
