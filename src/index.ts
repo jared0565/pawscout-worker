@@ -489,7 +489,7 @@ app.post('/api/syndicate/send', async (c) => {
   const ensured = await ensurePack(c.env, store, cfg, blotato, {
     id: post.id, shopifyArticleId: post.shopify_article_id, title: post.title,
     collectionHandle: post.collection_handle, relatedHandlesJson: post.related_handles_json
-  });
+  }, { requirePublished: true }); // never post a link to an unpublished article, even on an owner click
   if ('error' in ensured) {
     await store.markSyndication(postId, channel, { error: ensured.error });
     return c.json({ ok: false, error: ensured.error });

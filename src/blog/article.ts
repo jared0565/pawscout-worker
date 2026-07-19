@@ -165,10 +165,10 @@ export async function getPublishedMap(admin: AdminGraphql, ids: string[]): Promi
 }
 
 const ARTICLES_FOR_SYNDICATION = `query pawscoutArticlesSyndication($ids: [ID!]!) {
-  nodes(ids: $ids) { ... on Article { id handle title isPublished image { url } } }
+  nodes(ids: $ids) { ... on Article { id handle title isPublished body image { url } } }
 }`;
 
-export interface ArticleSyndicationInfo { id: string; handle: string; title: string; imageUrl: string | null; isPublished: boolean }
+export interface ArticleSyndicationInfo { id: string; handle: string; title: string; imageUrl: string | null; isPublished: boolean; body: string }
 
 /** Live handle + title + CURRENT featured image per article id, for the
  * syndication pack build. Shopify is the source of truth here (an owner-swapped
@@ -179,11 +179,11 @@ export async function getArticlesForSyndication(admin: AdminGraphql, ids: string
   const map = new Map<string, ArticleSyndicationInfo>();
   if (!ids.length) return map;
   const data = await admin(ARTICLES_FOR_SYNDICATION, { ids }) as {
-    nodes?: ({ id?: string; handle?: string; title?: string; isPublished?: boolean; image?: { url?: string } | null } | null)[];
+    nodes?: ({ id?: string; handle?: string; title?: string; isPublished?: boolean; body?: string; image?: { url?: string } | null } | null)[];
   };
   for (const n of data.nodes ?? []) {
     if (!n?.id || !n.handle) continue;
-    map.set(n.id, { id: n.id, handle: n.handle, title: n.title ?? '', imageUrl: n.image?.url ?? null, isPublished: n.isPublished === true });
+    map.set(n.id, { id: n.id, handle: n.handle, title: n.title ?? '', imageUrl: n.image?.url ?? null, isPublished: n.isPublished === true, body: n.body ?? '' });
   }
   return map;
 }

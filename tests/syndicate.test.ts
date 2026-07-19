@@ -70,6 +70,24 @@ describe('syndication copy gates', () => {
     expect(validateCopy(null)).toBeNull();
     expect(validateCopy({})).toBeNull();
   });
+  it('hashtags are optional: absent stays absent, valid sets are kept', () => {
+    const without = validateCopy(GOOD_COPY);
+    expect(without).not.toBeNull();
+    expect(without!.hashtags).toBeUndefined();
+    const with5 = validateCopy({ ...GOOD_COPY, hashtags: '#CatCare #PetTips #CatHydration #Cats #PetHealth' });
+    expect(with5!.hashtags).toBe('#CatCare #PetTips #CatHydration #Cats #PetHealth');
+  });
+  it('present hashtags are gated: shape, count, brands', () => {
+    expect(validateCopy({ ...GOOD_COPY, hashtags: '#a #b #c #d #e #f' })).toBeNull();     // 6 tags
+    expect(validateCopy({ ...GOOD_COPY, hashtags: 'CatCare PetTips' })).toBeNull();       // no #
+    expect(validateCopy({ ...GOOD_COPY, hashtags: '#PawHut #PetTips' })).toBeNull();      // brand token
+    expect(copyGateErrors({ ...GOOD_COPY, hashtags: 'CatCare' } as SyndicationCopy).join(' ')).toContain('hashtags');
+  });
+  it('a non-string hashtags value is dropped, never fatal', () => {
+    const v = validateCopy({ ...GOOD_COPY, hashtags: ['#CatCare'] });
+    expect(v).not.toBeNull();
+    expect(v!.hashtags).toBeUndefined();
+  });
 });
 
 describe('buildCopy', () => {
@@ -92,6 +110,19 @@ describe('buildCopy', () => {
     const llm = { jsonChain: async () => ({ ok: false, error: 'exhausted' }) } as unknown as LlmClient;
     expect(await buildCopy(llm, storeOf(calls), CFG, { articleTitle: 'T', collectionHandle: null, productTitles: [] })).toBeNull();
     expect(calls.length).toBe(0);
+  });
+  it('grounds the model on the quick answer when one exists', async () => {
+    let userPayload = '';
+    const llm = {
+      jsonChain: async (opts: { user: string; validate: (v: unknown) => unknown }) => {
+        userPayload = opts.user;
+        return { ok: true, value: opts.validate(GOOD_COPY), usage: { provider: 'openrouter', model: 'm', promptTokens: 1, completionTokens: 1, costUsd: 0 } };
+      }
+    } as unknown as LlmClient;
+    await buildCopy(llm, storeOf([]), CFG, { articleTitle: 'Cat hydration', quickAnswer: 'Cats need more water than they drink.', collectionHandle: null, productTitles: [] });
+    expect(JSON.parse(userPayload).quickAnswer).toBe('Cats need more water than they drink.');
+    await buildCopy(llm, storeOf([]), CFG, { articleTitle: 'Cat hydration', quickAnswer: '  ', collectionHandle: null, productTitles: [] });
+    expect(JSON.parse(userPayload).quickAnswer).toBeUndefined(); // blank never sent
   });
 });
 
@@ -203,6 +234,24 @@ describe('channel payloads', () => {
     expect(nearCap.startsWith(p.text.split('\n\n')[0])).toBe(true);
   });
 
+  it('instagram: hashtags ride at the very end, after the link', () => {
+    const ch: SyndicateChannelConfig = { enabled: true, auto: false, accountId: 'a3' };
+    const p = blotatoPostFor('instagram', ch, { copy: { ...copy, hashtags: '#CatCare #PetTips' }, articleHandle: 'cat-hydration', imageUrl: IMG });
+    if ('error' in p) throw new Error(p.error);
+    expect(p.text.endsWith('\n\n#CatCare #PetTips')).toBe(true);
+    expect(p.text).toContain('Read the guide: ' + utmUrl('cat-hydration', 'instagram'));
+  });
+
+  it('instagram: the caption budget covers the hashtags too; link and tags never truncate', () => {
+    const ch: SyndicateChannelConfig = { enabled: true, auto: false, accountId: 'a3' };
+    const nearCap = ('Hydration matters for every cat in the house. ').repeat(60).slice(0, COPY_CAPS.caption);
+    const p = blotatoPostFor('instagram', ch, { copy: { ...copy, caption: nearCap, hashtags: '#CatCare #PetTips #Cats' }, articleHandle: 'cat-hydration', imageUrl: IMG });
+    if ('error' in p) throw new Error(p.error);
+    expect(p.text.length).toBeLessThanOrEqual(COPY_CAPS.caption);
+    expect(p.text.endsWith('\n\n#CatCare #PetTips #Cats')).toBe(true);
+    expect(p.text).toContain('Read the guide: ' + utmUrl('cat-hydration', 'instagram'));
+  });
+
   it('hard errors: no accountId, and no image where an image is required', () => {
     expect(blotatoPostFor('pinterest', { enabled: true, auto: false, boardId: 'b' }, { copy, articleHandle: 'h', imageUrl: IMG }))
       .toEqual({ error: 'channel has no connected accountId' });
@@ -218,18 +267,18 @@ describe('getArticlesForSyndication', () => {
     const admin = (async (_q: string, vars?: Record<string, unknown>) => {
       expect((vars as { ids: string[] }).ids).toEqual(['gid://shopify/Article/1', 'gid://shopify/Article/2']);
       return { nodes: [
-        { id: 'gid://shopify/Article/1', handle: 'cat-hydration', title: 'Cat hydration', image: { url: 'https://cdn.shopify.com/h.jpg' }, isPublished: true },
+        { id: 'gid://shopify/Article/1', handle: 'cat-hydration', title: 'Cat hydration', image: { url: 'https://cdn.shopify.com/h.jpg' }, isPublished: true, body: '<p>Most cats drink too little.</p>' },
         null
       ] };
     }) as unknown as AdminGraphql;
     const m = await getArticlesForSyndication(admin, ['gid://shopify/Article/1', 'gid://shopify/Article/2']);
-    expect(m.get('gid://shopify/Article/1')).toEqual({ id: 'gid://shopify/Article/1', handle: 'cat-hydration', title: 'Cat hydration', imageUrl: 'https://cdn.shopify.com/h.jpg', isPublished: true });
+    expect(m.get('gid://shopify/Article/1')).toEqual({ id: 'gid://shopify/Article/1', handle: 'cat-hydration', title: 'Cat hydration', imageUrl: 'https://cdn.shopify.com/h.jpg', isPublished: true, body: '<p>Most cats drink too little.</p>' });
     expect(m.has('gid://shopify/Article/2')).toBe(false);
     expect(await getArticlesForSyndication(admin, [])).toEqual(new Map());
   });
 });
 
-import { runSyndicationForShop, anyChannelEnabled, SYNDICATION_MAX_AUTO_ATTEMPTS } from '../src/syndicate/run';
+import { runSyndicationForShop, anyChannelEnabled, ensurePack, SYNDICATION_MAX_AUTO_ATTEMPTS, AUTO_SEND_COOLDOWN_MS, PACK_ERROR_BACKOFF_MS, CONFIRM_STALE_MS } from '../src/syndicate/run';
 import type { Env as WorkerEnv } from '../src/types';
 
 function fakeSynStore() {
@@ -241,7 +290,7 @@ function fakeSynStore() {
     logLlmUsage: async () => {},
     enqueueSyndication: async (p: string, c: string) => {
       if (ledger.has(key(p, c))) return false;
-      ledger.set(key(p, c), { post_id: p, channel: c, status: 'queued', external_id: null, error: null, attempts: 0, sent_at: null, updated_at: 't' });
+      ledger.set(key(p, c), { post_id: p, channel: c, status: 'queued', external_id: null, error: null, attempts: 0, sent_at: null, updated_at: new Date().toISOString() });
       return true;
     },
     listSyndicationLedger: async () => [...ledger.values()],
@@ -252,6 +301,7 @@ function fakeSynStore() {
       row.error = (patch.error as string | null) ?? null;
       if (patch.sentAt !== undefined && patch.sentAt !== null) row.sent_at = patch.sentAt as string;
       if (patch.attempts !== undefined && patch.attempts !== null) row.attempts = patch.attempts as number;
+      row.updated_at = new Date().toISOString(); // real timestamps: the sweep's backoff/cooldown read them
     },
     claimSyndicationAttempt: async (p: string, c: string, expected: number) => {
       const row = ledger.get(key(p, c));
@@ -267,7 +317,8 @@ function fakeSynStore() {
 }
 
 const POST = { id: 'post-1', shopify_article_id: 'gid://shopify/Article/1', title: 'Cat hydration', status: 'published', collection_handle: 'pet-health', related_handles_json: '["fountain-2l"]', blog_handle: 'guides', brief_json: null, claim_flags_json: null, hero_image_url: null, hero_source_handle: null, created_at: 't' };
-const ART = new Map([[POST.shopify_article_id, { id: POST.shopify_article_id, handle: 'cat-hydration', title: 'Cat hydration', imageUrl: 'https://cdn.shopify.com/h.jpg', isPublished: true }]]);
+const QUICK_ANSWER = 'Most cats drink far less than they need; a fountain, wider bowls and wet food all raise intake.';
+const ART = new Map([[POST.shopify_article_id, { id: POST.shopify_article_id, handle: 'cat-hydration', title: 'Cat hydration', imageUrl: 'https://cdn.shopify.com/h.jpg', isPublished: true, body: '<p>' + QUICK_ANSWER + '</p><h2>Why it matters</h2><p>Details.</p>' }]]);
 
 function synCfg(over: Record<string, Partial<SyndicateChannelConfig>>): TenantConfig {
   const syn = mergeSyndicate(JSON.stringify({ channels: over }));
@@ -417,6 +468,94 @@ describe('runSyndicationForShop', () => {
     expect(r.posted).toBe(0);
     expect(sent.length).toBe(0);
     expect(store.ledger.get('post-1|pinterest')!.status).toBe('queued');
+  });
+
+  it('the pack copy is grounded on the article quick answer', async () => {
+    const store = fakeSynStore();
+    let got: { quickAnswer?: string } | null = null;
+    const cfg = synCfg({ pinterest: { enabled: true, auto: true, accountId: 'a', boardId: 'b' } });
+    const d = {
+      listPosts: async () => [POST], articles: async () => ART, blotato: fakeBlotato([]) as never,
+      copy: (async (_l: unknown, _s: unknown, _c: unknown, input: { quickAnswer?: string }) => { got = input; return GOOD_COPY; }) as never
+    };
+    await runSyndicationForShop(okLlmEnv, store as never, cfg, d);
+    expect(got!.quickAnswer).toBe(QUICK_ANSWER);
+  });
+
+  it('an unpublished article never posts: rows stay queued with the reason visible', async () => {
+    const store = fakeSynStore();
+    const sent: unknown[] = [];
+    const unpub = new Map([[POST.shopify_article_id, { ...ART.get(POST.shopify_article_id)!, isPublished: false }]]);
+    const cfg = synCfg({ pinterest: { enabled: true, auto: true, accountId: 'a', boardId: 'b' } });
+    const r = await runSyndicationForShop(okLlmEnv, store as never, cfg, {
+      listPosts: async () => [POST], articles: async () => unpub, blotato: fakeBlotato(sent) as never, copy: (async () => GOOD_COPY) as never
+    });
+    expect(r.posted).toBe(0);
+    expect(sent.length).toBe(0);
+    const row = store.ledger.get('post-1|pinterest')!;
+    expect(row.status).toBe('queued');
+    expect(row.error).toContain('unpublished');
+  });
+
+  it('a cached pack does not bypass the publish gate', async () => {
+    const store = fakeSynStore();
+    await store.upsertSyndicationPack({ postId: 'post-1', articleHandle: 'cat-hydration', captionsJson: JSON.stringify(GOOD_COPY), pinImageUrl: 'https://database.blotato.com/m.jpg' });
+    const post = { id: 'post-1', shopifyArticleId: POST.shopify_article_id, title: POST.title, collectionHandle: null, relatedHandlesJson: null };
+    const unpub = new Map([[POST.shopify_article_id, { ...ART.get(POST.shopify_article_id)!, isPublished: false }]]);
+    const gated = await ensurePack(okLlmEnv, store as never, synCfg({}), null, post, { requirePublished: true, articles: async () => unpub });
+    expect('error' in gated && gated.error).toContain('unpublished');
+    // Published again: the cached pack is reused, no copy rebuild.
+    const reused = await ensurePack(okLlmEnv, store as never, synCfg({}), null, post, {
+      requirePublished: true, articles: async () => ART, copy: (async () => { throw new Error('copy must not run'); }) as never
+    });
+    expect('pack' in reused && reused.pack.copy.pinTitle).toBe(GOOD_COPY.pinTitle);
+  });
+
+  it('auto-fire drips a backlog: one send per channel per cooldown window', async () => {
+    const store = fakeSynStore();
+    const sent: unknown[] = [];
+    const POST2 = { ...POST, id: 'post-2', shopify_article_id: 'gid://shopify/Article/2', title: 'Dog beds' };
+    const art2 = new Map([
+      [POST.shopify_article_id, ART.get(POST.shopify_article_id)!],
+      [POST2.shopify_article_id, { ...ART.get(POST.shopify_article_id)!, id: POST2.shopify_article_id, handle: 'dog-beds' }]
+    ]);
+    const cfg = synCfg({ pinterest: { enabled: true, auto: true, accountId: 'a', boardId: 'b' } });
+    const d = { listPosts: async () => [POST, POST2], articles: async () => art2, blotato: fakeBlotato(sent) as never, copy: (async () => GOOD_COPY) as never };
+    const r1 = await runSyndicationForShop(okLlmEnv, store as never, cfg, d);
+    expect(r1.posted).toBe(1); // only the first fires this sweep
+    expect(store.ledger.get('post-2|pinterest')!.status).toBe('queued');
+    const r2 = await runSyndicationForShop(okLlmEnv, store as never, cfg, d);
+    expect(r2.posted).toBe(0); // still inside the cooldown
+    store.ledger.get('post-1|pinterest')!.sent_at = new Date(Date.now() - (AUTO_SEND_COOLDOWN_MS + 60_000)).toISOString();
+    const r3 = await runSyndicationForShop(okLlmEnv, store as never, cfg, d);
+    expect(r3.posted).toBe(1); // cooldown elapsed: the backlog advances by one
+    expect(store.ledger.get('post-2|pinterest')!.status).toBe('sent');
+  });
+
+  it('a failing pack build backs off instead of retrying the LLM every sweep', async () => {
+    const store = fakeSynStore();
+    let copyCalls = 0;
+    const cfg = synCfg({ pinterest: { enabled: true, auto: true, accountId: 'a', boardId: 'b' } });
+    const d = { listPosts: async () => [POST], articles: async () => ART, blotato: fakeBlotato([]) as never, copy: (async () => { copyCalls++; return null; }) as never };
+    await runSyndicationForShop(okLlmEnv, store as never, cfg, d);
+    expect(copyCalls).toBe(1);
+    await runSyndicationForShop(okLlmEnv, store as never, cfg, d);
+    expect(copyCalls).toBe(1); // fresh build error: waited out
+    store.ledger.get('post-1|pinterest')!.updated_at = new Date(Date.now() - (PACK_ERROR_BACKOFF_MS + 60_000)).toISOString();
+    await runSyndicationForShop(okLlmEnv, store as never, cfg, d);
+    expect(copyCalls).toBe(2); // stale error: retried
+  });
+
+  it('a sent row unconfirmed for a day gets a visible note; status stays sent', async () => {
+    const store = fakeSynStore();
+    const cfg = synCfg({ pinterest: { enabled: true, auto: true, accountId: 'a', boardId: 'b' } });
+    await runSyndicationForShop(okLlmEnv, store as never, cfg, deps(store, fakeBlotato([]))); // row goes 'sent'
+    const row = store.ledger.get('post-1|pinterest')!;
+    row.sent_at = new Date(Date.now() - (CONFIRM_STALE_MS + 60_000)).toISOString();
+    const pending = { ...fakeBlotato([]), pollStatus: async () => ({ status: 'in-progress' as const }) };
+    await runSyndicationForShop(okLlmEnv, store as never, cfg, deps(store, pending));
+    expect(row.status).toBe('sent');
+    expect(row.error).toContain('not confirmed');
   });
 
   it('permanent send failure goes failed immediately; no blotato = queued untouched', async () => {

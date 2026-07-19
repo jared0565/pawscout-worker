@@ -46,11 +46,13 @@ export function blotatoPostFor(
   // instagram: feed posts carry no clickable link; the URL rides in the caption.
   if (!input.imageUrl) return { error: 'no image available for an instagram post' };
   // Caption budget: the copy gate caps caption at COPY_CAPS.caption (Instagram's
-  // hard 2200), but the appended link suffix would push a near-cap caption over
-  // it and the post would be rejected at publish time. Budget the suffix first
-  // and word-boundary-trim the caption into what remains (never the link - a
-  // truncated URL is worthless).
-  const suffix = `\n\nRead the guide: ${link}`;
+  // hard 2200), but the appended suffix (link + optional discovery hashtags)
+  // would push a near-cap caption over it and the post would be rejected at
+  // publish time. Budget the suffix first and word-boundary-trim the caption
+  // into what remains (never the link or the tags - a truncated URL is
+  // worthless and a half hashtag is a different hashtag).
+  const tags = input.copy.hashtags?.trim() ? `\n\n${input.copy.hashtags.trim()}` : '';
+  const suffix = `\n\nRead the guide: ${link}${tags}`;
   const caption = capTitle(input.copy.caption, COPY_CAPS.caption - suffix.length);
   return {
     accountId: ch.accountId, text: `${caption}${suffix}`, mediaUrls: [input.imageUrl], platform: 'instagram',
