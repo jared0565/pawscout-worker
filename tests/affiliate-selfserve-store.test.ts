@@ -291,7 +291,10 @@ describe('affiliate self-serve store layer (migration 0032)', () => {
       });
       await s.upsertAffiliateOrder({
         shopifyOrderId: 'gid://shopify/Order/1', voucherId, orderName: '#1001', grossGbp: 50, discountGbp: 2.5,
-        commissionGbp: 1, financialStatus: 'paid', eligible: true, placedAt: new Date().toISOString(), buyerEmailHash: 'hash-redact-all'
+        commissionGbp: 1, financialStatus: 'paid', eligible: true,
+        // beyond the 45d commission clearance hold, or the payout sanity check
+        // below can never pass (mark_paid covers only CLEARED orders, 9fffada)
+        placedAt: new Date(Date.now() - 50 * 86_400_000).toISOString(), buyerEmailHash: 'hash-redact-all'
       });
       const payout = await s.createAffiliatePayout(voucherId);
       expect(payout).not.toBeNull(); // sanity: the payout row genuinely exists before redaction

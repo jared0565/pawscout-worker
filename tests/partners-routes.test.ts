@@ -64,27 +64,34 @@ describe('createPartner + getPartners', () => {
 });
 
 describe('ledger roll-up + actions', () => {
+  // placedAt must sit BEYOND the commission clearance hold on any run date:
+  // mark_paid only covers CLEARED orders (age > COMMISSION_CLEARANCE_DAYS,
+  // 9fffada), so fixed calendar dates rot as time passes. Relative dates stay
+  // cleared forever while preserving #1 oldest -> #3 newest ordering.
+  const daysAgo = (n: number) => new Date(Date.now() - n * 86_400_000).toISOString();
+
   async function seedWithOrders() {
     const store = await seed();
     const r = await createPartner(env.DB, SHOP, REG);
     if (!r.ok) throw new Error('registration failed');
     const voucherId = r.voucherId;
+    const newestPlacedAt = daysAgo(48);
     // two eligible orders + one refunded (zero commission, ineligible)
-    await store.upsertAffiliateOrder({ shopifyOrderId: 'o1', voucherId, orderName: '#1', grossGbp: 100, discountGbp: 5, commissionGbp: 2, financialStatus: 'PAID', eligible: true, placedAt: '2026-07-01T10:00:00Z' });
-    await store.upsertAffiliateOrder({ shopifyOrderId: 'o2', voucherId, orderName: '#2', grossGbp: 50, discountGbp: 2.5, commissionGbp: 1, financialStatus: 'PAID', eligible: true, placedAt: '2026-07-02T10:00:00Z' });
-    await store.upsertAffiliateOrder({ shopifyOrderId: 'o3', voucherId, orderName: '#3', grossGbp: 80, discountGbp: 4, commissionGbp: 0, financialStatus: 'REFUNDED', eligible: false, placedAt: '2026-07-03T10:00:00Z' });
-    return { store, voucherId };
+    await store.upsertAffiliateOrder({ shopifyOrderId: 'o1', voucherId, orderName: '#1', grossGbp: 100, discountGbp: 5, commissionGbp: 2, financialStatus: 'PAID', eligible: true, placedAt: daysAgo(50) });
+    await store.upsertAffiliateOrder({ shopifyOrderId: 'o2', voucherId, orderName: '#2', grossGbp: 50, discountGbp: 2.5, commissionGbp: 1, financialStatus: 'PAID', eligible: true, placedAt: daysAgo(49) });
+    await store.upsertAffiliateOrder({ shopifyOrderId: 'o3', voucherId, orderName: '#3', grossGbp: 80, discountGbp: 4, commissionGbp: 0, financialStatus: 'REFUNDED', eligible: false, placedAt: newestPlacedAt });
+    return { store, voucherId, newestPlacedAt };
   }
 
   it('rolls up uses/gross/discount over eligible orders and splits owed vs paid', async () => {
-    const { voucherId } = await seedWithOrders();
+    const { voucherId, newestPlacedAt } = await seedWithOrders();
     const before = (await getPartners(env.DB, SHOP)).partners[0];
     expect(before.uses).toBe(2);           // refunded order does not count as a use
     expect(before.gross).toBe(150);
     expect(before.discount).toBe(7.5);
     expect(before.owed).toBe(3);
     expect(before.paid).toBe(0);
-    expect(before.lastOrderAt).toBe('2026-07-03T10:00:00Z');
+    expect(before.lastOrderAt).toBe(newestPlacedAt);
 
     const mark = await partnerVoucherAction(env.DB, SHOP, voucherId, 'mark_paid');
     expect(mark).toMatchObject({ ok: true, ordersCovered: 2, amount: 3 }); // the £0-commission refund is not "covered"
