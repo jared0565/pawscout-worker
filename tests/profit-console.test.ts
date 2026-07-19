@@ -100,4 +100,17 @@ describe('recalibration store methods (2026-07-12 median recalibration)', () => 
     expect(await s.getSearchCache('comp:p2')).not.toBeNull(); // the owner's call outlives a recalibration
     expect(await s.getSearchCache('pid:p1')).not.toBeNull();
   });
+
+  it('both clears also purge UNKNOWN seller-country lookups (ebayseller:* = ?) but keep resolved countries', async () => {
+    const s = new TenantStore(env.DB, SHOP);
+    await s.putSearchCache('ebayseller:v1|1|0', '?', 30);   // unknown - possibly a failed read; must retry
+    await s.putSearchCache('ebayseller:v1|2|0', 'CN', 30);  // resolved fact - keeps its TTL
+    await s.clearCompetitorCacheExceptOwner();
+    expect(await s.getSearchCache('ebayseller:v1|1|0')).toBeNull();
+    expect(await s.getSearchCache('ebayseller:v1|2|0')).toBe('CN');
+    await s.putSearchCache('ebayseller:v1|3|0', '?', 30);
+    await s.clearCompetitorCache();
+    expect(await s.getSearchCache('ebayseller:v1|3|0')).toBeNull();
+    expect(await s.getSearchCache('ebayseller:v1|2|0')).toBe('CN');
+  });
 });

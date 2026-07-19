@@ -255,10 +255,11 @@ export class EbaySource implements MarketSource {
 
   /** Registered-country per listing seller via the full-item read: UK/EU law
    *  obliges BUSINESS sellers to disclose a registered legal address, exposed
-   *  as sellerLegalInfo.sellerProvidedLegalAddress.country on getItem. An
-   *  individual seller (no legal info) or a failed read maps to null (unknown,
-   *  never excluded). Called only for the handful of MATCHED candidates, so
-   *  the extra reads stay tiny against the Browse quota. */
+   *  as seller.sellerLegalInfo.sellerProvidedLegalAddress.country on getItem
+   *  (nested inside the seller container, NOT top-level). An individual seller
+   *  (no legal info) or a failed read maps to null (unknown, never excluded).
+   *  Called only for the handful of MATCHED candidates, so the extra reads
+   *  stay tiny against the Browse quota. */
   async sellerCountries(itemIds: string[]): Promise<Map<string, string | null>> {
     const out = new Map<string, string | null>();
     const tok = await this.token();
@@ -270,9 +271,9 @@ export class EbaySource implements MarketSource {
         });
         if (!resp.ok) { out.set(id, null); continue; }
         const data = (await resp.json().catch(() => null)) as {
-          sellerLegalInfo?: { sellerProvidedLegalAddress?: { country?: string } };
+          seller?: { sellerLegalInfo?: { sellerProvidedLegalAddress?: { country?: string } } };
         } | null;
-        const c = data?.sellerLegalInfo?.sellerProvidedLegalAddress?.country;
+        const c = data?.seller?.sellerLegalInfo?.sellerProvidedLegalAddress?.country;
         out.set(id, typeof c === 'string' && c ? c.toUpperCase() : null);
       } catch {
         out.set(id, null);

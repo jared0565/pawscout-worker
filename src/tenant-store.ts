@@ -498,6 +498,7 @@ export class TenantStore {
    *  re-judge" meaningful. Other cache keys (pid:, hero:, ...) are untouched. */
   async clearCompetitorCache(): Promise<number> {
     const r = await this.db.prepare(`DELETE FROM search_cache WHERE shop = ?1 AND cache_key LIKE 'comp:%'`).bind(this.shop).run();
+    await this.clearUnknownSellerCountries();
     return r.meta.changes ?? 0;
   }
 
@@ -508,6 +509,19 @@ export class TenantStore {
   async clearCompetitorCacheExceptOwner(): Promise<number> {
     const r = await this.db
       .prepare(`DELETE FROM search_cache WHERE shop = ?1 AND cache_key LIKE 'comp:%' AND payload NOT LIKE '%"owner:%'`)
+      .bind(this.shop)
+      .run();
+    await this.clearUnknownSellerCountries();
+    return r.meta.changes ?? 0;
+  }
+
+  /** Re-referencing under current rules must also retry UNKNOWN seller-country
+   *  lookups (ebayseller:<id> = '?'): an unknown may be a transient read
+   *  failure, and a cached '?' suppresses the lookup for its whole 30d TTL.
+   *  Positively-resolved countries are facts and keep their TTL. */
+  private async clearUnknownSellerCountries(): Promise<number> {
+    const r = await this.db
+      .prepare(`DELETE FROM search_cache WHERE shop = ?1 AND cache_key LIKE 'ebayseller:%' AND payload = '?'`)
       .bind(this.shop)
       .run();
     return r.meta.changes ?? 0;

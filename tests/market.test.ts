@@ -118,6 +118,24 @@ describe('EbaySource (Browse API client)', () => {
     expect(out?.map((c) => c.title)).toEqual(['Dog Bottle 800ml Leakproof', 'Dog Bottle 800ml No Seller Field']);
   });
 
+  it('sellerCountries reads the registered country from the NESTED seller.sellerLegalInfo container (real getItem shape)', async () => {
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (url.includes('/buy/browse/v1/item/')) {
+        const id = decodeURIComponent(url.split('/buy/browse/v1/item/')[1]);
+        if (id === 'v1|111|0') return { ok: true, status: 200, json: async () => ({
+          itemId: id,
+          seller: { username: 'cn-trader', sellerAccountType: 'BUSINESS', sellerLegalInfo: { sellerProvidedLegalAddress: { country: 'cn' } } }
+        }) };
+        return { ok: true, status: 200, json: async () => ({ itemId: id, seller: { username: 'hobbyist' } }) };
+      }
+      return tokenResp;
+    });
+    const src = new EbaySource('id', 'secret', fetchImpl as any);
+    const out = await src.sellerCountries(['v1|111|0', 'v1|222|0']);
+    expect(out.get('v1|111|0')).toBe('CN');   // nested container, uppercased
+    expect(out.get('v1|222|0')).toBeNull();   // individual seller (no legal info) -> unknown, never excluded
+  });
+
   it('returns null (source failure) on auth or HTTP errors - callers may fall back', async () => {
     const authFail = vi.fn().mockResolvedValue({ ok: false, status: 401, json: async () => ({}) });
     expect(await new EbaySource('id', 'bad', authFail as any).search('x')).toBeNull();
