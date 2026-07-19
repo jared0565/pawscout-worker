@@ -46,6 +46,9 @@ export const profitView = `  <section class="card">
       <button type="button" class="ghost" onclick="pfRestoreCulled(this)">Restore no-traffic culls</button>
       <span class="muted" style="align-self:center;font-size:12px">Brings back products the 30-day inactivity cull archived while the store had almost no visitors to measure them by (the cull now stands down automatically in low-traffic windows). Products the agent dropped for economics, or that you archived yourself, are not touched. Restored products are re-judged by the agent as normal.</span>
     </div>
+    <div class="row" style="margin:0 0 8px">
+      <input type="search" id="pf-search" placeholder="Search product, SKU or handle" oninput="pfSearch(this.value)" style="max-width:320px">
+    </div>
     <div id="pf-list">Turn on the agent and run it to see decisions.</div>
   </section>
 
@@ -97,6 +100,9 @@ export const profitCss = `
          at the very bottom of a tall table); .pf-tablewrap keeps overflow-x as
          the safety net for genuinely narrow panes. --- */
   .pf-tablewrap{overflow-x:auto;margin-top:4px}
+  .pf-sec{margin-top:10px}
+  .pf-sec-h{display:block;font-weight:650;font-size:13px;color:inherit;text-decoration:none;padding:6px 0;border-bottom:1px solid var(--border)}
+  .pf-sec-h:hover,.pf-sec-h:focus{text-decoration:underline}
   .pf-table{table-layout:fixed;width:100%;min-width:872px;border-collapse:collapse;font-size:13px}
   .pf-table th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--subdued);font-weight:650;padding:8px 8px 6px;border-bottom:1px solid var(--border);white-space:nowrap}
   .pf-table td{padding:9px 8px;border-bottom:1px solid var(--border);vertical-align:top;white-space:nowrap}

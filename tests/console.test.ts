@@ -373,6 +373,12 @@ describe('consolePage', () => {
     // and the ledger renders (function in the script bundle).
     expect(html).toContain("pfSetFlag('dryRun'");
     expect(scripts).toContain('function pfRenderLedger(');
+    // Sectioned list + search (2026-07-19): grouped verdict sections replace the
+    // old all-or-needs-review toggle, and the search input lives OUTSIDE #pf-list.
+    expect(scripts).toContain('function pfToggleSection(');
+    expect(scripts).toContain('function pfSearch(');
+    expect(html).toContain('id="pf-search"');
+    expect(scripts).not.toContain('pfToggleAll');
     // The ad-share tuning field is wired (onchange in the view HTML, handler in JS).
     expect(html).toContain('pfSetAdShare(this.value)');
     expect(scripts).toContain('function pfSetAdShare(');

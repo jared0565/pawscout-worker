@@ -4,7 +4,7 @@
 // Reuses the shared helpers el(), esc(), setMsg(), api(), prtArm().
 export const profitJs = `
 // --- Profitability: the active adjust-or-drop agent window ---
-var pfState={rows:[],config:null,recentActions:[],showAll:false};
+var pfState={rows:[],config:null,recentActions:[],sections:{reject:true,review:true,pass:false},query:''};
 function pfChip(v){
   if(v==='reject') return '<span class="pf-chip pf-reject">reject</span>';
   if(v==='review') return '<span class="pf-chip pf-review">review</span>';
@@ -110,6 +110,45 @@ function pfRenderLedger(){
   if(!a.length){ box.innerHTML='<p class="muted">No actions yet.</p>'; return; }
   var s=''; for(var i=0;i<a.length;i++) s+=pfLedgerHtml(a[i]); box.innerHTML=s;
 }
+// --- Sectioned list (2026-07-19). Search matches name/SKU/handle substring;
+// sections group by verdict with counts; Passing starts collapsed.
+function pfMatch(r,q){
+  if(!q) return true;
+  var hay=((r.name||'')+' '+(r.sku||'')+' '+(r.handle||'')).toLowerCase();
+  return hay.indexOf(q)!==-1;
+}
+function pfGroup(rows){
+  var g={reject:[],review:[],pass:[]};
+  for(var i=0;i<rows.length;i++){ var v=rows[i].verdict; (g[v]||g.pass).push(rows[i]); }
+  return g;
+}
+function pfTableHtml(rows){
+  var s='<div class="pf-tablewrap"><table class="pf-table"><thead><tr>'
+    +'<th class="pf-c-prod">Product</th>'
+    +'<th class="pf-c-act">Decision</th>'
+    +'<th class="pf-c-price pf-num">PDP</th>'
+    +'<th class="pf-c-price pf-num">CJ</th>'
+    +'<th class="pf-c-comp pf-num">Competitor</th>'
+    +'<th class="pf-c-price pf-num">Net</th>'
+    +'<th class="pf-c-when">Processed</th>'
+    +'<th class="pf-c-arch" aria-label="Actions"></th>'
+    +'</tr></thead><tbody>';
+  for(var i=0;i<rows.length;i++) s+=pfRowTr(rows[i]);
+  return s+'</tbody></table></div>';
+}
+function pfSectionHtml(key,title,rows){
+  var open=!!pfState.sections[key];
+  var s='<div class="pf-sec"><a href="#" class="pf-sec-h" data-k="'+key+'" onclick="return pfToggleSection(this)">'
+    +(open?'&#9662;':'&#9656;')+' '+title+' ('+rows.length+')</a>';
+  if(open&&rows.length) s+=pfTableHtml(rows);
+  return s+'</div>';
+}
+function pfToggleSection(a){
+  var k=a.getAttribute('data-k');
+  pfState.sections[k]=!pfState.sections[k];
+  pfRender(); return false;
+}
+function pfSearch(v){ pfState.query=(v||'').trim(); pfRender(); }
 function pfRender(){
   var c=pfState.config||{};
   var en=el('pf-enabled'); if(en) en.checked=!!c.enabled;
@@ -126,37 +165,21 @@ function pfRender(){
     +esc(pfMoney(c.minNetAfterAdsGbp))+'/unit</strong>; it prices just under the market delivered price and keeps at least the floor. Other thresholds are tuned in tenant_config.profit.';
   var box=el('pf-list');
   if(box){
-    // Default view = only what needs eyes (review/reject). Passing products are
-    // behind the toggle so the list stays short as the catalog grows.
     var all=pfState.rows;
-    var need=[]; for(var k=0;k<all.length;k++){ if(all[k].verdict!=='pass') need.push(all[k]); }
-    var rows=pfState.showAll?all:need;
     if(!all.length){ box.innerHTML='<p class="muted">No decisions yet. The agent repopulates this list as it walks the catalog (or click Run now).</p>'; }
-    else if(!rows.length){ box.innerHTML='<p class="muted">Nothing needs review - all '+all.length+' evaluated products pass. <a href="#" class="pf-plink" onclick="return pfToggleAll()">Show them</a></p>'; }
     else{
-      var s='<div class="pf-tablewrap"><table class="pf-table"><thead><tr>'
-        +'<th class="pf-c-prod">Product</th>'
-        +'<th class="pf-c-act">Decision</th>'
-        +'<th class="pf-c-price pf-num">PDP</th>'
-        +'<th class="pf-c-price pf-num">CJ</th>'
-        +'<th class="pf-c-comp pf-num">Competitor</th>'
-        +'<th class="pf-c-price pf-num">Net</th>'
-        +'<th class="pf-c-when">Processed</th>'
-        +'<th class="pf-c-arch" aria-label="Actions"></th>'
-        +'</tr></thead><tbody>';
-      for(var i=0;i<rows.length;i++) s+=pfRowTr(rows[i]);
-      s+='</tbody></table></div>';
-      if(pfState.showAll){
-        if(need.length<all.length) s+='<p class="muted" style="margin:8px 4px 0;font-size:12px">Showing all '+all.length+'. <a href="#" class="pf-plink" onclick="return pfToggleAll()">Show only the '+need.length+' needing review</a></p>';
-      } else if(all.length>rows.length){
-        s+='<p class="muted" style="margin:8px 4px 0;font-size:12px">'+rows.length+' need review; '+(all.length-rows.length)+' passing products hidden. <a href="#" class="pf-plink" onclick="return pfToggleAll()">Show all '+all.length+'</a></p>';
-      }
+      var q=pfState.query.toLowerCase();
+      var vis=[]; for(var k=0;k<all.length;k++){ if(pfMatch(all[k],q)) vis.push(all[k]); }
+      var g=pfGroup(vis);
+      var s=pfSectionHtml('reject','Rejected',g.reject)
+        +pfSectionHtml('review','Flagged',g.review)
+        +pfSectionHtml('pass','Passing',g.pass);
+      if(q&&!vis.length) s+='<p class="muted" style="margin-top:8px">No products match "'+esc(pfState.query)+'".</p>';
       box.innerHTML=s;
     }
   }
   pfRenderLedger();
 }
-function pfToggleAll(){ pfState.showAll=!pfState.showAll; pfRender(); return false; }
 function pfSummary(sm){
   var el2=el('pf-summary'); if(!el2||!sm) return;
   if(!sm.total){ el2.textContent='Nothing evaluated yet.'; return; }
