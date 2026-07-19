@@ -11,6 +11,7 @@ import { resolveChain } from '../llm-resolve';
 import type { TenantConfig } from '../types';
 import type { TenantStore } from '../tenant-store';
 import type { BlogBrief, TopicSeed, FactPack, BlogTopicCandidate, SourcedFact } from './types';
+import { isApprovedSourceUrl, approvedSourcesPromptLine } from './sources';
 
 /** Curated evergreen starting points, one+ per real collection. The research
  *  agent may pick from these or propose its own, but the collection it funnels
@@ -125,6 +126,7 @@ export function validateSourcedFacts(v: unknown): SourcedFact[] | null {
     if (!fact || !sourceName) continue;
     if (!/^https?:\/\/[^\s"'<>]+$/i.test(sourceUrl)) continue;    // a real, linkable page
     if (/activepaw/i.test(sourceUrl)) continue;                    // external sources only
+    if (!isApprovedSourceUrl(sourceUrl)) continue;                 // non-commercial authorities only - never a retailer/competitor
     const key = (fact + sourceUrl).toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);
@@ -151,6 +153,7 @@ export async function collectSourcedFacts(
   const system = [
     'You are a careful fact researcher for a pet-care publication.',
     'Using live web search, find 2-4 SHORT, verifiable, genuinely useful facts or statistics directly relevant to the article described, each from a reputable source (veterinary bodies, animal welfare charities, academic or government pages).',
+    approvedSourcesPromptLine(),
     'Only include a fact you actually found stated on the source page, with that page\'s URL. NEVER invent, estimate, round beyond the source, or cite from memory.',
     'Prefer facts a reader would quote (a number, a threshold, a frequency). Skip anything medical-dosage shaped.',
     'If you cannot verify enough, return fewer, or an empty list. An empty list is a good answer; an unverified fact is not.',

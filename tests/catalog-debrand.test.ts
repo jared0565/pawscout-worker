@@ -47,7 +47,14 @@ function makeFakeAdmin() {
           // fully clean article - must not be touched
           { id: 'gid://a/3', title: 'Nails',
             body: '<p>Trim with clippers.</p>',
-            image: { url: 'https://cdn.shopify.com/x/nail.jpg', altText: 'Nail clipper and grinder' } }
+            image: { url: 'https://cdn.shopify.com/x/nail.jpg', altText: 'Nail clipper and grinder' } },
+          // competitor/listicle citations authored before the source gate existed -
+          // the sweep must scrub them while keeping approved + internal links
+          { id: 'gid://a/4', title: 'Cooling beds',
+            body: '<p>Dogs pant to cool down. <a href="https://www.purewow.com/family/best-cooling-dog-beds">Dogs only have sweat glands on their paw pads.</a> ' +
+              '<a href="https://www.nbcnews.com/select/x">Gel pads stay cool for up to 3 hours and recharge in 15 to 20 minutes.</a> ' +
+              'See the <a href="https://www.rspca.org.uk/advice/dogs">RSPCA hot weather advice</a> and our <a href="/collections/pet-accessories">beds</a>.</p>',
+            image: { url: 'https://cdn.shopify.com/x/bed.jpg', altText: 'Elevated dog bed' } }
         ], pageInfo: { hasNextPage: false } }
       } ] } };
     }
@@ -75,8 +82,8 @@ describe('debrandCatalog', () => {
   it('de-brands article body + image alt, preserves the href handle and the image url', async () => {
     const { admin, articleUpdates } = makeFakeAdmin();
     const r = await debrandCatalog(admin);
-    expect(r.articlesScanned).toBe(3);
-    expect(r.bodiesUpdated).toBe(2); // a/1 (body+alt) and a/2 (alt only); a/3 untouched
+    expect(r.articlesScanned).toBe(4);
+    expect(r.bodiesUpdated).toBe(3); // a/1 (body+alt), a/2 (alt only), a/4 (links); a/3 untouched
 
     const a1 = articleUpdates.find((u) => u.id === 'gid://a/1')!;
     expect(a1.article.body).toContain('/products/pawhut-litter-tray');       // handle preserved
@@ -89,6 +96,19 @@ describe('debrandCatalog', () => {
     expect(a2.article.image).toEqual({ url: 'https://cdn.shopify.com/x/tree.jpg', altText: '88cm Cat Tree' });
 
     expect(articleUpdates.find((u) => u.id === 'gid://a/3')).toBeUndefined(); // clean article never written
+  });
+
+  it('scrubs competitor/listicle links from published bodies, keeping approved + internal links', async () => {
+    const { admin, articleUpdates } = makeFakeAdmin();
+    await debrandCatalog(admin);
+    const a4 = articleUpdates.find((u) => u.id === 'gid://a/4')!;
+    expect(a4.article.body).not.toContain('purewow');
+    expect(a4.article.body).not.toContain('nbcnews');
+    expect(a4.article.body).toContain('Dogs only have sweat glands on their paw pads.'); // words survive, link does not
+    expect(a4.article.body).not.toContain('Gel pads stay cool');                          // uncited statistic dropped whole
+    expect(a4.article.body).toContain('href="https://www.rspca.org.uk/advice/dogs"');     // approved authority kept
+    expect(a4.article.body).toContain('href="/collections/pet-accessories"');             // internal funnel kept
+    expect(a4.article.image).toBeUndefined();                                             // clean alt not rewritten
   });
 
   it('collects userErrors without throwing', async () => {

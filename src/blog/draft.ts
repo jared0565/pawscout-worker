@@ -13,6 +13,7 @@ import type { TenantStore } from '../tenant-store';
 import type { BlogBrief, BlogDraft, BlogFaqEntry, FactPack, SourcedFact } from './types';
 import { factPackToPrompt } from './ground';
 import { refineBlogUntilClean, htmlToText, type BlogQualityContext } from './quality';
+import { scrubExternalLinks } from './sources';
 
 /** Strip em/en dashes from generated HTML (house rule; the inbox sanitiser is
  *  inbox code, so the blog keeps its own one-liner). */
@@ -51,7 +52,8 @@ function factsToPrompt(facts: SourcedFact[]): string {
   const lines = facts.map((f) => `- "${f.fact}" (source: ${f.sourceName}, ${f.sourceUrl})`);
   return [
     'VERIFIED FACTS you may cite (optional; use one only where it genuinely strengthens the article).',
-    'When you use one, weave it in naturally and hyperlink its source inline, e.g. <a href="URL">source name</a>. Never alter the numbers, never cite anything not in this list:',
+    'When you use one, weave it in naturally and hyperlink its source inline, e.g. <a href="URL">source name</a>. Never alter the numbers, never cite anything not in this list.',
+    'These are the ONLY external links the article may contain; any other external link is stripped automatically:',
     ...lines
   ].join('\n');
 }
@@ -96,10 +98,12 @@ function validateBlogDraft(v: unknown, tag: string): BlogDraft | null {
   const metaTitle = typeof o.metaTitle === 'string' ? o.metaTitle.trim() : '';
   const metaDescription = typeof o.metaDescription === 'string' ? o.metaDescription.trim() : '';
   if (!title || !bodyHtml) return null;
+  // scrubExternalLinks runs on EVERY draft and revision: a competitor or
+  // retailer link can never survive to Shopify no matter what the LLM wrote.
   return {
     title: title.slice(0, 180),
-    bodyHtml: sanitizeBlogHtml(bodyHtml).slice(0, 40000),
-    excerpt: sanitizeBlogHtml(excerpt).slice(0, 500),
+    bodyHtml: scrubExternalLinks(sanitizeBlogHtml(bodyHtml)).slice(0, 40000),
+    excerpt: scrubExternalLinks(sanitizeBlogHtml(excerpt)).slice(0, 500),
     metaTitle: (metaTitle || title).slice(0, 70),
     metaDescription: sanitizeBlogHtml(metaDescription).slice(0, 200),
     tag,

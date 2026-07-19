@@ -3,13 +3,17 @@
 // The catalog de-brand SWEEP: strip manufacturer/supplier brands (src/debrand.ts)
 // from existing product TITLES and already-published blog ARTICLE bodies. This is
 // the remediation half of the de-brand system (import.ts + ground.ts handle new
-// products and new prose). Idempotent and self-healing: it re-scans every run and
-// only writes the few items that still carry a brand, so it is a cheap no-op once
-// the catalog is clean. Wired as a nightly maintenance stage AND an owner-triggered
+// products and new prose). The same article pass also scrubs non-approved
+// external links (src/blog/sources.ts) so a competitor/retailer link can never
+// persist in a published post, even one authored before the gate existed.
+// Idempotent and self-healing: it re-scans every run and only writes the few
+// items that still carry a brand or a bad link, so it is a cheap no-op once the
+// catalog is clean. Wired as a nightly maintenance stage AND an owner-triggered
 // console action (POST /api/catalog/debrand).
 
 import type { AdminGraphql } from './shopify-admin';
 import { debrandTitle, debrandText, BRAND_TOKENS } from './debrand';
+import { scrubExternalLinks } from './blog/sources';
 
 const PRODUCTS_PAGE = `query pawscoutDebrandProducts($cursor: String) {
   products(first: 100, after: $cursor) {
@@ -101,8 +105,13 @@ async function debrandArticleBodies(
       const article: Record<string, unknown> = {};
       const changes: string[] = [];
       if (a.body) {
-        const cleaned = debrandText(a.body, brands);
-        if (cleaned !== a.body) { article.body = cleaned; changes.push('body'); }
+        const debranded = debrandText(a.body, brands);
+        const cleaned = scrubExternalLinks(debranded);
+        if (cleaned !== a.body) {
+          article.body = cleaned;
+          if (debranded !== a.body) changes.push('body');
+          if (cleaned !== debranded) changes.push('external links');
+        }
       }
       // The featured-image alt is a snapshot of the hero product title taken at
       // creation, so it can still carry a brand after the title rename. Use

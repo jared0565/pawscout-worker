@@ -9,6 +9,7 @@ import { extractProductHandles, selectShopBlock, pickHeroFields } from '../src/b
 import { pickComboHandles, availableByHandle } from '../src/blog/combo';
 import { pickBlogHeroImage, getProductImages } from '../src/blog/hero';
 import { proposeBrief, proposeTopics, seasonForMonth, validateSourcedFacts, collectSourcedFacts } from '../src/blog/research';
+import { isApprovedSourceUrl, scrubExternalLinks, approvedSourcesPromptLine } from '../src/blog/sources';
 import { resolvePipelineBrief } from '../src/blog/pipeline';
 import { LlmClient } from '../src/llm';
 import type { AdminGraphql } from '../src/shopify-admin';
@@ -562,6 +563,16 @@ describe('sourced facts (web research the drafter may cite)', () => {
     expect(validateSourcedFacts({ facts: [] })).toEqual([]);
   });
 
+  it('drops facts from non-approved domains (retailers, listicles, news shopping)', () => {
+    const facts = validateSourcedFacts({ facts: [
+      { fact: 'listicle claim', sourceUrl: 'https://www.purewow.com/family/best-cooling-dog-beds', sourceName: 'PureWow' },
+      { fact: 'competitor claim', sourceUrl: 'https://www.thebarklifeco.com/blog/best-cooling-dog-beds/', sourceName: 'Bark Life' },
+      { fact: 'news shopping claim', sourceUrl: 'https://www.nbcnews.com/select/shopping/x', sourceName: 'NBC Select' },
+      { fact: 'real one', sourceUrl: 'https://www.rspca.org.uk/advice', sourceName: 'RSPCA' }
+    ] });
+    expect(facts).toEqual([{ fact: 'real one', sourceUrl: 'https://www.rspca.org.uk/advice', sourceName: 'RSPCA' }]);
+  });
+
   it('discards facts served by the OpenAI floor (no web plugin = source URLs are model memory)', async () => {
     // Same OpenRouter-shaped payload, but the client only has an OpenAI key, so
     // the chain's floor tier serves it: provider === 'openai' -> facts dropped.
@@ -571,6 +582,78 @@ describe('sourced facts (web research the drafter may cite)', () => {
     }), { status: 200 })) as unknown as typeof fetch;
     const floorLlm = new LlmClient({ openai: 'k' }, fetchImpl);
     expect(await collectSourcedFacts(floorLlm, STORE, CFG, { title: 't', angle: 'a', keyPoints: ['k'] })).toEqual([]);
+  });
+});
+
+describe('approved-source gate (non-commercial authorities only)', () => {
+  it('approves vetted charities, vet bodies and gov/academic suffixes', () => {
+    for (const u of [
+      'https://www.rspca.org.uk/advice/pets',
+      'https://icatcare.org/hydration',
+      'https://www.gov.uk/keeping-pets',
+      'https://gov.uk/x',
+      'https://www.vet.cam.ac.uk/news',
+      'https://www.nhs.uk/live-well',
+      'https://vetmed.illinois.edu/pet-health',
+      'https://www.msdvetmanual.com/dog-owners'
+    ]) expect(isApprovedSourceUrl(u), u).toBe(true);
+  });
+
+  it('rejects retailers, listicles, lookalike hosts and non-http schemes', () => {
+    for (const u of [
+      'https://www.thebarklifeco.com/blog/best-cooling-dog-beds/',
+      'https://www.purewow.com/family/best-cooling-dog-beds',
+      'https://www.nbcnews.com/select/shopping/how-to-keep-dogs-cool',
+      'https://rspca.org.uk.evil.com/x',   // suffix spoof
+      'https://rspca.org.uk@evil.com/x',   // userinfo trick: the real host is evil.com
+      'https://evilrspca.org.uk/x',        // no dot boundary
+      'ftp://rspca.org.uk/x',
+      'not a url'
+    ]) expect(isApprovedSourceUrl(u), u).toBe(false);
+  });
+
+  it('the research prompt names the same allowlist the hard filter enforces (no drift)', () => {
+    const line = approvedSourcesPromptLine();
+    expect(line).toContain('rspca.org.uk');
+    expect(line).toContain('.ac.uk');
+    expect(line).toContain('discards');
+  });
+});
+
+describe('external-link scrub (the body can never link a competitor)', () => {
+  it('keeps relative, own-domain and approved-authority links untouched', () => {
+    const html = '<p><a href="/products/x">buy</a> <a href="/collections/y">shop</a> ' +
+      '<a href="https://activepaw.co.uk/blogs/guides/z">our guide</a> ' +
+      '<a href="https://www.rspca.org.uk/advice">RSPCA advice</a></p>';
+    expect(scrubExternalLinks(html)).toBe(html);
+  });
+
+  it('unwraps a non-approved link but keeps the words when they are not an uncited statistic', () => {
+    const html = '<p>Dogs cool by panting. <a href="https://www.purewow.com/x">as many owners know</a>.</p>';
+    expect(scrubExternalLinks(html)).toBe('<p>Dogs cool by panting. as many owners know.</p>');
+  });
+
+  it('drops a digit-bearing full-sentence anchor entirely (a statistic must not outlive its source)', () => {
+    const html = '<p>Gel pads store cold. <a href="https://www.nbcnews.com/select/x">Gel-based pads stay cool for up to 3 hours and recharge in 15 to 20 minutes.</a> They need chilling.</p>';
+    expect(scrubExternalLinks(html)).toBe('<p>Gel pads store cold. They need chilling.</p>');
+  });
+
+  it('unwraps protocol-relative and non-http schemes, keeping inner formatting', () => {
+    expect(scrubExternalLinks('<p><a href="//cdn.evil.com/x">text</a></p>')).toBe('<p>text</p>');
+    expect(scrubExternalLinks('<p><a href="javascript:alert(1)">click</a></p>')).toBe('<p>click</p>');
+    expect(scrubExternalLinks('<p><a href="https://x.com/y"><strong>bold words</strong></a></p>')).toBe('<p><strong>bold words</strong></p>');
+  });
+
+  it('draftArticle strips competitor links no matter what the model wrote', async () => {
+    const withCompetitor = { ...GOOD_DRAFT, bodyHtml: GOOD_BODY + '<p>More at <a href="https://www.thebarklifeco.com/blog/best-cooling-dog-beds/">this roundup</a>.</p>' };
+    const llm = fakeLlm([withCompetitor]);
+    const pack: FactPack = { collectionHandle: 'pet-health', collectionTitle: 'Pet Health', collectionPath: '/collections/pet-health', products: [{ title: 'Fountain', handle: 'fountain', path: '/products/fountain', priceGbp: 47.99, available: true }] };
+    const brief = { title: GOOD_DRAFT.title, angle: 'a', targetKeyword: 'k', collectionHandle: 'pet-health', whyNow: 'w', keyPoints: ['a', 'b', 'c'] };
+    const draft = await draftArticle(llm, STORE, CFG, brief, pack);
+    expect(draft).not.toBeNull();
+    expect(draft!.bodyHtml).not.toContain('thebarklifeco');
+    expect(draft!.bodyHtml).toContain('More at this roundup.'); // words kept, link gone
+    expect(draft!.bodyHtml).toContain('href="/products/2-2l-automatic-pet-water-fountain"'); // internal links untouched
   });
 });
 
