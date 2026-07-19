@@ -366,7 +366,7 @@ export async function proposeBlogTopics(
 
   const packs = [];
   for (const h of validHandles) {
-    const pack = await groundCollection(admin, h, 12);
+    const pack = await groundCollection(admin, h);
     if (pack && pack.products.filter((p) => p.available).length >= MIN_LIVE_FOR_TOPIC) packs.push(pack);
   }
   if (!packs.length) return { ok: false, error: 'No collection has enough live products yet to build a topic from.' };

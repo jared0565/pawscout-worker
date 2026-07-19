@@ -44,9 +44,16 @@ interface CollNode {
  * the collection does not exist or has no products (the caller then skips or
  * picks another collection - the drafter must never be handed an empty pack and
  * asked to invent products). `limit` caps how many products the drafter sees.
+ *
+ * The window must be WIDE: the profit agent archives stock continuously and
+ * archived products still occupy the head of a collection's Admin ordering, so
+ * a small window can be 100% dead while live products sit right behind it
+ * (2026-07-19: a 12-window starved the beds guide's shop-block refresh into
+ * "no available products" while the storefront showed plenty). Downstream
+ * consumers all filter to `available`, so a big window only adds choice.
  */
 export async function groundCollection(
-  admin: AdminGraphql, handle: string, limit = 12
+  admin: AdminGraphql, handle: string, limit = 50
 ): Promise<FactPack | null> {
   let data: { collections?: { nodes?: CollNode[] } };
   try {
