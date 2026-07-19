@@ -474,7 +474,7 @@ export class TenantStore {
          FROM product_profit pp
          LEFT JOIN product_links pl ON pl.shop = pp.shop AND pl.cj_pid = pp.cj_pid
          LEFT JOIN warehouse_products wp ON wp.shop = pp.shop AND wp.cj_pid = pp.cj_pid
-         WHERE pp.shop = ?1 AND (pl.state IS NULL OR pl.state <> 'archived')
+         WHERE pp.shop = ?1 AND (pl.state IS NULL OR pl.state NOT IN ('archived', 'failed'))
          ORDER BY CASE pp.verdict WHEN 'reject' THEN 0 WHEN 'review' THEN 1 ELSE 2 END, pp.net_gbp ASC LIMIT ?2`
       )
       .bind(this.shop, limit)

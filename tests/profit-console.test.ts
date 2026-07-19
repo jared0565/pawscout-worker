@@ -101,6 +101,20 @@ describe('recalibration store methods (2026-07-12 median recalibration)', () => 
     expect(await s.getSearchCache('pid:p1')).not.toBeNull();
   });
 
+  it('listProfitVerdicts omits verdicts for archived AND failed links (dead products are not reviewable)', async () => {
+    const s = new TenantStore(env.DB, SHOP);
+    const verdict = (cjPid: string) => s.upsertProfitVerdict({
+      cjPid, verdict: 'reject', netGbp: -1, netPct: -10, ourRetailGbp: 9.99,
+      competitorGbp: 5, competitorConfidence: 'high', competitorSources: ['ebay.co.uk (3 matches)'], reason: 'x'
+    });
+    await s.putLink({ cjPid: 'LIVE', shopifyProductId: 'gid://L', state: 'imported' });
+    await s.putLink({ cjPid: 'DEAD', shopifyProductId: 'gid://D', state: 'failed' });
+    await s.putLink({ cjPid: 'GONE', shopifyProductId: 'gid://G', state: 'archived' });
+    await verdict('LIVE'); await verdict('DEAD'); await verdict('GONE');
+    const pids = (await s.listProfitVerdicts(50)).map((r) => r.cj_pid);
+    expect(pids).toEqual(['LIVE']);
+  });
+
   it('both clears also purge UNKNOWN seller-country lookups (ebayseller:* = ?) but keep resolved countries', async () => {
     const s = new TenantStore(env.DB, SHOP);
     await s.putSearchCache('ebayseller:v1|1|0', '?', 30);   // unknown - possibly a failed read; must retry
