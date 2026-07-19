@@ -7,7 +7,7 @@ import { resyncLowStockInventory, JOB_STAMP_PIPELINE, JOB_STAMP_TTL_DAYS } from 
 import { attributeAffiliateOrders } from './affiliate-attribution';
 import { sendEmail } from './email';
 import type { Env, TenantConfig } from './types';
-import type { OrderLineItem, OrderAddress } from './fulfil';
+import { riskHold, type OrderLineItem, type OrderAddress } from './fulfil';
 
 // W-FULFIL Stage B: turn queued orders into paid CJ orders, then write tracking
 // back to Shopify. The money leg (createOrder + payBalance) only runs when
@@ -45,6 +45,32 @@ async function resolveLine(store: TenantStore, cj: CjClient, cjPid: string, sku:
 const FULFILLMENT_ORDERS = `query pawscoutFOs($id: ID!) {
   order(id: $id) { fulfillmentOrders(first: 10) { nodes { id status } } }
 }`;
+const ORDER_RISK = `query pawscoutOrderRisk($id: ID!) {
+  order(id: $id) { risk { recommendation } }
+}`;
+
+/** Shopify's fraud recommendation for an order, or null when unavailable
+ *  (fail-open - riskHold treats null as no hold). */
+async function fetchOrderRisk(admin: AdminGraphql, shopifyOrderId: string): Promise<string | null> {
+  try {
+    const data = await admin(ORDER_RISK, { id: `gid://shopify/Order/${shopifyOrderId}` }) as {
+      order?: { risk?: { recommendation?: string } };
+    };
+    return data.order?.risk?.recommendation ?? null;
+  } catch (e) {
+    console.warn(`order risk read failed for ${shopifyOrderId}: ${(e as Error).message}`);
+    return null;
+  }
+}
+
+/** True when the order has EVER carried hold reasons: it reached the queue via an
+ *  operator's explicit release, and their decision outranks the automated gate
+ *  (re-holding here would trap them in a release/re-hold loop). A corrupt
+ *  hold_reasons value also counts as history - err on respecting the operator. */
+function hasHoldHistory(holdReasonsJson: string | null): boolean {
+  if (!holdReasonsJson) return false;
+  try { return (JSON.parse(holdReasonsJson) as unknown[]).length > 0; } catch { return true; }
+}
 const FULFILL = `mutation pawscoutFulfill($f: FulfillmentV2Input!) {
   fulfillmentCreateV2(fulfillment: $f) { fulfillment { id status } userErrors { field message } }
 }`;
@@ -142,13 +168,14 @@ export async function processDueOrders(
   admin: AdminGraphql,
   cfg: TenantConfig,
   opts: { now?: () => number; max?: number; notify?: (n: AwaitingPaymentNotice) => Promise<void>; notifyStockout?: (n: StockoutNotice) => Promise<void> } = {}
-): Promise<{ submitted: number; awaiting: number; errored: number; skipped: boolean }> {
-  if (cfg.fulfil.mode !== 'pawscout') return { submitted: 0, awaiting: 0, errored: 0, skipped: true }; // 'manual'/'cj' → PawScout doesn't pay
+): Promise<{ submitted: number; awaiting: number; held: number; errored: number; skipped: boolean }> {
+  if (cfg.fulfil.mode !== 'pawscout') return { submitted: 0, awaiting: 0, held: 0, errored: 0, skipped: true }; // 'manual'/'cj' → PawScout doesn't pay
   const createOnly = cfg.fulfil.createOnly === true;
   const nowIso = new Date(opts.now ? opts.now() : Date.now()).toISOString();
   const due = await store.dueQueuedOrders(nowIso, opts.max ?? 10);
   let submitted = 0;
   let awaiting = 0;
+  let held = 0;
   let errored = 0;
   const markAwaiting = async (o: typeof due[number], cjOrderId: string, reason: string) => {
     await store.updateOrder(o.shopify_order_id, { status: 'awaiting-payment', hold_reasons: JSON.stringify([reason]) });
@@ -164,6 +191,23 @@ export async function processDueOrders(
   for (const o of due) {
     let lineItems: OrderLineItem[] = [];
     try {
+      // Fraud gate (2026-07-19): the orders/paid webhook carries no risk data, so
+      // Shopify's assessment is read HERE, just before money moves - and only on
+      // first submission (a pay-retry has a CJ order; an operator-released order
+      // has hold history and their call outranks the gate).
+      if (!o.cj_order_id && !hasHoldHistory(o.hold_reasons)) {
+        const rec = await fetchOrderRisk(admin, o.shopify_order_id);
+        const level = rec === 'CANCEL' ? 'HIGH' : rec === 'INVESTIGATE' ? 'MEDIUM' : rec ? 'LOW' : null;
+        const hold = riskHold(rec, o.total_price ?? 0);
+        if (hold) {
+          await store.updateOrder(o.shopify_order_id, { status: 'held', hold_reasons: JSON.stringify([hold]), ...(level ? { risk_level: level } : {}) });
+          held++;
+          console.log(`order ${o.order_name ?? o.shopify_order_id} HELD pre-spend (${hold}, Shopify recommends ${rec})`);
+          continue;
+        }
+        if (level) await store.updateOrder(o.shopify_order_id, { risk_level: level }); // console visibility on clean flows too
+      }
+
       lineItems = JSON.parse(o.line_items_json ?? '[]') as OrderLineItem[];
       const address = o.address_json ? (JSON.parse(o.address_json) as OrderAddress) : null;
       if (!address) throw new Error('no address on order');
@@ -276,7 +320,7 @@ export async function processDueOrders(
       }
     }
   }
-  return { submitted, awaiting, errored, skipped: false };
+  return { submitted, awaiting, held, errored, skipped: false };
 }
 
 /** Poll submitted CJ orders; when a tracking number appears, write it to Shopify and mark fulfilled. */
@@ -354,7 +398,7 @@ function makeStockoutNotify(env: Env, alertEmail: string | undefined): ((n: Stoc
 /** Run the order pipeline (submit due orders + poll tracking) for ONE shop. Returns
  * null when the shop isn't ready (no token / no CJ). Shared by the cron and the
  * on-demand "Run fulfilment now" endpoint. */
-export async function runOrderPipelineForShop(env: Env, vault: Vault, shop: string): Promise<{ submitted: number; awaiting: number; errored: number; checked: number; fulfilled: number } | null> {
+export async function runOrderPipelineForShop(env: Env, vault: Vault, shop: string): Promise<{ submitted: number; awaiting: number; held: number; errored: number; checked: number; fulfilled: number } | null> {
   const store = new TenantStore(env.DB, shop);
   const tenant = await store.getTenant();
   const cfg = await store.getConfig();
@@ -387,7 +431,7 @@ export async function runOrderPipelineForShop(env: Env, vault: Vault, shop: stri
   }
   // Console health stamp (Glance): record the completed run; best-effort.
   try { await store.putSearchCache(JOB_STAMP_PIPELINE, new Date().toISOString(), JOB_STAMP_TTL_DAYS); } catch { /* never affects the pipeline result */ }
-  return { submitted: p.submitted, awaiting: p.awaiting, errored: p.errored, checked: t.checked, fulfilled: t.fulfilled };
+  return { submitted: p.submitted, awaiting: p.awaiting, held: p.held, errored: p.errored, checked: t.checked, fulfilled: t.fulfilled };
 }
 
 /** Cron entry (runs more often than the daily job): submit due orders + poll tracking, per tenant. */

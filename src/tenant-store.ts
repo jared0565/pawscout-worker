@@ -915,7 +915,7 @@ export class TenantStore {
     return rs.results ?? [];
   }
 
-  async updateOrder(shopifyOrderId: string, fields: Partial<Pick<OrderRow, 'status' | 'hold_reasons' | 'cj_order_id' | 'tracking_number'>>): Promise<void> {
+  async updateOrder(shopifyOrderId: string, fields: Partial<Pick<OrderRow, 'status' | 'hold_reasons' | 'cj_order_id' | 'tracking_number' | 'risk_level'>>): Promise<void> {
     const now = new Date().toISOString();
     await this.db
       .prepare(
@@ -924,10 +924,11 @@ export class TenantStore {
            hold_reasons = COALESCE(?4, hold_reasons),
            cj_order_id = COALESCE(?5, cj_order_id),
            tracking_number = COALESCE(?6, tracking_number),
+           risk_level = COALESCE(?8, risk_level),
            updated_at = ?7
          WHERE shop = ?1 AND shopify_order_id = ?2`
       )
-      .bind(this.shop, shopifyOrderId, fields.status ?? null, fields.hold_reasons ?? null, fields.cj_order_id ?? null, fields.tracking_number ?? null, now)
+      .bind(this.shop, shopifyOrderId, fields.status ?? null, fields.hold_reasons ?? null, fields.cj_order_id ?? null, fields.tracking_number ?? null, now, fields.risk_level ?? null)
       .run();
   }
 

@@ -7,8 +7,28 @@ import type { TenantConfig } from './types';
 
 /** £ order total above which we always hold for a human (guardrail). */
 export const FULFIL_REVIEW_THRESHOLD_GBP = 100;
+/** £ order total above which a Shopify INVESTIGATE (medium-risk) recommendation
+ *  holds for a human. Below it, medium-risk orders flow: Shopify flags MEDIUM
+ *  often enough that holding them all would drown the operator, and the CJ
+ *  spend at stake on a small order is a few pounds. */
+export const MEDIUM_RISK_REVIEW_THRESHOLD_GBP = 40;
 /** Minutes to wait after payment before auto-submitting (buyer edit/cancel grace). */
 export const FULFIL_GRACE_MINUTES = 60;
+
+/**
+ * Stage-B fraud-gate policy on Shopify's order risk recommendation
+ * (Order.risk.recommendation: ACCEPT | INVESTIGATE | CANCEL | NONE), evaluated
+ * just before money moves. CANCEL always holds; INVESTIGATE holds only above
+ * MEDIUM_RISK_REVIEW_THRESHOLD_GBP; anything else (including an unavailable
+ * read) flows - fail-open, because the GBP100 hard cap and the operator-held
+ * queue still bound the worst case, while fail-closed would hold every order
+ * whenever the risk API hiccups and train the operator to rubber-stamp.
+ */
+export function riskHold(recommendation: string | null, totalPriceGbp: number): string | null {
+  if (recommendation === 'CANCEL') return 'high-risk';
+  if (recommendation === 'INVESTIGATE' && totalPriceGbp > MEDIUM_RISK_REVIEW_THRESHOLD_GBP) return 'medium-risk-value';
+  return null;
+}
 
 export interface OrderLineItem {
   productId: string | null; // Shopify product GID
@@ -36,7 +56,9 @@ export interface OrderRecord {
   totalPrice: number;
   currency: string;
   financialStatus: string;
-  riskLevel: string | null; // LOW | MEDIUM | HIGH | null (unknown - fetched in Stage B)
+  riskLevel: string | null; // LOW | MEDIUM | HIGH | null. The orders/paid webhook
+  // payload does NOT carry risk (this stays null at Stage A); Stage B fetches
+  // Order.risk via GraphQL before spending and stamps the row then.
   address: OrderAddress | null;
   lineItems: OrderLineItem[];
   noteAttributes: Record<string, string>;

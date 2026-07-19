@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
-import { parseOrderWebhook, validateOrder } from '../src/fulfil';
+import { parseOrderWebhook, validateOrder, riskHold, MEDIUM_RISK_REVIEW_THRESHOLD_GBP } from '../src/fulfil';
 import { TenantStore } from '../src/tenant-store';
 import { DEFAULT_GATES, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, DEFAULT_INBOX, type TenantConfig } from '../src/types';
 
@@ -133,5 +133,22 @@ describe('GDPR redaction', () => {
     expect(await store.getLink('P1')).toBeNull();
     expect(await store.getTenant()).toBeNull();
     expect((await store.listAnswerMemory()).total).toBe(0);
+  });
+});
+
+describe('riskHold (Stage-B fraud gate policy, 2026-07-19)', () => {
+  it('CANCEL recommendation always holds, regardless of value', () => {
+    expect(riskHold('CANCEL', 5)).toBe('high-risk');
+    expect(riskHold('CANCEL', 500)).toBe('high-risk');
+  });
+  it('INVESTIGATE holds only above the medium-risk value threshold', () => {
+    expect(riskHold('INVESTIGATE', MEDIUM_RISK_REVIEW_THRESHOLD_GBP + 0.01)).toBe('medium-risk-value');
+    expect(riskHold('INVESTIGATE', MEDIUM_RISK_REVIEW_THRESHOLD_GBP)).toBeNull(); // at the line = flows
+    expect(riskHold('INVESTIGATE', 9.99)).toBeNull();
+  });
+  it('ACCEPT / NONE / unknown never hold (fail-open: the GBP100 cap still bounds worst case)', () => {
+    expect(riskHold('ACCEPT', 500)).toBeNull();
+    expect(riskHold('NONE', 500)).toBeNull();
+    expect(riskHold(null, 500)).toBeNull();
   });
 });

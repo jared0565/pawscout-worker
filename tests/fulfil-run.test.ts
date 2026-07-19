@@ -315,3 +315,86 @@ describe('pollTracking', () => {
     expect((await store.getOrder('O1'))?.status).toBe('submitted');
   });
 });
+
+describe('Stage-B risk gate (2026-07-19: risk fetched before money moves)', () => {
+  // AdminGraphql that answers the order-risk query with a fixed recommendation
+  // and records every query it receives.
+  function riskAdmin(recommendation: string | null, calls: string[] = []): AdminGraphql {
+    return (async (q: string) => {
+      calls.push(q);
+      if (q.includes('risk')) {
+        if (recommendation === null) throw new Error('risk api down');
+        return { order: { risk: { recommendation } } };
+      }
+      return {};
+    }) as unknown as AdminGraphql;
+  }
+
+  it('holds a CANCEL-recommended order BEFORE any CJ spend (high-risk)', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedWarehouse(store, 'CJ1', 'S1', 'v1');
+    await seedOrder(store, 'O1', [{ sku: 'S1', quantity: 1, cjPid: 'CJ1' }]);
+    const spy = { create: [] as unknown[], pay: [] as string[] };
+    const r = await processDueOrders(store, fakeCj(spy), riskAdmin('CANCEL'), cfg('pawscout'));
+    expect(r).toMatchObject({ submitted: 0, held: 1, errored: 0 });
+    expect(spy.create.length + spy.pay.length).toBe(0);
+    const o = await store.getOrder('O1');
+    expect(o).toMatchObject({ status: 'held', risk_level: 'HIGH' });
+    expect(JSON.parse(o!.hold_reasons!)).toEqual(['high-risk']);
+  });
+
+  it('holds INVESTIGATE above the value threshold (medium-risk-value)', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedWarehouse(store, 'CJ1', 'S1', 'v1');
+    await seedOrder(store, 'O1', [{ sku: 'S1', quantity: 1, cjPid: 'CJ1' }], { totalPrice: 79.99 });
+    const spy = { create: [] as unknown[], pay: [] as string[] };
+    const r = await processDueOrders(store, fakeCj(spy), riskAdmin('INVESTIGATE'), cfg('pawscout'));
+    expect(r).toMatchObject({ held: 1 });
+    expect(spy.create.length).toBe(0);
+    const o = await store.getOrder('O1');
+    expect(o).toMatchObject({ status: 'held', risk_level: 'MEDIUM' });
+    expect(JSON.parse(o!.hold_reasons!)).toEqual(['medium-risk-value']);
+  });
+
+  it('lets a small INVESTIGATE order flow, stamping MEDIUM for console visibility', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedWarehouse(store, 'CJ1', 'S1', 'v1');
+    await seedOrder(store, 'O1', [{ sku: 'S1', quantity: 1, cjPid: 'CJ1' }], { totalPrice: 15 });
+    const spy = { create: [] as unknown[], pay: [] as string[] };
+    const r = await processDueOrders(store, fakeCj(spy), riskAdmin('INVESTIGATE'), cfg('pawscout'));
+    expect(r).toMatchObject({ submitted: 1, held: 0 });
+    expect((await store.getOrder('O1'))).toMatchObject({ status: 'submitted', risk_level: 'MEDIUM' });
+  });
+
+  it('fails OPEN when the risk read errors (order still submits)', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedWarehouse(store, 'CJ1', 'S1', 'v1');
+    await seedOrder(store, 'O1', [{ sku: 'S1', quantity: 1, cjPid: 'CJ1' }]);
+    const spy = { create: [] as unknown[], pay: [] as string[] };
+    const r = await processDueOrders(store, fakeCj(spy), riskAdmin(null), cfg('pawscout'));
+    expect(r).toMatchObject({ submitted: 1, held: 0, errored: 0 });
+  });
+
+  it('skips the risk check for an operator-released order (their decision wins)', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedWarehouse(store, 'CJ1', 'S1', 'v1');
+    // Held at webhook time, operator released it back to queued - hold history remains.
+    await seedOrder(store, 'O1', [{ sku: 'S1', quantity: 1, cjPid: 'CJ1' }], { holdReasons: ['high-risk'] });
+    const spy = { create: [] as unknown[], pay: [] as string[] };
+    const calls: string[] = [];
+    const r = await processDueOrders(store, fakeCj(spy), riskAdmin('CANCEL', calls), cfg('pawscout'));
+    expect(r).toMatchObject({ submitted: 1, held: 0 });
+    expect(calls.some((q) => q.includes('risk'))).toBe(false); // never even asked
+  });
+
+  it('skips the risk check on a pay-retry (CJ order already exists)', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedWarehouse(store, 'CJ1', 'S1', 'v1');
+    await seedOrder(store, 'O1', [{ sku: 'S1', quantity: 1, cjPid: 'CJ1' }]);
+    await store.updateOrder('O1', { cj_order_id: 'CJORD-O1' });
+    const spy = { create: [] as unknown[], pay: [] as string[] };
+    const r = await processDueOrders(store, fakeCj(spy), riskAdmin('CANCEL'), cfg('pawscout'));
+    expect(r).toMatchObject({ submitted: 1, held: 0 });
+    expect(spy.pay).toEqual(['CJORD-O1']); // paid the existing order, no re-create
+  });
+});
