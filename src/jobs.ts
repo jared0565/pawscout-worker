@@ -56,6 +56,7 @@ import { LlmClient, curateProduct, pickHeroImage, rewriteDescription, type Curat
 import { DEFAULT_SEMANTIC, type Env, type TenantConfig, type Gates } from './types';
 import { rotateRecurringEvents } from './recurring-events';
 import { debrandCatalog } from './catalog-debrand';
+import { runArticleHealth } from './blog/article-health';
 
 export const CULL_WINDOW_DAYS = 30; // grace period AND inactivity window
 /** Engagement gate for the cull (2026-07-18): "zero events for this product"
@@ -1436,6 +1437,12 @@ export const DAILY_SHOP_STAGES: DailyStage[] = [
   // a competitor. Self-healing and idempotent - a cheap no-op once the catalog is
   // clean. See src/catalog-debrand.ts + src/debrand.ts.
   { name: 'debrand', maxMs: 3 * MIN_MS, needsCj: false, run: async (ctx) => { const r = await debrandCatalog(ctx.admin); if (r.errors.length) console.warn(`debrand: ${r.errors.join(' | ')}`); } },
+  // Article health: published guides must never link a 404 product (the profit
+  // agent archives stock continuously). Dead body links are relinked to live
+  // congruent products (caged LLM, deterministic fallback) and stale shop-block
+  // metafields refreshed. Idempotent no-op on a healthy catalog.
+  // See src/blog/article-health.ts.
+  { name: 'article-health', maxMs: 3 * MIN_MS, needsCj: false, run: async (ctx) => { const r = await runArticleHealth(ctx.env, ctx.store, ctx.cfg, ctx.admin); if (r.errors.length) console.warn(`article-health: ${r.errors.join(' | ')}`); } },
   // Fixed USD shelf prices on the US & Canada catalog (after all repricing
   // stages, so tonight's GBP stickers are what gets converted). Takes US
   // display pricing away from Global-e's padded conversion; see us-price-list.ts.

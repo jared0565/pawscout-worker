@@ -22,6 +22,17 @@ describe('consolePage', () => {
     expect(html).toContain('id="inbox-threads"');
   });
 
+  // 2026-07-19: guide link health (dead product links in published guides).
+  it('ops card exposes the guide-link-health panel wired to /blog/health', async () => {
+    const html = await consolePage('test-api-key').text();
+    expect(html).toContain('id="bloghealth-btn"');
+    expect(html).toContain('Heal guide links now');
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+    expect(scripts).toContain('runBlogHealth');
+    expect(scripts).toContain("api('/blog/health',{})");
+    expect(scripts).toContain('Dead product links found');
+  });
+
   // 2026-07-04: optional margin cap (smooth high-end taper) in the pricing card.
   it('pricing card exposes the optional margin cap and only sends it when set', async () => {
     const html = await consolePage('test-api-key').text();

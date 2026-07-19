@@ -882,6 +882,24 @@ async function runDebrand(){
   }catch(e){ setMsg('debrand-msg','Failed: '+errText(e),'no'); }
   finally{ b.disabled=false; }
 }
+async function runBlogHealth(){
+  var b=el('bloghealth-btn'); b.disabled=true; setMsg('bloghealth-msg','Working…','muted');
+  try{
+    var r=await api('/blog/health',{});
+    if(r&&r.ok){
+      var changed=(r.bodiesHealed||0)+(r.metafieldsRefreshed||0);
+      setMsg('bloghealth-msg', changed?'Done':'All links healthy','ok');
+      var lines=[];
+      lines.push('Dead product links found: '+(r.deadLinks||0)+' of '+(r.linksChecked||0)+' checked across '+(r.articlesScanned||0)+' guides');
+      lines.push('Guide bodies healed: '+(r.bodiesHealed||0));
+      lines.push('Shop-this-guide blocks refreshed: '+(r.metafieldsRefreshed||0));
+      if(r.samples&&r.samples.length){ lines.push(''); r.samples.forEach(function(s){ lines.push(s); }); }
+      if(r.errors&&r.errors.length){ lines.push(''); lines.push('Errors: '+r.errors.join(' | ')); }
+      el('bloghealth-result').textContent=lines.join('\\n');
+    } else { setMsg('bloghealth-msg','Failed: '+((r&&r.error)||'unknown error'),'no'); }
+  }catch(e){ setMsg('bloghealth-msg','Failed: '+errText(e),'no'); }
+  finally{ b.disabled=false; }
+}
 async function saveCollections(){
   setMsg('mapmsg','Saving…','muted');
   try{

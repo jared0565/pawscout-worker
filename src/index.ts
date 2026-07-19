@@ -22,6 +22,7 @@ import { validateEventRequest, findOverlappingPromo, createEventDiscount, buildE
 import { reservedWindowClash, templateByKey } from './event-catalogue';
 import { ensureRecurringDiscount, retireRecurringDiscount, refreshPublicEventFeed, listRecurringForConsole } from './recurring-events';
 import { runBlogPipeline, enrichBlogPost, proposeBlogTopics, listPostsSynced } from './blog/pipeline';
+import { runArticleHealth } from './blog/article-health';
 import type { BlogBrief } from './blog/types';
 import { issueVoucher, fetchActiveOrderPromos, voucherDateLabel, deactivateVoucherDiscount } from './affiliate-discounts';
 import { hashBuyerEmail } from './affiliate-attribution';
@@ -1017,6 +1018,22 @@ app.post('/api/catalog/debrand', async (c) => {
   const admin = makeAdminGraphql(s, accessToken);
   try {
     return c.json({ ok: true, ...(await debrandCatalog(admin)) });
+  } catch (e) {
+    return c.json({ ok: false, error: (e as Error).message }, 500);
+  }
+});
+// Owner-triggered article health: replace dead product links in published
+// guides with live congruent ones and refresh stale shop-block picks NOW (the
+// nightly cron also runs this). Idempotent; returns counts + samples.
+app.post('/api/blog/health', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  const store = new TenantStore(c.env.DB, s);
+  const cfg = await store.getConfig();
+  if (!cfg) return c.json({ ok: false, error: 'Tenant not found' }, 400);
+  const admin = await adminForShop(c.env, store).catch(() => null);
+  if (!admin) return c.json({ ok: false, error: 'Shopify connection unavailable.' }, 400);
+  try {
+    return c.json({ ok: true, ...(await runArticleHealth(c.env, store, cfg, admin)) });
   } catch (e) {
     return c.json({ ok: false, error: (e as Error).message }, 500);
   }

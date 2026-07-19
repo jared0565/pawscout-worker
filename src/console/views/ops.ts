@@ -91,4 +91,13 @@ export const opsView = `  <section class="card">
       </div>
       <pre id="debrand-result" class="sub" style="white-space:pre-wrap;margin:6px 0 0"></pre>
     </div>
+    <div class="agents-panel" style="margin-top:12px">
+      <div class="agents-panel__head">Guide link health <span class="sub">(no dead products in blog guides)</span></div>
+      <p class="sub" style="margin:6px 0">Checks every product link in the published guides against the live catalog. A link to an archived product is replaced with a congruent live one (or the guide&rsquo;s collection), and thin Shop-this-guide blocks are refreshed. Runs automatically every night; use this to apply it right now.</p>
+      <div style="margin-top:10px">
+        <button type="button" id="bloghealth-btn" onclick="runBlogHealth()">Heal guide links now</button>
+        <span id="bloghealth-msg" class="sub"></span>
+      </div>
+      <pre id="bloghealth-result" class="sub" style="white-space:pre-wrap;margin:6px 0 0"></pre>
+    </div>
   </section>`;
