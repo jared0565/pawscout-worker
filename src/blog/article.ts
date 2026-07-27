@@ -110,6 +110,59 @@ export async function createDraftArticle(
   return created;
 }
 
+const ARTICLE_UPDATE_FULL = `mutation pawscoutArticleRegen($id: ID!, $article: ArticleUpdateInput!) {
+  articleUpdate(id: $id, article: $article) {
+    article { id handle title isPublished }
+    userErrors { field message }
+  }
+}`;
+
+/**
+ * Replace an EXISTING article's whole content from a freshly drafted BlogDraft:
+ * title, body, summary, SEO metafields, FAQ, shop-block picks and hero image.
+ *
+ * The HANDLE IS NEVER TOUCHED, so the live URL and anything linking to it
+ * survive a regeneration. Publication state is left alone too: regenerating a
+ * published guide leaves it published (the body is replaced in place), and
+ * regenerating a draft leaves it a draft. That is deliberate - a regen is an
+ * edit of existing content, not a new post, so it must not silently unpublish a
+ * live page or publish something the owner has not reviewed.
+ */
+export async function updateArticleContent(
+  admin: AdminGraphql,
+  opts: { articleId: string; draft: BlogDraft; imageUrl?: string; imageAlt?: string; relatedHandles?: string[] }
+): Promise<CreatedArticle> {
+  const { articleId, draft, imageUrl, imageAlt, relatedHandles } = opts;
+  const metafields: Record<string, unknown>[] = [
+    { namespace: 'global', key: 'title_tag', value: draft.metaTitle, type: 'single_line_text_field' },
+    { namespace: 'global', key: 'description_tag', value: draft.metaDescription, type: 'single_line_text_field' }
+  ];
+  if (relatedHandles && relatedHandles.length) {
+    metafields.push({ namespace: RELATED_NS, key: RELATED_KEY, value: JSON.stringify(relatedHandles), type: RELATED_TYPE });
+  }
+  if (draft.faq && draft.faq.length) {
+    metafields.push({ namespace: FAQ_NS, key: FAQ_KEY, value: JSON.stringify(draft.faq), type: FAQ_TYPE });
+  }
+  const article: Record<string, unknown> = {
+    title: draft.title,
+    body: draft.bodyHtml,
+    summary: draft.excerpt,
+    tags: draft.tag ? [draft.tag] : [],
+    metafields
+  };
+  // Same de-brand choke point as creation (alt becomes og:image:alt).
+  if (imageUrl) article.image = { url: imageUrl, altText: debrandTitle(imageAlt ?? draft.title) };
+
+  const data = await admin(ARTICLE_UPDATE_FULL, { id: articleId, article }) as {
+    articleUpdate?: { article?: CreatedArticle; userErrors?: { message: string }[] };
+  };
+  const errs = data.articleUpdate?.userErrors ?? [];
+  if (errs.length) throw new Error(`articleUpdate: ${errs.map((e) => e.message).join('; ')}`);
+  const updated = data.articleUpdate?.article;
+  if (!updated?.id) throw new Error('articleUpdate returned no article');
+  return updated;
+}
+
 const METAFIELD_DEFINITION_CREATE = `mutation pawscoutBlogMfDef($definition: MetafieldDefinitionInput!) {
   metafieldDefinitionCreate(definition: $definition) {
     createdDefinition { id }
@@ -189,16 +242,19 @@ export async function getArticlesForSyndication(admin: AdminGraphql, ids: string
 }
 
 const ARTICLE_READ = `query pawscoutArticleRead($id: ID!) {
-  article(id: $id) { id handle title image { url } body }
+  article(id: $id) { id handle title image { url } body tags }
 }`;
 
-export interface ArticleForEnrich { id: string; handle: string; title: string; hasImage: boolean; bodyHtml: string; }
+// `tags` carries the funnel collection handle (the drafter writes it as the
+// article's single tag), which a REGENERATION needs to ground the rewrite in the
+// same collection the post was originally written for.
+export interface ArticleForEnrich { id: string; handle: string; title: string; hasImage: boolean; bodyHtml: string; tags: string[]; }
 
 /** Read the fields enrich needs: whether a hero image already exists (never
  *  clobber an owner-set one) and the body (to see which products it links). */
 export async function getArticleForEnrich(admin: AdminGraphql, articleId: string): Promise<ArticleForEnrich | null> {
   const data = await admin(ARTICLE_READ, { id: articleId }) as {
-    article?: { id?: string; handle?: string; title?: string; image?: { url?: string } | null; body?: string };
+    article?: { id?: string; handle?: string; title?: string; image?: { url?: string } | null; body?: string; tags?: string[] };
   };
   const a = data.article;
   if (!a?.id) return null;
@@ -207,7 +263,8 @@ export async function getArticleForEnrich(admin: AdminGraphql, articleId: string
     handle: a.handle ?? '',
     title: a.title ?? '',
     hasImage: !!a.image?.url,
-    bodyHtml: a.body ?? ''
+    bodyHtml: a.body ?? '',
+    tags: Array.isArray(a.tags) ? a.tags.filter((t) => typeof t === 'string') : []
   };
 }
 

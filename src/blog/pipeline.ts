@@ -22,7 +22,7 @@ import { pickComboHandles, availableByHandle } from './combo';
 import type { ComboArticle } from './combo';
 import { getProductImages, pickBlogHeroImage } from './hero';
 import type { AdminGraphql } from '../shopify-admin';
-import { findBlog, renameBlog, createDraftArticle, ensureRelatedProductsDefinition, getArticleForEnrich, updateArticleAssets, getPublishedMap } from './article';
+import { findBlog, renameBlog, createDraftArticle, ensureRelatedProductsDefinition, getArticleForEnrich, updateArticleAssets, getPublishedMap, updateArticleContent } from './article';
 import type { FactPack } from './types';
 
 /**
@@ -259,6 +259,100 @@ export interface BlogEnrichResult {
  * recorded to D1 so it can be confirmed later. `articleId` defaults to the most
  * recent draft. Never publishes; degrades to {ok:false,error} on any failure.
  */
+export interface BlogRegenResult {
+  ok: boolean;
+  error?: string;
+  articleId?: string;
+  handle?: string;
+  title?: string;
+  claimFlags?: ReturnType<typeof findClaimFlags>;
+}
+
+/**
+ * REGENERATE an existing article's whole content in place.
+ *
+ * Why this exists (owner, 2026-07-27): refreshing the Shop-this-guide block only
+ * rewrites the related_products metafield, so it can never repair the article
+ * BODY. When a published post is structurally wrong (the case here: two links to
+ * charities that run competing shops), repointing links is a patch; rewriting
+ * the piece with the current, gated pipeline is the real remedy. There was no
+ * route for that at all, only "generate a NEW post".
+ *
+ * The rewrite reuses the article's OWN title and funnel tag as the brief, so it
+ * stays the same piece of content rather than drifting to a new topic, and the
+ * handle is preserved so the live URL keeps working. Everything the normal
+ * pipeline enforces applies, including the link hard gate: if the fresh draft
+ * cannot pass it, draftArticle returns null and NOTHING is written, leaving the
+ * existing article untouched.
+ */
+export async function regenerateArticle(
+  env: Env, store: TenantStore, cfg: TenantConfig,
+  opts: { articleId: string }, fetchImpl: typeof fetch = defaultFetch
+): Promise<BlogRegenResult> {
+  const admin = await adminForShop(env, store, fetchImpl).catch(() => null);
+  if (!admin) return { ok: false, error: 'Shopify connection unavailable (needs the write_content scope + a live token).' };
+
+  const llm = new LlmClient({ openrouter: env.OPENROUTER_API_KEY, openai: env.OPENAI_API_KEY }, fetchImpl);
+  if (!llm.available) return { ok: false, error: 'No LLM configured.' };
+
+  const existing = await getArticleForEnrich(admin, opts.articleId).catch(() => null);
+  if (!existing) return { ok: false, error: 'Article not found.' };
+
+  const validHandles = Object.values(cfg.collectionMap).map((c) => c.handle).filter(Boolean);
+  if (validHandles.length === 0) return { ok: false, error: 'No collections configured to funnel into.' };
+
+  // Keep the article on its own funnel collection when the tag still resolves;
+  // otherwise fall through to any collection that has live products, exactly as
+  // the create path does, so a retired collection cannot strand a rewrite.
+  const tagged = existing.tags.find((t) => validHandles.includes(t));
+  let pack = tagged ? await groundCollection(admin, tagged) : null;
+  if (!pack) {
+    for (const h of validHandles) {
+      pack = await groundCollection(admin, h);
+      if (pack && pack.products.some((p) => p.available)) break;
+      pack = null;
+    }
+  }
+  if (!pack) return { ok: false, error: 'No collection with products to ground the rewrite in.' };
+
+  // The article IS the brief: same title, same funnel, so a regeneration is a
+  // rewrite of this piece and not a new topic.
+  const brief: BlogBrief = {
+    title: existing.title,
+    angle: `Rewrite of the existing guide "${existing.title}", same subject and reader promise.`,
+    targetKeyword: existing.title,
+    collectionHandle: pack.collectionHandle,
+    whyNow: 'Regenerated on owner request.',
+    keyPoints: ['Cover the same ground as the existing guide', 'Ground every product claim in the supplied facts', 'Link only Active Paw pages']
+  };
+
+  // No external sources exist any more (src/blog/sources.ts), so this is [].
+  const facts = await collectSourcedFacts(llm, store, cfg, {
+    title: brief.title, angle: brief.angle, keyPoints: brief.keyPoints
+  });
+
+  const draft = await draftArticle(llm, store, cfg, brief, pack, {}, facts);
+  if (!draft) return { ok: false, error: 'Draft agent could not produce a clean article (the link gate blocks a draft that carries an external link). The existing article was left untouched.' };
+
+  const claimFlags = findClaimFlags(draft.bodyHtml);
+
+  const sel = await selectShopBlockAcross(admin, llm, store, cfg, {
+    primary: pack, validHandles,
+    article: { title: draft.title, angle: brief.angle, bodyHtml: draft.bodyHtml }
+  });
+  const hero = await resolveHero(admin, llm, store, cfg, sel, draft.title);
+
+  try {
+    const updated = await updateArticleContent(admin, {
+      articleId: existing.id, draft,
+      imageUrl: hero.url, imageAlt: hero.alt, relatedHandles: sel.handles
+    });
+    return { ok: true, articleId: updated.id, handle: updated.handle, title: updated.title, claimFlags };
+  } catch (e) {
+    return { ok: false, error: `Article update failed: ${(e as Error).message}` };
+  }
+}
+
 export async function enrichBlogPost(
   env: Env, store: TenantStore, cfg: TenantConfig,
   opts: { articleId?: string }, fetchImpl: typeof fetch = defaultFetch

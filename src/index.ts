@@ -21,7 +21,7 @@ import { collectSystemStates } from './system-states';
 import { validateEventRequest, findOverlappingPromo, createEventDiscount, buildEventCampaign, publicEventPayload, eventDayLabel } from './storewide-event';
 import { reservedWindowClash, templateByKey } from './event-catalogue';
 import { ensureRecurringDiscount, retireRecurringDiscount, refreshPublicEventFeed, listRecurringForConsole } from './recurring-events';
-import { runBlogPipeline, enrichBlogPost, proposeBlogTopics, listPostsSynced } from './blog/pipeline';
+import { runBlogPipeline, enrichBlogPost, proposeBlogTopics, listPostsSynced, regenerateArticle } from './blog/pipeline';
 import { runArticleHealth } from './blog/article-health';
 import type { BlogBrief } from './blog/types';
 import { issueVoucher, fetchActiveOrderPromos, voucherDateLabel, deactivateVoucherDiscount } from './affiliate-discounts';
@@ -390,6 +390,23 @@ app.post('/api/blog/enrich', async (c) => {
   const articleId = typeof body.articleId === 'string' && body.articleId ? body.articleId : undefined;
   const result = await enrichBlogPost(c.env, store, cfg, { articleId });
   return c.json(result);
+});
+// Regenerate an EXISTING article's whole content in place (owner, 2026-07-27).
+// Refreshing the shop block only rewrites the related_products metafield, so it
+// can never repair a bad article BODY; this rewrites the piece with the current
+// gated pipeline while keeping its handle, so the live URL survives. Requires an
+// explicit articleId: there is no "most recent" default, because regenerating
+// the wrong published guide is not something to do by accident.
+app.post('/api/blog/regenerate', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  const store = new TenantStore(c.env.DB, s);
+  const cfg = await store.getConfig();
+  if (!cfg) return c.json({ ok: false, error: 'Tenant not found' }, 400);
+  let body: { articleId?: unknown } = {};
+  try { body = await c.req.json(); } catch {}
+  const articleId = typeof body.articleId === 'string' ? body.articleId.trim() : '';
+  if (!articleId) return c.json({ ok: false, error: 'articleId is required' }, 400);
+  return c.json(await regenerateArticle(c.env, store, cfg, { articleId }));
 });
 // --- Blog syndication (distribution phase 1, 2026-07-11) ---
 // List the distribution state: published posts + their creative packs + the

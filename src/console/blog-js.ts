@@ -58,7 +58,13 @@ function blgItemHtml(p){
     // congruence merchandiser on the LIVE article (an owner-set hero image is
     // never overwritten, and publish state is never touched).
     var lbl=p.status==='published'?'Refresh shop block':(related.length?'Refresh image + shop block':'Add image + shop block');
-    h+='<div class="blg-actions"><button type="button" class="btn-sm" onclick="blogEnrich(\\''+esc(p.shopify_article_id)+'\\')">'+lbl+'</button></div>';
+    // Two DIFFERENT jobs, kept visibly apart because confusing them wastes a
+    // click: "Refresh shop block" only rewrites the related-products metafield
+    // and can never repair the article BODY, while "Regenerate content" rewrites
+    // the whole piece through the gated pipeline (same URL, same topic).
+    h+='<div class="blg-actions"><button type="button" class="btn-sm" onclick="blogEnrich(\\''+esc(p.shopify_article_id)+'\\')">'+lbl+'</button>'
+      +'<button type="button" class="btn-sm" onclick="blogRegen(\\''+esc(p.shopify_article_id)+'\\',\\''+esc(p.title).replace(/'/g,'')+'\\')">Regenerate content</button></div>'
+      +'<div class="blg-meta">Refresh shop block changes only the product block. Regenerate content rewrites the whole article body, keeping the same web address.</div>';
   }
   if(p.status!=='published'){
     h+='<div class="blg-meta">Review and publish in Shopify admin: Online Store &gt; Blog posts. You can swap the hero image there before publishing.</div>';
@@ -114,6 +120,22 @@ async function blogEnrich(articleId){
     setMsg('blg-msg','Shop block set: '+n+' product(s).'+img+' Review and publish in Shopify admin (you can swap the hero there).','ok');
     loadContent();
   }catch(e){ setMsg('blg-msg','Could not enrich the post: '+errText(e),'no'); }
+}
+// Rewrite the whole article body through the gated pipeline. Confirmed first:
+// it replaces a live page's content, and on a published guide that is visible to
+// customers immediately. The link hard gate still applies, so a rewrite that
+// would carry an external link is refused and the existing article is left
+// exactly as it was.
+async function blogRegen(articleId,title){
+  if(!confirm('Rewrite the entire content of "'+title+'"?\\n\\nThe web address stays the same. The current body is replaced. If the new draft fails the link check, nothing is changed.')) return;
+  setMsg('blg-msg','Rewriting the whole article from your real products. This can take up to a minute.','muted');
+  try{
+    var r=await api('/blog/regenerate',{articleId:articleId});
+    if(!r.ok){ setMsg('blg-msg','Could not regenerate: '+esc(r.error||'unknown error'),'no'); return; }
+    var extra=(r.claimFlags&&r.claimFlags.length)?(' '+r.claimFlags.length+' line(s) were flagged to verify.'):'';
+    setMsg('blg-msg','Rewritten: "'+esc(r.title)+'". Same web address.'+extra,'ok');
+    loadContent();
+  }catch(e){ setMsg('blg-msg','Could not regenerate: '+errText(e),'no'); }
 }
 // --- Distribution (syndication): creative packs + per-channel sends ---
 var sydState=null;
