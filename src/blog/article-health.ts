@@ -31,6 +31,12 @@ export interface ArticleHealthResult {
   deadLinks: number;
   bodiesHealed: number;
   metafieldsRefreshed: number;
+  /** External links found on ALREADY-PUBLISHED articles and repointed or
+   *  unlinked by the link gate. Surfaced as its own number rather than buried
+   *  in samples: a silent repair is exactly what let a bad source allowlist
+   *  survive months of "already fixed" reports. Any value above 0 here means
+   *  something reached publication that should not have. */
+  externalLinksFixed: number;
   errors: string[];
   samples: string[]; // before -> after examples for the console/log
 }
@@ -211,7 +217,8 @@ export async function runArticleHealth(
   enrich: typeof enrichBlogPost = enrichBlogPost // injectable for tests
 ): Promise<ArticleHealthResult> {
   const result: ArticleHealthResult = {
-    articlesScanned: 0, linksChecked: 0, deadLinks: 0, bodiesHealed: 0, metafieldsRefreshed: 0, errors: [], samples: []
+    articlesScanned: 0, linksChecked: 0, deadLinks: 0, bodiesHealed: 0, metafieldsRefreshed: 0,
+    externalLinksFixed: 0, errors: [], samples: []
   };
   let data: {
     blogs?: { nodes?: { handle?: string; articles?: {
@@ -239,36 +246,73 @@ export async function runArticleHealth(
         }
         result.linksChecked += bodyHandles.length;
         const all = [...new Set([...bodyHandles, ...curated.map((h) => h.toLowerCase())])];
-        if (!all.length) continue;
-        const live = await resolveHandleLiveness(admin, all);
-        const deadBody = bodyHandles.filter((h) => !live.get(h));
-        const deadCurated = curated.filter((h) => !live.get(h.toLowerCase()));
-        result.deadLinks += deadBody.length;
 
-        if (deadBody.length) {
-          // Funnel: the first tag that grounds to a collection with live products.
-          let pack = null;
+        let workingBody = body;
+        let deadCurated: string[] = [];
+        // Ground the funnel collection at most once per article, and only when
+        // something actually needs repoint candidates (it costs an Admin call).
+        let pack: Awaited<ReturnType<typeof groundCollection>> | null = null;
+        let packGrounded = false;
+        const groundPack = async () => {
+          if (packGrounded) return pack;
+          packGrounded = true;
           for (const tag of a.tags ?? []) {
             pack = await groundCollection(admin, tag).catch(() => null);
             if (pack && pack.products.some((p) => p.available)) break;
             pack = null;
           }
-          const candidates: HealCandidate[] = (pack?.products ?? [])
-            .filter((p) => p.available && !deadBody.includes(p.handle.toLowerCase()))
-            .map((p) => ({ title: p.title, handle: p.handle, path: p.path }));
-          const collectionPath = pack?.collectionPath ?? ((a.tags?.length) ? `/collections/${a.tags[0]}` : null);
-          const healed = await healArticleBody(llm, store, cfg, {
-            body, articleTitle: a.title ?? a.id, deadHandles: deadBody, candidates, collectionPath
-          });
-          if (healed.body !== body) {
-            const r = await admin(ARTICLE_BODY_UPDATE, { id: a.id, article: { body: healed.body } }) as {
-              articleUpdate?: { userErrors?: { message: string }[] };
-            };
-            const errs = r.articleUpdate?.userErrors ?? [];
-            if (errs.length) throw new Error(errs.map((e) => e.message).join('; '));
-            result.bodiesHealed++;
+          return pack;
+        };
+
+        if (all.length) {
+          const live = await resolveHandleLiveness(admin, all);
+          const deadBody = bodyHandles.filter((h) => !live.get(h));
+          deadCurated = curated.filter((h) => !live.get(h.toLowerCase()));
+          result.deadLinks += deadBody.length;
+
+          if (deadBody.length) {
+            const p = await groundPack();
+            const candidates: HealCandidate[] = (p?.products ?? [])
+              .filter((q) => q.available && !deadBody.includes(q.handle.toLowerCase()))
+              .map((q) => ({ title: q.title, handle: q.handle, path: q.path }));
+            const collectionPath = p?.collectionPath ?? ((a.tags?.length) ? `/collections/${a.tags[0]}` : null);
+            const healed = await healArticleBody(llm, store, cfg, {
+              body: workingBody, articleTitle: a.title ?? a.id, deadHandles: deadBody, candidates, collectionPath
+            });
+            workingBody = healed.body;
             for (const s of healed.samples) if (result.samples.length < 12) result.samples.push(s);
           }
+        }
+
+        // THE LINK GATE, remediate mode, on EVERY article. This must NOT sit
+        // inside the dead-link branch: the article that triggered this work had
+        // perfectly healthy product links and two external charity links, so a
+        // dead-link-gated sweep would never have cleaned it. Articles with no
+        // product links at all are checked too, which is why the `all.length`
+        // early-continue is gone.
+        const probe = reviewArticleLinks(workingBody, [], [], { mode: 'remediate' });
+        if (probe.violations.length) {
+          const p = await groundPack();
+          const cands = (p?.products ?? [])
+            .filter((q) => q.available)
+            .map((q) => ({ title: q.title, handle: q.handle, path: q.path, available: q.available }));
+          const gated = reviewArticleLinks(workingBody, cands, [], { mode: 'remediate' });
+          workingBody = gated.bodyHtml;
+          result.externalLinksFixed += gated.violations.length;
+          for (const v of gated.violations) {
+            if (result.samples.length < 12) {
+              result.samples.push(`"${a.title ?? a.id}": external ${v.url} -> ${v.repointedTo ?? '(unlinked)'}`);
+            }
+          }
+        }
+
+        if (workingBody !== body) {
+          const r = await admin(ARTICLE_BODY_UPDATE, { id: a.id, article: { body: workingBody } }) as {
+            articleUpdate?: { userErrors?: { message: string }[] };
+          };
+          const errs = r.articleUpdate?.userErrors ?? [];
+          if (errs.length) throw new Error(errs.map((e) => e.message).join('; '));
+          result.bodiesHealed++;
         }
 
         if (deadCurated.length) {
@@ -288,8 +332,13 @@ export async function runArticleHealth(
       result.errors.push(`blog ${blog.handle ?? '?'}: >100 articles, tail not checked this run`);
     }
   }
-  if (result.bodiesHealed || result.metafieldsRefreshed) {
+  if (result.bodiesHealed || result.metafieldsRefreshed || result.externalLinksFixed) {
     console.log(`article-health: healed ${result.bodiesHealed} body(ies), refreshed ${result.metafieldsRefreshed} shop block(s), ${result.deadLinks} dead link(s) found`);
+  }
+  if (result.externalLinksFixed) {
+    // Loud on purpose. A published article carrying an external link is the
+    // exact recurrence this gate exists to make visible.
+    console.error(`article-health: LINK GATE fixed ${result.externalLinksFixed} external link(s) on PUBLISHED articles: ${result.samples.filter((s) => s.includes('external ')).join(' | ')}`);
   }
   return result;
 }

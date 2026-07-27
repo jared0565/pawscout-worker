@@ -111,6 +111,55 @@ describe('reviewArticleLinks', () => {
     expect(second.bodyHtml).toBe(first.bodyHtml);
   });
 
+  // 'remediate' is for articles ALREADY LIVE, where blocking would leave the
+  // bad link in front of customers.
+  it('remediate mode UNLINKS instead of blocking when nothing is congruent', () => {
+    const html = '<p><a href="https://www.bluecross.org.uk/advice/x">annual licence renewal deadlines</a></p>';
+    const v = reviewArticleLinks(html, CANDIDATES, [], { mode: 'remediate' });
+    expect(v.ok).toBe(true);                        // never blocks a live article
+    expect(v.bodyHtml).not.toContain('bluecross');
+    expect(v.bodyHtml).toContain('annual licence renewal deadlines'); // wording kept
+    expect(v.violations[0].action).toBe('stripped');
+  });
+
+  it('remediate mode drops a digit-bearing sentence whole: a statistic must not outlive its source', () => {
+    const html = '<p>Cats stretch. <a href="https://www.bluecross.org.uk/x">Gel pads stay cool for up to 3 hours and recharge in 20 minutes.</a> More.</p>';
+    const v = reviewArticleLinks(html, CANDIDATES, [], { mode: 'remediate' });
+    expect(v.bodyHtml).not.toContain('Gel pads stay cool');
+    expect(v.bodyHtml).toContain('Cats stretch.');
+  });
+
+  it('remediate mode still prefers repointing when a congruent product exists', () => {
+    const html = '<p><a href="https://www.cats.org.uk/x">Scratching posts should be at least 60cm tall</a></p>';
+    const v = reviewArticleLinks(html, CANDIDATES, [], { mode: 'remediate' });
+    expect(v.bodyHtml).toContain('href="/products/pawhut-63cm-cat-scratching-post-with-sisal-rope"');
+    expect(v.violations[0].action).toBe('repointed');
+  });
+
+  // THE ACTUAL INCIDENT, 2026-07-27. Verbatim anchors from the live article
+  // activepaw.co.uk/blogs/guides/indoor-cat-summer-boredom-scratching-posts-
+  // activity-centres-keep-them-engaged. If this ever fails, that post class has
+  // regressed.
+  it('cleans the real published article: all three charity links, none survive', () => {
+    const live =
+      '<p><a href="https://www.cats.org.uk/cats-blog/behaviour-focus-scratching">Scratching posts must be tall enough for cats to stretch up on their toes while scratching and sturdy enough so cats can lean their body weight against the post without it wobbling.</a></p>' +
+      '<p><a href="https://www.cats.org.uk/cats-blog/how-to-make-a-scratching-post">Scratching posts should be at least 60cm tall so that the cat can fully stretch.</a></p>' +
+      '<p><a href="https://www.bluecross.org.uk/advice/dog-cat-degu-hamster">A tiered scratching post helps cats feel safe as it provides hiding places and a high shelf from which to watch the world go by.</a></p>' +
+      '<p><a href="/products/pawhut-63cm-cat-scratching-post-with-sisal-rope">63cm Cat Scratching Post</a> and <a href="/collections/pet-toys">Pet Toys collection</a></p>';
+
+    const v = reviewArticleLinks(live, CANDIDATES, [], { mode: 'remediate' });
+
+    expect(v.bodyHtml).not.toContain('cats.org.uk');
+    expect(v.bodyHtml).not.toContain('bluecross.org.uk');
+    expect(v.violations).toHaveLength(3);
+    expect(v.violations.every((x) => x.action === 'repointed')).toBe(true);
+    // the 60cm claim lands on the 63cm post: the product provably satisfies it
+    expect(v.bodyHtml).toContain('at least 60cm tall');
+    // internal links are untouched, including the collection funnel link
+    expect(v.bodyHtml).toContain('href="/collections/pet-toys"');
+    expect(v.bodyHtml).toContain('href="/products/pawhut-63cm-cat-scratching-post-with-sisal-rope"');
+  });
+
   it('describeVerdict names the article and every link, so a recurrence is visible', () => {
     const v = reviewArticleLinks('<p><a href="https://www.cats.org.uk/x">licence deadlines</a></p>', CANDIDATES);
     const line = describeVerdict('Indoor cat boredom', v);
