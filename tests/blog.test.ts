@@ -536,41 +536,42 @@ describe('blog FAQ (drafter output -> metafield -> theme)', () => {
 });
 
 describe('sourced facts (web research the drafter may cite)', () => {
-  it('validateSourcedFacts keeps only real http(s)-sourced external facts, deduped, capped at 4', () => {
+  // 2026-07-27 policy change: there are NO approved external sources. The old
+  // allowlist admitted cats.org.uk and bluecross.org.uk as "non-commercial"
+  // while both run online shops selling competing products, so the whole
+  // category is gone rather than the two domains that were caught.
+  it('drops EVERY external fact now that no source is approved, including the old charities', () => {
     const facts = validateSourcedFacts({ facts: [
       { fact: 'Cats need about 50ml of water per kg daily', sourceUrl: 'https://icatcare.org/hydration', sourceName: 'International Cat Care' },
-      { fact: 'dup', sourceUrl: 'https://icatcare.org/hydration', sourceName: 'ICC' },
-      { fact: 'dup', sourceUrl: 'https://icatcare.org/hydration', sourceName: 'ICC' },       // duplicate dropped
-      { fact: 'no source', sourceUrl: 'from memory', sourceName: 'X' },                      // not a URL
-      { fact: 'self cite', sourceUrl: 'https://activepaw.co.uk/blogs/guides/x', sourceName: 'Active Paw' }, // internal dropped
+      { fact: 'no source', sourceUrl: 'from memory', sourceName: 'X' },
+      { fact: 'self cite', sourceUrl: 'https://activepaw.co.uk/blogs/guides/x', sourceName: 'Active Paw' },
       { fact: 'f3', sourceUrl: 'https://rspca.org.uk/a', sourceName: 'RSPCA' },
-      { fact: 'f4', sourceUrl: 'https://pdsa.org.uk/b', sourceName: 'PDSA' },
-      { fact: 'f5', sourceUrl: 'https://bluecross.org.uk/c', sourceName: 'Blue Cross' }
+      { fact: 'shop-running charity', sourceUrl: 'https://cats.org.uk/c', sourceName: 'Cats Protection' },
+      { fact: 'shop-running charity', sourceUrl: 'https://bluecross.org.uk/c', sourceName: 'Blue Cross' }
     ] });
-    expect(facts!.map((f) => f.sourceName)).toEqual(['International Cat Care', 'ICC', 'RSPCA', 'PDSA']); // capped at 4
+    expect(facts).toEqual([]);
     expect(validateSourcedFacts({})).toBeNull();
   });
 
-  it('collectSourcedFacts returns [] on an invalid payload (drafter stays hermetic), values on success', async () => {
+  it('collectSourcedFacts returns [] for any payload: the drafter is now fully hermetic', async () => {
     const bad = fakeLlm([{ nope: 1 }]);
     expect(await collectSourcedFacts(bad, STORE, CFG, { title: 't', angle: 'a', keyPoints: ['k'] })).toEqual([]);
-    const good = fakeLlm([{ facts: [{ fact: 'f', sourceUrl: 'https://rspca.org.uk/x', sourceName: 'RSPCA' }] }]);
-    const facts = await collectSourcedFacts(good, STORE, CFG, { title: 't', angle: 'a', keyPoints: ['k'] });
-    expect(facts).toEqual([{ fact: 'f', sourceUrl: 'https://rspca.org.uk/x', sourceName: 'RSPCA' }]);
+    const formerlyApproved = fakeLlm([{ facts: [{ fact: 'f', sourceUrl: 'https://rspca.org.uk/x', sourceName: 'RSPCA' }] }]);
+    expect(await collectSourcedFacts(formerlyApproved, STORE, CFG, { title: 't', angle: 'a', keyPoints: ['k'] })).toEqual([]);
   });
 
   it('an empty facts list is a VALID research outcome (never pushed to invent)', () => {
     expect(validateSourcedFacts({ facts: [] })).toEqual([]);
   });
 
-  it('drops facts from non-approved domains (retailers, listicles, news shopping)', () => {
+  it('drops retailers, listicles and news shopping (unchanged), and now charities too', () => {
     const facts = validateSourcedFacts({ facts: [
       { fact: 'listicle claim', sourceUrl: 'https://www.purewow.com/family/best-cooling-dog-beds', sourceName: 'PureWow' },
       { fact: 'competitor claim', sourceUrl: 'https://www.thebarklifeco.com/blog/best-cooling-dog-beds/', sourceName: 'Bark Life' },
       { fact: 'news shopping claim', sourceUrl: 'https://www.nbcnews.com/select/shopping/x', sourceName: 'NBC Select' },
-      { fact: 'real one', sourceUrl: 'https://www.rspca.org.uk/advice', sourceName: 'RSPCA' }
+      { fact: 'formerly approved', sourceUrl: 'https://www.rspca.org.uk/advice', sourceName: 'RSPCA' }
     ] });
-    expect(facts).toEqual([{ fact: 'real one', sourceUrl: 'https://www.rspca.org.uk/advice', sourceName: 'RSPCA' }]);
+    expect(facts).toEqual([]);
   });
 
   it('discards facts served by the OpenAI floor (no web plugin = source URLs are model memory)', async () => {
@@ -586,17 +587,18 @@ describe('sourced facts (web research the drafter may cite)', () => {
 });
 
 describe('approved-source gate (non-commercial authorities only)', () => {
-  it('approves vetted charities, vet bodies and gov/academic suffixes', () => {
+  it('approves NOTHING: the allowlist is empty by policy', () => {
     for (const u of [
       'https://www.rspca.org.uk/advice/pets',
       'https://icatcare.org/hydration',
       'https://www.gov.uk/keeping-pets',
-      'https://gov.uk/x',
       'https://www.vet.cam.ac.uk/news',
       'https://www.nhs.uk/live-well',
       'https://vetmed.illinois.edu/pet-health',
-      'https://www.msdvetmanual.com/dog-owners'
-    ]) expect(isApprovedSourceUrl(u), u).toBe(true);
+      // the two that caused this: both run online shops selling competing products
+      'https://www.cats.org.uk/cats-blog/how-to-make-a-scratching-post',
+      'https://www.bluecross.org.uk/advice/cat/scratching'
+    ]) expect(isApprovedSourceUrl(u), u).toBe(false);
   });
 
   it('rejects retailers, listicles, lookalike hosts and non-http schemes', () => {
@@ -612,20 +614,23 @@ describe('approved-source gate (non-commercial authorities only)', () => {
     ]) expect(isApprovedSourceUrl(u), u).toBe(false);
   });
 
-  it('the research prompt names the same allowlist the hard filter enforces (no drift)', () => {
+  it('the research prompt tells the model there are NO external sources (no drift from the empty list)', () => {
     const line = approvedSourcesPromptLine();
-    expect(line).toContain('rspca.org.uk');
-    expect(line).toContain('.ac.uk');
-    expect(line).toContain('discards');
+    expect(line).toContain('NO EXTERNAL SOURCES');
+    expect(line).toContain('activepaw.co.uk');
+    expect(line).not.toContain('rspca.org.uk');
+    expect(line).not.toContain('cats.org.uk');
   });
 });
 
 describe('external-link scrub (the body can never link a competitor)', () => {
-  it('keeps relative, own-domain and approved-authority links untouched', () => {
-    const html = '<p><a href="/products/x">buy</a> <a href="/collections/y">shop</a> ' +
-      '<a href="https://activepaw.co.uk/blogs/guides/z">our guide</a> ' +
-      '<a href="https://www.rspca.org.uk/advice">RSPCA advice</a></p>';
-    expect(scrubExternalLinks(html)).toBe(html);
+  it('keeps relative and own-domain links, and now strips former "approved authority" links too', () => {
+    const internal = '<p><a href="/products/x">buy</a> <a href="/collections/y">shop</a> ' +
+      '<a href="https://activepaw.co.uk/blogs/guides/z">our guide</a></p>';
+    expect(scrubExternalLinks(internal)).toBe(internal);
+    // the charity link that shipped on a live article is no longer exempt
+    expect(scrubExternalLinks('<p><a href="https://www.cats.org.uk/advice">advice</a></p>'))
+      .toBe('<p>advice</p>');
   });
 
   it('unwraps a non-approved link but keeps the words when they are not an uncited statistic', () => {
@@ -644,16 +649,25 @@ describe('external-link scrub (the body can never link a competitor)', () => {
     expect(scrubExternalLinks('<p><a href="https://x.com/y"><strong>bold words</strong></a></p>')).toBe('<p><strong>bold words</strong></p>');
   });
 
-  it('draftArticle strips competitor links no matter what the model wrote', async () => {
+  const PACK: FactPack = { collectionHandle: 'pet-health', collectionTitle: 'Pet Health', collectionPath: '/collections/pet-health', products: [{ title: 'Automatic Pet Water Fountain', handle: 'fountain', path: '/products/fountain', priceGbp: 47.99, available: true }] };
+  const BRIEF = { title: GOOD_DRAFT.title, angle: 'a', targetKeyword: 'k', collectionHandle: 'pet-health', whyNow: 'w', keyPoints: ['a', 'b', 'c'] };
+
+  it('draftArticle BLOCKS the whole draft when an external link has no congruent product', async () => {
+    // "this roundup" shares no vocabulary with the fountain, so the gate cannot
+    // repoint it. A hard gate refuses rather than silently unlinking: silent
+    // repair is what let a bad allowlist survive months of "already fixed".
     const withCompetitor = { ...GOOD_DRAFT, bodyHtml: GOOD_BODY + '<p>More at <a href="https://www.thebarklifeco.com/blog/best-cooling-dog-beds/">this roundup</a>.</p>' };
-    const llm = fakeLlm([withCompetitor]);
-    const pack: FactPack = { collectionHandle: 'pet-health', collectionTitle: 'Pet Health', collectionPath: '/collections/pet-health', products: [{ title: 'Fountain', handle: 'fountain', path: '/products/fountain', priceGbp: 47.99, available: true }] };
-    const brief = { title: GOOD_DRAFT.title, angle: 'a', targetKeyword: 'k', collectionHandle: 'pet-health', whyNow: 'w', keyPoints: ['a', 'b', 'c'] };
-    const draft = await draftArticle(llm, STORE, CFG, brief, pack);
+    const draft = await draftArticle(fakeLlm([withCompetitor, withCompetitor, withCompetitor]), STORE, CFG, BRIEF, PACK);
+    expect(draft).toBeNull();
+  });
+
+  it('draftArticle REPOINTS an external link to the congruent product and keeps the claim', async () => {
+    const withCitation = { ...GOOD_DRAFT, bodyHtml: GOOD_BODY + '<p><a href="https://www.cats.org.uk/x">An automatic water fountain encourages drinking</a>.</p>' };
+    const draft = await draftArticle(fakeLlm([withCitation]), STORE, CFG, BRIEF, PACK);
     expect(draft).not.toBeNull();
-    expect(draft!.bodyHtml).not.toContain('thebarklifeco');
-    expect(draft!.bodyHtml).toContain('More at this roundup.'); // words kept, link gone
-    expect(draft!.bodyHtml).toContain('href="/products/2-2l-automatic-pet-water-fountain"'); // internal links untouched
+    expect(draft!.bodyHtml).not.toContain('cats.org.uk');
+    expect(draft!.bodyHtml).toContain('href="/products/fountain"');
+    expect(draft!.bodyHtml).toContain('An automatic water fountain encourages drinking');
   });
 });
 

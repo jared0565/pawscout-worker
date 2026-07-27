@@ -1,33 +1,34 @@
 // src/blog/sources.ts
 //
-// The APPROVED-SOURCE gate for external links in blog content. Articles exist
-// to earn bundled sales; an external link may ONLY point at a non-commercial
-// authority (veterinary bodies, animal-welfare charities, government/academic
-// pages). Retailer blogs, price-comparison pages, "best products" listicles and
-// news shopping sections compete for the same buyer and must NEVER receive a
-// link, no matter what the research LLM returns. Enforcement is DETERMINISTIC
-// (fact validator + draft body scrub + the nightly article sweep), never
-// prompt-only: prompt-only enforcement already failed once in production
-// (2026-07-10 post cited two shopping listicles and a competitor pet shop).
+// External-source policy for blog content. The policy is now: THERE ARE NO
+// APPROVED EXTERNAL SOURCES. Both lists below are deliberately empty.
+//
+// WHY (2026-07-27, owner directive). This file used to allowlist "non-commercial
+// authorities" and the premise was simply false. Two entries, cats.org.uk and
+// bluecross.org.uk, run online shops selling competing cat products (verified
+// live: cats.org.uk/shop returns 200 "Shop | Help cats and kittens while you
+// shop", shop.bluecross.org.uk returns 200 "Blue Cross Shop"), which broke this
+// file's own rule that no allowlisted domain may sell products. The result
+// shipped: an article selling scratching posts linked a charity guide on how to
+// BUILD a scratching post.
+//
+// It also explains why the issue kept being reported as fixed. The 2026-07-10
+// fix was real and it works (it stopped retailers and "best products"
+// listicles), but charities were permitted BY DESIGN, so every audit of the
+// enforcement found it healthy while the owner kept seeing external links.
+//
+// Keeping these arrays empty rather than deleting the mechanism is deliberate:
+// the research step, the prompt line and the scrub all still read from one
+// place, so the policy cannot drift back in through a single edit. The hard
+// gate that actually enforces this at publish time is src/blog/link-gate.ts.
 
-/** Hostname suffixes that are non-commercial by construction. */
-export const APPROVED_SOURCE_SUFFIXES = ['.gov', '.gov.uk', '.ac.uk', '.edu', '.nhs.uk'];
+/** Hostname suffixes approved for citation. EMPTY: no external source qualifies. */
+export const APPROVED_SOURCE_SUFFIXES: string[] = [];
 
-/** Curated non-commercial pet-care authorities. Extend deliberately; never add
- *  a domain that sells or ranks products (a "best X" page is a competitor). */
-export const APPROVED_SOURCE_DOMAINS: { domain: string; name: string }[] = [
-  { domain: 'rspca.org.uk', name: 'RSPCA' },
-  { domain: 'pdsa.org.uk', name: 'PDSA' },
-  { domain: 'bluecross.org.uk', name: 'Blue Cross' },
-  { domain: 'dogstrust.org.uk', name: 'Dogs Trust' },
-  { domain: 'cats.org.uk', name: 'Cats Protection' },
-  { domain: 'icatcare.org', name: 'International Cat Care' },
-  { domain: 'battersea.org.uk', name: 'Battersea' },
-  { domain: 'thekennelclub.org.uk', name: 'The Kennel Club' },
-  { domain: 'bva.co.uk', name: 'British Veterinary Association' },
-  { domain: 'rcvs.org.uk', name: 'Royal College of Veterinary Surgeons' },
-  { domain: 'msdvetmanual.com', name: 'MSD Veterinary Manual' }
-];
+/** Approved citation domains. EMPTY BY POLICY. Do not repopulate this list: a
+ *  "non-commercial" domain is not the test, and the last attempt at that test
+ *  admitted two shops. Blog articles link to activepaw.co.uk only. */
+export const APPROVED_SOURCE_DOMAINS: { domain: string; name: string }[] = [];
 
 /** Parsed lowercase hostname of an http(s) URL, or null for anything else
  *  (other schemes, garbage, userinfo tricks are all handled by URL parsing). */
@@ -85,6 +86,12 @@ export function scrubExternalLinks(html: string): string {
 /** The research prompt's source-policy line, derived from the allowlist so the
  *  prompt and the hard filter can never drift apart. */
 export function approvedSourcesPromptLine(): string {
+  if (APPROVED_SOURCE_DOMAINS.length === 0 && APPROVED_SOURCE_SUFFIXES.length === 0) {
+    return 'NO EXTERNAL SOURCES. Do not cite, quote, link or name any website other than activepaw.co.uk. ' +
+      'Every link you write must be a relative Active Paw path (/products/..., /collections/..., /blogs/guides/...). ' +
+      'A hard gate discards any draft containing an external link, so an outside citation cannot reach publication: do not spend a sentence on one. ' +
+      'Ground every claim in the supplied product facts instead.';
+  }
   const names = APPROVED_SOURCE_DOMAINS.map((d) => `${d.name} (${d.domain})`).join(', ');
   return 'APPROVED SOURCES ONLY: non-commercial veterinary, animal-welfare, government or academic pages. Approved domains: ' +
     names + ', plus any .gov, .gov.uk, .nhs.uk, .ac.uk or .edu page. ' +

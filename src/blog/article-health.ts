@@ -20,7 +20,7 @@ import { LlmClient } from '../llm';
 import { resolveChain } from '../llm-resolve';
 import { defaultFetch } from '../safe-fetch';
 import { groundCollection } from './ground';
-import { scrubExternalLinks } from './sources';
+import { reviewArticleLinks } from './link-gate';
 import { sanitizeBlogHtml } from './draft';
 import { htmlToText } from './quality';
 import { enrichBlogPost } from './pipeline';
@@ -163,7 +163,21 @@ export async function healArticleBody(
     samples.push(`"${opts.articleTitle}": /products/${dead} -> ${target}`);
   }
 
-  if (body !== opts.body) body = scrubExternalLinks(sanitizeBlogHtml(body));
+  // Link gate in REMEDIATE mode: these articles are already live, so an
+  // external link is repointed to a congruent product where one exists and
+  // unlinked where none does. Blocking would be wrong here, it would leave the
+  // bad link in front of customers. Runs unconditionally (not only when a dead
+  // product was healed) so a live article carrying an external link is cleaned
+  // on the next nightly sweep even if nothing else about it changed.
+  const gated = reviewArticleLinks(sanitizeBlogHtml(body), opts.candidates, [], { mode: 'remediate' });
+  if (gated.violations.length > 0) {
+    body = gated.bodyHtml;
+    for (const v of gated.violations) {
+      samples.push(`"${opts.articleTitle}": ${v.url} -> ${v.repointedTo ?? '(unlinked)'}`);
+    }
+  } else if (body !== opts.body) {
+    body = sanitizeBlogHtml(body);
+  }
   return { body, samples };
 }
 

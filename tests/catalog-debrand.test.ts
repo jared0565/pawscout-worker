@@ -98,7 +98,10 @@ describe('debrandCatalog', () => {
     expect(articleUpdates.find((u) => u.id === 'gid://a/3')).toBeUndefined(); // clean article never written
   });
 
-  it('scrubs competitor/listicle links from published bodies, keeping approved + internal links', async () => {
+  it('scrubs EVERY external link from published bodies, keeping only internal ones', async () => {
+    // 2026-07-27: the "approved authority" exemption is gone. No external host
+    // survives, charities and vet bodies included, because the old allowlist
+    // admitted two domains that run competing online shops.
     const { admin, articleUpdates } = makeFakeAdmin();
     await debrandCatalog(admin);
     const a4 = articleUpdates.find((u) => u.id === 'gid://a/4')!;
@@ -106,7 +109,8 @@ describe('debrandCatalog', () => {
     expect(a4.article.body).not.toContain('nbcnews');
     expect(a4.article.body).toContain('Dogs only have sweat glands on their paw pads.'); // words survive, link does not
     expect(a4.article.body).not.toContain('Gel pads stay cool');                          // uncited statistic dropped whole
-    expect(a4.article.body).toContain('href="https://www.rspca.org.uk/advice/dogs"');     // approved authority kept
+    expect(a4.article.body).not.toContain('rspca.org.uk');                                // formerly exempt, now stripped
+    expect(a4.article.body).toContain('RSPCA hot weather advice');                        // wording kept, link gone
     expect(a4.article.body).toContain('href="/collections/pet-accessories"');             // internal funnel kept
     expect(a4.article.image).toBeUndefined();                                             // clean alt not rewritten
   });

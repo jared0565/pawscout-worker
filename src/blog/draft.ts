@@ -13,7 +13,7 @@ import type { TenantStore } from '../tenant-store';
 import type { BlogBrief, BlogDraft, BlogFaqEntry, FactPack, SourcedFact } from './types';
 import { factPackToPrompt } from './ground';
 import { refineBlogUntilClean, htmlToText, type BlogQualityContext } from './quality';
-import { scrubExternalLinks } from './sources';
+import { reviewArticleLinks, describeVerdict, type RepointCandidate, type SourceAttribution } from './link-gate';
 
 /** Strip em/en dashes from generated HTML (house rule; the inbox sanitiser is
  *  inbox code, so the blog keeps its own one-liner). */
@@ -89,7 +89,10 @@ export function validateFaq(v: unknown): BlogFaqEntry[] {
   return out;
 }
 
-function validateBlogDraft(v: unknown, tag: string): BlogDraft | null {
+export function validateBlogDraft(
+  v: unknown, tag: string,
+  candidates: RepointCandidate[] = [], sources: SourceAttribution[] = []
+): BlogDraft | null {
   const o = v as Record<string, unknown>;
   if (typeof o !== 'object' || o === null) return null;
   const title = typeof o.title === 'string' ? o.title.trim() : '';
@@ -98,12 +101,21 @@ function validateBlogDraft(v: unknown, tag: string): BlogDraft | null {
   const metaTitle = typeof o.metaTitle === 'string' ? o.metaTitle.trim() : '';
   const metaDescription = typeof o.metaDescription === 'string' ? o.metaDescription.trim() : '';
   if (!title || !bodyHtml) return null;
-  // scrubExternalLinks runs on EVERY draft and revision: a competitor or
-  // retailer link can never survive to Shopify no matter what the LLM wrote.
+  // THE LINK HARD GATE runs on EVERY draft and revision (src/blog/link-gate.ts).
+  // An external link is repointed to a congruent product; one with no congruent
+  // product FAILS VALIDATION, so the model is asked again rather than the link
+  // being silently removed. Silent removal is what let a bad allowlist survive
+  // months of "already fixed" reports.
+  const gatedBody = reviewArticleLinks(sanitizeBlogHtml(bodyHtml), candidates, sources);
+  const gatedExcerpt = reviewArticleLinks(sanitizeBlogHtml(excerpt), candidates, sources);
+  if (!gatedBody.ok || !gatedExcerpt.ok) {
+    console.warn(`blog link gate rejected draft: ${describeVerdict(title, gatedBody.ok ? gatedExcerpt : gatedBody)}`);
+    return null;
+  }
   return {
     title: title.slice(0, 180),
-    bodyHtml: scrubExternalLinks(sanitizeBlogHtml(bodyHtml)).slice(0, 40000),
-    excerpt: scrubExternalLinks(sanitizeBlogHtml(excerpt)).slice(0, 500),
+    bodyHtml: gatedBody.bodyHtml.slice(0, 40000),
+    excerpt: gatedExcerpt.bodyHtml.slice(0, 500),
     metaTitle: (metaTitle || title).slice(0, 70),
     metaDescription: sanitizeBlogHtml(metaDescription).slice(0, 200),
     tag,
@@ -127,11 +139,20 @@ export async function draftArticle(
   const tag = brief.collectionHandle;
   const baseUser = JSON.stringify({ title: brief.title, angle: brief.angle, keyPoints: brief.keyPoints });
 
+  // Repoint targets for the link gate: the article's OWN grounded products, so
+  // a repointed link always lands on something the merchandiser already judged
+  // relevant to this brief. Source names ride along so a repointed citation
+  // keeps its attribution as plain text.
+  const candidates: RepointCandidate[] = pack.products.map((p) => ({
+    title: p.title, handle: p.handle, path: p.path, available: p.available
+  }));
+  const sources: SourceAttribution[] = facts.map((f) => ({ url: f.sourceUrl, name: f.sourceName }));
+
   const initialResult = await llm.jsonChain<BlogDraft>({
     chain, maxTokens: 4800,
     system: buildSystem(brief, factPackText, facts),
     user: baseUser,
-    validate: (v) => validateBlogDraft(v, tag)
+    validate: (v) => validateBlogDraft(v, tag, candidates, sources)
   });
   if (!initialResult.ok) { console.warn(`blog draft failed: ${initialResult.error}`); return null; }
   await store.logLlmUsage('blog-draft', initialResult.usage.model, initialResult.usage.promptTokens, initialResult.usage.completionTokens, initialResult.usage.costUsd);
@@ -141,12 +162,30 @@ export async function draftArticle(
       chain, maxTokens: 4800,
       system: buildSystem(brief, factPackText, facts, issues),
       user: JSON.stringify({ ...JSON.parse(baseUser), previousDraft: prev.bodyHtml.slice(0, 6000) }),
-      validate: (v) => validateBlogDraft(v, tag)
+      validate: (v) => validateBlogDraft(v, tag, candidates, sources)
     });
     if (!r.ok) { console.warn(`blog revise failed: ${r.error}`); return null; }
     await store.logLlmUsage('blog-revise', r.usage.model, r.usage.promptTokens, r.usage.completionTokens, r.usage.costUsd);
     return r.value;
   };
 
-  return refineBlogUntilClean(initialResult.value, revise, ctx);
+  const refined = await refineBlogUntilClean(initialResult.value, revise, ctx);
+  if (!refined) return null;
+
+  // FINAL HARD GATE. The per-attempt gate above can only police what it was
+  // handed; this one polices what is actually about to be staged, after the
+  // refine loop has had its way with the body. It is the last thing between the
+  // pipeline and Shopify: a body that still carries an external link here is
+  // NOT published, and the verdict is recorded so a recurrence is visible
+  // instead of silently repaired.
+  const finalVerdict = reviewArticleLinks(refined.bodyHtml, candidates, sources);
+  if (!finalVerdict.ok) {
+    console.error(`blog link gate BLOCKED publication: ${describeVerdict(refined.title, finalVerdict)}`);
+    await store.logLlmUsage('blog-link-gate-blocked', 'gate', 0, 0, 0).catch(() => {});
+    return null;
+  }
+  if (finalVerdict.violations.length > 0) {
+    console.warn(`blog link gate repaired links: ${describeVerdict(refined.title, finalVerdict)}`);
+  }
+  return { ...refined, bodyHtml: finalVerdict.bodyHtml };
 }
