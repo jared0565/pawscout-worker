@@ -6,6 +6,7 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "test": "vitest run",
+    "test:ci": "node scripts/test-ci.mjs",
     "typecheck": "tsc --noEmit",
     "migrate:local": "wrangler d1 migrations apply pawscout --local",
     "migrate:remote": "wrangler d1 migrations apply pawscout --remote"
