@@ -21,3 +21,9 @@ search-*-after-fix.png
 
 **/.cache/graphite/
 **/.graphite/
+
+# aramid local state -- ledger.db, fingerprint salt, caches, logs.
+# Never commit: the salt is machine-local fingerprinting material.
+.aramid/
+.graphite*
+.cache/
