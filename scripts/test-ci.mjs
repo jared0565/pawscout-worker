@@ -49,8 +49,10 @@ for (let i = 0; i < files.length; i += BATCH) batches.push(files.slice(i, i + BA
 
 console.log(`test:ci: ${files.length} test files in ${batches.length} batch(es) of up to ${BATCH}`);
 
+// NB: the `basic` reporter was REMOVED in vitest 4 and now fails at startup with
+// "Failed to load custom Reporter from basic", which reads like a suite failure.
 const runBatch = (batch) =>
-  spawnSync('npx', ['vitest', 'run', ...batch, '--reporter=basic'], { stdio: 'inherit', shell: true });
+  spawnSync('npx', ['vitest', 'run', ...batch, '--reporter=dot'], { stdio: 'inherit', shell: true });
 
 const failed = [];
 const flaky = [];
