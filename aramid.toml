@@ -20,6 +20,26 @@
 
 schema_version = 1
 
+# MEASURED, not guessed - which is the condition this file set for re-adding
+# these keys ("Re-add a real value only if a measured run needs one", below).
+#
+# After the 2026-07-28 vitest 2->4 upgrade the suite actually RUNS: 150 files /
+# 1861 tests in 275.35s wall clock. Under the old stack it died in seconds
+# without executing anything, so the 300s default was never tested against a
+# real run. It is now too tight: 275s of tests plus gitleaks, semgrep, typecheck
+# and the dependency audit overruns the budget, and aramid records the overrun
+# as `tests:tests-failed - tests timeout`, which reads like a broken suite
+# rather than a stopwatch problem.
+#
+# 900s gives the suite headroom on a slower/busier machine without letting a
+# genuinely hung run block a push indefinitely. Revisit if the suite grows: the
+# number to beat is the "Duration" line from `npx vitest run`.
+[timeouts]
+pre_push = 900
+
+[tests]
+timeout_s = 600
+
 # Top-level, and it MUST stay above every table header.
 #
 # An earlier version of this file placed this key after `[timeouts]`, so TOML
