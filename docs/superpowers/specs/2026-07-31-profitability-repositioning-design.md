@@ -238,11 +238,58 @@ All TDD. These are the load-bearing tests:
 - Restore deletes the redirect before un-archiving
 - Backfill: each of the 112 URLs resolves 200 or 301, never 404
 
+## PREREQUISITE: access scope (owner action, blocks all redirect work)
+
+Discovered 2026-07-31 while planning, verified against the 2026-04 docs:
+
+- `urlRedirectCreate` and `urlRedirectDelete` both **exist** in Admin API 2026-04.
+- Both require the **`write_online_store_navigation`** access scope.
+- **The worker does not have it.** `wrangler.toml:43` `SHOPIFY_SCOPES` and
+  `shopify.app.toml:10` both end at `write_content` / `write_markets` with no
+  navigation scope, and there is **zero** existing URL-redirect usage in `src/`.
+
+The redirect half of this design therefore cannot execute until the owner
+re-authorises the app. The re-auth flow is proven ground - `docs/INBOX_OPS.md` section 2
+documents it, and it was used to grant `write_draft_orders` + `read_customers`.
+
+**Both `read_online_store_navigation` and `write_online_store_navigation` are
+requested** in a single consent cycle. The docs confirm both scopes exist but do not
+state whether write implies read; requesting both costs nothing extra on the same
+consent screen and removes the risk of a second re-auth being discovered mid-backfill,
+when the backfill must query existing redirects to avoid minting duplicates on a re-run.
+
+The scope must be added to **both** `shopify.app.toml:10` and `wrangler.toml:43` - the
+comment at `wrangler.toml:35` requires they be kept in lockstep.
+
+### Behaviour while the scope is absent (owner decision)
+
+**Refuse every archive, and log the reason explicitly.** Nothing archives, so nothing
+new 404s. The no-movement cull and the console archive button both go dormant *by
+design* for the duration.
+
+This is deliberate and must be diagnosable: the guard logs
+`redirect unavailable: missing write_online_store_navigation` rather than a generic
+abort, so a dormant cull reads as a known gated state and not as a broken job. The
+probe reuses the pattern already proven at `src/affiliate-discounts.ts:85`, where an
+`ACCESS_DENIED` response doubles as the scope check.
+
+Note this makes the spec's "redirect creation fails -> abort" rule cover two distinct
+cases: a **transient** failure (retry next run) and a **persistent** missing scope
+(dormant until re-auth). They must be logged differently.
+
+### What is NOT blocked
+
+Four of the six components need no new scope and are fully buildable and testable
+today: the referrer index, the search gate, removing the agent's archive authority, and
+the flag split. Only redirect creation and the 112-URL backfill are gated. Splitting the
+backfill into its own change would not unblock it - it needs the same scope.
+
 ## Rollout
 
-Build and test locally -> adversarial review -> **explicit owner deploy-go** -> apply
-migration `--remote` first, then `wrangler deploy` -> verify by re-crawling a sample of
-the 112 and confirming the cull's next tick refuses a referenced product.
+Owner re-auth for the navigation scopes (above) -> build and test locally ->
+adversarial review -> **explicit owner deploy-go** -> apply migration `--remote` first,
+then `wrangler deploy` -> verify by re-crawling a sample of the 112 and confirming the
+cull's next tick refuses a referenced product.
 
 Nothing deploys without the owner's go.
 
@@ -257,3 +304,11 @@ Nothing deploys without the owner's go.
   read-time margin check and still be refused at import by the full judgment. This is
   intentional - the alternative is a slow search - but it means the two gates can
   disagree at the margin.
+- **Takedown is fully dormant until the owner re-authorises.** Between shipping this
+  and the scope grant, no product can be archived by any path. Genuinely dead stock
+  accumulates in the live catalog during that window. This is the accepted cost of never
+  minting another 404, but it is a real behaviour change and the console should make the
+  dormant state visible rather than leaving it to be inferred from an empty cull log.
+- **The backfill must be idempotent against existing redirects.** It has to query
+  current redirects and skip handles already covered, or a second run mints 112
+  duplicates. This is why the read scope is requested alongside the write scope.
