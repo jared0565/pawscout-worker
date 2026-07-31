@@ -62,6 +62,18 @@ export interface ProductLink {
   updated_at: string;
 }
 
+/** One internal surface that points at a product handle. DERIVED - rebuilt
+ *  from article bodies, the related_products metafield and syndication_ledger.
+ *  `blog` referrers are repairable (the article can be rewritten); `syndication`
+ *  and `collection` are not, so a product they reference is refused outright. */
+export interface ProductReferrer {
+  shop: string;
+  handle: string;
+  referrer_type: string;
+  referrer_id: string;
+  detected_at: string;
+}
+
 export interface KeywordDemand { keyword_norm: string; searches: number; avg_store_hits: number; avg_ghost_hits: number }
 
 export interface WarehouseRow {
@@ -961,6 +973,52 @@ export class TenantStore {
            state = ?6, updated_at = ?7`
       )
       .bind(this.shop, link.cjPid, link.shopifyProductId ?? null, link.handle ?? null, link.category ?? null, link.state, now)
+      .run();
+  }
+
+  // --- Product referrer index (2026-07-31) ---
+  //
+  // A DERIVED CACHE of which internal surfaces point at a product handle, read
+  // by archiveProductGuarded before any takedown. A MISS means "unknown" and
+  // BLOCKS the archive - it must never be read as "safe to archive".
+
+  /** Insert referrer rows for ONE handle. Idempotent per
+   *  (handle, type, id), so a nightly rebuild cannot accumulate duplicates. */
+  async putProductReferrers(
+    handle: string,
+    rows: { referrerType: string; referrerId: string }[]
+  ): Promise<void> {
+    if (!rows.length) return;
+    const now = new Date().toISOString();
+    await this.db.batch(
+      rows.map((r) =>
+        this.db
+          .prepare(
+            `INSERT INTO product_referrers (shop, handle, referrer_type, referrer_id, detected_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(shop, handle, referrer_type, referrer_id)
+             DO UPDATE SET detected_at = excluded.detected_at`
+          )
+          .bind(this.shop, handle.toLowerCase(), r.referrerType, r.referrerId, now)
+      )
+    );
+  }
+
+  async referrersFor(handle: string): Promise<ProductReferrer[]> {
+    const rs = await this.db
+      .prepare(`SELECT * FROM product_referrers WHERE shop = ?1 AND handle = ?2 ORDER BY referrer_type, referrer_id`)
+      .bind(this.shop, handle.toLowerCase())
+      .all<ProductReferrer>();
+    return rs.results ?? [];
+  }
+
+  /** Drop every row contributed by ONE source, so rebuilding that source also
+   *  REMOVES links it no longer contains. Without this the index would only
+   *  grow and would block archives forever. */
+  async clearProductReferrers(referrerType: string, referrerId: string): Promise<void> {
+    await this.db
+      .prepare(`DELETE FROM product_referrers WHERE shop = ?1 AND referrer_type = ?2 AND referrer_id = ?3`)
+      .bind(this.shop, referrerType, referrerId)
       .run();
   }
 
