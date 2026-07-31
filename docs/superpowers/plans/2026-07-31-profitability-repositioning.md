@@ -1308,7 +1308,57 @@ mask. See `migrations/0036_referrer_index_stamp.sql`, `indexUsable()` in
 
 ---
 
-### Task 12: Replace a referenced product in-article before archiving (BLOCKED BY TASK 0)
+### Task 12: Replace a referenced product in-article before archiving (BUILT 2026-08-01)
+
+**Status: complete, committed `b5278d5`. Built WIDER than specified - see below.**
+
+**THE PLAN HEALED ONE SURFACE; THERE ARE TWO.** As written this task only
+rewrote the article BODY. But a product can be referenced solely by the curated
+"Shop this guide" metafield (`blog`/`related_products`) and never appear in the
+body at all - `rebuildBlogReferrers` indexes both, so such a product IS a blog
+referrer. Healing the body alone would have archived a product that was still a
+visible pick in the guide, leaving a dead entry in the shop block: the same
+class of defect this task exists to prevent, one surface over.
+
+`getArticleForEnrich` now returns `relatedHandles` (additive; `ARTICLE_READ`
+gained the metafield) and both surfaces are repaired. The shop block prefers
+whatever the body was relinked to, so the guide and its block agree, and a swap
+that collides with an existing pick is deduped.
+
+**Refusal is the fallback, never the default.** Every uncertain case leaves the
+product live, because live is recoverable and a 404 in a published guide is not:
+no live candidates; the heal left the dead link in place; the heal UNWRAPPED the
+anchor rather than relinking (reachable, because `collectionPath` is passed as
+null and `healArticleBody` treats null as "unwrap" - removing a 404 is not the
+same as replacing a product); a non-blog referrer; or no `deps` wired at all.
+
+**`deps` are wired ONLY at the nightly cull stage**, the one caller holding an
+env, config and LLM. The owner console passes none and therefore still refuses
+rather than silently archiving.
+
+**Two properties verified at source rather than assumed:**
+- `liveCandidates` cannot relink to a dead product: `groundCollection` sets
+  `available = availableForSale && !!onlineStoreUrl` (`src/blog/ground.ts:85`),
+  so an archived or unpublished product is excluded by the 404 truth, not just
+  by stock.
+- The repair path never calls `clearProductReferrers` or `reindexArticle`
+  (grep-verified zero occurrences in `archive-guard.ts` and `jobs.ts`). Clearing
+  an article's rows mid-run would drop OTHER products' blocks and let them
+  archive unguarded. Index staleness after a repair therefore only ever
+  over-blocks, and the nightly rebuild corrects it.
+
+Ordering is pinned by a test: articles save BEFORE `setArchived`.
+
+**Verification:** 155 files / 1968 tests green, tsc clean, and
+`status: 'ARCHIVED'` appears only in `src/catalog/archive-guard.ts`.
+
+---
+
+<details>
+<summary>Original task text as planned (kept for reference)</summary>
+
+### Task 12 (as originally written)
+
 
 Blocked because its success-path tests archive, and archiving requires a redirect (Task 7), which requires the scope. The refusal-path tests could run earlier, but keep the task whole rather than splitting it.
 
@@ -1463,3 +1513,5 @@ git commit -m "feat(catalog): replace referenced products in-article before arch
 4. Owner clicks "Backfill archive redirects"
 5. Verify by re-crawling a sample of the 112 archived URLs - expect 301, never 404
 6. Verify the next cull tick logs a refusal for a referenced product rather than archiving it
+
+</details>
