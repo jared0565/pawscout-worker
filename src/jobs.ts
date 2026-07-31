@@ -59,7 +59,10 @@ import { LlmClient, curateProduct, pickHeroImage, rewriteDescription, type Curat
 import { DEFAULT_SEMANTIC, type Env, type TenantConfig, type Gates } from './types';
 import { rotateRecurringEvents } from './recurring-events';
 import { debrandCatalog } from './catalog-debrand';
-import { runArticleHealth } from './blog/article-health';
+import { runArticleHealth, healArticleBody, saveArticleBody } from './blog/article-health';
+import { getArticleForEnrich, updateArticleAssets } from './blog/article';
+import { groundCollection } from './blog/ground';
+import type { GuardDeps } from './catalog/archive-guard';
 
 export const CULL_WINDOW_DAYS = 30; // grace period AND inactivity window
 /** Engagement gate for the cull (2026-07-18): "zero events for this product"
@@ -112,6 +115,49 @@ const SET_PRODUCT_ACTIVE = `mutation pawscoutActivate($input: ProductInput!) {
 }`;
 
 /**
+ * The live repair path handed to the archive guard.
+ *
+ * Everything here is reused rather than reimplemented: `healArticleBody` brings
+ * the deterministic cage that makes an LLM relink safe (the chosen handle MUST
+ * come from the grounded candidate list), and `saveArticleBody` is the same
+ * mutation the nightly article-health pass writes with. A second relink path
+ * would drift from the first, which is exactly how this codebase ended up with
+ * three copies of the archive mutation.
+ *
+ * Candidates are grounded from the article's own funnel tag first, falling back
+ * to any configured collection that still has live products - the same walk
+ * runArticleHealth does, for the same reason: archives bury collection heads,
+ * so a narrow window comes back all-dead.
+ */
+export function buildGuardDeps(
+  env: Env, store: TenantStore, cfg: TenantConfig, admin: AdminGraphql, llm: LlmClient
+): GuardDeps {
+  return {
+    loadArticle: (articleId) => getArticleForEnrich(admin, articleId).catch(() => null),
+    saveArticle: (articleId, body) => saveArticleBody(admin, articleId, body),
+    saveRelated: (articleId, handles) => updateArticleAssets(admin, { articleId, relatedHandles: handles }),
+    async liveCandidates(excludeHandle, tags) {
+      const validHandles = Object.values(cfg.collectionMap).map((c) => c.handle).filter(Boolean);
+      // The article's own tag leads; it is the collection the guide was written
+      // for, so its products are the most congruent replacements available.
+      const order = [...tags.filter((t) => validHandles.includes(t)), ...validHandles];
+      const seen = new Set<string>();
+      for (const h of order) {
+        if (seen.has(h)) continue;
+        seen.add(h);
+        const pack = await groundCollection(admin, h).catch(() => null);
+        const usable = (pack?.products ?? [])
+          .filter((p) => p.available && p.handle.toLowerCase() !== excludeHandle.toLowerCase())
+          .map((p) => ({ title: p.title, handle: p.handle, path: p.path }));
+        if (usable.length) return usable;
+      }
+      return [];
+    },
+    healBody: (o) => healArticleBody(llm, store, cfg, o),
+  };
+}
+
+/**
  * 30-day performance cull: ARCHIVE (never delete) imported products with zero
  * qualifying events (view/atc/order) in the window. Products younger than the
  * window are exempt by the same cutoff (grace period).
@@ -125,7 +171,8 @@ const SET_PRODUCT_ACTIVE = `mutation pawscoutActivate($input: ProductInput!) {
 export async function cullStaleProducts(
   store: TenantStore,
   admin: AdminGraphql,
-  now: () => number = Date.now
+  now: () => number = Date.now,
+  deps?: GuardDeps
 ): Promise<number> {
   const cutoff = new Date(now() - CULL_WINDOW_DAYS * 86400_000).toISOString();
   // Engagement gate: with next to no store-wide traffic in the window, a
@@ -150,7 +197,7 @@ export async function cullStaleProducts(
         handle: link.handle,
         reason: 'no-movement cull',
         memo,
-      });
+      }, deps);
       if (out.ok) {
         await store.putLink({ cjPid: link.cj_pid, state: 'archived' });
         archived++;
@@ -1501,7 +1548,11 @@ export const DAILY_SHOP_STAGES: DailyStage[] = [
   // index is complete. Running it after the cull would mean every night's cull
   // reads yesterday's index - or on the first night, no index at all.
   { name: 'referrer-index', maxMs: 3 * MIN_MS, needsCj: false, run: async (ctx) => { await rebuildReferrerIndex(ctx.store, ctx.admin); } },
-  { name: 'cull', maxMs: 3 * MIN_MS, needsCj: false, run: (ctx) => cullStaleProducts(ctx.store, ctx.admin).then(() => undefined) },
+  // Deps are wired HERE and nowhere else: this is the only caller that holds an
+  // env, a config and an LLM, so it is the only one that can repair a guide
+  // rather than merely refuse. The owner console still refuses (see the
+  // no-deps branch in archiveProductGuarded).
+  { name: 'cull', maxMs: 3 * MIN_MS, needsCj: false, run: (ctx) => cullStaleProducts(ctx.store, ctx.admin, Date.now, buildGuardDeps(ctx.env, ctx.store, ctx.cfg, ctx.admin, ctx.llm)).then(() => undefined) },
   { name: 'warehouse-stock', maxMs: 10 * MIN_MS, run: async (ctx) => { await refreshWarehouseStock(ctx.store, ctx.cj!, ctx.cfg); } },
   { name: 'replenish', maxMs: 8 * MIN_MS, run: async (ctx) => { await replenishWarehouse(ctx.store, ctx.cj!, ctx.cfg, { curate: ctx.curate }); } },
   // Warm the term-library cores (hybrid cron half).

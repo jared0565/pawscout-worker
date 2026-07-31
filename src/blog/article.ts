@@ -242,19 +242,41 @@ export async function getArticlesForSyndication(admin: AdminGraphql, ids: string
 }
 
 const ARTICLE_READ = `query pawscoutArticleRead($id: ID!) {
-  article(id: $id) { id handle title image { url } body tags }
+  article(id: $id) {
+    id handle title image { url } body tags
+    metafield(namespace: "${RELATED_NS}", key: "${RELATED_KEY}") { value }
+  }
 }`;
 
 // `tags` carries the funnel collection handle (the drafter writes it as the
 // article's single tag), which a REGENERATION needs to ground the rewrite in the
 // same collection the post was originally written for.
-export interface ArticleForEnrich { id: string; handle: string; title: string; hasImage: boolean; bodyHtml: string; tags: string[]; }
+export interface ArticleForEnrich {
+  id: string; handle: string; title: string; hasImage: boolean; bodyHtml: string; tags: string[];
+  /** The "Shop this guide" picks. A product can be referenced by an article
+   *  WITHOUT appearing in its body, so anything reasoning about whether an
+   *  article still points at a product has to read this too - healing the body
+   *  alone would leave a dead pick in the shop block. */
+  relatedHandles: string[];
+}
+
+/** The shop-block metafield is a JSON array of handles. A malformed or absent
+ *  value yields [] rather than throwing: a broken metafield must not make an
+ *  article unreadable. */
+function parseRelatedHandles(raw: string | undefined): string[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((h): h is string => typeof h === 'string') : [];
+  } catch { return []; }
+}
 
 /** Read the fields enrich needs: whether a hero image already exists (never
- *  clobber an owner-set one) and the body (to see which products it links). */
+ *  clobber an owner-set one), the body (to see which products it links), and
+ *  the curated shop-block picks. */
 export async function getArticleForEnrich(admin: AdminGraphql, articleId: string): Promise<ArticleForEnrich | null> {
   const data = await admin(ARTICLE_READ, { id: articleId }) as {
-    article?: { id?: string; handle?: string; title?: string; image?: { url?: string } | null; body?: string; tags?: string[] };
+    article?: { id?: string; handle?: string; title?: string; image?: { url?: string } | null; body?: string; tags?: string[]; metafield?: { value?: string } | null };
   };
   const a = data.article;
   if (!a?.id) return null;
@@ -264,7 +286,8 @@ export async function getArticleForEnrich(admin: AdminGraphql, articleId: string
     title: a.title ?? '',
     hasImage: !!a.image?.url,
     bodyHtml: a.body ?? '',
-    tags: Array.isArray(a.tags) ? a.tags.filter((t) => typeof t === 'string') : []
+    tags: Array.isArray(a.tags) ? a.tags.filter((t) => typeof t === 'string') : [],
+    relatedHandles: parseRelatedHandles(a.metafield?.value)
   };
 }
 

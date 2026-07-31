@@ -21,6 +21,7 @@
 import type { AdminGraphql } from '../shopify-admin';
 import type { TenantStore } from '../tenant-store';
 import { findRedirect, createRedirect, pickRedirectTarget, isScopeDenial, type LivenessMemo } from './redirects';
+import type { HealCandidate } from '../blog/article-health';
 
 const ARCHIVE = `mutation pawscoutArchive($input: ProductInput!) {
   productUpdate(input: $input) { product { id } userErrors { field message } }
@@ -42,6 +43,113 @@ export type ArchiveOutcome =
  * is exactly the one whose product is still fresh enough to be culled.
  */
 export const INDEX_MAX_AGE_MS = 36 * 60 * 60 * 1000;
+
+/**
+ * The repair path, injected so the guard is testable without a network or an
+ * LLM. Absent means "this caller cannot repair", and the guard then refuses any
+ * referenced product rather than archiving one.
+ */
+export interface GuardDeps {
+  loadArticle(articleId: string): Promise<{ title: string; bodyHtml: string; tags: string[]; relatedHandles: string[] } | null>;
+  saveArticle(articleId: string, body: string): Promise<void>;
+  /** Rewrite the curated "Shop this guide" picks. */
+  saveRelated(articleId: string, handles: string[]): Promise<void>;
+  /** Live, congruent products to relink to, excluding the one being archived. */
+  liveCandidates(excludeHandle: string, tags: string[]): Promise<HealCandidate[]>;
+  healBody(opts: {
+    body: string; articleTitle: string; deadHandles: string[];
+    candidates: HealCandidate[]; collectionPath: string | null;
+  }): Promise<{ body: string; samples: string[] }>;
+}
+
+/** Distinct product handles a body links. Local copy for the same reason
+ *  referrers.ts keeps one: this must not move when the heal pass changes. */
+function bodyHandles(html: string): Set<string> {
+  const out = new Set<string>();
+  for (const m of html.matchAll(/href\s*=\s*['"]\/products\/([a-zA-Z0-9][a-zA-Z0-9-]*)['"]/g)) out.add(m[1].toLowerCase());
+  return out;
+}
+
+/**
+ * Rewrite every guide that points at `handle` so it points somewhere live.
+ *
+ * THE ORDER MATTERS AND IT IS DELIBERATE: articles are saved BEFORE the caller
+ * archives. If the archive then fails, the guides are already honest and the
+ * archive simply retries next run. The reverse would leave a published guide
+ * pointing at an archived product, which is the 404 this project exists to
+ * prevent.
+ *
+ * A product can be referenced by the BODY, by the curated shop-block picks, or
+ * both, and fixing only the body would archive a product that is still a
+ * visible pick. Both surfaces are handled, and anything that cannot be fully
+ * repaired refuses instead - the product stays live, which is always recoverable.
+ */
+async function replaceInArticles(
+  deps: GuardDeps,
+  articleIds: string[],
+  handle: string
+): Promise<{ ok: true } | { ok: false; detail: string }> {
+  for (const articleId of articleIds) {
+    const article = await deps.loadArticle(articleId);
+    // A referrer row pointing at an article that no longer exists is stale
+    // index data, not a reason to block: nothing customer-facing references
+    // the product through it.
+    if (!article) continue;
+
+    const inBody = bodyHandles(article.bodyHtml).has(handle.toLowerCase());
+    const inPicks = article.relatedHandles.some((h) => h.toLowerCase() === handle.toLowerCase());
+    if (!inBody && !inPicks) continue; // index was stale; this guide moved on already
+
+    const candidates = await deps.liveCandidates(handle, article.tags);
+    if (!candidates.length) {
+      return { ok: false, detail: `no live candidates to replace ${handle} in ${articleId}` };
+    }
+
+    let newBody = article.bodyHtml;
+    let replacement: string | null = null;
+
+    if (inBody) {
+      const healed = await deps.healBody({
+        body: article.bodyHtml,
+        articleTitle: article.title,
+        deadHandles: [handle],
+        candidates,
+        // NEVER a collection fallback here. healArticleBody treats a null path
+        // as "unwrap the anchor", and unwrapping would silently delete the
+        // shopping route from a published guide. If the LLM declines to pick,
+        // that is a refusal, not a licence to strip the link.
+        collectionPath: null,
+      });
+      const after = bodyHandles(healed.body);
+      if (after.has(handle.toLowerCase())) {
+        return { ok: false, detail: `no congruent replacement for ${handle} in ${articleId}` };
+      }
+      const added = [...after].filter((h) => !bodyHandles(article.bodyHtml).has(h));
+      if (!added.length) {
+        // The link went away without a replacement taking its place - that is
+        // the unwrap case, and it loses the shopping path.
+        return { ok: false, detail: `replacement for ${handle} in ${articleId} removed the link instead of relinking it` };
+      }
+      replacement = added[0];
+      newBody = healed.body;
+    }
+
+    let newPicks: string[] | null = null;
+    if (inPicks) {
+      // Prefer whatever the body was relinked to, so the guide and its shop
+      // block agree. Otherwise fall back to the top grounded candidate.
+      const swap = replacement ?? candidates[0].handle;
+      newPicks = article.relatedHandles
+        .map((h) => (h.toLowerCase() === handle.toLowerCase() ? swap : h))
+        .filter((h, i, a) => a.indexOf(h) === i); // a swap can duplicate an existing pick
+    }
+
+    if (inBody) await deps.saveArticle(articleId, newBody);
+    if (newPicks) await deps.saveRelated(articleId, newPicks);
+    console.log(`archive repair: ${articleId} no longer links ${handle}${replacement ? ` (now ${replacement})` : ''}`);
+  }
+  return { ok: true };
+}
 
 /**
  * Is the index trustworthy enough to read an EMPTY result as "unreferenced"?
@@ -99,7 +207,8 @@ export function writesArchivedStatus(src: string): boolean {
 export async function archiveProductGuarded(
   admin: AdminGraphql,
   store: TenantStore,
-  opts: { cjPid: string; productId: string; handle: string; reason: string; memo?: LivenessMemo }
+  opts: { cjPid: string; productId: string; handle: string; reason: string; memo?: LivenessMemo },
+  deps?: GuardDeps
 ): Promise<ArchiveOutcome> {
   // BEFORE the lookup, not after: an empty result is only meaningful when the
   // index that produced it was complete. Checking this second would let a
@@ -111,10 +220,32 @@ export async function archiveProductGuarded(
   }
 
   const refs = await store.referrersFor(opts.handle);
-  if (refs.length) {
-    const detail = `referenced by ${refs.map((r) => `${r.referrer_type}:${r.referrer_id}`).join(', ')}`;
+
+  // A referrer we cannot edit is final. Only `blog` is ours to rewrite; any
+  // other type would mean a surface outside our control still points at the
+  // product, and no amount of repair on our side fixes that.
+  const unrepairable = refs.filter((r) => r.referrer_type !== 'blog');
+  if (unrepairable.length) {
+    const detail = `referenced by ${unrepairable.map((r) => `${r.referrer_type}:${r.referrer_id}`).join(', ')}`;
     console.log(`archive refused for ${opts.handle} (${opts.reason}): ${detail}`);
     return { ok: false, refusal: 'referenced', detail };
+  }
+
+  const blogRefs = refs.filter((r) => r.referrer_type === 'blog');
+  if (blogRefs.length) {
+    // Without deps there is no way to rewrite anything, so refusing is the only
+    // honest answer. This is the path the owner console takes today: it can
+    // still refuse, it just cannot repair.
+    if (!deps) {
+      const detail = `referenced by ${blogRefs.map((r) => `blog:${r.referrer_id}`).join(', ')} (no repair path wired for this caller)`;
+      console.log(`archive refused for ${opts.handle} (${opts.reason}): ${detail}`);
+      return { ok: false, refusal: 'referenced', detail };
+    }
+    const replaced = await replaceInArticles(deps, blogRefs.map((r) => r.referrer_id), opts.handle);
+    if (!replaced.ok) {
+      console.log(`archive refused for ${opts.handle} (${opts.reason}): ${replaced.detail}`);
+      return { ok: false, refusal: 'no-replacement', detail: replaced.detail };
+    }
   }
 
   // THE REDIRECT COMES FIRST. Archiving before the redirect exists opens a

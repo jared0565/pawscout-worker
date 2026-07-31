@@ -206,6 +206,22 @@ const ARTICLE_BODY_UPDATE = `mutation pawscoutHealthArticleUpdate($id: ID!, $art
 }`;
 
 /**
+ * Write a healed body back. Exported so the archive guard reuses this exact
+ * mutation instead of declaring a second one - this repo already paid for three
+ * copies of the archive mutation drifting apart, and a body write is the same
+ * kind of thing.
+ *
+ * Throws on userErrors so a caller cannot treat a rejected write as a success.
+ */
+export async function saveArticleBody(admin: AdminGraphql, articleId: string, body: string): Promise<void> {
+  const r = await admin(ARTICLE_BODY_UPDATE, { id: articleId, article: { body } }) as {
+    articleUpdate?: { userErrors?: { message: string }[] };
+  };
+  const errs = r.articleUpdate?.userErrors ?? [];
+  if (errs.length) throw new Error(errs.map((e) => e.message).join('; '));
+}
+
+/**
  * The full pass: detect dead product links in every article, heal bodies, and
  * refresh the shop-block metafield (via the existing enrich flow) when its
  * curated picks are dead. Never throws: per-article failures collect into

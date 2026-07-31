@@ -277,3 +277,140 @@ describe('redirect-before-archive', () => {
     expect(f.calls).toEqual([]);
   });
 });
+
+// TASK 12: the owner's central requirement - a product mentioned in a guide is
+// REPLACED with a live product, not merely refused. Refusal is the fallback,
+// never the default, and the product stays live whenever repair is impossible.
+describe('replace-in-article before archiving', () => {
+  let store: TenantStore;
+  beforeEach(async () => { store = new TenantStore(env.DB, SHOP); await freshIndex(store); });
+
+  const ART = 'gid://shopify/Article/1';
+
+  function deps(over: Partial<{
+    body: string; picks: string[]; candidates: { title: string; handle: string; path: string }[];
+    healed: string; missingArticle: boolean;
+  }> = {}) {
+    const savedBodies: string[] = [];
+    const savedPicks: string[][] = [];
+    const d = {
+      loadArticle: async () => over.missingArticle ? null : ({
+        title: 'Guide A',
+        bodyHtml: over.body ?? '<p><a href="/products/old-tree">tall tree</a></p>',
+        tags: ['pet-toys'],
+        relatedHandles: over.picks ?? [],
+      }),
+      saveArticle: async (_id: string, body: string) => { savedBodies.push(body); },
+      saveRelated: async (_id: string, h: string[]) => { savedPicks.push(h); },
+      liveCandidates: async () => over.candidates ?? [{ title: 'New Tree', handle: 'new-tree', path: '/products/new-tree' }],
+      healBody: async () => ({ body: over.healed ?? '<p><a href="/products/new-tree">tall tree</a></p>', samples: [] }),
+    };
+    return { d, savedBodies, savedPicks };
+  }
+
+  const go = (admin: never, d?: unknown, handle = 'old-tree') => archiveProductGuarded(admin, store, {
+    cjPid: '20', productId: 'gid://shopify/Product/20', handle, reason: 'cull',
+  }, d as never);
+
+  it('REPLACES the product in the article body, then archives', async () => {
+    await store.putProductReferrers('old-tree', [{ referrerType: 'blog', referrerId: ART }]);
+    const f = redirectAdmin();
+    const x = deps();
+    const out = await go(f.admin, x.d);
+    expect(out.ok).toBe(true);
+    expect(x.savedBodies[0]).toContain('/products/new-tree');
+    expect(x.savedBodies[0]).not.toContain('/products/old-tree');
+  });
+
+  it('saves the article BEFORE it archives', async () => {
+    // If the archive later fails the guide is already honest and the archive
+    // retries. The reverse order leaves a live guide pointing at a 404.
+    await store.putProductReferrers('old-tree', [{ referrerType: 'blog', referrerId: ART }]);
+    const order: string[] = [];
+    const f = redirectAdmin();
+    const inner = f.admin as unknown as (a: string, b?: unknown) => Promise<unknown>;
+    const admin = (async (q: string, v?: unknown) => { if (q.includes('productUpdate')) order.push('archive'); return inner(q, v); }) as never;
+    const x = deps();
+    const d = { ...x.d, saveArticle: async () => { order.push('save-article'); } };
+    await go(admin, d);
+    expect(order).toEqual(['save-article', 'archive']);
+  });
+
+  it('REFUSES when there are no live candidates - the product stays live', async () => {
+    await store.putProductReferrers('only-tree', [{ referrerType: 'blog', referrerId: ART }]);
+    const x = deps({ body: '<a href="/products/only-tree">t</a>', candidates: [] });
+    const d = { ...x.d, saveArticle: async () => { throw new Error('must not save'); } };
+    const out = await go(redirectAdmin().admin, d, 'only-tree');
+    expect(out.ok).toBe(false);
+    if (!out.ok) expect(out.refusal).toBe('no-replacement');
+  });
+
+  it('REFUSES when the heal leaves the dead link in place', async () => {
+    await store.putProductReferrers('old-tree', [{ referrerType: 'blog', referrerId: ART }]);
+    const x = deps({ healed: '<a href="/products/old-tree">tall tree</a>' });
+    const out = await go(redirectAdmin().admin, x.d);
+    expect(out.ok).toBe(false);
+    if (!out.ok) expect(out.refusal).toBe('no-replacement');
+  });
+
+  it('REFUSES when the heal UNWRAPPED the link instead of relinking it', async () => {
+    // Losing the anchor silently strips the shopping route out of a published
+    // guide. Removing the 404 is not the same as replacing the product.
+    await store.putProductReferrers('old-tree', [{ referrerType: 'blog', referrerId: ART }]);
+    const x = deps({ healed: '<p>tall tree</p>' });
+    const out = await go(redirectAdmin().admin, x.d);
+    expect(out.ok).toBe(false);
+    if (!out.ok) expect(out.detail).toContain('removed the link');
+  });
+
+  it('replaces a curated SHOP-BLOCK pick even when the body never linked it', async () => {
+    // A product can be referenced ONLY by the metafield. Healing the body alone
+    // would archive a product that is still a visible pick in the guide.
+    await store.putProductReferrers('pick-only', [{ referrerType: 'blog', referrerId: ART }]);
+    const x = deps({ body: '<p>no product links here</p>', picks: ['pick-only', 'keep-me'] });
+    const out = await go(redirectAdmin().admin, x.d, 'pick-only');
+    expect(out.ok).toBe(true);
+    expect(x.savedBodies).toEqual([]);
+    expect(x.savedPicks[0]).toEqual(['new-tree', 'keep-me']);
+  });
+
+  it('does not duplicate a pick when the replacement is already in the block', async () => {
+    await store.putProductReferrers('pick-only', [{ referrerType: 'blog', referrerId: ART }]);
+    const x = deps({ body: '<p>none</p>', picks: ['pick-only', 'new-tree'] });
+    await go(redirectAdmin().admin, x.d, 'pick-only');
+    expect(x.savedPicks[0]).toEqual(['new-tree']);
+  });
+
+  it('a STALE referrer row does not block - the guide already moved on', async () => {
+    await store.putProductReferrers('old-tree', [{ referrerType: 'blog', referrerId: ART }]);
+    const x = deps({ body: '<p>this guide links nothing</p>', picks: [] });
+    const out = await go(redirectAdmin().admin, x.d);
+    expect(out.ok).toBe(true);
+    expect(x.savedBodies).toEqual([]);
+  });
+
+  it('a DELETED article does not block', async () => {
+    await store.putProductReferrers('old-tree', [{ referrerType: 'blog', referrerId: ART }]);
+    const out = await go(redirectAdmin().admin, deps({ missingArticle: true }).d);
+    expect(out.ok).toBe(true);
+  });
+
+  it('refuses a NON-BLOG referrer outright - we cannot edit an off-platform post', async () => {
+    await store.putProductReferrers('posted-item', [{ referrerType: 'syndication', referrerId: 'syn-1' }]);
+    const out = await go(redirectAdmin().admin, deps().d, 'posted-item');
+    expect(out.ok).toBe(false);
+    if (!out.ok) expect(out.refusal).toBe('referenced');
+  });
+
+  it('WITHOUT deps a referenced product is still refused, never archived', async () => {
+    // The owner console has no repair path. It must not silently archive.
+    await store.putProductReferrers('old-tree', [{ referrerType: 'blog', referrerId: ART }]);
+    const f = redirectAdmin();
+    const out = await archiveProductGuarded(f.admin, store, {
+      cjPid: '20', productId: 'gid://shopify/Product/20', handle: 'old-tree', reason: 'console',
+    });
+    expect(out.ok).toBe(false);
+    if (!out.ok) expect(out.refusal).toBe('referenced');
+    expect(f.calls).toEqual([]);
+  });
+});
