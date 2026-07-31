@@ -5,6 +5,7 @@ import { retailPriceGbp } from '../pricing';
 import { getKeywordMeta, type LlmClient } from '../llm';
 import { getExpansions } from '../semantic/library';
 import { bestLocalQty, localWarehousesFor } from '../local-markets';
+import { productNetAfterAds } from '../profitability';
 
 export const CACHE_TTL_DAYS = 30; // PS retention promise: cached supplier data lives 30 days
 
@@ -252,6 +253,39 @@ export function liveCjPasses(item: CjSearchItem, gates: Gates, keyword: string):
   return relevanceMatch(keyword, item.nameEn, gates.relevance);
 }
 
+/**
+ * Read-time profitability gate for ghost cards (2026-07-31).
+ *
+ * A ghost card is a supplier product that is NOT in the catalog, so this gate
+ * structurally cannot touch an inventory product - live catalog results in
+ * storefront search come from Shopify itself. That matters: the owner's rule is
+ * that once a product is in inventory the profitability agent leaves it alone.
+ *
+ * DETERMINISTIC AND NETWORK-FREE BY DESIGN. It runs on a live shopper request,
+ * so it must not call eBay or an LLM; it reuses productNetAfterAds, the SAME
+ * floor logic the import entry gate applies, so a card we would refuse to
+ * import is never put in front of a customer.
+ *
+ * FAILS OPEN. A null result means no usable price, and absence of data is not a
+ * profitability failure - the same stance import.ts takes.
+ *
+ * Freight is often unknown at search time, which makes this check slightly
+ * optimistic; the FULL judgment still runs at import if the shopper clicks, so
+ * the two can disagree at the margin. That is accepted (see the design spec's
+ * residual risks) and is the price of a search that stays fast.
+ */
+export function ghostCardClearsFloor(
+  item: { sellPriceUsd: number },
+  cfg: TenantConfig,
+  freightUsd?: number
+): boolean {
+  const profit = cfg.profit;
+  if (!profit?.enabled) return true; // gate dormant - unchanged behaviour
+  const net = productNetAfterAds([{ sellPriceUsd: item.sellPriceUsd }], cfg.pricing, freightUsd, profit);
+  if (!net) return true;             // no usable price: fail open, do not hide
+  return !net.belowFloor;
+}
+
 export function passesGates(item: CjSearchItem, gates: Gates, keyword: string): boolean {
   return (
     item.listedNum >= gates.popularityFloor &&
@@ -355,6 +389,12 @@ export async function searchBackfill(
     // ghost card with the stored freight so the preview matches the eventual PDP.
     let freightUsd = 0;
     try { freightUsd = (JSON.parse(r.detail) as { freightUsd?: number }).freightUsd ?? 0; } catch { /* legacy row */ }
+    // Profitability gate on GHOST cards only (2026-07-31). An `imported` card is
+    // a live catalog product and must NEVER be re-judged here - once a product
+    // is in inventory the profitability agent leaves it alone, which is the
+    // whole point of the repositioning. Only not-yet-imported suggestions are
+    // gated, and only on the deterministic no-network check.
+    if (!imported && !ghostCardClearsFloor({ sellPriceUsd: r.price_usd }, cfg, freightUsd)) continue;
     cards.push({
       pid: r.cj_pid,
       title: r.title,
@@ -402,6 +442,11 @@ export async function searchBackfill(
       if (cards.length >= limit) break;
       const link = links.get(item.pid);
       const imported = link?.state === 'imported' && link.handle;
+      // Ghost cards only - see the note on the warehouse loop above. A live
+      // catalog product surfacing here is never re-judged. Freight is unknown on
+      // the raw live feed, so this check is slightly optimistic; the full
+      // judgment still runs at import if the shopper clicks.
+      if (!imported && !ghostCardClearsFloor({ sellPriceUsd: item.sellPriceUsd }, cfg)) continue;
       cards.push({
         pid: item.pid,
         title: item.nameEn,
