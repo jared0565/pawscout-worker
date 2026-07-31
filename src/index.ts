@@ -49,7 +49,7 @@ import { productInventoryItems } from './proxy/inventory';
 import { readDeliveryConfig, syncSignatureProfiles } from './shipping/delivery-profile';
 import { resolveShipConfig } from './shipping/ship-config';
 import { resolveLogistics } from './logistics';
-import { runDailyMaintenance, resumeDailyMaintenance, runMarketVisibilityReconcile, runProfitAgentSweep, restoreCulledProducts, syncStoreInventory, refillCollections } from './jobs';
+import { runDailyMaintenance, resumeDailyMaintenance, runMarketVisibilityReconcile, runProfitAgentSweep, restoreCulledProducts, syncStoreInventory, refillCollections, backfillArchivedRedirects } from './jobs';
 import { maybeAffiliatePayoutReminder } from './affiliate-payout-reminder';
 import { debrandCatalog } from './catalog-debrand';
 import { runOrderPipeline, runOrderPipelineForShop } from './fulfil-run';
@@ -398,6 +398,23 @@ app.post('/api/blog/enrich', async (c) => {
 // gated pipeline while keeping its handle, so the live URL survives. Requires an
 // explicit articleId: there is no "most recent" default, because regenerating
 // the wrong published guide is not something to do by accident.
+// Redirect backfill (2026-07-31): give every already-archived product a redirect
+// so it stops 404ing. Owner-triggered and re-runnable; DRY RUN unless the caller
+// explicitly sends {live: true}, because this writes the storefront's routing
+// table. The dry run returns sample targets so the owner can sanity-check where
+// the dead URLs are about to point before committing.
+app.post('/api/catalog/backfill-redirects', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  const store = new TenantStore(c.env.DB, s);
+  const admin = await adminForShop(c.env, store).catch(() => null);
+  if (!admin) return c.json({ ok: false, error: 'Shopify connection unavailable.' }, 400);
+  let body: { live?: unknown; limit?: unknown } = {};
+  try { body = await c.req.json(); } catch {}
+  const limit = typeof body.limit === 'number' && body.limit > 0 ? Math.min(body.limit, 500) : undefined;
+  const r = await backfillArchivedRedirects(store, admin, { dryRun: body.live !== true, ...(limit ? { limit } : {}) });
+  return c.json({ ok: true, ...r });
+});
+
 app.post('/api/blog/regenerate', async (c) => {
   const s = await shopOf(c); if (typeof s !== 'string') return s;
   const store = new TenantStore(c.env.DB, s);

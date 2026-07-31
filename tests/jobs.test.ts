@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
-import { cullStaleProducts, restoreCulledProducts, runProfitAgentSweep, refillCollections, syncStoreInventory, resyncLowStockInventory, seedSemanticLibrary, sellableQty, CULL_MIN_WINDOW_EVENTS, CULL_WINDOW_DAYS, LOW_STOCK_BAND, LOW_STOCK_RESERVE } from '../src/jobs';
+import { cullStaleProducts, restoreCulledProducts, backfillArchivedRedirects, runProfitAgentSweep, refillCollections, syncStoreInventory, resyncLowStockInventory, seedSemanticLibrary, sellableQty, CULL_MIN_WINDOW_EVENTS, CULL_WINDOW_DAYS, LOW_STOCK_BAND, LOW_STOCK_RESERVE } from '../src/jobs';
 import { TenantStore } from '../src/tenant-store';
 import { DEFAULT_GATES, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, DEFAULT_INBOX, DEFAULT_SEMANTIC, DEFAULT_PROFIT, type TenantConfig } from '../src/types';
 import type { CjClient, CjDetail } from '../src/cj';
@@ -779,5 +779,83 @@ describe('restoreCulledProducts redirect cleanup', () => {
     const r = await restoreCulledProducts(store, f.admin, since());
     expect(r.restored).toBe(1);
     expect(f.calls).toEqual(['activate']);
+  });
+});
+
+// THE REPAIR HALF. Task 7 stops new 404s; this clears the 112 already in
+// Google's index. It is owner-triggered and therefore double-clickable, so
+// idempotence is not a nicety.
+describe('backfillArchivedRedirects', () => {
+  let store: TenantStore;
+  beforeEach(async () => { store = new TenantStore(env.DB, SHOP); });
+
+  function fakeShopify() {
+    const existing = new Set<string>();
+    const created: string[] = [];
+    const admin = (async (q: string, v?: Record<string, unknown>) => {
+      if (q.includes('urlRedirectCreate')) {
+        const path = String((v?.urlRedirect as { path: string }).path);
+        created.push(path); existing.add(path);
+        return { urlRedirectCreate: { urlRedirect: { id: 'gid://r' }, userErrors: [] } };
+      }
+      if (q.includes('urlRedirects')) {
+        const path = String(v?.q ?? '').replace(/^path:/, '');
+        return { urlRedirects: { nodes: existing.has(path) ? [{ id: 'gid://r', path, target: '/x' }] : [] } };
+      }
+      if (q.includes('collections')) return { collections: { nodes: [] } };
+      if (q.includes('products')) return { products: { nodes: [] } };
+      return {};
+    }) as never;
+    return { admin, created, existing };
+  }
+
+  it('DEFAULTS TO DRY RUN - the safe outcome is the one you get by forgetting', async () => {
+    await store.putLink({ cjPid: 'a1', state: 'archived', shopifyProductId: 'gid://p/1', handle: 'dead-one' });
+    const f = fakeShopify();
+    const r = await backfillArchivedRedirects(store, f.admin);
+    expect(r.dryRun).toBe(true);
+    expect(r.created).toBe(1);       // reports what it WOULD do
+    expect(f.created).toEqual([]);   // but writes nothing
+  });
+
+  it('is IDEMPOTENT - a second live run creates nothing', async () => {
+    await store.putLink({ cjPid: 'a1', state: 'archived', shopifyProductId: 'gid://p/1', handle: 'dead-one' });
+    const f = fakeShopify();
+    const first = await backfillArchivedRedirects(store, f.admin, { dryRun: false });
+    expect(first.created).toBe(1);
+    const second = await backfillArchivedRedirects(store, f.admin, { dryRun: false });
+    expect(second.created).toBe(0);
+    expect(second.skipped).toBe(1);
+    expect(f.created).toEqual(['/products/dead-one']);
+  });
+
+  it('skips live products entirely - only archived links are 404ing', async () => {
+    await store.putLink({ cjPid: 'live', state: 'imported', shopifyProductId: 'gid://p/2', handle: 'alive' });
+    const f = fakeShopify();
+    const r = await backfillArchivedRedirects(store, f.admin, { dryRun: false });
+    expect(r.scanned).toBe(0);
+    expect(f.created).toEqual([]);
+  });
+
+  it('one bad row does not abandon the rest', async () => {
+    await store.putLink({ cjPid: 'a1', state: 'archived', shopifyProductId: 'gid://p/1', handle: 'boom' });
+    await store.putLink({ cjPid: 'a2', state: 'archived', shopifyProductId: 'gid://p/2', handle: 'fine' });
+    const admin = (async (q: string, v?: Record<string, unknown>) => {
+      const path = String(v?.q ?? '').replace(/^path:/, '');
+      if (q.includes('urlRedirects') && path === '/products/boom') throw new Error('rate limited');
+      if (q.includes('urlRedirects')) return { urlRedirects: { nodes: [] } };
+      if (q.includes('urlRedirectCreate')) return { urlRedirectCreate: { urlRedirect: { id: 'g' }, userErrors: [] } };
+      return { collections: { nodes: [] }, products: { nodes: [] } };
+    }) as never;
+    const r = await backfillArchivedRedirects(store, admin, { dryRun: false });
+    expect(r.failed).toBe(1);
+    expect(r.created).toBe(1);
+  });
+
+  it('reports sample targets so the owner can sanity-check before going live', async () => {
+    await store.putLink({ cjPid: 'a1', state: 'archived', shopifyProductId: 'gid://p/1', handle: 'dead-one' });
+    const f = fakeShopify();
+    const r = await backfillArchivedRedirects(store, f.admin);
+    expect(r.samples[0]).toContain('/products/dead-one -> ');
   });
 });

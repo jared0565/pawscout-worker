@@ -588,6 +588,27 @@ export class TenantStore {
     return row?.n ?? 0;
   }
 
+  /**
+   * Every archived product that still has a handle, oldest first.
+   *
+   * These are the 404s: 112 of them measured 2026-07-31, all with handles.
+   * Unlike listCulledArchivedLinks this deliberately does NOT filter by who
+   * archived it or when - an owner-era archive 404s exactly as loudly as a
+   * cull-era one, and Google does not care which of us did it.
+   */
+  async listArchivedLinksWithHandles(limit = 500): Promise<ProductLink[]> {
+    const { results } = await this.db
+      .prepare(
+        `SELECT * FROM product_links
+          WHERE shop = ?1 AND state = 'archived' AND handle IS NOT NULL AND handle != ''
+          ORDER BY updated_at ASC
+          LIMIT ?2`
+      )
+      .bind(this.shop, limit)
+      .all<ProductLink>();
+    return results ?? [];
+  }
+
   /** Archived links attributable to the performance CULL, not the profit agent
    *  and not the owner: archived since `sinceIso` with NO real (dry_run = 0)
    *  agent drop on record. The owner's console archives predate the cutoff the

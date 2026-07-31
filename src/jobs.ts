@@ -6,7 +6,7 @@ import { liveCjPasses, normalizeKeyword, CACHE_TTL_DAYS, isLikelyPetProduct, tit
 import { bestLocalQty, localWarehousesFor, HOME_MARKET_WAREHOUSES } from './local-markets';
 import { archiveProductGuarded } from './catalog/archive-guard';
 import { rebuildReferrerIndex } from './catalog/referrers';
-import { findRedirect, deleteRedirect, type LivenessMemo } from './catalog/redirects';
+import { findRedirect, createRedirect, deleteRedirect, pickRedirectTarget, type LivenessMemo } from './catalog/redirects';
 
 /** US-lane sourcing keywords (2026-07-07): bulky / high-ticket niches ONLY.
  *  The generic SEED_KEYWORDS produced a 0-for-35 street-parity pass rate for
@@ -174,6 +174,50 @@ export async function cullStaleProducts(
  * re-enter the profit agent's walk, so a genuine loser is re-judged on
  * evidence, not resurrected permanently. Owner-triggered (console).
  */
+/**
+ * Give every already-archived product a redirect so it stops 404ing.
+ *
+ * This is the repair half of the work. Task 7 stops NEW 404s being minted;
+ * this clears the ones already in Google's index - 112 archived links measured
+ * 2026-07-31, all with handles.
+ *
+ * Re-runnable by design rather than one-shot: findRedirect is consulted first,
+ * so a second run creates nothing. That matters because the owner triggers it
+ * by hand and a double-click must not mint duplicates.
+ *
+ * `dryRun` defaults to TRUE. This writes to the live storefront's routing
+ * table, so the safe outcome is the one you get by forgetting the flag.
+ *
+ * One liveness memo spans the whole run: the 112 share a handful of categories,
+ * so each collection is checked once rather than 112 times.
+ */
+export async function backfillArchivedRedirects(
+  store: TenantStore,
+  admin: AdminGraphql,
+  opts: { limit?: number; dryRun?: boolean } = {}
+): Promise<{ scanned: number; created: number; skipped: number; failed: number; dryRun: boolean; samples: string[] }> {
+  const dryRun = opts.dryRun !== false;
+  const links = await store.listArchivedLinksWithHandles(opts.limit ?? 500);
+  const memo: LivenessMemo = new Map();
+  let created = 0, skipped = 0, failed = 0;
+  const samples: string[] = [];
+  for (const link of links) {
+    const path = `/products/${link.handle}`;
+    try {
+      if (await findRedirect(admin, path)) { skipped++; continue; }
+      const target = await pickRedirectTarget(store, admin, link.handle!, memo);
+      if (!dryRun) await createRedirect(admin, path, target);
+      created++;
+      if (samples.length < 12) samples.push(`${path} -> ${target}`);
+    } catch (e) {
+      failed++;
+      console.warn(`redirect backfill failed for ${link.cj_pid} (${path}): ${(e as Error).message}`);
+    }
+  }
+  console.log(`redirect backfill (${dryRun ? 'DRY RUN' : 'live'}): ${created} created, ${skipped} already had one, ${failed} failed of ${links.length}`);
+  return { scanned: links.length, created, skipped, failed, dryRun, samples };
+}
+
 export async function restoreCulledProducts(
   store: TenantStore,
   admin: AdminGraphql,
