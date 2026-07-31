@@ -62,6 +62,37 @@ export async function probeGrantedScopes(admin: AdminGraphql): Promise<ScopeProb
   }
 }
 
+/** Validated against the pinned 2026-04 Admin schema (shopify.dev, 2026-07-31):
+ *  urlRedirects(first: Int) -> UrlRedirectConnection, nodes are UrlRedirect. */
+const REDIRECT_READ = `query pawscoutRedirectReadProbe { urlRedirects(first: 1) { nodes { id } } }`;
+
+/**
+ * CAN THE TOKEN ACTUALLY USE THE SCOPE, as opposed to the installation merely
+ * claiming it?
+ *
+ * These are different facts and the difference is load-bearing here.
+ * `accessScopes` reports the INSTALLATION's scope set, which the Dev Dashboard
+ * config drives. The worker's offline token was minted 2026-07-03 and
+ * `ensureInstalled` never re-exchanges it, so a token that predates the grant
+ * could in principle keep its old, narrower authority while the installation
+ * reports the new scopes. Trusting `accessScopes` alone would unblock the
+ * redirect work onto a mutation that then 403s.
+ *
+ * This settles it with a real call. It is READ-ONLY on purpose: the read scope
+ * was granted in the same action as the write, and the token predates BOTH, so
+ * a successful read proves the token's grant expanded server-side. Proving it
+ * without writing anything to the live store is worth more than the marginal
+ * certainty a throwaway redirect would add.
+ */
+export async function probeRedirectRead(admin: AdminGraphql): Promise<{ ok: true } | { ok: false; error: string }> {
+  try {
+    await admin(REDIRECT_READ);
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: (e as Error).message };
+  }
+}
+
 /** Which of `required` are absent from `granted`, preserving the required order. */
 export function missingScopes(granted: string[], required: readonly string[]): string[] {
   const have = new Set(granted);
@@ -110,12 +141,22 @@ export async function runScopeWatch(env: Env): Promise<void> {
         continue;
       }
       const missing = missingScopes(probe.granted, REDIRECT_SCOPES);
+      let verdict: string;
       if (missing.length) {
+        verdict = `missing:${missing.join(',')}`;
         console.warn(`scope watch ${shop}: archive redirects BLOCKED, missing ${missing.join(', ')} - the no-movement cull refuses every archive. Granted: ${probe.granted.join(', ')}`);
       } else {
-        console.log(`scope watch ${shop}: archive redirect scopes GRANTED. Granted: ${probe.granted.join(', ')}`);
+        // The installation claims both scopes. Confirm the TOKEN can use them
+        // before anyone treats the redirect work as unblocked.
+        const usable = await probeRedirectRead(makeAdminGraphql(shop, accessToken));
+        verdict = usable.ok ? 'granted+usable' : `granted-but-unusable:${usable.error}`;
+        if (usable.ok) {
+          console.log(`scope watch ${shop}: archive redirect scopes GRANTED and the token can USE them (live urlRedirects read succeeded). Granted: ${probe.granted.join(', ')}`);
+        } else {
+          console.warn(`scope watch ${shop}: scopes are granted on the INSTALLATION but the token cannot use them: ${usable.error}. The token predates the grant and may need a re-exchange.`);
+        }
       }
-      await store.putSearchCache(SCOPE_WATCH_KEY, missing.length ? `missing:${missing.join(',')}` : 'granted', SCOPE_WATCH_TTL_DAYS);
+      await store.putSearchCache(SCOPE_WATCH_KEY, verdict, SCOPE_WATCH_TTL_DAYS);
     } catch (e) {
       console.warn(`scope watch failed for ${shop}: ${(e as Error).message}`);
     }

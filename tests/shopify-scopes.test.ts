@@ -59,3 +59,28 @@ describe('runScopeWatch', () => {
       .resolves.toBeUndefined();
   });
 });
+
+describe('probeRedirectRead', () => {
+  it('reports success when the token can read redirects', async () => {
+    const { probeRedirectRead } = await import('../src/shopify-scopes');
+    expect(await probeRedirectRead((async () => ({ urlRedirects: { nodes: [] } })) as never)).toEqual({ ok: true });
+  });
+
+  it('reports the ACCESS DENIED reason instead of throwing', async () => {
+    // The case that matters: the installation claims the scope but the token
+    // predates the grant. Distinguishing this from "scope missing" is the whole
+    // reason this probe exists alongside the accessScopes read.
+    const { probeRedirectRead } = await import('../src/shopify-scopes');
+    const r = await probeRedirectRead((async () => { throw new Error('ACCESS_DENIED: read_online_store_navigation'); }) as never);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain('read_online_store_navigation');
+  });
+
+  it('makes no write - the probe must not touch the live store', async () => {
+    const { probeRedirectRead } = await import('../src/shopify-scopes');
+    let sent = '';
+    await probeRedirectRead((async (q: string) => { sent = q; return {}; }) as never);
+    expect(sent).toContain('query ');
+    expect(sent).not.toMatch(/mutation|urlRedirectCreate|urlRedirectDelete/);
+  });
+});
