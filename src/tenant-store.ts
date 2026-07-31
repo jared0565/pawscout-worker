@@ -1042,6 +1042,37 @@ export class TenantStore {
       .run();
   }
 
+  /**
+   * Most-engaged live product in a category, for redirect targeting: most
+   * product_events in 30 days, ties broken by the most recently created link.
+   *
+   * `exclude` is the handle being archived - without it the top result can be
+   * the dying product itself, which would redirect a URL to itself. Filtered in
+   * SQL rather than by the caller so no call site can forget it.
+   *
+   * state='imported' means WE think it is live; the caller still confirms
+   * onlineStoreUrl against Shopify, because an unpublished product carries that
+   * state too.
+   */
+  async topLiveHandleInCategory(category: string, exclude?: string): Promise<string | null> {
+    const since = new Date(Date.now() - 30 * 86400_000).toISOString();
+    const row = await this.db
+      .prepare(
+        `SELECT pl.handle AS h, COUNT(pe.id) AS n
+           FROM product_links pl
+           LEFT JOIN product_events pe
+             ON pe.shop = pl.shop AND pe.cj_pid = pl.cj_pid AND pe.created_at >= ?3
+          WHERE pl.shop = ?1 AND pl.state = 'imported' AND pl.category = ?2
+            AND pl.handle IS NOT NULL AND pl.handle != ?4
+          GROUP BY pl.handle
+          ORDER BY n DESC, pl.created_at DESC
+          LIMIT 1`
+      )
+      .bind(this.shop, category, since, exclude ?? '')
+      .first<{ h: string; n: number }>();
+    return row?.h ?? null;
+  }
+
   /** Overwrite the single completeness stamp for this shop's referrer index. */
   async putReferrerIndexStamp(s: ReferrerIndexStamp): Promise<void> {
     await this.db

@@ -18,6 +18,30 @@ async function freshIndex(store: TenantStore, over: Partial<{ truncated: boolean
   });
 }
 
+
+/** A fake Shopify that records the ORDER of the calls that matter. */
+function redirectAdmin(over: { createFails?: string; existing?: boolean } = {}) {
+  const calls: string[] = [];
+  const admin = async (q: string, _v?: unknown) => {
+    if (q.includes('urlRedirectCreate')) {
+      calls.push('redirect');
+      if (over.createFails) return { urlRedirectCreate: { urlRedirect: null, userErrors: [{ message: over.createFails }] } };
+      return { urlRedirectCreate: { urlRedirect: { id: 'gid://shopify/UrlRedirect/1' }, userErrors: [] } };
+    }
+    if (q.includes('productUpdate')) { calls.push('archive'); return { productUpdate: { product: { id: 'p' }, userErrors: [] } }; }
+    if (q.includes('urlRedirects')) {
+      calls.push('find');
+      return over.existing
+        ? { urlRedirects: { nodes: [{ id: 'gid://shopify/UrlRedirect/9', path: '/products/unreferenced-item', target: '/x' }] } }
+        : { urlRedirects: { nodes: [] } };
+    }
+    if (q.includes('collections')) return { collections: { nodes: [] } };
+    if (q.includes('products')) return { products: { nodes: [] } };
+    return {};
+  };
+  return { admin: admin as never, calls };
+}
+
 describe('archiveProductGuarded', () => {
   let store: TenantStore;
   beforeEach(() => { store = new TenantStore(env.DB, SHOP); });
@@ -37,9 +61,13 @@ describe('archiveProductGuarded', () => {
     }
   });
 
-  it('refuses with missing-scope (not a generic abort) when redirects are unavailable', async () => {
+  it('refuses with missing-scope (not a generic abort) when Shopify denies the scope', async () => {
+    // No longer the standing outcome - the scope was granted 2026-07-31. This
+    // now pins that a REAL denial is still classified as configuration rather
+    // than as a fault, which is what tells the reader where to go.
     await freshIndex(store);
-    const out = await archiveProductGuarded(noopAdmin, store, {
+    const denying = async () => { throw new Error('ACCESS_DENIED: write_online_store_navigation required'); };
+    const out = await archiveProductGuarded(denying as never, store, {
       cjPid: '2', productId: 'gid://shopify/Product/2', handle: 'unreferenced-item', reason: 'cull',
     });
     expect(out.ok).toBe(false);
@@ -179,12 +207,13 @@ describe('archiveProductGuarded index gate', () => {
   });
 
   it('gets PAST the index gate once the stamp is good', async () => {
-    // Proves the gate is a gate and not a permanent block: the refusal reason
-    // moves on to the next check in the chain.
+    // Proves the gate is a gate and not a permanent block: with a good stamp
+    // and no referrers, the archive now completes.
     await freshIndex(store);
-    const out = await attempt();
-    expect(out.ok).toBe(false);
-    if (!out.ok) expect(out.refusal).toBe('missing-scope');
+    const out = await archiveProductGuarded(redirectAdmin().admin, store, {
+      cjPid: '9', productId: 'gid://shopify/Product/9', handle: 'unreferenced-item', reason: 'cull',
+    });
+    expect(out.ok).toBe(true);
   });
 
   it('checks the index BEFORE calling Shopify', async () => {
@@ -194,5 +223,57 @@ describe('archiveProductGuarded index gate', () => {
       cjPid: '9', productId: 'gid://shopify/Product/9', handle: 'x', reason: 'cull',
     });
     expect(called).toBe(0);
+  });
+});
+
+// THE ORDER IS THE WHOLE POINT. Archiving before the redirect exists opens a
+// window in which the URL 404s, and a crash inside that window leaves it 404ing
+// forever. These pin the sequence, not just the outcome.
+describe('redirect-before-archive', () => {
+  let store: TenantStore;
+  beforeEach(async () => { store = new TenantStore(env.DB, SHOP); await freshIndex(store); });
+
+  const go = (admin: never) => archiveProductGuarded(admin, store, {
+    cjPid: '9', productId: 'gid://shopify/Product/9', handle: 'unreferenced-item', reason: 'cull',
+  });
+
+  it('creates the redirect BEFORE it archives', async () => {
+    const f = redirectAdmin();
+    expect((await go(f.admin)).ok).toBe(true);
+    expect(f.calls.indexOf('redirect')).toBeLessThan(f.calls.indexOf('archive'));
+  });
+
+  it('does NOT archive when redirect creation fails', async () => {
+    const f = redirectAdmin({ createFails: 'boom' });
+    const out = await go(f.admin);
+    expect(out.ok).toBe(false);
+    if (!out.ok) expect(out.refusal).toBe('redirect-failed');
+    expect(f.calls).not.toContain('archive');
+  });
+
+  it('is IDEMPOTENT - an existing redirect is reused, never duplicated', async () => {
+    const f = redirectAdmin({ existing: true });
+    expect((await go(f.admin)).ok).toBe(true);
+    expect(f.calls).not.toContain('redirect'); // no second create
+    expect(f.calls).toContain('archive');
+  });
+
+  it('classifies a scope denial as configuration, a fault as redirect-failed', async () => {
+    const denied = await go((async () => { throw new Error('ACCESS_DENIED'); }) as never);
+    expect(denied.ok).toBe(false);
+    if (!denied.ok) expect(denied.refusal).toBe('missing-scope');
+
+    const broke = await go((async () => { throw new Error('502 upstream'); }) as never);
+    expect(broke.ok).toBe(false);
+    if (!broke.ok) expect(broke.refusal).toBe('redirect-failed');
+  });
+
+  it('still refuses a REFERENCED product without touching redirects at all', async () => {
+    await store.putProductReferrers('unreferenced-item', [{ referrerType: 'blog', referrerId: 'gid://shopify/Article/1' }]);
+    const f = redirectAdmin();
+    const out = await go(f.admin);
+    expect(out.ok).toBe(false);
+    if (!out.ok) expect(out.refusal).toBe('referenced');
+    expect(f.calls).toEqual([]);
   });
 });

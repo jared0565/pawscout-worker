@@ -20,6 +20,7 @@
  */
 import type { AdminGraphql } from '../shopify-admin';
 import type { TenantStore } from '../tenant-store';
+import { findRedirect, createRedirect, pickRedirectTarget, isScopeDenial, type LivenessMemo } from './redirects';
 
 const ARCHIVE = `mutation pawscoutArchive($input: ProductInput!) {
   productUpdate(input: $input) { product { id } userErrors { field message } }
@@ -84,17 +85,21 @@ export function writesArchivedStatus(src: string): boolean {
 /**
  * The ONLY way a product may be archived.
  *
- * Redirect creation lands with the online-store-navigation scope. Until that
- * scope is granted, every archive of an unreferenced product refuses with
- * `missing-scope`, which means the no-movement cull and the owner's console
- * archive are BOTH DORMANT BY DESIGN. That is the accepted trade: nothing
- * archives, so nothing new 404s. It is logged with the scope name so a dormant
- * cull is diagnosable rather than looking like a broken job.
+ * Four gates, in this order, and the order is the design:
+ *   1. the referrer index must be COMPLETE - an empty lookup against a
+ *      half-built index is indistinguishable from "nothing references this"
+ *   2. no internal surface may still point at the product
+ *   3. a redirect must exist, created here if it does not
+ *   4. only then does the product's status change
+ *
+ * The online-store-navigation scope was granted and verified live on
+ * 2026-07-31, so `missing-scope` is no longer the standing outcome - it is now
+ * a real measurement, raised only when Shopify actually denies the call.
  */
 export async function archiveProductGuarded(
   admin: AdminGraphql,
   store: TenantStore,
-  opts: { cjPid: string; productId: string; handle: string; reason: string }
+  opts: { cjPid: string; productId: string; handle: string; reason: string; memo?: LivenessMemo }
 ): Promise<ArchiveOutcome> {
   // BEFORE the lookup, not after: an empty result is only meaningful when the
   // index that produced it was complete. Checking this second would let a
@@ -112,13 +117,35 @@ export async function archiveProductGuarded(
     return { ok: false, refusal: 'referenced', detail };
   }
 
-  // Redirect support is gated on read/write_online_store_navigation. Until the
-  // owner grants it this is the only reachable outcome for an unreferenced
-  // product, and refusing is correct - archiving here would mint the exact 404
-  // class this whole change exists to eliminate.
-  const detail = 'redirect unavailable: missing write_online_store_navigation';
-  console.log(`archive refused for ${opts.handle} (${opts.reason}): ${detail}`);
-  return { ok: false, refusal: 'missing-scope', detail };
+  // THE REDIRECT COMES FIRST. Archiving before the redirect exists opens a
+  // window - however brief - in which the URL 404s, and a crash inside that
+  // window leaves it 404ing permanently. Doing it in this order means the worst
+  // case is a redirect pointing at a product that is still live, which is
+  // harmless and self-corrects on the next attempt.
+  const path = `/products/${opts.handle}`;
+  try {
+    if (!(await findRedirect(admin, path))) {
+      const target = await pickRedirectTarget(store, admin, opts.handle, opts.memo);
+      await createRedirect(admin, path, target);
+      console.log(`archive ${opts.handle} (${opts.reason}): redirect ${path} -> ${target}`);
+    }
+  } catch (e) {
+    const message = (e as Error).message;
+    // A missing scope is a CONFIGURATION state the owner can fix; anything else
+    // is a fault. Collapsing them would send whoever reads this log to the
+    // wrong place, so they stay separate refusals.
+    if (isScopeDenial(message)) {
+      const detail = `redirect unavailable: ${message}`;
+      console.log(`archive refused for ${opts.handle} (${opts.reason}): ${detail}`);
+      return { ok: false, refusal: 'missing-scope', detail };
+    }
+    const detail = `redirect creation failed: ${message}`;
+    console.warn(`archive aborted for ${opts.handle} (${opts.reason}): ${detail}`);
+    return { ok: false, refusal: 'redirect-failed', detail };
+  }
+
+  await setArchived(admin, opts.productId);
+  return { ok: true };
 }
 
 /**

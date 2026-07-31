@@ -6,6 +6,7 @@ import { liveCjPasses, normalizeKeyword, CACHE_TTL_DAYS, isLikelyPetProduct, tit
 import { bestLocalQty, localWarehousesFor, HOME_MARKET_WAREHOUSES } from './local-markets';
 import { archiveProductGuarded } from './catalog/archive-guard';
 import { rebuildReferrerIndex } from './catalog/referrers';
+import type { LivenessMemo } from './catalog/redirects';
 
 /** US-lane sourcing keywords (2026-07-07): bulky / high-ticket niches ONLY.
  *  The generic SEED_KEYWORDS produced a 0-for-35 street-parity pass rate for
@@ -136,6 +137,10 @@ export async function cullStaleProducts(
   }
   const stale = await store.linksEligibleForArchive(cutoff);
   let archived = 0;
+  // One memo for the whole run: the stale set shares a handful of categories,
+  // so without it the same "is this collection still live?" question is asked
+  // once per product instead of once per category.
+  const memo: LivenessMemo = new Map();
   for (const link of stale) {
     if (!link.shopify_product_id || !link.handle) continue;
     try {
@@ -144,6 +149,7 @@ export async function cullStaleProducts(
         productId: link.shopify_product_id,
         handle: link.handle,
         reason: 'no-movement cull',
+        memo,
       });
       if (out.ok) {
         await store.putLink({ cjPid: link.cj_pid, state: 'archived' });
