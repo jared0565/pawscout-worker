@@ -7,7 +7,18 @@ name = "PawScout"
 
 [access_scopes]
 # Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
-scopes = "write_inventory,read_inventory,read_locations,write_merchant_managed_fulfillment_orders,read_orders,read_products,write_products,read_publications,write_publications,write_draft_orders,read_customers,read_shipping,write_shipping,read_markets,write_markets"
+#
+# NOTE (2026-07-31): this list had already drifted from wrangler.toml's
+# SHOPIFY_SCOPES, which the comment there asks be kept in lockstep - it was
+# missing read_discounts, write_discounts and write_content, all three of which
+# were added in the Dev Dashboard on their respective dates. Only the two
+# navigation scopes are added here; closing the older drift is left alone
+# deliberately rather than bundled into an unrelated change.
+#
+# read/write_online_store_navigation: archiving must leave a URL redirect
+# instead of a 404. The Dev Dashboard is what actually grants scopes (token
+# exchange); this file and wrangler.toml are hygiene.
+scopes = "write_inventory,read_inventory,read_locations,write_merchant_managed_fulfillment_orders,read_orders,read_products,write_products,read_publications,write_publications,write_draft_orders,read_customers,read_shipping,write_shipping,read_markets,write_markets,read_online_store_navigation,write_online_store_navigation"
 optional_scopes = [ ]
 use_legacy_install_flow = false
 
