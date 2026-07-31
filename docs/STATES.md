@@ -87,7 +87,19 @@ SELECT inbox, fulfil, gates, pricing, llm, addons, target FROM tenant_config WHE
 
 | Key | Where it lives | Check |
 |---|---|---|
-| `conn.shopify` | `tenants` row + its `scopes` string (the granted record) | `SELECT shop, scopes, status FROM tenants` |
+| `conn.shopify` | `tenants` row (connection only) | `SELECT shop, status FROM tenants` |
+| `conn.shopify.scopes` | **Admin API** `currentAppInstallation.accessScopes` - probed live | console register only (the token is vault-sealed, so there is no D1 probe) |
+| `conn.shopify.redirects` | same live probe, filtered to `read/write_online_store_navigation` | console register only |
+
+> **`tenants.scopes` IS NOT THE AUTHORITY - do not quote it.** It records the
+> last token *write*, not what the app holds. Measured 2026-07-31 against live
+> D1, that column still read its 2026-07-03 value and was missing
+> `write_content`, a scope the blog pipeline uses every night. Scopes added in
+> the Dev Dashboard are granted by token exchange and never touch the column, so
+> it drifts silently and always understates the grant. The two rows above ask
+> Shopify instead. This is exactly the class of stale-state error the rule at the
+> top of this document exists to prevent.
+
 | `conn.cj` | `supplier_credentials` row `supplier='cj'` | `SELECT supplier, label, validated_at FROM supplier_credentials` |
 | `conn.resend` | worker secret `RESEND_API_KEY` (presence only) | `npx wrangler secret list` |
 | `conn.openrouter` | worker secret `OPENROUTER_API_KEY` (presence only) | `npx wrangler secret list` |

@@ -7,6 +7,8 @@ import { getTrackingStatus } from './resend-events';
 import { SENDING_DOMAIN } from './email';
 import { JOB_STAMP_DAILY, JOB_STAMP_PIPELINE, JOB_STAMP_MARKETS } from './jobs';
 import { defaultFetch } from './safe-fetch';
+import { adminForShop } from './inbox/invoice-routes';
+import { probeGrantedScopes, missingScopes, REDIRECT_SCOPES } from './shopify-scopes';
 
 /**
  * System states register (2026-07-06, owner request after the stale
@@ -93,6 +95,43 @@ export async function collectSystemStates(
   trackingBits.push(webhookCred ? 'webhook secret sealed' : 'webhook secret NOT stored');
   trackingBits.push(pulse.total > 0 ? `${pulse.total} events, latest ${pulse.latestAt}` : 'no events stored yet');
 
+  // GRANTED SCOPES, ASKED OF SHOPIFY. `tenants.scopes` is a stale record of the
+  // last token write, not what the app holds - it was measured on 2026-07-31
+  // still reading its 2026-07-03 value, missing write_content, which the blog
+  // pipeline uses nightly. Dev Dashboard grants arrive by token exchange and
+  // never touch that column. So the register asks the live API, exactly as it
+  // does for Resend tracking, rather than reporting our own notes back to us.
+  let scopesValue = 'Not probed';
+  let scopesOn: boolean | null = null;
+  let scopesDetail = 'no Shopify token stored';
+  let redirectValue = 'Unknown';
+  let redirectOn: boolean | null = null;
+  let redirectDetail = 'granted scopes could not be read';
+  const admin = tenant ? await adminForShop(env, store, fetchImpl).catch(() => null) : null;
+  if (admin) {
+    const probe = await probeGrantedScopes(admin);
+    if (probe.ok) {
+      scopesValue = `${probe.granted.length} granted`;
+      scopesOn = null;
+      scopesDetail = probe.granted.join(', ');
+      const missing = missingScopes(probe.granted, REDIRECT_SCOPES);
+      redirectOn = missing.length === 0;
+      redirectValue = redirectOn ? 'Granted' : 'NOT GRANTED';
+      redirectDetail = redirectOn
+        ? 'archives can create a URL redirect; the no-movement cull is able to act'
+        : `missing ${missing.join(', ')} - every archive refuses with 'missing-scope' and the cull is dormant. Add both in the Dev Dashboard, then reload this page to re-probe.`;
+    } else {
+      // An unreachable API is NOT the same fact as a missing scope, and saying
+      // so is the whole point. Leaving these null keeps the chip informational.
+      scopesValue = 'Probe failed';
+      scopesDetail = probe.error;
+      redirectDetail = `probe failed: ${probe.error}`;
+    }
+  } else if (tenant) {
+    scopesDetail = 'token could not be opened from the vault';
+    redirectDetail = scopesDetail;
+  }
+
   const groups: SystemStatesReport['groups'] = [
     {
       title: 'Reply automation',
@@ -159,7 +198,9 @@ export async function collectSystemStates(
     {
       title: 'Connections',
       states: [
-        { key: 'conn.shopify', label: 'Shopify', value: tenant ? 'Connected' : 'NOT CONNECTED', on: !!tenant, detail: tenant?.scopes ?? undefined, source: 'tenants row + scopes' },
+        { key: 'conn.shopify', label: 'Shopify', value: tenant ? 'Connected' : 'NOT CONNECTED', on: !!tenant, detail: tenant ? 'granted scopes are probed live below; the tenants row records only the last token write' : undefined, source: 'tenants row' },
+        { key: 'conn.shopify.scopes', label: 'Granted scopes (live)', value: scopesValue, on: scopesOn, detail: scopesDetail, source: 'Admin API currentAppInstallation.accessScopes (NOT tenants.scopes, which is stale)' },
+        { key: 'conn.shopify.redirects', label: 'Archive redirect scopes', value: redirectValue, on: redirectOn, detail: redirectDetail, source: 'Admin API currentAppInstallation.accessScopes' },
         { key: 'conn.cj', label: 'CJ supplier key', value: cjCred ? 'Stored' : 'Not stored', on: !!cjCred, source: "supplier_credentials supplier='cj'" },
         { key: 'conn.resend', label: 'Resend API key', value: env.RESEND_API_KEY ? 'Present' : 'MISSING', on: !!env.RESEND_API_KEY, detail: 'worker secret; email cannot send without it', source: 'worker secret RESEND_API_KEY' },
         { key: 'conn.openrouter', label: 'LLM API key', value: env.OPENROUTER_API_KEY ? 'Present' : 'MISSING', on: !!env.OPENROUTER_API_KEY, detail: 'worker secret; drafting and curation need it', source: 'worker secret OPENROUTER_API_KEY' }

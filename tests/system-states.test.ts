@@ -53,7 +53,13 @@ describe('collectSystemStates', () => {
     expect(tr.detail).toContain('webhook secret NOT stored');
     // Connections read presence, never values.
     expect(states.get('conn.shopify')?.on).toBe(true);
-    expect(states.get('conn.shopify')?.detail).toContain('read_products');
+    // conn.shopify no longer echoes tenants.scopes. That column records the last
+    // token WRITE, not the grant: measured 2026-07-31 it still held its
+    // 2026-07-03 value and omitted write_content, which the blog pipeline uses
+    // nightly. Presenting it as "the granted record" is what made a stale
+    // to-do look like a fact. The live probe below is the authority.
+    expect(states.get('conn.shopify')?.detail ?? '').not.toContain('read_products');
+    expect(states.get('conn.shopify')?.source).not.toContain('scopes');
     expect(states.get('conn.cj')?.on).toBe(false);
     expect(states.get('conn.resend')?.on).toBe(false);
     // Jobs that never ran say so honestly.
@@ -112,5 +118,28 @@ describe('collectSystemStates', () => {
         expect(statesDoc, `state '${st.key}' missing from docs/STATES.md`).toContain('`' + docKey + '`');
       }
     }
+  });
+});
+
+describe('granted-scope states', () => {
+  it('never reports a probe failure as "no scopes granted"', async () => {
+    // No usable vault token in tests, so adminForShop yields null. The states
+    // must stay INFORMATIONAL (on === null), not flip to a false "off". An
+    // unreachable API and a missing scope are different facts, and conflating
+    // them is how a working feature gets diagnosed as a permissions problem.
+    await seed();
+    const r = await collectSystemStates(BARE_ENV(), new TenantStore(env.DB, SHOP));
+    expect(r.ok).toBe(true);
+    const states = flat(r as SystemStatesReport);
+    expect(states.get('conn.shopify.scopes')?.on).toBeNull();
+    expect(states.get('conn.shopify.redirects')?.on).toBeNull();
+    expect(states.get('conn.shopify.redirects')?.value).toBe('Unknown');
+  });
+
+  it('names the Admin API, not tenants.scopes, as the source', async () => {
+    await seed();
+    const r = await collectSystemStates(BARE_ENV(), new TenantStore(env.DB, SHOP));
+    const states = flat(r as SystemStatesReport);
+    expect(states.get('conn.shopify.scopes')?.source).toContain('currentAppInstallation');
   });
 });
