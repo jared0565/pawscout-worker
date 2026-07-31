@@ -6,7 +6,7 @@ import { liveCjPasses, normalizeKeyword, CACHE_TTL_DAYS, isLikelyPetProduct, tit
 import { bestLocalQty, localWarehousesFor, HOME_MARKET_WAREHOUSES } from './local-markets';
 import { archiveProductGuarded } from './catalog/archive-guard';
 import { rebuildReferrerIndex } from './catalog/referrers';
-import { findRedirect, createRedirect, deleteRedirect, pickRedirectTarget, type LivenessMemo } from './catalog/redirects';
+import { findRedirect, createRedirect, deleteRedirect, pickRedirectTarget, isScopeDenial, type LivenessMemo } from './catalog/redirects';
 
 /** US-lane sourcing keywords (2026-07-07): bulky / high-ticket niches ONLY.
  *  The generic SEED_KEYWORDS produced a 0-for-35 street-parity pass rate for
@@ -195,12 +195,19 @@ export async function backfillArchivedRedirects(
   store: TenantStore,
   admin: AdminGraphql,
   opts: { limit?: number; dryRun?: boolean } = {}
-): Promise<{ scanned: number; created: number; skipped: number; failed: number; dryRun: boolean; samples: string[] }> {
+): Promise<{ scanned: number; created: number; skipped: number; failed: number; dryRun: boolean; samples: string[]; byTarget: Record<string, number> }> {
   const dryRun = opts.dryRun !== false;
   const links = await store.listArchivedLinksWithHandles(opts.limit ?? 500);
   const memo: LivenessMemo = new Map();
   let created = 0, skipped = 0, failed = 0;
   const samples: string[] = [];
+  // Counts per destination. `samples` caps at 12, which is enough to eyeball
+  // the format and nowhere near enough to see the DISTRIBUTION - and the
+  // distribution is what decides whether this repair is worth shipping. If most
+  // of the 112 land on /collections/all rather than a sibling or a category
+  // page, that is a much weaker fix than "the 404s are handled" suggests, and
+  // the dry run should say so before anything is written.
+  const byTarget: Record<string, number> = {};
   for (const link of links) {
     const path = `/products/${link.handle}`;
     try {
@@ -208,14 +215,16 @@ export async function backfillArchivedRedirects(
       const target = await pickRedirectTarget(store, admin, link.handle!, memo);
       if (!dryRun) await createRedirect(admin, path, target);
       created++;
+      byTarget[target] = (byTarget[target] ?? 0) + 1;
       if (samples.length < 12) samples.push(`${path} -> ${target}`);
     } catch (e) {
       failed++;
       console.warn(`redirect backfill failed for ${link.cj_pid} (${path}): ${(e as Error).message}`);
     }
   }
-  console.log(`redirect backfill (${dryRun ? 'DRY RUN' : 'live'}): ${created} created, ${skipped} already had one, ${failed} failed of ${links.length}`);
-  return { scanned: links.length, created, skipped, failed, dryRun, samples };
+  const spread = Object.entries(byTarget).sort((a, b) => b[1] - a[1]).map(([t, n]) => `${t} x${n}`).join(', ');
+  console.log(`redirect backfill (${dryRun ? 'DRY RUN' : 'live'}): ${created} created, ${skipped} already had one, ${failed} failed of ${links.length}${spread ? ` | targets: ${spread}` : ''}`);
+  return { scanned: links.length, created, skipped, failed, dryRun, samples, byTarget };
 }
 
 export async function restoreCulledProducts(
@@ -226,17 +235,30 @@ export async function restoreCulledProducts(
   const links = await store.listCulledArchivedLinks(sinceIso);
   let restored = 0, failed = 0;
   for (const link of links) {
-    try {
-      // DELETE THE REDIRECT FIRST. Every archive now leaves one behind, so a
-      // product restored while its own /products/<handle> still redirects
-      // elsewhere is live but unreachable - the restore would report success
-      // and the product would stay invisible. Failing here must abort the
-      // restore rather than press on: un-archiving behind a live redirect is
-      // strictly worse than leaving it archived, because it looks fixed.
-      if (link.handle) {
+    // DELETE THE REDIRECT FIRST. Every archive now leaves one behind, so a
+    // product restored while its own /products/<handle> still redirects
+    // elsewhere is live but unreachable, and that failure reports as success.
+    //
+    // Deliberately its OWN try/catch rather than sharing the activation's. A
+    // lookup fault and an activation fault are different problems with
+    // different fixes, and folding them together made a 502 on the redirect
+    // read indistinguishable from Shopify refusing the status change.
+    //
+    // Still fail-closed: an unknown redirect state means we cannot promise the
+    // product would be reachable, and staying archived is retried next run
+    // whereas live-but-invisible is silent. The log says which it was.
+    if (link.handle) {
+      try {
         const existing = await findRedirect(admin, `/products/${link.handle}`);
         if (existing) await deleteRedirect(admin, existing.id);
+      } catch (e) {
+        failed++;
+        const m = (e as Error).message;
+        console.warn(`restore-culled: redirect cleanup ${isScopeDenial(m) ? 'DENIED (scope)' : 'failed'} for ${link.cj_pid}: ${m} - left archived rather than restored behind a possible redirect`);
+        continue;
       }
+    }
+    try {
       const data = await admin(SET_PRODUCT_ACTIVE, { input: { id: link.shopify_product_id, status: 'ACTIVE' } });
       const errs = (data.productUpdate as { userErrors?: { message: string }[] } | undefined)?.userErrors ?? [];
       if (errs.length) throw new Error(errs.map((e) => e.message).join('; '));

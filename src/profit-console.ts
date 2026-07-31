@@ -13,7 +13,7 @@ import type { TenantConfig } from './types';
 import { DEFAULT_PROFIT } from './types';
 import { judgeImportedLink, competitorCacheKey } from './profitability';
 import { archiveProductGuarded } from './catalog/archive-guard';
-import { findRedirect, deleteRedirect } from './catalog/redirects';
+import { findRedirect, deleteRedirect, isScopeDenial } from './catalog/redirects';
 
 export interface ProfitConsoleRow {
   cjPid: string;
@@ -295,10 +295,18 @@ export async function recalibrateProfitDrops(
         // first, or the product comes back live behind a redirect that sends
         // its own URL somewhere else. This is the second restore path, and it
         // is exactly the kind of divergence that put three copies of the
-        // archive mutation in this codebase - keep the two in step.
+        // archive mutation in this codebase - keep the two in step, including
+        // the separate error handling and the distinct log wording.
         if (link.handle) {
-          const existing = await findRedirect(admin, `/products/${link.handle}`);
-          if (existing) await deleteRedirect(admin, existing.id);
+          try {
+            const existing = await findRedirect(admin, `/products/${link.handle}`);
+            if (existing) await deleteRedirect(admin, existing.id);
+          } catch (e) {
+            failed++;
+            const m = (e as Error).message;
+            console.warn(`recalibrate: redirect cleanup ${isScopeDenial(m) ? 'DENIED (scope)' : 'failed'} for ${cjPid}: ${m} - left archived`);
+            continue;
+          }
         }
         const data = await admin(SET_PRODUCT_ACTIVE, { input: { id: link.shopify_product_id, status: 'ACTIVE' } });
         const errs = (data.productUpdate as { userErrors?: { message: string }[] } | undefined)?.userErrors ?? [];

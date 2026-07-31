@@ -780,6 +780,27 @@ describe('restoreCulledProducts redirect cleanup', () => {
     expect(r.restored).toBe(1);
     expect(f.calls).toEqual(['activate']);
   });
+
+  it('a redirect LOOKUP fault is fatal too, but reported as its own failure', async () => {
+    // Regression guard. The lookup and the activation used to share one catch,
+    // which made a 502 on the redirect READ indistinguishable from Shopify
+    // refusing the status change - two problems with two different fixes.
+    // Fail-closed is still correct (an unknown redirect state cannot promise
+    // the product would be reachable), but it must say which one broke.
+    const admin = (async (q: string) => {
+      if (q.includes('urlRedirects')) throw new Error('502 upstream');
+      throw new Error('activate should never be reached');
+    }) as never;
+    const r = await restoreCulledProducts(store, admin, since());
+    expect(r).toEqual({ restored: 0, failed: 1 });
+    expect((await store.getLink('r1'))!.state).toBe('archived');
+  });
+
+  it('does not double-count: one product failing counts exactly once', async () => {
+    const f = fake({ deleteFails: true });
+    const r = await restoreCulledProducts(store, f.admin, since());
+    expect(r.failed).toBe(1);
+  });
 });
 
 // THE REPAIR HALF. Task 7 stops new 404s; this clears the 112 already in
