@@ -20,6 +20,20 @@
 
 schema_version = 1
 
+# Top-level, and it MUST stay above every table header.
+#
+# An earlier version of this file placed this key after `[timeouts]`, so TOML
+# parsed it as `timeouts.bake_started`. `config.load_config` reads it with
+# `merged.get("bake_started")` -- a top-level lookup -- so it silently resolved
+# to None and `aramid status` reported "bake in progress, day ? (bake_started
+# not set in aramid.toml)" while the key sat right there in the file. A quiet
+# misparse, not an error.
+#
+# Dated to when aramid first ran against this repo rather than when this file
+# was last edited: the bake measures how long semgrep findings have been
+# WARN-only, and that clock started then.
+bake_started = "2026-07-25"
+
 # MEASURED, not guessed - which is the condition this file set for re-adding
 # these keys ("Re-add a real value only if a measured run needs one", below).
 #
@@ -40,33 +54,15 @@ pre_push = 900
 [tests]
 timeout_s = 600
 
-# Top-level, and it MUST stay above every table header.
-#
-# An earlier version of this file placed this key after `[timeouts]`, so TOML
-# parsed it as `timeouts.bake_started`. `config.load_config` reads it with
-# `merged.get("bake_started")` -- a top-level lookup -- so it silently resolved
-# to None and `aramid status` reported "bake in progress, day ? (bake_started
-# not set in aramid.toml)" while the key sat right there in the file. A quiet
-# misparse, not an error.
-#
-# Dated to when aramid first ran against this repo rather than when this file
-# was last edited: the bake measures how long semgrep findings have been
-# WARN-only, and that clock started then.
-bake_started = "2026-07-25"
-
 # ---------------------------------------------------------------------------
-# ONBOARDING IS NOT COMPLETE (status 2026-07-27).
+# ONBOARDING IS COMPLETE (verified 2026-07-31, correcting a stale note here
+# that said otherwise as of 2026-07-27).
 #
-# `aramid init` has deliberately NOT been run here. The precondition for it is
-# `aramid check --gate pre-push` exiting 0, and it exits 1:
-#
-#   * `npm test` fails with 149 collection errors -- one per test file. vitest's
-#     dist chunks are present on disk, but workerd cannot resolve them, so zero
-#     tests run. Installed vitest 2.1.9 / @cloudflare/vitest-pool-workers 0.5.41
-#     against Node v24.16.0; current published are 4.1.10 / 0.18.8.
-#   * 2 of 14 npm advisories classify BLOCK.
-#
-# Both are pawscout toolchain issues, not aramid ones. Running `init` now would
-# install hooks and block every push on this repo until they are fixed, which is
-# why the step is being held rather than forced.
+# The precondition this file used to describe -- `aramid check --gate pre-push`
+# exiting 0 -- was blocked at the time by the vitest 2.1.9 / pool-workers 0.5.41
+# collection failure. That was fixed 2026-07-28 (vitest 4 / pool-workers 0.18,
+# commit d739684) and `aramid init` was run afterward: `.git/hooks/pre-commit`,
+# `pre-push`, and `post-commit` are all present and aramid-managed, `aramid
+# status` reports `registry: registered` with a real baseline (+9 baseline
+# findings), and `aramid check --gate pre-push` now exits 0 (0 blocking).
 # ---------------------------------------------------------------------------

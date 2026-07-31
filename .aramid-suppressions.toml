@@ -5,37 +5,16 @@
 # reviewable file rather than a local ledger event. That asymmetry is the point
 # -- a WARN can be waved through by one person on one machine; a BLOCK cannot.
 #
-# Scope: both entries below are the vitest/Workers TEST toolchain. Neither ships
-# in the deployed Worker. Every claim in the reasons was verified on 2026-07-27,
-# not inherited from an earlier triage:
+# Empty as of 2026-07-31. It previously held two entries scoped to the
+# vitest 2.1.9 / @cloudflare/vitest-pool-workers 0.5.41 test-toolchain
+# advisories (npm findings e3b37520... and 9af55a5d...), both dev-only and
+# unreachable in the deployed Worker. Both were removed here because the
+# 2026-07-28 upgrade (vitest -> 4.1.10, pool-workers -> 0.18.8, commit
+# d739684) resolved the advisories outright -- verified against
+# package-lock.json (vitest 4.1.10, pool-workers ^0.18.8 present) and against
+# aramid's own ledger (both findings already `[fixed]`) before deleting, not
+# assumed from the suppression reasons alone.
 #
-#   * `grep -rn "vitest\|@cloudflare/vitest-pool-workers" src/`  -> 0 matches
-#   * package.json: both are devDependencies, absent from `dependencies`.
-#     Runtime dependencies are exactly: @shopify/shopify-api, hono, postal-mime.
-#   * package.json test script is `vitest run`; no `--ui` flag anywhere in
-#     package.json or vitest.config.ts.
-#
-# DELIBERATELY NOT SUPPRESSED, though they are also open advisories: hono,
-# undici, ws, sharp, postcss, wrangler. hono in particular is a RUNTIME
-# dependency of the deployed Worker, so it must keep blocking. This file is
-# scoped to the test toolchain on purpose -- do not widen it to "the npm audit
-# noise".
-#
-# REVISIT WHEN THE VITEST STACK IS UPGRADED. Installed are vitest 2.1.9 and
-# @cloudflare/vitest-pool-workers 0.5.41; current published are 4.1.10 and
-# 0.18.8. That upgrade is expected to resolve both advisories outright, at which
-# point these entries should be deleted rather than left to rot.
-
-[[suppress]]
-id = "e3b37520a47de96944b86e69a10b8e8d166318a76ddb87660c6ca2456cc4eec9"
-tool = "npm"
-rule = "@cloudflare/vitest-pool-workers"
-path = "package-lock.json"
-reason = "Dev-only test harness: @cloudflare/vitest-pool-workers is a devDependency, is imported nowhere under src/ (0 matches), and is not part of the deployed Worker bundle. Verified 2026-07-27. Accepted until the vitest 2.1.9 -> 4.x / pool-workers 0.5.41 -> 0.18.x upgrade lands, which is expected to clear it."
-
-[[suppress]]
-id = "9af55a5d3dcd6fe3282b1d45607bfb762dc68d452880f4ad47083c08c94e1fa1"
-tool = "npm"
-rule = "GHSA-5xrq-8626-4rwp"
-path = "package-lock.json"
-reason = "Unreachable by construction: this advisory requires the Vitest UI server to be listening ('When Vitest UI server is listening, arbitrary file can be read and executed'). This repo's test script is `vitest run` and no --ui flag appears in package.json or vitest.config.ts, so the UI server is never started. vitest is also a devDependency absent from the deployed Worker. Verified 2026-07-27."
+# Add a new [[suppress]] entry here only for a genuinely unreachable
+# BLOCK-tier finding, with the same standard the deleted entries set: a
+# verified-at-source reason, not an inherited one.
