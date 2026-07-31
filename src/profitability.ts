@@ -612,6 +612,11 @@ export async function runProfitAgent(
   const profit = cfg.profit;
   const dryRun = profit?.dryRun !== false; // preview unless explicitly cleared to false
   if (!profit?.enabled) return { scanned: 0, acted: 0, repriced: 0, dropped: 0, flagged: 0, total: 0, next: null, dryRun };
+  // The LIVE sweep has its own switch (2026-07-31). Turning it off leaves the
+  // import + search ADMISSION gates running, which is the whole point of the
+  // split: admission is cheap and protective, the sweep costs market lookups.
+  // Undefined means ON so existing saved configs are unaffected.
+  if (profit.repriceEnabled === false) return { scanned: 0, acted: 0, repriced: 0, dropped: 0, flagged: 0, total: 0, next: null, dryRun };
   const offset = Math.max(0, opts.offset ?? 0);
   const limit = opts.limit ?? 8;
   const all = (await store.listImportedLinks(500)).filter((l) => l.shopify_product_id);

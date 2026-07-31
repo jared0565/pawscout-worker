@@ -229,6 +229,13 @@ export const DEFAULT_SEMANTIC: SemanticConfig = { enabled: true, maxExpansions: 
  */
 export interface ProfitConfig {
   enabled: boolean;                  // master switch; false = fully dormant (no spend, gate no-ops)
+  /** Gates the LIVE reprice sweep ONLY. `enabled` gates the ADMISSION gates
+   *  (import + storefront search). Split 2026-07-31: both used to ride on
+   *  `enabled`, so stopping the sweep also disabled admission - and after the
+   *  agent lost its archive authority, the sweep and the gates have genuinely
+   *  different risk profiles and deserve separate switches. Undefined means
+   *  ON, so existing saved configs keep their current behaviour. */
+  repriceEnabled?: boolean;
   // Preview mode for the ACTIVE agent. true = compute + record every intended
   // action (reprice/drop) WITHOUT touching prices or listings, so the owner sees
   // exactly what full-auto would do. false = full auto (execute on defensible data).

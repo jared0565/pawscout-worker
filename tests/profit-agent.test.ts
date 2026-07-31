@@ -128,6 +128,24 @@ describe('runProfitAgent (active adjust-or-drop on live Shopify numbers)', () =>
     expect(f.productProfit.get('LOSS')?.action).toBe('flag');
   });
 
+  it('repriceEnabled:false stops the LIVE sweep while the admission gates stay on', async () => {
+    const f = makeFakes({ HIGH: { variants: [{ variantId: 'v', price: '30.00', cost: '5.00' }], competitor: { estimateGbp: 25, confidence: 'high' } } });
+    const c = cfg({ dryRun: false });
+    (c.profit as { repriceEnabled?: boolean }).repriceEnabled = false;
+    const r = await runProfitAgent(f.store, f.admin, f.llm, c, {});
+    expect(r.scanned).toBe(0);
+    expect(f.priceCalls).toEqual([]);        // nothing repriced
+    expect(c.profit.enabled).toBe(true);     // admission gates untouched
+  });
+
+  it('repriceEnabled undefined means ON, so existing saved configs are unaffected', async () => {
+    const f = makeFakes({ HIGH: { variants: [{ variantId: 'v', price: '30.00', cost: '5.00' }], competitor: { estimateGbp: 25, confidence: 'high' } } });
+    const c = cfg({ dryRun: false });
+    expect((c.profit as { repriceEnabled?: boolean }).repriceEnabled).toBeUndefined();
+    const r = await runProfitAgent(f.store, f.admin, f.llm, c, {});
+    expect(r.scanned).toBe(1);
+  });
+
   it('NEVER auto-archives on a medium-confidence market (flag only, no execution)', async () => {
     const f = makeFakes({ MAYBE: { variants: [{ variantId: 'v', price: '10.00', cost: '8.00' }], competitor: { estimateGbp: 15, confidence: 'medium' } } });
     await runProfitAgent(f.store, f.admin, f.llm, cfg({ dryRun: false }), {});
