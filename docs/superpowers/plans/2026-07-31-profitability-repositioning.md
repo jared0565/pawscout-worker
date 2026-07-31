@@ -1177,205 +1177,134 @@ git commit -m "feat(catalog): idempotent redirect backfill for archived products
 
 ---
 
-### Task 10: Wire the index rebuild into the nightly chain
+### Task 10: Wire the index rebuild into the nightly chain (BUILT 2026-07-31)
+
+**Status: complete. Built larger than specified - see "What changed" below.**
 
 **Files:**
-- Modify: `src/jobs.ts` (stage list around line 1396)
-- Modify: `src/blog/` publish and regenerate paths
-- Test: `tests/daily-chain.test.ts` (extend)
+- Create: `migrations/0036_referrer_index_stamp.sql`
+- Modify: `src/catalog/referrers.ts` (`listArticlesForIndex`, `rebuildReferrerIndex`, `reindexArticle`)
+- Modify: `src/tenant-store.ts` (`putReferrerIndexStamp`, `getReferrerIndexStamp`)
+- Modify: `src/catalog/archive-guard.ts` (`indexUsable`, `index-incomplete` refusal)
+- Modify: `src/jobs.ts` (`referrer-index` stage above `cull`)
+- Modify: `src/blog/pipeline.ts` (reindex after regenerate + enrich)
+- Test: `tests/referrers.test.ts`, `tests/archive-guard.test.ts`, `tests/daily-chain.test.ts`
 
-**Interfaces:**
-- Consumes: `rebuildBlogReferrers` (Task 2).
-- Produces: a `referrer-index` stage in the nightly chain.
+**What changed from the plan as written, and why.**
 
-- [ ] **Step 1: Write the failing test (append to `tests/daily-chain.test.ts`)**
+1. **The stage exports are `DAILY_SHOP_STAGES`, not `STAGES`** (`src/jobs.ts:1415`).
+   `cull` was at index 0, so `referrer-index` is inserted above it. The existing
+   name-reresolution test (`tests/daily-chain.test.ts:190`) already proves that
+   inserting a stage mid-day is safe for a parked cursor.
 
-```typescript
-it('runs the referrer-index stage before the cull', () => {
-  const names = STAGES.map((s) => s.name);
-  expect(names).toContain('referrer-index');
-  expect(names.indexOf('referrer-index')).toBeLessThan(names.indexOf('cull'));
-});
-```
+2. **The article query shape in the plan was a guess and was wrong.** There is no
+   root `articles(first:)` read here; the proven shape is
+   `blogs(first:20) { nodes { articles(first:100) { nodes { ... } } } }`, copied
+   from `HEALTH_ARTICLES_QUERY` (`src/blog/article-health.ts:192`), which is
+   validated against the pinned 2026-04 schema. The metafield is
+   **`namespace: "blog", key: "related_products"`**, NOT `custom`. The plan told
+   the implementer to verify this rather than trust the guess; verified.
 
-Ordering matters: the cull must never read a stale index.
+3. **`referrer_id` is the article GID, not its handle.** `clearProductReferrers`
+   is scoped to one id, so a handle-keyed row is orphaned by any article rename
+   and would block that product from archiving forever. The GID is stable and is
+   also what `ARTICLE_BODY_UPDATE` takes, so Task 12's in-article repair needs no
+   second lookup. `ArticleSource.handle` was renamed to `ArticleSource.articleId`.
 
-- [ ] **Step 2: Run and confirm failure**
+4. **THE COMPLETENESS STAMP - the defect this task nearly shipped.**
+   `referrers.ts` promises "a MISS means unknown and must BLOCK an archive", but
+   the code could not honour it. `blogs(first:20) x articles(first:100)`
+   truncates silently, and `runArticleHealth` merely *logs* `hasNextPage`. For
+   healing, a missed article is degraded-but-safe. For the index it is not: an
+   unindexed article makes `referrersFor(X)` return `[]`, which is
+   indistinguishable from "genuinely unreferenced". Today `missing-scope` masks
+   it. The moment Task 7 lands, that mask lifts and the guard becomes a 404
+   generator aimed at exactly the products this project protects.
 
-Run: `npx vitest run tests/daily-chain.test.ts`
-Expected: FAIL, `referrer-index` not found.
+   So the rebuild records what it actually managed to read
+   (`referrer_index_stamp`: `indexed_at`, `article_count`, `row_count`,
+   `truncated`) and `archiveProductGuarded` refuses with `index-incomplete` when
+   the stamp is **absent**, **truncated**, or **older than
+   `INDEX_MAX_AGE_MS` (36h)**. 36h tolerates one skipped nightly run and refuses
+   on two. The check runs BEFORE the referrer lookup: checking it second would
+   let a never-built index answer "nothing references it" for every product.
 
-- [ ] **Step 3: Add the stage BEFORE the `cull` entry in the stage array**
+5. **Per-article reindex on regenerate and enrich** (`reindexArticle`) uses the
+   body and picks already in hand - no extra Admin call. It deliberately does NOT
+   touch the stamp: a single-article refresh says nothing about whether the whole
+   blog was read, and moving `indexed_at` there would let a stale index look
+   fresh every time the owner regenerated a post. It never throws - an article
+   write must not roll back because a derived cache could not be updated, and a
+   miss can only over-block, never over-archive.
 
-```typescript
-  { name: 'referrer-index', maxMs: 3 * MIN_MS, needsCj: false, run: async (ctx) => {
-      const articles = await listArticlesForIndex(ctx.admin);
-      await rebuildBlogReferrers(ctx.store, articles);
-    } },
-```
-
-Implement `listArticlesForIndex` in `src/catalog/referrers.ts`:
-
-```typescript
-const ARTICLES = `query pawscoutArticlesForIndex($n: Int!) {
-  articles(first: $n) {
-    nodes {
-      handle
-      body
-      metafield(namespace: "custom", key: "related_products") { value }
-    }
-  }
-}`;
-
-/** Every published article with its body and curated related list, shaped for
- *  rebuildBlogReferrers. The metafield is a JSON array of product GIDs or
- *  handles depending on its definition - read one live value and confirm which
- *  before trusting the parse below. */
-export async function listArticlesForIndex(admin: AdminGraphql): Promise<ArticleSource[]> {
-  const data = await admin(ARTICLES, { n: 100 });
-  const nodes = (data.articles as { nodes?: { handle: string; body: string; metafield?: { value?: string } | null }[] } | undefined)?.nodes ?? [];
-  return nodes.map((n) => {
-    let relatedHandles: string[] = [];
-    try {
-      const parsed = JSON.parse(n.metafield?.value ?? '[]');
-      if (Array.isArray(parsed)) {
-        relatedHandles = parsed.map(String).map((v) => v.split('/').pop() ?? v);
-      }
-    } catch { relatedHandles = []; }
-    return { handle: n.handle, bodyHtml: n.body ?? '', relatedHandles };
-  });
-}
-```
-
-Verify the `custom`/`related_products` namespace and key against the live metafield definition before running this - the blog pipeline writes it, so read how `enrichBlogPost` sets it rather than trusting this guess.
-
-- [ ] **Step 4: Rebuild on publish and regenerate**
-
-In the blog publish path and the `POST /api/blog/regenerate` handler, call `rebuildBlogReferrers` for the single affected article after the write, so the index is fresh without waiting for the nightly run.
-
-- [ ] **Step 5: Run and commit**
-
-Run: `npx vitest run tests/daily-chain.test.ts tests/blog.test.ts`
-Expected: PASS.
-
-```bash
-git add src/jobs.ts src/blog/ src/catalog/referrers.ts tests/
-git commit -m "feat(catalog): rebuild the referrer index nightly and on publish"
-```
+**Verification:** `npx vitest run tests/referrers.test.ts tests/archive-guard.test.ts
+tests/daily-chain.test.ts tests/blog.test.ts tests/jobs.test.ts tests/guard.test.ts`
+-> 154 passed. `npx tsc --noEmit` clean.
 
 ---
 
-### Task 11: Syndication and collection slices of the index
+### Task 11: WITHDRAWN - the premise was falsified during implementation (2026-07-31)
 
-**Files:**
-- Modify: `src/catalog/referrers.ts`
-- Modify: `src/tenant-store.ts`
-- Test: `tests/referrers.test.ts` (extend)
+**Status: not built, and it should not be. Superseded by the completeness stamp folded into Task 10.**
 
-**Interfaces:**
-- Consumes: `store.putProductReferrers`, `store.clearProductReferrers` (Task 1).
-- Produces: `rebuildSyndicationReferrers(store): Promise<number>`, `rebuildCollectionReferrers(store, blocks): Promise<number>`.
+This task was written to add `syndication` and `collection` slices to the index,
+on the reasoning that "once a Pinterest or Facebook post carries a product URL,
+that link is outside our control forever". That reasoning is wrong for this
+codebase, and the plan itself flagged the checks that proved it.
 
-The spec's index scope is product -> ANY internal referrer, not blog-only. Syndicated posts are the case that cannot be repaired after the fact: once a Pinterest or Facebook post carries a product URL, that link is outside our control forever.
+**What the code actually does:**
 
-- [ ] **Step 1: Write the failing test (append to `tests/referrers.test.ts`)**
+1. **Syndicated posts never carry a product URL.** `utmUrl`
+   (`src/syndicate/channels.ts:16-18`) is the ONLY link builder in
+   `src/syndicate/`, and it emits `${STORE_URL}/blogs/${BLOG_HANDLE}/${handle}`.
+   A syndicated post links an ARTICLE. Archiving a product therefore cannot break
+   the post; it puts a dead link inside the article, which `runArticleHealth`
+   already heals nightly and which the blog slice already indexes.
+2. **`syndication_ledger` has no product handles to read.** Migration 0029
+   defines it as `(shop, post_id, channel, status, external_id, error, attempts,
+   sent_at, created_at, updated_at)`. The plan's `listSyndicatedProductHandles`
+   query would not have compiled against the real schema. The plan told the
+   implementer to check the column existed first; it does not.
+3. **The "collection" slice is the blog slice under another name.** The curated
+   Shop-this-guide picks ARE the `blog`/`related_products` metafield, which
+   `rebuildBlogReferrers` already unions into `relatedHandles`.
+4. **Shopify collections do not 404 on archive.** A collection drops the product
+   from its listing and keeps working. There is no broken referrer to prevent.
 
-```typescript
-import { rebuildSyndicationReferrers, rebuildCollectionReferrers } from '../src/catalog/referrers';
+**The surface sweep that closed the question.** Every `/products/` URL the worker
+constructs (`grep -rn "'/products/" src/`) is one of:
 
-describe('non-blog referrer slices', () => {
-  let store: TenantStore;
-  beforeEach(() => { store = new TenantStore(env.DB, SHOP); });
+| Site | Durable? | Covered by |
+|---|---|---|
+| `src/blog/ground.ts:83` | yes - lands in article bodies | blog slice |
+| `blog`/`related_products` metafield | yes | blog slice (`relatedHandles`) |
+| `src/index.ts:1705`, `src/proxy/import.ts:72`, `src/proxy/search.ts:404,456` | no - response payloads | n/a |
+| `src/console/profit-js.ts:28` | no - owner console only | n/a |
+| `src/blog/draft.ts:36`, `quality.ts:81`, `sources.ts:91` | no - prompt text | n/a |
 
-  it('indexes product handles carried by syndicated posts', async () => {
-    await store.putSyndicationRow({ id: 'syn-1', articleHandle: 'guide-a', productHandles: ['cat-tree-88'] });
-    const n = await rebuildSyndicationReferrers(store);
-    expect(n).toBe(1);
-    const rows = await store.referrersFor('cat-tree-88');
-    expect(rows[0].referrer_type).toBe('syndication');
-  });
+Affiliate and partner modules persist no product handles at all (they work off
+discount codes); every `handle` match in `src/affiliate*` is a function name.
 
-  it('indexes curated Shop-this-guide picks', async () => {
-    const n = await rebuildCollectionReferrers(store, [
-      { collectionHandle: 'pet-toys', productHandles: ['ball-9', 'rope-3'] },
-    ]);
-    expect(n).toBe(2);
-    expect((await store.referrersFor('rope-3'))[0].referrer_type).toBe('collection');
-  });
-});
-```
+**The one genuinely uncovered surface: Online Store navigation menus.** A menu
+item can point at `/products/<handle>` and would 404 on archive. It is NOT
+indexed today. Reading menus needs `read_online_store_navigation` - the same
+scope Task 0 requests and Tasks 7-9 wait on - so it is blocked by the same owner
+action, and there is no point building it before that lands.
 
-- [ ] **Step 2: Run and confirm failure**
+**Follow-up when the scope is granted:** add a `navigation` slice reading
+`menus(first:)` -> `items { type resourceId }`, filtered to product resources,
+keyed by menu GID. It is a strictly stronger refusal than `blog`: a menu item
+cannot be repaired by rewriting an article, so a referenced product should be
+refused outright rather than routed through Task 12's replacement path.
 
-Run: `npx vitest run tests/referrers.test.ts`
-Expected: FAIL, `rebuildSyndicationReferrers` is not exported.
-
-- [ ] **Step 3: Add the store reader**
-
-In `src/tenant-store.ts` (D1 access must live here):
-
-```typescript
-/** Product handles carried by every syndicated post, from the existing ledger.
- *  No scraper needed - this is a join over a table we already keep. */
-async listSyndicatedProductHandles(): Promise<{ id: string; handles: string[] }[]> {
-  const rs = await this.db
-    .prepare(`SELECT id, product_handles FROM syndication_ledger WHERE shop = ?1`)
-    .bind(this.shop)
-    .all<{ id: string; product_handles: string | null }>();
-  return (rs.results ?? []).map((r) => {
-    let handles: string[] = [];
-    try { const a = JSON.parse(r.product_handles ?? '[]'); if (Array.isArray(a)) handles = a.map(String); }
-    catch { handles = []; }
-    return { id: r.id, handles };
-  });
-}
-```
-
-If `syndication_ledger` has no `product_handles` column, add one in `migrations/0035_product_referrers.sql` as `ALTER TABLE syndication_ledger ADD COLUMN product_handles TEXT;` and populate it where packs are built. **Check the column exists before writing the query** - read the migration that creates `syndication_ledger` first.
-
-- [ ] **Step 4: Implement both rebuilders in `src/catalog/referrers.ts`**
-
-```typescript
-export async function rebuildSyndicationReferrers(store: TenantStore): Promise<number> {
-  const rows = await store.listSyndicatedProductHandles();
-  let written = 0;
-  for (const row of rows) {
-    await store.clearProductReferrers('syndication', row.id);
-    for (const h of new Set(row.handles.map((x) => x.toLowerCase()))) {
-      await store.putProductReferrers(h, [{ referrerType: 'syndication', referrerId: row.id }]);
-      written++;
-    }
-  }
-  return written;
-}
-
-export async function rebuildCollectionReferrers(
-  store: TenantStore,
-  blocks: { collectionHandle: string; productHandles: string[] }[]
-): Promise<number> {
-  let written = 0;
-  for (const b of blocks) {
-    await store.clearProductReferrers('collection', b.collectionHandle);
-    for (const h of new Set(b.productHandles.map((x) => x.toLowerCase()))) {
-      await store.putProductReferrers(h, [{ referrerType: 'collection', referrerId: b.collectionHandle }]);
-      written++;
-    }
-  }
-  return written;
-}
-```
-
-- [ ] **Step 5: Call both from the `referrer-index` stage added in Task 10**
-
-- [ ] **Step 6: Run and commit**
-
-Run: `npx vitest run tests/referrers.test.ts tests/syndicate.test.ts`
-Expected: PASS.
-
-```bash
-git add src/catalog/referrers.ts src/tenant-store.ts tests/
-git commit -m "feat(catalog): index syndication and collection referrers"
-```
+**What replaced this task's effort.** The review that falsified Task 11 surfaced
+a real defect in Task 10's lap, and the budget went there instead: the index had
+no way to distinguish "nothing references this product" from "the index never
+read the article that does". `blogs(first:20) x articles(first:100)` silently
+truncates, and `referrersFor()` returns `[]` either way. That would have turned
+the guard into a 404 generator the moment Task 7 removed the `missing-scope`
+mask. See `migrations/0036_referrer_index_stamp.sql`, `indexUsable()` in
+`src/catalog/archive-guard.ts`, and the `index-incomplete` refusal.
 
 ---
 

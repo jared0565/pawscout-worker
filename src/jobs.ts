@@ -5,6 +5,7 @@ import { TenantStore, listActiveShops, purgeExpiredSearchCache, purgeUnusedWareh
 import { liveCjPasses, normalizeKeyword, CACHE_TTL_DAYS, isLikelyPetProduct, titleSignature } from './proxy/search';
 import { bestLocalQty, localWarehousesFor, HOME_MARKET_WAREHOUSES } from './local-markets';
 import { archiveProductGuarded } from './catalog/archive-guard';
+import { rebuildReferrerIndex } from './catalog/referrers';
 
 /** US-lane sourcing keywords (2026-07-07): bulky / high-ticket niches ONLY.
  *  The generic SEED_KEYWORDS produced a 0-for-35 street-parity pass rate for
@@ -1413,6 +1414,11 @@ export const DAILY_GLOBAL_STAGES: DailyGlobalStage[] = [
 ];
 
 export const DAILY_SHOP_STAGES: DailyStage[] = [
+  // MUST precede 'cull'. The cull is the only automated takedown left, and it
+  // refuses to archive anything unless this stage has just proven the referrer
+  // index is complete. Running it after the cull would mean every night's cull
+  // reads yesterday's index - or on the first night, no index at all.
+  { name: 'referrer-index', maxMs: 3 * MIN_MS, needsCj: false, run: async (ctx) => { await rebuildReferrerIndex(ctx.store, ctx.admin); } },
   { name: 'cull', maxMs: 3 * MIN_MS, needsCj: false, run: (ctx) => cullStaleProducts(ctx.store, ctx.admin).then(() => undefined) },
   { name: 'warehouse-stock', maxMs: 10 * MIN_MS, run: async (ctx) => { await refreshWarehouseStock(ctx.store, ctx.cj!, ctx.cfg); } },
   { name: 'replenish', maxMs: 8 * MIN_MS, run: async (ctx) => { await replenishWarehouse(ctx.store, ctx.cj!, ctx.cfg, { curate: ctx.curate }); } },

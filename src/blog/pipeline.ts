@@ -24,6 +24,7 @@ import { getProductImages, pickBlogHeroImage } from './hero';
 import type { AdminGraphql } from '../shopify-admin';
 import { findBlog, renameBlog, createDraftArticle, ensureRelatedProductsDefinition, getArticleForEnrich, updateArticleAssets, getPublishedMap, updateArticleContent } from './article';
 import type { FactPack } from './types';
+import { reindexArticle } from '../catalog/referrers';
 
 /**
  * Resolve the hero image: prefer a pet-with-product LIFESTYLE frame (converts
@@ -347,6 +348,10 @@ export async function regenerateArticle(
       articleId: existing.id, draft,
       imageUrl: hero.url, imageAlt: hero.alt, relatedHandles: sel.handles
     });
+    // A rewrite changes which products this guide points at, in both directions.
+    // Reindex from what we just wrote so the guard sees the new picks without
+    // waiting for tonight's rebuild.
+    await reindexArticle(store, { articleId: existing.id, bodyHtml: draft.bodyHtml, relatedHandles: sel.handles });
     return { ok: true, articleId: updated.id, handle: updated.handle, title: updated.title, claimFlags };
   } catch (e) {
     return { ok: false, error: `Article update failed: ${(e as Error).message}` };
@@ -408,6 +413,11 @@ export async function enrichBlogPost(
   } catch (e) {
     return { ok: false, error: `Update failed: ${(e as Error).message}` };
   }
+
+  // Enrich replaces the Shop-this-guide picks, which are referrers in their own
+  // right. Body is unchanged here, so it is re-read from the article we already
+  // fetched rather than re-queried.
+  await reindexArticle(store, { articleId, bodyHtml: article.bodyHtml, relatedHandles: sel.handles });
 
   await store.setBlogPostAssets(articleId, {
     relatedHandlesJson: JSON.stringify(sel.handles),

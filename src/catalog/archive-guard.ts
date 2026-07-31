@@ -25,11 +25,45 @@ const ARCHIVE = `mutation pawscoutArchive($input: ProductInput!) {
   productUpdate(input: $input) { product { id } userErrors { field message } }
 }`;
 
-export type ArchiveRefusal = 'referenced' | 'missing-scope' | 'redirect-failed' | 'no-replacement';
+export type ArchiveRefusal =
+  | 'referenced' | 'missing-scope' | 'redirect-failed' | 'no-replacement' | 'index-incomplete';
 
 export type ArchiveOutcome =
   | { ok: true }
   | { ok: false; refusal: ArchiveRefusal; detail: string };
+
+/**
+ * How old the referrer index may be before the guard stops believing it.
+ *
+ * The nightly chain rebuilds it once every 24h, so 36h tolerates one skipped or
+ * deferred run and refuses on two. Deliberately NOT generous: a stale index
+ * cannot know about an article published since it was built, and that article
+ * is exactly the one whose product is still fresh enough to be culled.
+ */
+export const INDEX_MAX_AGE_MS = 36 * 60 * 60 * 1000;
+
+/**
+ * Is the index trustworthy enough to read an EMPTY result as "unreferenced"?
+ *
+ * This is the whole reason the stamp exists. `referrersFor` returning nothing
+ * has two causes with opposite meanings - the product really is unreferenced,
+ * or the index never saw the article that references it - and only the stamp
+ * tells them apart. Exported for direct testing; the failure mode it guards is
+ * silent, so it must be provable on its own.
+ */
+export function indexUsable(
+  stamp: { indexedAt: string; truncated: boolean } | null,
+  nowMs: number = Date.now()
+): { ok: true } | { ok: false; detail: string } {
+  if (!stamp) return { ok: false, detail: 'referrer index has never been built' };
+  if (stamp.truncated) return { ok: false, detail: 'referrer index is truncated: some articles were never read' };
+  const age = nowMs - Date.parse(stamp.indexedAt);
+  if (!Number.isFinite(age)) return { ok: false, detail: `referrer index stamp is unreadable (${stamp.indexedAt})` };
+  if (age > INDEX_MAX_AGE_MS) {
+    return { ok: false, detail: `referrer index is stale: built ${Math.round(age / 3600_000)}h ago` };
+  }
+  return { ok: true };
+}
 
 /**
  * Tripwire helper, exported for tests/archive-guard.test.ts.
@@ -62,6 +96,15 @@ export async function archiveProductGuarded(
   store: TenantStore,
   opts: { cjPid: string; productId: string; handle: string; reason: string }
 ): Promise<ArchiveOutcome> {
+  // BEFORE the lookup, not after: an empty result is only meaningful when the
+  // index that produced it was complete. Checking this second would let a
+  // never-built index answer "nothing references it" for every product.
+  const usable = indexUsable(await store.getReferrerIndexStamp());
+  if (!usable.ok) {
+    console.log(`archive refused for ${opts.handle} (${opts.reason}): ${usable.detail}`);
+    return { ok: false, refusal: 'index-incomplete', detail: usable.detail };
+  }
+
   const refs = await store.referrersFor(opts.handle);
   if (refs.length) {
     const detail = `referenced by ${refs.map((r) => `${r.referrer_type}:${r.referrer_id}`).join(', ')}`;

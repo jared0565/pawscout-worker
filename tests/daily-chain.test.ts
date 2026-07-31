@@ -12,7 +12,7 @@ import { env, applyD1Migrations } from 'cloudflare:test';
 import {
   driveDailyChain, runDailyMaintenance, resumeDailyMaintenance,
   readDailyCursor, writeDailyCursor, chainDeadline,
-  JOB_STAMP_DAILY,
+  JOB_STAMP_DAILY, DAILY_SHOP_STAGES,
   type DailyCursor, type DailyStage, type DailyGlobalStage, type DailyShopCtx
 } from '../src/jobs';
 import { TenantStore } from '../src/tenant-store';
@@ -225,5 +225,26 @@ describe('runDailyMaintenance (entry point on an empty test tenant set)', () => 
     await writeDailyCursor(env.DB, freshCursor({ date: '2026-07-04', si: 0, ss: 5, ssName: 'store-inventory' }));
     await runDailyMaintenance(E, { deadlineMs: Date.now() + 60 * MIN });
     expect(await readDailyCursor(env.DB)).toBeNull(); // fresh chain for an empty tenant set completes
+  });
+});
+
+// STAGE ORDERING IS A CORRECTNESS CONSTRAINT, NOT A PREFERENCE.
+//
+// The cull is the only automated takedown left, and archiveProductGuarded
+// refuses unless the referrer index is complete and recent. Rebuilt AFTER the
+// cull, the index would be a day old every night and brand new never - so the
+// first night would archive nothing and every later night would decide from
+// yesterday's article set.
+describe('DAILY_SHOP_STAGES ordering', () => {
+  it('rebuilds the referrer index before the cull reads it', () => {
+    const names = DAILY_SHOP_STAGES.map((s) => s.name);
+    expect(names).toContain('referrer-index');
+    expect(names.indexOf('referrer-index')).toBeLessThan(names.indexOf('cull'));
+  });
+
+  it('the referrer-index stage does not need CJ - it reads Shopify only', () => {
+    // A shop without CJ credentials still culls, so its index must still build.
+    const s = DAILY_SHOP_STAGES.find((x) => x.name === 'referrer-index')!;
+    expect(s.needsCj).toBe(false);
   });
 });

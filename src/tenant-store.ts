@@ -62,16 +62,36 @@ export interface ProductLink {
   updated_at: string;
 }
 
-/** One internal surface that points at a product handle. DERIVED - rebuilt
- *  from article bodies, the related_products metafield and syndication_ledger.
- *  `blog` referrers are repairable (the article can be rewritten); `syndication`
- *  and `collection` are not, so a product they reference is refused outright. */
+/** One internal surface that points at a product handle. DERIVED - rebuilt from
+ *  article bodies and the related_products metafield.
+ *
+ *  `referrer_id` is the ARTICLE GID, not its handle. A handle can be renamed,
+ *  and clearProductReferrers is scoped to one id, so handle-keyed rows would be
+ *  orphaned by a rename and would block that product from archiving forever.
+ *
+ *  Only `blog` referrers exist today, and they are repairable (the article can
+ *  be rewritten). Surfaces that were expected to need their own type turned out
+ *  not to: syndicated posts link ARTICLES, never products (utmUrl,
+ *  src/syndicate/channels.ts:16), and the "Shop this guide" picks ARE the
+ *  related_products metafield the blog slice already reads. See the Task 11
+ *  falsification note in docs/superpowers/plans/2026-07-31-profitability-repositioning.md. */
 export interface ProductReferrer {
   shop: string;
   handle: string;
   referrer_type: string;
   referrer_id: string;
   detected_at: string;
+}
+
+/** What the last index rebuild actually managed to read. The guard refuses to
+ *  archive anything unless this is present, complete and recent - an empty
+ *  referrer lookup against a half-built index is indistinguishable from
+ *  "genuinely unreferenced". See migrations/0036_referrer_index_stamp.sql. */
+export interface ReferrerIndexStamp {
+  indexedAt: string;
+  articleCount: number;
+  rowCount: number;
+  truncated: boolean;
 }
 
 export interface KeywordDemand { keyword_norm: string; searches: number; avg_store_hits: number; avg_ghost_hits: number }
@@ -1020,6 +1040,36 @@ export class TenantStore {
       .prepare(`DELETE FROM product_referrers WHERE shop = ?1 AND referrer_type = ?2 AND referrer_id = ?3`)
       .bind(this.shop, referrerType, referrerId)
       .run();
+  }
+
+  /** Overwrite the single completeness stamp for this shop's referrer index. */
+  async putReferrerIndexStamp(s: ReferrerIndexStamp): Promise<void> {
+    await this.db
+      .prepare(
+        `INSERT INTO referrer_index_stamp (shop, indexed_at, article_count, row_count, truncated)
+         VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT(shop) DO UPDATE SET
+           indexed_at = excluded.indexed_at, article_count = excluded.article_count,
+           row_count = excluded.row_count, truncated = excluded.truncated`
+      )
+      .bind(this.shop, s.indexedAt, s.articleCount, s.rowCount, s.truncated ? 1 : 0)
+      .run();
+  }
+
+  /** null when the index has never been built - which the guard must treat as
+   *  "unknown", never as "nothing is referenced". */
+  async getReferrerIndexStamp(): Promise<ReferrerIndexStamp | null> {
+    const row = await this.db
+      .prepare(`SELECT indexed_at, article_count, row_count, truncated FROM referrer_index_stamp WHERE shop = ?1`)
+      .bind(this.shop)
+      .first<{ indexed_at: string; article_count: number; row_count: number; truncated: number }>();
+    if (!row) return null;
+    return {
+      indexedAt: row.indexed_at,
+      articleCount: row.article_count,
+      rowCount: row.row_count,
+      truncated: row.truncated === 1,
+    };
   }
 
   async recordEvent(cjPid: string, event: 'view' | 'atc' | 'order'): Promise<void> {
