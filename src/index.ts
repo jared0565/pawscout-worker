@@ -61,6 +61,7 @@ import { firecrawlCjSearch } from './firecrawl';
 import { handleAffiliateApply, renderApplyForm, renderTermsPage, GENERIC_APPLY_MESSAGE, type ApplyFields } from './affiliate/apply';
 import { handleAffiliateVerify, EXPIRED_HTML as AFFILIATE_VERIFY_EXPIRED_HTML } from './affiliate/verify';
 import { runAffiliateScreenSweep } from './affiliate/screen';
+import { runScopeWatch } from './shopify-scopes';
 import { getApplicationsConsole, approveApplicationAnyway, declineApplicationById } from './affiliate/console';
 import { defaultFetch } from './safe-fetch';
 import { handlePortalLogin, handlePortalGet, handlePortalData, SESSION_COOKIE_NAME, SESSION_COOKIE_PATH, SESSION_MAX_AGE_SECONDS, PORTAL_DARK_HTML, GENERIC_LOGIN_HTML } from './affiliate/portal';
@@ -2079,7 +2080,7 @@ const worker: ExportedHandler<Env> = {
     ctx.waitUntil(
       controller.cron === DAILY_CRON
         ? Promise.all([runDailyMaintenance(env), maybeAffiliatePayoutReminder(env)]).then(() => undefined)
-        : Promise.all([runOrderPipeline(env), runInboxClassifySweep(env), runMarketVisibilityReconcile(env), runProfitAgentSweep(env), runSyndicationSweep(env), runAffiliateScreenSweep(env), resumeDailyMaintenance(env)]).then(() => undefined)
+        : Promise.all([runOrderPipeline(env), runInboxClassifySweep(env), runMarketVisibilityReconcile(env), runProfitAgentSweep(env), runSyndicationSweep(env), runAffiliateScreenSweep(env), runScopeWatch(env), resumeDailyMaintenance(env)]).then(() => undefined)
     );
   },
   email: (message, env, ctx) => handleInboundEmail(message, env, ctx)

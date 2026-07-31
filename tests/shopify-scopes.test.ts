@@ -50,3 +50,12 @@ describe('missingScopes', () => {
       .toEqual(['read_online_store_navigation']);
   });
 });
+
+describe('runScopeWatch', () => {
+  it('is exported and never throws when the vault is unusable', async () => {
+    // A diagnostic must not be able to break the 15-minute sweep it rides on.
+    const { runScopeWatch } = await import('../src/shopify-scopes');
+    await expect(runScopeWatch({ DB: undefined, PAWSCOUT_MASTER_KEY: 'not-a-key' } as never))
+      .resolves.toBeUndefined();
+  });
+});

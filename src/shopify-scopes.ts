@@ -13,7 +13,10 @@
  * answered by a clicked consent screen or by a remembered to-do. It has to be a
  * real call. This module is that call.
  */
-import type { AdminGraphql } from './shopify-admin';
+import { makeAdminGraphql, type AdminGraphql } from './shopify-admin';
+import type { Env } from './types';
+import { TenantStore, listActiveShops } from './tenant-store';
+import { Vault } from './vault';
 
 /** Validated against the pinned 2026-04 Admin schema (shopify.dev docs,
  *  2026-07-31): currentAppInstallation returns AppInstallation!, whose
@@ -63,4 +66,58 @@ export async function probeGrantedScopes(admin: AdminGraphql): Promise<ScopeProb
 export function missingScopes(granted: string[], required: readonly string[]): string[] {
   const have = new Set(granted);
   return required.filter((r) => !have.has(r));
+}
+
+/** search_cache key holding the last logged redirect-scope verdict, per shop. */
+export const SCOPE_WATCH_KEY = 'scope-watch:redirects';
+const SCOPE_WATCH_TTL_DAYS = 1 / 24; // one hour
+
+/**
+ * THE DORMANT-CULL WATCH, on the 15-minute cron.
+ *
+ * Adding a scope in the Dev Dashboard and the app actually holding it are
+ * different events, and nothing in this worker noticed the gap between them:
+ * `ensureInstalled` returns early once a token exists (auth/ensure-installed.ts)
+ * and never re-exchanges, while `tenants.scopes` keeps its mint-time value
+ * forever. So the only honest answer comes from asking Shopify, and the only
+ * place that answer was visible was a session-authed console page - useless to
+ * a cron, a log reader, or anyone without a browser open.
+ *
+ * This logs the verdict so the state is observable without a session. Rate
+ * limited to one line per shop per hour so it cannot flood the log, and it logs
+ * the GRANTED case too: silence would otherwise be ambiguous between "all good"
+ * and "the cron never ran", which is the ambiguity this whole exercise is about.
+ *
+ * Never throws - a diagnostic must not be able to break the sweep it rides on.
+ */
+export async function runScopeWatch(env: Env): Promise<void> {
+  let vault: Vault;
+  try { vault = await Vault.fromMasterKey(env.PAWSCOUT_MASTER_KEY); }
+  catch (e) { console.warn(`scope watch: vault unavailable: ${(e as Error).message}`); return; }
+
+  for (const shop of await listActiveShops(env.DB)) {
+    try {
+      const store = new TenantStore(env.DB, shop);
+      if (await store.getSearchCache(SCOPE_WATCH_KEY)) continue; // logged within the hour
+      const tenant = await store.getTenant();
+      if (!tenant?.access_token_enc || !tenant.dek_wrapped) continue;
+      const accessToken = await vault.open(tenant.dek_wrapped, tenant.access_token_enc);
+      const probe = await probeGrantedScopes(makeAdminGraphql(shop, accessToken));
+      if (!probe.ok) {
+        // NOT cached: a failed probe is not a verdict, and caching it would
+        // suppress the real answer for an hour.
+        console.warn(`scope watch ${shop}: probe FAILED: ${probe.error}`);
+        continue;
+      }
+      const missing = missingScopes(probe.granted, REDIRECT_SCOPES);
+      if (missing.length) {
+        console.warn(`scope watch ${shop}: archive redirects BLOCKED, missing ${missing.join(', ')} - the no-movement cull refuses every archive. Granted: ${probe.granted.join(', ')}`);
+      } else {
+        console.log(`scope watch ${shop}: archive redirect scopes GRANTED. Granted: ${probe.granted.join(', ')}`);
+      }
+      await store.putSearchCache(SCOPE_WATCH_KEY, missing.length ? `missing:${missing.join(',')}` : 'granted', SCOPE_WATCH_TTL_DAYS);
+    } catch (e) {
+      console.warn(`scope watch failed for ${shop}: ${(e as Error).message}`);
+    }
+  }
 }
