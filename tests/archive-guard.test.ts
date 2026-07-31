@@ -48,6 +48,26 @@ describe('archiveProductGuarded', () => {
   });
 });
 
+// Vite inlines these file contents as strings at build time (?raw) - no node:fs,
+// which workerd does not implement. Mirrors the pattern in tests/guard.test.ts.
+declare global {
+  interface ImportMeta {
+    glob(pattern: string, opts: { query?: string; eager?: boolean; import?: string }): Record<string, string>;
+  }
+}
+const sources = import.meta.glob('../src/**/*.ts', { query: '?raw', eager: true, import: 'default' });
+
+describe('single archive door', () => {
+  it('only archive-guard.ts writes status ARCHIVED', () => {
+    expect(Object.keys(sources).length).toBeGreaterThan(0); // fail loudly if the glob matched nothing
+    const offenders = Object.entries(sources)
+      .filter(([p]) => !p.endsWith('catalog/archive-guard.ts'))
+      .filter(([, src]) => writesArchivedStatus(src))
+      .map(([p]) => p);
+    expect(offenders, `archive outside the guard: ${offenders.join(', ')}`).toEqual([]);
+  });
+});
+
 describe('archive tripwire', () => {
   it('flags a real ARCHIVED status write but not an innocent state comparison', () => {
     // Positive controls: genuine archive mutations must be caught.

@@ -62,7 +62,11 @@ function makeFakes(products: Record<string, Prod>) {
     }
     if (query.includes('pawscoutPrices')) { priceCalls.push({ productId: vars.productId, updates: vars.variants }); return { productVariantsBulkUpdate: { userErrors: [] } }; }
     if (query.includes('pawscoutArchiveOne')) { archiveCalls.push(vars.input.id); return { productUpdate: { userErrors: [] } }; }
-    if (query.includes('pawscoutProfitStatus')) { statusCalls.push({ id: vars.input.id, status: vars.input.status }); return { productUpdate: { userErrors: [] } }; }
+    // Renamed from pawscoutProfitStatus 2026-07-31: the mutation now only ever
+    // sets ACTIVE (the un-archive direction), because archiving moved behind
+    // archiveProductGuarded. The accurate name matters - archive/activate
+    // ambiguity is what let three separate archive paths grow.
+    if (query.includes('pawscoutProfitActivate')) { statusCalls.push({ id: vars.input.id, status: vars.input.status }); return { productUpdate: { userErrors: [] } }; }
     return {};
   }) as any;
 
@@ -106,13 +110,22 @@ describe('runProfitAgent (active adjust-or-drop on live Shopify numbers)', () =>
     expect(f.ledger[0].dryRun).toBe(false);
   });
 
-  it('LIVE drop ARCHIVES a clear loss and flips the link state', async () => {
+  // BEHAVIOUR CHANGED 2026-07-31. This test asserted that a clear loss was
+  // ARCHIVED by the agent. That is exactly what generated the 404 flood in the
+  // Google feed: archiving left /products/<handle> permanently dead. The agent
+  // now FLAGS a clear loss and archives nothing; takedown belongs to the
+  // no-movement cull, which goes through archiveProductGuarded.
+  it('LIVE clear loss is FLAGGED, never archived, and the link stays imported', async () => {
     const f = makeFakes({ LOSS: { variants: [{ variantId: 'v', price: '10.00', cost: '8.00' }], competitor: { estimateGbp: 15, confidence: 'high' } } });
     const r = await runProfitAgent(f.store, f.admin, f.llm, cfg({ dryRun: false }), {});
-    expect(f.archiveCalls).toEqual(['gid://LOSS']);
-    expect(f.putLinkCalls).toEqual([{ cjPid: 'LOSS', state: 'archived' }]);
-    expect(r.dropped).toBe(1);
-    expect(f.ledger[0].action).toBe('drop');
+    expect(f.archiveCalls).toEqual([]);                   // the whole point
+    expect(f.putLinkCalls).toEqual([]);                   // link is NOT flipped to archived
+    expect(r.dropped).toBe(0);
+    expect(f.ledger.length).toBe(0);                      // a flag is not a ledger mutation
+    // The economics are still reported honestly: the console still shows this
+    // as a reject, it simply is not acted on.
+    expect(f.productProfit.get('LOSS')?.verdict).toBe('reject');
+    expect(f.productProfit.get('LOSS')?.action).toBe('flag');
   });
 
   it('NEVER auto-archives on a medium-confidence market (flag only, no execution)', async () => {

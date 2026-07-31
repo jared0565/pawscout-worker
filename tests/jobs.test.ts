@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
-import { cullStaleProducts, restoreCulledProducts, runProfitAgentSweep, refillCollections, syncStoreInventory, resyncLowStockInventory, seedSemanticLibrary, sellableQty, CULL_MIN_WINDOW_EVENTS, LOW_STOCK_BAND, LOW_STOCK_RESERVE } from '../src/jobs';
+import { cullStaleProducts, restoreCulledProducts, runProfitAgentSweep, refillCollections, syncStoreInventory, resyncLowStockInventory, seedSemanticLibrary, sellableQty, CULL_MIN_WINDOW_EVENTS, CULL_WINDOW_DAYS, LOW_STOCK_BAND, LOW_STOCK_RESERVE } from '../src/jobs';
 import { TenantStore } from '../src/tenant-store';
 import { DEFAULT_GATES, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, DEFAULT_INBOX, DEFAULT_SEMANTIC, DEFAULT_PROFIT, type TenantConfig } from '../src/types';
 import type { CjClient, CjDetail } from '../src/cj';
@@ -111,10 +111,21 @@ describe('cullStaleProducts', () => {
       archived.push((variables!.input as { id: string }).id);
       return { productUpdate: { product: { id: 'x' }, userErrors: [] } };
     };
-    const n = await cullStaleProducts(store, admin);
+    // SELECTION is unchanged: 'stale' is the one and only eligible candidate.
+    // This is the part of the cull this test exists to pin, and it is asserted
+    // directly rather than inferred from an archive that no longer happens.
+    const eligible = await store.linksEligibleForArchive(new Date(Date.now() - CULL_WINDOW_DAYS * 86400_000).toISOString());
+    expect(eligible.map((l) => l.cj_pid)).toEqual(['stale']);
 
-    expect(n).toBe(1);
-    expect(archived).toEqual(['gid://shopify/Product/stale']);
+    // BEHAVIOUR CHANGED 2026-07-31: the cull now archives through
+    // archiveProductGuarded, which refuses while the online-store-navigation
+    // scope is absent because it cannot create a redirect. So the eligible
+    // product is NOT archived and nothing new 404s. This is deliberate
+    // dormancy, not a broken cull - see the 2026-07-31 spec.
+    const n = await cullStaleProducts(store, admin);
+    expect(n).toBe(0);
+    expect(archived).toEqual([]);
+    expect((await store.getLink('stale'))?.state).toBe('imported'); // still live, deliberately
     expect((await store.getLink('paused'))?.state).toBe('imported'); // exempt while unsellable
     expect((await store.getLink('active'))?.state).toBe('imported');
   });

@@ -4,6 +4,7 @@ import { makeAdminGraphql, type AdminGraphql } from './shopify-admin';
 import { TenantStore, listActiveShops, purgeExpiredSearchCache, purgeUnusedWarehouse, trimOldLogs, readJobCheckpoint, writeJobCheckpoint } from './tenant-store';
 import { liveCjPasses, normalizeKeyword, CACHE_TTL_DAYS, isLikelyPetProduct, titleSignature } from './proxy/search';
 import { bestLocalQty, localWarehousesFor, HOME_MARKET_WAREHOUSES } from './local-markets';
+import { archiveProductGuarded } from './catalog/archive-guard';
 
 /** US-lane sourcing keywords (2026-07-07): bulky / high-ticket niches ONLY.
  *  The generic SEED_KEYWORDS produced a 0-for-35 street-parity pass rate for
@@ -100,7 +101,11 @@ export const JOB_STAMP_PIPELINE = 'job:order-pipeline';
 export const JOB_STAMP_MARKETS = 'job:market-exclusions';
 export const JOB_STAMP_TTL_DAYS = 30;
 
-const ARCHIVE = `mutation pawscoutArchive($input: ProductInput!) {
+/** Sets a product back to ACTIVE. The UN-archive direction, so it is not an
+ *  archive path and does not go through the guard. It previously shared a
+ *  constant with the cull's archive mutation, which is why that constant
+ *  outlived the archive call site. */
+const SET_PRODUCT_ACTIVE = `mutation pawscoutActivate($input: ProductInput!) {
   productUpdate(input: $input) { product { id } userErrors { field message } }
 }`;
 
@@ -108,6 +113,12 @@ const ARCHIVE = `mutation pawscoutArchive($input: ProductInput!) {
  * 30-day performance cull: ARCHIVE (never delete) imported products with zero
  * qualifying events (view/atc/order) in the window. Products younger than the
  * window are exempt by the same cutoff (grace period).
+ *
+ * Since 2026-07-31 this is the ONLY automated takedown in the system - the
+ * profitability agent no longer archives - and it goes through
+ * archiveProductGuarded, which refuses a product that a guide or a syndicated
+ * post still points at and creates a URL redirect before anything is archived.
+ * Its inline ARCHIVE mutation was deleted; a refusal is logged, not thrown.
  */
 export async function cullStaleProducts(
   store: TenantStore,
@@ -125,13 +136,22 @@ export async function cullStaleProducts(
   const stale = await store.linksEligibleForArchive(cutoff);
   let archived = 0;
   for (const link of stale) {
-    if (!link.shopify_product_id) continue;
+    if (!link.shopify_product_id || !link.handle) continue;
     try {
-      const data = await admin(ARCHIVE, { input: { id: link.shopify_product_id, status: 'ARCHIVED' } });
-      const errs = (data.productUpdate as { userErrors?: { message: string }[] } | undefined)?.userErrors ?? [];
-      if (errs.length) throw new Error(errs.map((e) => e.message).join('; '));
-      await store.putLink({ cjPid: link.cj_pid, state: 'archived' });
-      archived++;
+      const out = await archiveProductGuarded(admin, store, {
+        cjPid: link.cj_pid,
+        productId: link.shopify_product_id,
+        handle: link.handle,
+        reason: 'no-movement cull',
+      });
+      if (out.ok) {
+        await store.putLink({ cjPid: link.cj_pid, state: 'archived' });
+        archived++;
+      } else {
+        // Not an error: a refusal is the guard working. Logged with its reason
+        // so a cull that archives nothing is diagnosable rather than mysterious.
+        console.log(`cull: skipped ${link.cj_pid} - ${out.refusal}: ${out.detail}`);
+      }
     } catch (e) {
       console.warn(`cull: archive failed for ${link.cj_pid}: ${(e as Error).message}`);
     }
@@ -156,7 +176,7 @@ export async function restoreCulledProducts(
   let restored = 0, failed = 0;
   for (const link of links) {
     try {
-      const data = await admin(ARCHIVE, { input: { id: link.shopify_product_id, status: 'ACTIVE' } });
+      const data = await admin(SET_PRODUCT_ACTIVE, { input: { id: link.shopify_product_id, status: 'ACTIVE' } });
       const errs = (data.productUpdate as { userErrors?: { message: string }[] } | undefined)?.userErrors ?? [];
       if (errs.length) throw new Error(errs.map((e) => e.message).join('; '));
       await store.putLink({ cjPid: link.cj_pid, state: 'imported' });

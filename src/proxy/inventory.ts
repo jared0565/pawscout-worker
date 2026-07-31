@@ -99,22 +99,12 @@ export async function updateVariantPrices(
   if (errs.length) throw new Error(errs.map((e) => e.message).join('; '));
 }
 
-/**
- * Archive a product (take it off sale without deleting it). Same mutation the
- * 30-day cull uses; exposed here so the profitability agent can drop a product
- * that cannot be sold at a profit. Reversible (status back to ACTIVE + link
- * state). Throws on userErrors. Callers also flip the product_link state.
- */
-export async function archiveProduct(admin: AdminGraphql, productId: string): Promise<void> {
-  const data = await admin(
-    `mutation pawscoutArchiveOne($input: ProductInput!) {
-      productUpdate(input: $input) { product { id } userErrors { field message } }
-    }`,
-    { input: { id: productId, status: 'ARCHIVED' } }
-  );
-  const errs = (data.productUpdate as { userErrors?: { message: string }[] } | undefined)?.userErrors ?? [];
-  if (errs.length) throw new Error(errs.map((e) => e.message).join('; '));
-}
+// archiveProduct was REMOVED 2026-07-31. It let the profitability agent take a
+// live product off sale, and because it created no URL redirect every call left
+// a permanent 404 that Google kept crawling. Archiving now happens ONLY through
+// archiveProductGuarded in src/catalog/archive-guard.ts, which checks the
+// referrer index and creates a redirect first. tests/archive-guard.test.ts fails
+// the build if a status-ARCHIVED write reappears in this file.
 
 /** Absolute-set available quantities (reason: correction). Throws on userErrors. */
 export async function setInventoryQuantities(

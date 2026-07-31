@@ -12,6 +12,7 @@ import type { MarketSource } from './market';
 import type { TenantConfig } from './types';
 import { DEFAULT_PROFIT } from './types';
 import { judgeImportedLink, competitorCacheKey } from './profitability';
+import { archiveProductGuarded } from './catalog/archive-guard';
 
 export interface ProfitConsoleRow {
   cjPid: string;
@@ -211,13 +212,21 @@ export async function rejectProfitMatch(
   }
 }
 
-const SET_PRODUCT_STATUS = `mutation pawscoutProfitStatus($input: ProductInput!) {
+/** Sets a product back to ACTIVE. This is the UN-archive direction, so it is not
+ *  an archive path and does not go through the guard - it previously shared a
+ *  constant with the archive mutation, which is why that constant outlived the
+ *  archive call site. */
+const SET_PRODUCT_ACTIVE = `mutation pawscoutProfitActivate($input: ProductInput!) {
   productUpdate(input: $input) { product { id } userErrors { field message } }
 }`;
 
-/** Owner-confirmed archive of ONE flagged product (never automatic). Sets the
- *  Shopify product to ARCHIVED and marks the link archived, mirroring the cull
- *  path. Refuses a pid with no live product or one already archived. */
+/** Owner-confirmed archive of ONE flagged product (never automatic).
+ *
+ *  Routed through archiveProductGuarded since 2026-07-31 - it no longer carries
+ *  its own mutation. Even an owner-initiated archive must leave a URL redirect
+ *  and must not silently break a guide that recommends the product, so the same
+ *  refusals apply here as to the cull; they are surfaced as the error string so
+ *  the console shows WHY rather than failing opaquely. */
 export async function archiveProfitProduct(
   store: TenantStore, admin: AdminGraphql, cjPid: unknown
 ): Promise<{ ok: true } | { ok: false; error: string }> {
@@ -225,9 +234,11 @@ export async function archiveProfitProduct(
   const link = await store.getLink(cjPid);
   if (!link || !link.shopify_product_id) return { ok: false, error: 'No Shopify product for that item' };
   if (link.state === 'archived') return { ok: false, error: 'Already archived' };
-  const data = await admin(SET_PRODUCT_STATUS, { input: { id: link.shopify_product_id, status: 'ARCHIVED' } });
-  const errs = (data.productUpdate as { userErrors?: { message: string }[] } | undefined)?.userErrors ?? [];
-  if (errs.length) return { ok: false, error: errs.map((e) => e.message).join('; ') };
+  if (!link.handle) return { ok: false, error: 'No handle on that link' };
+  const out = await archiveProductGuarded(admin, store, {
+    cjPid, productId: link.shopify_product_id, handle: link.handle, reason: 'owner console archive',
+  });
+  if (!out.ok) return { ok: false, error: `${out.refusal}: ${out.detail}` };
   await store.putLink({ cjPid, state: 'archived' });
   return { ok: true };
 }
@@ -273,9 +284,13 @@ export async function recalibrateProfitDrops(
       const judged = await judgeImportedLink(store, admin, llm, cfg,
         { cj_pid: cjPid, shopify_product_id: link.shopify_product_id, profit_keep: link.profit_keep },
         dryRun, { market: opts.market ?? null });
-      if (judged.action === 'drop') { stillDropped++; continue; }
+      // rawAction, NOT action: the agent stopped archiving live products on
+      // 2026-07-31 and now reports an economic drop as a 'flag'. Reading
+      // `action` here would treat every unprofitable product as rescuable and
+      // un-archive the entire drop history on the next recalibrate.
+      if (judged.rawAction === 'drop') { stillDropped++; continue; }
       if (!dryRun) {
-        const data = await admin(SET_PRODUCT_STATUS, { input: { id: link.shopify_product_id, status: 'ACTIVE' } });
+        const data = await admin(SET_PRODUCT_ACTIVE, { input: { id: link.shopify_product_id, status: 'ACTIVE' } });
         const errs = (data.productUpdate as { userErrors?: { message: string }[] } | undefined)?.userErrors ?? [];
         if (errs.length) { failed++; console.warn(`recalibrate un-archive failed for ${cjPid}: ${errs.map((e) => e.message).join('; ')}`); continue; }
         await store.putLink({ cjPid, state: 'imported' });

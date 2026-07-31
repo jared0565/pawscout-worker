@@ -15,7 +15,7 @@ import { resolveChain } from './llm-resolve';
 import type { TenantStore } from './tenant-store';
 import type { CjDetail } from './cj';
 import type { AdminGraphql } from './shopify-admin';
-import { productInventoryItems, updateVariantPrices, archiveProduct } from './proxy/inventory';
+import { productInventoryItems, updateVariantPrices } from './proxy/inventory';
 import type { Pricing, ProfitConfig, TenantConfig } from './types';
 import { DEFAULT_PROFIT } from './types';
 import { buildMarketQuery, matchCandidates, credibleMarketGbp } from './market';
@@ -462,7 +462,18 @@ export async function judgeImportedLink(
   store: TenantStore, admin: AdminGraphql, llm: LlmClient, cfg: TenantConfig,
   link: { cj_pid: string; shopify_product_id: string; profit_keep?: number | null }, dryRun: boolean,
   opts: { market?: MarketSource | null; signalOverride?: CompetitorSignal | null } = {}
-): Promise<{ action: 'keep' | 'reprice' | 'drop' | 'flag'; reason: string; signal: CompetitorSignal | null }> {
+): Promise<{
+  /** What the agent DID. Never 'drop' since 2026-07-31 - the agent does not
+   *  archive live products. */
+  action: 'keep' | 'reprice' | 'drop' | 'flag';
+  /** What the economics SAID, before the drop-to-flag remap. Callers that need
+   *  the real verdict must read this - notably recalibrateProfitDrops, which
+   *  un-archives anything that is not a drop and would otherwise rescue every
+   *  unprofitable product the moment drops started arriving as flags. */
+  rawAction: 'keep' | 'reprice' | 'drop' | 'flag';
+  reason: string;
+  signal: CompetitorSignal | null;
+}> {
   const profit = cfg.profit as ProfitConfig;
   const pid = link.shopify_product_id;
 
@@ -487,7 +498,7 @@ export async function judgeImportedLink(
       competitorConfidence: prev?.competitor_confidence ?? null, competitorSources: prevSources,
       reason, action: 'keep', fromGbp: null, toGbp: null, dryRun,
     });
-    return { action: 'keep', reason, signal: null };
+    return { action: 'keep', rawAction: 'keep', reason, signal: null };
   }
 
   const inv = await productInventoryItems(admin, pid);
@@ -505,7 +516,7 @@ export async function judgeImportedLink(
       competitorGbp: null, competitorConfidence: null, competitorSources: null,
       reason: 'no live price/cost to judge', action: 'keep', fromGbp: null, toGbp: null, dryRun,
     });
-    return { action: 'keep', reason: 'no live price/cost to judge', signal: null };
+    return { action: 'keep', rawAction: 'keep', reason: 'no live price/cost to judge', signal: null };
   }
 
   const fromPrice = Math.min(...sellable.map((v) => v.priceGbp));
@@ -522,7 +533,23 @@ export async function judgeImportedLink(
     ? opts.signalOverride
     : await competitorSignal(llm, store, cfg, { pid: link.cj_pid, title, ourRetailGbp: fromPrice, market: opts.market });
   const competitor = signal && signal.estimateGbp > 0 ? { estimateGbp: signal.estimateGbp, confidence: signal.confidence } : null;
-  const action = decideProfitAction({ variants: sellable, competitor, profit });
+  const decided = decideProfitAction({ variants: sellable, competitor, profit });
+
+  // THE AGENT NO LONGER ARCHIVES A LIVE PRODUCT (2026-07-31).
+  //
+  // Archiving a live product is what generated the 404s Google was reporting:
+  // every archive left /products/<handle> permanently dead. Takedown is now the
+  // no-movement cull's job alone, and it must go through archiveProductGuarded
+  // so a referrer check and a URL redirect happen first.
+  //
+  // A `drop` verdict is still computed and still recorded - it is a real signal
+  // and the owner sees it - but it becomes a FLAG for review rather than an
+  // action. decideProfitAction itself is deliberately unchanged, because the
+  // IMPORT entry gate still needs `drop` to mean "refuse admission"; only this
+  // post-catalog caller remaps it.
+  const action = decided.kind === 'drop'
+    ? { kind: 'flag' as const, reason: `${decided.reason} - flagged for review (the agent no longer archives live products)` }
+    : decided;
 
   // Reported net + our price + verdict, from the decided action.
   let toGbp: number | null = null;
@@ -533,14 +560,18 @@ export async function judgeImportedLink(
   }
   const ourPrice = action.kind === 'reprice' ? (toGbp as number) : fromPrice;
   const exVat = ourPrice / (1 + profit.vatRate);
-  const verdict = action.kind === 'drop' ? 'reject' : action.kind === 'flag' ? 'review' : 'pass';
+  // Verdict comes from the RAW decision, not the remapped action. The agent no
+  // longer archives, but "this product cannot be sold at a profit" is still
+  // worth showing as 'reject' in the console rather than collapsing every
+  // economic reject into the softer 'review' bucket.
+  const verdict = decided.kind === 'drop' ? 'reject' : decided.kind === 'flag' ? 'review' : 'pass';
 
   // EXECUTE (live only). Dry-run still counts what it WOULD do.
   if (action.kind === 'reprice') {
     if (!dryRun) await updateVariantPrices(admin, pid, action.updates.map((u) => ({ id: u.variantId, price: u.toGbp.toFixed(2) })));
-  } else if (action.kind === 'drop') {
-    if (!dryRun) { await archiveProduct(admin, pid); await store.putLink({ cjPid: link.cj_pid, state: 'archived' }); }
   }
+  // No archive branch by design - see the remap above. `flag` is a recorded
+  // verdict, not a mutation.
 
   // Persist current state (always).
   await store.upsertProfitVerdict({
@@ -552,7 +583,12 @@ export async function judgeImportedLink(
 
   // Ledger: record only real mutations (reprice/drop), deduped against the
   // pre-write snapshot so a re-preview / steady-state repeat is not re-logged.
-  if (action.kind === 'reprice' || action.kind === 'drop') {
+  // `drop` is unreachable here since the 2026-07-31 remap, so reprice is the
+  // only real mutation left to log. A flag is still recorded - it goes to
+  // product_profit via upsertProfitVerdict above and shows in the console
+  // Products list - it just is not an action ledger entry, because nothing was
+  // mutated. That keeps profit_actions meaning "what the agent actually did".
+  if (action.kind === 'reprice') {
     const sig = (a: string | null | undefined, to: number | null | undefined, dr: number | null | undefined) =>
       `${a ?? ''}|${to == null ? '' : Number(to).toFixed(2)}|${dr ?? ''}`;
     const cur = sig(action.kind, toGbp, dryRun ? 1 : 0);
@@ -566,7 +602,7 @@ export async function judgeImportedLink(
     }
   }
 
-  return { action: action.kind, reason: action.reason, signal };
+  return { action: action.kind, rawAction: decided.kind, reason: action.reason, signal };
 }
 
 export async function runProfitAgent(
