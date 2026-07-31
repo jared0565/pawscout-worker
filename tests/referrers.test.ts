@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
 import { TenantStore } from '../src/tenant-store';
-import { handlesInBody, rebuildBlogReferrers, listArticlesForIndex, rebuildReferrerIndex } from '../src/catalog/referrers';
+import { handlesInBody, rebuildBlogReferrers, listArticlesForIndex, rebuildReferrerIndex, reindexArticle } from '../src/catalog/referrers';
 
 const SHOP = 'test.myshopify.com';
 
@@ -207,5 +207,54 @@ describe('rebuildReferrerIndex', () => {
 
   it('a shop that never ran it reads null, not an empty stamp', async () => {
     expect(await new TenantStore(env.DB, 'fresh.myshopify.com').getReferrerIndexStamp()).toBeNull();
+  });
+});
+
+describe('reindexArticle', () => {
+  let store: TenantStore;
+  beforeEach(() => { store = new TenantStore(env.DB, SHOP); });
+
+  it('refreshes ONE article without touching the completeness stamp', async () => {
+    // Moving indexedAt here would let a stale index look fresh every time the
+    // owner regenerated a post.
+    await reindexArticle(store, {
+      articleId: 'gid://shopify/Article/1',
+      bodyHtml: '<a href="/products/cat-tree-88">t</a>', relatedHandles: ['scratch-post-63'],
+    });
+    expect(await store.referrersFor('cat-tree-88')).toHaveLength(1);
+    expect(await store.referrersFor('scratch-post-63')).toHaveLength(1);
+    expect(await store.getReferrerIndexStamp()).toBeNull();
+  });
+
+  it('drops a handle the rewrite removed', async () => {
+    const a = 'gid://shopify/Article/1';
+    await reindexArticle(store, { articleId: a, bodyHtml: '<a href="/products/old">x</a>', relatedHandles: [] });
+    await reindexArticle(store, { articleId: a, bodyHtml: '<a href="/products/new">y</a>', relatedHandles: [] });
+    expect(await store.referrersFor('old')).toEqual([]);
+    expect(await store.referrersFor('new')).toHaveLength(1);
+  });
+
+  it('REFUSES an empty body rather than clearing the article to nothing', async () => {
+    // The callers read the body via `a.body ?? ''`, so a partial GraphQL
+    // response presents a real article as linkless. Rebuilding from that would
+    // UNDER-block, and the cull can run the same day.
+    const a = 'gid://shopify/Article/1';
+    await reindexArticle(store, { articleId: a, bodyHtml: '<a href="/products/keep-me">x</a>', relatedHandles: [] });
+    await reindexArticle(store, { articleId: a, bodyHtml: '   ', relatedHandles: [] });
+    expect(await store.referrersFor('keep-me')).toHaveLength(1);
+  });
+
+  it('the NIGHTLY path still clears on an empty body - it reads every article at once', async () => {
+    const a = 'gid://shopify/Article/1';
+    await reindexArticle(store, { articleId: a, bodyHtml: '<a href="/products/gone">x</a>', relatedHandles: [] });
+    await rebuildBlogReferrers(store, [{ articleId: a, bodyHtml: '', relatedHandles: [] }]);
+    expect(await store.referrersFor('gone')).toEqual([]);
+  });
+
+  it('swallows a store failure - an article write must not roll back for a cache', async () => {
+    const broken = { clearProductReferrers: async () => { throw new Error('d1 down'); } } as never;
+    await expect(reindexArticle(broken, {
+      articleId: 'gid://shopify/Article/1', bodyHtml: '<a href="/products/x">x</a>', relatedHandles: [],
+    })).resolves.toBeUndefined();
   });
 });

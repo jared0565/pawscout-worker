@@ -150,11 +150,24 @@ export async function rebuildBlogReferrers(
  * Never throws: an article write must not be rolled back because a derived
  * cache could not be updated. A miss here is corrected by the nightly rebuild,
  * and until then it can only over-block, never over-archive.
+ *
+ * AN EMPTY BODY IS REFUSED, and that asymmetry with the nightly rebuild is
+ * deliberate. Callers read the body from a query that coalesces a null to ''
+ * (getArticleForEnrich, blog/article.ts:266), so a partial GraphQL response
+ * would present a real article as having no links at all. Rebuilding from that
+ * clears every body referrer this article contributed and UNDER-blocks until
+ * the next nightly run, with the cull possibly landing in between. The nightly
+ * path stays authoritative and does clear on an empty body: it reads every
+ * article in one query, so an empty body there is a real edit, not a lost field.
  */
 export async function reindexArticle(
   store: TenantStore,
   article: ArticleSource
 ): Promise<void> {
+  if (!article.bodyHtml.trim()) {
+    console.warn(`referrer reindex skipped for ${article.articleId}: empty body, leaving the nightly rebuild authoritative`);
+    return;
+  }
   try {
     await rebuildBlogReferrers(store, [article]);
   } catch (e) {
