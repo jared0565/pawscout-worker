@@ -6,7 +6,7 @@ import { liveCjPasses, normalizeKeyword, CACHE_TTL_DAYS, isLikelyPetProduct, tit
 import { bestLocalQty, localWarehousesFor, HOME_MARKET_WAREHOUSES } from './local-markets';
 import { archiveProductGuarded } from './catalog/archive-guard';
 import { rebuildReferrerIndex } from './catalog/referrers';
-import type { LivenessMemo } from './catalog/redirects';
+import { findRedirect, deleteRedirect, type LivenessMemo } from './catalog/redirects';
 
 /** US-lane sourcing keywords (2026-07-07): bulky / high-ticket niches ONLY.
  *  The generic SEED_KEYWORDS produced a 0-for-35 street-parity pass rate for
@@ -183,6 +183,16 @@ export async function restoreCulledProducts(
   let restored = 0, failed = 0;
   for (const link of links) {
     try {
+      // DELETE THE REDIRECT FIRST. Every archive now leaves one behind, so a
+      // product restored while its own /products/<handle> still redirects
+      // elsewhere is live but unreachable - the restore would report success
+      // and the product would stay invisible. Failing here must abort the
+      // restore rather than press on: un-archiving behind a live redirect is
+      // strictly worse than leaving it archived, because it looks fixed.
+      if (link.handle) {
+        const existing = await findRedirect(admin, `/products/${link.handle}`);
+        if (existing) await deleteRedirect(admin, existing.id);
+      }
       const data = await admin(SET_PRODUCT_ACTIVE, { input: { id: link.shopify_product_id, status: 'ACTIVE' } });
       const errs = (data.productUpdate as { userErrors?: { message: string }[] } | undefined)?.userErrors ?? [];
       if (errs.length) throw new Error(errs.map((e) => e.message).join('; '));

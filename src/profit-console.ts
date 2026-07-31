@@ -13,6 +13,7 @@ import type { TenantConfig } from './types';
 import { DEFAULT_PROFIT } from './types';
 import { judgeImportedLink, competitorCacheKey } from './profitability';
 import { archiveProductGuarded } from './catalog/archive-guard';
+import { findRedirect, deleteRedirect } from './catalog/redirects';
 
 export interface ProfitConsoleRow {
   cjPid: string;
@@ -290,6 +291,15 @@ export async function recalibrateProfitDrops(
       // un-archive the entire drop history on the next recalibrate.
       if (judged.rawAction === 'drop') { stillDropped++; continue; }
       if (!dryRun) {
+        // Same rule as the nightly restore (jobs.ts): the redirect must go
+        // first, or the product comes back live behind a redirect that sends
+        // its own URL somewhere else. This is the second restore path, and it
+        // is exactly the kind of divergence that put three copies of the
+        // archive mutation in this codebase - keep the two in step.
+        if (link.handle) {
+          const existing = await findRedirect(admin, `/products/${link.handle}`);
+          if (existing) await deleteRedirect(admin, existing.id);
+        }
         const data = await admin(SET_PRODUCT_ACTIVE, { input: { id: link.shopify_product_id, status: 'ACTIVE' } });
         const errs = (data.productUpdate as { userErrors?: { message: string }[] } | undefined)?.userErrors ?? [];
         if (errs.length) { failed++; console.warn(`recalibrate un-archive failed for ${cjPid}: ${errs.map((e) => e.message).join('; ')}`); continue; }

@@ -164,8 +164,13 @@ describe('restoreCulledProducts', () => {
     const since = new Date(Date.now() - 7 * DAY).toISOString();
     const r = await restoreCulledProducts(store, admin, since);
     expect(r).toEqual({ restored: 1, failed: 0 });
-    expect(calls.length).toBe(1);
-    expect((calls[0].variables!.input as { id: string; status: string })).toEqual({ id: 'gid://shopify/Product/culled', status: 'ACTIVE' });
+    // Count the ACTIVATIONS, not every admin call: since 2026-07-31 the restore
+    // also looks up the product's redirect first (a restore behind a live
+    // redirect would be reachable by nobody). The claim here is "exactly one
+    // product came back", which is what this now says.
+    const activations = calls.filter((c) => c.query.includes('productUpdate'));
+    expect(activations.length).toBe(1);
+    expect((activations[0].variables!.input as { id: string; status: string })).toEqual({ id: 'gid://shopify/Product/culled', status: 'ACTIVE' });
     expect((await store.getLink('culled'))?.state).toBe('imported');
     expect((await store.getLink('dropped'))?.state).toBe('archived');
     expect((await store.getLink('old-archive'))?.state).toBe('archived');
@@ -716,5 +721,63 @@ describe('seedSemanticLibrary (Task 8 - cron seeding)', () => {
     const res = await seedSemanticLibrary(store, noLlm, cfg, { fetchImpl: fetchOk });
     expect(res).toEqual({ seeded: 0, skipped: 0 });
     expect(await store.getSemanticExpansions('pet-toys', 'pet toys')).toBeNull();
+  });
+});
+
+// THE REDIRECT MUST GO BEFORE THE PRODUCT COMES BACK. Every archive now leaves
+// a redirect behind, so un-archiving without removing it produces a product
+// that is live and unreachable: its own URL sends visitors elsewhere. That
+// failure reports as SUCCESS, which is what makes the order worth pinning.
+describe('restoreCulledProducts redirect cleanup', () => {
+  let store: TenantStore;
+  beforeEach(async () => {
+    store = new TenantStore(env.DB, SHOP);
+    await store.putLink({ cjPid: 'r1', state: 'archived', shopifyProductId: 'gid://shopify/Product/7', handle: 'restored-item' });
+  });
+
+  const since = () => new Date(Date.now() - 86400_000).toISOString();
+
+  function fake(over: { hasRedirect?: boolean; deleteFails?: boolean } = {}) {
+    const calls: string[] = [];
+    const admin = (async (q: string) => {
+      if (q.includes('urlRedirectDelete')) {
+        calls.push('delete');
+        if (over.deleteFails) return { urlRedirectDelete: { userErrors: [{ message: 'nope' }] } };
+        return { urlRedirectDelete: { deletedRedirectId: 'gid://r/1', userErrors: [] } };
+      }
+      if (q.includes('urlRedirects')) {
+        return over.hasRedirect === false
+          ? { urlRedirects: { nodes: [] } }
+          : { urlRedirects: { nodes: [{ id: 'gid://r/1', path: '/products/restored-item', target: '/x' }] } };
+      }
+      if (q.includes('productUpdate')) { calls.push('activate'); return { productUpdate: { userErrors: [] } }; }
+      return {};
+    }) as never;
+    return { admin, calls };
+  }
+
+  it('deletes the redirect BEFORE un-archiving', async () => {
+    const f = fake();
+    const r = await restoreCulledProducts(store, f.admin, since());
+    expect(r.restored).toBe(1);
+    expect(f.calls).toEqual(['delete', 'activate']);
+  });
+
+  it('does NOT un-archive when the redirect cannot be removed', async () => {
+    // Leaving it archived is strictly better than a live-but-unreachable
+    // product, because the latter looks fixed.
+    const f = fake({ deleteFails: true });
+    const r = await restoreCulledProducts(store, f.admin, since());
+    expect(r.restored).toBe(0);
+    expect(r.failed).toBe(1);
+    expect(f.calls).not.toContain('activate');
+    expect((await store.getLink('r1'))!.state).toBe('archived');
+  });
+
+  it('restores normally when there is no redirect to remove', async () => {
+    const f = fake({ hasRedirect: false });
+    const r = await restoreCulledProducts(store, f.admin, since());
+    expect(r.restored).toBe(1);
+    expect(f.calls).toEqual(['activate']);
   });
 });
