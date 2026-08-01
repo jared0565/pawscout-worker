@@ -177,39 +177,27 @@ export async function pickRedirectTarget(
   handle: string,
   memo: LivenessMemo = new Map(),
   ctx: { articles?: ArticleTargets | null; preferArticleIds?: string[] } = {}
-): Promise<string> {
-  const articles = ctx.articles ?? null;
-
-  // 1. A guide that actually referenced this product. Sorted so that when a
-  //    product appeared in two guides the choice is stable across runs.
-  if (articles) {
-    for (const id of [...(ctx.preferArticleIds ?? [])].sort()) {
-      const p = articles.byId.get(id);
-      if (p) return p;
-    }
-  }
-
+): Promise<RedirectChoice> {
   const link = await store.getLinkByHandle(handle);
+
+  // 1 and 2 - see pickGuideTarget.
+  const guide = pickGuideTarget(link, ctx.articles ?? null, ctx.preferArticleIds);
+  if (guide) return guide;
+
   const category = link?.category ?? null;
   if (category) {
-    // 2. The guide that covers this category, on the evidence of what it
-    //    recommends. Not liveness-checked against Shopify: byId already
-    //    excluded unpublished articles, which is the only way a guide 404s.
-    const guide = articles?.byCategory.get(category);
-    if (guide) return guide;
-
     // 3. The category collection.
     const c = `/collections/${category}`;
-    if (await pathIsLive(admin, c, memo)) return c;
+    if (await pathIsLive(admin, c, memo)) return { path: c, tier: 'collection' };
 
     // 4. A live sibling, for a category whose own collection is dead.
     const best = await store.topLiveHandleInCategory(category, handle);
     if (best) {
       const p = `/products/${best}`;
-      if (await pathIsLive(admin, p, memo)) return p;
+      if (await pathIsLive(admin, p, memo)) return { path: p, tier: 'sibling' };
     }
   }
-  return REDIRECT_FALLBACK;
+  return { path: REDIRECT_FALLBACK, tier: 'fallback' };
 }
 
 // Article handles + publish state, for turning a referrer id into a real URL.
@@ -229,6 +217,58 @@ const ARTICLE_TARGETS = `query pawscoutRedirectArticles {
     pageInfo { hasNextPage }
   }
 }`;
+
+/**
+ * Which rung of the chain answered. The archive gate turns on this: the owner
+ * ruled on 2026-08-01 that a product is archived only when its URL can land on
+ * a real guide, so a `collection`/`sibling`/`fallback` answer is good enough to
+ * REPAIR an already-dead URL but not good enough to KILL a live one.
+ */
+export type RedirectTier = 'referring-guide' | 'category-guide' | 'collection' | 'sibling' | 'fallback';
+
+export interface RedirectChoice { path: string; tier: RedirectTier; }
+
+/** A congruent blog post, i.e. what the owner's rule actually asks for. */
+export function isGuideTier(tier: RedirectTier): boolean {
+  return tier === 'referring-guide' || tier === 'category-guide';
+}
+
+/**
+ * The guide rungs of the chain, and ONLY those. Returns null when no congruent
+ * blog post exists.
+ *
+ * Deliberately synchronous and Shopify-free. The archive gate asks this
+ * question before it writes anything, and routing it through a Shopify call
+ * would be actively harmful: pathIsLive swallows admin errors by design, so a
+ * scope denial would come back as "no guide exists" and send whoever reads the
+ * log off to write a blog post when the real fix is to grant a scope. It also
+ * means a refused archive costs no API call at all.
+ *
+ * Publication was already checked when the index was built, so a hit here is a
+ * live storefront page.
+ *
+ *  - `referring-guide`: this guide actually recommended the product. Sorted so
+ *    a product appearing in two guides resolves the same way on every run.
+ *  - `category-guide`: the guide covering the product's category, inferred from
+ *    what each guide recommends.
+ */
+export function pickGuideTarget(
+  link: { category?: string | null } | null,
+  articles: ArticleTargets | null,
+  preferArticleIds: string[] = []
+): RedirectChoice | null {
+  if (!articles) return null;
+  for (const id of [...preferArticleIds].sort()) {
+    const p = articles.byId.get(id);
+    if (p) return { path: p, tier: 'referring-guide' };
+  }
+  const category = link?.category ?? null;
+  if (category) {
+    const g = articles.byCategory.get(category);
+    if (g) return { path: g, tier: 'category-guide' };
+  }
+  return null;
+}
 
 export interface ArticleTargets {
   /** Article GID -> storefront path. PUBLISHED articles only. */

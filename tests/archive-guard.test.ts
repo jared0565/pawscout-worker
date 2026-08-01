@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
 import { TenantStore } from '../src/tenant-store';
 import { archiveProductGuarded, writesArchivedStatus, indexUsable, INDEX_MAX_AGE_MS } from '../src/catalog/archive-guard';
+import type { ArticleTargets } from '../src/catalog/redirects';
 
 const SHOP = 'test.myshopify.com';
 const noopAdmin = async () => ({});
@@ -16,8 +17,36 @@ async function freshIndex(store: TenantStore, over: Partial<{ truncated: boolean
     indexedAt: new Date(Date.now() - (over.ageMs ?? 0)).toISOString(),
     articleCount: 3, rowCount: 5, truncated: over.truncated ?? false,
   });
+  await catalogued(store, 'unreferenced-item', 'watched', 'x', 'old-tree', 'pick-only', 'only-tree', 'posted-item', 'cat-tree-88');
 }
 
+
+/** Guides covering the categories these tests use.
+ *
+ *  Since the owner's ruling of 2026-08-01 an archive REQUIRES a congruent blog
+ *  post, so a test that omits this exercises the guide gate rather than
+ *  whatever it meant to test. Both referrer ids the tests use are present, so
+ *  the gate passes and the refusal under test is the one that fires. */
+const GUIDES: ArticleTargets = {
+  byId: new Map([
+    ['indoor-cat-boredom', '/blogs/guides/g1'],
+    ['gid://shopify/Article/1', '/blogs/guides/g1'],
+  ]),
+  byCategory: new Map([['pet-toys', '/blogs/guides/g1']]),
+  truncated: false,
+};
+
+/** Give the handles these tests archive a catalogue row in a covered category.
+ *  A real product always carries one; without it there is no category to match
+ *  a guide on and every archive refuses. */
+async function catalogued(store: TenantStore, ...handles: string[]) {
+  for (const h of handles) {
+    await store.putLink({
+      cjPid: `c-${h}`, handle: h, category: 'pet-toys',
+      state: 'imported' as never, shopifyProductId: `gid://shopify/Product/c-${h}`,
+    });
+  }
+}
 
 /** A fake Shopify that records the ORDER of the calls that matter. */
 function redirectAdmin(over: { createFails?: string; existing?: boolean } = {}) {
@@ -52,7 +81,7 @@ describe('archiveProductGuarded', () => {
       { referrerType: 'blog', referrerId: 'indoor-cat-boredom' },
     ]);
     const out = await archiveProductGuarded(noopAdmin, store, {
-      cjPid: '1', productId: 'gid://shopify/Product/1', handle: 'cat-tree-88', reason: 'cull',
+      cjPid: '1', productId: 'gid://shopify/Product/1', handle: 'cat-tree-88', reason: 'cull', articles: GUIDES,
     });
     expect(out.ok).toBe(false);
     if (!out.ok) {
@@ -68,7 +97,7 @@ describe('archiveProductGuarded', () => {
     await freshIndex(store);
     const denying = async () => { throw new Error('ACCESS_DENIED: write_online_store_navigation required'); };
     const out = await archiveProductGuarded(denying as never, store, {
-      cjPid: '2', productId: 'gid://shopify/Product/2', handle: 'unreferenced-item', reason: 'cull',
+      cjPid: '2', productId: 'gid://shopify/Product/2', handle: 'unreferenced-item', reason: 'cull', articles: GUIDES,
     });
     expect(out.ok).toBe(false);
     if (!out.ok) {
@@ -83,7 +112,7 @@ describe('archiveProductGuarded', () => {
     await freshIndex(store);
     await store.putProductReferrers('watched', [{ referrerType: 'blog', referrerId: 'g' }]);
     await archiveProductGuarded(admin, store, {
-      cjPid: '3', productId: 'gid://shopify/Product/3', handle: 'watched', reason: 'cull',
+      cjPid: '3', productId: 'gid://shopify/Product/3', handle: 'watched', reason: 'cull', articles: GUIDES,
     });
     expect(called).toBe(0);
   });
@@ -181,7 +210,7 @@ describe('archiveProductGuarded index gate', () => {
   beforeEach(() => { store = new TenantStore(env.DB, SHOP); });
 
   const attempt = () => archiveProductGuarded(noopAdmin, store, {
-    cjPid: '9', productId: 'gid://shopify/Product/9', handle: 'unreferenced-item', reason: 'cull',
+    cjPid: '9', productId: 'gid://shopify/Product/9', handle: 'unreferenced-item', reason: 'cull', articles: GUIDES,
   });
 
   it('refuses an UNREFERENCED product when the index was never built', async () => {
@@ -211,7 +240,7 @@ describe('archiveProductGuarded index gate', () => {
     // and no referrers, the archive now completes.
     await freshIndex(store);
     const out = await archiveProductGuarded(redirectAdmin().admin, store, {
-      cjPid: '9', productId: 'gid://shopify/Product/9', handle: 'unreferenced-item', reason: 'cull',
+      cjPid: '9', productId: 'gid://shopify/Product/9', handle: 'unreferenced-item', reason: 'cull', articles: GUIDES,
     });
     expect(out.ok).toBe(true);
   });
@@ -220,7 +249,7 @@ describe('archiveProductGuarded index gate', () => {
     let called = 0;
     const admin = async () => { called++; return {}; };
     await archiveProductGuarded(admin, store, {
-      cjPid: '9', productId: 'gid://shopify/Product/9', handle: 'x', reason: 'cull',
+      cjPid: '9', productId: 'gid://shopify/Product/9', handle: 'x', reason: 'cull', articles: GUIDES,
     });
     expect(called).toBe(0);
   });
@@ -234,7 +263,7 @@ describe('redirect-before-archive', () => {
   beforeEach(async () => { store = new TenantStore(env.DB, SHOP); await freshIndex(store); });
 
   const go = (admin: never) => archiveProductGuarded(admin, store, {
-    cjPid: '9', productId: 'gid://shopify/Product/9', handle: 'unreferenced-item', reason: 'cull',
+    cjPid: '9', productId: 'gid://shopify/Product/9', handle: 'unreferenced-item', reason: 'cull', articles: GUIDES,
   });
 
   it('creates the redirect BEFORE it archives', async () => {
@@ -309,7 +338,7 @@ describe('replace-in-article before archiving', () => {
   }
 
   const go = (admin: never, d?: unknown, handle = 'old-tree') => archiveProductGuarded(admin, store, {
-    cjPid: '20', productId: 'gid://shopify/Product/20', handle, reason: 'cull',
+    cjPid: '20', productId: 'gid://shopify/Product/20', handle, reason: 'cull', articles: GUIDES,
   }, d as never);
 
   it('REPLACES the product in the article body, then archives', async () => {
@@ -407,10 +436,78 @@ describe('replace-in-article before archiving', () => {
     await store.putProductReferrers('old-tree', [{ referrerType: 'blog', referrerId: ART }]);
     const f = redirectAdmin();
     const out = await archiveProductGuarded(f.admin, store, {
-      cjPid: '20', productId: 'gid://shopify/Product/20', handle: 'old-tree', reason: 'console',
+      cjPid: '20', productId: 'gid://shopify/Product/20', handle: 'old-tree', reason: 'console', articles: GUIDES,
     });
     expect(out.ok).toBe(false);
     if (!out.ok) expect(out.refusal).toBe('referenced');
     expect(f.calls).toEqual([]);
+  });
+});
+
+// THE GUIDE GATE (owner ruling, 2026-08-01). A product is archived only when
+// its URL can land on a congruent blog post; otherwise it stays live and the
+// cull tries again once a guide covers the topic.
+describe('the guide gate', () => {
+  let store: TenantStore;
+  beforeEach(async () => { store = new TenantStore(env.DB, SHOP); await freshIndex(store); });
+
+  const NO_GUIDES: ArticleTargets = { byId: new Map(), byCategory: new Map(), truncated: false };
+
+  it('REFUSES with no-guide, leaves the product live, and costs no API call', async () => {
+    // Shopify-free by design: routing this through pathIsLive would swallow a
+    // scope denial and report it as "no guide exists", sending the reader off
+    // to write a blog post when the real fix is to grant a scope.
+    const f = redirectAdmin();
+    const out = await archiveProductGuarded(f.admin, store, {
+      cjPid: '40', productId: 'gid://shopify/Product/40', handle: 'unreferenced-item',
+      reason: 'cull', articles: NO_GUIDES,
+    });
+    expect(out.ok).toBe(false);
+    if (!out.ok) expect(out.refusal).toBe('no-guide');
+    expect(f.calls).toEqual([]);
+  });
+
+  it('gates BEFORE repairing the article - a refusal must not rewrite a guide', async () => {
+    // Gating after the repair would edit a published guide to drop a product
+    // and then decline to archive it, leaving the guide changed for nothing and
+    // no longer recommending a product that is still live.
+    await store.putProductReferrers('old-tree', [{ referrerType: 'blog', referrerId: 'gid://shopify/Article/77' }]);
+    const saved: string[] = [];
+    const deps = {
+      loadArticle: async () => ({ title: 'G', bodyHtml: '<a href="/products/old-tree">t</a>', tags: [], relatedHandles: [] }),
+      saveArticle: async () => { saved.push('body'); },
+      saveRelated: async () => { saved.push('related'); },
+      liveCandidates: async () => [{ title: 'N', handle: 'new-tree', path: '/products/new-tree' }],
+      healBody: async () => ({ body: '<a href="/products/new-tree">t</a>', samples: [] }),
+    };
+    const f = redirectAdmin();
+    const out = await archiveProductGuarded(f.admin, store, {
+      cjPid: '41', productId: 'gid://shopify/Product/41', handle: 'old-tree',
+      reason: 'cull', articles: NO_GUIDES,
+    }, deps as never);
+    expect(out.ok).toBe(false);
+    if (!out.ok) expect(out.refusal).toBe('no-guide');
+    expect(saved).toEqual([]);
+  });
+
+  it('a guide that REFERENCED the product satisfies the gate', async () => {
+    // The strongest tier: this guide recommended this exact product, so it is
+    // congruent by construction rather than inferred from a category.
+    await store.putProductReferrers('old-tree', [{ referrerType: 'blog', referrerId: 'indoor-cat-boredom' }]);
+    const onlyById: ArticleTargets = { byId: GUIDES.byId, byCategory: new Map(), truncated: false };
+    const deps = {
+      loadArticle: async () => ({ title: 'G', bodyHtml: '<a href="/products/old-tree">t</a>', tags: [], relatedHandles: [] }),
+      saveArticle: async () => {},
+      saveRelated: async () => {},
+      liveCandidates: async () => [{ title: 'N', handle: 'new-tree', path: '/products/new-tree' }],
+      healBody: async () => ({ body: '<a href="/products/new-tree">t</a>', samples: [] }),
+    };
+    const f = redirectAdmin();
+    const out = await archiveProductGuarded(f.admin, store, {
+      cjPid: '42', productId: 'gid://shopify/Product/42', handle: 'old-tree',
+      reason: 'cull', articles: onlyById,
+    }, deps as never);
+    expect(out.ok).toBe(true);
+    expect(f.calls).toContain('archive');
   });
 });

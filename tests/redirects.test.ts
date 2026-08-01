@@ -50,7 +50,7 @@ describe('pickRedirectTarget', () => {
     // URL. This is the regression test for that exact defect.
     await link(store, '1', { handle: 'dying', category: 'more-to-love' });
     const s = shopify({ collections: ['pet-toys'] }); // more-to-love NOT live
-    expect(await pickRedirectTarget(store, s.admin, 'dying')).toBe(REDIRECT_FALLBACK);
+    expect((await pickRedirectTarget(store, s.admin, 'dying')).path).toBe(REDIRECT_FALLBACK);
   });
 
   it('prefers the CATEGORY COLLECTION over a live sibling product', async () => {
@@ -62,7 +62,7 @@ describe('pickRedirectTarget', () => {
     await link(store, '1', { handle: 'dying', category: 'pet-toys' });
     await link(store, '2', { handle: 'sibling', category: 'pet-toys' });
     const s = shopify({ products: ['sibling'], collections: ['pet-toys'] });
-    expect(await pickRedirectTarget(store, s.admin, 'dying')).toBe('/collections/pet-toys');
+    expect((await pickRedirectTarget(store, s.admin, 'dying')).path).toBe('/collections/pet-toys');
   });
 
   it('falls back to a live sibling when the CATEGORY COLLECTION is dead', async () => {
@@ -71,7 +71,7 @@ describe('pickRedirectTarget', () => {
     await link(store, '1', { handle: 'dying', category: 'addons' });
     await link(store, '2', { handle: 'sibling', category: 'addons' });
     const s = shopify({ products: ['sibling'] }); // collection NOT live
-    expect(await pickRedirectTarget(store, s.admin, 'dying')).toBe('/products/sibling');
+    expect((await pickRedirectTarget(store, s.admin, 'dying')).path).toBe('/products/sibling');
   });
 
   it('ignores a sibling that is NOT on the storefront', async () => {
@@ -80,7 +80,7 @@ describe('pickRedirectTarget', () => {
     await link(store, '1', { handle: 'dying', category: 'addons' });
     await link(store, '2', { handle: 'sibling', category: 'addons' });
     const s = shopify({}); // neither collection nor sibling live
-    expect(await pickRedirectTarget(store, s.admin, 'dying')).toBe(REDIRECT_FALLBACK);
+    expect((await pickRedirectTarget(store, s.admin, 'dying')).path).toBe(REDIRECT_FALLBACK);
   });
 
   it('never redirects a product to itself', async () => {
@@ -88,19 +88,19 @@ describe('pickRedirectTarget', () => {
     // the collection would answer first and this would prove nothing.
     await link(store, '1', { handle: 'dying', category: 'addons' });
     const s = shopify({ products: ['dying'] });
-    expect(await pickRedirectTarget(store, s.admin, 'dying')).toBe(REDIRECT_FALLBACK);
+    expect((await pickRedirectTarget(store, s.admin, 'dying')).path).toBe(REDIRECT_FALLBACK);
   });
 
   it('falls back to /collections/all when the link has no category', async () => {
     await link(store, '1', { handle: 'dying', category: undefined as never });
     const s = shopify({});
-    expect(await pickRedirectTarget(store, s.admin, 'dying')).toBe(REDIRECT_FALLBACK);
+    expect((await pickRedirectTarget(store, s.admin, 'dying')).path).toBe(REDIRECT_FALLBACK);
   });
 
   it('treats an unverifiable target as unusable rather than assuming it is fine', async () => {
     await link(store, '1', { handle: 'dying', category: 'pet-toys' });
     const boom = (async () => { throw new Error('admin down'); }) as never;
-    expect(await pickRedirectTarget(store, boom, 'dying')).toBe(REDIRECT_FALLBACK);
+    expect((await pickRedirectTarget(store, boom, 'dying')).path).toBe(REDIRECT_FALLBACK);
   });
 
   it('ignores archived siblings - they are 404s themselves', async () => {
@@ -109,7 +109,7 @@ describe('pickRedirectTarget', () => {
     await link(store, '1', { handle: 'dying', category: 'addons' });
     await link(store, '2', { handle: 'gone', category: 'addons', state: 'archived' });
     const s = shopify({ products: ['gone'] });
-    expect(await pickRedirectTarget(store, s.admin, 'dying')).toBe(REDIRECT_FALLBACK);
+    expect((await pickRedirectTarget(store, s.admin, 'dying')).path).toBe(REDIRECT_FALLBACK);
   });
 
   it('MEMOISES the shared COLLECTION question across a backfill run', async () => {
@@ -167,7 +167,8 @@ describe('blog-post redirect targets', () => {
     const t = await pickRedirectTarget(store, s.admin, 'dying', new Map(), {
       articles, preferArticleIds: ['gid://shopify/Article/1'],
     });
-    expect(t).toBe('/blogs/guides/best-cat-toys');
+    expect(t.path).toBe('/blogs/guides/best-cat-toys');
+    expect(t.tier).toBe('referring-guide');
   });
 
   it('uses the CATEGORY guide - derived from what each guide recommends', async () => {
@@ -178,7 +179,7 @@ describe('blog-post redirect targets', () => {
     await store.putProductReferrers('toy-in-guide', [{ referrerType: 'blog', referrerId: 'gid://shopify/Article/1' }]);
     const s = blogShopify(ART, { collections: ['pet-toys'] });
     const articles = await buildArticleTargets(store, s.admin);
-    expect(await pickRedirectTarget(store, s.admin, 'dying', new Map(), { articles })).toBe('/blogs/guides/best-cat-toys');
+    expect((await pickRedirectTarget(store, s.admin, 'dying', new Map(), { articles })).path).toBe('/blogs/guides/best-cat-toys');
   });
 
   it('a guide OUTRANKS the category collection', async () => {
@@ -188,8 +189,8 @@ describe('blog-post redirect targets', () => {
     const s = blogShopify(ART, { collections: ['pet-toys'], products: ['toy-in-guide'] });
     const articles = await buildArticleTargets(store, s.admin);
     const t = await pickRedirectTarget(store, s.admin, 'dying', new Map(), { articles });
-    expect(t).not.toBe('/collections/pet-toys');
-    expect(t).toBe('/blogs/guides/best-cat-toys');
+    expect(t.path).not.toBe('/collections/pet-toys');
+    expect(t.path).toBe('/blogs/guides/best-cat-toys');
   });
 
   it('NEVER points at an unpublished draft - it has no storefront page', async () => {
@@ -203,14 +204,14 @@ describe('blog-post redirect targets', () => {
     const t = await pickRedirectTarget(store, s.admin, 'dying', new Map(), {
       articles, preferArticleIds: ['gid://shopify/Article/1'],
     });
-    expect(t).toBe('/collections/pet-toys');
+    expect(t.path).toBe('/collections/pet-toys');
   });
 
   it('falls through to the collection when NO guide covers the category', async () => {
     await link(store, '1', { handle: 'dying', category: 'pet-health' });
     const s = blogShopify(ART, { collections: ['pet-health'] });
     const articles = await buildArticleTargets(store, s.admin);
-    expect(await pickRedirectTarget(store, s.admin, 'dying', new Map(), { articles })).toBe('/collections/pet-health');
+    expect((await pickRedirectTarget(store, s.admin, 'dying', new Map(), { articles })).path).toBe('/collections/pet-health');
   });
 
   it('NEVER 404s, even for a product that never belonged in the catalog', async () => {
@@ -220,7 +221,7 @@ describe('blog-post redirect targets', () => {
     await link(store, '1', { handle: 'set-diamond-love-more-pendant', category: 'more-to-love' });
     const s = blogShopify(ART);
     const articles = await buildArticleTargets(store, s.admin);
-    expect(await pickRedirectTarget(store, s.admin, 'set-diamond-love-more-pendant', new Map(), { articles })).toBe(REDIRECT_FALLBACK);
+    expect((await pickRedirectTarget(store, s.admin, 'set-diamond-love-more-pendant', new Map(), { articles })).path).toBe(REDIRECT_FALLBACK);
   });
 
   it('degrades to collection-then-fallback when the articles query FAILS', async () => {
@@ -233,7 +234,7 @@ describe('blog-post redirect targets', () => {
     }) as never;
     const articles = await buildArticleTargets(store, admin);
     expect(articles.byId.size).toBe(0);
-    expect(await pickRedirectTarget(store, admin, 'dying', new Map(), { articles })).toBe('/collections/pet-toys');
+    expect((await pickRedirectTarget(store, admin, 'dying', new Map(), { articles })).path).toBe('/collections/pet-toys');
   });
 
   it('picks the guide that recommends the MOST of a category, ties broken stably', async () => {

@@ -20,7 +20,7 @@
  */
 import type { AdminGraphql } from '../shopify-admin';
 import type { TenantStore } from '../tenant-store';
-import { findRedirect, createRedirect, pickRedirectTarget, isScopeDenial, type LivenessMemo, type ArticleTargets } from './redirects';
+import { findRedirect, createRedirect, pickGuideTarget, isScopeDenial, type LivenessMemo, type ArticleTargets } from './redirects';
 import type { HealCandidate } from '../blog/article-health';
 
 const ARCHIVE = `mutation pawscoutArchive($input: ProductInput!) {
@@ -28,7 +28,11 @@ const ARCHIVE = `mutation pawscoutArchive($input: ProductInput!) {
 }`;
 
 export type ArchiveRefusal =
-  | 'referenced' | 'missing-scope' | 'redirect-failed' | 'no-replacement' | 'index-incomplete';
+  | 'referenced' | 'missing-scope' | 'redirect-failed' | 'no-replacement' | 'index-incomplete'
+  // No congruent guide exists to redirect this product's URL to, so it stays
+  // live. Unlike the others this is a CONTENT gap, not a fault: the fix is to
+  // publish a guide covering the topic, and the detail names the gap.
+  | 'no-guide';
 
 export type ArchiveOutcome =
   | { ok: true }
@@ -232,6 +236,31 @@ export async function archiveProductGuarded(
   }
 
   const blogRefs = refs.filter((r) => r.referrer_type === 'blog');
+
+  // THE GUIDE GATE, and it runs BEFORE the repair on purpose.
+  //
+  // Owner rule (2026-08-01): a product is archived only when its URL can land
+  // on a congruent blog post. A collection or /collections/all is good enough
+  // to REPAIR a URL that is already dead, but not good enough to KILL a live
+  // one - so when no guide covers this product it stays live and the cull tries
+  // again another day.
+  //
+  // Ordering is load-bearing. Gating AFTER replaceInArticles would rewrite a
+  // guide to drop a product and then refuse to archive it, leaving a published
+  // guide edited for no reason and a live product it no longer recommends.
+  // Nothing above this point has written anything.
+  //
+  // pickGuideTarget rather than the full chain because this must not touch
+  // Shopify: pathIsLive swallows admin errors, so asking the chain here would
+  // turn a scope denial into "no guide exists" and misdirect the fix. It also
+  // keeps a refusal free of API calls.
+  const choice = pickGuideTarget(await store.getLinkByHandle(opts.handle), opts.articles ?? null, blogRefs.map((r) => r.referrer_id));
+  if (!choice) {
+    const detail = `no congruent guide covers ${opts.handle}; leaving it live`;
+    console.log(`archive refused for ${opts.handle} (${opts.reason}): ${detail}`);
+    return { ok: false, refusal: 'no-guide', detail };
+  }
+
   if (blogRefs.length) {
     // Without deps there is no way to rewrite anything, so refusing is the only
     // honest answer. This is the path the owner console takes today: it can
@@ -256,15 +285,11 @@ export async function archiveProductGuarded(
   const path = `/products/${opts.handle}`;
   try {
     if (!(await findRedirect(admin, path))) {
-      // The guides we just repaired are handed over as the preferred targets.
-      // They are congruent BY CONSTRUCTION - each one recommended this exact
-      // product moments ago - so they beat anything inferred from category.
-      const target = await pickRedirectTarget(store, admin, opts.handle, opts.memo, {
-        articles: opts.articles ?? null,
-        preferArticleIds: blogRefs.map((r) => r.referrer_id),
-      });
-      await createRedirect(admin, path, target);
-      console.log(`archive ${opts.handle} (${opts.reason}): redirect ${path} -> ${target}`);
+      // Reuses the choice the gate already made rather than asking twice. The
+      // guides handed over as preferred targets are the ones just repaired, so
+      // they are congruent by construction, not by inference.
+      await createRedirect(admin, path, choice.path);
+      console.log(`archive ${opts.handle} (${opts.reason}): redirect ${path} -> ${choice.path} (${choice.tier})`);
     }
   } catch (e) {
     const message = (e as Error).message;

@@ -267,11 +267,14 @@ export async function backfillArchivedRedirects(
     const path = `/products/${link.handle}`;
     try {
       if (await findRedirect(admin, path)) { skipped++; continue; }
-      const target = await pickRedirectTarget(store, admin, link.handle!, memo, { articles });
+      // No guide gate here, deliberately. These URLs are ALREADY dead, so the
+      // question is only which live page best replaces them - refusing would
+      // leave a 404 standing, which is the one outcome the owner ruled out.
+      const { path: target, tier } = await pickRedirectTarget(store, admin, link.handle!, memo, { articles });
       if (!dryRun) await createRedirect(admin, path, target);
       created++;
       byTarget[target] = (byTarget[target] ?? 0) + 1;
-      if (samples.length < 12) samples.push(`${path} -> ${target}`);
+      if (samples.length < 12) samples.push(`${path} -> ${target} (${tier})`);
     } catch (e) {
       failed++;
       console.warn(`redirect backfill failed for ${link.cj_pid} (${path}): ${(e as Error).message}`);
