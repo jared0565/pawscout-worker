@@ -3,7 +3,7 @@ import { env, applyD1Migrations } from 'cloudflare:test';
 import { TenantStore } from '../src/tenant-store';
 import {
   findRedirect, createRedirect, deleteRedirect, pickRedirectTarget,
-  isScopeDenial, REDIRECT_FALLBACK
+  isScopeDenial, isOffCatalogJunk, REDIRECT_FALLBACK
 } from '../src/catalog/redirects';
 
 const SHOP = 'test.myshopify.com';
@@ -53,26 +53,42 @@ describe('pickRedirectTarget', () => {
     expect(await pickRedirectTarget(store, s.admin, 'dying')).toBe(REDIRECT_FALLBACK);
   });
 
-  it('prefers the most-engaged live sibling in the same category', async () => {
+  it('prefers the CATEGORY COLLECTION over a live sibling product', async () => {
+    // This order is the fix for what the 2026-08-01 dry run measured: with the
+    // sibling first, all 112 dead URLs collapsed onto 7 product pages (one per
+    // category), producing dog-multivitamins -> cat-water-fountain. Google reads
+    // a redirect to an irrelevant page as a soft 404. The collection is the
+    // honest target, so it wins even when a live sibling exists.
     await link(store, '1', { handle: 'dying', category: 'pet-toys' });
     await link(store, '2', { handle: 'sibling', category: 'pet-toys' });
     const s = shopify({ products: ['sibling'], collections: ['pet-toys'] });
+    expect(await pickRedirectTarget(store, s.admin, 'dying')).toBe('/collections/pet-toys');
+  });
+
+  it('falls back to a live sibling when the CATEGORY COLLECTION is dead', async () => {
+    // more-to-love and addons are both 404 collections carrying real archived
+    // products. A live sibling still beats /collections/all for those.
+    await link(store, '1', { handle: 'dying', category: 'addons' });
+    await link(store, '2', { handle: 'sibling', category: 'addons' });
+    const s = shopify({ products: ['sibling'] }); // collection NOT live
     expect(await pickRedirectTarget(store, s.admin, 'dying')).toBe('/products/sibling');
   });
 
-  it('falls back to the collection when the sibling is NOT on the storefront', async () => {
+  it('ignores a sibling that is NOT on the storefront', async () => {
     // state='imported' only means WE think it is live; an unpublished product
     // carries that state too, so the storefront check is what decides.
-    await link(store, '1', { handle: 'dying', category: 'pet-toys' });
-    await link(store, '2', { handle: 'sibling', category: 'pet-toys' });
-    const s = shopify({ collections: ['pet-toys'] }); // sibling not live
-    expect(await pickRedirectTarget(store, s.admin, 'dying')).toBe('/collections/pet-toys');
+    await link(store, '1', { handle: 'dying', category: 'addons' });
+    await link(store, '2', { handle: 'sibling', category: 'addons' });
+    const s = shopify({}); // neither collection nor sibling live
+    expect(await pickRedirectTarget(store, s.admin, 'dying')).toBe(REDIRECT_FALLBACK);
   });
 
   it('never redirects a product to itself', async () => {
-    await link(store, '1', { handle: 'dying', category: 'pet-toys' });
-    const s = shopify({ products: ['dying'], collections: ['pet-toys'] });
-    expect(await pickRedirectTarget(store, s.admin, 'dying')).toBe('/collections/pet-toys');
+    // Collection dead, so the sibling branch is the one under test - otherwise
+    // the collection would answer first and this would prove nothing.
+    await link(store, '1', { handle: 'dying', category: 'addons' });
+    const s = shopify({ products: ['dying'] });
+    expect(await pickRedirectTarget(store, s.admin, 'dying')).toBe(REDIRECT_FALLBACK);
   });
 
   it('falls back to /collections/all when the link has no category', async () => {
@@ -88,10 +104,12 @@ describe('pickRedirectTarget', () => {
   });
 
   it('ignores archived siblings - they are 404s themselves', async () => {
-    await link(store, '1', { handle: 'dying', category: 'pet-toys' });
-    await link(store, '2', { handle: 'gone', category: 'pet-toys', state: 'archived' });
-    const s = shopify({ products: ['gone'], collections: ['pet-toys'] });
-    expect(await pickRedirectTarget(store, s.admin, 'dying')).toBe('/collections/pet-toys');
+    // Category 'addons' so the collection cannot answer first; the archived
+    // sibling must be rejected on its own merits, not masked by the collection.
+    await link(store, '1', { handle: 'dying', category: 'addons' });
+    await link(store, '2', { handle: 'gone', category: 'addons', state: 'archived' });
+    const s = shopify({ products: ['gone'] });
+    expect(await pickRedirectTarget(store, s.admin, 'dying')).toBe(REDIRECT_FALLBACK);
   });
 
   it('MEMOISES the shared COLLECTION question across a backfill run', async () => {
@@ -115,6 +133,34 @@ describe('pickRedirectTarget', () => {
     await pickRedirectTarget(store, s.admin, 'a');
     await pickRedirectTarget(store, s.admin, 'b');
     expect(s.asked.filter((x) => x === 'collection:more-to-love')).toHaveLength(2);
+  });
+});
+
+describe('isOffCatalogJunk', () => {
+  // Redirecting a barber scissors to a pet page tells Google this shop sells
+  // barber scissors. A 404 is the correct answer for a product that should
+  // never have been imported, so these are deliberately left broken.
+  it('excludes the whole more-to-love category - all 11 members are off-catalog', () => {
+    expect(isOffCatalogJunk({ handle: 'set-diamond-love-more-pendant', category: 'more-to-love' })).toBe(true);
+    expect(isOffCatalogJunk({ handle: 'household-vacuum-sealer-food-saver', category: 'more-to-love' })).toBe(true);
+  });
+
+  it('excludes the three junk handles filed under REAL pet categories', () => {
+    // No category rule can reach these - they sit in pet-grooming, pet-health
+    // and pet-cleaning alongside genuine products.
+    expect(isOffCatalogJunk({ handle: 'barber-scissors', category: 'pet-grooming' })).toBe(true);
+    expect(isOffCatalogJunk({ handle: 'hairdressing-scissors', category: 'pet-health' })).toBe(true);
+    expect(isOffCatalogJunk({ handle: 'professional-scissors-sharpener-with-angle-adjustment', category: 'pet-cleaning' })).toBe(true);
+  });
+
+  it('does NOT exclude a genuine pet product', () => {
+    expect(isOffCatalogJunk({ handle: 'dog-multivitamin-chews-with-glucosamine-probiotics', category: 'pet-health' })).toBe(false);
+    expect(isOffCatalogJunk({ handle: 'pet-teeth-cleaning-powder-100g-1', category: 'pet-grooming' })).toBe(false);
+  });
+
+  it('survives a null handle or category rather than throwing', () => {
+    expect(isOffCatalogJunk({})).toBe(false);
+    expect(isOffCatalogJunk({ handle: null, category: null })).toBe(false);
   });
 });
 

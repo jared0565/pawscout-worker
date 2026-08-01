@@ -135,11 +135,30 @@ async function pathIsLive(admin: AdminGraphql, path: string, memo: LivenessMemo)
 /**
  * Where a dead product URL should point.
  *
- * Order: the most-engaged live sibling in the same category, then the category
- * collection, then /collections/all. Deterministic and LLM-free so the 112-URL
+ * Order: the category COLLECTION, then the most-engaged live sibling in that
+ * category, then /collections/all. Deterministic and LLM-free so the 112-URL
  * backfill is cheap and reproducible - but every candidate above the fallback
  * is confirmed against Shopify, because the local category record is exactly
  * what would otherwise send the more-to-love products to a 404.
+ *
+ * COLLECTION FIRST, AND THAT ORDER IS LOAD-BEARING. It was sibling-first until
+ * the backfill dry run measured what that actually produces (2026-08-01): all
+ * 112 dead URLs collapsed onto SEVEN product pages, exactly one per category,
+ * because topLiveHandleInCategory returns the same "top" product for every
+ * member of a category. The mappings that fell out included dog multivitamins
+ * -> cat water fountain and barber scissors -> cat water fountain. Google
+ * treats a redirect to an irrelevant page as a soft 404, so consolidating at
+ * 16-to-1 buys an index full of discounted redirects rather than a repair, and
+ * it reads as manipulative consolidation on a store already under GMC
+ * Misrepresentation review. The category page is the honest "this product is
+ * gone, here is where it lived" signal.
+ *
+ * The sibling is kept as the SECOND choice rather than deleted, for a category
+ * whose own collection is dead (more-to-love, addons - both curl-confirmed 404
+ * on 2026-08-01). There a live product still beats /collections/all.
+ *
+ * Cheaper too, incidentally: the collection question is shared across a run and
+ * memoised, so most products never trigger the per-product lookup at all.
  */
 export async function pickRedirectTarget(
   store: TenantStore,
@@ -150,13 +169,42 @@ export async function pickRedirectTarget(
   const link = await store.getLinkByHandle(handle);
   const category = link?.category ?? null;
   if (category) {
+    const c = `/collections/${category}`;
+    if (await pathIsLive(admin, c, memo)) return c;
     const best = await store.topLiveHandleInCategory(category, handle);
     if (best) {
       const p = `/products/${best}`;
       if (await pathIsLive(admin, p, memo)) return p;
     }
-    const c = `/collections/${category}`;
-    if (await pathIsLive(admin, c, memo)) return c;
   }
   return REDIRECT_FALLBACK;
+}
+
+/**
+ * Products that never belonged in this catalog. These are left as 404s.
+ *
+ * A redirect is a claim that the old URL's subject still has a home here. For a
+ * barber scissors or an "I love you more" bracelet in a pet store that claim is
+ * false, and pointing them at pet pages tells Google this shop is about barber
+ * scissors - the same soft-404 harm the collection-first ordering above exists
+ * to avoid, just aimed at the catalog's own credibility. A 404 is the CORRECT
+ * response for a product that should never have been imported.
+ *
+ * `more-to-love` is a whole-category key, not a guess: every one of its 11
+ * archived members was read on 2026-08-01 and all 11 are off-catalog (four
+ * kitchen/garden tools, seven jewellery and apparel pieces), zero pet products.
+ * Its collection is itself a 404, which is what a category retired as a mistake
+ * looks like. The three handles below are the same junk filed under real pet
+ * categories, so no category rule can reach them.
+ */
+const JUNK_CATEGORIES = new Set(['more-to-love']);
+const JUNK_HANDLES = new Set([
+  'professional-scissors-sharpener-with-angle-adjustment',
+  'hairdressing-scissors',
+  'barber-scissors'
+]);
+
+export function isOffCatalogJunk(link: { handle?: string | null; category?: string | null }): boolean {
+  if (JUNK_CATEGORIES.has(link.category ?? '')) return true;
+  return JUNK_HANDLES.has(link.handle ?? '');
 }

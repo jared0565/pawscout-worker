@@ -879,4 +879,21 @@ describe('backfillArchivedRedirects', () => {
     const r = await backfillArchivedRedirects(store, f.admin);
     expect(r.samples[0]).toContain('/products/dead-one -> ');
   });
+
+  it('LEAVES OFF-CATALOG JUNK 404ing and counts it separately from skipped', async () => {
+    // A redirect asserts the old URL's subject still has a home here. For an
+    // "I love you more" pendant in a pet store that is false, and pointing it at
+    // a pet page is the same soft-404 harm the collection-first ordering exists
+    // to avoid. `junk` is its own counter because `skipped` means "already had a
+    // redirect" - collapsing the two would hide a deliberate non-repair.
+    await store.putLink({ cjPid: 'j1', state: 'archived', shopifyProductId: 'gid://p/1', handle: 'set-diamond-love-more-pendant', category: 'more-to-love' });
+    await store.putLink({ cjPid: 'j2', state: 'archived', shopifyProductId: 'gid://p/2', handle: 'barber-scissors', category: 'pet-grooming' });
+    await store.putLink({ cjPid: 'ok', state: 'archived', shopifyProductId: 'gid://p/3', handle: 'real-pet-thing', category: 'pet-toys' });
+    const f = fakeShopify();
+    const r = await backfillArchivedRedirects(store, f.admin, { dryRun: false });
+    expect(r.junk).toBe(2);
+    expect(r.skipped).toBe(0);
+    expect(r.created).toBe(1);
+    expect(f.created).toEqual(['/products/real-pet-thing']);
+  });
 });
