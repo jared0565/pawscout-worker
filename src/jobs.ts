@@ -6,7 +6,7 @@ import { liveCjPasses, normalizeKeyword, CACHE_TTL_DAYS, isLikelyPetProduct, tit
 import { bestLocalQty, localWarehousesFor, HOME_MARKET_WAREHOUSES } from './local-markets';
 import { archiveProductGuarded } from './catalog/archive-guard';
 import { rebuildReferrerIndex } from './catalog/referrers';
-import { findRedirect, createRedirect, deleteRedirect, pickRedirectTarget, isScopeDenial, isOffCatalogJunk, type LivenessMemo } from './catalog/redirects';
+import { findRedirect, createRedirect, deleteRedirect, pickRedirectTarget, isScopeDenial, buildArticleTargets, type LivenessMemo } from './catalog/redirects';
 
 /** US-lane sourcing keywords (2026-07-07): bulky / high-ticket niches ONLY.
  *  The generic SEED_KEYWORDS produced a 0-for-35 street-parity pass rate for
@@ -188,6 +188,9 @@ export async function cullStaleProducts(
   // so without it the same "is this collection still live?" question is asked
   // once per product instead of once per category.
   const memo: LivenessMemo = new Map();
+  // Built once and shared for the same reason. Skipped entirely when there is
+  // nothing to cull, so a quiet night costs no Shopify call.
+  const articles = stale.length ? await buildArticleTargets(store, admin) : null;
   for (const link of stale) {
     if (!link.shopify_product_id || !link.handle) continue;
     try {
@@ -197,6 +200,7 @@ export async function cullStaleProducts(
         handle: link.handle,
         reason: 'no-movement cull',
         memo,
+        articles,
       }, deps);
       if (out.ok) {
         await store.putLink({ cjPid: link.cj_pid, state: 'archived' });
@@ -242,11 +246,15 @@ export async function backfillArchivedRedirects(
   store: TenantStore,
   admin: AdminGraphql,
   opts: { limit?: number; dryRun?: boolean } = {}
-): Promise<{ scanned: number; created: number; skipped: number; junk: number; failed: number; dryRun: boolean; samples: string[]; byTarget: Record<string, number> }> {
+): Promise<{ scanned: number; created: number; skipped: number; failed: number; dryRun: boolean; samples: string[]; byTarget: Record<string, number> }> {
   const dryRun = opts.dryRun !== false;
   const links = await store.listArchivedLinksWithHandles(opts.limit ?? 500);
   const memo: LivenessMemo = new Map();
-  let created = 0, skipped = 0, failed = 0, junk = 0;
+  // One article index for the whole run, same reasoning as the liveness memo.
+  // These are historic archives, so none carry a referrer row any more - they
+  // reach a guide through the CATEGORY level of the index, not the exact one.
+  const articles = await buildArticleTargets(store, admin);
+  let created = 0, skipped = 0, failed = 0;
   const samples: string[] = [];
   // Counts per destination. `samples` caps at 12, which is enough to eyeball
   // the format and nowhere near enough to see the DISTRIBUTION - and the
@@ -257,13 +265,9 @@ export async function backfillArchivedRedirects(
   const byTarget: Record<string, number> = {};
   for (const link of links) {
     const path = `/products/${link.handle}`;
-    // Off-catalog junk is left 404ing ON PURPOSE - see isOffCatalogJunk. Checked
-    // before findRedirect so it costs no Admin call and reads as its own outcome
-    // rather than hiding inside `skipped`, which means "already had a redirect".
-    if (isOffCatalogJunk(link)) { junk++; continue; }
     try {
       if (await findRedirect(admin, path)) { skipped++; continue; }
-      const target = await pickRedirectTarget(store, admin, link.handle!, memo);
+      const target = await pickRedirectTarget(store, admin, link.handle!, memo, { articles });
       if (!dryRun) await createRedirect(admin, path, target);
       created++;
       byTarget[target] = (byTarget[target] ?? 0) + 1;
@@ -274,8 +278,8 @@ export async function backfillArchivedRedirects(
     }
   }
   const spread = Object.entries(byTarget).sort((a, b) => b[1] - a[1]).map(([t, n]) => `${t} x${n}`).join(', ');
-  console.log(`redirect backfill (${dryRun ? 'DRY RUN' : 'live'}): ${created} created, ${skipped} already had one, ${junk} left 404 as off-catalog, ${failed} failed of ${links.length}${spread ? ` | targets: ${spread}` : ''}`);
-  return { scanned: links.length, created, skipped, junk, failed, dryRun, samples, byTarget };
+  console.log(`redirect backfill (${dryRun ? 'DRY RUN' : 'live'}): ${created} created, ${skipped} already had one, ${failed} failed of ${links.length}${spread ? ` | targets: ${spread}` : ''}`);
+  return { scanned: links.length, created, skipped, failed, dryRun, samples, byTarget };
 }
 
 export async function restoreCulledProducts(

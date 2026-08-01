@@ -1053,6 +1053,32 @@ export class TenantStore {
     return rs.results ?? [];
   }
 
+  /**
+   * How many products of each category a given guide references.
+   *
+   * This is what lets a dead product URL find a CONGRUENT article without an
+   * LLM and without a hand-maintained topic map: an article that recommends six
+   * pet-toys products is, on the evidence, the pet-toys guide. Derived from live
+   * data, so it re-aims itself as the blog grows rather than going stale.
+   *
+   * Joined on handle because that is what product_referrers stores; a product
+   * with no category contributes nothing rather than forming a null bucket.
+   */
+  async articleCategoryWeights(): Promise<{ referrerId: string; category: string; n: number }[]> {
+    const rs = await this.db
+      .prepare(
+        `SELECT r.referrer_id AS referrerId, l.category AS category, COUNT(*) AS n
+           FROM product_referrers r
+           JOIN product_links l ON l.shop = r.shop AND l.handle = r.handle
+          WHERE r.shop = ?1 AND r.referrer_type = 'blog'
+            AND l.category IS NOT NULL AND l.category != ''
+          GROUP BY r.referrer_id, l.category`
+      )
+      .bind(this.shop)
+      .all<{ referrerId: string; category: string; n: number }>();
+    return rs.results ?? [];
+  }
+
   /** Drop every row contributed by ONE source, so rebuilding that source also
    *  REMOVES links it no longer contains. Without this the index would only
    *  grow and would block archives forever. */

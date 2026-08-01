@@ -3,7 +3,7 @@ import { env, applyD1Migrations } from 'cloudflare:test';
 import { TenantStore } from '../src/tenant-store';
 import {
   findRedirect, createRedirect, deleteRedirect, pickRedirectTarget,
-  isScopeDenial, isOffCatalogJunk, REDIRECT_FALLBACK
+  isScopeDenial, buildArticleTargets, REDIRECT_FALLBACK
 } from '../src/catalog/redirects';
 
 const SHOP = 'test.myshopify.com';
@@ -136,31 +136,118 @@ describe('pickRedirectTarget', () => {
   });
 });
 
-describe('isOffCatalogJunk', () => {
-  // Redirecting a barber scissors to a pet page tells Google this shop sells
-  // barber scissors. A 404 is the correct answer for a product that should
-  // never have been imported, so these are deliberately left broken.
-  it('excludes the whole more-to-love category - all 11 members are off-catalog', () => {
-    expect(isOffCatalogJunk({ handle: 'set-diamond-love-more-pendant', category: 'more-to-love' })).toBe(true);
-    expect(isOffCatalogJunk({ handle: 'household-vacuum-sealer-food-saver', category: 'more-to-love' })).toBe(true);
+// The owner's rule (2026-08-01): an archived product URL lands on a CONGRUENT
+// blog post, never a 404. A guide is a content page that can legitimately serve
+// many products where a product page cannot, so it outranks both the collection
+// and the sibling.
+describe('blog-post redirect targets', () => {
+  let store: TenantStore;
+  beforeEach(() => { store = new TenantStore(env.DB, SHOP); });
+
+  /** Shopify returning one blog with the given articles. */
+  function blogShopify(articles: { id: string; handle: string; isPublished: boolean }[], live: { collections?: string[]; products?: string[] } = {}) {
+    const base = shopify(live);
+    const admin = (async (q: string, v: Record<string, string>) => {
+      if (q.includes('pawscoutRedirectArticles')) {
+        return { blogs: { nodes: [{ handle: 'guides', articles: { nodes: articles, pageInfo: { hasNextPage: false } } }], pageInfo: { hasNextPage: false } } };
+      }
+      return (base.admin as unknown as (a: string, b: Record<string, string>) => Promise<unknown>)(q, v);
+    }) as never;
+    return { admin, asked: base.asked };
+  }
+
+  const ART = [{ id: 'gid://shopify/Article/1', handle: 'best-cat-toys', isPublished: true }];
+
+  it('prefers a guide that REFERENCED the product over anything inferred', async () => {
+    // Exact congruence: the guard just repaired this guide because it
+    // recommended this exact product. Nothing inferred can beat that.
+    await link(store, '1', { handle: 'dying', category: 'pet-toys' });
+    const s = blogShopify(ART, { collections: ['pet-toys'] });
+    const articles = await buildArticleTargets(store, s.admin);
+    const t = await pickRedirectTarget(store, s.admin, 'dying', new Map(), {
+      articles, preferArticleIds: ['gid://shopify/Article/1'],
+    });
+    expect(t).toBe('/blogs/guides/best-cat-toys');
   });
 
-  it('excludes the three junk handles filed under REAL pet categories', () => {
-    // No category rule can reach these - they sit in pet-grooming, pet-health
-    // and pet-cleaning alongside genuine products.
-    expect(isOffCatalogJunk({ handle: 'barber-scissors', category: 'pet-grooming' })).toBe(true);
-    expect(isOffCatalogJunk({ handle: 'hairdressing-scissors', category: 'pet-health' })).toBe(true);
-    expect(isOffCatalogJunk({ handle: 'professional-scissors-sharpener-with-angle-adjustment', category: 'pet-cleaning' })).toBe(true);
+  it('uses the CATEGORY guide - derived from what each guide recommends', async () => {
+    // No referrer for the dying product, but a sibling in its category is
+    // recommended by the guide, which makes that guide the category's guide.
+    await link(store, '1', { handle: 'dying', category: 'pet-toys' });
+    await link(store, '2', { handle: 'toy-in-guide', category: 'pet-toys' });
+    await store.putProductReferrers('toy-in-guide', [{ referrerType: 'blog', referrerId: 'gid://shopify/Article/1' }]);
+    const s = blogShopify(ART, { collections: ['pet-toys'] });
+    const articles = await buildArticleTargets(store, s.admin);
+    expect(await pickRedirectTarget(store, s.admin, 'dying', new Map(), { articles })).toBe('/blogs/guides/best-cat-toys');
   });
 
-  it('does NOT exclude a genuine pet product', () => {
-    expect(isOffCatalogJunk({ handle: 'dog-multivitamin-chews-with-glucosamine-probiotics', category: 'pet-health' })).toBe(false);
-    expect(isOffCatalogJunk({ handle: 'pet-teeth-cleaning-powder-100g-1', category: 'pet-grooming' })).toBe(false);
+  it('a guide OUTRANKS the category collection', async () => {
+    await link(store, '1', { handle: 'dying', category: 'pet-toys' });
+    await link(store, '2', { handle: 'toy-in-guide', category: 'pet-toys' });
+    await store.putProductReferrers('toy-in-guide', [{ referrerType: 'blog', referrerId: 'gid://shopify/Article/1' }]);
+    const s = blogShopify(ART, { collections: ['pet-toys'], products: ['toy-in-guide'] });
+    const articles = await buildArticleTargets(store, s.admin);
+    const t = await pickRedirectTarget(store, s.admin, 'dying', new Map(), { articles });
+    expect(t).not.toBe('/collections/pet-toys');
+    expect(t).toBe('/blogs/guides/best-cat-toys');
   });
 
-  it('survives a null handle or category rather than throwing', () => {
-    expect(isOffCatalogJunk({})).toBe(false);
-    expect(isOffCatalogJunk({ handle: null, category: null })).toBe(false);
+  it('NEVER points at an unpublished draft - it has no storefront page', async () => {
+    // Redirecting to a draft would manufacture the very 404 this prevents.
+    await link(store, '1', { handle: 'dying', category: 'pet-toys' });
+    await link(store, '2', { handle: 'toy-in-guide', category: 'pet-toys' });
+    await store.putProductReferrers('toy-in-guide', [{ referrerType: 'blog', referrerId: 'gid://shopify/Article/1' }]);
+    const s = blogShopify([{ id: 'gid://shopify/Article/1', handle: 'draft-post', isPublished: false }], { collections: ['pet-toys'] });
+    const articles = await buildArticleTargets(store, s.admin);
+    expect(articles.byId.size).toBe(0);
+    const t = await pickRedirectTarget(store, s.admin, 'dying', new Map(), {
+      articles, preferArticleIds: ['gid://shopify/Article/1'],
+    });
+    expect(t).toBe('/collections/pet-toys');
+  });
+
+  it('falls through to the collection when NO guide covers the category', async () => {
+    await link(store, '1', { handle: 'dying', category: 'pet-health' });
+    const s = blogShopify(ART, { collections: ['pet-health'] });
+    const articles = await buildArticleTargets(store, s.admin);
+    expect(await pickRedirectTarget(store, s.admin, 'dying', new Map(), { articles })).toBe('/collections/pet-health');
+  });
+
+  it('NEVER 404s, even for a product that never belonged in the catalog', async () => {
+    // Owner rule: no archived URL may 404. more-to-love is a dead collection
+    // holding off-catalog junk, so every earlier step misses and the terminal
+    // built-in has to answer.
+    await link(store, '1', { handle: 'set-diamond-love-more-pendant', category: 'more-to-love' });
+    const s = blogShopify(ART);
+    const articles = await buildArticleTargets(store, s.admin);
+    expect(await pickRedirectTarget(store, s.admin, 'set-diamond-love-more-pendant', new Map(), { articles })).toBe(REDIRECT_FALLBACK);
+  });
+
+  it('degrades to collection-then-fallback when the articles query FAILS', async () => {
+    // Losing guide targets must not block an archive or produce a 404.
+    await link(store, '1', { handle: 'dying', category: 'pet-toys' });
+    const base = shopify({ collections: ['pet-toys'] });
+    const admin = (async (q: string, v: Record<string, string>) => {
+      if (q.includes('pawscoutRedirectArticles')) throw new Error('blog api down');
+      return (base.admin as unknown as (a: string, b: Record<string, string>) => Promise<unknown>)(q, v);
+    }) as never;
+    const articles = await buildArticleTargets(store, admin);
+    expect(articles.byId.size).toBe(0);
+    expect(await pickRedirectTarget(store, admin, 'dying', new Map(), { articles })).toBe('/collections/pet-toys');
+  });
+
+  it('picks the guide that recommends the MOST of a category, ties broken stably', async () => {
+    await link(store, '1', { handle: 'a', category: 'pet-toys' });
+    await link(store, '2', { handle: 'b', category: 'pet-toys' });
+    await link(store, '3', { handle: 'dying', category: 'pet-toys' });
+    await store.putProductReferrers('a', [{ referrerType: 'blog', referrerId: 'gid://shopify/Article/2' }]);
+    await store.putProductReferrers('b', [{ referrerType: 'blog', referrerId: 'gid://shopify/Article/2' }]);
+    const s = blogShopify([
+      { id: 'gid://shopify/Article/1', handle: 'thin-post', isPublished: true },
+      { id: 'gid://shopify/Article/2', handle: 'deep-post', isPublished: true },
+    ], { collections: ['pet-toys'] });
+    const articles = await buildArticleTargets(store, s.admin);
+    expect(articles.byCategory.get('pet-toys')).toBe('/blogs/guides/deep-post');
   });
 });
 

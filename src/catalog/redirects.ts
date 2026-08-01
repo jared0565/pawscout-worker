@@ -159,18 +159,50 @@ async function pathIsLive(admin: AdminGraphql, path: string, memo: LivenessMemo)
  *
  * Cheaper too, incidentally: the collection question is shared across a run and
  * memoised, so most products never trigger the per-product lookup at all.
+ *
+ * A BLOG POST OUTRANKS BOTH (owner rule, 2026-08-01). A guide is a content page
+ * that can legitimately serve many products, where a product page cannot - so
+ * "this product is gone, here is the guide that covers it" is a claim that
+ * stays true, and it is the one destination that reads as an answer rather than
+ * a dead end. `preferArticleIds` is the guard handing over the guides it just
+ * repaired, which is exact congruence; the category guide is inferred.
+ *
+ * NEVER RETURNS A 404, by owner instruction. /collections/all is a Shopify
+ * built-in that cannot be unpublished, so the chain always terminates somewhere
+ * live even for products that never belonged in the catalog.
  */
 export async function pickRedirectTarget(
   store: TenantStore,
   admin: AdminGraphql,
   handle: string,
-  memo: LivenessMemo = new Map()
+  memo: LivenessMemo = new Map(),
+  ctx: { articles?: ArticleTargets | null; preferArticleIds?: string[] } = {}
 ): Promise<string> {
+  const articles = ctx.articles ?? null;
+
+  // 1. A guide that actually referenced this product. Sorted so that when a
+  //    product appeared in two guides the choice is stable across runs.
+  if (articles) {
+    for (const id of [...(ctx.preferArticleIds ?? [])].sort()) {
+      const p = articles.byId.get(id);
+      if (p) return p;
+    }
+  }
+
   const link = await store.getLinkByHandle(handle);
   const category = link?.category ?? null;
   if (category) {
+    // 2. The guide that covers this category, on the evidence of what it
+    //    recommends. Not liveness-checked against Shopify: byId already
+    //    excluded unpublished articles, which is the only way a guide 404s.
+    const guide = articles?.byCategory.get(category);
+    if (guide) return guide;
+
+    // 3. The category collection.
     const c = `/collections/${category}`;
     if (await pathIsLive(admin, c, memo)) return c;
+
+    // 4. A live sibling, for a category whose own collection is dead.
     const best = await store.topLiveHandleInCategory(category, handle);
     if (best) {
       const p = `/products/${best}`;
@@ -180,31 +212,101 @@ export async function pickRedirectTarget(
   return REDIRECT_FALLBACK;
 }
 
-/**
- * Products that never belonged in this catalog. These are left as 404s.
- *
- * A redirect is a claim that the old URL's subject still has a home here. For a
- * barber scissors or an "I love you more" bracelet in a pet store that claim is
- * false, and pointing them at pet pages tells Google this shop is about barber
- * scissors - the same soft-404 harm the collection-first ordering above exists
- * to avoid, just aimed at the catalog's own credibility. A 404 is the CORRECT
- * response for a product that should never have been imported.
- *
- * `more-to-love` is a whole-category key, not a guess: every one of its 11
- * archived members was read on 2026-08-01 and all 11 are off-catalog (four
- * kitchen/garden tools, seven jewellery and apparel pieces), zero pet products.
- * Its collection is itself a 404, which is what a category retired as a mistake
- * looks like. The three handles below are the same junk filed under real pet
- * categories, so no category rule can reach them.
- */
-const JUNK_CATEGORIES = new Set(['more-to-love']);
-const JUNK_HANDLES = new Set([
-  'professional-scissors-sharpener-with-angle-adjustment',
-  'hairdressing-scissors',
-  'barber-scissors'
-]);
+// Article handles + publish state, for turning a referrer id into a real URL.
+// isPublished is the field the blog pipeline already uses (blog/article.ts:59);
+// a draft has no storefront page, so redirecting to one would manufacture the
+// 404 this module exists to prevent. pageInfo at BOTH levels for the same
+// reason listArticlesForIndex selects it: either boundary can hide an article.
+const ARTICLE_TARGETS = `query pawscoutRedirectArticles {
+  blogs(first: 20) {
+    nodes {
+      handle
+      articles(first: 100) {
+        nodes { id handle isPublished }
+        pageInfo { hasNextPage }
+      }
+    }
+    pageInfo { hasNextPage }
+  }
+}`;
 
-export function isOffCatalogJunk(link: { handle?: string | null; category?: string | null }): boolean {
-  if (JUNK_CATEGORIES.has(link.category ?? '')) return true;
-  return JUNK_HANDLES.has(link.handle ?? '');
+export interface ArticleTargets {
+  /** Article GID -> storefront path. PUBLISHED articles only. */
+  byId: Map<string, string>;
+  /** Category -> the path of the guide that best covers it. */
+  byCategory: Map<string, string>;
+  truncated: boolean;
+}
+
+export const EMPTY_ARTICLE_TARGETS: ArticleTargets = {
+  byId: new Map(), byCategory: new Map(), truncated: false
+};
+
+/**
+ * Build the guide index a dead product URL is aimed at.
+ *
+ * The owner's rule (2026-08-01) is that an archived product must land on a
+ * congruent blog post rather than 404. Two levels of congruence are available
+ * and they are very different in quality:
+ *
+ *  - `byId` is EXACT. The archive guard knows which guides referenced the dying
+ *    product, because it just repaired them. That article is congruent by
+ *    construction, not by inference.
+ *  - `byCategory` is INFERRED, from which categories each guide's referenced
+ *    products belong to. An article recommending six pet-toys products is the
+ *    pet-toys guide on the evidence. Ties break on article id so a run is
+ *    reproducible rather than dependent on row order.
+ *
+ * Built once per run and passed down, like LivenessMemo - the 112-URL backfill
+ * must not re-ask this per product.
+ *
+ * A failure returns EMPTY rather than throwing: losing article targets degrades
+ * the chain to collection-then-fallback, which still never 404s. That is the
+ * right trade here, unlike in listArticlesForIndex where an empty scan would be
+ * read as "nothing is referenced" and unblock archives that should be refused.
+ */
+export async function buildArticleTargets(store: TenantStore, admin: AdminGraphql): Promise<ArticleTargets> {
+  const byId = new Map<string, string>();
+  let truncated = false;
+  try {
+    const data = await admin(ARTICLE_TARGETS) as {
+      blogs?: {
+        nodes?: {
+          handle?: string;
+          articles?: {
+            nodes?: { id?: string; handle?: string; isPublished?: boolean }[];
+            pageInfo?: { hasNextPage?: boolean };
+          };
+        }[];
+        pageInfo?: { hasNextPage?: boolean };
+      };
+    };
+    truncated = data.blogs?.pageInfo?.hasNextPage === true;
+    for (const blog of data.blogs?.nodes ?? []) {
+      if (blog.articles?.pageInfo?.hasNextPage) truncated = true;
+      for (const a of blog.articles?.nodes ?? []) {
+        if (!a.id || !a.handle || a.isPublished !== true || !blog.handle) continue;
+        byId.set(a.id, `/blogs/${blog.handle}/${a.handle}`);
+      }
+    }
+  } catch (e) {
+    console.warn(`article redirect targets unavailable: ${(e as Error).message}`);
+    return EMPTY_ARTICLE_TARGETS;
+  }
+
+  const byCategory = new Map<string, string>();
+  try {
+    const best = new Map<string, { id: string; n: number }>();
+    for (const w of await store.articleCategoryWeights()) {
+      if (!byId.has(w.referrerId)) continue; // unpublished or gone
+      const cur = best.get(w.category);
+      if (!cur || w.n > cur.n || (w.n === cur.n && w.referrerId < cur.id)) {
+        best.set(w.category, { id: w.referrerId, n: w.n });
+      }
+    }
+    for (const [category, { id }] of best) byCategory.set(category, byId.get(id)!);
+  } catch (e) {
+    console.warn(`article category weights unavailable: ${(e as Error).message}`);
+  }
+  return { byId, byCategory, truncated };
 }

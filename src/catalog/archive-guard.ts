@@ -20,7 +20,7 @@
  */
 import type { AdminGraphql } from '../shopify-admin';
 import type { TenantStore } from '../tenant-store';
-import { findRedirect, createRedirect, pickRedirectTarget, isScopeDenial, type LivenessMemo } from './redirects';
+import { findRedirect, createRedirect, pickRedirectTarget, isScopeDenial, type LivenessMemo, type ArticleTargets } from './redirects';
 import type { HealCandidate } from '../blog/article-health';
 
 const ARCHIVE = `mutation pawscoutArchive($input: ProductInput!) {
@@ -207,7 +207,7 @@ export function writesArchivedStatus(src: string): boolean {
 export async function archiveProductGuarded(
   admin: AdminGraphql,
   store: TenantStore,
-  opts: { cjPid: string; productId: string; handle: string; reason: string; memo?: LivenessMemo },
+  opts: { cjPid: string; productId: string; handle: string; reason: string; memo?: LivenessMemo; articles?: ArticleTargets | null },
   deps?: GuardDeps
 ): Promise<ArchiveOutcome> {
   // BEFORE the lookup, not after: an empty result is only meaningful when the
@@ -256,7 +256,13 @@ export async function archiveProductGuarded(
   const path = `/products/${opts.handle}`;
   try {
     if (!(await findRedirect(admin, path))) {
-      const target = await pickRedirectTarget(store, admin, opts.handle, opts.memo);
+      // The guides we just repaired are handed over as the preferred targets.
+      // They are congruent BY CONSTRUCTION - each one recommended this exact
+      // product moments ago - so they beat anything inferred from category.
+      const target = await pickRedirectTarget(store, admin, opts.handle, opts.memo, {
+        articles: opts.articles ?? null,
+        preferArticleIds: blogRefs.map((r) => r.referrer_id),
+      });
       await createRedirect(admin, path, target);
       console.log(`archive ${opts.handle} (${opts.reason}): redirect ${path} -> ${target}`);
     }
