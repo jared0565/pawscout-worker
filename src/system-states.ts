@@ -64,6 +64,9 @@ export async function collectSystemStates(
   const addons = { ...DEFAULT_ADDONS, ...cfg.addons };
   const semantic = { ...DEFAULT_SEMANTIC, ...(cfg.semantic ?? {}) };
 
+  // Fails soft: a states page that 500s because a roll-up query broke is worse
+  // than one missing a line, and every other row here is still useful.
+  const funnel = await store.failureReasonCounts().catch(() => []);
   const tenant = await store.getTenant();
   const cjCred = await store.getSupplierCredential('cj');
   const webhookCred = await store.getSupplierCredential('resend-webhook');
@@ -192,7 +195,21 @@ export async function collectSystemStates(
         { key: 'pricing', label: 'Pricing chain', value: `${pricing.multiplier}x, floor ${pricing.floor}x, min margin GBP ${pricing.minMarginGbp}` + (pricing.maxMarginGbp != null ? `, cap GBP ${pricing.maxMarginGbp}` : ''), on: null, detail: `fx ${pricing.fxUsdToGbp} +${pricing.fxBufferPct}% buffer`, source: 'tenant_config.pricing' },
         { key: 'addons.enabled', label: 'Add-on lane', value: onOff(addons.enabled), on: addons.enabled, detail: `$${addons.priceMinUsd}-$${addons.priceMaxUsd}, pool ${addons.poolSize}, ${addons.suppressFromBrowse ? 'hidden from browse' : 'visible'}`, source: 'tenant_config.addons' },
         { key: 'semantic.enabled', label: 'Semantic term library', value: onOff(semantic.enabled), on: semantic.enabled, detail: `max ${semantic.maxExpansions} expansions, ttl ${semantic.ttlDays}d`, source: 'tenant_config.semantic' },
-        { key: 'target', label: 'Per-collection target', value: String(cfg.target), on: null, source: 'tenant_config.target' }
+        { key: 'target', label: 'Per-collection target', value: String(cfg.target), on: null, source: 'tenant_config.target' },
+        // WHICH gate is actually binding. Without this the only visible fact is
+        // that the catalog is small, which says nothing about whether that is
+        // discipline or a misconfigured floor. Read it before moving any
+        // threshold above. 'unrecorded' is the pre-0037 backlog, not a fault.
+        {
+          key: 'catalog.funnel',
+          label: 'Rejected at admission',
+          value: funnel.length
+            ? funnel.map((f) => `${f.reason} ${f.n}`).join(', ')
+            : 'none rejected',
+          on: null,
+          detail: 'why products never entered the catalog; tune the binding gate, not the total',
+          source: 'product_links.fail_reason'
+        }
       ]
     },
     {

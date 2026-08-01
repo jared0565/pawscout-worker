@@ -82,6 +82,7 @@ SELECT inbox, fulfil, gates, pricing, llm, addons, target FROM tenant_config WHE
 | `addons.enabled` | `tenant_config.addons` |
 | `semantic.enabled` | `tenant_config.semantic` |
 | `target` | `tenant_config.target` |
+| `catalog.funnel` | `product_links.fail_reason` (read-only roll-up, not a switch) - which admission gate is keeping products out, counted per reason. Probe: `SELECT COALESCE(fail_reason,'unrecorded') r, COUNT(*) FROM product_links WHERE state='failed' GROUP BY r`. Reasons are written in `src/proxy/import.ts`: `curation-score`, `not-pet-relevant`, `no-congruent-image`, `no-local-stock`, `stock-below-floor`, `below-profit-floor`, `exception`. `unrecorded` = rows predating migration 0037. **Read this before changing any gate above: a small catalog is only evidence of an over-strict gate once you know which one is binding, and `exception` is a bug rather than a policy outcome.** |
 
 ## Connections
 

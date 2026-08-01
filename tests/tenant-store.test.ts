@@ -42,3 +42,47 @@ describe('TenantStore', () => {
     expect(await new TenantStore(env.DB, 'b.myshopify.com').getSupplierCredential('cj')).toBeNull();
   });
 });
+
+
+// The admission funnel (migration 0037). On 2026-08-01 product_links held 270
+// rows in state 'failed' against 48 live, written from seven different places,
+// with nothing recording which. "Is the gate protecting our margin or are
+// imports crashing?" was unanswerable from the data.
+describe('fail_reason and the admission funnel', () => {
+  let store: TenantStore;
+  beforeEach(() => { store = new TenantStore(env.DB, 'funnel.myshopify.com'); });
+
+  it('records the reason a product was kept out, grouped for counting', async () => {
+    await store.putLink({ cjPid: 'a', state: 'failed', failReason: 'below-profit-floor' });
+    await store.putLink({ cjPid: 'b', state: 'failed', failReason: 'below-profit-floor' });
+    await store.putLink({ cjPid: 'c', state: 'failed', failReason: 'no-local-stock' });
+    const counts = await store.failureReasonCounts();
+    expect(counts).toEqual([
+      { reason: 'below-profit-floor', n: 2 },
+      { reason: 'no-local-stock', n: 1 },
+    ]);
+  });
+
+  it('CLEARS the reason when the product later imports fine', async () => {
+    // A stale explanation on a live product is worse than none: it would be
+    // counted as a rejection forever and make the binding gate look wrong.
+    await store.putLink({ cjPid: 'a', state: 'failed', failReason: 'stock-below-floor' });
+    await store.putLink({ cjPid: 'a', state: 'imported', shopifyProductId: 'gid://p/1' });
+    expect(await store.failureReasonCounts()).toEqual([]);
+    const link = await store.getLink('a');
+    expect(link?.fail_reason).toBeNull();
+  });
+
+  it('counts a failed row with no reason as unrecorded, not as a mystery', async () => {
+    // The 270 rows that predate the migration. Naming them keeps the roll-up
+    // honest instead of quietly under-reporting the total.
+    await store.putLink({ cjPid: 'old', state: 'failed' });
+    expect(await store.failureReasonCounts()).toEqual([{ reason: 'unrecorded', n: 1 }]);
+  });
+
+  it('does not record a reason against a non-failed state', async () => {
+    await store.putLink({ cjPid: 'a', state: 'imported', failReason: 'below-profit-floor' });
+    const link = await store.getLink('a');
+    expect(link?.fail_reason).toBeNull();
+  });
+});

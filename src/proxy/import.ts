@@ -184,7 +184,7 @@ export async function confirmAndImport(
       if (curated) {
         if (curated.relevanceScore < cfg.llm.scoreThreshold) {
           console.warn(`import rejected by curation for ${detail.pid}: score ${curated.relevanceScore} < ${cfg.llm.scoreThreshold}`);
-          await store.putLink({ cjPid: detail.pid, state: 'failed', category: category ?? null });
+          await store.putLink({ cjPid: detail.pid, state: 'failed', failReason: 'curation-score', category: category ?? null });
           return null;
         }
         detail = {
@@ -206,7 +206,7 @@ export async function confirmAndImport(
   // gates would otherwise pass (the kitchen/garden/human-tool class).
   if (detail.llmScore === undefined && !isLikelyPetProduct(`${detail.nameEn} ${detail.categoryName ?? ''}`)) {
     console.warn(`import blocked (not pet-relevant) for ${detail.pid}: ${detail.nameEn}`);
-    await store.putLink({ cjPid: detail.pid, state: 'failed', category: category ?? null });
+    await store.putLink({ cjPid: detail.pid, state: 'failed', failReason: 'not-pet-relevant', category: category ?? null });
     return null;
   }
   // Image QA (vision): CJ's first image is often a single component or a
@@ -218,7 +218,7 @@ export async function confirmAndImport(
     const { detail: curated, congruent } = await curateDetailImages(store, detail, pickHero);
     if (!congruent) { // no image matches the title - don't list a mislabelled product
       console.warn(`import rejected (no congruent image) for ${detail.pid}: ${detail.nameEn}`);
-      await store.putLink({ cjPid: detail.pid, state: 'failed', category: category ?? null });
+      await store.putLink({ cjPid: detail.pid, state: 'failed', failReason: 'no-congruent-image', category: category ?? null });
       return null;
     }
     detail = curated;
@@ -259,7 +259,7 @@ export async function confirmAndImport(
   const localQty = bestLocalQty(origins, locals);
   if (localQty < cfg.floors.stockFloor) {
     console.warn(`import blocked (no local-warehouse stock for lane ${locals.join('/')}) for ${detail.pid}: ${detail.nameEn}`);
-    await store.putLink({ cjPid: detail.pid, state: 'failed', category: category ?? null });
+    await store.putLink({ cjPid: detail.pid, state: 'failed', failReason: 'no-local-stock', category: category ?? null });
     return null;
   }
   // Origin evidence rides the detail into importProduct and the warehouse
@@ -276,7 +276,7 @@ export async function confirmAndImport(
     await store.setWarehouseStock(detail.pid, live, live >= cfg.floors.stockFloor ? 'available' : 'low_stock');
     if (live < cfg.floors.stockFloor) {
       console.warn(`import blocked for ${detail.pid}: CJ stock ${live} < floor ${cfg.floors.stockFloor}`);
-      await store.putLink({ cjPid: detail.pid, state: 'failed', category: category ?? null });
+      await store.putLink({ cjPid: detail.pid, state: 'failed', failReason: 'stock-below-floor', category: category ?? null });
       return null;
     }
   }
@@ -325,7 +325,7 @@ export async function confirmAndImport(
     if (failReason) {
       if (profit.hardBlock) {
         console.warn(`import blocked (below profit floor) for ${detail.pid}: ${failReason}`);
-        await store.putLink({ cjPid: detail.pid, state: 'failed', category: category ?? null });
+        await store.putLink({ cjPid: detail.pid, state: 'failed', failReason: 'below-profit-floor', category: category ?? null });
         return null;
       }
       console.warn(`import flagged for review (below profit floor) for ${detail.pid}: ${failReason}`);
@@ -487,7 +487,7 @@ export async function importProduct(
     }
   } catch (e) {
     console.warn(`import failed for ${detail.pid}: ${(e as Error).message}`);
-    await store.putLink({ cjPid: detail.pid, state: 'failed', category: cat });
+    await store.putLink({ cjPid: detail.pid, state: 'failed', failReason: 'exception', category: cat });
   }
 }
 

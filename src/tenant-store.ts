@@ -58,6 +58,10 @@ export interface ProductLink {
   state: 'ghost' | 'importing' | 'imported' | 'archived' | 'failed' | 'draft';
   stock_paused: number; // 1 = inventory zeroed because CJ stock fell below floor
   profit_keep: number;  // 1 = owner Keep override: the profit agent must not act on this product
+  // Which admission gate kept this product out. Set only with state 'failed',
+  // and null on every other state. Null on a failed row means the row predates
+  // migration 0037, not that the cause is a mystery worth investigating.
+  fail_reason: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -1001,20 +1005,51 @@ export class TenantStore {
     return out;
   }
 
-  async putLink(link: { cjPid: string; state: ProductLink['state']; shopifyProductId?: string | null; handle?: string | null; category?: string | null }): Promise<void> {
+  /**
+   * `failReason` is recorded ONLY alongside state 'failed', and any other state
+   * CLEARS it rather than leaving a stale explanation on a product that has
+   * since imported fine. That is why it is not a COALESCE like the fields
+   * above: those carry forward when omitted, this one must not.
+   */
+  async putLink(link: { cjPid: string; state: ProductLink['state']; shopifyProductId?: string | null; handle?: string | null; category?: string | null; failReason?: string | null }): Promise<void> {
     const now = new Date().toISOString();
+    const reason = link.state === 'failed' ? (link.failReason ?? null) : null;
     await this.db
       .prepare(
-        `INSERT INTO product_links (shop, cj_pid, shopify_product_id, handle, category, state, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)
+        `INSERT INTO product_links (shop, cj_pid, shopify_product_id, handle, category, state, created_at, updated_at, fail_reason)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, ?8)
          ON CONFLICT(shop, cj_pid) DO UPDATE SET
            shopify_product_id = COALESCE(?3, shopify_product_id),
            handle = COALESCE(?4, handle),
            category = COALESCE(?5, category),
-           state = ?6, updated_at = ?7`
+           state = ?6, updated_at = ?7, fail_reason = ?8`
       )
-      .bind(this.shop, link.cjPid, link.shopifyProductId ?? null, link.handle ?? null, link.category ?? null, link.state, now)
+      .bind(this.shop, link.cjPid, link.shopifyProductId ?? null, link.handle ?? null, link.category ?? null, link.state, now, reason)
       .run();
+  }
+
+  /**
+   * The admission funnel: how many products each gate is currently keeping out.
+   *
+   * This is the question that could not be answered on 2026-08-01, when 270
+   * rows sat in 'failed' with no recorded cause. Read it before tuning any
+   * floor - a small catalog is only evidence of an over-strict gate once you
+   * know WHICH gate is binding.
+   *
+   * `unrecorded` is the pre-migration backlog, not a bug.
+   */
+  async failureReasonCounts(): Promise<{ reason: string; n: number }[]> {
+    const rs = await this.db
+      .prepare(
+        `SELECT COALESCE(fail_reason, 'unrecorded') AS reason, COUNT(*) AS n
+           FROM product_links
+          WHERE shop = ?1 AND state = 'failed'
+          GROUP BY reason
+          ORDER BY n DESC`
+      )
+      .bind(this.shop)
+      .all<{ reason: string; n: number }>();
+    return rs.results ?? [];
   }
 
   // --- Product referrer index (2026-07-31) ---
