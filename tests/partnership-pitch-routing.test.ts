@@ -13,7 +13,8 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
 import { TenantStore } from '../src/tenant-store';
 import {
-  detectVolumePitch, detectServicePitch, detectOffPlatformRequest, buildQualifyingEmail, maybePartnershipDraft, QUALIFYING_MARKER,
+  detectVolumePitch, detectServicePitch, detectOffPlatformRequest, buildQualifyingEmail, buildSignupInvite,
+  maybePartnershipDraft, QUALIFYING_MARKER, AFFILIATE_APPLY_URL,
   STANDARD_COMMISSION_PCT, TIER_REVIEW_ORDERS, TIER_MAX_PCT
 } from '../src/inbox/partnership';
 // (the on-ramp tests below exercise maybePartnershipDraft with category 'other')
@@ -30,6 +31,21 @@ async function seedFirstTouch(shop: string, bodyText: string) {
   const tid = await s.createThread({ contactEmail: 'p@x.com', subject: 'Partnership', subjectNorm: 'partnership', receivedAt: '2026-07-05T10:00:00Z', initialStatus: 'needs_reply' });
   await s.setThreadClassification(tid, { status: 'needs_reply', primaryCategory: 'affiliate', intentScore: 60, summary: null, classifiedAt: '2026-07-05T10:00:01Z' });
   await s.insertInboundMessageIfNew({ threadId: tid, messageId: `<p1@${shop}>`, inReplyTo: null, references: [], from: 'p@x.com', to: 'sales@activepaw.co.uk', subject: 'Partnership', bodyText, bodyHtml: null, headersJson: '{}', receivedAt: '2026-07-05T10:00:00Z' });
+  return { s, tid };
+}
+
+/** COLD first touch, the shape the Yusuf thread actually had (2026-08-02): the
+ * pitch is the FIRST message, it arrives at contact@, the classifier calls it
+ * 'other', and there is no prior outbound. Distinct from seedFirstTouch (which
+ * uses sales@ + category 'affiliate', so isPartnershipLane alone routes it and a
+ * detector regression would still pass) and from seedBaitOpener (which seeds an
+ * earlier outbound). Only this shape proves the DETECTOR is what routes it. */
+async function seedColdPitch(shop: string, bodyText: string) {
+  const s = new TenantStore(env.DB, shop);
+  await s.upsertContact({ email: 'p@x.com', name: 'Yusuf', phone: null });
+  const tid = await s.createThread({ contactEmail: 'p@x.com', subject: 'Activepaw', subjectNorm: 'activepaw', receivedAt: '2026-08-02T09:53:06Z', initialStatus: 'needs_reply' });
+  await s.setThreadClassification(tid, { status: 'needs_reply', primaryCategory: 'other', intentScore: 0, summary: null, classifiedAt: '2026-08-02T09:54:00Z' });
+  await s.insertInboundMessageIfNew({ threadId: tid, messageId: `<c1@${shop}>`, inReplyTo: null, references: [], from: 'p@x.com', to: 'contact@activepaw.co.uk', subject: 'Activepaw', bodyText, bodyHtml: null, headersJson: '{}', receivedAt: '2026-08-02T09:53:06Z' });
   return { s, tid };
 }
 
@@ -291,5 +307,79 @@ describe('Ishola-shape pitch (bait opener answered, then a 3%-for-orders pitch)'
     expect(second).not.toBeNull();
     const draft = await s.getPendingDraft(tid);
     expect(draft!.body_text).toMatch(/where would you promote/i); // re-asked, NOT scored into a decline
+  });
+});
+
+// --- Yusuf regression (2026-08-02, live thread e157259b) ---------------------
+// A cold commission pitch at contact@ that NO detector caught, so it fell to the
+// generic 'other' agent and got a three-line brush-off signed "Active Paw
+// Customer Support" - wrong substance and the wrong desk. Scored 1/4 on the old
+// detectVolumePitch (only the percentage): it promises no VOLUME and names no
+// METHOD, because the whole offer IS the risk-free framing.
+// Byte-exact from D1, including the U+00EB in "agrëe" (deliberate spam-filter
+// evasion), the newline inside "no ads\nbudget" (ordinary email wrapping), and
+// the trailing U+200E.
+const YUSUF_PITCH =
+  'Can we agrëe on 3% to grow your store with no upfront payment no ads\nbudget, can we discuss further on telegram or WhatsApp?\n‎';
+
+describe('Yusuf-shape pitch (risk-free framing, no volume promise, cold at contact@)', () => {
+  it('detectVolumePitch fires on the live text (percent + pay-on-results)', () => {
+    expect(detectVolumePitch(YUSUF_PITCH)).toBe(true);
+  });
+
+  it('the pay-on-results signal survives an email line-wrap mid-phrase', () => {
+    // "no ads\nbudget" is how it actually arrived; a literal-space regex misses it.
+    expect(detectVolumePitch('We take 4% and there is no ads\nbudget needed')).toBe(true);
+    expect(detectVolumePitch('Just 2% commission, no upfront\ncost at all')).toBe(true);
+  });
+
+  it('detectOffPlatformRequest fires on "discuss further on telegram"', () => {
+    expect(detectOffPlatformRequest(YUSUF_PITCH)).toBe(true);
+    expect(detectOffPlatformRequest('Can we discuss this on WhatsApp?')).toBe(true);
+    expect(detectOffPlatformRequest('hit me up on Telegram')).toBe(true);
+  });
+
+  it('detectServicePitch STAYS false on it - the wrong lane would hard-decline', () => {
+    // Its `service` clause already matches "grow your store"; only `offer` holds
+    // it back. If someone loosens `offer`, this pitch starts getting
+    // SERVICE_DECLINE_BODY ("we keep development and marketing in-house"), which
+    // is a hard decline in the wrong lane. This assertion is the tripwire.
+    expect(detectServicePitch(YUSUF_PITCH)).toBe(false);
+  });
+
+  it('pay-on-results does NOT fire on ordinary customer questions', () => {
+    expect(detectVolumePitch('Do I only pay once, or is the 5% off applied each time?')).toBe(false);
+    expect(detectVolumePitch('Is there no upfront payment for a return?')).toBe(false);
+    expect(detectVolumePitch('Your 10% welcome code did not work')).toBe(false);
+  });
+
+  it('routes a COLD first touch into the funnel and answers BOTH asks (signup_page)', async () => {
+    const { s, tid } = await seedColdPitch('yus.myshopify.com', YUSUF_PITCH);
+    const got = (await s.getThreadWithMessages(tid))!;
+    const r = await maybePartnershipDraft({ ...env } as any, s, CFG, got.thread, got, noFetch, 'signup_page');
+    expect(r).not.toBeNull();            // no longer falls through to the generic drafter
+    expect(r!.send).toBe(false);         // HITL
+    const draft = await s.getPendingDraft(tid);
+    expect(draft!.body_text).toContain(AFFILIATE_APPLY_URL);
+    expect(draft!.body_text).toMatch(/do not agree commission rates against promised volume/i);
+    expect(draft!.body_text).toMatch(/not able to use WhatsApp or Telegram/i);
+    // Signed by the partnerships desk, not Customer Support.
+    expect(draft!.body_text).toContain('Active Paw Partnerships');
+    // The rate is ANSWERED without quoting a number - signup_page keeps every
+    // figure on the application page as the single source of truth.
+    expect(draft!.body_text).not.toMatch(/\b\d{1,2}%/);
+    expect((await s.getApplicantByThread(tid))!.stage).toBe('passed_to_form');
+  });
+
+  it('buildSignupInvite adds nothing by default and anchors extras before the sign-off', () => {
+    const plain = buildSignupInvite('Yusuf');
+    expect(plain).not.toMatch(/promised volume/i);
+    expect(plain).not.toMatch(/WhatsApp/i);
+
+    const both = buildSignupInvite('Yusuf', { volumePitch: true, offPlatform: true });
+    expect(both.indexOf('promised volume')).toBeLessThan(both.indexOf('We look forward'));
+    expect(both.indexOf('WhatsApp')).toBeLessThan(both.indexOf('We look forward'));
+    expect(both.trimEnd().endsWith('Active Paw Partnerships')).toBe(true);
+    expect(both).toContain(AFFILIATE_APPLY_URL);
   });
 });

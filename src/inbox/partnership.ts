@@ -79,14 +79,31 @@ export function resolveFromAddress(opts: { partnershipLane: boolean; toAddr: str
 }
 
 /** Commission-for-volume pitch ("give me X% and I will sell Y units"): needs two
- * of four signals - commission language (incl. "pay me" / "compensation"), a
- * percentage, a volume promise, or method-pitch phrasing ("my marketing method",
- * "performance-based partnership") - so a plain "what commission do you offer?"
+ * of five signals - commission language (incl. "pay me" / "compensation"), a
+ * percentage, a volume promise, method-pitch phrasing ("my marketing method",
+ * "performance-based partnership"), or pay-on-results framing ("no upfront
+ * payment", "no ads budget") - so a plain "what commission do you offer?"
  * still gets the normal funnel. Signal shapes come from live pitches (2026-07-05:
  * the 3%-for-40-orders, 15-sales-per-week-pay-me, and 5-7-orders-a-day-GSE-method
  * threads; 2026-07-06 Ishola: "generate 20 ADDITIONAL orders ... my COMPENSATION
  * is just 3% ... PERFORMANCE-BASED partnership" - the noun can sit a word or two
  * after the number, and compensation/performance-based are pitch vocabulary).
+ *
+ * payOnResults added 2026-08-02 (Yusuf: "Can we agree on 3% to grow your store
+ * with no upfront payment no ads budget"). That pitch scored 1/4 - only the
+ * percentage - because it promises no VOLUME at all and names no method: the
+ * whole offer IS the risk-free framing. It fell through to the generic 'other'
+ * agent, which brushed it off in three lines signed "Customer Support". The
+ * no-risk clause is the pitch's own load-bearing claim, so it is a signal in its
+ * own right rather than a widening of `commission`.
+ *
+ * DELIBERATELY NOT FIXED HERE: `detectServicePitch` also misses this text (its
+ * `service` clause matches "grow your store" but `offer` does not match "can we
+ * agree"). Loosening `offer` would make the pair fire, and the service check runs
+ * FIRST - the sender would get SERVICE_DECLINE_BODY ("we keep development,
+ * listings and marketing in-house"), a hard decline in the wrong lane. This file's
+ * standing rule holds: when in doubt, the funnel; never a wrong decline.
+ *
  * Pure and deterministic; grounded in the message TEXT only (standing rule). */
 export function detectVolumePitch(text: string): boolean {
   const t = text.toLowerCase();
@@ -96,7 +113,17 @@ export function detectVolumePitch(text: string): boolean {
     /\b(?:sell|shift|move|guarantee[ds]?|deliver|generate)\b[^.!?\n]{0,60}?\b\d[\d,]*\+?\s+(?:[a-z-]+\s+){0,2}?(?:units?|pieces?|products?|items?|orders?|sales?)\b/.test(t)
     || /\b\d[\d,]*\+?\s*(?:units?|pieces?|orders?|sales?)\s*(?:a|per|every)\s*(?:day|week|month)\b/.test(t);
   const methodPitch = /\b(marketing (?:method|strategy|system|campaign)|my (?:method|strategy|system)|performance[- ]based partnership|long[- ]term partnership|work with (?:me|us) long[- ]term)\b/.test(t);
-  return [commission, percent, volume, methodPitch].filter(Boolean).length >= 2;
+  // Risk-free / pay-on-results framing. Kept narrow and directed AT US ("you only
+  // pay") so an ordinary customer asking "do I only pay once?" cannot reach it.
+  // \s+ not a literal space throughout: real email wraps mid-phrase, and the
+  // live 2026-08-02 pitch arrived with a newline inside "no ads\nbudget".
+  const payOnResults =
+    /\bno\s+upfront\s+(?:payment|cost|fee|charge|investment)s?\b/.test(t)
+    || /\bno\s+ads?\s+(?:budget|spend|cost)\b/.test(t)
+    || /\b(?:you|u)(?:'?ll|\s+will|\s+would)?\s+only\s+pay\b/.test(t)
+    || /\brisk[-\s]free\b/.test(t)
+    || /\bpay(?:ment)?\s+only\s+(?:when|after|if|on)\b/.test(t);
+  return [commission, percent, volume, methodPitch, payOnResults].filter(Boolean).length >= 2;
 }
 
 /** Pure service pitch (site-speed/SEO/listing/design/marketing vendors):
@@ -122,7 +149,12 @@ export function detectOffPlatformRequest(text: string): boolean {
   const t = text.toLowerCase();
   const CH = '(?:whats\\s?app|telegram|signal|we\\s?chat|viber|messenger|skype|discord)';
   // A switch/continue/reach verb pointing at a channel within a short span.
-  const switchToChannel = new RegExp(`\\b(?:move|switch|continue|carry on|chat|talk|speak|connect|reach(?:\\s+(?:me|us|you))?|hop on|take (?:this|it)|do (?:this|it)|use)\\b[^.?!\\n]{0,30}?\\b${CH}\\b`);
+  // `discuss` and `hit me up` added 2026-08-02 (Yusuf: "can we discuss further on
+  // telegram or WhatsApp?" matched NOTHING - `discuss` was absent from this list,
+  // and `modalWeChannel` wants "can we telegram", not "can we discuss ... on
+  // telegram"). Note this detector did NOT cause that thread's bad draft: the
+  // intercept below is gated on an in-flight applicant, and first touch has none.
+  const switchToChannel = new RegExp(`\\b(?:move|switch|continue|carry on|chat|talk|speak|discuss|connect|reach(?:\\s+(?:me|us|you))?|hop on|hit (?:me|us|you) up|take (?:this|it)|do (?:this|it)|use)\\b[^.?!\\n]{0,30}?\\b${CH}\\b`);
   // "can/shall we <channel>" with the channel used directly as the verb.
   const modalWeChannel = new RegExp(`\\b(?:can|could|shall|should|let'?s|lets|wanna)\\s+we\\s+(?:just\\s+|please\\s+)?${CH}\\b`);
   // Asking for our off-email contact details.
@@ -307,6 +339,22 @@ We look forward to seeing your application.
 Best Regards,
 Active Paw Partnerships`;
 
+// Answers a NEGOTIATED rate without quoting one. signup_page mode deliberately
+// keeps every number on the application page (single source of truth), so this
+// paragraph ends the negotiation by stating the POLICY - rates are not traded
+// against promised volume - and points at the page for the actual figures, which
+// it genuinely carries (COMMISSION_TIERS_SENTENCE renders there). Without this,
+// a sender who opened with "can we agree on 3%?" gets an invite that never
+// acknowledges the number they led with, and simply asks again.
+const SIGNUP_RATE_PARAGRAPH =
+`One thing worth answering directly, since you mentioned a rate: we do not agree commission rates against promised volume. Every partner starts on the same standard terms, which are set out in full on that page, and rates are reviewed on delivered results from there.`;
+
+// Answers a request to move to WhatsApp/Telegram in the SAME reply, rather than
+// leaving half the message unanswered. Deliberately not a decline of the person:
+// it keeps the record on email and points at the page as the way forward.
+const SIGNUP_KEEP_TO_EMAIL_PARAGRAPH =
+`On moving the conversation elsewhere: we keep partnership discussions on email so there is a clear record for both sides, so we are not able to use WhatsApp or Telegram. The application page is the quickest way forward, and you are very welcome to reply here at any time.`;
+
 const FORM_INVITE_BODY =
 `Thank you - this looks like a great potential fit, and we'd love to take it further.
 
@@ -392,7 +440,20 @@ export function buildQualifyingEmail(
   return applySalutation(body, name);
 }
 export function buildPartnershipDecline(name: string | null): string { return applySalutation(DECLINE_BODY, name); }
-export function buildSignupInvite(name: string | null): string { return applySalutation(SIGNUP_INVITE_BODY, name); }
+/** Both optional paragraphs are anchored BEFORE the sign-off (same technique as
+ * buildQualifyingEmail's ladder) so the invite never ends mid-thought. */
+export function buildSignupInvite(
+  name: string | null, opts: { volumePitch?: boolean; offPlatform?: boolean } = {}
+): string {
+  const extras = [
+    opts.volumePitch ? SIGNUP_RATE_PARAGRAPH : null,
+    opts.offPlatform ? SIGNUP_KEEP_TO_EMAIL_PARAGRAPH : null,
+  ].filter((p): p is string => p !== null);
+  const body = extras.length === 0
+    ? SIGNUP_INVITE_BODY
+    : SIGNUP_INVITE_BODY.replace('\n\nWe look forward', `\n\n${extras.join('\n\n')}\n\nWe look forward`);
+  return applySalutation(body, name);
+}
 export function buildServiceDecline(name: string | null): string { return applySalutation(SERVICE_DECLINE_BODY, name); }
 export function buildOperationsDecline(name: string | null): string { return applySalutation(OPERATIONS_DECLINE_BODY, name); }
 export function buildFormInvite(name: string | null): string { return applySalutation(FORM_INVITE_BODY, name); }
@@ -585,6 +646,10 @@ export async function maybePartnershipDraft(
   const latestNewText = stripQuotedReply(latestInbound?.body_text ?? '').trim();
   const servicePitch = detectServicePitch(latestNewText);
   const volumePitchNow = detectVolumePitch(latestNewText);
+  // Computed once here and reused by the in-flight intercept below and by the
+  // first-touch signup invite, which answers the channel-switch ask inline
+  // rather than leaving half the message unanswered (2026-08-02).
+  const offPlatformNow = detectOffPlatformRequest(latestNewText);
   if (!applicant && !servicePitch && !volumePitchNow
       && !isPartnershipLane({ inboundToAddrs, declaredIntent, primaryCategory: thread.primary_category })) return null;
 
@@ -629,7 +694,7 @@ export async function maybePartnershipDraft(
   // the generic drafter as before, and a first-touch pitch (no applicant) still
   // hits the funnel. Detector is switch-REQUEST phrasing only, so a partner who
   // merely lists their WhatsApp alongside real answers is still scored normally.
-  if (applicant && applicant.stage !== 'declined' && detectOffPlatformRequest(latestNewText)) {
+  if (applicant && applicant.stage !== 'declined' && offPlatformNow) {
     const body = buildKeepToEmail(name);
     const draftId = await store.insertDraft({
       threadId: thread.id, bodyText: body, bodyHtml: renderReplyHtml(body),
@@ -670,7 +735,9 @@ export async function maybePartnershipDraft(
   // screening); funnel modes send the email screening questions as before.
   if (!applicant) {
     const signup = mode === 'signup_page';
-    const body = signup ? buildSignupInvite(name) : buildQualifyingEmail(name, variant, { volumePitch });
+    const body = signup
+      ? buildSignupInvite(name, { volumePitch, offPlatform: offPlatformNow })
+      : buildQualifyingEmail(name, variant, { volumePitch });
     const draftId = await store.insertDraft({
       threadId: thread.id, bodyText: body, bodyHtml: renderReplyHtml(body),
       confidence: null, quotesPriceOrder: false, holdReasons: [], model: 'partnership-screen', status: 'pending',
@@ -699,7 +766,7 @@ export async function maybePartnershipDraft(
       // invite instead and move the stage, or the next reply would land back
       // here and re-send it forever (no QUALIFYING_MARKER ever appears).
       if (mode === 'signup_page') {
-        const body = buildSignupInvite(name);
+        const body = buildSignupInvite(name, { volumePitch, offPlatform: offPlatformNow });
         const draftId = await store.insertDraft({
           threadId: thread.id, bodyText: body, bodyHtml: renderReplyHtml(body),
           confidence: null, quotesPriceOrder: false, holdReasons: [], model: 'partnership-screen', status: 'pending',
