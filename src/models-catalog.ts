@@ -17,7 +17,11 @@ export type CatalogModel = {
 // 4.6 IS included as the claim-safety accuracy ceiling. gemini-3.1-pro-preview
 // is merchant-mandated and must always appear even if OpenRouter has not listed
 // the preview yet (it then surfaces with the static hint + price n/a). Ordered
-// premium → workhorse; 10 of 11 are vision-capable for the image (vision) field.
+// premium → workhorse; 11 of 12 are vision-capable for the image (vision) field.
+//
+// ORDER IS LOAD-BEARING AT POSITION 0: resolveChain falls back to
+// CURATED_MODELS[0].slug when a tenant has no primary set (src/llm-resolve.ts:15),
+// so whatever sits first is the system default. Do not reorder casually.
 //
 // GPT-5.6 Luna heads the workhorse band rather than the premium one, and the
 // placement is from measured attributes, not the version number. Verified
@@ -35,6 +39,18 @@ export const CURATED_MODELS = [
   { slug: 'openai/gpt-5.6-luna',            label: 'GPT-5.6 Luna',             vision: true  },
   { slug: 'google/gemini-3.5-flash',        label: 'Gemini 3.5 Flash',         vision: true  },
   { slug: 'openai/gpt-5-mini',              label: 'GPT-5 mini',               vision: true  },
+  // Sits immediately above gemini-2.5-flash because it SUPERSEDES it, and the
+  // adjacency is the documentation. Measured on the live OpenRouter catalog
+  // 2026-08-02, the two are identical on every attribute that is machine-
+  // readable - $0.300/M in, $2.500/M out, 1,048,576 context, the same
+  // text+image+video+file+audio modalities, ~65,536 max completion, neither
+  // tiered - and 3.5-flash-lite is 13 months newer (2026-07-21 vs 2025-06-17).
+  // 2.5-flash is kept for now because IT is the one with adversarial-ranking
+  // evidence behind it and this is not; retire it once 3.5-flash-lite has
+  // actually run as the fallback. Removal is safe when that day comes: a saved
+  // slug missing from this list is preserved as a "<slug> (current)" option
+  // (src/console/page.ts:246), so dropping it cannot silently change a config.
+  { slug: 'google/gemini-3.5-flash-lite',   label: 'Gemini 3.5 Flash Lite',    vision: true  },
   { slug: 'google/gemini-2.5-flash',        label: 'Gemini 2.5 Flash',         vision: true  },
   { slug: 'google/gemini-3.1-flash-lite',   label: 'Gemini 3.1 Flash Lite',    vision: true  },
   { slug: 'anthropic/claude-haiku-4.5',     label: 'Claude Haiku 4.5',         vision: true  },

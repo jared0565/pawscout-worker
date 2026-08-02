@@ -2,13 +2,27 @@ import { describe, it, expect } from 'vitest';
 import { CURATED_MODELS, buildLiveMap, getModelCatalog, MODELS_CACHE_KEY } from '../src/models-catalog';
 
 describe('CURATED_MODELS', () => {
-  it('has exactly 11 models incl. gemini-3.1-pro-preview + sonnet-4.6, excludes opus', () => {
+  it('has exactly 12 models incl. gemini-3.1-pro-preview + sonnet-4.6, excludes opus', () => {
     const slugs = CURATED_MODELS.map((m) => m.slug);
-    expect(slugs).toHaveLength(11);
+    expect(slugs).toHaveLength(12);
     expect(slugs).toContain('google/gemini-3.1-pro-preview'); // merchant-mandated
     expect(slugs).toContain('anthropic/claude-sonnet-4.6');   // accuracy-first inclusion
     expect(slugs).toContain('openai/gpt-5.6-luna');           // added 2026-08-02 (owner request)
+    expect(slugs).toContain('google/gemini-3.5-flash-lite');  // added 2026-08-02 (owner request)
     expect(slugs.some((s) => s.includes('opus'))).toBe(false); // opus stays excluded (cost)
+  });
+
+  // position 0 is the no-primary-set default via resolveChain, so a reorder that
+  // moves it is a behaviour change, not a cosmetic one.
+  it('keeps the merchant-mandated model at position 0 (the resolveChain default)', () => {
+    expect(CURATED_MODELS[0].slug).toBe('google/gemini-3.1-pro-preview');
+  });
+
+  // 3.5-flash-lite supersedes 2.5-flash at an identical price; the adjacency is
+  // deliberate and is how the eventual retirement stays obvious.
+  it('orders gemini-3.5-flash-lite immediately above the 2.5-flash it supersedes', () => {
+    const slugs = CURATED_MODELS.map((m) => m.slug);
+    expect(slugs.indexOf('google/gemini-3.5-flash-lite')).toBe(slugs.indexOf('google/gemini-2.5-flash') - 1);
   });
 
   // The slug is the whole contract: an unrecognised one is not rejected anywhere
@@ -19,6 +33,12 @@ describe('CURATED_MODELS', () => {
     const luna = CURATED_MODELS.find((m) => m.label === 'GPT-5.6 Luna');
     expect(luna?.slug).toBe('openai/gpt-5.6-luna');
     expect(luna?.vision).toBe(true);
+  });
+
+  it('uses the exact OpenRouter slug for Gemini 3.5 Flash Lite', () => {
+    const lite = CURATED_MODELS.find((m) => m.label === 'Gemini 3.5 Flash Lite');
+    expect(lite?.slug).toBe('google/gemini-3.5-flash-lite');
+    expect(lite?.vision).toBe(true);
   });
   it('has exactly one text-only model (the rest are vision-capable)', () => {
     const bySlug = Object.fromEntries(CURATED_MODELS.map((m) => [m.slug, m.vision]));
