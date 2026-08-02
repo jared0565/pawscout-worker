@@ -1,0 +1,31 @@
+-- HOW FAR a product missed an admission gate, not merely which gate (2026-08-02).
+--
+-- WHY THIS EXISTS. Migration 0037 recorded WHICH gate kept a product out, and
+-- the first night of that data (2026-08-02) read: below-profit-floor 50,
+-- curation-score 45, and nothing else firing at all. That answered "which" and
+-- immediately exposed the next question it cannot answer: HOW HARD does the
+-- binding gate bind?
+--
+-- The two readings imply opposite decisions and are INDISTINGUISHABLE today:
+--   * 50 products missing a GBP 6 net floor by 20p  -> the floor is nearly right,
+--     a small loosening admits most of them.
+--   * 50 products missing it by GBP 5               -> they are genuinely
+--     unprofitable and the floor is doing its job.
+-- Same for curation: a product scoring 58 against a threshold of 60 is not the
+-- same animal as one scoring 12, and `fail_reason` calls both 'curation-score'.
+--
+-- The magnitude is ALREADY COMPUTED at every rejection site and thrown away -
+-- src/proxy/import.ts writes it to console.warn ("best sub-market net ~GBP
+-- 4.80", "score 58 < 60") and then persists only the coarse bucket. Workers Logs
+-- retention is short, so by the time anyone asks the question the evidence is
+-- gone. This column keeps the sentence that was already written.
+--
+-- DELIBERATELY A SEPARATE COLUMN, NOT APPENDED TO fail_reason. fail_reason is
+-- the funnel roll-up's GROUP BY key (docs/STATES.md, catalog.funnel); free text
+-- in it would shatter the aggregate into one row per product and destroy the
+-- very report this is meant to deepen.
+--
+-- No backfill, for the same reason as 0037: a reason invented after the fact is
+-- worse than an honest NULL. Rows fill in as the nightly sweep re-screens them,
+-- which measured ~92 rows on 2026-08-01, so one night gives a usable sample.
+ALTER TABLE product_links ADD COLUMN fail_detail TEXT;

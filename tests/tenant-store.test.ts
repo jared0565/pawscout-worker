@@ -85,4 +85,48 @@ describe('fail_reason and the admission funnel', () => {
     const link = await store.getLink('a');
     expect(link?.fail_reason).toBeNull();
   });
+
+  // fail_detail is HOW FAR a product missed, next to the coarse reason. The
+  // counts alone cannot separate "missed by 20p" from "missed by GBP 5", and
+  // those imply opposite decisions about the gate.
+  it('records the magnitude alongside the reason', async () => {
+    await store.putLink({
+      cjPid: 'a', state: 'failed', failReason: 'curation-score',
+      failDetail: 'score 58 < threshold 60',
+    });
+    const link = await store.getLink('a');
+    expect(link?.fail_reason).toBe('curation-score');
+    expect(link?.fail_detail).toBe('score 58 < threshold 60');
+  });
+
+  it('clears the detail when a product later imports fine', async () => {
+    // A detail surviving a success would read as a live product that also
+    // failed - worse than silence, because it looks like real evidence.
+    await store.putLink({ cjPid: 'a', state: 'failed', failReason: 'curation-score', failDetail: 'score 58 < threshold 60' });
+    await store.putLink({ cjPid: 'a', state: 'imported' });
+    const link = await store.getLink('a');
+    expect(link?.fail_detail).toBeNull();
+    expect(link?.fail_reason).toBeNull();
+  });
+
+  it('failureDetails returns only rows that HAVE a detail, scoped to the shop', async () => {
+    await store.putLink({ cjPid: 'withDetail', state: 'failed', failReason: 'below-profit-floor', failDetail: 'best sub-market net ~GBP 4.80' });
+    await store.putLink({ cjPid: 'noDetail', state: 'failed', failReason: 'curation-score' });
+    await store.putLink({ cjPid: 'live', state: 'imported' });
+    const other = new TenantStore(env.DB, 'other.myshopify.com');
+    await other.putLink({ cjPid: 'theirs', state: 'failed', failReason: 'exception', failDetail: 'not mine' });
+
+    const rows = await store.failureDetails();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].reason).toBe('below-profit-floor');
+    expect(rows[0].detail).toBe('best sub-market net ~GBP 4.80');
+  });
+
+  // The whole point of a separate column: free text in fail_reason would
+  // shatter the funnel's GROUP BY into one row per product.
+  it('keeps the funnel roll-up intact however varied the details are', async () => {
+    await store.putLink({ cjPid: 'a', state: 'failed', failReason: 'below-profit-floor', failDetail: 'missed by GBP 0.20' });
+    await store.putLink({ cjPid: 'b', state: 'failed', failReason: 'below-profit-floor', failDetail: 'missed by GBP 5.00' });
+    expect(await store.failureReasonCounts()).toEqual([{ reason: 'below-profit-floor', n: 2 }]);
+  });
 });

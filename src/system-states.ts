@@ -67,6 +67,9 @@ export async function collectSystemStates(
   // Fails soft: a states page that 500s because a roll-up query broke is worse
   // than one missing a line, and every other row here is still useful.
   const funnel = await store.failureReasonCounts().catch(() => []);
+  // Same fail-soft contract as the counts above: this register must never 500
+  // because one diagnostic read failed.
+  const funnelDetails = await store.failureDetails(200).catch(() => []);
   const tenant = await store.getTenant();
   const cjCred = await store.getSupplierCredential('cj');
   const webhookCred = await store.getSupplierCredential('resend-webhook');
@@ -209,6 +212,25 @@ export async function collectSystemStates(
           on: null,
           detail: 'why products never entered the catalog; tune the binding gate, not the total',
           source: 'product_links.fail_reason'
+        },
+        // HOW HARD the binding gate binds. The counts above cannot separate
+        // "missed the floor by 20p" from "missed it by GBP 5", and those imply
+        // opposite decisions. One worked example per gate is enough to tell them
+        // apart at a glance; the full set is in product_links.fail_detail.
+        {
+          key: 'catalog.funnel.detail',
+          label: 'How far each rejection missed',
+          value: funnelDetails.length
+            ? `${funnelDetails.length} recorded`
+            : 'not yet recorded (fills in as the nightly sweep re-screens)',
+          on: null,
+          detail: funnelDetails.length
+            ? [...new Map(funnelDetails.map((d) => [d.reason, d])).values()]
+                .slice(0, 4)
+                .map((d) => `${d.reason}: ${(d.detail ?? '').slice(0, 90)}`)
+                .join(' | ')
+            : 'no product has been re-screened since migration 0038',
+          source: 'product_links.fail_detail'
         }
       ]
     },

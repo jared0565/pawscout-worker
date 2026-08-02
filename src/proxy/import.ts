@@ -184,7 +184,13 @@ export async function confirmAndImport(
       if (curated) {
         if (curated.relevanceScore < cfg.llm.scoreThreshold) {
           console.warn(`import rejected by curation for ${detail.pid}: score ${curated.relevanceScore} < ${cfg.llm.scoreThreshold}`);
-          await store.putLink({ cjPid: detail.pid, state: 'failed', failReason: 'curation-score', category: category ?? null });
+          // Keep the MARGIN, not just the verdict: 58-against-60 and 12-against-60
+          // are the same fail_reason and completely different evidence about
+          // whether the threshold is set right.
+          await store.putLink({
+            cjPid: detail.pid, state: 'failed', failReason: 'curation-score', category: category ?? null,
+            failDetail: `score ${curated.relevanceScore} < threshold ${cfg.llm.scoreThreshold}`,
+          });
           return null;
         }
         detail = {
@@ -206,7 +212,12 @@ export async function confirmAndImport(
   // gates would otherwise pass (the kitchen/garden/human-tool class).
   if (detail.llmScore === undefined && !isLikelyPetProduct(`${detail.nameEn} ${detail.categoryName ?? ''}`)) {
     console.warn(`import blocked (not pet-relevant) for ${detail.pid}: ${detail.nameEn}`);
-    await store.putLink({ cjPid: detail.pid, state: 'failed', failReason: 'not-pet-relevant', category: category ?? null });
+    // The title IS the evidence here: reviewing whether this gate is too blunt
+    // means reading what it actually turned away.
+    await store.putLink({
+      cjPid: detail.pid, state: 'failed', failReason: 'not-pet-relevant', category: category ?? null,
+      failDetail: `no pet signal in "${detail.nameEn}"${detail.categoryName ? ` (CJ category ${detail.categoryName})` : ''}`.slice(0, 500),
+    });
     return null;
   }
   // Image QA (vision): CJ's first image is often a single component or a
@@ -218,7 +229,10 @@ export async function confirmAndImport(
     const { detail: curated, congruent } = await curateDetailImages(store, detail, pickHero);
     if (!congruent) { // no image matches the title - don't list a mislabelled product
       console.warn(`import rejected (no congruent image) for ${detail.pid}: ${detail.nameEn}`);
-      await store.putLink({ cjPid: detail.pid, state: 'failed', failReason: 'no-congruent-image', category: category ?? null });
+      await store.putLink({
+        cjPid: detail.pid, state: 'failed', failReason: 'no-congruent-image', category: category ?? null,
+        failDetail: `no image matched "${detail.nameEn}" across ${detail.images.length} CJ images`.slice(0, 500),
+      });
       return null;
     }
     detail = curated;
@@ -259,7 +273,18 @@ export async function confirmAndImport(
   const localQty = bestLocalQty(origins, locals);
   if (localQty < cfg.floors.stockFloor) {
     console.warn(`import blocked (no local-warehouse stock for lane ${locals.join('/')}) for ${detail.pid}: ${detail.nameEn}`);
-    await store.putLink({ cjPid: detail.pid, state: 'failed', failReason: 'no-local-stock', category: category ?? null });
+    // Distinguishes the two very different causes this gate conflates: the
+    // product IS local but thin (localQty below the floor), versus origins came
+    // back empty so the gate failed closed on unverifiable provenance. The
+    // second is a supply-data problem, not a stock problem, and the counts alone
+    // cannot tell them apart. See [[cj-eu-uk-warehouse-sourcing]].
+    await store.putLink({
+      cjPid: detail.pid, state: 'failed', failReason: 'no-local-stock', category: category ?? null,
+      failDetail: `local qty ${localQty} < floor ${cfg.floors.stockFloor} for lane ${locals.join('/')}`
+        + (origins
+          ? ` (stock by country: ${Object.entries(origins).map(([cc, q]) => `${cc}:${q}`).slice(0, 6).join(',') || 'none'})`
+          : ' (origins UNVERIFIED - failed closed)'),
+    });
     return null;
   }
   // Origin evidence rides the detail into importProduct and the warehouse
@@ -276,7 +301,10 @@ export async function confirmAndImport(
     await store.setWarehouseStock(detail.pid, live, live >= cfg.floors.stockFloor ? 'available' : 'low_stock');
     if (live < cfg.floors.stockFloor) {
       console.warn(`import blocked for ${detail.pid}: CJ stock ${live} < floor ${cfg.floors.stockFloor}`);
-      await store.putLink({ cjPid: detail.pid, state: 'failed', failReason: 'stock-below-floor', category: category ?? null });
+      await store.putLink({
+        cjPid: detail.pid, state: 'failed', failReason: 'stock-below-floor', category: category ?? null,
+        failDetail: `CJ stock ${live} < floor ${cfg.floors.stockFloor}`,
+      });
       return null;
     }
   }
@@ -325,7 +353,14 @@ export async function confirmAndImport(
     if (failReason) {
       if (profit.hardBlock) {
         console.warn(`import blocked (below profit floor) for ${detail.pid}: ${failReason}`);
-        await store.putLink({ cjPid: detail.pid, state: 'failed', failReason: 'below-profit-floor', category: category ?? null });
+        // `failReason` here is the rich sentence built above - it already names
+        // the floor, the observed market price and the best achievable net. It
+        // was going only to console.warn, where short log retention destroyed it
+        // before anyone could ask how far off these products actually were.
+        await store.putLink({
+          cjPid: detail.pid, state: 'failed', failReason: 'below-profit-floor', category: category ?? null,
+          failDetail: failReason,
+        });
         return null;
       }
       console.warn(`import flagged for review (below profit floor) for ${detail.pid}: ${failReason}`);
@@ -487,7 +522,14 @@ export async function importProduct(
     }
   } catch (e) {
     console.warn(`import failed for ${detail.pid}: ${(e as Error).message}`);
-    await store.putLink({ cjPid: detail.pid, state: 'failed', failReason: 'exception', category: cat });
+    // The most valuable detail of the seven. 'exception' is a BUG, not a policy
+    // outcome, and without the message a count of them says only "something is
+    // wrong" - by the time anyone reads the funnel, the log carrying the actual
+    // error is long expired.
+    await store.putLink({
+      cjPid: detail.pid, state: 'failed', failReason: 'exception', category: cat,
+      failDetail: (e as Error).message?.slice(0, 500) ?? null,
+    });
   }
 }
 

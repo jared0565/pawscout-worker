@@ -62,6 +62,11 @@ export interface ProductLink {
   // and null on every other state. Null on a failed row means the row predates
   // migration 0037, not that the cause is a mystery worth investigating.
   fail_reason: string | null;
+  // HOW FAR it missed that gate, in the gate's own units ("score 58 < 60",
+  // "best sub-market net ~GBP 4.80"). Null on rows predating migration 0038 and
+  // on gates that have no meaningful magnitude. Never parsed for control flow -
+  // it is evidence for a human decision, not a machine-readable field.
+  fail_detail: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -1011,21 +1016,45 @@ export class TenantStore {
    * since imported fine. That is why it is not a COALESCE like the fields
    * above: those carry forward when omitted, this one must not.
    */
-  async putLink(link: { cjPid: string; state: ProductLink['state']; shopifyProductId?: string | null; handle?: string | null; category?: string | null; failReason?: string | null }): Promise<void> {
+  async putLink(link: { cjPid: string; state: ProductLink['state']; shopifyProductId?: string | null; handle?: string | null; category?: string | null; failReason?: string | null; failDetail?: string | null }): Promise<void> {
     const now = new Date().toISOString();
     const reason = link.state === 'failed' ? (link.failReason ?? null) : null;
+    // failDetail follows failReason exactly - written only alongside 'failed',
+    // cleared on every other state. A detail surviving a later successful import
+    // would read as a live product that also failed, which is worse than silence.
+    const detail = link.state === 'failed' ? (link.failDetail ?? null) : null;
     await this.db
       .prepare(
-        `INSERT INTO product_links (shop, cj_pid, shopify_product_id, handle, category, state, created_at, updated_at, fail_reason)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, ?8)
+        `INSERT INTO product_links (shop, cj_pid, shopify_product_id, handle, category, state, created_at, updated_at, fail_reason, fail_detail)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, ?8, ?9)
          ON CONFLICT(shop, cj_pid) DO UPDATE SET
            shopify_product_id = COALESCE(?3, shopify_product_id),
            handle = COALESCE(?4, handle),
            category = COALESCE(?5, category),
-           state = ?6, updated_at = ?7, fail_reason = ?8`
+           state = ?6, updated_at = ?7, fail_reason = ?8, fail_detail = ?9`
       )
-      .bind(this.shop, link.cjPid, link.shopifyProductId ?? null, link.handle ?? null, link.category ?? null, link.state, now, reason)
+      .bind(this.shop, link.cjPid, link.shopifyProductId ?? null, link.handle ?? null, link.category ?? null, link.state, now, reason, detail)
       .run();
+  }
+
+  /**
+   * The funnel roll-up, one row per (gate, product): which gate rejected it and
+   * HOW FAR it missed. `fail_reason` alone answers which gate binds;
+   * `fail_detail` is what makes "loosen it or not" an evidenced decision rather
+   * than a guess. Ordered so the biggest bucket reads first.
+   */
+  async failureDetails(limit = 500): Promise<{ reason: string; detail: string | null; handle: string | null; category: string | null }[]> {
+    const rs = await this.db
+      .prepare(
+        `SELECT COALESCE(fail_reason, 'unrecorded') AS reason, fail_detail AS detail, handle, category
+           FROM product_links
+          WHERE shop = ?1 AND state = 'failed' AND fail_detail IS NOT NULL
+          ORDER BY updated_at DESC
+          LIMIT ?2`
+      )
+      .bind(this.shop, limit)
+      .all<{ reason: string; detail: string | null; handle: string | null; category: string | null }>();
+    return rs.results ?? [];
   }
 
   /**
