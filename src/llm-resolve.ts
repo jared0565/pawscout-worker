@@ -6,7 +6,9 @@ import { CURATED_MODELS } from './models-catalog';
  * Turn a tenant's model selection into an ordered tier chain:
  *   1. OpenRouter, models:[primary, fallback] (native failover; blanks dropped,
  *      deduped, never empty - a blank primary falls back to the menu head).
- *   2. OpenAI-direct gpt-5.4-mini (the system floor).
+ *   2. OpenAI-direct DEFAULT_MODEL (the system floor; gpt-5.6-luna since
+ *      2026-08-02). Named by the constant rather than spelled out, so this
+ *      comment cannot drift from src/llm.ts the way the last one did.
  * The chain is provider-aware; LlmClient.jsonChain walks it and skips a tier
  * whose provider key is absent. Pure - no env, no I/O.
  */

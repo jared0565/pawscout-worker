@@ -6,8 +6,39 @@ import { resolveChain } from './llm-resolve';
 
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 export const OPENAI_URL = 'https://api.openai.com/v1/chat/completions';
-export const DEFAULT_MODEL = 'gpt-5.4-mini';
-export const DEFAULT_MODEL_PRICE = { promptPerM: 0.75, completionPerM: 4.50 };
+/**
+ * The OpenAI-DIRECT floor: the last tier resolveChain walks, reached only when
+ * both OpenRouter slots have failed. Its whole value is being on a different
+ * provider path from OpenRouter, so it must stay a first-party OpenAI model ID
+ * (bare, no `openai/` prefix - that form is an OpenRouter slug and 404s here).
+ *
+ * Verified on OpenAI's own model docs 2026-08-02: `gpt-5.6-luna` is a real API
+ * model ID, "optimized for cost-sensitive workloads", 1.05M context, knowledge
+ * cutoff 2026-02-16. It accepts the exact parameter set this client already
+ * sends - reasoning_effort, response_format, structured_outputs,
+ * max_completion_tokens - identical to gpt-5.4-mini's, so the request shape in
+ * `send` needs no branch.
+ *
+ * DEFAULT_MODEL_PRICE MUST MOVE WITH DEFAULT_MODEL. OpenAI's API does not
+ * return a cost field (OpenRouter does, via usage.cost), so this constant is
+ * the ONLY source of truth for what a tier-3 call cost - see the isOpenai
+ * branch below. A stale pair does not fail loudly; it quietly writes wrong
+ * numbers into llm_usage forever.
+ *
+ * These are OpenAI's DIRECT rates, which are NOT the OpenRouter rates for the
+ * same model: OpenRouter lists openai/gpt-5.6-luna at $0.10/$0.60, OpenAI
+ * charges $0.20/$1.20. Take the figure from whichever provider this tier
+ * actually calls, which is OpenAI. (Both were $0.75/$4.50 for gpt-5.4-mini,
+ * which is why the distinction never bit before.)
+ *
+ * Known gap, deliberately not modelled: OpenAI prices prompts over 272K input
+ * tokens at 2x input / 1.5x output, and cached input at $0.02/M. This flat pair
+ * therefore over-states cheap cached calls and under-states very long ones. The
+ * tier is a rare last resort, so a flat rate stays the honest simplification -
+ * revisit if tier-3 activations stop being rare.
+ */
+export const DEFAULT_MODEL = 'gpt-5.6-luna';
+export const DEFAULT_MODEL_PRICE = { promptPerM: 0.20, completionPerM: 1.20 };
 export type LlmRole = 'image' | 'text';
 export type ChainTier =
   | { provider: 'openrouter'; models: string[] }
