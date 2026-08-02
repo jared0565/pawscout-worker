@@ -17,12 +17,22 @@ export type CatalogModel = {
 // 4.6 IS included as the claim-safety accuracy ceiling. gemini-3.1-pro-preview
 // is merchant-mandated and must always appear even if OpenRouter has not listed
 // the preview yet (it then surfaces with the static hint + price n/a). Ordered
-// premium → workhorse; 9 of 10 are vision-capable for the image (vision) field.
+// premium → workhorse; 10 of 11 are vision-capable for the image (vision) field.
+//
+// GPT-5.6 Luna heads the workhorse band rather than the premium one, and the
+// placement is from measured attributes, not the version number. Verified
+// against the live OpenRouter catalog 2026-08-02: the 5.6 generation ships in
+// three price tiers - sol $5.00/$30.00, terra $1.00/$6.00, luna $0.10/$0.60 per
+// million tokens - so Luna is that generation's EFFICIENT tier, priced an order
+// of magnitude below gpt-5.2 ($1.75/$14.00), not a flagship. It leads the
+// workhorse band because it is the newest-generation model in it and carries a
+// 1,050,000-token context with vision.
 export const CURATED_MODELS = [
   { slug: 'google/gemini-3.1-pro-preview',  label: 'Gemini 3.1 Pro (preview)', vision: true  },
   { slug: 'openai/gpt-5.2',                 label: 'GPT-5.2',                  vision: true  },
   { slug: 'anthropic/claude-sonnet-4.6',    label: 'Claude Sonnet 4.6',        vision: true  },
   { slug: 'x-ai/grok-4.3',                  label: 'Grok 4.3',                 vision: true  },
+  { slug: 'openai/gpt-5.6-luna',            label: 'GPT-5.6 Luna',             vision: true  },
   { slug: 'google/gemini-3.5-flash',        label: 'Gemini 3.5 Flash',         vision: true  },
   { slug: 'openai/gpt-5-mini',              label: 'GPT-5 mini',               vision: true  },
   { slug: 'google/gemini-2.5-flash',        label: 'Gemini 2.5 Flash',         vision: true  },
