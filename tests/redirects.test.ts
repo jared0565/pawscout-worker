@@ -3,7 +3,7 @@ import { env, applyD1Migrations } from 'cloudflare:test';
 import { TenantStore } from '../src/tenant-store';
 import {
   findRedirect, createRedirect, deleteRedirect, pickRedirectTarget,
-  isScopeDenial, buildArticleTargets, REDIRECT_FALLBACK
+  isScopeDenial, buildArticleTargets, REDIRECT_FALLBACK, articleSeq
 } from '../src/catalog/redirects';
 
 const SHOP = 'test.myshopify.com';
@@ -249,6 +249,115 @@ describe('blog-post redirect targets', () => {
     ], { collections: ['pet-toys'] });
     const articles = await buildArticleTargets(store, s.admin);
     expect(articles.byCategory.get('pet-toys')).toBe('/blogs/guides/deep-post');
+  });
+});
+
+// A guide's brief already recorded the collection it was written against. Until
+// 2026-08-02 nothing read it, and byCategory guessed a guide's subject from the
+// products it happened to link. Measured against live data, that guess sent a
+// guide about grooming brushes to the `more-to-love` junk category and left
+// `pet-grooming` pointing at a nail guide.
+describe('declared subject beats inference', () => {
+  let store: TenantStore;
+  beforeEach(() => { store = new TenantStore(env.DB, SHOP); });
+
+  function blogShopify(articles: { id: string; handle: string; isPublished: boolean }[], live: { collections?: string[] } = {}) {
+    const base = shopify(live);
+    return (async (q: string, v: Record<string, string>) => {
+      if (q.includes('pawscoutRedirectArticles')) {
+        return { blogs: { nodes: [{ handle: 'guides', articles: { nodes: articles, pageInfo: { hasNextPage: false } } }], pageInfo: { hasNextPage: false } } };
+      }
+      return (base.admin as unknown as (a: string, b: Record<string, string>) => Promise<unknown>)(q, v);
+    }) as never;
+  }
+
+  const draft = (store: TenantStore, id: string, articleId: string, collectionHandle: string | null) =>
+    store.insertBlogPostDraft({
+      id, shopifyArticleId: articleId, blogHandle: 'guides', title: 't',
+      collectionHandle, briefJson: null, claimFlagsJson: null, model: null,
+    });
+
+  it('a guide claims its OWN collection even when it links nothing in it', async () => {
+    // The real failure: the brush guide linked one pet-cleaning, one
+    // pet-grooming and one more-to-love product. Inference alone can never say
+    // "this is the grooming guide" from that.
+    await draft(store, 'd1', 'gid://shopify/Article/10', 'pet-grooming');
+    const admin = blogShopify([{ id: 'gid://shopify/Article/10', handle: 'brush-guide', isPublished: true }]);
+    const articles = await buildArticleTargets(store, admin);
+    expect(articles.byCategory.get('pet-grooming')).toBe('/blogs/guides/brush-guide');
+  });
+
+  it('a declared subject OUTRANKS a guide that merely links more of that category', async () => {
+    await link(store, '1', { handle: 'a', category: 'pet-grooming' });
+    await link(store, '2', { handle: 'b', category: 'pet-grooming' });
+    await store.putProductReferrers('a', [{ referrerType: 'blog', referrerId: 'gid://shopify/Article/11' }]);
+    await store.putProductReferrers('b', [{ referrerType: 'blog', referrerId: 'gid://shopify/Article/11' }]);
+    await draft(store, 'd1', 'gid://shopify/Article/10', 'pet-grooming'); // declared, links none
+    await draft(store, 'd2', 'gid://shopify/Article/11', 'pet-health');   // links 2, but is a health guide
+    const admin = blogShopify([
+      { id: 'gid://shopify/Article/10', handle: 'brush-guide', isPublished: true },
+      { id: 'gid://shopify/Article/11', handle: 'health-guide', isPublished: true },
+    ]);
+    const articles = await buildArticleTargets(store, admin);
+    expect(articles.byCategory.get('pet-grooming')).toBe('/blogs/guides/brush-guide');
+  });
+
+  it('a guide with a declared subject NEVER represents a different category', async () => {
+    // This is the more-to-love bug: one stray linked product made a grooming
+    // guide the guide for jewellery. No guide covering it is the honest answer.
+    await link(store, '1', { handle: 'pendant', category: 'more-to-love' });
+    await store.putProductReferrers('pendant', [{ referrerType: 'blog', referrerId: 'gid://shopify/Article/10' }]);
+    await draft(store, 'd1', 'gid://shopify/Article/10', 'pet-grooming');
+    const admin = blogShopify([{ id: 'gid://shopify/Article/10', handle: 'brush-guide', isPublished: true }]);
+    const articles = await buildArticleTargets(store, admin);
+    expect(articles.byCategory.has('more-to-love')).toBe(false);
+    expect(articles.byCategory.get('pet-grooming')).toBe('/blogs/guides/brush-guide');
+  });
+
+  it('between two guides on the SAME subject the NEWEST wins, so commissioning one takes effect', async () => {
+    // Both declare pet-grooming and link one product each - the exact live tie
+    // where the older nail guide used to beat a brand new brush guide.
+    await link(store, '1', { handle: 'a', category: 'pet-grooming' });
+    await link(store, '2', { handle: 'b', category: 'pet-grooming' });
+    await store.putProductReferrers('a', [{ referrerType: 'blog', referrerId: 'gid://shopify/Article/615250886994' }]);
+    await store.putProductReferrers('b', [{ referrerType: 'blog', referrerId: 'gid://shopify/Article/615679295826' }]);
+    await draft(store, 'd1', 'gid://shopify/Article/615250886994', 'pet-grooming');
+    await draft(store, 'd2', 'gid://shopify/Article/615679295826', 'pet-grooming');
+    const admin = blogShopify([
+      { id: 'gid://shopify/Article/615250886994', handle: 'nail-guide', isPublished: true },
+      { id: 'gid://shopify/Article/615679295826', handle: 'brush-guide', isPublished: true },
+    ]);
+    const articles = await buildArticleTargets(store, admin);
+    expect(articles.byCategory.get('pet-grooming')).toBe('/blogs/guides/brush-guide');
+  });
+
+  it('an article with NO draft row still claims a category by inference', async () => {
+    // Legacy / hand-written articles have no brief. They must keep working.
+    await link(store, '1', { handle: 'a', category: 'pet-toys' });
+    await store.putProductReferrers('a', [{ referrerType: 'blog', referrerId: 'gid://shopify/Article/9' }]);
+    const admin = blogShopify([{ id: 'gid://shopify/Article/9', handle: 'legacy-post', isPublished: true }]);
+    const articles = await buildArticleTargets(store, admin);
+    expect(articles.byCategory.get('pet-toys')).toBe('/blogs/guides/legacy-post');
+  });
+
+  it('a DRAFT guide never claims a category, however it was declared', async () => {
+    await draft(store, 'd1', 'gid://shopify/Article/10', 'pet-grooming');
+    const admin = blogShopify([{ id: 'gid://shopify/Article/10', handle: 'brush-guide', isPublished: false }]);
+    const articles = await buildArticleTargets(store, admin);
+    expect(articles.byCategory.size).toBe(0);
+  });
+});
+
+describe('articleSeq', () => {
+  // Ordering GIDs as STRINGS silently inverts the moment ids gain a digit,
+  // which would flip category winners for no visible reason.
+  it('orders by numeric suffix, not lexicographically', () => {
+    expect(articleSeq('gid://shopify/Article/100000000000'))
+      .toBeGreaterThan(articleSeq('gid://shopify/Article/99999999999'));
+    expect('gid://shopify/Article/100000000000' > 'gid://shopify/Article/99999999999').toBe(false);
+  });
+  it('is 0 for an unparseable id rather than NaN', () => {
+    expect(articleSeq('nonsense')).toBe(0);
   });
 });
 

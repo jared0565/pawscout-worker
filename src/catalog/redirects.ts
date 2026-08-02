@@ -282,6 +282,39 @@ export const EMPTY_ARTICLE_TARGETS: ArticleTargets = {
   byId: new Map(), byCategory: new Map(), truncated: false
 };
 
+interface Candidate { id: string; n: number; onSubject: boolean; }
+
+/**
+ * Article GIDs must be ordered by their NUMERIC suffix, never as strings.
+ * `.../99999999999` sorts above `.../100000000000` lexicographically, so the
+ * day Shopify ids gain a digit a string comparison silently inverts and the
+ * category winner flips for no visible reason.
+ */
+export function articleSeq(gid: string): number {
+  const m = /(\d+)\s*$/.exec(gid);
+  return m ? Number(m[1]) : 0;
+}
+
+/**
+ * Does candidate `a` beat the incumbent `b` for a category?
+ *
+ * 1. ON-SUBJECT WINS. A guide written about this category beats one merely
+ *    inferred from the products it links. The brief knew; the inference guessed.
+ * 2. Then the most products linked in that category.
+ * 3. Then the NEWEST article, and that direction is a deliberate reversal.
+ *    It used to prefer the lexicographically smaller (older) id, which meant
+ *    commissioning a guide for a category that already had one did NOTHING -
+ *    measured 2026-08-02, a brand new guide about grooming brushes tied the
+ *    2-month-old nail guide at one linked product each and lost, so the owner
+ *    paid for a guide that changed no redirect. Newest-wins makes commissioning
+ *    a guide take effect, which is the whole point of commissioning one.
+ */
+function better(a: Candidate, b: Candidate): boolean {
+  if (a.onSubject !== b.onSubject) return a.onSubject;
+  if (a.n !== b.n) return a.n > b.n;
+  return articleSeq(a.id) > articleSeq(b.id);
+}
+
 /**
  * Build the guide index a dead product URL is aimed at.
  *
@@ -292,10 +325,13 @@ export const EMPTY_ARTICLE_TARGETS: ArticleTargets = {
  *  - `byId` is EXACT. The archive guard knows which guides referenced the dying
  *    product, because it just repaired them. That article is congruent by
  *    construction, not by inference.
- *  - `byCategory` is INFERRED, from which categories each guide's referenced
- *    products belong to. An article recommending six pet-toys products is the
- *    pet-toys guide on the evidence. Ties break on article id so a run is
- *    reproducible rather than dependent on row order.
+ *  - `byCategory` is DECLARED first and inferred only as a fallback. A guide's
+ *    brief already recorded the collection it was written against
+ *    (`blog_post_drafts.collection_handle`, read via `articleSubjects`), and
+ *    that beats guessing from the products it links. Where no guide declares a
+ *    category, the old inference still applies: an article recommending six
+ *    pet-toys products is the pet-toys guide on the evidence. See `better()`
+ *    for the full ordering and why the tie-break now prefers the NEWEST guide.
  *
  * Built once per run and passed down, like LivenessMemo - the 112-URL backfill
  * must not re-ask this per product.
@@ -336,14 +372,26 @@ export async function buildArticleTargets(store: TenantStore, admin: AdminGraphq
 
   const byCategory = new Map<string, string>();
   try {
-    const best = new Map<string, { id: string; n: number }>();
-    for (const w of await store.articleCategoryWeights()) {
-      if (!byId.has(w.referrerId)) continue; // unpublished or gone
-      const cur = best.get(w.category);
-      if (!cur || w.n > cur.n || (w.n === cur.n && w.referrerId < cur.id)) {
-        best.set(w.category, { id: w.referrerId, n: w.n });
-      }
-    }
+    const subjects = new Map<string, string>();
+    for (const s of await store.articleSubjects()) subjects.set(s.referrerId, s.category);
+
+    const best = new Map<string, Candidate>();
+    const consider = (category: string, id: string, n: number) => {
+      if (!byId.has(id)) return;                       // unpublished or gone
+      const declared = subjects.get(id);
+      // A guide that declares a subject may ONLY represent that subject. This
+      // is what stops the grooming guide becoming the `more-to-love` guide
+      // just because it happened to link one item filed there. A category left
+      // with no candidate at all is the honest outcome: no guide covers it, so
+      // the archive gate refuses and the URL keeps its collection fallback.
+      if (declared && declared !== category) return;
+      const onSubject = declared === category;
+      const cur = best.get(category);
+      if (!cur || better({ id, n, onSubject }, cur)) best.set(category, { id, n, onSubject });
+    };
+    for (const w of await store.articleCategoryWeights()) consider(w.category, w.referrerId, w.n);
+    // Second pass so a guide claims its declared subject even with n = 0 there.
+    for (const [id, category] of subjects) consider(category, id, 0);
     for (const [category, { id }] of best) byCategory.set(category, byId.get(id)!);
   } catch (e) {
     console.warn(`article category weights unavailable: ${(e as Error).message}`);

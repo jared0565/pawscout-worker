@@ -1114,6 +1114,41 @@ export class TenantStore {
     return rs.results ?? [];
   }
 
+  /**
+   * Each generated guide's OWN declared subject - the collection its brief was
+   * written against - keyed by the article it became.
+   *
+   * WHY THIS IS SEPARATE FROM articleCategoryWeights. That query infers what a
+   * guide is about from the categories of the products it happens to link, which
+   * is a proxy that measurably fails: a guide written about grooming brushes
+   * linked one pet-cleaning, one pet-grooming and one more-to-love product, so
+   * the inference made it the `more-to-love` guide and never the grooming one
+   * (measured 2026-08-02). The brief already knew the answer; nothing read it.
+   *
+   * Sourced independently of the weights ON PURPOSE, so a guide can claim its
+   * own category even when it links NO products in that category at all - which
+   * an inference-only ranking can never express.
+   *
+   * shopify_article_id is nullable and carries no unique constraint (the PK is
+   * shop+id), so the GROUP BY collapses any duplicates deterministically:
+   * MAX(updated_at) makes SQLite return the newest row's collection_handle
+   * rather than an arbitrary one.
+   */
+  async articleSubjects(): Promise<{ referrerId: string; category: string }[]> {
+    const rs = await this.db
+      .prepare(
+        `SELECT shopify_article_id AS referrerId, collection_handle AS category, MAX(updated_at)
+           FROM blog_post_drafts
+          WHERE shop = ?1
+            AND shopify_article_id IS NOT NULL AND shopify_article_id != ''
+            AND collection_handle IS NOT NULL AND collection_handle != ''
+          GROUP BY shopify_article_id`
+      )
+      .bind(this.shop)
+      .all<{ referrerId: string; category: string }>();
+    return (rs.results ?? []).map((r) => ({ referrerId: r.referrerId, category: r.category }));
+  }
+
   /** Drop every row contributed by ONE source, so rebuilding that source also
    *  REMOVES links it no longer contains. Without this the index would only
    *  grow and would block archives forever. */
