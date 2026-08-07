@@ -14,9 +14,13 @@ import { env, applyD1Migrations } from 'cloudflare:test';
 import { TenantStore } from '../src/tenant-store';
 import {
   detectVolumePitch, detectServicePitch, detectOffPlatformRequest, buildQualifyingEmail, buildSignupInvite,
-  maybePartnershipDraft, QUALIFYING_MARKER, AFFILIATE_APPLY_URL,
+  maybePartnershipDraft, QUALIFYING_MARKER, AFFILIATE_APPLY_URL, PARTNERSHIP_STANCE, buildAcceptedPartnerAck,
   STANDARD_COMMISSION_PCT, TIER_REVIEW_ORDERS, TIER_MAX_PCT
 } from '../src/inbox/partnership';
+import { otherAgent } from '../src/inbox/agents/other';
+import { affiliateAgent } from '../src/inbox/agents/affiliate';
+import { leadAgent } from '../src/inbox/agents/lead';
+import { wholesaleAgent } from '../src/inbox/agents/wholesale';
 // (the on-ramp tests below exercise maybePartnershipDraft with category 'other')
 import { DEFAULT_INBOX } from '../src/inbox/types';
 import { DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, type TenantConfig } from '../src/types';
@@ -361,25 +365,115 @@ describe('Yusuf-shape pitch (risk-free framing, no volume promise, cold at conta
     expect(r!.send).toBe(false);         // HITL
     const draft = await s.getPendingDraft(tid);
     expect(draft!.body_text).toContain(AFFILIATE_APPLY_URL);
-    expect(draft!.body_text).toMatch(/do not agree commission rates against promised volume/i);
+    expect(draft!.body_text).toMatch(/we do not negotiate commission against promised orders or sales/i);
     expect(draft!.body_text).toMatch(/not able to use WhatsApp or Telegram/i);
     // Signed by the partnerships desk, not Customer Support.
     expect(draft!.body_text).toContain('Active Paw Partnerships');
-    // The rate is ANSWERED without quoting a number - signup_page keeps every
-    // figure on the application page as the single source of truth.
-    expect(draft!.body_text).not.toMatch(/\b\d{1,2}%/);
+    // 2026-08-07 REVERSAL: this line used to assert `not.toMatch(/\d{1,2}%/)`,
+    // because signup_page kept every figure on the application page. The owner
+    // ruled the rate must be communicated, so the invite now states it.
+    expect(draft!.body_text).toContain(`${STANDARD_COMMISSION_PCT}%`);
+    expect(draft!.body_text).toContain(`${TIER_MAX_PCT}%`);
     expect((await s.getApplicantByThread(tid))!.stage).toBe('passed_to_form');
   });
 
   it('buildSignupInvite adds nothing by default and anchors extras before the sign-off', () => {
     const plain = buildSignupInvite('Yusuf');
-    expect(plain).not.toMatch(/promised volume/i);
+    expect(plain).not.toMatch(/rate you suggested/i);
     expect(plain).not.toMatch(/WhatsApp/i);
 
     const both = buildSignupInvite('Yusuf', { volumePitch: true, offPlatform: true });
-    expect(both.indexOf('promised volume')).toBeLessThan(both.indexOf('We look forward'));
+    expect(both.indexOf('rate you suggested')).toBeLessThan(both.indexOf('We look forward'));
     expect(both.indexOf('WhatsApp')).toBeLessThan(both.indexOf('We look forward'));
     expect(both.trimEnd().endsWith('Active Paw Partnerships')).toBe(true);
     expect(both).toContain(AFFILIATE_APPLY_URL);
+  });
+});
+
+// --- Owner ruling 2026-08-07: state the commission, and never imply we have no
+// programme. Reverses the 2026-08-02 "answer the rate without quoting one"
+// design after the owner reviewed the live inbox. ---
+
+describe('the commission percentage is communicated, not withheld', () => {
+  it('EVERY signup invite carries the actual figures, not just the page link', () => {
+    const plain = buildSignupInvite('Sam');
+    expect(plain).toContain(`${STANDARD_COMMISSION_PCT}%`);
+    expect(plain).toContain(`${TIER_MAX_PCT}%`);
+    expect(plain).toContain(`${TIER_REVIEW_ORDERS} tracked orders`);
+    expect(plain).toContain(AFFILIATE_APPLY_URL);
+  });
+
+  it('says the affiliate programme is the ONLY partnership, rather than merely omitting others', () => {
+    // "We are not taking partnerships" was being INFERRED from a reply that
+    // simply failed to mention one.
+    expect(buildSignupInvite('Sam')).toMatch(/only partnership we run/i);
+  });
+
+  it('PARTNERSHIP_STANCE states the figures and forbids negotiating them', () => {
+    expect(PARTNERSHIP_STANCE).toContain(`${STANDARD_COMMISSION_PCT}%`);
+    expect(PARTNERSHIP_STANCE).toContain(`${TIER_MAX_PCT}%`);
+    expect(PARTNERSHIP_STANCE).toContain(AFFILIATE_APPLY_URL);
+    expect(PARTNERSHIP_STANCE).toMatch(/only partnership/i);
+    expect(PARTNERSHIP_STANCE).toMatch(/never negotiate/i);
+    // The flow instruction the owner asked for.
+    expect(PARTNERSHIP_STANCE).toMatch(/do not simply repeat the earlier decline/i);
+  });
+
+  it('is carried by every agent a partnership approach can actually land on', () => {
+    // 9412f18d and 33fed54f were both 'other'; a97e308b was 'affiliate'; a trade
+    // buyer asking about commission lands on wholesale-b2b because it is
+    // excluded from PARTNERSHIP_CATEGORIES; brand-interest lands on lead.
+    for (const a of [otherAgent, affiliateAgent, leadAgent, wholesaleAgent]) {
+      expect(a.promptFragment({} as any)).toContain(PARTNERSHIP_STANCE);
+    }
+  });
+
+  it('the affiliate agent no longer forbids stating a rate', () => {
+    // The exact instruction that produced "we do not have a percentage offer".
+    expect(affiliateAgent.promptFragment({} as any)).not.toMatch(/never commit in email to any commission rate/i);
+  });
+
+  it('does NOT leak the standard rate into the ACCEPTED-partner path', () => {
+    // An already-approved partner may sit on bespoke terms: issueVoucher takes a
+    // commissionPct and draftAcceptedPartnerReply grounds on that voucher's own
+    // commission_pct. Telling them they earn the standard rate would be wrong
+    // for them specifically, so partnerSupportAgent deliberately does not carry
+    // PARTNERSHIP_STANCE. This pins the LLM-failure fallback, which is the part
+    // reachable without a live model.
+    expect(buildAcceptedPartnerAck('Sam')).not.toMatch(/\b\d{1,2}%/);
+    expect(buildAcceptedPartnerAck('Sam')).not.toContain(AFFILIATE_APPLY_URL);
+  });
+});
+
+describe('detectVolumePitch on the 2026-08-06 live shapes', () => {
+  // "If I bring extra orders to Activepaw store this month, what percentage
+  // would you offer?" - drew "We do not have a percentage offer available".
+  const SANKO = 'If I bring extra orders to Activepaw store this month, what percentage would you offer?';
+  // "If I firstly pull in 13 orders this week ... No service fee upfront ...
+  // What's the best WhatsApp number to reach you on?"
+  const ALI = 'If I firstly pull in 13 orders this week, approximately 2 orders daily for a start. No service fee upfront. Until 13 Orders are achieved.';
+
+  it('catches the unnumbered volume promise paired with a bare percentage ask', () => {
+    expect(detectVolumePitch(SANKO)).toBe(true);
+  });
+
+  it('catches "pull in 13 orders" and the trailing-upfront fee wording', () => {
+    expect(detectVolumePitch(ALI)).toBe(true);
+  });
+
+  it('still does NOT fire on the pre-existing negatives (commissionTopic must not double-count)', () => {
+    // A bare commission question belongs in the normal funnel. Merging the two
+    // money signals is what keeps this at 1.
+    expect(detectVolumePitch('What commission do you offer?')).toBe(false);
+    expect(detectVolumePitch('Does my 5% discount code still work?')).toBe(false);
+    expect(detectVolumePitch('I run a dog IG and would love to promote you for commission')).toBe(false);
+    expect(detectVolumePitch('I would love to feature your products to my 40k followers')).toBe(false);
+    // Ordinary customer phrasing that brushes the new unnumbered-volume clause.
+    expect(detectVolumePitch('Can I add more items to my order before it ships?')).toBe(false);
+  });
+
+  it('detectOffPlatformRequest catches a channel named BEFORE the verb', () => {
+    expect(detectOffPlatformRequest("What's the best WhatsApp number to reach you on?")).toBe(true);
+    expect(detectOffPlatformRequest('My audience is mostly on WhatsApp and Instagram groups')).toBe(false);
   });
 });

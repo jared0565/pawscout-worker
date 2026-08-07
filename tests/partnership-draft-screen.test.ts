@@ -101,7 +101,13 @@ describe('partnership first-touch, signup_page mode (owner policy 2026-07-18: se
     expect(draft!.body_text).toContain(AFFILIATE_APPLY_URL);
     expect(draft!.body_text).not.toMatch(/where would you promote/i);   // no email screening
     expect(draft!.body_text).not.toMatch(/not taking on new partnerships/i);
-    expect(draft!.body_text).not.toMatch(/\d+\s?%/);                    // terms live on the page, never in email
+    // 2026-08-07 REVERSAL: this asserted `not.toMatch(/\d+\s?%/)` ("terms live
+    // on the page, never in email"). The owner ruled the commission must be
+    // stated in the reply, so the invite now carries the figures. They still
+    // interpolate from the constants the apply page renders, so the two cannot
+    // disagree - only the location changed.
+    expect(draft!.body_text).toMatch(/\d+\s?%/);
+    expect(draft!.body_text).toMatch(/only partnership we run/i);
     expect(draft!.body_text).toContain('Best Regards,\nActive Paw Partnerships');
     expect((await s.getApplicantByThread(tid))!.stage).toBe('passed_to_form');
   });

@@ -107,11 +107,23 @@ export function resolveFromAddress(opts: { partnershipLane: boolean; toAddr: str
  * Pure and deterministic; grounded in the message TEXT only (standing rule). */
 export function detectVolumePitch(text: string): boolean {
   const t = text.toLowerCase();
-  const commission = /\b(commission|rev(?:enue)? ?share|per sale|payout|compensation|my cut|pay(?:ing)? (?:me|us))\b/.test(t);
+  // commissionTopic MERGES the two ways a sender raises money, so they can
+  // never both fire and reach the threshold on their own. That is what keeps a
+  // bare "What commission do you offer?" at 1 signal (it belongs in the normal
+  // funnel, not the volume-pitch lane) while "bring extra orders ... what
+  // percentage would you offer?" reaches 2 by pairing with the volume promise.
+  const commissionTopic =
+    /\b(commission|rev(?:enue)? ?share|per sale|payout|compensation|my cut|pay(?:ing)? (?:me|us))\b/.test(t)
+    || /\bwhat\s+(?:kind\s+of\s+)?(?:percentage|percent|cut|rate)\b/.test(t)
+    || /\b(?:percentage|percent|cut|rate)\s+(?:would|will|do|can|could)\s+you\s+(?:offer|give|pay)\b/.test(t);
   const percent = /\b\d{1,2}(?:\.\d)?\s*(?:%|percent)/.test(t);
   const volume =
-    /\b(?:sell|shift|move|guarantee[ds]?|deliver|generate)\b[^.!?\n]{0,60}?\b\d[\d,]*\+?\s+(?:[a-z-]+\s+){0,2}?(?:units?|pieces?|products?|items?|orders?|sales?)\b/.test(t)
-    || /\b\d[\d,]*\+?\s*(?:units?|pieces?|orders?|sales?)\s*(?:a|per|every)\s*(?:day|week|month)\b/.test(t);
+    /\b(?:sell|shift|move|guarantee[ds]?|deliver|generate|bring|pull in|drive)\b[^.!?\n]{0,60}?\b\d[\d,]*\+?\s+(?:[a-z-]+\s+){0,2}?(?:units?|pieces?|products?|items?|orders?|sales?)\b/.test(t)
+    || /\b\d[\d,]*\+?\s*(?:units?|pieces?|orders?|sales?)\s*(?:a|per|every|daily|weekly|monthly)\b/.test(t)
+    // Unnumbered volume promise: "if I bring extra orders", "drive more sales".
+    // Requires an explicit more/extra quantifier, so "add items to my order"
+    // and other ordinary customer phrasings cannot reach it.
+    || /\b(?:bring|pull in|drive|generate|deliver|add)\b[^.!?\n]{0,40}?\b(?:extra|additional|more)\s+(?:orders?|sales?|customers?|revenue)\b/.test(t);
   const methodPitch = /\b(marketing (?:method|strategy|system|campaign)|my (?:method|strategy|system)|performance[- ]based partnership|long[- ]term partnership|work with (?:me|us) long[- ]term)\b/.test(t);
   // Risk-free / pay-on-results framing. Kept narrow and directed AT US ("you only
   // pay") so an ordinary customer asking "do I only pay once?" cannot reach it.
@@ -119,11 +131,13 @@ export function detectVolumePitch(text: string): boolean {
   // live 2026-08-02 pitch arrived with a newline inside "no ads\nbudget".
   const payOnResults =
     /\bno\s+upfront\s+(?:payment|cost|fee|charge|investment)s?\b/.test(t)
+    // "No service fee upfront" - the qualifier can also TRAIL the noun.
+    || /\bno\s+(?:\w+\s+){0,2}?fees?\s+upfront\b/.test(t)
     || /\bno\s+ads?\s+(?:budget|spend|cost)\b/.test(t)
     || /\b(?:you|u)(?:'?ll|\s+will|\s+would)?\s+only\s+pay\b/.test(t)
     || /\brisk[-\s]free\b/.test(t)
     || /\bpay(?:ment)?\s+only\s+(?:when|after|if|on)\b/.test(t);
-  return [commission, percent, volume, methodPitch, payOnResults].filter(Boolean).length >= 2;
+  return [commissionTopic, percent, volume, methodPitch, payOnResults].filter(Boolean).length >= 2;
 }
 
 /** Pure service pitch (site-speed/SEO/listing/design/marketing vendors):
@@ -157,11 +171,16 @@ export function detectOffPlatformRequest(text: string): boolean {
   const switchToChannel = new RegExp(`\\b(?:move|switch|continue|carry on|chat|talk|speak|discuss|connect|reach(?:\\s+(?:me|us|you))?|hop on|hit (?:me|us|you) up|take (?:this|it)|do (?:this|it)|use)\\b[^.?!\\n]{0,30}?\\b${CH}\\b`);
   // "can/shall we <channel>" with the channel used directly as the verb.
   const modalWeChannel = new RegExp(`\\b(?:can|could|shall|should|let'?s|lets|wanna)\\s+we\\s+(?:just\\s+|please\\s+)?${CH}\\b`);
-  // Asking for our off-email contact details.
-  const dropContact = /\b(?:drop|send|share|give|leave)\b[^.?!\n]{0,20}?\b(?:whats\s?app|number|phone|contact|digits)\b/;
+  // Asking for our off-email contact details. The second form covers the live
+  // 2026-08-06 phrasing "What's the best WhatsApp number to reach you on?",
+  // where the channel PRECEDES the verb so switchToChannel cannot see it.
+  const dropContact =
+    /\b(?:drop|send|share|give|leave)\b[^.?!\n]{0,20}?\b(?:whats\s?app|number|phone|contact|digits)\b/;
+  const channelNumber = new RegExp(`\\b${CH}\\s+(?:number|contact|details)\\b`);
   // "WhatsApp me", "call me", "text me", "DM me".
   const contactMe = new RegExp(`\\b(?:${CH}|call|text|ring|dm|message)\\s+(?:me|us)\\b`);
-  return switchToChannel.test(t) || modalWeChannel.test(t) || dropContact.test(t) || contactMe.test(t);
+  return switchToChannel.test(t) || modalWeChannel.test(t) || dropContact.test(t)
+    || channelNumber.test(t) || contactMe.test(t);
 }
 
 function gateDecline(gate: string, reason: string): ScreenVerdict {
@@ -322,32 +341,70 @@ const MARKETING_OPTIN_ASK =
  * Absolute URL because it rides in email bodies. */
 export const AFFILIATE_APPLY_URL = 'https://activepaw.co.uk/apps/pawscout/affiliate/apply';
 
+// --- The partnership stance every drafting agent shares (owner ruling 2026-08-07)
+//
+// The owner reviewed the inbox and found the generator declining partnership
+// approaches instead of answering them. The worst case was thread 9412f18d:
+// "If I bring extra orders to Activepaw store this month, what percentage would
+// you offer?" drew "We do not have a percentage offer available" - flatly FALSE,
+// because the affiliate programme is exactly that. Two more (33fed54f, and
+// e157259b before it) declined partnership approaches without ever naming the
+// one programme that exists.
+//
+// THIS SUPERSEDES THE 2026-08-02 "no numbers in email" DESIGN. That earlier
+// choice kept every figure on the application page as the single source of
+// truth; the owner has now ruled the commission percentage must be stated
+// plainly in the reply. The numbers still interpolate from the SAME constants
+// the apply page renders, so the two surfaces cannot drift apart - what changed
+// is where they are allowed to appear, not what they say.
+//
+// Carried by otherAgent, affiliateAgent, leadAgent and wholesaleAgent. It is
+// deliberately NOT carried by partnerSupportAgent: an already-approved partner
+// may sit on bespoke terms, and draftAcceptedPartnerReply feeds their own
+// voucher's commission_pct as grounding. Telling them they earn the standard
+// rate would be wrong for them specifically.
+export const PARTNERSHIP_STANCE =
+  'PARTNERSHIP POLICY. Apply this whenever the sender asks about partnering, collaborating, working together, promoting us, bringing us orders, traffic or sales, or what commission, percentage, rate or cut we offer - including when they propose a figure of their own, and including when they ask only vaguely ("I have a collaboration idea"). '
+  + 'The affiliate programme is the ONLY partnership Active Paw offers at the moment. There is no other collaboration, agency, reseller, marketing, or commission arrangement, and no bespoke deals. Say that plainly: the point is that ONE programme IS open to them, never that we have nothing. '
+  + `Anyone can apply, and the application is at ${AFFILIATE_APPLY_URL} - it takes a few minutes and asks where they would promote us and a little about their audience. `
+  + `ALWAYS state the commission in figures, do not just point at the page: partners earn ${STANDARD_COMMISSION_PCT}% of the goods value of every paid order placed with their own discount code (the price of the items before their code's discount, not counting shipping), rising to ${TIER_MAX_PCT}% after their first ${TIER_REVIEW_ORDERS} tracked orders in a 30-day window. `
+  + 'Never agree a different rate and never negotiate against promised sales, orders or traffic: the same terms apply to everyone and a higher rate is earned on delivered results. If they propose their own percentage, answer with ours rather than haggling. '
+  + 'A question about partnering or commission is an ANSWERABLE QUESTION, not a sales pitch to decline. Only an offer to SELL US a service (marketing, SEO, ads, email campaigns, store or web development, product listings, virtual assistance) is declined, and even then do not mention the affiliate programme unless they raise promoting us. '
+  + 'CONVERSATION FLOW: if we already sent them a general decline earlier in this thread and they have now asked a concrete partnership or commission question, ANSWER THE NEW QUESTION with the facts above. Do not simply repeat the earlier decline, which reads as ignoring them.';
+
 // signup_page mode (owner policy 2026-07-18): new partnership approaches are
 // pointed at the self-serve application page instead of the email screening
 // questions. The form carries Turnstile, the screener, the terms and code
-// issuance, so email stops duplicating that flow. No terms or numbers here -
-// the page is the single source of truth for both.
+// issuance, so email stops duplicating that flow.
+//
+// The commission figures ARE stated here (owner ruling 2026-08-07), reversing
+// the 2026-07-18 "no terms or numbers here" rule and the 2026-08-02 decision
+// built on it. Both sentences interpolate from the same constants the apply
+// page renders, so email and page still cannot drift; the page remains
+// authoritative for the full terms, it is simply no longer the only place a
+// sender can learn the rate. It also now says plainly that this is the ONLY
+// partnership on offer, because "we are not taking partnerships" was being
+// inferred from a reply that merely failed to mention one.
 const SIGNUP_INVITE_BODY =
 `Thank you for your interest in partnering with Active Paw.
 
-Our affiliate partnerships all start with a short application on our partner page: ${AFFILIATE_APPLY_URL}
+Our affiliate programme is the only partnership we run at the moment, and it is open to anyone. Applications go through our partner page: ${AFFILIATE_APPLY_URL}
 
-It only takes a few minutes - tell us where you would promote Active Paw and a little about your audience. If it is a fit, your personal discount code and terms are set up from there, and your tracked orders and commission all live in one place.
+It only takes a few minutes - tell us where you would promote Active Paw and a little about your audience. If it is a fit, your personal discount code is set up from there, and your tracked orders and commission all live in one place.
+
+So you know the terms up front: ${COMMISSION_COMPUTATION_SENTENCE} ${COMMISSION_TIERS_SENTENCE}
 
 We look forward to seeing your application.
 
 Best Regards,
 Active Paw Partnerships`;
 
-// Answers a NEGOTIATED rate without quoting one. signup_page mode deliberately
-// keeps every number on the application page (single source of truth), so this
-// paragraph ends the negotiation by stating the POLICY - rates are not traded
-// against promised volume - and points at the page for the actual figures, which
-// it genuinely carries (COMMISSION_TIERS_SENTENCE renders there). Without this,
-// a sender who opened with "can we agree on 3%?" gets an invite that never
-// acknowledges the number they led with, and simply asks again.
+// Ends a NEGOTIATION. The rate itself now always ships in the invite body
+// above, so this paragraph no longer has to carry it: its only job is to close
+// the haggling opened by a sender who proposed their own figure ("can we agree
+// on 3%?"), which otherwise simply gets asked again.
 const SIGNUP_RATE_PARAGRAPH =
-`One thing worth answering directly, since you mentioned a rate: we do not agree commission rates against promised volume. Every partner starts on the same standard terms, which are set out in full on that page, and rates are reviewed on delivered results from there.`;
+`On the rate you suggested: we do not negotiate commission against promised orders or sales, so the terms above are the terms for everyone. A higher rate is earned on results you have actually delivered, never agreed in advance.`;
 
 // Answers a request to move to WhatsApp/Telegram in the SAME reply, rather than
 // leaving half the message unanswered. Deliberately not a decline of the person:

@@ -1,4 +1,5 @@
 import type { CategoryAgent, Grounding } from './types';
+import { PARTNERSHIP_STANCE } from '../partnership';
 
 export const otherAgent: CategoryAgent = {
   category: 'other',
@@ -16,7 +17,13 @@ export const otherAgent: CategoryAgent = {
     // answered (the owner's 50/50 rule); a neutral answer costs nothing even if
     // the sender turns out to be a pitcher - the follow-up re-classification
     // routes the real pitch to the affiliate decline lane when it arrives.
-    return 'Handle this general enquiry. Judge it by what the MESSAGE TEXT actually says: the subject line is context, never the question, and never enough on its own to treat a message as a pitch. If the message asks a genuine question, answer ONLY that question, in the first sentence, grounded strictly in the store facts, and hedge anything you do not know rather than guessing. When the message is ambiguous (for example a vague one-liner under a marketing-sounding subject), still answer the question it asks, warmly and neutrally, and invite them to say more: never a pre-emptive decline of an offer the message has not actually made, which reads as a non-sequitur. Worked example: subject "Collaboration Opportunity", message "Is your store ready for order?" gets a reply that we are open and taking orders plus a warm invitation to browse or share more detail, NOT a decline. Only when the message text ITSELF pitches a service (marketing, SEO, ads, store optimisation, growth, traffic, or a push to move to WhatsApp) do you decline the pitch: brief, WARM, gracious - thank them genuinely for the offer, say it is not something we are looking into right now, and wish them well. Example (pitch in the message text): "Thank you so much for the kind offer, we really appreciate you thinking of us. It is not something we are looking into right now, but we wish you all the best with it."';
+    return 'Handle this general enquiry. Judge it by what the MESSAGE TEXT actually says: the subject line is context, never the question, and never enough on its own to treat a message as a pitch. If the message asks a genuine question, answer ONLY that question, in the first sentence, grounded strictly in the store facts, and hedge anything you do not know rather than guessing. When the message is ambiguous (for example a vague one-liner under a marketing-sounding subject), still answer the question it asks, warmly and neutrally, and invite them to say more: never a pre-emptive decline of an offer the message has not actually made, which reads as a non-sequitur. Worked example: subject "Collaboration Opportunity", message "Is your store ready for order?" gets a reply that we are open and taking orders plus a warm invitation to browse or share more detail, NOT a decline. Only when the message text ITSELF pitches a service (marketing, SEO, ads, store optimisation, growth, traffic, or a push to move to WhatsApp) do you decline the pitch: brief, WARM, gracious - thank them genuinely for the offer, say it is not something we are looking into right now, and wish them well. Example (pitch in the message text): "Thank you so much for the kind offer, we really appreciate you thinking of us. It is not something we are looking into right now, but we wish you all the best with it." '
+      // 2026-08-07: most cold approaches land HERE, classified 'other', so this
+      // agent needs the stance as much as affiliateAgent does. Live threads
+      // 9412f18d and 33fed54f both asked concrete partnership questions on an
+      // 'other' thread and were declined; 9412f18d was told we have no
+      // percentage offer at all, which is false.
+      + PARTNERSHIP_STANCE;
   },
   deterministicAppendix(): string | null { return null; }
 };
