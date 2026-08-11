@@ -241,6 +241,16 @@ export async function collectSourcedFacts(
  * and the honest sources for "what are people buying right now" are trade press
  * and retail trend pages. These URLs must never be handed to the drafter.
  */
+/** Strip inline markup from a demand field before it is stored or displayed.
+ *  The OpenRouter web plugin makes models annotate searched claims with
+ *  `<cite index="45-1,45-6">...</cite>`, and the first live run after this
+ *  feature shipped put exactly that in front of the owner: the console escapes
+ *  the text, so it was safe but read as raw tags. Keep the sentence, drop the
+ *  scaffolding. */
+export function plainDemandText(s: string): string {
+  return s.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
+}
+
 export function validateDemandSignals(v: unknown, validHandles: string[]): DemandSignal[] | null {
   const arr = (v as { signals?: unknown })?.signals;
   if (!Array.isArray(arr)) return null;
@@ -248,15 +258,15 @@ export function validateDemandSignals(v: unknown, validHandles: string[]): Deman
   const seen = new Set<string>();
   for (const item of arr) {
     const o = item as Record<string, unknown>;
-    const term = typeof o?.term === 'string' ? o.term.trim() : '';
+    const term = typeof o?.term === 'string' ? plainDemandText(o.term) : '';
     const collectionHandle = typeof o?.collectionHandle === 'string' ? o.collectionHandle.trim() : '';
-    const why = typeof o?.why === 'string' ? o.why.trim() : '';
+    const why = typeof o?.why === 'string' ? plainDemandText(o.why) : '';
     if (!term || !validHandles.includes(collectionHandle)) continue;
     const key = term.toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);
     const rawUrl = typeof o?.sourceUrl === 'string' ? o.sourceUrl.trim() : '';
-    const rawName = typeof o?.sourceName === 'string' ? o.sourceName.trim() : '';
+    const rawName = typeof o?.sourceName === 'string' ? plainDemandText(o.sourceName) : '';
     const usableSource = /^https?:\/\/[^\s"'<>]+$/i.test(rawUrl) && !/activepaw/i.test(rawUrl);
     out.push({
       term: term.slice(0, 120),
@@ -348,7 +358,8 @@ function validateCandidates(
     const pack = packByHandle.get(brief.collectionHandle)!;
     const live = pack.products.filter((p) => p.available);
     const rawTerm = (item as Record<string, unknown>)?.demandTerm;
-    const demandTerm = typeof rawTerm === 'string' && rawTerm.trim() ? rawTerm.trim().slice(0, 120) : undefined;
+    const cleanTerm = typeof rawTerm === 'string' ? plainDemandText(rawTerm) : '';
+    const demandTerm = cleanTerm ? cleanTerm.slice(0, 120) : undefined;
     out.push({
       brief,
       collectionTitle: pack.collectionTitle,

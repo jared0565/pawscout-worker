@@ -8,7 +8,7 @@ import { createDraftArticle, renameBlog, findBlog, updateArticleAssets, getPubli
 import { extractProductHandles, selectShopBlock, pickHeroFields } from '../src/blog/select';
 import { pickComboHandles, availableByHandle } from '../src/blog/combo';
 import { pickBlogHeroImage, getProductImages } from '../src/blog/hero';
-import { proposeBrief, proposeTopics, seasonForMonth, publishWindow, validateDemandSignals, validateSourcedFacts, collectSourcedFacts } from '../src/blog/research';
+import { proposeBrief, proposeTopics, seasonForMonth, publishWindow, validateDemandSignals, plainDemandText, validateSourcedFacts, collectSourcedFacts } from '../src/blog/research';
 
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 import { isApprovedSourceUrl, scrubExternalLinks, approvedSourcesPromptLine } from '../src/blog/sources';
@@ -485,6 +485,19 @@ describe('blog research + draft agents (LLM-backed)', () => {
     expect(out![0].sourceUrl).toBe('https://example.org/a');
     expect(out![1].sourceUrl).toBeUndefined();   // the console renders this into an href
     expect(validateDemandSignals({ signals: [] }, ['pet-health'])).toBeNull();
+  });
+  // Observed on the FIRST live run after this shipped: the OpenRouter web plugin
+  // makes the model wrap searched claims in <cite index="45-1,45-6">...</cite>,
+  // and the console showed those tags to the owner as literal text.
+  it('strips the web plugin citation markup out of demand text', () => {
+    const out = validateDemandSignals({ signals: [{
+      term: '<cite index="45-1">cat water fountain</cite>',
+      collectionHandle: 'pet-health',
+      why: '<cite index="45-1,45-6">Popularity surged in 2026</cite> across the UK'
+    }] }, ['pet-health']);
+    expect(out![0].term).toBe('cat water fountain');
+    expect(out![0].why).toBe('Popularity surged in 2026 across the UK');
+    expect(plainDemandText('a  <b>b</b>\n c')).toBe('a b c');
   });
   it('proposeBrief rejects a hallucinated collection and accepts a real one', async () => {
     const w = { season: 'autumn', months: ['September', 'October', 'November'] };
