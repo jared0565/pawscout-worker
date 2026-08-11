@@ -6,14 +6,20 @@ export const blogJs = `
 // Topic suggestions: researched picks, each already backed by in-stock products.
 // The chosen candidate carries its full brief into generation (no re-research).
 var blgCandidates=[]; var blgChosen=null;
-async function blogSuggest(){
+// deep=true is the paid LLM web-search pass. It is a separate button on
+// purpose, labelled with its cost, because it is ~200x the price of the
+// default: 99.6% of that click is search content injected into the prompt.
+async function blogSuggest(deep){
   var btn=el('blg-suggest-btn'); if(btn) btn.disabled=true;
-  setMsg('blg-msg','Researching topics grounded in your live, in-stock products. This can take a moment.','muted');
+  var deepBtn=el('blg-deep-btn'); if(deepBtn) deepBtn.disabled=true;
+  setMsg('blg-msg', deep
+    ? 'Running deep market research (live web search). This takes up to a minute and costs about $0.20.'
+    : 'Finding what people are actually searching for, from your in-stock categories.','muted');
   try{
-    var r=await api('/blog/topics',{});
+    var r=await api('/blog/topics',deep?{deep:true}:{});
     // Clear the demand panel on failure too, or a previous run's evidence sits
     // next to an error message and reads as if it applies to it.
-    if(!r.ok||!r.candidates||!r.candidates.length){ var db=el('blg-demand'); if(db){ db.innerHTML=''; db.style.display='none'; } setMsg('blg-msg','No topic suggestions right now: '+esc((r&&r.error)||'none found'),'no'); if(btn) btn.disabled=false; return; }
+    if(!r.ok||!r.candidates||!r.candidates.length){ var db=el('blg-demand'); if(db){ db.innerHTML=''; db.style.display='none'; } setMsg('blg-msg','No topic suggestions right now: '+esc((r&&r.error)||'none found'),'no'); if(btn) btn.disabled=false; if(deepBtn) deepBtn.disabled=false; return; }
     blgCandidates=r.candidates;
     var sel=el('blg-suggest');
     if(sel){
@@ -39,6 +45,7 @@ async function blogSuggest(){
     blgRenderDemand(d);
   }catch(e){ setMsg('blg-msg','Could not research topics: '+errText(e),'no'); }
   if(btn) btn.disabled=false;
+  if(deepBtn) deepBtn.disabled=false;
 }
 // Show the demand evidence the suggestions were built on, so the owner can see
 // WHY a topic was proposed instead of taking "researched" on trust. Sources are

@@ -383,9 +383,15 @@ describe('blog topic suggestions + brief passthrough', () => {
       ({ title: `${handle}-p${i}`, handle: `${handle}-p${i}`, path: `/products/${handle}-p${i}`, priceGbp: 9.99, available: true }))
   });
   const topic = (title: string, h: string) => ({ title, angle: 'a', targetKeyword: 'k', collectionHandle: h, whyNow: 'w', keyPoints: ['a', 'b', 'c'] });
-  // proposeTopics now runs TWO calls: demand research, then topic generation.
-  // fakeLlm replays its LAST entry once the queue drains, so a single-entry
-  // queue answers both and the demand pass simply finds no `signals` key.
+  // These are pinned to mode:'deep' deliberately. 'deep' is the LLM web-search
+  // path these tests exercise; the DEFAULT is now 'fast' (deterministic
+  // autocomplete), and leaving them on the default would make them reach the
+  // real network. Fast-mode behaviour is covered in demand-suggest.test.ts and
+  // in the fast/deep split tests below, both with an injected fake source.
+  //
+  // proposeTopics runs TWO calls in deep mode: demand research, then topic
+  // generation. fakeLlm replays its LAST entry once the queue drains, so a
+  // single-entry queue answers both and the demand pass finds no `signals` key.
   const WINDOW = { season: 'autumn', months: ['September', 'October', 'November'] };
   const signalsPayload = (sigs: unknown[]) => ({ signals: sigs });
 
@@ -396,7 +402,7 @@ describe('blog topic suggestions + brief passthrough', () => {
       topic('Boredom busters', 'pet-toys'),
       topic('Ghost topic', 'not-real')   // dropped: collection is not in the gated set
     ] }]);
-    const { candidates: cands } = await proposeTopics(llm, STORE, CFG, { packs, window: WINDOW });
+    const { candidates: cands } = await proposeTopics(llm, STORE, CFG, { packs, window: WINDOW, mode: 'deep' });
     expect(cands.length).toBe(2);
     expect(cands.map((c) => c.brief.collectionHandle).sort()).toEqual(['pet-health', 'pet-toys']);
     expect(cands.find((c) => c.brief.collectionHandle === 'not-real')).toBeUndefined();
@@ -410,7 +416,7 @@ describe('blog topic suggestions + brief passthrough', () => {
       topic('H1', 'pet-health'), topic('H2', 'pet-health'), topic('H3', 'pet-health'),
       topic('H4', 'pet-health'), topic('T1', 'pet-toys')
     ] }]);
-    const { candidates: cands } = await proposeTopics(llm, STORE, CFG, { packs, window: WINDOW, count: 5 });
+    const { candidates: cands } = await proposeTopics(llm, STORE, CFG, { packs, window: WINDOW, count: 5, mode: 'deep' });
     expect(cands.filter((c) => c.brief.collectionHandle === 'pet-health').length).toBeLessThanOrEqual(3); // ceil(5/2)
     expect(cands.some((c) => c.brief.collectionHandle === 'pet-toys')).toBe(true);
   });
@@ -430,7 +436,7 @@ describe('blog topic suggestions + brief passthrough', () => {
         { ...topic('Indoor play ideas', 'pet-toys'), demandTerm: 'indoor enrichment toys' }
       ] }
     ]);
-    const { candidates, demand } = await proposeTopics(llm, STORE, CFG, { packs, window: WINDOW });
+    const { candidates, demand } = await proposeTopics(llm, STORE, CFG, { packs, window: WINDOW, mode: 'deep' });
     expect(demand.grounded).toBe(true);
     expect(demand.signals.map((s) => s.term)).toEqual(['dog joint supplements', 'indoor enrichment toys']);
     expect(demand.signals[0].sourceUrl).toBe('https://example.org/pet-trends');
@@ -441,7 +447,7 @@ describe('blog topic suggestions + brief passthrough', () => {
   it('proposeTopics still returns topics when demand research finds nothing, but says so', async () => {
     const packs = [mkPack('pet-health', 'Pet Health', 4)];
     const llm = fakeLlm([{ topics: [topic('Evergreen hydration guide', 'pet-health')] }]);
-    const { candidates, demand } = await proposeTopics(llm, STORE, CFG, { packs, window: WINDOW });
+    const { candidates, demand } = await proposeTopics(llm, STORE, CFG, { packs, window: WINDOW, mode: 'deep' });
     expect(candidates.length).toBe(1);
     expect(demand.grounded).toBe(false);       // degraded, and it admits it
     expect(demand.signals).toEqual([]);

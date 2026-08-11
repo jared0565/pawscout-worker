@@ -16,7 +16,8 @@ import type { BlogBrief, BlogTopicCandidate, DemandEvidence } from './types';
 // ever asked "what season is it" in order to CHOOSE a topic, which is exactly the
 // question that needs to lead the calendar. seasonForMonth stays exported and is
 // still what publishWindow is built from.
-import { proposeBrief, proposeTopics, validateBrief, publishWindow, collectSourcedFacts } from './research';
+import { proposeBrief, proposeTopics, validateBrief, publishWindow, collectSourcedFacts, type DemandMode } from './research';
+import { GoogleSuggestSource } from './demand-suggest';
 import { groundCollection } from './ground';
 import { draftArticle } from './draft';
 import { findClaimFlags } from './quality';
@@ -465,7 +466,7 @@ const MIN_LIVE_FOR_TOPIC = 4;
  */
 export async function proposeBlogTopics(
   env: Env, store: TenantStore, cfg: TenantConfig,
-  opts: { nowMonth0: number }, fetchImpl: typeof fetch = defaultFetch
+  opts: { nowMonth0: number; mode?: DemandMode }, fetchImpl: typeof fetch = defaultFetch
 ): Promise<BlogTopicsResult> {
   const admin = await adminForShop(env, store, fetchImpl).catch(() => null);
   if (!admin) return { ok: false, error: 'Shopify connection unavailable (needs the write_content scope + a live token).' };
@@ -483,7 +484,12 @@ export async function proposeBlogTopics(
   }
   if (!packs.length) return { ok: false, error: 'No collection has enough live products yet to build a topic from.' };
 
-  const { candidates, demand } = await proposeTopics(llm, store, cfg, { packs, window: publishWindow(opts.nowMonth0) });
+  const { candidates, demand } = await proposeTopics(llm, store, cfg, {
+    packs, window: publishWindow(opts.nowMonth0), mode: opts.mode,
+    // The deterministic source is a plain fetch, so it must honour the injected
+    // fetch the same way every other outbound call here does (tests pass a fake).
+    suggestSource: new GoogleSuggestSource(fetchImpl)
+  });
   if (!candidates.length) return { ok: false, error: 'Could not research topics right now. Please try again.' };
   return { ok: true, candidates, demand };
 }

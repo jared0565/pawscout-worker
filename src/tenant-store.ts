@@ -1266,6 +1266,20 @@ export class TenantStore {
     return r?.n ?? 0;
   }
 
+  /** Record one topic-research run's ranked demand signals. Nothing reads this
+   *  yet: it exists so that month-over-month diffs can later recover the
+   *  rising/falling signal that autocomplete does not provide, which is the one
+   *  thing that cannot be backfilled once the month has passed. */
+  async saveDemandSnapshot(mode: string, signals: unknown): Promise<void> {
+    await this.db
+      .prepare(
+        `INSERT INTO demand_snapshots (shop, mode, signals, created_at)
+         VALUES (?1, ?2, ?3, ?4)`
+      )
+      .bind(this.shop, mode, JSON.stringify(signals), new Date().toISOString())
+      .run();
+  }
+
   async logLlmUsage(task: string, model: string, promptTokens: number, completionTokens: number, costUsd: number): Promise<void> {
     await this.db
       .prepare(

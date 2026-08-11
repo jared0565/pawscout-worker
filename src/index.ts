@@ -368,7 +368,12 @@ app.post('/api/blog/topics', async (c) => {
   const store = new TenantStore(c.env.DB, s);
   const cfg = await store.getConfig();
   if (!cfg) return c.json({ ok: false, error: 'Tenant not found' }, 400);
-  const result = await proposeBlogTopics(c.env, store, cfg, { nowMonth0: new Date().getMonth() });
+  // 'deep' is the paid LLM web-search pass (~$0.21 a run) and must be an
+  // EXPLICIT owner choice: anything that escalates to it automatically spends
+  // money nobody asked for. Default is the deterministic autocomplete source.
+  const body = await c.req.json().catch(() => ({} as Record<string, unknown>));
+  const mode = (body as { deep?: unknown })?.deep === true ? 'deep' : 'fast';
+  const result = await proposeBlogTopics(c.env, store, cfg, { nowMonth0: new Date().getMonth(), mode });
   return c.json(result);
 });
 app.post('/api/blog/list', async (c) => {

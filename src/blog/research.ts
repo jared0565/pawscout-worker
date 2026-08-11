@@ -15,6 +15,7 @@ import type {
   DemandSignal, DemandEvidence
 } from './types';
 import { isApprovedSourceUrl, approvedSourcesPromptLine } from './sources';
+import { GoogleSuggestSource, researchDemandDeterministic, type SuggestSource } from './demand-suggest';
 
 /** Curated evergreen starting points, one+ per real collection. The research
  *  agent may pick from these or propose its own, but the collection it funnels
@@ -420,11 +421,27 @@ export interface TopicResearchResult {
   demand: DemandEvidence;
 }
 
+/** Which demand source to use.
+ *
+ *  'fast'  - deterministic autocomplete mining (src/blog/demand-suggest.ts).
+ *            ~1,900 tokens of input, effectively free, real search phrases.
+ *  'deep'  - the LLM web-search pass. ~$0.21 a run, and the only mode that can
+ *            produce seasonal "why now" reasoning from trade sources.
+ *
+ *  'fast' is the default because 99.6% of a 'deep' click is the search step and
+ *  three of them cost 41% of a month's LLM bill. 'deep' must stay an explicit
+ *  owner choice: an automatic escalation would spend money nobody asked for. */
+export type DemandMode = 'fast' | 'deep';
+
 export async function proposeTopics(
   llm: LlmClient, store: TenantStore, cfg: TenantConfig,
-  opts: { packs: FactPack[]; window: { season: string; months: string[] }; count?: number }
+  opts: {
+    packs: FactPack[]; window: { season: string; months: string[] }; count?: number;
+    mode?: DemandMode; suggestSource?: SuggestSource;
+  }
 ): Promise<TopicResearchResult> {
   const count = opts.count ?? 5;
+  const mode: DemandMode = opts.mode ?? 'fast';
   const packByHandle = new Map(opts.packs.map((p) => [p.collectionHandle, p]));
   const handles = [...packByHandle.keys()];
   const monthList = opts.window.months.join(', ');
@@ -444,17 +461,38 @@ export async function proposeTopics(
   // difference between a researched answer and a seasonal guess. Now the
   // evidence exists as data before any topic is written, and its absence is
   // visible to the owner instead of being swallowed by a fallback.
-  const signals = await researchDemand(llm, store, cfg, { validHandles: handles, catalog, window: opts.window });
+  let signals: DemandSignal[];
+  let sourceLabel: string;
+  if (mode === 'deep') {
+    signals = await researchDemand(llm, store, cfg, { validHandles: handles, catalog, window: opts.window });
+    sourceLabel = 'live web research';
+  } else {
+    const source = opts.suggestSource ?? new GoogleSuggestSource();
+    const out = await researchDemandDeterministic(opts.packs, source, { max: 8 });
+    signals = out.signals;
+    sourceLabel = 'real search-autocomplete data';
+    console.log(`blog demand (fast): ${signals.length} signal(s) from ${out.seeds.length} seed(s), sourceFailed=${out.sourceFailed}`);
+    if (signals.length) {
+      // Snapshot every run. The rising/falling signal autocomplete cannot give
+      // us today is recoverable by DIFFING these over months, and it cannot be
+      // backfilled, so the cost of storing from day one is the price of having
+      // the option at all.
+      await store.saveDemandSnapshot(mode, signals).catch((e) => console.warn(`demand snapshot failed: ${(e as Error).message}`));
+    }
+  }
+
   const demand: DemandEvidence = signals.length
     ? {
         grounded: true,
         signals,
-        note: `Ranked on ${signals.length} live demand signal(s) researched for ${monthList}.`
+        note: `Ranked on ${signals.length} demand signal(s) from ${sourceLabel}, for ${monthList}.`
       }
     : {
         grounded: false,
         signals: [],
-        note: `Live demand research was unavailable, so these are evergreen picks from your in-stock collections for ${monthList}, not trend-ranked suggestions.`
+        note: mode === 'deep'
+          ? `Live web research was unavailable, so these are evergreen picks from your in-stock collections for ${monthList}, not trend-ranked suggestions.`
+          : `Search-autocomplete data was unavailable, so these are evergreen picks for ${monthList}. Deep research can still be run deliberately.`
       };
 
   // STEP 2: turn the evidence into buildable topics. One call, no hidden
