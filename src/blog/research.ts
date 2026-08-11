@@ -7,10 +7,13 @@
 // is a later enhancement that would inform the brief, never the drafter's facts.
 
 import { LlmClient } from '../llm';
-import { resolveChain } from '../llm-resolve';
+import { resolveChain, resolveSearchChain } from '../llm-resolve';
 import type { TenantConfig } from '../types';
 import type { TenantStore } from '../tenant-store';
-import type { BlogBrief, TopicSeed, FactPack, BlogTopicCandidate, SourcedFact } from './types';
+import type {
+  BlogBrief, TopicSeed, FactPack, BlogTopicCandidate, SourcedFact,
+  DemandSignal, DemandEvidence
+} from './types';
 import { isApprovedSourceUrl, approvedSourcesPromptLine } from './sources';
 
 /** Curated evergreen starting points, one+ per real collection. The research
@@ -33,6 +36,35 @@ export function seasonForMonth(month0: number): string {
   return 'autumn';
 }
 
+const MONTH_NAMES = [
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December'
+];
+
+/**
+ * The window a guide published TODAY is actually READ in.
+ *
+ * A new article needs weeks to be indexed and start ranking, and then earns
+ * traffic for months. Choosing its topic from the CURRENT month is therefore
+ * always a month or more late. Measured 2026-08-11: `seasonForMonth(7)` returned
+ * "summer", the prompt said "Current season: summer. Prefer a topic that fits the
+ * season", and the agent duly proposed "How to Keep Your Dog Cool on Summer
+ * Walks", "Summer Cat Shedding" and "A Simple Summer Routine" - for a guide that
+ * will be in front of readers across September, October and November.
+ *
+ * So: lead the calendar by a month, describe the three months the piece is for,
+ * and take the season from the window's MIDPOINT rather than from today. This is
+ * deliberately a NEW function rather than a change to `seasonForMonth`, which
+ * `runBlogPipeline` still uses for the drafter and whose mapping is pinned by
+ * tests - the drafter should know what season it is writing IN, while the topic
+ * chooser needs to know what season it is writing FOR.
+ */
+export function publishWindow(month0: number): { season: string; months: string[] } {
+  const start = (((month0 % 12) + 12) % 12) + 1;      // lead by one month
+  const months = [0, 1, 2].map((i) => MONTH_NAMES[(start + i) % 12]);
+  return { season: seasonForMonth((start + 1) % 12), months };
+}
+
 export function validateBrief(v: unknown, validHandles: string[]): BlogBrief | null {
   const o = v as Record<string, unknown>;
   if (typeof o !== 'object' || o === null) return null;
@@ -51,22 +83,26 @@ export function validateBrief(v: unknown, validHandles: string[]): BlogBrief | n
 }
 
 function buildBriefSystem(
-  validHandles: string[], season: string, seeds: TopicSeed[], topicHint: string | undefined, useWeb: boolean
+  validHandles: string[], window: { season: string; months: string[] },
+  seeds: TopicSeed[], topicHint: string | undefined, useWeb: boolean
 ): string {
   // Same web-first/hermetic-fallback split as the topic suggestions: web framing
   // ranks by REAL current demand; the hermetic variant keeps the feature alive
   // when web search is unavailable. Demand informs the BRIEF only, never the
   // drafter's facts.
+  const monthList = window.months.join(', ');
   const demand = useWeb
-    ? 'Use live web search to judge what UK pet owners are actually searching for RIGHT NOW around this direction and season, and pick the angle with genuine current demand. Never force a trending topic we cannot back with a real collection.'
-    : 'Judge what a pet owner is most likely to search for this season.';
+    ? 'Use live web search to judge what UK pet owners are actually searching for RIGHT NOW around this direction, and pick the angle with genuine current demand. Never force a trending topic we cannot back with a real collection.'
+    : 'Choose a durable evergreen angle rather than guessing at a trend you cannot check.';
   return [
     'You are a content strategist for Active Paw, a UK pet-care store for dogs and cats.',
     'Propose ONE blog article brief: a genuinely useful buying-guide or how-to that a pet owner would search for, and that funnels naturally into one of our real collections.',
     demand,
     'It must be honest and evergreen-to-seasonal, never clickbait, never a topic we cannot tie to a real product category.',
     `The collectionHandle in your brief MUST be exactly one of these real handles: ${validHandles.join(', ')}.`,
-    `Current season: ${season}. Prefer a topic that fits the season when there is a good one, otherwise a strong evergreen.`,
+    // Forward-looking for the same reason as the topic chooser: a brief written
+    // against TODAY's season ships a guide that is already a month late.
+    `This guide is published now but will be READ across ${monthList} (${window.season}). Fit that window, not today's weather; otherwise prefer a strong evergreen.`,
     topicHint ? `The owner suggested this direction, build the brief around it: ${topicHint}` : `Some evergreen starting points (you may use or improve one, or propose your own): ${seeds.map((s) => `${s.workingTitle} [${s.collectionHandle}]`).join('; ')}.`,
     'Respond with ONLY JSON: {"title": <specific search-friendly title>, "angle": <the specific promise of the piece>, "targetKeyword": <primary search intent>, "collectionHandle": <one real handle from the list>, "whyNow": <one sentence: why this topic now, citing the demand signal>, "keyPoints": <array of 3-6 short points the article should cover>}.'
   ].join(' ');
@@ -81,15 +117,18 @@ function buildBriefSystem(
  */
 export async function proposeBrief(
   llm: LlmClient, store: TenantStore, cfg: TenantConfig,
-  opts: { validHandles: string[]; season: string; topicHint?: string }
+  opts: { validHandles: string[]; window: { season: string; months: string[] }; topicHint?: string }
 ): Promise<BlogBrief | null> {
   const chain = resolveChain(cfg, 'text');
   const seeds = SEED_TOPICS.filter((s) => opts.validHandles.includes(s.collectionHandle));
-  const user = JSON.stringify({ season: opts.season, topicHint: opts.topicHint ?? null });
+  const user = JSON.stringify({ readInMonths: opts.window.months, season: opts.window.season, topicHint: opts.topicHint ?? null });
 
+  // `required` so this cannot quietly be served by the non-searching floor tier
+  // and then logged as 'blog-research-web'. A failure here is real and lands in
+  // the hermetic branch below, which no longer claims to know what is trending.
   const web = await llm.jsonChain<BlogBrief>({
-    chain, maxTokens: 700, web: { maxResults: 6 },
-    system: buildBriefSystem(opts.validHandles, opts.season, seeds, opts.topicHint, true),
+    chain: resolveSearchChain(cfg), maxTokens: 700, web: { maxResults: 6, required: true },
+    system: buildBriefSystem(opts.validHandles, opts.window, seeds, opts.topicHint, true),
     user,
     validate: (v) => validateBrief(v, opts.validHandles)
   });
@@ -97,11 +136,11 @@ export async function proposeBrief(
     await store.logLlmUsage('blog-research-web', web.usage.model, web.usage.promptTokens, web.usage.completionTokens, web.usage.costUsd);
     return web.value;
   }
-  console.warn(`blog research: web grounding produced nothing (${web.error}); falling back to hermetic season+seeds.`);
+  console.warn(`blog research: web grounding produced nothing (${web.error}); falling back to hermetic seeds.`);
 
   const r = await llm.jsonChain<BlogBrief>({
     chain, maxTokens: 700,
-    system: buildBriefSystem(opts.validHandles, opts.season, seeds, opts.topicHint, false),
+    system: buildBriefSystem(opts.validHandles, opts.window, seeds, opts.topicHint, false),
     user,
     validate: (v) => validateBrief(v, opts.validHandles)
   });
@@ -149,7 +188,6 @@ export async function collectSourcedFacts(
   opts: { title: string; angle: string; keyPoints: string[] }
 ): Promise<SourcedFact[]> {
   if (!llm.available) return [];
-  const chain = resolveChain(cfg, 'text');
   const system = [
     'You are a careful fact researcher for a pet-care publication.',
     'Using live web search, find 2-4 SHORT, verifiable, genuinely useful facts or statistics directly relevant to the article described, each from a reputable source (veterinary bodies, animal welfare charities, academic or government pages).',
@@ -160,8 +198,18 @@ export async function collectSourcedFacts(
     'Respond with ONLY JSON: {"facts": [{"fact": <the claim, short and quotable>, "sourceUrl": <the exact page URL>, "sourceName": <the source display name>}]}.'
   ].join(' ');
 
+  // Search chain, same as demand research: this call is worthless without live
+  // search, and it had quietly degraded the same way - its last logged run
+  // (2026-08-01) was served by the OpenAI floor and thrown away by the guard
+  // below, so the drafter has been writing without cited facts. Model choice
+  // here affects research QUALITY only; what keeps citations safe is the
+  // approved-source allowlist in validateSourcedFacts plus the provider check,
+  // and neither depends on which model ran the search.
+  // `required` also makes that guard cheaper rather than redundant: the OpenAI
+  // tier is no longer CALLED for a job it cannot do, so we stop paying for an
+  // answer we would only throw away.
   const r = await llm.jsonChain<SourcedFact[]>({
-    chain, maxTokens: 700, web: { maxResults: 6 },
+    chain: resolveSearchChain(cfg), maxTokens: 700, web: { maxResults: 6, required: true },
     system,
     user: JSON.stringify({ title: opts.title, angle: opts.angle, keyPoints: opts.keyPoints }),
     validate: validateSourcedFacts
@@ -176,6 +224,100 @@ export async function collectSourcedFacts(
     console.warn('blog facts served without web search (floor tier) - discarded');
     return [];
   }
+  return r.value;
+}
+
+/**
+ * Validate a `{signals:[...]}` demand payload against the collections we can
+ * actually fulfil. A signal for a category we do not stock is dropped, not
+ * bent to fit - proposing a topic we cannot back with products is the failure
+ * mode this whole gate exists to prevent.
+ *
+ * NOTE on source URLs: unlike `validateSourcedFacts`, this does NOT apply the
+ * approved-source allowlist. That allowlist exists because cited facts get
+ * PUBLISHED into an article, where linking a retailer would surface a competitor
+ * ([[no-competitor-supplier-brands]]). Demand evidence is the opposite case:
+ * it is internal, shown only in the owner's console to justify a suggestion,
+ * and the honest sources for "what are people buying right now" are trade press
+ * and retail trend pages. These URLs must never be handed to the drafter.
+ */
+export function validateDemandSignals(v: unknown, validHandles: string[]): DemandSignal[] | null {
+  const arr = (v as { signals?: unknown })?.signals;
+  if (!Array.isArray(arr)) return null;
+  const out: DemandSignal[] = [];
+  const seen = new Set<string>();
+  for (const item of arr) {
+    const o = item as Record<string, unknown>;
+    const term = typeof o?.term === 'string' ? o.term.trim() : '';
+    const collectionHandle = typeof o?.collectionHandle === 'string' ? o.collectionHandle.trim() : '';
+    const why = typeof o?.why === 'string' ? o.why.trim() : '';
+    if (!term || !validHandles.includes(collectionHandle)) continue;
+    const key = term.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const rawUrl = typeof o?.sourceUrl === 'string' ? o.sourceUrl.trim() : '';
+    const rawName = typeof o?.sourceName === 'string' ? o.sourceName.trim() : '';
+    const usableSource = /^https?:\/\/[^\s"'<>]+$/i.test(rawUrl) && !/activepaw/i.test(rawUrl);
+    out.push({
+      term: term.slice(0, 120),
+      collectionHandle,
+      why: why.slice(0, 200),
+      ...(usableSource ? { sourceUrl: rawUrl.slice(0, 500) } : {}),
+      ...(usableSource && rawName ? { sourceName: rawName.slice(0, 120) } : {})
+    });
+    if (out.length >= 8) break;
+  }
+  return out.length ? out : null;
+}
+
+/**
+ * THE DEMAND STEP the owner asked for (2026-08-11): before proposing anything,
+ * go and find out what pet owners are ACTUALLY searching for and buying right
+ * now, and rank OUR stocked categories by that.
+ *
+ * `web.required` is the point of this function. Only the OpenRouter tier can run
+ * live search, so requiring it means this step either does real research or
+ * honestly returns nothing - it can no longer quietly fall through to a tier that
+ * answers from model memory and have the result banked as "researched". An empty
+ * return is a legitimate answer; the caller degrades visibly rather than
+ * pretending.
+ */
+export async function researchDemand(
+  llm: LlmClient, store: TenantStore, cfg: TenantConfig,
+  opts: { validHandles: string[]; catalog: string; window: { season: string; months: string[] } }
+): Promise<DemandSignal[]> {
+  if (!llm.available) return [];
+  const chain = resolveSearchChain(cfg);
+  const monthList = opts.window.months.join(', ');
+  const system = [
+    'You are a demand researcher for a UK pet-care store that sells to dog and cat owners.',
+    'Use live web search to find what UK pet owners are SEARCHING FOR AND BUYING RIGHT NOW: rising search interest, trending pet product categories, current retail and trade reporting, seasonal buying patterns just starting to build.',
+    `Weight your answer toward the period this content is FOR: ${monthList} (${opts.window.season}). Something already peaking is nearly over; prefer interest that is building INTO that window.`,
+    'Report only what your search results actually support. Do not pad the list from general knowledge, and never invent a source. Fewer real signals beat a full list of guesses.',
+    `Map every signal onto EXACTLY ONE of these collections we genuinely stock: ${opts.validHandles.join(', ')}. Discard any demand we cannot serve from these, however strong - a topic we cannot back with products is worthless to us.`,
+    `Our real collections and their in-stock products:\n${opts.catalog}`,
+    'Order the list strongest current demand first.',
+    'Respond with ONLY JSON: {"signals": [ up to 8 objects, each {"term": <what people actually search or ask for, in their words>, "collectionHandle": <one handle from the list>, "why": <one sentence: the evidence that this is current>, "sourceName": <source display name>, "sourceUrl": <the exact page URL you found it on>} ]}.'
+  ].join(' ');
+
+  const r = await llm.jsonChain<DemandSignal[]>({
+    chain, maxTokens: 1400, web: { maxResults: 8, required: true },
+    system,
+    user: JSON.stringify({ readInMonths: opts.window.months, season: opts.window.season }),
+    validate: (v) => validateDemandSignals(v, opts.validHandles)
+  });
+  if (!r.ok) { console.warn(`blog demand research produced nothing: ${r.error}`); return []; }
+  await store.logLlmUsage('blog-demand', r.usage.model, r.usage.promptTokens, r.usage.completionTokens, r.usage.costUsd);
+  // Belt AND braces with `web.required`: that flag stops the OpenAI tier being
+  // TRIED, this check stops an OpenAI-served answer being TRUSTED if the chain
+  // shape ever changes. The guard `collectSourcedFacts` already had is the only
+  // reason its fabricated citations never shipped; topic research went without
+  // one and spent nine days quietly ungrounded.
+  if (r.usage.provider === 'openai') {
+    console.warn('blog demand research served without web search (floor tier) - discarded');
+    return [];
+  }
+  console.log(`blog demand: ${r.value.length} signal(s) via ${r.usage.model}, promptTokens=${r.usage.promptTokens}`);
   return r.value;
 }
 
@@ -205,11 +347,14 @@ function validateCandidates(
     if (used >= maxPerCollection) continue;
     const pack = packByHandle.get(brief.collectionHandle)!;
     const live = pack.products.filter((p) => p.available);
+    const rawTerm = (item as Record<string, unknown>)?.demandTerm;
+    const demandTerm = typeof rawTerm === 'string' && rawTerm.trim() ? rawTerm.trim().slice(0, 120) : undefined;
     out.push({
       brief,
       collectionTitle: pack.collectionTitle,
       liveProductCount: live.length,
-      sampleProducts: live.slice(0, 3).map((p) => p.title)
+      sampleProducts: live.slice(0, 3).map((p) => p.title),
+      ...(demandTerm ? { demandTerm } : {})
     });
     seenTitles.add(key);
     perCollection.set(brief.collectionHandle, used + 1);
@@ -227,65 +372,98 @@ function validateCandidates(
  * data (that is a later enhancement, and would inform the brief only). Returns
  * [] when the LLM is unavailable or nothing validates.
  */
-function buildTopicSystem(handles: string[], catalog: string, season: string, count: number, useWeb: boolean): string {
-  // The demand instruction is the ONLY difference between the web + hermetic
-  // prompts. Web framing (advisor): rank OUR coverable categories by REAL current
-  // demand and never force a trend we cannot stock - the collection gate then
-  // guarantees we only surface topics we can actually fulfill.
-  const demand = useWeb
-    ? 'Use live web search to judge which of these stocked categories has REAL current search demand right now (this season, current pet-owner interest) and the SPECIFIC angle people are actually searching for. Rank your suggestions by genuine current demand. Never invent or force a trending topic onto a category we cannot stock - only propose topics we can fully back with the products listed below.'
-    : 'Judge which of these stocked categories a pet owner is most likely to search for this season, and the specific angle they want.';
+function buildTopicSystem(
+  handles: string[], catalog: string, window: { season: string; months: string[] },
+  count: number, signals: DemandSignal[]
+): string {
+  const monthList = window.months.join(', ');
+  // Demand is now RESEARCHED EVIDENCE passed in, not an instruction to "judge"
+  // demand. When the research step returned signals the strategist's job is to
+  // turn the strongest ones into articles; when it returned nothing we say so
+  // plainly and ask for durable evergreen topics, because the honest fallback
+  // for "we don't know what's trending" is a piece that is useful in any month -
+  // NOT a guess dressed as a trend. The old prompt's fallback leaned on the
+  // season alone, which is exactly how a mid-August run produced three summer
+  // topics for an autumn readership.
+  const demand = signals.length
+    ? [
+        'These are the demand signals a live web-search pass just found, strongest first. Build your topics on THEM:',
+        signals.map((s, i) => `${i + 1}. "${s.term}" [${s.collectionHandle}] - ${s.why}`).join('\n'),
+        `Cover the strongest signals you can while keeping the collections diverse. Set demandTerm on each topic to the exact signal term it answers, and make whyNow state that signal's evidence. Do not invent demand beyond this list; if you need more topics than there are signals, make the extras strong EVERGREEN buying guides and leave their demandTerm empty.`
+      ].join(' ')
+    : 'No live demand research was available for this run, so do NOT pretend to know what is trending. Propose durable EVERGREEN buying guides and how-tos that a pet owner searches for in any month, leave demandTerm empty, and let whyNow give the honest catalog reason rather than a claimed trend.';
   return [
     'You are a content strategist for Active Paw, a UK pet-care store for dogs and cats.',
     `Propose ${count} DIVERSE blog article topics a pet owner would genuinely search for. Each MUST funnel into one of the real collections below and be congruent with that collection's actual products.`,
     demand,
     'Diversity is required: spread topics across DIFFERENT collections; do not propose several topics for the same collection unless there are fewer collections than requested topics.',
     'Honest and useful only: never clickbait, never a topic we cannot tie to the listed products.',
-    `Current season: ${season}.`,
+    `Timing: this guide is published now but will be READ across ${monthList} (${window.season}). Write for that window, not for today - a topic that is peaking this week is already too late to be worth publishing. Do not anchor to the current month's weather.`,
     `Real collections and their in-stock products (choose collectionHandle EXACTLY from: ${handles.join(', ')}):\n${catalog}`,
-    `Respond with ONLY JSON: {"topics": [ ${count} objects, each {"title": <specific search-friendly title>, "angle": <the specific promise>, "targetKeyword": <primary search intent>, "collectionHandle": <one real handle from the list>, "whyNow": <one sentence, cite the demand signal>, "keyPoints": <array of 3-6 short points to cover>} ]}.`
+    `Respond with ONLY JSON: {"topics": [ ${count} objects, each {"title": <specific search-friendly title>, "angle": <the specific promise>, "targetKeyword": <primary search intent>, "collectionHandle": <one real handle from the list>, "demandTerm": <the demand signal term this answers, or "">, "whyNow": <one sentence, cite the demand evidence or say it is evergreen>, "keyPoints": <array of 3-6 short points to cover>} ]}.`
   ].join(' ');
+}
+
+export interface TopicResearchResult {
+  candidates: BlogTopicCandidate[];
+  demand: DemandEvidence;
 }
 
 export async function proposeTopics(
   llm: LlmClient, store: TenantStore, cfg: TenantConfig,
-  opts: { packs: FactPack[]; season: string; count?: number }
-): Promise<BlogTopicCandidate[]> {
+  opts: { packs: FactPack[]; window: { season: string; months: string[] }; count?: number }
+): Promise<TopicResearchResult> {
   const count = opts.count ?? 5;
   const packByHandle = new Map(opts.packs.map((p) => [p.collectionHandle, p]));
   const handles = [...packByHandle.keys()];
-  if (!handles.length) return [];
+  const monthList = opts.window.months.join(', ');
+  if (!handles.length) {
+    return { candidates: [], demand: { grounded: false, signals: [], note: 'No collection was eligible.' } };
+  }
 
   const catalog = opts.packs.map((p) => {
     const names = p.products.filter((x) => x.available).slice(0, 6).map((x) => x.title).join(', ');
     return `- ${p.collectionTitle} [${p.collectionHandle}]: ${names}`;
   }).join('\n');
+
+  // STEP 1: go and find out what people are actually searching for. Separating
+  // this from topic generation is the substance of the 2026-08-11 change. The
+  // old single call told one model to "judge demand" while also writing titles,
+  // so when its search silently stopped working there was no observable
+  // difference between a researched answer and a seasonal guess. Now the
+  // evidence exists as data before any topic is written, and its absence is
+  // visible to the owner instead of being swallowed by a fallback.
+  const signals = await researchDemand(llm, store, cfg, { validHandles: handles, catalog, window: opts.window });
+  const demand: DemandEvidence = signals.length
+    ? {
+        grounded: true,
+        signals,
+        note: `Ranked on ${signals.length} live demand signal(s) researched for ${monthList}.`
+      }
+    : {
+        grounded: false,
+        signals: [],
+        note: `Live demand research was unavailable, so these are evergreen picks from your in-stock collections for ${monthList}, not trend-ranked suggestions.`
+      };
+
+  // STEP 2: turn the evidence into buildable topics. One call, no hidden
+  // fallback: the prompt already knows whether it has demand evidence, and says
+  // so honestly either way.
   const chain = resolveChain(cfg, 'text');
-  const user = JSON.stringify({ season: opts.season, count });
-
-  // 1) Demand-driven: web search grounds the topics in what people search NOW.
-  const web = await llm.jsonChain<BlogTopicCandidate[]>({
-    chain, maxTokens: 1800, web: { maxResults: 6 },
-    system: buildTopicSystem(handles, catalog, opts.season, count, true),
-    user,
-    validate: (v) => validateCandidates(v, packByHandle, count)
-  });
-  if (web.ok && web.value.length) {
-    await store.logLlmUsage('blog-topics-web', web.usage.model, web.usage.promptTokens, web.usage.completionTokens, web.usage.costUsd);
-    console.log(`blog topics: web-grounded ok, ${web.value.length} candidates, costUsd=${web.usage.costUsd}`);
-    return web.value;
-  }
-  console.warn(`blog topics: web grounding produced nothing (${web.ok ? 'no valid candidates' : web.error}); falling back to hermetic catalog+season.`);
-
-  // 2) Fallback: hermetic (catalog + season only) so the feature still works if
-  //    web search is unavailable or does not compose on the current models.
   const r = await llm.jsonChain<BlogTopicCandidate[]>({
     chain, maxTokens: 1800,
-    system: buildTopicSystem(handles, catalog, opts.season, count, false),
-    user,
+    system: buildTopicSystem(handles, catalog, opts.window, count, signals),
+    user: JSON.stringify({ readInMonths: opts.window.months, season: opts.window.season, count }),
     validate: (v) => validateCandidates(v, packByHandle, count)
   });
-  if (!r.ok) { console.warn(`blog topic research failed: ${r.error}`); return []; }
+  if (!r.ok) { console.warn(`blog topic research failed: ${r.error}`); return { candidates: [], demand }; }
+  // Always 'blog-topics'. Naming this row for whether the SEPARATE demand pass
+  // succeeded would recreate the exact ambiguity this change removes: this call
+  // never carries the web plugin, so a '-web' label on it would again describe
+  // something other than the request it records. Whether a run was researched is
+  // told by the presence of a 'blog-demand' row, whose token count makes real
+  // search self-evident.
   await store.logLlmUsage('blog-topics', r.usage.model, r.usage.promptTokens, r.usage.completionTokens, r.usage.costUsd);
-  return r.value;
+  console.log(`blog topics: ${r.value.length} candidate(s), demandGrounded=${demand.grounded}, costUsd=${r.usage.costUsd}`);
+  return { candidates: r.value, demand };
 }

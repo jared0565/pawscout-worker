@@ -113,6 +113,32 @@ describe('LlmClient.jsonChain', () => {
     expect(JSON.parse((fetchImpl.mock.calls[0][1] as any).body).plugins).toBeUndefined();
   });
 
+  // The guard behind the 2026-08-11 blog-topics fix. Only OpenRouter can attach
+  // the search plugin, so a `required` web call must FAIL rather than let the
+  // OpenAI floor answer from model memory and have the caller bank it as
+  // researched - which is how three llm_usage rows came to be labelled
+  // 'blog-topics-web' with 643 prompt tokens and no search behind them.
+  it('web.required refuses to fall through to the non-searching OpenAI tier', async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce({ ok: false, status: 429, json: async () => ({ error: { code: 'insufficient_quota', message: 'quota' } }) });
+    const llm = new LlmClient({ openrouter: 'k', openai: 'o' }, fetchImpl as any);
+    const r = await llm.jsonChain({ chain: CHAIN, system: 's', user: 'u', web: { maxResults: 5, required: true }, validate: (v: any) => v });
+    expect(r.ok).toBe(false);
+    // OpenRouter was tried; OpenAI was never called at all.
+    const hosts = fetchImpl.mock.calls.map((c: any) => String(c[0]));
+    expect(hosts.some((h) => h.includes('openrouter'))).toBe(true);
+    expect(hosts.some((h) => h.includes('api.openai.com'))).toBe(false);
+  });
+
+  it('without web.required the OpenAI tier still serves as the floor', async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce({ ok: false, status: 429, json: async () => ({ error: { code: 'insufficient_quota', message: 'quota' } }) })
+      .mockResolvedValueOnce(ok('gpt-5.4-mini', '{"v":9}'));
+    const llm = new LlmClient({ openrouter: 'k', openai: 'o' }, fetchImpl as any);
+    const r = await llm.jsonChain({ chain: CHAIN, system: 's', user: 'u', web: { maxResults: 5 }, validate: (v: any) => v });
+    expect(r.ok).toBe(true);
+  });
+
   it('tier3 activation log fires when OpenAI tier serves', async () => {
     const fetchImpl = vi.fn()
       .mockResolvedValueOnce({ ok: false, status: 429, json: async () => ({ error: { code: 'insufficient_quota', message: 'quota' } }) })

@@ -8,7 +8,9 @@ import { createDraftArticle, renameBlog, findBlog, updateArticleAssets, getPubli
 import { extractProductHandles, selectShopBlock, pickHeroFields } from '../src/blog/select';
 import { pickComboHandles, availableByHandle } from '../src/blog/combo';
 import { pickBlogHeroImage, getProductImages } from '../src/blog/hero';
-import { proposeBrief, proposeTopics, seasonForMonth, validateSourcedFacts, collectSourcedFacts } from '../src/blog/research';
+import { proposeBrief, proposeTopics, seasonForMonth, publishWindow, validateDemandSignals, validateSourcedFacts, collectSourcedFacts } from '../src/blog/research';
+
+const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 import { isApprovedSourceUrl, scrubExternalLinks, approvedSourcesPromptLine } from '../src/blog/sources';
 import { resolvePipelineBrief } from '../src/blog/pipeline';
 import { LlmClient } from '../src/llm';
@@ -381,6 +383,11 @@ describe('blog topic suggestions + brief passthrough', () => {
       ({ title: `${handle}-p${i}`, handle: `${handle}-p${i}`, path: `/products/${handle}-p${i}`, priceGbp: 9.99, available: true }))
   });
   const topic = (title: string, h: string) => ({ title, angle: 'a', targetKeyword: 'k', collectionHandle: h, whyNow: 'w', keyPoints: ['a', 'b', 'c'] });
+  // proposeTopics now runs TWO calls: demand research, then topic generation.
+  // fakeLlm replays its LAST entry once the queue drains, so a single-entry
+  // queue answers both and the demand pass simply finds no `signals` key.
+  const WINDOW = { season: 'autumn', months: ['September', 'October', 'November'] };
+  const signalsPayload = (sigs: unknown[]) => ({ signals: sigs });
 
   it('proposeTopics returns validated candidates, drops a hallucinated collection, and carries live counts', async () => {
     const packs = [mkPack('pet-health', 'Pet Health', 4), mkPack('pet-toys', 'Pet Toys', 5)];
@@ -389,7 +396,7 @@ describe('blog topic suggestions + brief passthrough', () => {
       topic('Boredom busters', 'pet-toys'),
       topic('Ghost topic', 'not-real')   // dropped: collection is not in the gated set
     ] }]);
-    const cands = await proposeTopics(llm, STORE, CFG, { packs, season: 'summer' });
+    const { candidates: cands } = await proposeTopics(llm, STORE, CFG, { packs, window: WINDOW });
     expect(cands.length).toBe(2);
     expect(cands.map((c) => c.brief.collectionHandle).sort()).toEqual(['pet-health', 'pet-toys']);
     expect(cands.find((c) => c.brief.collectionHandle === 'not-real')).toBeUndefined();
@@ -403,9 +410,42 @@ describe('blog topic suggestions + brief passthrough', () => {
       topic('H1', 'pet-health'), topic('H2', 'pet-health'), topic('H3', 'pet-health'),
       topic('H4', 'pet-health'), topic('T1', 'pet-toys')
     ] }]);
-    const cands = await proposeTopics(llm, STORE, CFG, { packs, season: 'summer', count: 5 });
+    const { candidates: cands } = await proposeTopics(llm, STORE, CFG, { packs, window: WINDOW, count: 5 });
     expect(cands.filter((c) => c.brief.collectionHandle === 'pet-health').length).toBeLessThanOrEqual(3); // ceil(5/2)
     expect(cands.some((c) => c.brief.collectionHandle === 'pet-toys')).toBe(true);
+  });
+
+  // The regression the owner reported on 2026-08-11: suggestions had silently
+  // stopped being demand-researched and were coming back as seasonal filler,
+  // with nothing in the response to distinguish that from a researched run.
+  it('proposeTopics reports demand as grounded and carries the researched term through', async () => {
+    const packs = [mkPack('pet-health', 'Pet Health', 4), mkPack('pet-toys', 'Pet Toys', 4)];
+    const llm = fakeLlm([
+      signalsPayload([
+        { term: 'dog joint supplements', collectionHandle: 'pet-health', why: 'rising UK interest into autumn', sourceName: 'Trade press', sourceUrl: 'https://example.org/pet-trends' },
+        { term: 'indoor enrichment toys', collectionHandle: 'pet-toys', why: 'darker evenings drive indoor play' }
+      ]),
+      { topics: [
+        { ...topic('Joint care guide', 'pet-health'), demandTerm: 'dog joint supplements' },
+        { ...topic('Indoor play ideas', 'pet-toys'), demandTerm: 'indoor enrichment toys' }
+      ] }
+    ]);
+    const { candidates, demand } = await proposeTopics(llm, STORE, CFG, { packs, window: WINDOW });
+    expect(demand.grounded).toBe(true);
+    expect(demand.signals.map((s) => s.term)).toEqual(['dog joint supplements', 'indoor enrichment toys']);
+    expect(demand.signals[0].sourceUrl).toBe('https://example.org/pet-trends');
+    expect(candidates.find((c) => c.brief.collectionHandle === 'pet-health')!.demandTerm).toBe('dog joint supplements');
+    expect(demand.note).toContain('September');
+  });
+
+  it('proposeTopics still returns topics when demand research finds nothing, but says so', async () => {
+    const packs = [mkPack('pet-health', 'Pet Health', 4)];
+    const llm = fakeLlm([{ topics: [topic('Evergreen hydration guide', 'pet-health')] }]);
+    const { candidates, demand } = await proposeTopics(llm, STORE, CFG, { packs, window: WINDOW });
+    expect(candidates.length).toBe(1);
+    expect(demand.grounded).toBe(false);       // degraded, and it admits it
+    expect(demand.signals).toEqual([]);
+    expect(demand.note).toMatch(/unavailable/i);
   });
 
   it('resolvePipelineBrief reuses a valid picked brief and rejects undefined or a stale collection', () => {
@@ -423,11 +463,35 @@ describe('blog research + draft agents (LLM-backed)', () => {
     expect(seasonForMonth(6)).toBe('summer');
     expect(seasonForMonth(9)).toBe('autumn');
   });
+  // The bug the owner reported: on 11 August the topic chooser was told
+  // "summer" and proposed summer topics, for a guide nobody reads until autumn.
+  // publishWindow LEADS the calendar so the suggestions are for the months the
+  // piece is actually read in.
+  it('publishWindow leads the calendar instead of describing today', () => {
+    expect(publishWindow(7)).toEqual({ season: 'autumn', months: ['September', 'October', 'November'] });
+    expect(publishWindow(11)).toEqual({ season: 'winter', months: ['January', 'February', 'March'] });
+    expect(publishWindow(0)).toEqual({ season: 'spring', months: ['February', 'March', 'April'] });
+    // never anchors to the month it is called in
+    for (let m = 0; m < 12; m++) expect(publishWindow(m).months[0]).not.toBe(MONTHS[m]);
+  });
+  it('validateDemandSignals keeps only stocked collections and real http sources', () => {
+    const out = validateDemandSignals({ signals: [
+      { term: 'joint supplements', collectionHandle: 'pet-health', why: 'w', sourceUrl: 'https://example.org/a', sourceName: 'Src' },
+      { term: 'aquarium filters', collectionHandle: 'pet-fish', why: 'w' },              // dropped: we do not stock it
+      { term: 'joint supplements', collectionHandle: 'pet-health', why: 'dupe' },        // dropped: duplicate term
+      { term: 'nail clippers', collectionHandle: 'pet-health', why: 'w', sourceUrl: 'javascript:alert(1)' } // scheme rejected
+    ] }, ['pet-health']);
+    expect(out!.map((s) => s.term)).toEqual(['joint supplements', 'nail clippers']);
+    expect(out![0].sourceUrl).toBe('https://example.org/a');
+    expect(out![1].sourceUrl).toBeUndefined();   // the console renders this into an href
+    expect(validateDemandSignals({ signals: [] }, ['pet-health'])).toBeNull();
+  });
   it('proposeBrief rejects a hallucinated collection and accepts a real one', async () => {
+    const w = { season: 'autumn', months: ['September', 'October', 'November'] };
     const bad = fakeLlm([{ title: 'X guide', angle: 'a', targetKeyword: 'k', collectionHandle: 'not-real', whyNow: 'w', keyPoints: ['a', 'b', 'c'] }]);
-    expect(await proposeBrief(bad, STORE, CFG, { validHandles: ['pet-health'], season: 'summer' })).toBeNull();
+    expect(await proposeBrief(bad, STORE, CFG, { validHandles: ['pet-health'], window: w })).toBeNull();
     const good = fakeLlm([{ title: 'Cat water guide', angle: 'help cats drink', targetKeyword: 'cat hydration', collectionHandle: 'pet-health', whyNow: 'evergreen', keyPoints: ['why', 'signs', 'fixes'] }]);
-    const brief = await proposeBrief(good, STORE, CFG, { validHandles: ['pet-health'], season: 'summer' });
+    const brief = await proposeBrief(good, STORE, CFG, { validHandles: ['pet-health'], window: w });
     expect(brief?.collectionHandle).toBe('pet-health');
   });
   it('draftArticle sanitises em-dashes and returns a clean draft', async () => {
@@ -675,7 +739,7 @@ describe('brief research web-first with hermetic fallback', () => {
   const goodBrief = { title: 'Summer cat cooling guide', angle: 'a', targetKeyword: 'k', collectionHandle: 'pet-health', whyNow: 'heatwave searches', keyPoints: ['x', 'y', 'z'] };
   it('falls back to the hermetic prompt when the web-grounded attempt yields nothing valid', async () => {
     const llm = fakeLlm([{ title: 'bad', collectionHandle: 'ghost' }, goodBrief]); // web attempt invalid -> hermetic succeeds
-    const brief = await proposeBrief(llm, STORE, CFG, { validHandles: ['pet-health'], season: 'summer' });
+    const brief = await proposeBrief(llm, STORE, CFG, { validHandles: ['pet-health'], window: { season: 'autumn', months: ['September', 'October', 'November'] } });
     expect(brief?.title).toBe('Summer cat cooling guide');
   });
 });

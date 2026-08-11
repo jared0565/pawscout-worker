@@ -37,8 +37,38 @@ export const OPENAI_URL = 'https://api.openai.com/v1/chat/completions';
  * tier is a rare last resort, so a flat rate stays the honest simplification -
  * revisit if tier-3 activations stop being rare.
  */
-export const DEFAULT_MODEL = 'gpt-5.6-luna';
-export const DEFAULT_MODEL_PRICE = { promptPerM: 0.20, completionPerM: 1.20 };
+/*
+ * REVERTED 2026-08-11 to gpt-5.4-mini. The block above verified `gpt-5.6-luna`
+ * against OpenAI's MODEL DOCS and that verification was correct but irrelevant:
+ * a model existing in the docs is not the same as THIS project being entitled to
+ * call it. Measured from a live worker log, our OpenAI-direct key answers every
+ * gpt-5.6-luna request with:
+ *
+ *   Project `proj_C5iKlmS2NkRlOLUECLmwcxae` does not have access to model `gpt-5.6-luna`
+ *
+ * So from ee579d0 (2026-08-02) until this commit the OpenAI-direct floor - the
+ * whole system's last resort when both OpenRouter slots fail - was DEAD for
+ * EVERY task, not just blog. It failed silently because a dead floor only shows
+ * up once OpenRouter has already failed, and the caller just sees "no LLM".
+ * gpt-5.4-mini is the proven-entitled model (it last served this project on
+ * 2026-08-01), so the floor goes back to it and its price pair goes back with it.
+ * Re-point this at a newer model ONLY after checking entitlement on the API key,
+ * not the docs: the check is a real call, not a page.
+ */
+export const DEFAULT_MODEL = 'gpt-5.4-mini';
+export const DEFAULT_MODEL_PRICE = { promptPerM: 0.75, completionPerM: 4.50 };
+/**
+ * The model used for LIVE-SEARCH calls, independent of the tenant's chosen text
+ * model. Live search is a capability, not a preference, and tying it to the
+ * tenant's model selection is what silently killed blog demand research: web
+ * calls succeeded on `anthropic/claude-haiku-4.5` (four runs, 52k-92k prompt
+ * tokens of injected results, up to 2026-07-27), then the owner selected
+ * `openai/gpt-5.6-luna` in the console on 2026-08-02 and every subsequent
+ * web-plugin request failed. Nothing about picking a writing model should
+ * disable research, so search calls now lead with a model measured to work and
+ * keep the tenant's as OpenRouter-native failover.
+ */
+export const SEARCH_MODEL = 'anthropic/claude-haiku-4.5';
 export type LlmRole = 'image' | 'text';
 export type ChainTier =
   | { provider: 'openrouter'; models: string[] }
@@ -93,15 +123,30 @@ export class LlmClient {
 
   get available(): boolean { return !!(this.keys.openrouter || this.keys.openai); }
 
-  /** Walk a resolved tier chain; degrade to {ok:false} when exhausted. Never throws. */
+  /** Walk a resolved tier chain; degrade to {ok:false} when exhausted. Never throws.
+   *
+   *  `web.required` means the ANSWER IS WORTHLESS WITHOUT LIVE SEARCH. Only the
+   *  OpenRouter tier can attach the search plugin (see `send`), so a required-web
+   *  call must never silently fall through to the OpenAI floor: that tier would
+   *  happily answer from model memory and the caller would bank it as researched.
+   *  That is not hypothetical - it is exactly how three `blog-topics-web` rows
+   *  (643-675 prompt tokens, vs 52k-92k for a genuinely searched call) got
+   *  written to llm_usage in July and then misled this very investigation.
+   *  Tiers that cannot search are skipped, so failure is honest and the caller
+   *  chooses its own fallback. */
   async jsonChain<T>(opts: {
     chain: ChainTier[]; system: string; user: string;
-    images?: string[]; maxTokens?: number; web?: { maxResults?: number }; validate: (v: unknown) => T | null;
+    images?: string[]; maxTokens?: number; web?: { maxResults?: number; required?: boolean };
+    validate: (v: unknown) => T | null;
   }): Promise<LlmJson<T>> {
     let lastError = 'no usable LLM tier';
     for (const tier of opts.chain) {
       const key = tier.provider === 'openai' ? this.keys.openai : this.keys.openrouter;
       if (!key) continue; // provider not configured → skip
+      if (opts.web?.required && tier.provider === 'openai') {
+        lastError = 'web search required but no search-capable tier succeeded';
+        continue;
+      }
       for (let attempt = 0; attempt < 2; attempt++) {
         const out = await this.send<T>(tier, key, opts);
         if (out.kind === 'ok') {
@@ -111,6 +156,12 @@ export class LlmClient {
           return { ok: true, value: out.value, usage: out.usage };
         }
         lastError = out.error;
+        // Log EVERY tier failure. Previously only the last tier's error survived
+        // into the caller's warning, so a later tier's error masked the earlier
+        // one - the OpenRouter web failure was invisible behind an OpenAI
+        // entitlement error for nine days.
+        const label = tier.provider === 'openai' ? tier.model : tier.models.join(',');
+        console.warn(`llm.tier.failed provider=${tier.provider} model=${label} kind=${out.kind} attempt=${attempt} web=${!!opts.web} error=${out.error}`);
         if (out.kind === 'stop') return { ok: false, error: out.error };
         if (out.kind === 'retry' && attempt === 0) continue; // one same-tier retry
         break; // advance to next tier
@@ -120,7 +171,8 @@ export class LlmClient {
   }
 
   private async send<T>(tier: ChainTier, key: string, opts: {
-    system: string; user: string; images?: string[]; maxTokens?: number; web?: { maxResults?: number }; validate: (v: unknown) => T | null;
+    system: string; user: string; images?: string[]; maxTokens?: number;
+    web?: { maxResults?: number; required?: boolean }; validate: (v: unknown) => T | null;
   }): Promise<SendOutcome<T>> {
     const userContent = opts.images?.length
       ? [{ type: 'text', text: opts.user }, ...opts.images.map((url) => ({ type: 'image_url', image_url: { url } }))]

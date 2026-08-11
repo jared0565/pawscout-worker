@@ -11,7 +11,9 @@ async function blogSuggest(){
   setMsg('blg-msg','Researching topics grounded in your live, in-stock products. This can take a moment.','muted');
   try{
     var r=await api('/blog/topics',{});
-    if(!r.ok||!r.candidates||!r.candidates.length){ setMsg('blg-msg','No topic suggestions right now: '+esc((r&&r.error)||'none found'),'no'); if(btn) btn.disabled=false; return; }
+    // Clear the demand panel on failure too, or a previous run's evidence sits
+    // next to an error message and reads as if it applies to it.
+    if(!r.ok||!r.candidates||!r.candidates.length){ var db=el('blg-demand'); if(db){ db.innerHTML=''; db.style.display='none'; } setMsg('blg-msg','No topic suggestions right now: '+esc((r&&r.error)||'none found'),'no'); if(btn) btn.disabled=false; return; }
     blgCandidates=r.candidates;
     var sel=el('blg-suggest');
     if(sel){
@@ -20,16 +22,49 @@ async function blogSuggest(){
         var c=blgCandidates[i];
         var o=document.createElement('option');
         o.value=String(i);
-        o.textContent=c.brief.title+'  ['+c.collectionTitle+', '+c.liveProductCount+' in stock]';
+        o.textContent=c.brief.title+'  ['+c.collectionTitle+', '+c.liveProductCount+' in stock'+(c.demandTerm?', demand: '+c.demandTerm:'')+']';
         sel.appendChild(o);
       }
       sel.style.display='';
     }
     blgChosen=blgCandidates[0];
     if(el('blg-topic')) el('blg-topic').value=blgChosen.brief.title;
-    setMsg('blg-msg','Researched '+blgCandidates.length+' topic(s), each backed by in-stock products. Pick one (or edit the field), then Draft a new post.','ok');
+    // Say plainly whether these were ranked on live demand research. Until
+    // 2026-08-11 a run whose research had silently failed looked exactly like a
+    // researched one, so nine days of seasonal filler read as "Researched N
+    // topic(s)". An ungrounded run is usable, but it must announce itself.
+    var d=r.demand||{};
+    var head='Researched '+blgCandidates.length+' topic(s), each backed by in-stock products. ';
+    setMsg('blg-msg',head+esc(d.note||'')+' Pick one (or edit the field), then Draft a new post.', d.grounded?'ok':'muted');
+    blgRenderDemand(d);
   }catch(e){ setMsg('blg-msg','Could not research topics: '+errText(e),'no'); }
   if(btn) btn.disabled=false;
+}
+// Show the demand evidence the suggestions were built on, so the owner can see
+// WHY a topic was proposed instead of taking "researched" on trust. Sources are
+// INTERNAL: they justify the pick in this console and are never handed to the
+// drafter or published (see validateDemandSignals in src/blog/research.ts).
+function blgRenderDemand(d){
+  var box=el('blg-demand'); if(!box) return;
+  var sigs=(d&&d.signals)||[];
+  if(!sigs.length){
+    box.innerHTML='<div class="blg-meta">'+esc((d&&d.note)||'No demand research for this run.')+'</div>';
+    box.style.display=''; return;
+  }
+  var h='<div class="blg-meta"><strong>Demand research</strong> - what UK pet owners are searching for now, strongest first:</div><ol class="blg-demand-list">';
+  for(var i=0;i<sigs.length;i++){
+    var s=sigs[i];
+    h+='<li>'+esc(s.term)+' <span class="muted">['+esc(s.collectionHandle)+']</span>';
+    if(s.why) h+='<div class="blg-meta">'+esc(s.why)+'</div>';
+    // The href is LLM-derived, so esc() alone is not enough here: escaping makes
+    // it safe as markup but would still happily render a javascript: URL. What
+    // actually closes that is validateDemandSignals dropping any sourceUrl that
+    // is not http(s) - keep that check if this line survives.
+    if(s.sourceUrl) h+='<div class="blg-meta"><a href="'+esc(s.sourceUrl)+'" target="_blank" rel="noopener noreferrer">'+esc(s.sourceName||s.sourceUrl)+'</a></div>';
+    h+='</li>';
+  }
+  box.innerHTML=h+'</ol>';
+  box.style.display='';
 }
 function blogPickSuggested(){
   var sel=el('blg-suggest'); if(!sel) return;

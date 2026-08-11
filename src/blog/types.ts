@@ -81,4 +81,27 @@ export interface BlogTopicCandidate {
   collectionTitle: string;    // funnel collection display name
   liveProductCount: number;   // how many live storefront products back it
   sampleProducts: string[];   // a few product titles, for the dropdown subtitle
+  demandTerm?: string;        // the researched search term this topic answers, if any
+}
+
+/** One thing UK pet owners are searching for RIGHT NOW, found by live web
+ *  research and tied to a category we actually stock. This is the demand
+ *  evidence a topic is built ON, so the owner can see WHY a topic was proposed
+ *  rather than trusting that some research happened. */
+export interface DemandSignal {
+  term: string;              // the search phrase / product interest, as people express it
+  collectionHandle: string;  // the real collection it maps to (validated)
+  why: string;               // one line: what makes this current
+  sourceName?: string;       // where the signal came from, when the research names one
+  sourceUrl?: string;
+}
+
+/** Whether a topic set was built on live demand research, and the evidence if so.
+ *  `grounded:false` is a FIRST-CLASS result, not an error: the owner must be able
+ *  to tell a researched suggestion from a catalog-and-calendar guess, because for
+ *  nine days they could not and the topics silently became seasonal filler. */
+export interface DemandEvidence {
+  grounded: boolean;
+  signals: DemandSignal[];
+  note: string;             // owner-facing explanation, always populated
 }

@@ -11,8 +11,12 @@ import { TenantStore } from '../tenant-store';
 import { adminForShop } from '../inbox/invoice-routes';
 import { defaultFetch } from '../safe-fetch';
 import type { Env, TenantConfig } from '../types';
-import type { BlogBrief, BlogTopicCandidate } from './types';
-import { proposeBrief, proposeTopics, validateBrief, seasonForMonth, collectSourcedFacts } from './research';
+import type { BlogBrief, BlogTopicCandidate, DemandEvidence } from './types';
+// Both former seasonForMonth call sites now use publishWindow: the pipeline only
+// ever asked "what season is it" in order to CHOOSE a topic, which is exactly the
+// question that needs to lead the calendar. seasonForMonth stays exported and is
+// still what publishWindow is built from.
+import { proposeBrief, proposeTopics, validateBrief, publishWindow, collectSourcedFacts } from './research';
 import { groundCollection } from './ground';
 import { draftArticle } from './draft';
 import { findClaimFlags } from './quality';
@@ -154,7 +158,7 @@ export async function runBlogPipeline(
   let brief = resolvePipelineBrief(opts.brief, validHandles);
   if (!brief) {
     brief = await proposeBrief(llm, store, cfg, {
-      validHandles, season: seasonForMonth(opts.nowMonth0), topicHint: opts.topicHint
+      validHandles, window: publishWindow(opts.nowMonth0), topicHint: opts.topicHint
     });
   }
   if (!brief) return { ok: false, error: 'Research agent could not produce a brief.' };
@@ -441,6 +445,10 @@ export interface BlogTopicsResult {
   ok: boolean;
   error?: string;
   candidates?: BlogTopicCandidate[];
+  /** Whether these were ranked on live demand research, and the evidence.
+   *  Carried to the console so a degraded run is VISIBLE instead of looking
+   *  identical to a researched one. */
+  demand?: DemandEvidence;
 }
 
 // Enough live products to fill a 4-item shop block AND give the drafter products
@@ -475,9 +483,9 @@ export async function proposeBlogTopics(
   }
   if (!packs.length) return { ok: false, error: 'No collection has enough live products yet to build a topic from.' };
 
-  const candidates = await proposeTopics(llm, store, cfg, { packs, season: seasonForMonth(opts.nowMonth0) });
+  const { candidates, demand } = await proposeTopics(llm, store, cfg, { packs, window: publishWindow(opts.nowMonth0) });
   if (!candidates.length) return { ok: false, error: 'Could not research topics right now. Please try again.' };
-  return { ok: true, candidates };
+  return { ok: true, candidates, demand };
 }
 
 type BlogPostRow = Awaited<ReturnType<TenantStore['listBlogPostDrafts']>>[number];

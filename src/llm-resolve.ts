@@ -1,5 +1,5 @@
 import type { TenantConfig } from './types';
-import { DEFAULT_MODEL, type LlmRole, type ChainTier } from './llm';
+import { DEFAULT_MODEL, SEARCH_MODEL, type LlmRole, type ChainTier } from './llm';
 import { CURATED_MODELS } from './models-catalog';
 
 /**
@@ -20,4 +20,25 @@ export function resolveChain(cfg: TenantConfig, role: LlmRole): ChainTier[] {
     { provider: 'openrouter', models },
     { provider: 'openai', model: DEFAULT_MODEL },
   ];
+}
+
+/**
+ * Chain for calls that REQUIRE live web search. Two deliberate differences from
+ * `resolveChain`:
+ *
+ *  1. `SEARCH_MODEL` leads, with the tenant's own models as OpenRouter-native
+ *     failover behind it. A model chosen for writing style should never decide
+ *     whether research is possible - see SEARCH_MODEL in src/llm.ts for the
+ *     nine-day outage that rule comes from.
+ *  2. NO OpenAI tier. That provider cannot attach the search plugin at all, so
+ *     including it could only ever produce an answer from model memory wearing a
+ *     researched label. `web.required` in LlmClient enforces the same thing from
+ *     the other side; this keeps the chain honest by construction.
+ *
+ * Pure - no env, no I/O.
+ */
+export function resolveSearchChain(cfg: TenantConfig): ChainTier[] {
+  const m = cfg.llm.models ?? {};
+  const models = [...new Set([SEARCH_MODEL, m.text, m.fallback].filter((s): s is string => !!s))];
+  return [{ provider: 'openrouter', models }];
 }
