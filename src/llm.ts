@@ -69,6 +69,33 @@ export const DEFAULT_MODEL_PRICE = { promptPerM: 0.75, completionPerM: 4.50 };
  * keep the tenant's as OpenRouter-native failover.
  */
 export const SEARCH_MODEL = 'anthropic/claude-haiku-4.5';
+
+/**
+ * Minimum completion budget for ANY tier.
+ *
+ * A reasoning model spends tokens thinking BEFORE it emits content, and that
+ * spend comes out of the same budget. Give one a 300-token cap and it can burn
+ * the lot reasoning, return empty content, and be indistinguishable from a
+ * broken model: `extractJson('')` yields undefined and the client reports
+ * `LLM returned non-JSON`.
+ *
+ * The OpenAI branch has had this floor for a while. The OpenRouter branch did
+ * NOT, and once the tenant selected the reasoning model `openai/gpt-5.6-luna`
+ * on 2026-08-02 that asymmetry started costing real money. Measured over
+ * 2026-08-11..13 from Workers logs: 44 tier failures, ALL on that model, 40 of
+ * them `LLM returned non-JSON`, with web=false - so this was never about the
+ * search plugin. 22 first attempts failed, 18 failed again on retry and fell
+ * through to the OpenAI floor, which succeeded precisely BECAUSE it applies
+ * this floor. Over the same window the floor was 14% of calls but 90% of spend
+ * ($0.227 of $0.252), averaging 57x an OpenRouter call.
+ *
+ * max_tokens is a CAP, not a charge: you pay for what is generated. Raising it
+ * cannot cost more for a model that already returns short JSON, and for a
+ * reasoning model it turns a double failure plus an expensive fallback into one
+ * cheap success.
+ */
+export const REASONING_HEADROOM = 3000;
+
 export type LlmRole = 'image' | 'text';
 export type ChainTier =
   | { provider: 'openrouter'; models: string[] }
@@ -182,7 +209,7 @@ export class LlmClient {
     const url = isOpenai ? OPENAI_URL : OPENROUTER_URL;
     const body: Record<string, unknown> = isOpenai
       ? { model: tier.model, max_completion_tokens: Math.max(opts.maxTokens ?? 1024, 3000), reasoning_effort: 'medium', response_format: { type: 'json_object' }, messages }
-      : { models: tier.models, max_tokens: opts.maxTokens ?? 1024, response_format: { type: 'json_object' }, usage: { include: true }, messages };
+      : { models: tier.models, max_tokens: Math.max(opts.maxTokens ?? 1024, REASONING_HEADROOM), response_format: { type: 'json_object' }, usage: { include: true }, messages };
     // Web search grounding (OpenRouter only, opt-in per call): injects live search
     // results as context so the model reasons over current demand. Strictly
     // additive - the non-web request shape is unchanged.

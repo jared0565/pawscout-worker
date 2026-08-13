@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { LlmClient } from '../src/llm';
+import { LlmClient, REASONING_HEADROOM } from '../src/llm';
 
 const ok = (model: string, content: string, cost = 0.001) => ({
   ok: true, status: 200,
@@ -111,6 +111,34 @@ describe('LlmClient.jsonChain', () => {
     const llm = new LlmClient({ openai: 'o' }, fetchImpl as any);
     await llm.jsonChain({ chain: [{ provider: 'openai', model: 'gpt-5.4-mini' }], system: 's', user: 'u', web: { maxResults: 5 }, validate: (v: any) => v });
     expect(JSON.parse((fetchImpl.mock.calls[0][1] as any).body).plugins).toBeUndefined();
+  });
+
+  // Measured 2026-08-11..13: 44 tier failures, all on the reasoning model
+  // openai/gpt-5.6-luna, 40 of them "LLM returned non-JSON" with web=false. The
+  // OpenRouter branch capped completions at the caller's budget (as low as 160)
+  // while the OpenAI branch floored it at 3000, so a reasoning model burned the
+  // budget thinking, returned empty content, failed twice and fell through to the
+  // floor - which worked BECAUSE it had the floor, at 57x the price. Both
+  // branches must floor, or the cheap tier silently stops working for any
+  // reasoning model.
+  it('floors the completion budget on BOTH tiers, not just OpenAI', async () => {
+    const orFetch = vi.fn().mockResolvedValue(ok('openai/gpt-5.6-luna', '{"v":1}'));
+    await new LlmClient({ openrouter: 'k' }, orFetch as any)
+      .jsonChain({ chain: [{ provider: 'openrouter', models: ['openai/gpt-5.6-luna'] }], system: 's', user: 'u', maxTokens: 300, validate: (v: any) => v });
+    const orBody = JSON.parse((orFetch.mock.calls[0][1] as any).body);
+    expect(orBody.max_tokens).toBe(REASONING_HEADROOM);   // NOT the caller's 300
+
+    const oaFetch = vi.fn().mockResolvedValue(ok('gpt-5.4-mini', '{"v":1}'));
+    await new LlmClient({ openai: 'o' }, oaFetch as any)
+      .jsonChain({ chain: [{ provider: 'openai', model: 'gpt-5.4-mini' }], system: 's', user: 'u', maxTokens: 300, validate: (v: any) => v });
+    expect(JSON.parse((oaFetch.mock.calls[0][1] as any).body).max_completion_tokens).toBe(REASONING_HEADROOM);
+  });
+
+  it('a caller asking for MORE than the floor still gets what it asked for', async () => {
+    const f = vi.fn().mockResolvedValue(ok('openai/gpt-5.6-luna', '{"v":1}'));
+    await new LlmClient({ openrouter: 'k' }, f as any)
+      .jsonChain({ chain: [{ provider: 'openrouter', models: ['m'] }], system: 's', user: 'u', maxTokens: 4800, validate: (v: any) => v });
+    expect(JSON.parse((f.mock.calls[0][1] as any).body).max_tokens).toBe(4800);
   });
 
   // The guard behind the 2026-08-11 blog-topics fix. Only OpenRouter can attach
