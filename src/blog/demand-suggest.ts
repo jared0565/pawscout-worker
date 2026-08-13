@@ -174,22 +174,34 @@ export function buildSeeds(packs: FactPack[], maxSeeds = 12): string[] {
 // --- Mapping + ranking ---
 
 const MAP_MIN_SIM = 0.34;
+/** A phrase must also resemble a REAL PRODUCT, not merely the category name.
+ *  Observed on the first live run (2026-08-13): seeding with the collection
+ *  title `pet health` made autocomplete return `pet health insurance`, which
+ *  matched the collection title strongly and was published as a demand signal -
+ *  for a category-level query we cannot sell anything against. Matching the
+ *  CATEGORY NAME is not evidence we can answer the query; matching a product is. */
+const MIN_PRODUCT_SIM = 0.2;
 
 /** Which stocked collection a phrase belongs to, by token overlap against the
  *  collection title AND its live product titles. Below threshold returns null
  *  and the phrase is DROPPED - we would rather lose a real signal than propose
  *  a topic we cannot back with products. No LLM. */
 export function mapToCollection(phrase: string, packs: FactPack[]): string | null {
-  let best: { handle: string; sim: number } | null = null;
+  let best: { handle: string; sim: number; prodSim: number } | null = null;
   for (const p of packs) {
-    let sim = titleSimilarity(phrase, p.collectionTitle);
+    let prodSim = 0;
     for (const prod of p.products.filter((x) => x.available)) {
       const s = titleSimilarity(phrase, prod.title);
-      if (s > sim) sim = s;
+      if (s > prodSim) prodSim = s;
     }
-    if (!best || sim > best.sim) best = { handle: p.collectionHandle, sim };
+    const sim = Math.max(titleSimilarity(phrase, p.collectionTitle), prodSim);
+    if (!best || sim > best.sim) best = { handle: p.collectionHandle, sim, prodSim };
   }
-  return best && best.sim >= MAP_MIN_SIM ? best.handle : null;
+  if (!best || best.sim < MAP_MIN_SIM) return null;
+  // Matched the category name but nothing we stock -> we cannot back a topic
+  // about it, so drop rather than funnel it somewhere plausible-looking.
+  if (best.prodSim < MIN_PRODUCT_SIM) return null;
+  return best.handle;
 }
 
 /** One raw observation of a phrase: which seed produced it and at what rank. */
@@ -208,6 +220,11 @@ export function rankSignals(raw: RawSuggestion[], packs: FactPack[], max = 8): D
   for (const r of raw) {
     const key = r.phrase.toLowerCase().trim();
     if (!key || isNoisePhrase(key)) continue;
+    // A suggestion identical to the seed that produced it is not DISCOVERY, it
+    // is our own vocabulary handed back. The first live run surfaced `pet toys`
+    // and `pet accessories` as top signals purely because they are the seeds.
+    // The whole value here is the phrases we did not already know.
+    if (key === r.seed.toLowerCase().trim()) continue;
     const cur = byPhrase.get(key);
     if (cur) { cur.bestRank = Math.min(cur.bestRank, r.rank); cur.seeds.add(r.seed); }
     else byPhrase.set(key, { bestRank: r.rank, seeds: new Set([r.seed]) });

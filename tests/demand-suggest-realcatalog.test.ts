@@ -134,6 +134,33 @@ describe('demand mining against the REAL catalog', () => {
     expect(wrong, `mis-mapped: ${JSON.stringify(mapped, null, 1)}`).toEqual([]);
   });
 
+  // Both of these are REAL defects from the first live run of the deployed fast
+  // path (2026-08-13), fixed the same day. They are pinned with the actual
+  // phrases that came back, because both looked perfectly reasonable in the
+  // unit fixtures and only failed against the live catalog + live autocomplete.
+  it('drops a category-level query we cannot sell against', () => {
+    // Seeding with the collection title "Pet Health" made autocomplete return
+    // "pet health insurance", which matched the COLLECTION NAME strongly and was
+    // published as a demand signal. We do not sell insurance; no product in the
+    // catalog resembles it, so it must not map anywhere.
+    expect(mapToCollection('pet health insurance', PACKS)).toBeNull();
+    expect(mapToCollection('pet adoption near you', PACKS)).toBeNull();
+    // ...while genuine product-level demand in the same collection still maps.
+    expect(mapToCollection('cat water fountain filters', PACKS)).toBe('pet-health');
+  });
+
+  it('drops suggestions that merely echo the seed that produced them', () => {
+    const raw: RawSuggestion[] = [
+      { phrase: 'pet toys', seed: 'pet toys', rank: 0 },                 // echo
+      { phrase: 'pet accessories', seed: 'pet accessories', rank: 0 },   // echo
+      { phrase: 'enclosed cat bed', seed: 'cat bed', rank: 2 }           // real discovery
+    ];
+    const terms = rankSignals(raw, PACKS, 8).map((s) => s.term);
+    expect(terms).not.toContain('pet toys');
+    expect(terms).not.toContain('pet accessories');
+    expect(terms).toContain('enclosed cat bed');
+  });
+
   it('does not force unrelated demand into a collection', () => {
     for (const p of ['aquarium filter media', 'budgie cage cover', 'horse riding boots']) {
       expect(mapToCollection(p, PACKS), p).toBeNull();
