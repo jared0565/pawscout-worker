@@ -125,7 +125,25 @@ describe('partnership first-touch, signup_page mode (owner policy 2026-07-18: se
     expect((await s.getApplicantByThread(tid))!.stage).toBe('passed_to_form'); // next reply gets partner handling, not another invite
   });
 
-  it('a pure service pitch still gets the vendor decline, never the application invite', async () => {
+  // REVERSED 2026-08-14 by owner rule ("when affiliate is introduced, make sure
+  // to also give the direct link to the form"). This test used to assert the
+  // vendor decline must NOT contain AFFILIATE_APPLY_URL, on the premise that
+  // "vendors are not invited to the affiliate form".
+  //
+  // The premise did not hold against the body it was guarding. SERVICE_DECLINE_BODY
+  // has always carried the sentence "If you run a channel or audience and would
+  // like to promote Active Paw as an affiliate, that programme is open to
+  // anyone" - so the invitation was already there, conditionally, and dropping
+  // the URL never removed it. It only removed the way to act on it, leaving
+  // "just let us know and we will send you the details": a promise a human then
+  // has to keep by hand, for the one sender class we least want to correspond
+  // with. The link is the LOWER-touch option, and the form's own Turnstile and
+  // screener are what actually keep a non-creator out.
+  //
+  // What still must hold is that this is a DECLINE, so the assertions below now
+  // pin the refusal itself plus the conditional framing of the offer, which is
+  // the thing that keeps it from reading as an invitation to a vendor.
+  it('a pure service pitch still gets the vendor decline, with the programme offered only conditionally', async () => {
     const s = new TenantStore(env.DB, 'sv.myshopify.com');
     await s.upsertContact({ email: 'seo@x.com', name: 'Sam', phone: null });
     const tid = await s.createThread({ contactEmail: 'seo@x.com', subject: 'Site speed', subjectNorm: 'site speed', receivedAt: '2026-06-22T10:00:00Z', initialStatus: 'needs_reply' });
@@ -135,7 +153,15 @@ describe('partnership first-touch, signup_page mode (owner policy 2026-07-18: se
     const r = await maybePartnershipDraft({ ...env } as any, s, SIGNUP_CFG, got.thread, got, noFetch);
     expect(r).not.toBeNull();
     const draft = await s.getPendingDraft(tid);
-    expect(draft!.body_text).not.toContain(AFFILIATE_APPLY_URL); // vendors are not invited to the affiliate form
+    // Still a refusal of the SERVICE they actually pitched...
+    expect(draft!.body_text).toMatch(/in-house/);
+    expect(draft!.body_text).toMatch(/settled policy rather than a budget or timing question/);
+    expect(draft!.body_text).not.toMatch(/great (?:potential )?fit|look forward to seeing your application/i);
+    // ...with the programme raised only as a conditional alternative, and, when
+    // raised at all, actionable rather than a promise to send details later.
+    expect(draft!.body_text).toMatch(/If you run a channel or audience/);
+    expect(draft!.body_text).toContain(AFFILIATE_APPLY_URL);
+    expect(draft!.body_text).not.toMatch(/we will send you the details/i);
     expect((await s.getApplicantByThread(tid))!.stage).toBe('declined');
   });
 });

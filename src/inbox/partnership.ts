@@ -43,6 +43,20 @@ export const COMMISSION_TIMING_SENTENCE =
 export const COMMISSION_TIERS_SENTENCE =
   `Everyone starts at ${STANDARD_COMMISSION_PCT}%; after your first ${TIER_REVIEW_ORDERS} tracked orders in a 30-day window we review your rate, and consistent performers earn up to ${TIER_MAX_PCT}%.`;
 
+/** The live self-serve application form (footer "Affiliates" link target).
+ * Absolute URL because it rides in email bodies.
+ *
+ * Declared HERE, above every body that interpolates it, rather than beside the
+ * partnership stance further down: the bodies are module-scope `const`
+ * template literals, so a body defined earlier than this line would hit the
+ * temporal dead zone at module init, not at call time.
+ *
+ * OWNER RULE 2026-08-14: whenever a customer-facing message INTRODUCES the
+ * affiliate programme, it must carry this URL. "Let us know and we will send
+ * you the details" is not an introduction, it is a dead end - the form is live,
+ * self-serve and carries the screener, so there is nothing to withhold. */
+export const AFFILIATE_APPLY_URL = 'https://activepaw.co.uk/apps/pawscout/affiliate/apply';
+
 /** Mode comes from cfg.inbox.affiliateMode (owner-set in Settings, 2026-07-04):
  *  'funnel_voucher' (default) screens candidates for a discount-code trial and
  *  flags strong ones for the owner to issue a code in the Partners view;
@@ -298,7 +312,7 @@ const SERVICE_DECLINE_BODY =
 
 We keep our store's development, product listings and marketing in-house with our own team, so it is not a service we take up from outside. For the same reason we do not grant store, admin, or collaborator access to anyone outside the team. It is a settled policy rather than a budget or timing question, so we would rather be straight with you than leave it open.
 
-If you run a channel or audience and would like to promote Active Paw as an affiliate, that programme is open to anyone - just let us know and we will send you the details.
+If you run a channel or audience and would like to promote Active Paw as an affiliate, that programme is open to anyone and you can apply directly here: ${AFFILIATE_APPLY_URL}
 
 Wishing you and your work every success.
 
@@ -336,10 +350,6 @@ Active Paw Partnerships`;
 // gates the Campaigns partner audience.
 const MARKETING_OPTIN_ASK =
 `One optional thing: would you like occasional partner updates from us - new products, promotions we are running, things worth featuring? Just say yes in your reply and we'll add you; leaving it unanswered simply means no.`;
-
-/** The live self-serve application form (footer "Affiliates" link target).
- * Absolute URL because it rides in email bodies. */
-export const AFFILIATE_APPLY_URL = 'https://activepaw.co.uk/apps/pawscout/affiliate/apply';
 
 // --- The partnership stance every drafting agent shares (owner ruling 2026-08-07)
 //
@@ -415,7 +425,7 @@ const SIGNUP_KEEP_TO_EMAIL_PARAGRAPH =
 const FORM_INVITE_BODY =
 `Thank you - this looks like a great potential fit, and we'd love to take it further.
 
-The next step is our short partner application, where we'll gather a few details to set things up properly. We'll send that over shortly.
+The next step is our short partner application, where we'll gather a few details to set things up properly: ${AFFILIATE_APPLY_URL}
 
 ${MARKETING_OPTIN_ASK}
 

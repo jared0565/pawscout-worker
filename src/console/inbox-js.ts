@@ -200,6 +200,7 @@ function renderInboxThread(thread,messages,labels,draft,invoice,applicant,contac
   // console.test.ts pins the two lists together. Applying never sends.
   var tplSel='<select id="inbox-tpl-sel" class="ibx-tpl-sel" aria-label="Replace draft with a template">'
     +'<option value="">Use a template…</option>'
+    +'<option value="signup_invite">Application page invite (apply link)</option>'
     +'<option value="qualifying">Partnership screening questions</option>'
     +'<option value="voucher_invite">Trial invite (code on its way)</option>'
     +'<option value="partnership_decline">Partnership decline</option>'

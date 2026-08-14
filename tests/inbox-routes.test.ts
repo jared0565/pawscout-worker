@@ -4,7 +4,7 @@ import { env, applyD1Migrations } from 'cloudflare:test';
 import { SignJWT } from 'jose';
 import { TenantStore } from '../src/tenant-store';
 import { listInboxThreads, getInboxThread, setInboxStatus, setInboxLabels, regenerateDraft, applyDraftTemplate, DRAFT_TEMPLATES } from '../src/inbox/routes';
-import { QUALIFYING_MARKER } from '../src/inbox/partnership';
+import { QUALIFYING_MARKER, AFFILIATE_APPLY_URL } from '../src/inbox/partnership';
 import { DEFAULT_INBOX } from '../src/inbox/types';
 import { ACTIVE_PAW_COLLECTION_MAP, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, type Env } from '../src/types';
 import { app } from '../src/index';
@@ -301,6 +301,49 @@ describe('applyDraftTemplate', () => {
     expect(body).toContain('keep all of our conversations here on email');
     expect(body).not.toMatch(/not taking on|in-house|internal operations/i); // neutral, not a decline
     expect(await s.getApplicantByThread(tid)).toBeNull(); // stage untouched
+  });
+
+  // Live thread ca4e307d (2026-08-12). The funnel drafted the signup invite for
+  // this exact pitch, an unrelated nudge superseded it with the holding ack, and
+  // the dropdown then had no way back: 'signup_page' is the LIVE affiliateMode
+  // and had no template key, so the thread was hand-templated 'service_decline'
+  // - a body about development, listings and collaborator access, none of which
+  // this sender ever offered. One template closes that gap.
+  it('the signup invite answers the pitch, the rate and the WhatsApp ask, and stages passed_to_form', async () => {
+    const { s, tid } = await seedWithConfig();
+    await s.insertInboundMessageIfNew({
+      threadId: tid, messageId: '<olad1@x>', inReplyTo: null, references: [],
+      from: 'jane@x.com', to: 'contact@activepaw.co.uk', subject: 'Re: Hi',
+      bodyText: 'I am proposing a performance based collaboration where I will drive 40+ orders '
+        + 'with 5k+ targeted visitors within one week. In return, I would receive a 3% commission '
+        + 'after the results started coming in, with no upfront payment required. '
+        + 'Drop your WhatsApp number and I will guide you through the process.',
+      bodyHtml: null, headersJson: '{}', receivedAt: '2026-06-19T10:00:00Z'
+    });
+    // The LATEST inbound is a bare nudge carrying no pitch and no channel ask.
+    // This is what makes the test worth having: the funnel reads offPlatform
+    // from the latest message only, so a latest-only template would drop the
+    // WhatsApp request that was never answered by any sent reply.
+    await s.insertInboundMessageIfNew({
+      threadId: tid, messageId: '<olad2@x>', inReplyTo: null, references: [],
+      from: 'jane@x.com', to: 'contact@activepaw.co.uk', subject: 'Re: Hi',
+      bodyText: 'Hello, wondering if you saw my last message? Open for a brief chat?',
+      bodyHtml: null, headersJson: '{}', receivedAt: '2026-06-19T11:00:00Z'
+    });
+    const did = await s.insertDraft({ threadId: tid, bodyText: 'service decline', bodyHtml: '<p>x</p>', confidence: null, quotesPriceOrder: false, holdReasons: [], model: 'template', status: 'pending' });
+    const r = await applyDraftTemplate(env.DB, SHOP, tid, 'signup_invite');
+    expect(r.ok).toBe(true);
+    const body = (r as { draft?: { body_text?: string } }).draft?.body_text ?? '';
+    expect(body).toContain('Hi Jane,');
+    expect(body).toContain(AFFILIATE_APPLY_URL);            // the form, not a promise to send it
+    expect(body).toMatch(/only partnership we run/i);        // one programme IS open to them
+    expect(body).toMatch(/2% of the goods value/);           // the rate, in figures
+    expect(body).toMatch(/do not negotiate commission/i);    // answers their 3% counter-offer
+    expect(body).toMatch(/WhatsApp or Telegram/);            // answers the channel ask from the EARLIER message
+    // ...and none of the claims the service decline was inventing for them.
+    expect(body).not.toMatch(/in-house|collaborator access/i);
+    expect((await s.getDraft(did))?.status).toBe('superseded');
+    expect((await s.getApplicantByThread(tid))?.stage).toBe('passed_to_form');
   });
 
   it('every registry template renders a pending draft (no key without a body)', async () => {

@@ -6,7 +6,8 @@ import { sendReply } from './send';
 import { composeDraftForThread } from './sweep';
 import {
   maybePartnershipDraft, buildQualifyingEmail, buildPartnershipDecline, buildServiceDecline,
-  buildOperationsDecline, buildVoucherInvite, buildHoldingAck, buildKeepToEmail, detectVolumePitch, type FunnelVariant
+  buildOperationsDecline, buildVoucherInvite, buildHoldingAck, buildKeepToEmail, buildSignupInvite,
+  detectVolumePitch, detectOffPlatformRequest, type FunnelVariant
 } from './partnership';
 import { renderReplyHtml } from './draft';
 import { stripQuotedReply } from './quote';
@@ -184,6 +185,16 @@ export async function regenerateDraft(db: D1Database, env: Env, shop: string, dr
  * stay exactly what the funnel itself would have produced.
  */
 export const DRAFT_TEMPLATES: { key: string; label: string }[] = [
+  // signup_invite is FIRST because it is what the LIVE affiliateMode
+  // ('signup_page') actually produces. Its absence was a real gap, not a
+  // cosmetic one: on thread ca4e307d (2026-08-12, a 3%-for-40-orders pitch that
+  // also asked for a WhatsApp number) the funnel drafted exactly this invite,
+  // an unrelated follow-up superseded it with the holding ack, and the only
+  // partnership-shaped options left in this list were three declines. The
+  // dropdown could not re-produce the correct reply, so the thread was
+  // hand-templated with 'service_decline' - a body about development, listings
+  // and collaborator access, none of which the sender had ever offered.
+  { key: 'signup_invite', label: 'Application page invite (apply link)' },
   { key: 'qualifying', label: 'Partnership screening questions' },
   { key: 'voucher_invite', label: 'Trial invite (code on its way)' },
   { key: 'partnership_decline', label: 'Partnership decline' },
@@ -213,14 +224,26 @@ export async function applyDraftTemplate(db: D1Database, shop: string, threadId:
   const contact = await store.getContactByEmail(got.thread.contact_email);
   const name = contact?.name ?? null;
 
+  // Whole-thread inbound text, quote-stripped. Both optional-paragraph triggers
+  // below read it. This DELIBERATELY differs from the funnel, which reads
+  // `offPlatform` from the LATEST message only: the funnel is reacting to the
+  // message that just arrived, whereas a template is applied by hand to a
+  // thread whose earlier asks may never have been answered by a sent reply.
+  // On ca4e307d the WhatsApp request sat in the second-to-last inbound and the
+  // last one was a bare nudge, so latest-only would have shipped a reply that
+  // silently dropped it. Matches how `volumePitch` has always been computed here.
+  const inboundText = got.messages.filter((m) => m.direction === 'inbound')
+    .map((m) => stripQuotedReply(m.body_text ?? '')).join('\n\n');
+  const volumePitch = detectVolumePitch(inboundText);
+  const offPlatform = detectOffPlatformRequest(inboundText);
+
   let body: string;
-  if (key === 'qualifying') {
+  if (key === 'signup_invite') body = buildSignupInvite(name, { volumePitch, offPlatform });
+  else if (key === 'qualifying') {
     const variant: FunnelVariant = cfg.inbox.affiliateMode === 'funnel_link' ? 'link' : 'voucher';
     // Same tier-ladder trigger as the funnel: if ANY inbound negotiated
     // commission against volume, the earned-tiers paragraph rides along.
-    const inboundText = got.messages.filter((m) => m.direction === 'inbound')
-      .map((m) => stripQuotedReply(m.body_text ?? '')).join('\n\n');
-    body = buildQualifyingEmail(name, variant, { volumePitch: detectVolumePitch(inboundText) });
+    body = buildQualifyingEmail(name, variant, { volumePitch });
   } else if (key === 'voucher_invite') body = buildVoucherInvite(name);
   else if (key === 'partnership_decline') body = buildPartnershipDecline(name);
   else if (key === 'service_decline') body = buildServiceDecline(name);
@@ -235,8 +258,12 @@ export async function applyDraftTemplate(db: D1Database, shop: string, threadId:
   });
 
   const applicant = await store.getApplicantByThread(threadId);
+  // signup_invite stages 'passed_to_form', exactly as the funnel's own
+  // signup_page first-touch branch does - the FORM now does the screening. Left
+  // at a stale 'declined' the next inbound would route off a decision we just
+  // reversed.
   const stage = key === 'qualifying' ? 'screen_sent'
-    : key === 'voucher_invite' ? 'passed_to_form'
+    : (key === 'signup_invite' || key === 'voucher_invite') ? 'passed_to_form'
     : (key === 'partnership_decline' || key === 'service_decline' || key === 'operations_decline') ? 'declined'
     : null;
   if (stage) {
