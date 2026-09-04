@@ -108,3 +108,27 @@ export function chooseTouch(
   if (!repeatsPriorOutbound(bodies.second, prior)) return { body: bodies.second, touch: 'second' };
   return { body: bodies.pointer, touch: 'pointer' };
 }
+
+// --- Deterministic customer signal for the block rule (aramid 114e2e7b) ------
+// The sweep's classification may not exist yet when a 3rd copy lands, so the
+// text itself must keep a customer's order or delivery query out of the block.
+// Narrow on purpose: first-person order talk, an order number, a stuck parcel,
+// a refund or return. A vendor promising to "drive 40+ orders" does not match.
+const CUSTOMER_SIGNALS: RegExp[] = [
+  /\bmy (?:order|orders|parcel|package|delivery|refund|return|item|items|tracking)\b/i,
+  /\b(?:placed|made) (?:an |my |the )?order\b/i,
+  /\bI (?:have )?ordered\b/i,
+  /\border\s*(?:no\.?|number|#|id)?\s*:?\s*#?[A-Z]{0,2}\d{3,}\b/i,
+  /\b(?:has|have|hasn't|haven't|not yet|still not) (?:arrived|been (?:delivered|dispatched|shipped)|moved)\b/i,
+  /\brefund(?:ed|s)?\b/i,
+  /\breturn(?:ing)? (?:the|my|this|an?) \w+/i,
+  /\btracking (?:number|has|hasn't|is|info|details)\b/i,
+];
+
+/** True when the sender reads like a customer with an order, parcel, refund or
+ * return. Used to keep such senders out of the repeat block without waiting
+ * for the LLM sweep to classify their thread. */
+export function looksLikeCustomerMessage(text: string | null | undefined): boolean {
+  const own = stripQuotedReply(text ?? '');
+  return CUSTOMER_SIGNALS.some((re) => re.test(own));
+}

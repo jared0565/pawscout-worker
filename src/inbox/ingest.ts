@@ -2,7 +2,7 @@ import type { TenantStore } from '../tenant-store';
 import type { ParsedEmail, ThreadStatus } from './types';
 import { parseInbound, extractContactForm } from './mime';
 import { parseAuthResults, isAutomated, isHardSpam, normalizeSubject } from './gates';
-import { repeatVerdict, PROTECTED_CATEGORIES } from './repeat';
+import { repeatVerdict, looksLikeCustomerMessage, PROTECTED_CATEGORIES } from './repeat';
 
 /** Store one parsed inbound email: resolve the real sender, match-or-create the
  * thread, insert the message (deduped), and set the thread's initial status from
@@ -72,8 +72,13 @@ export async function ingestParsed(store: TenantStore, p: ParsedEmail): Promise<
     // already replied to it (or a 3rd copy regardless), makes the sender spam
     // and blocks their later messages. Never for customers: a linked Shopify
     // customer or a thread in a customer-service lane is protected.
+    // Three deterministic guards (aramid review of the first cut, 2026-09-04):
+    // a block is punitive, so only an AUTHENTICATED sender (DMARC pass) can earn
+    // one - a spoofer must never be able to silence a third party; and a message
+    // that reads like a customer's order or delivery query is never blocked, so
+    // the protection does not wait on the LLM sweep's classification.
     let repeat = false;
-    if (!form && !automated && !spam && earlier.length > 0) {
+    if (!form && !automated && !spam && earlier.length > 0 && auth.dmarc === 'pass' && !looksLikeCustomerMessage(bodyText)) {
       repeat = repeatVerdict(bodyText, earlier.map((e) => ({ text: e.body_text, repliedAfter: e.replied_after })));
       if (repeat && await store.senderIsProtected(email, PROTECTED_CATEGORIES)) repeat = false;
     }

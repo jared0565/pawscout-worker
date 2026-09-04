@@ -1788,8 +1788,11 @@ export class TenantStore {
       .run();
   }
 
+  /** Becoming a customer also lifts any sender-level block (aramid b4b33fbf,
+   * 2026-09-04): the block was set on a vendor's behaviour, and a person who has
+   * since placed an order is a customer whose messages must reach us. */
   async linkContactToShopifyCustomer(email: string, customerId: string): Promise<void> {
-    await this.db.prepare(`UPDATE inbox_contacts SET shopify_customer_id = ?3 WHERE shop = ?1 AND email = ?2`).bind(this.shop, email, customerId).run();
+    await this.db.prepare(`UPDATE inbox_contacts SET shopify_customer_id = ?3, blocked_at = NULL, blocked_reason = NULL WHERE shop = ?1 AND email = ?2`).bind(this.shop, email, customerId).run();
   }
 
   getContactByEmail(email: string): Promise<ContactRow | null> {

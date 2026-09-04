@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { normalizeForRepeat, isRepeatOf, repeatVerdict, repeatsPriorOutbound, outboundBodies, chooseTouch } from '../src/inbox/repeat';
+import { normalizeForRepeat, isRepeatOf, repeatVerdict, repeatsPriorOutbound, outboundBodies, chooseTouch, looksLikeCustomerMessage } from '../src/inbox/repeat';
 
 // Owner rule 2026-09-04: "if they keep sending the same message, consider them
 // as spam and block their succeeding messages". These tests pin what "the same
@@ -116,5 +116,25 @@ describe('no-repeat guard against prior outbound', () => {
     expect(chooseTouch([FULL, SHORT], bodies)).toEqual({ body: POINTER, touch: 'pointer' });
     // The pointer is the terminal touch (owner's choice): it is drafted again rather than nothing.
     expect(chooseTouch([FULL, SHORT, POINTER], bodies).touch).toBe('pointer');
+  });
+});
+
+// Deterministic customer signal for the block rule: the sweep's classification
+// may not exist yet when a 3rd copy lands, so the text itself must be enough to
+// keep a customer's order or delivery query out of the block (aramid finding
+// 114e2e7b, 2026-09-04).
+describe('looksLikeCustomerMessage', () => {
+  it('recognises order, tracking, parcel, refund, return and delivery queries', () => {
+    for (const t of [
+      'Hello, I placed order 1042 nine days ago and the tracking has not moved since Friday.',
+      'My parcel has still not arrived, can you check?',
+      'I would like a refund for the bed, it does not fit.',
+      'How do I return the harness I received yesterday?',
+      'Has my delivery been dispatched yet? Order #A1234.',
+    ]) expect(looksLikeCustomerMessage(t), t).toBe(true);
+  });
+  it('does not fire on a pitch', () => {
+    expect(looksLikeCustomerMessage(PITCH)).toBe(false);
+    expect(looksLikeCustomerMessage('Can I speak with the owner of this brand? I have a proposal that could drive 40+ sales.')).toBe(false);
   });
 });
