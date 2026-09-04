@@ -4,7 +4,7 @@ import { env, applyD1Migrations } from 'cloudflare:test';
 import { SignJWT } from 'jose';
 import { TenantStore } from '../src/tenant-store';
 import { listInboxThreads, getInboxThread, setInboxStatus, setInboxLabels, regenerateDraft, applyDraftTemplate, unblockSender, DRAFT_TEMPLATES } from '../src/inbox/routes';
-import { QUALIFYING_MARKER, AFFILIATE_APPLY_URL, buildSignupInvite } from '../src/inbox/partnership';
+import { AFFILIATE_APPLY_URL, buildSignupInvite, buildSecondTouch } from '../src/inbox/partnership';
 import { countWords } from '../src/inbox/draft-quality';
 import { DEFAULT_INBOX } from '../src/inbox/types';
 import { ACTIVE_PAW_COLLECTION_MAP, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, type Env } from '../src/types';
@@ -228,41 +228,29 @@ describe('applyDraftTemplate', () => {
   it('rejects an unknown template key and an unknown thread', async () => {
     const { tid } = await seedWithConfig();
     expect((await applyDraftTemplate(env.DB, SHOP, tid, 'bogus')).ok).toBe(false);
-    expect((await applyDraftTemplate(env.DB, SHOP, 'no-such-thread', 'qualifying')).ok).toBe(false);
-    expect((await applyDraftTemplate(env.DB, SHOP, null, 'qualifying')).ok).toBe(false);
+    expect((await applyDraftTemplate(env.DB, SHOP, 'no-such-thread', 'signup_invite')).ok).toBe(false);
+    expect((await applyDraftTemplate(env.DB, SHOP, null, 'signup_invite')).ok).toBe(false);
   });
 
-  it('replaces the pending draft with the qualifying email and stamps the applicant at screen_sent', async () => {
-    const { s, tid } = await seedWithConfig();
-    // The Paul Joseph shape: a commission consultant whose FOLLOW-UP carries no
-    // pitch vocabulary, so the funnel's on-ramp cannot claim it by itself.
-    await s.insertInboundMessageIfNew({
-      threadId: tid, messageId: '<pj@x>', inReplyTo: null, references: [],
-      from: 'jane@x.com', to: 'support@activepaw.co.uk', subject: 'Re: Hi',
-      bodyText: 'Okay, can I know what you are actually looking into at the moment?',
-      bodyHtml: null, headersJson: '{}', receivedAt: '2026-06-19T10:00:00Z'
-    });
-    const did = await s.insertDraft({ threadId: tid, bodyText: 'generic LLM reply', bodyHtml: '<p>x</p>', confidence: 80, quotesPriceOrder: false, holdReasons: [], model: 'm', status: 'pending' });
-    const r = await applyDraftTemplate(env.DB, SHOP, tid, 'qualifying');
-    expect(r.ok).toBe(true);
-    const draft = (r as { draft?: { body_text?: string } }).draft;
-    expect(draft?.body_text).toContain(QUALIFYING_MARKER);   // replies will be scored, never re-asked
-    expect(draft?.body_text).toContain('Hi Jane,');          // salutation from the contact row
-    expect((await s.getDraft(did))?.status).toBe('superseded');
-    expect((await s.getApplicantByThread(tid))?.stage).toBe('screen_sent');
+  // Owner review 2026-09-04: the picker keeps only what the live self-serve
+  // programme needs. The screening questions and the trial invite are what the
+  // FORM now does; the partnership decline said we take no partnerships (false
+  // under the open programme); the holding note was the July duplicate
+  // offender and is superseded by the follow-up. The funnel keeps those bodies
+  // internally for the legacy funnel modes; only the picker loses them.
+  it('offers exactly the five live templates, the two programme ones first', () => {
+    expect(DRAFT_TEMPLATES.map((t) => t.key)).toEqual(['signup_invite', 'signup_followup', 'service_decline', 'operations_decline', 'keep_to_email']);
+    expect(DRAFT_TEMPLATES[0].label).toMatch(/^Affiliate programme: introduction/);
+    expect(DRAFT_TEMPLATES[1].label).toMatch(/^Affiliate programme: follow-up/);
   });
 
-  it('includes the earned-tiers terms when any inbound negotiated commission against volume', async () => {
-    const { s, tid } = await seedWithConfig();
-    await s.insertInboundMessageIfNew({
-      threadId: tid, messageId: '<vol@x>', inReplyTo: null, references: [],
-      from: 'jane@x.com', to: 'support@activepaw.co.uk', subject: 'Re: Hi',
-      bodyText: 'Give me 10% commission and I will guarantee 500 units in sales every month.',
-      bodyHtml: null, headersJson: '{}', receivedAt: '2026-06-19T10:00:00Z'
-    });
-    const r = await applyDraftTemplate(env.DB, SHOP, tid, 'qualifying');
-    expect(r.ok).toBe(true);
-    expect((r as { draft?: { body_text?: string } }).draft?.body_text).toContain('rates are earned on delivered volume');
+  it('refuses the four superseded funnel templates', async () => {
+    const { tid } = await seedWithConfig();
+    for (const key of ['qualifying', 'voucher_invite', 'partnership_decline', 'holding_ack']) {
+      const r = await applyDraftTemplate(env.DB, SHOP, tid, key);
+      expect(r.ok, key).toBe(false);
+      expect((r as { error?: string }).error, key).toBe('Unknown template');
+    }
   });
 
   it('decline templates stamp the applicant declined and reopen a closed thread', async () => {
@@ -285,13 +273,34 @@ describe('applyDraftTemplate', () => {
     expect((await s.getApplicantByThread(tid))?.stage).toBe('declined');
   });
 
-  it('creates a draft when none is pending; the holding note leaves the funnel untouched', async () => {
+  // The follow-up IS the reply drafted for Abdullahi on 2026-09-04 (the shorter
+  // introduction), promoted to a picker entry at the owner's request so the
+  // next "I understand, thanks" reply gets it in one click.
+  it('the follow-up renders the shorter introduction, creates a draft when none is pending, and stages passed_to_form', async () => {
     const { s, tid } = await seedWithConfig();
     expect(await s.getPendingDraft(tid)).toBeNull();
-    const r = await applyDraftTemplate(env.DB, SHOP, tid, 'holding_ack');
+    const r = await applyDraftTemplate(env.DB, SHOP, tid, 'signup_followup');
     expect(r.ok).toBe(true);
-    expect((await s.getPendingDraft(tid))?.body_text).toContain('reviewing the fit');
-    expect(await s.getApplicantByThread(tid)).toBeNull();
+    expect((r as { touch?: string }).touch).toBe('first');
+    const body = (await s.getPendingDraft(tid))!.body_text;
+    expect(body.startsWith('Hi Jane,')).toBe(true);
+    expect(body).toContain('Nothing has changed on our side');
+    expect(body).toContain(AFFILIATE_APPLY_URL);
+    expect(body).toBe(buildSecondTouch('signup_invite', 'Jane'));
+    expect(JSON.parse((await s.getPendingDraft(tid))!.hold_reasons ?? '[]')).toEqual([]);
+    expect((await s.getApplicantByThread(tid))?.stage).toBe('passed_to_form');
+  });
+
+  it('a follow-up already sent on the thread becomes the one-line pointer', async () => {
+    const { s, tid } = await seedWithConfig();
+    await s.insertOutboundMessage({ threadId: tid, messageId: '<f1@activepaw>', from: 'contact@activepaw.co.uk', to: 'jane@x.com', subject: 'Re: Hi', bodyText: buildSecondTouch('signup_invite', 'Jane'), bodyHtml: '<p>x</p>', sentAt: '2026-06-19T10:00:00Z' });
+    const r = await applyDraftTemplate(env.DB, SHOP, tid, 'signup_followup');
+    expect(r.ok).toBe(true);
+    expect((r as { touch?: string }).touch).toBe('pointer');
+    const body = (await s.getPendingDraft(tid))!.body_text;
+    expect(body).toMatch(/earlier reply/i);
+    expect(body).toContain(AFFILIATE_APPLY_URL);
+    expect(JSON.parse((await s.getPendingDraft(tid))!.hold_reasons ?? '[]')).toContain('repeat_touch');
   });
 
   it('the keep-to-email template stays on email without declining, and leaves the funnel untouched', async () => {

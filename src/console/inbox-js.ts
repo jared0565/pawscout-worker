@@ -195,19 +195,17 @@ function renderInboxThread(thread,messages,labels,draft,invoice,applicant,contac
       +'</div>';
   }
   // Template picker: swaps the pending draft for a canonical server-rendered
-  // template (partnership screening questions, declines, holding note) without
-  // leaving the Inbox. Keys/labels mirror DRAFT_TEMPLATES on the server -
-  // console.test.ts pins the two lists together. Applying never sends.
+  // template without leaving the Inbox. Keys/labels mirror DRAFT_TEMPLATES on
+  // the server - console.test.ts pins the two lists together. Applying never
+  // sends. Owner review 2026-09-04: the two affiliate-programme entries
+  // (introduction, then its shorter follow-up) plus the three situational ones.
   var tplSel='<select id="inbox-tpl-sel" class="ibx-tpl-sel" aria-label="Replace draft with a template">'
     +'<option value="">Use a template…</option>'
-    +'<option value="signup_invite">Application page invite (apply link)</option>'
-    +'<option value="qualifying">Partnership screening questions</option>'
-    +'<option value="voucher_invite">Trial invite (code on its way)</option>'
-    +'<option value="partnership_decline">Partnership decline</option>'
+    +'<option value="signup_invite">Affiliate programme: introduction (apply link)</option>'
+    +'<option value="signup_followup">Affiliate programme: follow-up (shorter, apply link)</option>'
     +'<option value="service_decline">Service pitch decline</option>'
     +'<option value="operations_decline">Internal operations decline</option>'
     +'<option value="keep_to_email">Keep to email (decline WhatsApp)</option>'
-    +'<option value="holding_ack">Holding note (we are reviewing)</option>'
     +'</select>';
   // Pending draft: distinct dashed card at the END of the timeline
   var draftHtml='';

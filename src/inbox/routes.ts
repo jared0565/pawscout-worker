@@ -4,11 +4,8 @@ import { DEFAULT_INBOX, type InboxConfig, type ThreadStatus } from './types';
 import type { Env } from '../types';
 import { sendReply } from './send';
 import { composeDraftForThread } from './sweep';
-import {
-  maybePartnershipDraft, buildQualifyingEmail, buildPartnershipDecline, buildServiceDecline,
-  buildOperationsDecline, buildVoucherInvite, buildHoldingAck, buildKeepToEmail, buildSignupInvite,
-  detectVolumePitch, detectOffPlatformRequest, type FunnelVariant, buildSecondTouch, buildPointerBack, type TouchTemplate } from './partnership';
-import { chooseTouch, outboundBodies } from './repeat';
+import { maybePartnershipDraft, buildServiceDecline, buildOperationsDecline, buildKeepToEmail, buildSignupInvite, detectVolumePitch, detectOffPlatformRequest, buildSecondTouch, buildPointerBack, type TouchTemplate } from './partnership';
+import { chooseTouch, outboundBodies, type TouchKind } from './repeat';
 import { renderReplyHtml } from './draft';
 import { stripQuotedReply } from './quote';
 import { defaultFetch } from '../safe-fetch';
@@ -198,23 +195,21 @@ export async function regenerateDraft(db: D1Database, env: Env, shop: string, dr
  * stay exactly what the funnel itself would have produced.
  */
 export const DRAFT_TEMPLATES: { key: string; label: string }[] = [
-  // signup_invite is FIRST because it is what the LIVE affiliateMode
-  // ('signup_page') actually produces. Its absence was a real gap, not a
-  // cosmetic one: on thread ca4e307d (2026-08-12, a 3%-for-40-orders pitch that
-  // also asked for a WhatsApp number) the funnel drafted exactly this invite,
-  // an unrelated follow-up superseded it with the holding ack, and the only
-  // partnership-shaped options left in this list were three declines. The
-  // dropdown could not re-produce the correct reply, so the thread was
-  // hand-templated with 'service_decline' - a body about development, listings
-  // and collaborator access, none of which the sender had ever offered.
-  { key: 'signup_invite', label: 'Application page invite (apply link)' },
-  { key: 'qualifying', label: 'Partnership screening questions' },
-  { key: 'voucher_invite', label: 'Trial invite (code on its way)' },
-  { key: 'partnership_decline', label: 'Partnership decline' },
+  // Owner review 2026-09-04: only what the live self-serve programme needs.
+  // The two programme entries come first because they are what the LIVE
+  // affiliateMode ('signup_page') produces: the introduction is the funnel's
+  // own first touch, and the follow-up is its shorter second touch (the reply
+  // drafted for Abdullahi on 2026-09-04, promoted here so the next "I
+  // understand, thanks" gets it in one click). Removed as superseded:
+  // 'qualifying' and 'voucher_invite' (the FORM now screens and issues codes),
+  // 'partnership_decline' (said we take no partnerships, false under the open
+  // programme), 'holding_ack' (the July duplicate offender). The funnel keeps
+  // those bodies for the legacy funnel modes; only the picker lost them.
+  { key: 'signup_invite', label: 'Affiliate programme: introduction (apply link)' },
+  { key: 'signup_followup', label: 'Affiliate programme: follow-up (shorter, apply link)' },
   { key: 'service_decline', label: 'Service pitch decline' },
   { key: 'operations_decline', label: 'Internal operations decline' },
   { key: 'keep_to_email', label: 'Keep to email (decline WhatsApp)' },
-  { key: 'holding_ack', label: 'Holding note (we are reviewing)' },
 ];
 
 /**
@@ -250,30 +245,29 @@ export async function applyDraftTemplate(db: D1Database, shop: string, threadId:
   const volumePitch = detectVolumePitch(inboundText);
   const offPlatform = detectOffPlatformRequest(inboundText);
 
+  // The follow-up is the introduction's own shorter second touch promoted to a
+  // picker entry; its next touch is therefore the one-line pointer.
+  const followup = key === 'signup_followup';
+  const touchKey: TouchTemplate = followup ? 'signup_invite' : (key as TouchTemplate);
   let body: string;
   if (key === 'signup_invite') body = buildSignupInvite(name, { volumePitch, offPlatform });
-  else if (key === 'qualifying') {
-    const variant: FunnelVariant = cfg.inbox.affiliateMode === 'funnel_link' ? 'link' : 'voucher';
-    // Same tier-ladder trigger as the funnel: if ANY inbound negotiated
-    // commission against volume, the earned-tiers paragraph rides along.
-    body = buildQualifyingEmail(name, variant, { volumePitch });
-  } else if (key === 'voucher_invite') body = buildVoucherInvite(name);
-  else if (key === 'partnership_decline') body = buildPartnershipDecline(name);
+  else if (followup) body = buildSecondTouch('signup_invite', name);
   else if (key === 'service_decline') body = buildServiceDecline(name);
   else if (key === 'operations_decline') body = buildOperationsDecline(name);
-  else if (key === 'keep_to_email') body = buildKeepToEmail(name);
-  else body = buildHoldingAck(name);
+  else body = buildKeepToEmail(name);
 
   // Owner rule 2026-09-04: never the same message twice on a thread. A template
   // already sent here renders as its shorter second touch, then as the one-line
   // pointer back to the earlier reply; either is flagged so the owner sees why.
+  const pointer = buildPointerBack(touchKey, name);
   const touched = chooseTouch(outboundBodies(got.messages), {
-    first: body, second: buildSecondTouch(key as TouchTemplate, name), pointer: buildPointerBack(key as TouchTemplate, name),
+    first: body, second: followup ? pointer : buildSecondTouch(touchKey, name), pointer,
   });
+  const touch: TouchKind = touched.body === pointer ? 'pointer' : touched.touch;
   await store.supersedePendingDrafts(threadId);
   await store.insertDraft({
     threadId, bodyText: touched.body, bodyHtml: renderReplyHtml(touched.body),
-    confidence: null, quotesPriceOrder: false, holdReasons: touched.touch === 'first' ? [] : ['repeat_touch'], model: 'template', status: 'pending'
+    confidence: null, quotesPriceOrder: false, holdReasons: touch === 'first' ? [] : ['repeat_touch'], model: 'template', status: 'pending'
   });
 
   const applicant = await store.getApplicantByThread(threadId);
@@ -281,16 +275,15 @@ export async function applyDraftTemplate(db: D1Database, shop: string, threadId:
   // signup_page first-touch branch does - the FORM now does the screening. Left
   // at a stale 'declined' the next inbound would route off a decision we just
   // reversed.
-  const stage = key === 'qualifying' ? 'screen_sent'
-    : (key === 'signup_invite' || key === 'voucher_invite') ? 'passed_to_form'
-    : (key === 'partnership_decline' || key === 'service_decline' || key === 'operations_decline') ? 'declined'
+  const stage = (key === 'signup_invite' || key === 'signup_followup') ? 'passed_to_form'
+    : (key === 'service_decline' || key === 'operations_decline') ? 'declined'
     : null;
   if (stage) {
     if (!applicant) await store.upsertApplicant({ threadId, contactEmail: got.thread.contact_email, stage });
     else await store.setApplicantStage(threadId, stage, null);
   }
   if (got.thread.status === 'closed') await store.setThreadStatus(threadId, 'needs_reply');
-  return { ok: true as const, touch: touched.touch, draft: await store.getPendingDraft(threadId) };
+  return { ok: true as const, touch, draft: await store.getPendingDraft(threadId) };
 }
 
 export async function approveDraft(db: D1Database, shop: string, env: Env, draftId: string, editedBody?: string) {

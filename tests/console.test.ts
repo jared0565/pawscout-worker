@@ -588,6 +588,17 @@ describe('consolePage', () => {
     expect(scripts).toContain("'/inbox/unblock'");
   });
 
+  // Owner review 2026-09-04: the picker mirrors the five live templates and
+  // nothing else; the four superseded funnel entries must not linger in the JS.
+  it('the picker no longer offers the superseded funnel templates', async () => {
+    const html = await consolePage('test-api-key').text();
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join(' ');
+    for (const gone of ['value="qualifying"', 'value="voucher_invite"', 'value="partnership_decline"', 'value="holding_ack"', 'Partnership screening questions', 'Holding note (we are reviewing)']) {
+      expect(scripts, gone).not.toContain(gone);
+    }
+    expect(scripts).toContain('value="signup_followup"');
+  });
+
   it('Inbox carries the template picker wired to /inbox/template', async () => {
     const html = await consolePage('test-api-key').text();
     const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
