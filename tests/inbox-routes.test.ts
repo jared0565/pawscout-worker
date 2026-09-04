@@ -3,7 +3,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
 import { SignJWT } from 'jose';
 import { TenantStore } from '../src/tenant-store';
-import { listInboxThreads, getInboxThread, setInboxStatus, setInboxLabels, regenerateDraft, applyDraftTemplate, DRAFT_TEMPLATES } from '../src/inbox/routes';
+import { listInboxThreads, getInboxThread, setInboxStatus, setInboxLabels, regenerateDraft, applyDraftTemplate, unblockSender, DRAFT_TEMPLATES } from '../src/inbox/routes';
 import { QUALIFYING_MARKER, AFFILIATE_APPLY_URL } from '../src/inbox/partnership';
 import { DEFAULT_INBOX } from '../src/inbox/types';
 import { ACTIVE_PAW_COLLECTION_MAP, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, type Env } from '../src/types';
@@ -444,5 +444,39 @@ describe('getInboxThread - affiliate applicant', () => {
     const r = await getInboxThread(env.DB, 'applicant.myshopify.com', tid);
     expect(r.ok).toBe(true);
     expect((r as { applicant?: { stage: string } }).applicant?.stage).toBe('screen_sent');
+  });
+});
+
+// Sender-level block (owner rule 2026-09-04): the repeat rule blocks a contact
+// at ingest; the console shows the block on the thread and can lift it. The
+// thread payload carries the contact's blocked_at so the badge has a source.
+describe('unblockSender', () => {
+  it('the thread payload shows the block, and unblockSender lifts it', async () => {
+    const tid = await seed();
+    const s = new TenantStore(env.DB, SHOP);
+    await s.blockContact('jane@x.com', 'repeat message: same text sent 2 times');
+    const before = await getInboxThread(env.DB, SHOP, tid);
+    expect(before.ok && before.contact?.blocked_at).toBeTruthy();
+    expect(before.ok && before.contact?.blocked_reason).toMatch(/repeat/);
+    const r = await unblockSender(env.DB, SHOP, tid);
+    expect(r.ok).toBe(true);
+    const after = await getInboxThread(env.DB, SHOP, tid);
+    expect(after.ok && after.contact?.blocked_at).toBeNull();
+  });
+  it('404s an unknown thread', async () => {
+    expect((await unblockSender(env.DB, SHOP, 'no-such-id')).ok).toBe(false);
+  });
+  it('POST /api/inbox/unblock is registered, session-authed, and 400s without an id', async () => {
+    const s = new TenantStore(env.DB, ANSWERS_SHOP);
+    await s.upsertTenant({ accessTokenEnc: 'tok', dekWrapped: 'd', scopes: 's' });
+    await s.upsertContact({ email: 'v@x.com', name: 'V', phone: null });
+    const tid = await s.createThread({ contactEmail: 'v@x.com', subject: 'Hi', subjectNorm: 'hi', receivedAt: '2026-09-01T10:00:00Z', initialStatus: 'spam' });
+    await s.blockContact('v@x.com', 'repeat message');
+    const token = await answersBearerToken(ANSWERS_SHOP);
+    expect((await callAnswersRoute('/api/inbox/unblock', {}, token)).status).toBe(400);
+    const res = await callAnswersRoute('/api/inbox/unblock', { id: tid }, token);
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { ok: boolean }).ok).toBe(true);
+    expect((await s.getContactByEmail('v@x.com'))!.blocked_at).toBeNull();
   });
 });

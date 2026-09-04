@@ -129,3 +129,96 @@ describe('ingestParsed', () => {
     expect(await store.getPendingDraft(a.threadId)).not.toBeNull();                                    // draft NOT superseded
   });
 });
+
+// Owner rule 2026-09-04: "if they keep sending the same message, consider them
+// as spam and block their succeeding messages". The rule the owner chose: spam
+// on the 2nd copy of a message we already replied to, or the 3rd copy overall.
+// Customers are protected: a thread in an order/shipping/product/complaint/
+// wholesale lane, or a contact linked to a Shopify customer, never trips it.
+describe('repeat-sender block (ingest)', () => {
+  const PITCH = 'I am proposing a performance based collaboration where I will drive 40+ orders with 5k+ targeted visitors within one week. In return I would receive a 3% commission after the results start coming in. Drop your WhatsApp number and I will guide you through the process.';
+  const VENDOR = 'vendor@x.com';
+
+  async function firstPitchAnswered(store: TenantStore) {
+    const a = await ingestParsed(store, pe({ messageId: '<p1@x>', from: { email: VENDOR, name: 'Vendor' }, subject: 'Collaboration', text: PITCH, date: '2026-09-01T10:00:00Z' }));
+    await store.insertOutboundMessage({ threadId: a.threadId, messageId: '<our1@activepaw>', from: 'sales@activepaw.co.uk', to: VENDOR, subject: 'Re: Collaboration', bodyText: 'Our affiliate programme is the only partnership we run.', bodyHtml: '<p>x</p>', sentAt: '2026-09-01T12:00:00Z' });
+    await store.setThreadStatus(a.threadId, 'awaiting_customer');
+    return a.threadId;
+  }
+
+  it('the 2nd copy of a pitch we already answered marks the thread spam, blocks the sender, and does not reopen', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const tid = await firstPitchAnswered(store);
+    await store.insertDraft({ threadId: tid, bodyText: 'stale', bodyHtml: '<p>x</p>', confidence: null, quotesPriceOrder: false, holdReasons: [], model: 'm', status: 'pending' });
+    const r = await ingestParsed(store, pe({ messageId: '<p2@x>', from: { email: VENDOR, name: 'Vendor' }, subject: 'Re: Collaboration', inReplyTo: '<our1@activepaw>', references: ['<p1@x>', '<our1@activepaw>'], text: PITCH + '\n\nOn Tue, Sep 1, 2026 Active Paw wrote:\n> Our affiliate programme', date: '2026-09-03T10:00:00Z' }));
+    expect(r.threadId).toBe(tid);
+    const got = (await store.getThreadWithMessages(tid))!;
+    expect(got.thread.status).toBe('spam');
+    expect(got.labels).toContain('spam');
+    expect(await store.getPendingDraft(tid)).toBeNull();
+    const contact = (await store.getContactByEmail(VENDOR))!;
+    expect(contact.blocked_at).not.toBeNull();
+    expect(contact.blocked_reason).toMatch(/repeat/i);
+  });
+
+  it("a blocked sender's next message lands as spam at ingest, pre-classified, even under a new subject", async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await store.upsertContact({ email: VENDOR, name: 'Vendor', phone: null });
+    await store.blockContact(VENDOR, 'repeat message x2');
+    const r = await ingestParsed(store, pe({ messageId: '<p9@x>', from: { email: VENDOR, name: 'Vendor' }, subject: 'Quick question about your store', text: 'Completely different text this time, are you the owner of this store? I have a proposal for you.', date: '2026-09-05T10:00:00Z' }));
+    const got = (await store.getThreadWithMessages(r.threadId))!;
+    expect(got.thread.status).toBe('spam');
+    expect(got.thread.primary_category).toBe('spam');
+    expect(got.thread.classified_at).not.toBeNull(); // never enters the LLM sweep
+    expect(got.labels).toContain('spam');
+  });
+
+  it('a reworded follow-up is not a repeat: the thread reopens and the sender stays unblocked', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const tid = await firstPitchAnswered(store);
+    await ingestParsed(store, pe({ messageId: '<p3@x>', from: { email: VENDOR, name: 'Vendor' }, subject: 'Re: Collaboration', inReplyTo: '<our1@activepaw>', references: ['<p1@x>'], text: 'Hello, wondering if you saw my last message on driving predictable sales? Open for a brief chat this week?', date: '2026-09-03T10:00:00Z' }));
+    expect((await store.getThreadWithMessages(tid))!.thread.status).toBe('needs_reply');
+    expect((await store.getContactByEmail(VENDOR))!.blocked_at).toBeNull();
+  });
+
+  it('a 2nd copy BEFORE any reply does not block; the 3rd copy does', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const a = await ingestParsed(store, pe({ messageId: '<q1@x>', from: { email: VENDOR, name: 'Vendor' }, subject: 'Hello', text: PITCH, date: '2026-09-01T10:00:00Z' }));
+    await ingestParsed(store, pe({ messageId: '<q2@x>', from: { email: VENDOR, name: 'Vendor' }, subject: 'Hello', text: PITCH, date: '2026-09-01T10:05:00Z' }));
+    expect((await store.getContactByEmail(VENDOR))!.blocked_at).toBeNull();
+    expect((await store.getThreadWithMessages(a.threadId))!.thread.status).toBe('new');
+    await ingestParsed(store, pe({ messageId: '<q3@x>', from: { email: VENDOR, name: 'Vendor' }, subject: 'Hello again', text: PITCH, date: '2026-09-02T10:00:00Z' }));
+    expect((await store.getContactByEmail(VENDOR))!.blocked_at).not.toBeNull();
+  });
+
+  it('a customer in an order-status thread is never blocked for re-sending the same message', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const ask = 'Hello, I placed order 1042 nine days ago and the tracking has not moved since Friday. Can you tell me where my parcel is and when it will arrive?';
+    const a = await ingestParsed(store, pe({ messageId: '<c1@x>', from: { email: 'cust@x.com', name: 'Cust' }, subject: 'Order 1042', text: ask, date: '2026-09-01T10:00:00Z' }));
+    await store.setThreadClassification(a.threadId, { status: 'needs_reply', primaryCategory: 'order-status', intentScore: 50, summary: null, classifiedAt: '2026-09-01T10:01:00Z' });
+    await store.insertOutboundMessage({ threadId: a.threadId, messageId: '<our-c1@activepaw>', from: 'support@activepaw.co.uk', to: 'cust@x.com', subject: 'Re: Order 1042', bodyText: 'Looking into it.', bodyHtml: '<p>x</p>', sentAt: '2026-09-01T12:00:00Z' });
+    await store.setThreadStatus(a.threadId, 'awaiting_customer');
+    await ingestParsed(store, pe({ messageId: '<c2@x>', from: { email: 'cust@x.com', name: 'Cust' }, subject: 'Re: Order 1042', inReplyTo: '<our-c1@activepaw>', references: ['<c1@x>'], text: ask, date: '2026-09-03T10:00:00Z' }));
+    expect((await store.getContactByEmail('cust@x.com'))!.blocked_at).toBeNull();
+    expect((await store.getThreadWithMessages(a.threadId))!.thread.status).toBe('needs_reply');
+  });
+
+  it('a contact linked to a Shopify customer is never blocked', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const tid = await firstPitchAnswered(store);
+    await store.linkContactToShopifyCustomer(VENDOR, 'gid://shopify/Customer/1');
+    await ingestParsed(store, pe({ messageId: '<p4@x>', from: { email: VENDOR, name: 'Vendor' }, subject: 'Re: Collaboration', inReplyTo: '<our1@activepaw>', references: ['<p1@x>'], text: PITCH, date: '2026-09-03T10:00:00Z' }));
+    expect((await store.getContactByEmail(VENDOR))!.blocked_at).toBeNull();
+    expect((await store.getThreadWithMessages(tid))!.thread.status).toBe('needs_reply');
+  });
+
+  it('unblockContact lifts the block, so the next message is treated normally again', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await store.upsertContact({ email: VENDOR, name: 'Vendor', phone: null });
+    await store.blockContact(VENDOR, 'repeat message x2');
+    await store.unblockContact(VENDOR);
+    const r = await ingestParsed(store, pe({ messageId: '<p8@x>', from: { email: VENDOR, name: 'Vendor' }, subject: 'Hello', text: 'A brand new message that is long enough to be judged on its own merits by the funnel.', date: '2026-09-06T10:00:00Z' }));
+    expect((await store.getThreadWithMessages(r.threadId))!.thread.status).toBe('new');
+    expect((await store.getContactByEmail(VENDOR))!.blocked_at).toBeNull();
+  });
+});

@@ -2,6 +2,7 @@ import type { TenantStore } from '../tenant-store';
 import type { ParsedEmail, ThreadStatus } from './types';
 import { parseInbound, extractContactForm } from './mime';
 import { parseAuthResults, isAutomated, isHardSpam, normalizeSubject } from './gates';
+import { repeatVerdict, PROTECTED_CATEGORIES } from './repeat';
 
 /** Store one parsed inbound email: resolve the real sender, match-or-create the
  * thread, insert the message (deduped), and set the thread's initial status from
@@ -17,6 +18,10 @@ export async function ingestParsed(store: TenantStore, p: ParsedEmail): Promise<
   const subjectNorm = normalizeSubject(p.subject);
 
   await store.upsertContact({ email, name, phone });
+  // Sender-level block (owner rule 2026-09-04): a contact the repeat rule (or the
+  // owner) blocked lands as spam before classification, drafting or alerting.
+  const contact = await store.getContactByEmail(email);
+  const blocked = !!contact?.blocked_at;
 
   const matchedThreadId = await store.matchThread({
     contactEmail: email, inReplyTo: p.inReplyTo, references: p.references, subjectNorm
@@ -29,8 +34,11 @@ export async function ingestParsed(store: TenantStore, p: ParsedEmail): Promise<
   // real human - so a form submission must NOT be gated as "automated" on the
   // envelope sender. The DMARC spam gate below still applies to everyone.
   const automated = form ? false : isAutomated(p);
-  const spam = isHardSpam(auth);
+  const spam = isHardSpam(auth) || blocked;
   const initialStatus: ThreadStatus = spam ? 'spam' : automated ? 'closed' : 'new';
+  // Read the sender's earlier messages BEFORE the new one is stored, so the
+  // repeat check below compares the new text against genuinely earlier copies.
+  const earlier = (!form && !automated && !spam) ? await store.recentInboundBySender(email) : [];
 
   let threadId: string;
   if (!matchedThreadId) {
@@ -42,7 +50,7 @@ export async function ingestParsed(store: TenantStore, p: ParsedEmail): Promise<
     if (automated || spam) {
       await store.setThreadClassification(threadId, {
         status: initialStatus, primaryCategory: automated ? 'automated' : 'spam',
-        intentScore: 0, summary: automated ? 'Automated/bulk message' : 'Failed DMARC - likely spoofed',
+        intentScore: 0, summary: automated ? 'Automated/bulk message' : blocked ? 'Blocked sender' : 'Failed DMARC - likely spoofed',
         classifiedAt: new Date().toISOString()
       });
       await store.setThreadLabels(threadId, [automated ? 'automated' : 'spam']);
@@ -59,11 +67,29 @@ export async function ingestParsed(store: TenantStore, p: ParsedEmail): Promise<
 
   if (inserted) {
     await store.touchThread(threadId, p.date);
-    // Multi-turn: an inbound on an active existing thread re-opens it for a fresh reply.
-    // Guard: only if this message is genuinely new (inserted) - a duplicate redelivery
-    // (same Message-ID, already stored) must NOT re-open the thread or supersede drafts.
-    // Only reopen conversations we'd engage with; never resurrect spam/closed/converted.
-    if (isExistingThread && !automated && !spam) {
+
+    // Repeat-message rule (owner 2026-09-04): the same text again, after we
+    // already replied to it (or a 3rd copy regardless), makes the sender spam
+    // and blocks their later messages. Never for customers: a linked Shopify
+    // customer or a thread in a customer-service lane is protected.
+    let repeat = false;
+    if (!form && !automated && !spam && earlier.length > 0) {
+      repeat = repeatVerdict(bodyText, earlier.map((e) => ({ text: e.body_text, repliedAfter: e.replied_after })));
+      if (repeat && await store.senderIsProtected(email, PROTECTED_CATEGORIES)) repeat = false;
+    }
+    if (repeat) {
+      const copies = earlier.length + 1;
+      await store.blockContact(email, `repeat message: same text sent ${copies} times, blocked at ingest`);
+      await markThreadSpam(store, threadId, 'Repeated the same message after our reply - sender blocked');
+    } else if (blocked && isExistingThread) {
+      // A blocked sender writing on one of their OLD threads: that thread joins
+      // the spam pile too, so it cannot sit in the queue asking for a reply.
+      await markThreadSpam(store, threadId, 'Blocked sender');
+    } else if (isExistingThread && !automated && !spam) {
+      // Multi-turn: an inbound on an active existing thread re-opens it for a fresh reply.
+      // Guard: only if this message is genuinely new (inserted) - a duplicate redelivery
+      // (same Message-ID, already stored) must NOT re-open the thread or supersede drafts.
+      // Only reopen conversations we'd engage with; never resurrect spam/closed/converted.
       const existing = await store.getThreadWithMessages(threadId);
       const st = existing?.thread.status;
       if (st === 'awaiting_customer' || st === 'needs_reply') {
@@ -74,6 +100,17 @@ export async function ingestParsed(store: TenantStore, p: ParsedEmail): Promise<
   }
 
   return { threadId, deduped: !inserted };
+}
+
+/** Spam disposition for a thread the block rule caught: classified spam (so the
+ * LLM sweep skips it), labelled, and any pending draft retired so it cannot be
+ * sent or inflate the pending badge. */
+async function markThreadSpam(store: TenantStore, threadId: string, summary: string): Promise<void> {
+  await store.setThreadClassification(threadId, {
+    status: 'spam', primaryCategory: 'spam', intentScore: 0, summary, classifiedAt: new Date().toISOString()
+  });
+  await store.setThreadLabels(threadId, ['spam']);
+  await store.discardPendingDrafts(threadId);
 }
 
 /** Parse raw RFC822 bytes then ingest. The thin core the email() handler calls. */

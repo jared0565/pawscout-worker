@@ -258,6 +258,15 @@ function renderInboxContext(thread,labels,draft,invoice,applicant,contact,partne
   if(contact&&contact.message_count!=null){
     cust+='<p class="muted" style="margin:6px 0 0;font-size:12px">Messages on file: '+esc(String(contact.message_count))+'</p>';
   }
+  // Sender-level block (2026-09-04): set at ingest when the same message keeps
+  // coming back; every later message from this address lands as spam. Shown
+  // here because it is the one place the owner can see why a sender went quiet,
+  // and lifted from the same place.
+  if(contact&&contact.blocked_at){
+    cust+='<p style="margin:8px 0 0;font-size:12px"><span class="ibx-tag no">Blocked sender</span></p>'
+      +'<p class="muted" style="margin:4px 0 0;font-size:12px">'+esc(contact.blocked_reason||'blocked')+' ('+esc(String(contact.blocked_at).slice(0,10))+')</p>'
+      +'<button id="inbox-unblock-btn" class="ghost" type="button" style="margin-top:6px">Unblock sender</button>';
+  }
   if(thread.declared_intent){
     var DMAP={order:'Order help',partnerships:'Creator / affiliate partnership',wholesale:'Wholesale / bulk order'};
     cust+='<p class="muted" style="margin:6px 0 0;font-size:12px">Declared: <strong>'+esc(DMAP[thread.declared_intent]||thread.declared_intent)+'</strong></p>';
@@ -366,6 +375,7 @@ function renderInboxContext(thread,labels,draft,invoice,applicant,contact,partne
   }
   ctx.innerHTML=cust+evBlock+labBlock+holdBlock+partnerBlock+invoiceBlock;
   var slb=el('inbox-save-labels'); if(slb) slb.onclick=function(){ saveInboxLabels(tid); };
+  var ubb=el('inbox-unblock-btn'); if(ubb) ubb.onclick=function(){ unblockSenderAction(tid); };
   var qb=el('inbox-queue-btn'); if(qb) qb.onclick=function(){ queuePartnerAction(tid); };
   var cb=el('inbox-consent-btn'); if(cb) cb.onclick=function(){ threadConsentAction(tid,cb.getAttribute('data-consent-on')==='1'); };
   if(invoice&&invoice.id){
@@ -441,6 +451,16 @@ async function saveInboxStatus(id){
     if(r.ok){ setMsg('ibx-msg','Status updated to '+(IBX_STATUS_LABELS[status]||status)+'.','ok'); loadInboxThreads(); }
     else setMsg('ibx-msg','Failed: '+(r.error||'unknown error'),'no');
   }catch(e){ setMsg('ibx-msg','Failed: '+errText(e),'no'); }
+}
+// Lift a sender-level block; the thread re-renders so the badge disappears.
+async function unblockSenderAction(tid){
+  var ubb=el('inbox-unblock-btn'); if(ubb) ubb.disabled=true;
+  setMsg('ibx-msg','Unblocking sender…','muted');
+  try{
+    var r=await api('/inbox/unblock',{id:tid});
+    if(r.ok){ setMsg('ibx-msg','Sender unblocked. Their next message will be handled normally.','ok'); openInboxThread(tid); }
+    else { setMsg('ibx-msg','Failed: '+(r.error||'unknown error'),'no'); if(ubb) ubb.disabled=false; }
+  }catch(e){ setMsg('ibx-msg','Failed: '+errText(e),'no'); if(ubb) ubb.disabled=false; }
 }
 // Trial-code queue: one click parks this sender in Partners (status queued) so
 // their code can be issued later. No email, no Shopify object - just bookkeeping.

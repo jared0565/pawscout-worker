@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   buildQualifyingEmail, buildPartnershipDecline, buildFormInvite, buildVoucherInvite, buildHoldingAck,
-  buildServiceDecline, buildSignupInvite, AFFILIATE_APPLY_URL, PARTNERSHIP_STANCE
+  buildServiceDecline, buildSignupInvite, AFFILIATE_APPLY_URL, PARTNERSHIP_STANCE, STANDARD_COMMISSION_PCT
 } from '../src/inbox/partnership';
 
 describe('partnership composers', () => {
@@ -82,5 +82,19 @@ describe('an affiliate mention always carries the apply link', () => {
     const body = buildServiceDecline('Jo');
     expect(body).toMatch(/in-house/);
     expect(body).toMatch(/do not grant store, admin, or collaborator access/);
+  });
+
+  // Owner rule 2026-09-04: vendors who keep offering their services are told
+  // about the ONE collaboration that exists, plainly and with its terms, so the
+  // answer is complete and there is nothing left to follow up on. The old body
+  // offered the programme only conditionally ("If you run a channel...") and
+  // gave no rate, which read as a door left ajar.
+  it('the service decline names the affiliate programme as the only collaboration on offer, with its rate', () => {
+    const body = buildServiceDecline('Jo');
+    expect(body).toMatch(/only collaboration we (?:currently )?run/i);
+    expect(body).toContain(AFFILIATE_APPLY_URL);
+    expect(body).toContain(`${STANDARD_COMMISSION_PCT}%`);
+    expect(body).not.toMatch(/If you run a channel or audience/);
+    expect(body).toMatch(/no reply is needed/i);
   });
 });

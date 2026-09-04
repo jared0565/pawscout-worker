@@ -1796,6 +1796,57 @@ export class TenantStore {
     return this.db.prepare(`SELECT * FROM inbox_contacts WHERE shop = ?1 AND email = ?2`).bind(this.shop, email).first<ContactRow>();
   }
 
+  // --- Sender-level block (owner rule 2026-09-04): see src/inbox/repeat.ts ---
+
+  async blockContact(email: string, reason: string): Promise<void> {
+    await this.db
+      .prepare(`UPDATE inbox_contacts SET blocked_at = ?3, blocked_reason = ?4 WHERE shop = ?1 AND email = ?2`)
+      .bind(this.shop, email, new Date().toISOString(), reason.slice(0, 200))
+      .run();
+  }
+
+  async unblockContact(email: string): Promise<void> {
+    await this.db
+      .prepare(`UPDATE inbox_contacts SET blocked_at = NULL, blocked_reason = NULL WHERE shop = ?1 AND email = ?2`)
+      .bind(this.shop, email)
+      .run();
+  }
+
+  /** The sender's earlier inbound messages across ALL their threads, newest
+   * first, each flagged with whether we sent a reply on its thread after it
+   * arrived. Call it BEFORE inserting the new message so the new one is not in
+   * the list. Capped: a repeat only needs a few recent copies to show. */
+  async recentInboundBySender(email: string, limit = 20): Promise<Array<{ id: string; thread_id: string; body_text: string | null; received_at: string; replied_after: boolean }>> {
+    const lim = Math.min(Math.max(limit, 1), 50);
+    const rs = await this.db
+      .prepare(
+        `SELECT m.id, m.thread_id, m.body_text, m.received_at,
+                EXISTS (SELECT 1 FROM inbox_messages o
+                        WHERE o.shop = m.shop AND o.thread_id = m.thread_id AND o.direction = 'outbound' AND o.received_at > m.received_at) AS replied_after
+         FROM inbox_messages m
+         WHERE m.shop = ?1 AND m.direction = 'inbound' AND m.from_addr = ?2
+         ORDER BY m.received_at DESC LIMIT ${lim}`
+      )
+      .bind(this.shop, email)
+      .all<{ id: string; thread_id: string; body_text: string | null; received_at: string; replied_after: number }>();
+    return (rs.results ?? []).map((r) => ({ ...r, replied_after: !!r.replied_after }));
+  }
+
+  /** A contact the repeat rule must never block: linked to a Shopify customer,
+   * or any of their threads sits in a customer-service lane. A frustrated
+   * customer re-sending "where is my order" is exactly who this protects. */
+  async senderIsProtected(email: string, protectedCategories: readonly string[]): Promise<boolean> {
+    const c = await this.getContactByEmail(email);
+    if (c?.shopify_customer_id) return true;
+    if (protectedCategories.length === 0) return false;
+    const ph = protectedCategories.map((_, i) => `?${i + 3}`).join(',');
+    const row = await this.db
+      .prepare(`SELECT 1 AS x FROM inbox_threads WHERE shop = ?1 AND contact_email = ?2 AND primary_category IN (${ph}) LIMIT 1`)
+      .bind(this.shop, email, ...protectedCategories)
+      .first<{ x: number }>();
+    return !!row;
+  }
+
   /** Find an existing thread for a reply: first by any referenced Message-ID,
    * then by (contact + normalized subject). Returns the thread id or null. */
   async matchThread(args: { contactEmail: string; inReplyTo: string | null; references: string[]; subjectNorm: string }): Promise<string | null> {

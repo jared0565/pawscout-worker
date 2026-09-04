@@ -578,6 +578,16 @@ describe('consolePage', () => {
 
   // --- Draft templates (2026-07-06): swap the pending draft from a dropdown ---
 
+  // Sender-level block (owner rule 2026-09-04): a blocked sender is visible on
+  // the thread, and the block is reversible from the same place.
+  it('Inbox shows a blocked-sender badge with an Unblock button wired to /inbox/unblock', async () => {
+    const html = await consolePage('test-api-key').text();
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+    expect(scripts).toContain('id="inbox-unblock-btn"');
+    expect(scripts).toContain('Blocked sender');
+    expect(scripts).toContain("'/inbox/unblock'");
+  });
+
   it('Inbox carries the template picker wired to /inbox/template', async () => {
     const html = await consolePage('test-api-key').text();
     const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');

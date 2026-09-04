@@ -305,16 +305,23 @@ Active Paw Partnerships`;
 const EARNED_TIERS_PARAGRAPH =
 `One thing worth being clear on, since you raised commission terms: every partnership starts at our standard rate - ${STANDARD_COMMISSION_PCT}% of the goods value of each paid order tracked to you, that is the price of the items before your code's discount and not counting shipping. We do not negotiate rates against promised volume, but rates are earned on delivered volume: after your first ${TIER_REVIEW_ORDERS} tracked orders in a 30-day window we review your tier, and consistent performers earn up to ${TIER_MAX_PCT}%. Your tracked results do the negotiating for you.`;
 
-// Vendors (site-speed/SEO/listing services) are not partnership candidates:
-// polite, final, and does not invite a budget follow-up.
+// Vendors (site-speed/SEO/listing/marketing services) are not partnership
+// candidates. Owner rule 2026-09-04: someone who keeps offering their services
+// is told, plainly, about the ONE collaboration that exists and its terms, so
+// the answer is complete and leaves nothing to follow up on. Polite, final, and
+// does not invite a budget conversation. A sender who re-sends the same pitch
+// after this reply is blocked at ingest (see repeat.ts), so this body is the
+// last word they get from us.
 const SERVICE_DECLINE_BODY =
 `Thank you for reaching out, and for the offer - we appreciate you taking the time to write.
 
-We keep our store's development, product listings and marketing in-house with our own team, so it is not a service we take up from outside. For the same reason we do not grant store, admin, or collaborator access to anyone outside the team. It is a settled policy rather than a budget or timing question, so we would rather be straight with you than leave it open.
+We keep our store's development, product listings and marketing in-house with our own team, so outside services are not something we take up, and we do not grant store, admin, or collaborator access to anyone outside the team. That is a settled policy rather than a budget or timing question, so we would rather be straight with you than leave it open.
 
-If you run a channel or audience and would like to promote Active Paw as an affiliate, that programme is open to anyone and you can apply directly here: ${AFFILIATE_APPLY_URL}
+The only collaboration we currently run is the Active Paw affiliate programme. It is open to anyone with an audience or channel, and you can apply directly here: ${AFFILIATE_APPLY_URL}
 
-Wishing you and your work every success.
+${COMMISSION_COMPUTATION_SENTENCE} ${COMMISSION_TIERS_SENTENCE}
+
+If that is not a fit for you, no reply is needed - we wish you and your work every success.
 
 Best Regards,
 Active Paw Partnerships`;

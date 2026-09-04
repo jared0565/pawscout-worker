@@ -109,6 +109,19 @@ export async function setInboxStatus(db: D1Database, shop: string, threadId: str
   return { ok: true as const, status };
 }
 
+/** Lift a sender-level block from the thread it shows on (owner rule
+ *  2026-09-04). The block is set by the repeat rule at ingest (src/inbox/repeat.ts)
+ *  and lives on the contact, so lifting it here re-admits every later message
+ *  from that address. The thread's own status is left alone: the owner can
+ *  reopen it with the status control if the last message deserved an answer. */
+export async function unblockSender(db: D1Database, shop: string, threadId: string) {
+  const store = new TenantStore(db, shop);
+  const got = await store.getThreadWithMessages(threadId);
+  if (!got) return { ok: false as const, error: 'Thread not found' };
+  await store.unblockContact(got.thread.contact_email);
+  return { ok: true as const, email: got.thread.contact_email };
+}
+
 export async function setInboxLabels(db: D1Database, shop: string, threadId: string, labels: unknown) {
   const v = validateLabels(labels);
   if (!v.ok) return { ok: false as const, error: v.error };

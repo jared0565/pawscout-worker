@@ -143,7 +143,7 @@ describe('partnership first-touch, signup_page mode (owner policy 2026-07-18: se
   // What still must hold is that this is a DECLINE, so the assertions below now
   // pin the refusal itself plus the conditional framing of the offer, which is
   // the thing that keeps it from reading as an invitation to a vendor.
-  it('a pure service pitch still gets the vendor decline, with the programme offered only conditionally', async () => {
+  it('a pure service pitch still gets the vendor decline, with the programme named as the only collaboration on offer', async () => {
     const s = new TenantStore(env.DB, 'sv.myshopify.com');
     await s.upsertContact({ email: 'seo@x.com', name: 'Sam', phone: null });
     const tid = await s.createThread({ contactEmail: 'seo@x.com', subject: 'Site speed', subjectNorm: 'site speed', receivedAt: '2026-06-22T10:00:00Z', initialStatus: 'needs_reply' });
@@ -157,9 +157,9 @@ describe('partnership first-touch, signup_page mode (owner policy 2026-07-18: se
     expect(draft!.body_text).toMatch(/in-house/);
     expect(draft!.body_text).toMatch(/settled policy rather than a budget or timing question/);
     expect(draft!.body_text).not.toMatch(/great (?:potential )?fit|look forward to seeing your application/i);
-    // ...with the programme raised only as a conditional alternative, and, when
-    // raised at all, actionable rather than a promise to send details later.
-    expect(draft!.body_text).toMatch(/If you run a channel or audience/);
+    // ...with the programme named as the ONLY collaboration on offer (owner rule
+    // 2026-09-04), actionable rather than a promise to send details later.
+    expect(draft!.body_text).toMatch(/only collaboration we (?:currently )?run/i);
     expect(draft!.body_text).toContain(AFFILIATE_APPLY_URL);
     expect(draft!.body_text).not.toMatch(/we will send you the details/i);
     expect((await s.getApplicantByThread(tid))!.stage).toBe('declined');

@@ -103,6 +103,9 @@ export interface ContactRow {
   shop: string; email: string; name: string | null; phone: string | null;
   shopify_customer_id: string | null; message_count: number;
   first_seen_at: string; last_seen_at: string;
+  /** Sender-level block (2026-09-04): set when the repeat-message rule fires or the
+   * owner blocks them; every later inbound from them lands as spam at ingest. */
+  blocked_at: string | null; blocked_reason: string | null;
 }
 export interface ThreadRow {
   shop: string; id: string; contact_email: string; subject: string | null;
