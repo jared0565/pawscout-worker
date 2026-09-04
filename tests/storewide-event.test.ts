@@ -1,10 +1,22 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
 import {
   validateEventRequest, findOverlappingPromo, buildEventCampaign, publicEventPayload, eventDayLabel
 } from '../src/storewide-event';
 import type { PromoWindow } from '../src/affiliate-discounts';
 
 const NOW = Date.parse('2026-07-06T12:00:00Z');
+
+// validateEventRequest and buildEventCampaign read Date.now() directly (the
+// end-date-in-the-past check and the "from <weekday>" future-start line). The
+// fixtures below hardcode a 2026-08-28 event, so once the real clock passed
+// that date both tests went red for a calendar reason, not a code one, and the
+// aramid pre-push gate blocked every push (2026-09-04). Pin the clock to NOW
+// for exactly those two describes; the rest of the file is pure or takes a
+// nowMs argument.
+function pinClockToNow() {
+  beforeAll(() => { vi.useFakeTimers(); vi.setSystemTime(NOW); });
+  afterAll(() => { vi.useRealTimers(); });
+}
 
 function promo(over: Partial<PromoWindow>): PromoWindow {
   return {
@@ -14,6 +26,7 @@ function promo(over: Partial<PromoWindow>): PromoWindow {
 }
 
 describe('validateEventRequest', () => {
+  pinClockToNow();
   it('normalises the code and builds full-day UTC instants', () => {
     const r = validateEventRequest({ code: 'bankhol15', pctOff: 15, startDate: '2026-08-28', endDate: '2026-08-31' });
     expect(r.ok).toBe(true);
@@ -46,6 +59,7 @@ describe('findOverlappingPromo', () => {
 });
 
 describe('buildEventCampaign', () => {
+  pinClockToNow();
   it('bakes the real dates and code into the copy (no drift possible)', () => {
     const d = buildEventCampaign({ code: 'BANKHOL15', pctOff: 15, startsAt: '2026-08-28T00:00:00.000Z', endsAt: '2026-08-31T23:59:59.000Z' });
     expect(d.subject).toBe('15% off everything until 31 August');
