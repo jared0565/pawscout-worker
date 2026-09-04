@@ -18,7 +18,49 @@ function trfRowHtml(ch){
   if(ch.nextAction) h+='<div class="trf-next"><strong>Next:</strong> '+esc(ch.nextAction)+'</div>';
   return h+'</div>';
 }
+// --- Traffic quality (2026-09-05): measured sessions above the board ---
+function tqPct(v){ return (v===null||v===undefined)?'n/a':(String(v)+'%'); }
+function tqWindowHtml(w){
+  var bots='';
+  for(var i=0;i<(w.topAutomated||[]).length;i++){
+    var b=w.topAutomated[i];
+    bots+=(bots?', ':'')+esc(b.browser)+' '+esc(String(b.sessions));
+  }
+  return '<div class="trf-q-win">'
+    +'<div class="trf-q-title">Last '+esc(String(w.days))+' days</div>'
+    +'<div class="trf-q-grid">'
+    +'<div class="trf-q-kpi"><div class="num">'+esc(String(w.sessions))+'</div><div class="sub">sessions</div></div>'
+    +'<div class="trf-q-kpi"><div class="num">'+esc(String(w.automated))+'</div><div class="sub">Automated ('+esc(tqPct(w.automatedShare))+')</div></div>'
+    +'<div class="trf-q-kpi"><div class="num">'+esc(String(w.engaged))+'</div><div class="sub">Engaged, more than one page</div></div>'
+    +'<div class="trf-q-kpi"><div class="num">'+esc(String(w.singlePage))+'</div><div class="sub">Single-page, unattributed</div></div>'
+    +'<div class="trf-q-kpi"><div class="num">'+esc(String(w.cartAdds))+'</div><div class="sub">added to cart</div></div>'
+    +'<div class="trf-q-kpi"><div class="num">'+esc(tqPct(w.humanBounceRate))+'</div><div class="sub">bounce rate, human-looking only</div></div>'
+    +'<div class="trf-q-kpi"><div class="num">'+esc(tqPct(w.rawBounceRate))+'</div><div class="sub">bounce rate as Shopify shows it</div></div>'
+    +'</div>'
+    +(bots?'<p class="muted" style="margin:6px 0 0;font-size:12px">Automated browsers: '+bots+'</p>':'')
+    +'</div>';
+}
+async function loadTrafficQuality(){
+  var box=el('trf-quality'); if(!box) return;
+  try{
+    var r=await api('/traffic/quality',{});
+    if(!r.ok){
+      if(r.reason==='scope_missing'){
+        box.innerHTML='<p class="msg muted">Needs the <code>'+esc(r.scope||'read_reports')+'</code> access scope. Add it to the app in the Shopify Dev Dashboard, then reopen PawScout in the admin and accept the new permission; this card fills in on the next load.</p>';
+      }else if(r.reason==='not_connected'){
+        box.innerHTML='<p class="msg muted">Shopify is not connected for this shop yet.</p>';
+      }else{
+        box.innerHTML='<p class="msg no">Could not read the session table: '+esc(r.error||r.reason||'unknown error')+'</p>';
+      }
+      return;
+    }
+    var h='';
+    for(var i=0;i<(r.windows||[]).length;i++) h+=tqWindowHtml(r.windows[i]);
+    box.innerHTML=h||'<p class="muted">No sessions recorded.</p>';
+  }catch(e){ box.innerHTML='<p class="msg no">Could not read the session table: '+esc(errText(e))+'</p>'; }
+}
 async function loadTraffic(){
+  loadTrafficQuality();
   var box=el('trf-list'); if(!box) return;
   try{
     var r=await api('/traffic',{});

@@ -18,7 +18,12 @@ name = "PawScout"
 # read/write_online_store_navigation: archiving must leave a URL redirect
 # instead of a 404. The Dev Dashboard is what actually grants scopes (token
 # exchange); this file and wrangler.toml are hygiene.
-scopes = "write_inventory,read_inventory,read_locations,write_merchant_managed_fulfillment_orders,read_orders,read_products,write_products,read_publications,write_publications,write_draft_orders,read_customers,read_shipping,write_shipping,read_markets,write_markets,read_online_store_navigation,write_online_store_navigation"
+#
+# read_reports (2026-09-05): the console's Traffic quality card reads the
+# sessions table through shopifyqlQuery, which requires it. Added in the Dev
+# Dashboard the same day; until the merchant accepts it the card shows the
+# scope-missing state.
+scopes = "write_inventory,read_inventory,read_locations,write_merchant_managed_fulfillment_orders,read_orders,read_products,write_products,read_publications,write_publications,write_draft_orders,read_customers,read_shipping,write_shipping,read_markets,write_markets,read_online_store_navigation,write_online_store_navigation,read_reports"
 optional_scopes = [ ]
 use_legacy_install_flow = false
 

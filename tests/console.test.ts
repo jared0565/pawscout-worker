@@ -311,6 +311,21 @@ describe('consolePage', () => {
 
   // --- Traffic view (2026-07-05): acquisition strategy board ---
 
+  // Traffic quality card (2026-09-05): measured session quality above the
+  // strategy board, fetched from /traffic/quality when the view loads. The
+  // renderer must carry the three bucket labels and the scope-missing state,
+  // so a missing read_reports grant reads as a named step, not an error.
+  it('renders the Traffic quality card and its loader above the board', async () => {
+    const html = await consolePage('test-api-key').text();
+    expect(html).toContain('id="trf-quality"');
+    expect(html.indexOf('id="trf-quality"')).toBeLessThan(html.indexOf('id="trf-list"'));
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+    expect(scripts).toContain('function loadTrafficQuality(');
+    expect(scripts).toContain("'/traffic/quality'");
+    expect(scripts).toContain('loadTrafficQuality();');
+    for (const label of ['Automated', 'Engaged', 'Single-page', 'read_reports']) expect(scripts).toContain(label);
+  });
+
   it('renders the Traffic view: rail entry, board, editor wired to /traffic endpoints', async () => {
     const html = await consolePage('test-api-key').text();
     expect(html).toContain('data-route="traffic"');

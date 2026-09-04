@@ -36,6 +36,7 @@ import { sendEmail, SENDING_DOMAIN } from './email';
 import { verifySvixSignature, parseResendEvent, applyResendEvent, getTrackingStatus, enableTracking, ensureEventsWebhook } from './resend-events';
 import { checkPrivacyPolicy, applyPrivacyPolicy } from './legal-policy';
 import { listTrafficBoard, validateTrafficPayload, trafficChannelForUi } from './traffic';
+import { getTrafficQuality } from './traffic-quality';
 import { verifyAppProxy } from './proxy/verify';
 import { verifyUnsubToken } from './retention';
 import { searchBackfill, normalizeKeyword } from './proxy/search';
@@ -657,6 +658,15 @@ app.post('/api/traffic', async (c) => {
   const s = await shopOf(c); if (typeof s !== 'string') return s;
   const rows = await listTrafficBoard(new TenantStore(c.env.DB, s));
   return c.json({ ok: true, channels: rows.map(trafficChannelForUi) });
+});
+// Traffic quality (2026-09-05): Shopify's own session table through the
+// worker's token, split into automated / engaged / single-page. Needs
+// read_reports; a denial comes back as a named scope_missing state.
+app.post('/api/traffic/quality', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  const store = new TenantStore(c.env.DB, s);
+  const admin = await adminForShop(c.env, store).catch(() => null);
+  return c.json(await getTrafficQuality(admin));
 });
 app.post('/api/traffic/save', async (c) => {
   const s = await shopOf(c); if (typeof s !== 'string') return s;
