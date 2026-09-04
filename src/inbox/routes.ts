@@ -4,7 +4,7 @@ import { DEFAULT_INBOX, type InboxConfig, type ThreadStatus } from './types';
 import type { Env } from '../types';
 import { sendReply } from './send';
 import { composeDraftForThread } from './sweep';
-import { maybePartnershipDraft, buildServiceDecline, buildOperationsDecline, buildKeepToEmail, buildSignupInvite, detectVolumePitch, detectOffPlatformRequest, buildSecondTouch, buildPointerBack, type TouchTemplate } from './partnership';
+import { maybePartnershipDraft, buildServiceDecline, buildOperationsDecline, buildCollaborationDecline, buildKeepToEmail, buildSignupInvite, detectVolumePitch, detectOffPlatformRequest, buildSecondTouch, buildPointerBack, type TouchTemplate } from './partnership';
 import { chooseTouch, outboundBodies, type TouchKind } from './repeat';
 import { renderReplyHtml } from './draft';
 import { stripQuotedReply } from './quote';
@@ -209,6 +209,11 @@ export const DRAFT_TEMPLATES: { key: string; label: string }[] = [
   { key: 'signup_followup', label: 'Affiliate programme: follow-up (shorter, apply link)' },
   { key: 'service_decline', label: 'Service pitch decline' },
   { key: 'operations_decline', label: 'Internal operations decline' },
+  // 2026-09-04 (later, Paul's thread): for the applicant who was introduced to
+  // the programme twice and still insists on a different arrangement. The
+  // funnel drafts it by itself in that situation; the picker entry is for the
+  // owner to apply it by hand on any other thread.
+  { key: 'collaboration_decline', label: 'Friendly decline (programme already introduced)' },
   { key: 'keep_to_email', label: 'Keep to email (decline WhatsApp)' },
 ];
 
@@ -254,6 +259,7 @@ export async function applyDraftTemplate(db: D1Database, shop: string, threadId:
   else if (followup) body = buildSecondTouch('signup_invite', name);
   else if (key === 'service_decline') body = buildServiceDecline(name);
   else if (key === 'operations_decline') body = buildOperationsDecline(name);
+  else if (key === 'collaboration_decline') body = buildCollaborationDecline(name);
   else body = buildKeepToEmail(name);
 
   // Owner rule 2026-09-04: never the same message twice on a thread. A template
@@ -276,7 +282,7 @@ export async function applyDraftTemplate(db: D1Database, shop: string, threadId:
   // at a stale 'declined' the next inbound would route off a decision we just
   // reversed.
   const stage = (key === 'signup_invite' || key === 'signup_followup') ? 'passed_to_form'
-    : (key === 'service_decline' || key === 'operations_decline') ? 'declined'
+    : (key === 'service_decline' || key === 'operations_decline' || key === 'collaboration_decline') ? 'declined'
     : null;
   if (stage) {
     if (!applicant) await store.upsertApplicant({ threadId, contactEmail: got.thread.contact_email, stage });

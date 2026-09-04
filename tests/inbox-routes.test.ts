@@ -238,10 +238,27 @@ describe('applyDraftTemplate', () => {
   // under the open programme); the holding note was the July duplicate
   // offender and is superseded by the follow-up. The funnel keeps those bodies
   // internally for the legacy funnel modes; only the picker loses them.
-  it('offers exactly the five live templates, the two programme ones first', () => {
-    expect(DRAFT_TEMPLATES.map((t) => t.key)).toEqual(['signup_invite', 'signup_followup', 'service_decline', 'operations_decline', 'keep_to_email']);
+  // 2026-09-04 (later): the friendly collaboration decline joins the declines,
+  // for the applicant who was introduced to the programme twice and still
+  // insists on a different arrangement (Paul's thread).
+  it('offers exactly the six live templates, the two programme ones first', () => {
+    expect(DRAFT_TEMPLATES.map((t) => t.key)).toEqual(['signup_invite', 'signup_followup', 'service_decline', 'operations_decline', 'collaboration_decline', 'keep_to_email']);
     expect(DRAFT_TEMPLATES[0].label).toMatch(/^Affiliate programme: introduction/);
     expect(DRAFT_TEMPLATES[1].label).toMatch(/^Affiliate programme: follow-up/);
+    expect(DRAFT_TEMPLATES[4].label).toMatch(/^Friendly decline/);
+  });
+
+  it('the friendly collaboration decline renders with the apply link and stamps the applicant declined', async () => {
+    const { s, tid } = await seedWithConfig();
+    const r = await applyDraftTemplate(env.DB, SHOP, tid, 'collaboration_decline');
+    expect(r.ok).toBe(true);
+    expect((r as { touch?: string }).touch).toBe('first');
+    const body = (await s.getPendingDraft(tid))!.body_text;
+    expect(body.startsWith('Hi Jane,')).toBe(true);
+    expect(body).toMatch(/do not take on other forms of collaboration/i);
+    expect(body).toContain(AFFILIATE_APPLY_URL);
+    expect(body).toMatch(/no reply is needed/i);
+    expect((await s.getApplicantByThread(tid))?.stage).toBe('declined');
   });
 
   it('refuses the four superseded funnel templates', async () => {

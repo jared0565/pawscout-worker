@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   buildQualifyingEmail, buildPartnershipDecline, buildFormInvite, buildVoucherInvite, buildHoldingAck,
   buildServiceDecline, buildSignupInvite, buildOperationsDecline, buildKeepToEmail, buildSecondTouch, buildPointerBack,
+  buildCollaborationDecline, detectAlternativeCollaboration, countProgrammeIntroductions,
   TOUCH_TEMPLATES, QUALIFYING_MARKER, AFFILIATE_APPLY_URL, PARTNERSHIP_STANCE, STANDARD_COMMISSION_PCT
 } from '../src/inbox/partnership';
 import { countWords } from '../src/inbox/draft-quality';
@@ -110,6 +111,7 @@ describe('second-touch and pointer variants', () => {
     voucher_invite: buildVoucherInvite('Jo'), form_invite: buildFormInvite('Jo'),
     partnership_decline: buildPartnershipDecline('Jo'), service_decline: buildServiceDecline('Jo'),
     operations_decline: buildOperationsDecline('Jo'), keep_to_email: buildKeepToEmail('Jo'), holding_ack: buildHoldingAck('Jo'),
+    collaboration_decline: buildCollaborationDecline('Jo'),
   };
   it('every template has a second touch shorter than the first, and a pointer shorter still', () => {
     expect(TOUCH_TEMPLATES.length).toBe(Object.keys(firstOf).length);
@@ -127,12 +129,67 @@ describe('second-touch and pointer variants', () => {
     }
   });
   it('link-bearing templates keep the apply link in both shorter forms', () => {
-    for (const key of ['signup_invite', 'service_decline', 'form_invite'] as const) {
+    for (const key of ['signup_invite', 'service_decline', 'form_invite', 'collaboration_decline'] as const) {
       expect(buildSecondTouch(key, 'Jo'), key).toContain(AFFILIATE_APPLY_URL);
       expect(buildPointerBack(key, 'Jo'), key).toContain(AFFILIATE_APPLY_URL);
     }
   });
   it('the second-touch qualifying note does not carry the screening marker (it does not re-ask the questions)', () => {
     expect(buildSecondTouch('qualifying', 'Jo')).not.toContain(QUALIFYING_MARKER);
+  });
+});
+
+// Owner rule 2026-09-04 (Paul's thread): "if we have previously introduced the
+// partnership program a couple of times and they insist on other form of
+// collaboration, then our next reply is just to decline their offer but still
+// in a friendly manner." The decline is final on the other arrangement, keeps
+// the programme door open with its link, and asks for nothing back.
+describe('friendly collaboration decline (programme introduced twice, they insist on another arrangement)', () => {
+  it('declines other arrangements plainly, keeps the programme door open with the link, needs no reply', () => {
+    const body = buildCollaborationDecline('Paul');
+    expect(body.startsWith('Hi Paul,')).toBe(true);
+    expect(body).toMatch(/appreciate/i);
+    expect(body).toMatch(/do not take on other forms of collaboration/i);
+    expect(body).toMatch(/hands-on, consulting or results-based/i);
+    expect(body).toMatch(/settled position/i);
+    expect(body).toContain(AFFILIATE_APPLY_URL);
+    expect(body).toMatch(/door stays open/i);
+    expect(body).toMatch(/no reply is needed/i);
+    expect(body).toMatch(/every success/i);
+    expect(body).toContain('Best Regards,\nActive Paw Partnerships');
+    // The old partnership decline's falsehood must not come back through here.
+    expect(body).not.toMatch(/not taking on new partnerships/i);
+    expect(body).not.toMatch(/[–—]/);
+  });
+
+  // Grounded in the MESSAGE TEXT only (standing rule). The positives are the
+  // live phrasings; the negatives are the ordinary replies an invited applicant
+  // sends, none of which may read as a refusal of the programme.
+  it('detects insistence on a different arrangement from the sender\'s own words', () => {
+    const paul = 'I\'m not looking to operate purely as a referral partner. What I had in mind is a more hands-on growth partnership, where I work alongside you to improve the customer journey, strengthen the store and marketing strategy, and increase conversions, on a results-based collaboration. I completely respect your existing referral structure, but I believe there is more value we could create together.';
+    expect(detectAlternativeCollaboration(paul)).toBe(true);
+    expect(detectAlternativeCollaboration('Rather than a referral arrangement, I would propose a monthly consulting retainer.')).toBe(true);
+    expect(detectAlternativeCollaboration('I would prefer a different kind of partnership where I manage your ads for a share of the profit.')).toBe(true);
+    expect(detectAlternativeCollaboration('Instead of the affiliate route, could we look at a performance-based partnership?')).toBe(true);
+    for (const plain of [
+      'Thanks, I have submitted the application form.',
+      'What commission do you offer?',
+      'I understand, thanks for the reply.',
+      'Where do I find my discount code once approved?',
+      'Great, I will apply through the link this week.',
+    ]) expect(detectAlternativeCollaboration(plain), plain).toBe(false);
+  });
+
+  it('counts the outbound messages that introduced the programme (questions or apply link), never inbound echoes', () => {
+    const msgs = [
+      { direction: 'inbound', body_text: 'I run a dog page, can we work together?' },
+      { direction: 'outbound', body_text: buildQualifyingEmail('Jo', 'voucher') },
+      { direction: 'inbound', body_text: `You sent me ${AFFILIATE_APPLY_URL} but I want more than that` },
+      { direction: 'outbound', body_text: 'Thanks, we will come back to you.' },
+      { direction: 'outbound', body_text: buildSignupInvite('Jo') },
+    ];
+    expect(countProgrammeIntroductions(msgs)).toBe(2);
+    expect(countProgrammeIntroductions(msgs.slice(0, 2))).toBe(1);
+    expect(countProgrammeIntroductions([])).toBe(0);
   });
 });

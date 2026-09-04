@@ -597,6 +597,7 @@ describe('consolePage', () => {
       expect(scripts, gone).not.toContain(gone);
     }
     expect(scripts).toContain('value="signup_followup"');
+    expect(scripts).toContain('value="collaboration_decline"');
   });
 
   it('Inbox carries the template picker wired to /inbox/template', async () => {

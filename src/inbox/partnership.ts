@@ -168,6 +168,29 @@ export function detectServicePitch(text: string): boolean {
   return offer && service;
 }
 
+/** An invited applicant INSISTING on a different arrangement instead of the
+ * programme they were pointed at: refusing the referral/affiliate model in so
+ * many words, naming a hands-on / consulting / results-based / retainer
+ * arrangement, or re-pitching a service or a volume deal. The other half of
+ * the owner's 2026-09-04 rule (Paul: "not looking to operate purely as a
+ * referral partner ... a more hands-on growth partnership ... results-based
+ * collaboration"). Ordinary applicant replies ("I have submitted the form",
+ * "what commission do you offer?") must never reach it. Pure and
+ * deterministic; message TEXT only. */
+export function detectAlternativeCollaboration(text: string): boolean {
+  const t = text.toLowerCase();
+  const refusesProgramme =
+    /\bnot\s+(?:looking|interested|keen|wanting|willing|able)\s+(?:to|in)\s+(?:\w+\s+){0,4}?(?:referral|affiliate)/.test(t)
+    || /\b(?:rather than|instead of|beyond|more than)\s+(?:\w+\s+){0,3}?(?:referral|affiliate)/.test(t)
+    || /\b(?:different|another|alternative|other)\s+(?:kind|type|form|sort)\s+of\s+(?:partnership|collaboration|arrangement|deal)\b/.test(t);
+  const otherArrangement =
+    /\bhands[-\s]on\b/.test(t)
+    || /\b(?:growth|strategic|consulting|advisory|management|equity)\s+(?:partnership|collaboration|arrangement|role|model)\b/.test(t)
+    || /\b(?:results?|performance|revenue|profit)[-\s]based\s+(?:partnership|collaboration|arrangement|model)\b/.test(t)
+    || /\b(?:consultan(?:t|cy)|retainer|profit[-\s]shar(?:e|ing)|manage your (?:ads|marketing|store|campaigns))\b/.test(t);
+  return refusesProgramme || otherArrangement || detectServicePitch(text) || detectVolumePitch(text);
+}
+
 /** Detects a REQUEST to move the conversation OFF email to another channel
  * (WhatsApp/Telegram/Signal/etc.) or to a phone call/text: "can we continue on
  * WhatsApp", "let's move to Telegram", "drop your WhatsApp", "call/text me". Fires
@@ -469,6 +492,25 @@ Whatever you need, just reply to this email and we will pick it up from here.
 Best Regards,
 Active Paw`;
 
+// Friendly collaboration decline (owner rule 2026-09-04, Paul's thread): "if we
+// have previously introduced the partnership program a couple of times and they
+// insist on other form of collaboration, then our next reply is just to decline
+// their offer but still in a friendly manner." Final on the OTHER arrangement,
+// never on the person: the programme door stays open with its link, and the
+// note asks for nothing back. Deliberately generic about the arrangement
+// (hands-on, consulting, results-based) so it drops onto any such thread.
+const COLLABORATION_DECLINE_BODY =
+`Thank you for coming back to us, and for being so clear about the kind of partnership you have in mind. We appreciate the thought you have put into it.
+
+We have to be straight with you, so we do not keep you waiting: we do not take on other forms of collaboration, whether hands-on, consulting or results-based, because our store's strategy, marketing and development stay with our own team. That is a settled position rather than a reflection on your proposal.
+
+The affiliate programme we described is the one way we work with partners, and that door stays open to you at any time: ${AFFILIATE_APPLY_URL}
+
+Thank you again for your interest in Active Paw. No reply is needed, and we wish you every success with your work.
+
+Best Regards,
+Active Paw Partnerships`;
+
 // One-line tier reminder for the code invite (full ladder already went out in
 // the qualifying email; numbers interpolate from the same constants).
 const EARNED_TIERS_SHORT =
@@ -535,6 +577,21 @@ export function buildFormInvite(name: string | null): string { return applySalut
 export function buildVoucherInvite(name: string | null): string { return applySalutation(VOUCHER_INVITE_BODY, name); }
 export function buildHoldingAck(name: string | null): string { return applySalutation(HOLDING_ACK_BODY, name); }
 export function buildKeepToEmail(name: string | null): string { return applySalutation(KEEP_TO_EMAIL_BODY, name); }
+export function buildCollaborationDecline(name: string | null): string { return applySalutation(COLLABORATION_DECLINE_BODY, name); }
+
+/** How many outbound messages on the thread INTRODUCED the programme: the
+ * screening questions (QUALIFYING_MARKER) or the apply link. Inbound echoes of
+ * the link never count. Drives the "introduced a couple of times" half of the
+ * owner's 2026-09-04 rule. */
+export function countProgrammeIntroductions(
+  messages: ReadonlyArray<{ direction: string; body_text: string | null }>
+): number {
+  return messages.filter((m) => {
+    if (m.direction !== 'outbound') return false;
+    const body = m.body_text ?? '';
+    return body.includes(AFFILIATE_APPLY_URL) || body.includes(QUALIFYING_MARKER);
+  }).length;
+}
 
 // --- Second touch and pointer (owner rule 2026-09-04) -----------------------
 // "We never send the same message multiple times. If you need to send the same
@@ -544,7 +601,7 @@ export function buildKeepToEmail(name: string | null): string { return applySalu
 // thread's outbound history; the guard runs in the funnel and the template route.
 export const TOUCH_TEMPLATES = [
   'signup_invite', 'qualifying', 'voucher_invite', 'form_invite', 'partnership_decline',
-  'service_decline', 'operations_decline', 'keep_to_email', 'holding_ack',
+  'service_decline', 'operations_decline', 'keep_to_email', 'holding_ack', 'collaboration_decline',
 ] as const;
 export type TouchTemplate = typeof TOUCH_TEMPLATES[number];
 
@@ -596,6 +653,12 @@ ${SIGNOFF_STORE}`,
 `Thanks for checking in. Your application is still in review, and you will hear from us here as soon as it is decided.
 
 ${SIGNOFF_PARTNERSHIPS}`,
+  collaboration_decline:
+`Thank you for following up. Our answer is unchanged: we do not take on other forms of collaboration, and the affiliate programme remains the one way to work with us: ${AFFILIATE_APPLY_URL}
+
+No reply is needed, and we wish you every success.
+
+${SIGNOFF_PARTNERSHIPS}`,
 };
 
 // One sentence each, pointing back to the earlier reply (the owner's choice for a
@@ -610,6 +673,7 @@ const POINTER_BACK: Record<TouchTemplate, string> = {
   operations_decline: `Our earlier reply on this thread still stands, and there is nothing we are able to add to it.`,
   keep_to_email: `As in our earlier reply, we keep our conversations on email, so please carry on here whenever you are ready.`,
   holding_ack: `Our earlier note still stands: your application is in review, and we will write as soon as it is decided.`,
+  collaboration_decline: `Our earlier reply on this thread still stands: the affiliate programme is the only collaboration we run, and its form stays open to you: ${AFFILIATE_APPLY_URL}`,
 };
 
 export function buildSecondTouch(key: TouchTemplate, name: string | null): string {
@@ -824,9 +888,20 @@ export async function maybePartnershipDraft(
   // always HITL, because a conversation that has looped deserves a human look.
   const prior = outboundBodies(got.messages);
   async function insertTouched(
-    key: TouchTemplate, first: string, opts: { holdReasons?: string[]; model?: string } = {}
+    key: TouchTemplate, first: string, opts: { holdReasons?: string[]; model?: string; startAtSecond?: boolean } = {}
   ): Promise<{ draftId: string; touch: TouchKind }> {
-    const t = chooseTouch(prior, { first, second: buildSecondTouch(key, name), pointer: buildPointerBack(key, name) });
+    const second = buildSecondTouch(key, name);
+    const pointer = buildPointerBack(key, name);
+    // startAtSecond: the point was made already by construction (the sender is
+    // answering it), so the ladder starts at the shorter touch. Similarity alone
+    // cannot be trusted here: a first body with an extra paragraph appended
+    // scores under the repeat threshold and would go out in full again.
+    const chosen = opts.startAtSecond
+      ? chooseTouch(prior, { first: second, second: pointer, pointer })
+      : chooseTouch(prior, { first, second, pointer });
+    const t: { body: string; touch: TouchKind } = opts.startAtSecond
+      ? { body: chosen.body, touch: chosen.body === pointer ? 'pointer' : 'second' }
+      : chosen;
     const holdReasons = [...(opts.holdReasons ?? []), ...(t.touch === 'first' ? [] : ['repeat_touch'])];
     const draftId = await store.insertDraft({
       threadId: thread.id, bodyText: t.body, bodyHtml: renderReplyHtml(t.body),
@@ -1040,6 +1115,28 @@ export async function maybePartnershipDraft(
       });
       await maybeAlertOwner(env, cfg, thread.shop, thread,
         'An approved partner replied - a context-aware draft is ready for your review.', 'affiliate', _fetchImpl);
+      return { draftId, send: false };
+    }
+    // Owner rule 2026-09-04 (Paul's thread): an applicant who answers the
+    // programme by INSISTING on a different arrangement is not a screened
+    // applicant checking in, so the holding ack ("reviewing the fit") would tell
+    // them nobody read their reply. Introduced twice and still insisting: the
+    // friendly decline, final on the other arrangement, applicant declined
+    // (later replies fall through to the generic drafter like every declined
+    // thread). Introduced once: the shorter programme reminder, i.e. the
+    // earlier "tell them about the only programme" rule, stage unchanged.
+    // Both HITL.
+    if (detectAlternativeCollaboration(latestNewText)) {
+      if (countProgrammeIntroductions(got.messages) >= 2) {
+        const { draftId } = await insertTouched('collaboration_decline', buildCollaborationDecline(name));
+        await store.setApplicantStage(thread.id, 'declined', null);
+        await maybeAlertOwner(env, cfg, thread.shop, thread,
+          'An invited applicant still wants a different arrangement after two introductions - a friendly decline is ready for your review.', 'affiliate', _fetchImpl);
+        return { draftId, send: false };
+      }
+      const { draftId } = await insertTouched('signup_invite', buildSignupInvite(name, { volumePitch, offPlatform: offPlatformNow }), { startAtSecond: true });
+      await maybeAlertOwner(env, cfg, thread.shop, thread,
+        'An invited applicant wants a different arrangement - the shorter programme reminder is ready for your review.', 'affiliate', _fetchImpl);
       return { draftId, send: false };
     }
     // NOT yet accepted: 'escalated' (owner may still decline) or 'passed_to_form'

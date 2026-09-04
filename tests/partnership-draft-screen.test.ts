@@ -3,7 +3,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
 import { TenantStore } from '../src/tenant-store';
 import { composeDraftForThread } from '../src/inbox/sweep';
-import { maybePartnershipDraft, AFFILIATE_APPLY_URL, buildHoldingAck } from '../src/inbox/partnership';
+import { maybePartnershipDraft, AFFILIATE_APPLY_URL, buildHoldingAck, buildQualifyingEmail, buildSignupInvite, buildSecondTouch } from '../src/inbox/partnership';
 import { countWords } from '../src/inbox/draft-quality';
 import { DEFAULT_INBOX } from '../src/inbox/types';
 import { DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, type TenantConfig } from '../src/types';
@@ -274,5 +274,67 @@ describe('funnel never repeats a sent message', () => {
     expect(countWords(draft!.body_text)).toBeLessThan(countWords(first));
     expect(draft!.body_text).toMatch(/review/i);
     expect(JSON.parse(draft!.hold_reasons ?? '[]')).toContain('repeat_touch');
+  });
+});
+
+// Owner rule 2026-09-04 (Paul's thread, pojoseph422): an invited applicant who
+// answers the programme by insisting on a DIFFERENT arrangement is not a
+// screened applicant checking in, so the holding note ("reviewing the fit") is
+// the wrong reply. Introduced twice and still insisting: the friendly decline,
+// applicant declined. Introduced once: the shorter invite follow-up (the
+// earlier "tell them about the only programme" rule). Any other reply at that
+// stage keeps the holding note.
+describe('an invited applicant who insists on another form of collaboration', () => {
+  const SIGNUP_CFG: TenantConfig = { ...CFG, inbox: { ...DEFAULT_INBOX, affiliateMode: 'signup_page' } };
+  const REFUSAL = 'I\'m not looking to operate purely as a referral partner. What I had in mind is a more hands-on growth partnership, where I work alongside you to improve the customer journey and increase conversions, on a results-based collaboration.';
+
+  async function seedInvited(shop: string, introductions: 1 | 2, reply: string) {
+    const { s, tid } = await seedFirstTouch(shop);
+    await s.upsertApplicant({ threadId: tid, contactEmail: 'kasim@x.com', stage: 'passed_to_form' });
+    if (introductions === 2) {
+      await s.insertOutboundMessage({ threadId: tid, messageId: `<q1@${shop}>`, from: 'contact@activepaw.co.uk', to: 'kasim@x.com', subject: 'Re: Partnership', bodyText: buildQualifyingEmail('Kasim', 'voucher'), bodyHtml: '<p>x</p>', sentAt: '2026-06-23T10:00:00Z' });
+      await s.insertInboundMessageIfNew({ threadId: tid, messageId: `<a2@${shop}>`, inReplyTo: null, references: [], from: 'kasim@x.com', to: 'sales@activepaw.co.uk', subject: 'Re: Partnership', bodyText: 'Here are my answers: a small dog page, no brand work yet.', bodyHtml: null, headersJson: '{}', receivedAt: '2026-06-24T10:00:00Z' });
+    }
+    await s.insertOutboundMessage({ threadId: tid, messageId: `<i1@${shop}>`, from: 'contact@activepaw.co.uk', to: 'kasim@x.com', subject: 'Re: Partnership', bodyText: buildSignupInvite('Kasim'), bodyHtml: '<p>x</p>', sentAt: '2026-06-25T10:00:00Z' });
+    await s.insertInboundMessageIfNew({ threadId: tid, messageId: `<a3@${shop}>`, inReplyTo: null, references: [], from: 'kasim@x.com', to: 'sales@activepaw.co.uk', subject: 'Re: Partnership', bodyText: reply, bodyHtml: null, headersJson: '{}', receivedAt: '2026-06-26T10:00:00Z' });
+    return { s, tid };
+  }
+
+  it('introduced twice and still insisting: the friendly decline, held, applicant declined', async () => {
+    const { s, tid } = await seedInvited('cd2.myshopify.com', 2, REFUSAL);
+    const got = (await s.getThreadWithMessages(tid))!;
+    const r = await maybePartnershipDraft({ ...env } as any, s, SIGNUP_CFG, got.thread, got, noFetch);
+    expect(r).not.toBeNull();
+    expect(r!.send).toBe(false);
+    const draft = await s.getPendingDraft(tid);
+    expect(draft!.body_text).toMatch(/do not take on other forms of collaboration/i);
+    expect(draft!.body_text).toContain(AFFILIATE_APPLY_URL);
+    expect(draft!.body_text).not.toMatch(/reviewing the fit|taking a look/i);
+    expect(JSON.parse(draft!.hold_reasons ?? '[]')).toEqual([]);
+    expect((await s.getApplicantByThread(tid))!.stage).toBe('declined');
+  });
+
+  it('introduced once and insisting: the shorter invite follow-up, not the holding note; stage unchanged', async () => {
+    const { s, tid } = await seedInvited('cd1.myshopify.com', 1, REFUSAL);
+    const got = (await s.getThreadWithMessages(tid))!;
+    const r = await maybePartnershipDraft({ ...env } as any, s, SIGNUP_CFG, got.thread, got, noFetch);
+    expect(r).not.toBeNull();
+    expect(r!.send).toBe(false);
+    const draft = await s.getPendingDraft(tid);
+    expect(draft!.body_text).toBe(buildSecondTouch('signup_invite', 'Kasim'));
+    expect(draft!.body_text).not.toMatch(/reviewing the fit|taking a look/i);
+    expect(JSON.parse(draft!.hold_reasons ?? '[]')).toContain('repeat_touch');
+    expect((await s.getApplicantByThread(tid))!.stage).toBe('passed_to_form');
+  });
+
+  it('introduced twice, but a plain reply: the holding note as before, stage unchanged', async () => {
+    const { s, tid } = await seedInvited('cd0.myshopify.com', 2, 'Thanks, I have submitted the application form.');
+    const got = (await s.getThreadWithMessages(tid))!;
+    const r = await maybePartnershipDraft({ ...env } as any, s, SIGNUP_CFG, got.thread, got, noFetch);
+    expect(r).not.toBeNull();
+    const draft = await s.getPendingDraft(tid);
+    expect(draft!.body_text).toMatch(/reviewing|taking a look/i);
+    expect(draft!.body_text).not.toMatch(/do not take on other forms of collaboration/i);
+    expect((await s.getApplicantByThread(tid))!.stage).toBe('passed_to_form');
   });
 });

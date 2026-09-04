@@ -205,6 +205,7 @@ function renderInboxThread(thread,messages,labels,draft,invoice,applicant,contac
     +'<option value="signup_followup">Affiliate programme: follow-up (shorter, apply link)</option>'
     +'<option value="service_decline">Service pitch decline</option>'
     +'<option value="operations_decline">Internal operations decline</option>'
+    +'<option value="collaboration_decline">Friendly decline (programme already introduced)</option>'
     +'<option value="keep_to_email">Keep to email (decline WhatsApp)</option>'
     +'</select>';
   // Pending draft: distinct dashed card at the END of the timeline
