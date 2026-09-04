@@ -27,3 +27,5 @@ search-*-after-fix.png
 .aramid/
 .graphite*
 .cache/
+
+.githooks/

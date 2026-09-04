@@ -10,7 +10,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python -m graphite build F:/Projects/Shopify/demo-store2/pawscout-worker",
+            "command": "python -P -m graphite build F:/Projects/Shopify/demo-store2/pawscout-worker",
             "timeout": 120,
             "statusMessage": "Rebuilding Graphite code graph (0 tokens)"
           }
@@ -20,7 +20,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python -m graphite agent-hook stop"
+            "command": "python -P -m graphite agent-hook stop"
           }
         ]
       }
@@ -39,11 +39,11 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "Grep|Glob",
+        "matcher": "Grep|Glob|Bash|PowerShell",
         "hooks": [
           {
             "type": "command",
-            "command": "python -m graphite agent-hook pre-tool-use --mode remind"
+            "command": "python -P -m graphite agent-hook pre-tool-use --mode strict"
           }
         ]
       }
@@ -53,7 +53,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python -m graphite agent-hook session-start"
+            "command": "python -P -m graphite agent-hook session-start"
           }
         ]
       }

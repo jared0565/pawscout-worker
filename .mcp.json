@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "graphite": {
+      "command": "python",
+      "args": [
+        "-P",
+        "-m",
+        "graphite.mcp"
+      ]
+    }
+  }
+}
