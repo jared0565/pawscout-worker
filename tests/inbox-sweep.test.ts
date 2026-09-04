@@ -321,3 +321,25 @@ describe('composeAgentDraft', () => {
     expect(out.bodyText).toBe('Happy to help.\n\nBest Regards,\nActive Paw Sales Team');
   });
 });
+
+// Owner rule 2026-09-04: an LLM draft that repeats a reply we already sent on
+// the thread is held with a named reason and never auto-sends. The reviser is
+// asked for a shorter, non-repeating reply first; when it comes back the same
+// (this mock always does), the hold is what protects the customer.
+describe('LLM draft that repeats a prior reply', () => {
+  it('is held with repeats_prior_reply', async () => {
+    const tid = await seedShopWithThread();
+    const store = new TenantStore(env.DB, SHOP);
+    await store.setThreadClassification(tid, { status: 'needs_reply', primaryCategory: 'product-question', intentScore: 40, summary: 's', classifiedAt: '2026-06-18T11:05:00Z' }); // stamped after the follow-up: no re-classification pass
+    const SENT = 'Yes, we ship to Ireland, and delivery usually takes five to seven working days from dispatch.';
+    await store.insertOutboundMessage({ threadId: tid, messageId: '<o1@activepaw>', from: 'support@activepaw.co.uk', to: 'jane@x.com', subject: 'Re: Buy a bed', bodyText: 'Hi Jane,\n\n' + SENT + '\n\nBest Regards,\nActive Paw', bodyHtml: '<p>x</p>', sentAt: '2026-06-18T10:30:00Z' });
+    await store.insertInboundMessageIfNew({ threadId: tid, messageId: '<m2@x>', inReplyTo: null, references: [], from: 'jane@x.com', to: 'support@activepaw.co.uk', subject: 'Re: Buy a bed', bodyText: 'Great, and is that the same for Northern Ireland?', bodyHtml: null, headersJson: '{"authentication-results":"mx; spf=pass dkim=pass dmarc=pass"}', receivedAt: '2026-06-18T11:00:00Z' });
+    await store.reopenThread(tid);
+    const fetchImpl = (async () => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ bodyText: SENT, confidence: 95, quotesPriceOrOrder: false }) } }], usage: { cost: 0.0001 } }), { status: 200 })) as unknown as typeof fetch;
+    await runInboxClassifySweep({ ...env, OPENROUTER_API_KEY: 'k' } as any, fetchImpl);
+    const d = await store.getPendingDraft(tid);
+    expect(d).not.toBeNull();
+    expect(JSON.parse(d!.hold_reasons ?? '[]')).toContain('repeats_prior_reply');
+    expect(d!.status).toBe('pending');
+  });
+});

@@ -3,7 +3,8 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
 import { TenantStore } from '../src/tenant-store';
 import { composeDraftForThread } from '../src/inbox/sweep';
-import { maybePartnershipDraft, AFFILIATE_APPLY_URL } from '../src/inbox/partnership';
+import { maybePartnershipDraft, AFFILIATE_APPLY_URL, buildHoldingAck } from '../src/inbox/partnership';
+import { countWords } from '../src/inbox/draft-quality';
 import { DEFAULT_INBOX } from '../src/inbox/types';
 import { DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, type TenantConfig } from '../src/types';
 
@@ -252,5 +253,26 @@ describe('partnership lane routing (unchanged by the mode)', () => {
     // No LLM keys → generic drafter returns null; the partnership intercept must NOT fire.
     expect(r).toBeNull();
     expect(await s.getApplicantByThread(tid)).toBeNull();
+  });
+});
+
+// Owner rule 2026-09-04: the funnel never repeats a message it already sent on
+// the thread. The July offender was exactly this holding ack, sent twice to the
+// same applicant; now the second one is the shorter touch, and always HITL.
+describe('funnel never repeats a sent message', () => {
+  it('a passed applicant who already received the holding ack gets the shorter second touch, held', async () => {
+    const { s, tid } = await seedFirstTouch('vh.myshopify.com');
+    await s.upsertApplicant({ threadId: tid, contactEmail: 'kasim@x.com', stage: 'passed_to_form' });
+    const first = buildHoldingAck('Kasim');
+    await s.insertOutboundMessage({ threadId: tid, messageId: '<h1@activepaw>', from: 'contact@activepaw.co.uk', to: 'kasim@x.com', subject: 'Re: Partnership', bodyText: first, bodyHtml: '<p>x</p>', sentAt: '2026-06-23T10:00:00Z' });
+    const got = (await s.getThreadWithMessages(tid))!;
+    const r = await maybePartnershipDraft({ ...env } as any, s, CFG, got.thread, got, noFetch);
+    expect(r).not.toBeNull();
+    expect(r!.send).toBe(false);
+    const draft = await s.getPendingDraft(tid);
+    expect(draft!.body_text).not.toBe(first);
+    expect(countWords(draft!.body_text)).toBeLessThan(countWords(first));
+    expect(draft!.body_text).toMatch(/review/i);
+    expect(JSON.parse(draft!.hold_reasons ?? '[]')).toContain('repeat_touch');
   });
 });

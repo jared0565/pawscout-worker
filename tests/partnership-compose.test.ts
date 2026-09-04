@@ -1,8 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import {
   buildQualifyingEmail, buildPartnershipDecline, buildFormInvite, buildVoucherInvite, buildHoldingAck,
-  buildServiceDecline, buildSignupInvite, AFFILIATE_APPLY_URL, PARTNERSHIP_STANCE, STANDARD_COMMISSION_PCT
+  buildServiceDecline, buildSignupInvite, buildOperationsDecline, buildKeepToEmail, buildSecondTouch, buildPointerBack,
+  TOUCH_TEMPLATES, QUALIFYING_MARKER, AFFILIATE_APPLY_URL, PARTNERSHIP_STANCE, STANDARD_COMMISSION_PCT
 } from '../src/inbox/partnership';
+import { countWords } from '../src/inbox/draft-quality';
 
 describe('partnership composers', () => {
   it('qualifying email greets by name and asks the six screening questions', () => {
@@ -96,5 +98,41 @@ describe('an affiliate mention always carries the apply link', () => {
     expect(body).toContain(`${STANDARD_COMMISSION_PCT}%`);
     expect(body).not.toMatch(/If you run a channel or audience/);
     expect(body).toMatch(/no reply is needed/i);
+  });
+});
+
+// Owner rule 2026-09-04: a thread never gets the same message twice; when a
+// point has to be made again it is made SHORTER. Every deterministic body has a
+// concise second touch and a one-line pointer back to the earlier reply.
+describe('second-touch and pointer variants', () => {
+  const firstOf: Record<string, string> = {
+    signup_invite: buildSignupInvite('Jo'), qualifying: buildQualifyingEmail('Jo', 'voucher'),
+    voucher_invite: buildVoucherInvite('Jo'), form_invite: buildFormInvite('Jo'),
+    partnership_decline: buildPartnershipDecline('Jo'), service_decline: buildServiceDecline('Jo'),
+    operations_decline: buildOperationsDecline('Jo'), keep_to_email: buildKeepToEmail('Jo'), holding_ack: buildHoldingAck('Jo'),
+  };
+  it('every template has a second touch shorter than the first, and a pointer shorter still', () => {
+    expect(TOUCH_TEMPLATES.length).toBe(Object.keys(firstOf).length);
+    for (const key of TOUCH_TEMPLATES) {
+      const first = firstOf[key];
+      const second = buildSecondTouch(key, 'Jo');
+      const pointer = buildPointerBack(key, 'Jo');
+      expect(first, key).toBeTruthy();
+      expect(second.startsWith('Hi Jo,'), key).toBe(true);
+      expect(pointer.startsWith('Hi Jo,'), key).toBe(true);
+      expect(countWords(second), key).toBeLessThan(countWords(first));
+      expect(countWords(pointer), key).toBeLessThan(countWords(second));
+      expect(pointer, key).toMatch(/earlier/i);
+      expect(second, key).toMatch(/\nActive Paw/); // signed
+    }
+  });
+  it('link-bearing templates keep the apply link in both shorter forms', () => {
+    for (const key of ['signup_invite', 'service_decline', 'form_invite'] as const) {
+      expect(buildSecondTouch(key, 'Jo'), key).toContain(AFFILIATE_APPLY_URL);
+      expect(buildPointerBack(key, 'Jo'), key).toContain(AFFILIATE_APPLY_URL);
+    }
+  });
+  it('the second-touch qualifying note does not carry the screening marker (it does not re-ask the questions)', () => {
+    expect(buildSecondTouch('qualifying', 'Jo')).not.toContain(QUALIFYING_MARKER);
   });
 });

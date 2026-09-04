@@ -189,3 +189,18 @@ describe('refineUntilClean (runtime self-correction loop)', () => {
     expect(out).toBe(FILLER);
   });
 });
+
+// Owner rule 2026-09-04: never send the same message twice on a thread. For LLM
+// drafts the repeat is a QUALITY ISSUE, so the existing self-correction loop asks
+// the reviser for a shorter reply that does not repeat what we already sent.
+describe('findDraftIssues: repeating a reply we already sent', () => {
+  const SENT = 'Thank you for those details, much appreciated. We are taking a look and reviewing the fit, and we will be in touch shortly with the next step.';
+  it('flags a candidate that repeats a prior outbound on the thread and asks for a shorter, non-repeating reply', () => {
+    const issues = findDraftIssues(SENT, { priorOutbound: ['Hi Jo,\n\n' + SENT + '\n\nBest Regards,\nActive Paw'] });
+    expect(issues.some((i) => /already sent/i.test(i) && /shorter/i.test(i))).toBe(true);
+  });
+  it('does not flag a fresh reply, and skips the check when no prior outbound is given', () => {
+    expect(findDraftIssues('Yes, we ship to Ireland; delivery takes five to seven working days from dispatch.', { priorOutbound: [SENT] })).toEqual([]);
+    expect(findDraftIssues(SENT, {})).toEqual([]);
+  });
+});

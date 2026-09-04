@@ -4,7 +4,8 @@ import { env, applyD1Migrations } from 'cloudflare:test';
 import { SignJWT } from 'jose';
 import { TenantStore } from '../src/tenant-store';
 import { listInboxThreads, getInboxThread, setInboxStatus, setInboxLabels, regenerateDraft, applyDraftTemplate, unblockSender, DRAFT_TEMPLATES } from '../src/inbox/routes';
-import { QUALIFYING_MARKER, AFFILIATE_APPLY_URL } from '../src/inbox/partnership';
+import { QUALIFYING_MARKER, AFFILIATE_APPLY_URL, buildSignupInvite } from '../src/inbox/partnership';
+import { countWords } from '../src/inbox/draft-quality';
 import { DEFAULT_INBOX } from '../src/inbox/types';
 import { ACTIVE_PAW_COLLECTION_MAP, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, type Env } from '../src/types';
 import { app } from '../src/index';
@@ -478,5 +479,39 @@ describe('unblockSender', () => {
     expect(res.status).toBe(200);
     expect(((await res.json()) as { ok: boolean }).ok).toBe(true);
     expect((await s.getContactByEmail('v@x.com'))!.blocked_at).toBeNull();
+  });
+});
+
+// Owner rule 2026-09-04: a thread never gets the same message twice. A template
+// that was already sent on the thread renders as its shorter second touch; once
+// that has gone out too, as a one-line pointer back to the earlier reply.
+describe('applyDraftTemplate never repeats a sent message', () => {
+  it('renders the second touch after the full template was sent, then the pointer', async () => {
+    const { s, tid } = await seedWithConfig();
+    const first = buildSignupInvite('Jane');
+    await s.insertOutboundMessage({ threadId: tid, messageId: '<o1@activepaw>', from: 'contact@activepaw.co.uk', to: 'jane@x.com', subject: 'Re: Hi', bodyText: first, bodyHtml: '<p>x</p>', sentAt: '2026-06-19T10:00:00Z' });
+
+    const r2 = await applyDraftTemplate(env.DB, SHOP, tid, 'signup_invite');
+    expect(r2.ok).toBe(true);
+    const second = (r2 as { draft?: { body_text: string } }).draft!.body_text;
+    expect((r2 as { touch?: string }).touch).toBe('second');
+    expect(second).not.toBe(first);
+    expect(countWords(second)).toBeLessThan(countWords(first));
+    expect(second).toContain(AFFILIATE_APPLY_URL);
+    expect(JSON.parse((await s.getPendingDraft(tid))!.hold_reasons ?? '[]')).toContain('repeat_touch');
+
+    await s.insertOutboundMessage({ threadId: tid, messageId: '<o2@activepaw>', from: 'contact@activepaw.co.uk', to: 'jane@x.com', subject: 'Re: Hi', bodyText: second, bodyHtml: '<p>x</p>', sentAt: '2026-06-20T10:00:00Z' });
+    const r3 = await applyDraftTemplate(env.DB, SHOP, tid, 'signup_invite');
+    expect((r3 as { touch?: string }).touch).toBe('pointer');
+    const pointer = (r3 as { draft?: { body_text: string } }).draft!.body_text;
+    expect(pointer).toMatch(/earlier reply/i);
+    expect(countWords(pointer)).toBeLessThan(countWords(second));
+  });
+
+  it('a template never sent on the thread renders in full, with no repeat hold', async () => {
+    const { s, tid } = await seedWithConfig();
+    const r = await applyDraftTemplate(env.DB, SHOP, tid, 'signup_invite');
+    expect((r as { touch?: string }).touch).toBe('first');
+    expect(JSON.parse((await s.getPendingDraft(tid))!.hold_reasons ?? '[]')).not.toContain('repeat_touch');
   });
 });

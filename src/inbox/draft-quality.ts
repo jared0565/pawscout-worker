@@ -12,6 +12,8 @@
 // modes the owner actually edits out: a reply with NO substance (only courtesy +
 // sign-off), an over-long reply, or a missing direct answer when one is owed.
 
+import { repeatsPriorOutbound } from './repeat';
+
 /** Customer-service courtesy phrases. ALLOWED (the owner's voice is a warm, polite
  * wrapper), so they no longer fail the bar on their own. They carry no substance, so
  * they are STRIPPED when measuring whether a reply actually answers anything. */
@@ -114,6 +116,7 @@ export function claimsBusinessBiography(text: string): boolean {
 export interface DraftQualityContext {
   maxWords?: number;        // conciseness ceiling (default 110: warm wrapper + a grounded answer)
   askedDelivery?: boolean;  // customer asked "do you deliver/ship to X" -> require an up-front yes
+  priorOutbound?: ReadonlyArray<string | null>; // our earlier replies on this thread (owner rule 2026-09-04: never the same message twice)
 }
 
 /** Minimum words of real substance a reply must carry (a warm courtesy wrapper is fine,
@@ -142,6 +145,9 @@ export function findDraftIssues(bodyText: string, ctx: DraftQualityContext = {})
   }
   if (ctx.askedDelivery && !affirmsDelivery(bodyText)) {
     issues.push("The customer asked whether we deliver to their location; affirm it directly in the first sentence (e.g. 'Yes, we ship to ...').");
+  }
+  if (ctx.priorOutbound && ctx.priorOutbound.length > 0 && repeatsPriorOutbound(bodyText, ctx.priorOutbound)) {
+    issues.push("This reply repeats a message we already sent on this thread. Never send the same message twice: write a SHORTER reply that acknowledges what they just said and adds only what is new, or points back to the earlier reply in one sentence.");
   }
   if (claimsBusinessBiography(bodyText)) {
     issues.push("This reply states facts about the business itself (how long it has been trading, its size, or its customer base). No such fact exists in the grounded store facts, so it is invented. Remove the claim entirely: say warmly that details about the business are something we keep private, and offer help with products or orders instead.");

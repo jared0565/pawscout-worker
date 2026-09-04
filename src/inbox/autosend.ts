@@ -12,11 +12,14 @@ export function mentionsMoney(text: string): boolean {
 export function autoSendDecision(opts: {
   autosend: boolean; confidence: number; threshold: number;
   quotesPriceOrOrder: boolean; bodyText: string; category: string; recentAutoCount: number;
+  /** The body repeats a reply already sent on the thread (owner rule 2026-09-04). */
+  repeatsPrior?: boolean;
 }): { send: boolean; holdReasons: string[] } {
   const reasons: string[] = [];
   if (!opts.autosend) reasons.push('autosend_off');
   if (opts.confidence < opts.threshold) reasons.push('low_confidence');
   if (opts.quotesPriceOrOrder || mentionsMoney(opts.bodyText)) reasons.push('mentions_money');
   if (opts.recentAutoCount >= AUTO_RATELIMIT_PER_SENDER_DAY) reasons.push('rate_limited');
+  if (opts.repeatsPrior) reasons.push('repeats_prior_reply');
   return { send: reasons.length === 0, holdReasons: reasons };
 }

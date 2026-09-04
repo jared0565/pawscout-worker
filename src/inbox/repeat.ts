@@ -79,3 +79,32 @@ export function repeatVerdict(newText: string | null | undefined, earlier: Earli
   if (copies.some((c) => c.repliedAfter)) return true;
   return copies.length >= 2;
 }
+
+// --- No-repeat guard against our OWN earlier replies (owner rule 2026-09-04) ---
+// "We never send the same message multiple times. If you need to send the same
+// message at least make it shorter and more concise the second time."
+
+/** Our own messages on a thread, oldest first: what the guard compares against. */
+export function outboundBodies(messages: ReadonlyArray<{ direction: string; body_text: string | null }>): (string | null)[] {
+  return messages.filter((m) => m.direction === 'outbound').map((m) => m.body_text);
+}
+
+/** True when the candidate would repeat something we already sent on the thread. */
+export function repeatsPriorOutbound(candidate: string | null | undefined, prior: ReadonlyArray<string | null>): boolean {
+  return prior.some((p) => isRepeatOf(candidate, p));
+}
+
+export type TouchKind = 'first' | 'second' | 'pointer';
+
+/** Picks the full body while it is new to the thread, the concise second touch
+ * once the full body has gone out, and the one-line pointer back to the earlier
+ * reply once both have. The pointer is the terminal touch (owner's choice): it is
+ * drafted again rather than leaving the thread without a reply. */
+export function chooseTouch(
+  prior: ReadonlyArray<string | null>,
+  bodies: { first: string; second: string; pointer: string }
+): { body: string; touch: TouchKind } {
+  if (!repeatsPriorOutbound(bodies.first, prior)) return { body: bodies.first, touch: 'first' };
+  if (!repeatsPriorOutbound(bodies.second, prior)) return { body: bodies.second, touch: 'second' };
+  return { body: bodies.pointer, touch: 'pointer' };
+}

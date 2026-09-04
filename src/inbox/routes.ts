@@ -7,8 +7,8 @@ import { composeDraftForThread } from './sweep';
 import {
   maybePartnershipDraft, buildQualifyingEmail, buildPartnershipDecline, buildServiceDecline,
   buildOperationsDecline, buildVoucherInvite, buildHoldingAck, buildKeepToEmail, buildSignupInvite,
-  detectVolumePitch, detectOffPlatformRequest, type FunnelVariant
-} from './partnership';
+  detectVolumePitch, detectOffPlatformRequest, type FunnelVariant, buildSecondTouch, buildPointerBack, type TouchTemplate } from './partnership';
+import { chooseTouch, outboundBodies } from './repeat';
 import { renderReplyHtml } from './draft';
 import { stripQuotedReply } from './quote';
 import { defaultFetch } from '../safe-fetch';
@@ -264,10 +264,16 @@ export async function applyDraftTemplate(db: D1Database, shop: string, threadId:
   else if (key === 'keep_to_email') body = buildKeepToEmail(name);
   else body = buildHoldingAck(name);
 
+  // Owner rule 2026-09-04: never the same message twice on a thread. A template
+  // already sent here renders as its shorter second touch, then as the one-line
+  // pointer back to the earlier reply; either is flagged so the owner sees why.
+  const touched = chooseTouch(outboundBodies(got.messages), {
+    first: body, second: buildSecondTouch(key as TouchTemplate, name), pointer: buildPointerBack(key as TouchTemplate, name),
+  });
   await store.supersedePendingDrafts(threadId);
   await store.insertDraft({
-    threadId, bodyText: body, bodyHtml: renderReplyHtml(body),
-    confidence: null, quotesPriceOrder: false, holdReasons: [], model: 'template', status: 'pending'
+    threadId, bodyText: touched.body, bodyHtml: renderReplyHtml(touched.body),
+    confidence: null, quotesPriceOrder: false, holdReasons: touched.touch === 'first' ? [] : ['repeat_touch'], model: 'template', status: 'pending'
   });
 
   const applicant = await store.getApplicantByThread(threadId);
@@ -284,7 +290,7 @@ export async function applyDraftTemplate(db: D1Database, shop: string, threadId:
     else await store.setApplicantStage(threadId, stage, null);
   }
   if (got.thread.status === 'closed') await store.setThreadStatus(threadId, 'needs_reply');
-  return { ok: true as const, draft: await store.getPendingDraft(threadId) };
+  return { ok: true as const, touch: touched.touch, draft: await store.getPendingDraft(threadId) };
 }
 
 export async function approveDraft(db: D1Database, shop: string, env: Env, draftId: string, editedBody?: string) {

@@ -281,7 +281,7 @@ async function reviseDraft(
  * until it passes - the worker self-corrects in production, no dev tuning needed. */
 export async function draftReply(
   llm: LlmClient, store: TenantStore, cfg: TenantConfig,
-  input: { agent: CategoryAgent; grounding: Grounding; subject: string; conversation: string; latestMessage?: string; customerName?: string | null; customerEmail?: string | null; recall?: { question: string; answer: string }[] }
+  input: { agent: CategoryAgent; grounding: Grounding; subject: string; conversation: string; latestMessage?: string; customerName?: string | null; customerEmail?: string | null; recall?: { question: string; answer: string }[]; priorOutbound?: ReadonlyArray<string | null> }
 ): Promise<DraftResult | null> {
   if (!llm.available || !cfg.inbox.enabled) return null;
   const chain = resolveChain(cfg, 'text');
@@ -306,7 +306,9 @@ export async function draftReply(
   // Runtime self-correction: hold the draft to the bar; revise via the LLM until it
   // passes (bounded). Runs on the pre-salutation body so the greeting never trips the
   // answer-first check; the salutation is applied once at the end.
-  const qctx: DraftQualityContext = { maxWords: DRAFT_MAX_WORDS, askedDelivery: asksDoYouDeliver(latest) };
+  // priorOutbound (owner rule 2026-09-04): a draft that repeats an earlier reply on the
+  // thread is an issue the reviser must fix with a shorter, non-repeating reply.
+  const qctx: DraftQualityContext = { maxWords: DRAFT_MAX_WORDS, askedDelivery: asksDoYouDeliver(latest), priorOutbound: input.priorOutbound };
   const refined = await refineUntilClean(
     result.value,
     (prev, issues) => reviseDraft(llm, store, chain, agent, grounding, guidance, latest, baseUser, prev.bodyText, issues, shippingFact, input.recall),

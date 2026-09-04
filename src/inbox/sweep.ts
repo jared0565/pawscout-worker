@@ -18,6 +18,7 @@ import { createDraftOrder } from '../shopify-drafts';
 import { sendInvoice } from './send-invoice';
 import { hasScope } from './scopes';
 import { stripQuotedReply } from './quote';
+import { repeatsPriorOutbound, outboundBodies } from './repeat';
 import { recallAnswers, ensureAnswerBackfill } from './answer-memory';
 import { agentFor } from './agents/registry';
 import { resolveAgents } from './agents/config';
@@ -388,7 +389,8 @@ export async function composeDraftForThread(
 
   const draft = await draftReply(llm, store, cfg, {
     agent, grounding, subject: thread.subject ?? '', conversation: transcript, latestMessage: latestInbound,
-    customerName: contact?.name ?? null, customerEmail: thread.contact_email, recall
+    customerName: contact?.name ?? null, customerEmail: thread.contact_email, recall,
+    priorOutbound: outboundBodies(got.messages)
   });
   if (!draft) return null; // degrade: retry next sweep
 
@@ -405,10 +407,14 @@ export async function composeDraftForThread(
   const agentAutosend = cfg.inbox.autosend && agents[agent.category].autosend;
   const sinceIso = new Date(Date.now() - 86400_000).toISOString();
   const recentAutoCount = await store.recentAutoSendCount(thread.contact_email, sinceIso);
+  // Owner rule 2026-09-04: a reply that repeats one we already sent on this thread
+  // never auto-sends (the reviser was asked for a shorter one first; this is the
+  // backstop when it came back the same).
+  const repeatsPrior = repeatsPriorOutbound(composed.bodyText, outboundBodies(got.messages));
   const decision = autoSendDecision({
     autosend: agentAutosend, confidence: draft.confidence, threshold: cfg.inbox.autoConfidenceThreshold,
     quotesPriceOrOrder: composed.quotesPriceOrder, bodyText: draft.bodyText,
-    category: agent.category, recentAutoCount
+    category: agent.category, recentAutoCount, repeatsPrior
   });
 
   const draftId = await store.insertDraft({

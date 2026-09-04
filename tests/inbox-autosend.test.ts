@@ -52,3 +52,16 @@ describe('autoSendDecision', () => {
     expect(autoSendDecision({ ...base, recentAutoCount: AUTO_RATELIMIT_PER_SENDER_DAY }).send).toBe(false);
   });
 });
+
+// Owner rule 2026-09-04: a draft that repeats a reply we already sent on the
+// thread never auto-sends; the hold reason names it so the owner sees why.
+describe('autoSendDecision: repeat of a prior reply', () => {
+  it('holds with repeats_prior_reply and never sends', () => {
+    const d = autoSendDecision({ ...base, repeatsPrior: true });
+    expect(d.send).toBe(false);
+    expect(d.holdReasons).toContain('repeats_prior_reply');
+  });
+  it('leaves a fresh reply alone', () => {
+    expect(autoSendDecision({ ...base, repeatsPrior: false }).send).toBe(true);
+  });
+});
