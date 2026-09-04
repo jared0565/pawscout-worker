@@ -18,3 +18,25 @@
 # Add a new [[suppress]] entry here only for a genuinely unreachable
 # BLOCK-tier finding, with the same standard the deleted entries set: a
 # verified-at-source reason, not an inherited one.
+
+# 2026-09-04: two semgrep BLOCK findings in tests/console.test.ts, surfaced the
+# first time that file changed after aramid was re-registered on 2026-09-04.
+# Verified at source: both `new Function(...)` calls compile the console page's
+# OWN inline script, produced by consolePage() in the same test run, never any
+# external or user-supplied string. The first test exists precisely to catch a
+# syntax error inside src/console/page.ts's template literal (tsc cannot see
+# JS errors inside it); the second lifts the page's esc() to prove it escapes.
+# Test-only code: vitest never ships to the Worker bundle.
+[[suppress]]
+id = "3319eabd7ce7371f7e3111e2a865609b67c1385688db164e1b69992a83fdc677"
+tool = "semgrep"
+rule = "owasp-top-ten.a03-injection.javascript-dangerous-function-constructor"
+path = "tests/console.test.ts"
+reason = "Test compiles the console's own generated inline script (consolePage() output, same process) to catch template-literal syntax errors; no external input, test-only, not in the Worker bundle."
+
+[[suppress]]
+id = "bf407751e70a4f39ff1d50841ca56c3b7ef6332236eace2d9aaf5eabf7d63b85"
+tool = "semgrep"
+rule = "owasp-top-ten.a03-injection.javascript-dangerous-function-constructor"
+path = "tests/console.test.ts"
+reason = "Test lifts the console's own esc() source out of consolePage() output to prove it escapes a crafted <script>; no external input, test-only, not in the Worker bundle."
