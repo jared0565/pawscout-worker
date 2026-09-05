@@ -28,10 +28,6 @@ const UPDATE_MUTATION = `mutation pawscoutEventUpdate($id: ID!, $basicCodeDiscou
   }
 }`;
 
-const ACTIVATE_MUTATION = `mutation pawscoutEventActivate($id: ID!) {
-  discountCodeActivate(id: $id) { userErrors { message } }
-}`;
-
 const CREATE_MUTATION = `mutation pawscoutEventCreate($basicCodeDiscount: DiscountCodeBasicInput!) {
   discountCodeBasicCreate(basicCodeDiscount: $basicCodeDiscount) {
     codeDiscountNode { id }
@@ -76,8 +72,26 @@ export async function ensureRecurringDiscount(
     const updated = await admin(UPDATE_MUTATION, { id: node.id, basicCodeDiscount: discountInput(t, pct, w) });
     const uerrs = (updated.discountCodeBasicUpdate as { userErrors?: { message?: string }[] } | undefined)?.userErrors ?? [];
     if (uerrs.length) return { ok: false, error: uerrs.map((u) => u.message).join('; ') };
-    // A previously deactivated discount needs explicit re-activation; harmless otherwise.
-    await admin(ACTIVATE_MUTATION, { id: node.id }).catch(() => undefined);
+    // NO activation here (removed 2026-09-05). This used to call
+    // discountCodeActivate "in case the discount had been retired", believing
+    // it harmless. Shopify documents the opposite: activating a discount set to
+    // start in the future sets its startsAt to NOW. The first real rollover
+    // (SUMMERSALE, window ended 31 Aug 2026) therefore went live for a whole
+    // year and the storefront pop-up advertised a Summer bank holiday in
+    // September. A retired discount needs no activation either: deactivate
+    // only expires it (endsAt = now), and an update to a future window is
+    // SCHEDULED by itself. Instead the window is VERIFIED against Shopify, so a
+    // rollover that did not land is reported, never assumed.
+    const check = await admin(LOOKUP_QUERY, { code: t.code });
+    const after = (check.codeDiscountNodeByCode as { codeDiscount?: { status?: string; startsAt?: string } } | null)?.codeDiscount;
+    const landed = (after?.startsAt ?? '').slice(0, 10) === w.startsAt.slice(0, 10);
+    const expected = Date.parse(w.startsAt) <= nowMs ? 'ACTIVE' : 'SCHEDULED';
+    if (!landed || after?.status !== expected) {
+      return {
+        ok: false,
+        error: `${t.code}: re-dated to ${w.startsAt} but Shopify reports ${after?.status ?? 'unknown'} from ${after?.startsAt ?? 'unknown'} (expected ${expected}); left as is, not activated`,
+      };
+    }
     return { ok: true, action: 'updated', window: w };
   } catch (e) {
     return { ok: false, error: (e as Error).message };

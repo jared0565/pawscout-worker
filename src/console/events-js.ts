@@ -9,7 +9,11 @@ function evPromoCard(p){
   var status=p.status==='ACTIVE'
     ?'<span class="prt-chip prt-live">running</span>'
     :'<span class="prt-chip prt-expired">scheduled</span>';
+  // Both ends of the window (owner, 2026-09-05): "ends 30/08/2027" alone reads
+  // as a promotion running continuously until then.
+  var starts=p.startsAt?((p.status==='ACTIVE'?'started ':'starts ')+esc(prtWhen(p.startsAt))+', '):'';
   var when=(p.percentage!=null?(esc(p.percentage)+'% off, '):'')
+    +starts
     +(p.endsAt?('ends '+esc(prtWhen(p.endsAt))):'no end date');
   var h='<div class="evr-card'+(p.status==='ACTIVE'?' is-on':'')+'">'
     +'<div class="evr-head"><strong>'+esc(p.title)+'</strong>'

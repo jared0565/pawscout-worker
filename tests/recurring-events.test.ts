@@ -9,8 +9,16 @@ import type { AdminGraphql } from '../src/shopify-admin';
 beforeEach(async () => { await applyD1Migrations(env.DB, env.TEST_MIGRATIONS); });
 const SHOP = 'a.myshopify.com';
 
-/** Scripted admin mock: answers the code lookup and records every mutation. */
-function mockAdmin(existing: { id: string; startsAt: string; endsAt: string; status?: string } | null) {
+/** Scripted admin mock: answers the code lookup and records every mutation.
+ *  Behaves like Shopify on the two calls that matter here: an UPDATE re-dates
+ *  the stored discount and Shopify derives SCHEDULED from a future window; an
+ *  ACTIVATE on a future-dated discount sets startsAt to now and makes it
+ *  ACTIVE (documented, and the 2026-09-05 SUMMERSALE fault). `afterUpdate`
+ *  overrides what the re-read shows, to script a Shopify that misbehaves. */
+function mockAdmin(
+  existing: { id: string; startsAt: string; endsAt: string; status?: string } | null,
+  opts: { afterUpdate?: { status: string; startsAt: string } } = {}
+) {
   const calls: { query: string; vars: Record<string, unknown> }[] = [];
   const admin: AdminGraphql = async (query, vars) => {
     calls.push({ query, vars: vars ?? {} });
@@ -18,8 +26,19 @@ function mockAdmin(existing: { id: string; startsAt: string; endsAt: string; sta
       return { codeDiscountNodeByCode: existing ? { id: existing.id, codeDiscount: { status: existing.status ?? 'SCHEDULED', startsAt: existing.startsAt, endsAt: existing.endsAt } } : null };
     }
     if (query.includes('discountCodeBasicCreate')) return { discountCodeBasicCreate: { codeDiscountNode: { id: 'gid://new' }, userErrors: [] } };
-    if (query.includes('discountCodeBasicUpdate')) return { discountCodeBasicUpdate: { userErrors: [] } };
-    if (query.includes('discountCodeActivate')) return { discountCodeActivate: { userErrors: [] } };
+    if (query.includes('discountCodeBasicUpdate')) {
+      const input = (vars?.basicCodeDiscount ?? {}) as { startsAt?: string; endsAt?: string };
+      if (existing) {
+        existing.startsAt = opts.afterUpdate?.startsAt ?? input.startsAt ?? existing.startsAt;
+        existing.endsAt = input.endsAt ?? existing.endsAt;
+        existing.status = opts.afterUpdate?.status ?? 'SCHEDULED';
+      }
+      return { discountCodeBasicUpdate: { userErrors: [] } };
+    }
+    if (query.includes('discountCodeActivate')) {
+      if (existing) { existing.status = 'ACTIVE'; existing.startsAt = new Date().toISOString(); }
+      return { discountCodeActivate: { userErrors: [] } };
+    }
     if (query.includes('automaticDiscountNodes')) return { automaticDiscountNodes: { nodes: [] }, codeDiscountNodes: { nodes: [] } };
     return {};
   };
@@ -52,14 +71,48 @@ describe('ensureRecurringDiscount', () => {
     expect(calls.some((c) => c.query.includes('Update'))).toBe(false);
   });
 
-  it("re-dates last year's discount instead of colliding with its code (the yearly rollover)", async () => {
+  // 2026-09-05: the rollover used to follow the update with discountCodeActivate
+  // "in case the discount had been retired". Shopify documents that activating
+  // a discount set to start in the future sets its startsAt to NOW, so the
+  // first real rollover (SUMMERSALE, window ended 31 Aug) went live for a year
+  // and the storefront pop-up advertised a Summer bank holiday in September. A
+  // retired discount needs no activation: deactivate only expires it, and an
+  // update to a future window is SCHEDULED by itself. The rollover therefore
+  // never activates, and re-reads Shopify to prove the window landed.
+  it("re-dates last year's discount instead of colliding with its code (the yearly rollover), never activating it", async () => {
     const { admin, calls } = mockAdmin({ id: 'gid://d1', startsAt: '2025-08-22T00:00:00Z', endsAt: '2025-08-25T23:59:59Z', status: 'EXPIRED' });
     const r = await ensureRecurringDiscount(admin, t, 15, FAR_FROM_SUMMER);
     expect(r.ok && r.action).toBe('updated');
     const update = calls.find((c) => c.query.includes('discountCodeBasicUpdate'))!;
     const input = update.vars.basicCodeDiscount as Record<string, unknown>;
     expect(input.startsAt).toBe('2026-08-28T00:00:00.000Z');
-    expect(calls.some((c) => c.query.includes('discountCodeActivate'))).toBe(true);
+    expect(calls.some((c) => c.query.includes('discountCodeActivate'))).toBe(false);
+    // The window is verified against Shopify after the update, not assumed.
+    expect(calls.filter((c) => c.query.includes('codeDiscountNodeByCode')).length).toBe(2);
+  });
+
+  it('refuses to report success when Shopify shows the re-dated discount running from now (the SUMMERSALE fault)', async () => {
+    const { admin, calls } = mockAdmin(
+      { id: 'gid://d1', startsAt: '2025-08-22T00:00:00Z', endsAt: '2025-08-25T23:59:59Z', status: 'EXPIRED' },
+      { afterUpdate: { status: 'ACTIVE', startsAt: '2026-07-06T05:00:14Z' } }
+    );
+    const r = await ensureRecurringDiscount(admin, t, 15, FAR_FROM_SUMMER);
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error).toMatch(/ACTIVE/);
+    expect(r.error).toMatch(/2026-08-28/);
+    expect(calls.some((c) => c.query.includes('discountCodeActivate'))).toBe(false);
+  });
+
+  it('a window that has already started is expected ACTIVE, not flagged', async () => {
+    // 29 Aug 2026 05:00, inside the 28-31 Aug window: re-dating an old record lands ACTIVE legitimately.
+    const inWindow = Date.parse('2026-08-29T05:00:00Z');
+    const { admin } = mockAdmin(
+      { id: 'gid://d1', startsAt: '2025-08-22T00:00:00Z', endsAt: '2025-08-25T23:59:59Z', status: 'EXPIRED' },
+      { afterUpdate: { status: 'ACTIVE', startsAt: '2026-08-28T00:00:00Z' } }
+    );
+    const r = await ensureRecurringDiscount(admin, t, 15, inWindow);
+    expect(r.ok && r.action).toBe('updated');
   });
 });
 

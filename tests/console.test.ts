@@ -519,6 +519,13 @@ describe('consolePage', () => {
     expect(scripts).toContain('function issuePartnerVoucher(');
     expect(scripts).toContain("'/partners/issue'");
     expect(scripts).toContain("'/partners/discount-status'");
+    // 2026-09-05 (owner): a card that shows only "ends 30/08/2027" reads as a
+    // promotion running continuously until then. Both ends of the window are
+    // shown, worded by state: "starts" for a scheduled event, "started" for a
+    // running one.
+    expect(scripts).toContain("'starts '");
+    expect(scripts).toContain("'started '");
+    expect(scripts).toContain('prtWhen(p.startsAt)');
     expect(scripts).toContain('loadDiscountStatus();'); // probe runs on startup
     // A missing write_discounts grant explains the fix, not a stack trace.
     expect(scripts).toContain('approve the updated permissions');
