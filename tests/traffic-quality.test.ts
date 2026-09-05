@@ -20,7 +20,7 @@ import {
 beforeEach(async () => { await applyD1Migrations(env.DB, env.TEST_MIGRATIONS); });
 
 // The live 90-day rows measured 2026-09-05 (browser, bounced, sessions, carts).
-const LIVE_ROWS = [
+const LIVE_CELLS = [
   ['HeadlessChrome', 'true', '214', '0'], ['Chrome', 'true', '137', '0'], ['Mobile Safari', 'true', '31', '0'],
   ['Chrome Mobile', 'true', '29', '0'], ['Chrome', 'false', '26', '11'], ['Stripebot', 'true', '10', '0'],
   ['Chrome Mobile', 'false', '9', '4'], ['Other', 'true', '8', '0'], ['Edge', 'false', '5', '2'],
@@ -28,13 +28,16 @@ const LIVE_ROWS = [
   ['Firefox', 'true', '3', '0'], ['Safari', 'true', '3', '0'], ['Mobile Safari', 'false', '2', '1'],
   ['Other', 'false', '2', '0'], ['meta-webindexer', 'true', '2', '0'],
 ];
-const LIVE_TABLE = {
-  columns: [
-    { name: 'session_device_browser', dataType: 'STRING' }, { name: 'session_bounced', dataType: 'BOOLEAN' },
-    { name: 'sessions', dataType: 'INTEGER' }, { name: 'sessions_with_cart_additions', dataType: 'INTEGER' },
-  ],
-  rows: LIVE_ROWS,
-};
+const COLUMNS = [
+  { name: 'session_device_browser', dataType: 'STRING' }, { name: 'session_bounced', dataType: 'BOOLEAN' },
+  { name: 'sessions', dataType: 'INTEGER' }, { name: 'sessions_with_cart_additions', dataType: 'INTEGER' },
+];
+// The DOCUMENTED Admin API shape (ShopifyqlTableData.rows is JSON: an array of
+// objects keyed by column name). The first live call on 2026-09-05 returned
+// success with zero sessions because the parser assumed arrays of cells, the
+// shape the analytics connector uses; both are accepted now, this one first.
+const LIVE_ROWS = LIVE_CELLS.map(([b, bounced, s, c]) => ({ session_device_browser: b, session_bounced: bounced, sessions: s, sessions_with_cart_additions: c }));
+const LIVE_TABLE = { columns: COLUMNS, rows: LIVE_ROWS };
 
 describe('classifyBrowser', () => {
   it('names automation by what the browser calls itself, nothing else', () => {
@@ -58,7 +61,20 @@ describe('buildTrafficQuery', () => {
 });
 
 describe('parseTrafficTable', () => {
-  it('maps columns by name, so column order is not assumed, and coerces the string cells', () => {
+  it('reads the documented Admin API shape: rows as objects keyed by column name', () => {
+    const rows = parseTrafficTable({
+      columns: COLUMNS,
+      rows: [
+        { session_device_browser: 'Chrome', session_bounced: 'false', sessions: '7', sessions_with_cart_additions: '3' },
+        { session_device_browser: 'HeadlessChrome', session_bounced: true, sessions: 5, sessions_with_cart_additions: 0 },
+      ],
+    });
+    expect(rows).toEqual([
+      { browser: 'Chrome', bounced: false, sessions: 7, cartAdds: 3 },
+      { browser: 'HeadlessChrome', bounced: true, sessions: 5, cartAdds: 0 },
+    ]);
+  });
+  it('still reads rows as arrays of cells (the analytics connector shape), mapped by column name', () => {
     const rows = parseTrafficTable({
       columns: [{ name: 'sessions' }, { name: 'session_bounced' }, { name: 'session_device_browser' }, { name: 'sessions_with_cart_additions' }],
       rows: [['7', 'false', 'Chrome', '3'], ['5', 'true', 'HeadlessChrome', '0']],

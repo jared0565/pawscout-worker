@@ -54,7 +54,12 @@ const SHOPIFYQL = `query pawscoutTrafficQuality($q: String!) {
 
 export interface TrafficRow { browser: string; bounced: boolean; sessions: number; cartAdds: number }
 
-interface TableData { columns: { name: string }[]; rows: unknown[][] }
+/** ShopifyqlTableData.rows is typed JSON in the Admin API and is DOCUMENTED as
+ *  an array of objects keyed by column name. The analytics connector used to
+ *  measure this feature returns arrays of cells instead. Both are read; the
+ *  first live call (2026-09-05) answered "0 sessions" because only the array
+ *  shape was handled, which is why a table must never be assumed to be one. */
+interface TableData { columns: { name: string }[]; rows: unknown[] }
 
 function num(v: unknown): number {
   const n = typeof v === 'number' ? v : Number(String(v ?? '').replace(/,/g, ''));
@@ -72,11 +77,16 @@ export function parseTrafficTable(table: TableData): TrafficRow[] {
   const iBounced = idx('session_bounced');
   const iSessions = idx('sessions');
   const iCarts = idx('sessions_with_cart_additions');
-  return table.rows.map((r) => ({
-    browser: iBrowser >= 0 ? String(r[iBrowser] ?? '') : '',
-    bounced: iBounced >= 0 ? bool(r[iBounced]) : false,
-    sessions: iSessions >= 0 ? num(r[iSessions]) : 0,
-    cartAdds: iCarts >= 0 ? num(r[iCarts]) : 0,
+  const cell = (r: unknown, name: string, i: number): unknown => {
+    if (Array.isArray(r)) return i >= 0 ? r[i] : undefined;
+    if (r && typeof r === 'object') return (r as Record<string, unknown>)[name];
+    return undefined;
+  };
+  return (table.rows ?? []).map((r) => ({
+    browser: String(cell(r, 'session_device_browser', iBrowser) ?? ''),
+    bounced: bool(cell(r, 'session_bounced', iBounced)),
+    sessions: num(cell(r, 'sessions', iSessions)),
+    cartAdds: num(cell(r, 'sessions_with_cart_additions', iCarts)),
   }));
 }
 
