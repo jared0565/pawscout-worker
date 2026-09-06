@@ -543,7 +543,17 @@ describe('consolePage', () => {
     // running one.
     expect(scripts).toContain("'starts '");
     expect(scripts).toContain("'started '");
-    expect(scripts).toContain('prtWhen(p.startsAt)');
+    // 2026-09-05 leftover (b): the windows are UTC calendar days (a 23:59:59Z
+    // end), but prtWhen formats in the browser's zone, so during BST an event
+    // "ends" the day after it does. The Events view formats its window dates
+    // in UTC through evDay; prtWhen stays for the timestamps elsewhere.
+    expect(scripts).toContain('evDay(p.startsAt)');
+    expect(scripts).toContain('evDay(p.endsAt)');
+    expect(scripts).toContain('evDay(ev.nextStartsAt)');
+    expect(scripts).not.toContain('prtWhen(p.startsAt)');
+    const evDayLine = scripts.split('\n').find((l) => l.includes('function evDay('));
+    expect(evDayLine).toBeDefined();
+    expect(evDayLine).toContain("timeZone:'UTC'");
     expect(scripts).toContain('loadDiscountStatus();'); // probe runs on startup
     // A missing write_discounts grant explains the fix, not a stack trace.
     expect(scripts).toContain('approve the updated permissions');

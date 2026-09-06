@@ -4,6 +4,10 @@
 // The one-off create/end handlers moved here from campaigns-js when the
 // Storewide event card moved into this view (2026-07-06).
 export const eventsJs = `
+// Event windows are UTC calendar days (a 23:59:59Z end). prtWhen formats in the
+// browser zone, which during BST shows an event ending the day AFTER it does;
+// window dates here are formatted in UTC (2026-09-05 leftover, fixed 09-07).
+function evDay(iso){ if(!iso) return ''; var d=new Date(iso); return isNaN(d.getTime())?esc(iso):esc(d.toLocaleDateString(undefined,{timeZone:'UTC'})); }
 // --- Events: live/scheduled promos from the Shopify probe, as grid cards ---
 function evPromoCard(p){
   var status=p.status==='ACTIVE'
@@ -11,10 +15,10 @@ function evPromoCard(p){
     :'<span class="prt-chip prt-expired">scheduled</span>';
   // Both ends of the window (owner, 2026-09-05): "ends 30/08/2027" alone reads
   // as a promotion running continuously until then.
-  var starts=p.startsAt?((p.status==='ACTIVE'?'started ':'starts ')+esc(prtWhen(p.startsAt))+', '):'';
+  var starts=p.startsAt?((p.status==='ACTIVE'?'started ':'starts ')+esc(evDay(p.startsAt))+', '):'';
   var when=(p.percentage!=null?(esc(p.percentage)+'% off, '):'')
     +starts
-    +(p.endsAt?('ends '+esc(prtWhen(p.endsAt))):'no end date');
+    +(p.endsAt?('ends '+esc(evDay(p.endsAt))):'no end date');
   var h='<div class="evr-card'+(p.status==='ACTIVE'?' is-on':'')+'">'
     +'<div class="evr-head"><strong>'+esc(p.title)+'</strong>'
     +(p.code?'<span class="prt-code">'+esc(p.code)+'</span>':'')
@@ -37,7 +41,7 @@ async function evLoad(){
 }
 // --- Yearly (recurring) events: catalogue cards + enable/disable ---
 function evRecCard(ev){
-  var win=prtWhen(ev.nextStartsAt)+' to '+prtWhen(ev.nextEndsAt);
+  var win=evDay(ev.nextStartsAt)+' to '+evDay(ev.nextEndsAt);
   var head=esc(ev.headline.replace('{pct}',String(ev.pctOff)));
   var chips='';
   for(var i=0;i<ev.chips.length;i++) chips+='<span class="evr-chip">'+esc(ev.chips[i])+'</span>';
@@ -74,7 +78,7 @@ async function evRecToggle(key,on){
     var r=await api('/events/recurring/toggle',body);
     if(!r.ok){ setMsg('ev-rec-msg','Failed: '+(r.error||'unknown error'),'no'); return; }
     setMsg('ev-rec-msg',on
-      ?('Enabled. The next occurrence is scheduled in Shopify ('+prtWhen(r.window.startsAt)+' to '+prtWhen(r.window.endsAt)+') and re-arms itself every year from now on. The announcement draft appears in Campaigns about two weeks before it starts.')
+      ?('Enabled. The next occurrence is scheduled in Shopify ('+evDay(r.window.startsAt)+' to '+evDay(r.window.endsAt)+') and re-arms itself every year from now on. The announcement draft appears in Campaigns about two weeks before it starts.')
       :'Disabled. The scheduled discount was retired; the card stays ready to re-enable.','ok');
     evRecLoad(); evLoad();
   }catch(e){ setMsg('ev-rec-msg','Action failed.','no'); }
@@ -93,7 +97,7 @@ async function evCreate(btn){
   try{
     var r=await api('/event/create',body);
     if(!r.ok){ setMsg('ev-msg','Failed: '+(r.error||'unknown error'),'no'); return; }
-    var msg='Created '+r.code+'. It works at checkout only between '+prtWhen(r.startsAt)+' and '+prtWhen(r.endsAt)+' - the schedule lives inside the discount, and the storefront pop-up follows it automatically.';
+    var msg='Created '+r.code+'. It works at checkout only between '+evDay(r.startsAt)+' and '+evDay(r.endsAt)+' - the schedule lives inside the discount, and the storefront pop-up follows it automatically.';
     if(r.campaignId) msg+=' The announcement draft is in Campaigns: review, send yourself a test, then send.';
     setMsg('ev-msg',msg,'ok');
     el('ev-code').value='';

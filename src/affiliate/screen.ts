@@ -41,6 +41,7 @@ import {
 } from '../inbox/partnership';
 import { applySalutation, renderReplyHtml, sanitizeOutbound } from '../inbox/draft';
 import { sendEmail } from '../email';
+import { alertOwner } from '../owner-alert';
 import { issueVoucher, voucherDateLabel, genVoucherCode, findVoucherDiscountByCode } from '../affiliate-discounts';
 import { firecrawlScrape } from '../firecrawl';
 import { adminForShop } from '../inbox/invoice-routes';
@@ -118,14 +119,6 @@ async function sendApplicantEmail(
   if (!result.ok) console.warn(`[affiliate-screen] outbound applicant email failed: ${result.error}`);
 }
 
-async function alertOwner(env: Env, cfg: TenantConfig, subject: string, text: string, fetchImpl: typeof fetch): Promise<void> {
-  const to = cfg.inbox.alertEmail || cfg.fulfil.alertEmail;
-  if (!to || !env.RESEND_API_KEY) return;
-  const result = await sendEmail(env.RESEND_API_KEY, {
-    from: 'Active Paw <support@activepaw.co.uk>', to, subject: sanitizeOutbound(subject), text: sanitizeOutbound(text)
-  }, fetchImpl);
-  if (!result.ok) console.warn(`[affiliate-screen] owner alert failed: ${result.error}`);
-}
 
 export interface ChannelVerdict { verdict: 'pass' | 'deflect'; reason: string }
 

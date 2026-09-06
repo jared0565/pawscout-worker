@@ -57,7 +57,8 @@ import { LOGISTICS_DESTINATIONS } from './inbox/freight';
 import type { CjDetail } from './cj';
 import { LlmClient, curateProduct, pickHeroImage, rewriteDescription, type Curation, type HeroPick } from './llm';
 import { DEFAULT_SEMANTIC, type Env, type TenantConfig, type Gates } from './types';
-import { rotateRecurringEvents } from './recurring-events';
+import { rotateRecurringEvents, alertRotationErrors } from './recurring-events';
+import { alertOwner } from './owner-alert';
 import { debrandCatalog } from './catalog-debrand';
 import { runArticleHealth, healArticleBody, saveArticleBody } from './blog/article-health';
 import { getArticleForEnrich, updateArticleAssets } from './blog/article';
@@ -1656,6 +1657,10 @@ export const DAILY_SHOP_STAGES: DailyStage[] = [
       if (r.ensured || r.staged || r.errors.length) {
         console.log(`recurring events for ${ctx.shop}: ensured ${r.ensured}, staged ${r.staged}${r.errors.length ? `, errors: ${r.errors.join(' | ')}` : ''}`);
       }
+      // A rollover that fails verification leaves a discount in the wrong
+      // window (the 2026-09-05 SUMMERSALE fault); the log line above has short
+      // retention, so the owner is emailed, once per distinct failure set.
+      await alertRotationErrors(ctx.store, r.errors, (subject, text) => alertOwner(ctx.env, ctx.cfg, subject, text));
     }
   },
   // The catalog-walking sweeps checkpoint their offset against the deadline, so

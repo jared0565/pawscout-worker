@@ -2,7 +2,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
 import { TenantStore } from '../src/tenant-store';
-import { ensureRecurringDiscount, rotateRecurringEvents, CAMPAIGN_ARM_DAYS } from '../src/recurring-events';
+import { ensureRecurringDiscount, rotateRecurringEvents, alertRotationErrors, CAMPAIGN_ARM_DAYS } from '../src/recurring-events';
 import { templateByKey } from '../src/event-catalogue';
 import type { AdminGraphql } from '../src/shopify-admin';
 
@@ -150,5 +150,43 @@ describe('rotateRecurringEvents', () => {
     expect(r.ensured).toBe(1);       // discount still kept scheduled
     expect(r.staged).toBe(0);        // 28 Aug is more than CAMPAIGN_ARM_DAYS away
     expect(CAMPAIGN_ARM_DAYS).toBe(14);
+  });
+});
+
+// 2026-09-05 leftover (a): a rollover that fails verification was only
+// console.logged by the nightly stage, so a discount left in the wrong window
+// (the SUMMERSALE fault) was invisible until someone opened the Events view.
+// The owner gets one email per DISTINCT failure set: the same failure on the
+// next night is not news, a changed one is, and after a clean run the original
+// failure returning is news again.
+describe('alertRotationErrors', () => {
+  it('emails once per distinct failure set, again when it changes, and again after a clean run', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const sent: { subject: string; text: string }[] = [];
+    const send = async (subject: string, text: string) => { sent.push({ subject, text }); };
+    const fault = 'summersale: Shopify shows the re-dated discount ACTIVE from 2026-09-05T04:50:00Z';
+
+    expect(await alertRotationErrors(store, [fault], send)).toBe(true);
+    expect(sent).toHaveLength(1);
+    expect(sent[0].subject).toMatch(/event rotation/i);
+    expect(sent[0].text).toContain(fault);
+
+    expect(await alertRotationErrors(store, [fault], send)).toBe(false);   // same failure next night
+    expect(sent).toHaveLength(1);
+
+    expect(await alertRotationErrors(store, [fault, 'easter: userErrors: window in the past'], send)).toBe(true);
+    expect(sent).toHaveLength(2);
+    expect(sent[1].text).toContain('easter: userErrors');
+
+    expect(await alertRotationErrors(store, [], send)).toBe(false);        // clean run clears the memory
+    expect(await alertRotationErrors(store, [fault], send)).toBe(true);    // so its return is news again
+    expect(sent).toHaveLength(3);
+  });
+
+  it('is a no-op with no errors and no memory', async () => {
+    const store = new TenantStore(env.DB, 'clean.myshopify.com');
+    let calls = 0;
+    expect(await alertRotationErrors(store, [], async () => { calls++; })).toBe(false);
+    expect(calls).toBe(0);
   });
 });

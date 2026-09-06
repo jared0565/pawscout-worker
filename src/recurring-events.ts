@@ -156,6 +156,39 @@ export async function rotateRecurringEvents(
   return out;
 }
 
+/** Memory of the last failure set the owner was told about (search_cache
+ * key/value row; 30-day TTL so a failure nobody fixed is repeated monthly). */
+const ROTATION_ALERT_KEY = 'recurring-events:alerted';
+const ROTATION_ALERT_TTL_DAYS = 30;
+
+/** Turn a rotation's errors into ONE owner email per distinct failure set.
+ * The nightly stage runs every day, so "same failure again" must not mean
+ * "same email again": the sorted error list is the signature; a run that
+ * matches the remembered signature is silent, a different one alerts, and a
+ * clean run clears the memory so the original failure returning is news.
+ * `send` is the delivery (the stage wires alertOwner); returns whether it
+ * was called. */
+export async function alertRotationErrors(
+  store: TenantStore, errors: string[], send: (subject: string, text: string) => Promise<void>
+): Promise<boolean> {
+  const signature = [...errors].sort().join('\n');
+  const remembered = (await store.getSearchCache(ROTATION_ALERT_KEY)) ?? '';
+  if (!signature) {
+    if (remembered) await store.putSearchCache(ROTATION_ALERT_KEY, '', ROTATION_ALERT_TTL_DAYS);
+    return false;
+  }
+  if (signature === remembered) return false;
+  await store.putSearchCache(ROTATION_ALERT_KEY, signature, ROTATION_ALERT_TTL_DAYS);
+  const n = errors.length;
+  await send(
+    `Event rotation needs attention: ${n} event${n === 1 ? '' : 's'} not scheduled as expected`,
+    `The nightly event rotation could not keep every enabled event scheduled in Shopify:\n\n`
+      + errors.map((e) => `- ${e}`).join('\n')
+      + `\n\nOpen the Events view in PawScout to check the affected discount; disabling and re-enabling the event re-runs the schedule under the current rules. This email repeats only if the failure set changes.`
+  );
+  return true;
+}
+
 /** Console list: catalogue joined with the owner's enable flags + computed
  * next windows. Everything here is derived live - nothing stored but the flag. */
 export async function listRecurringForConsole(store: TenantStore, nowMs = Date.now()) {
