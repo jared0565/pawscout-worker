@@ -12,7 +12,7 @@ const CFG: any = { collectionMap: { 'pet-toys': { tag: 'pet-toys' } }, gates: { 
 function fakeCj(stockOverride?: Map<string, number>): CjClient {
   const detail = (pid: string, name: string): CjDetail => ({ pid, nameEn: name, images: ['https://img/x.jpg'], descriptionHtml: 'x', variants: [{ vid: `v-${pid}`, name: 'Default', sellPriceUsd: 6, sku: pid, stock: 50 }], listedNum: 20, categoryName: 'pet-toys', stock: 50, origins: { CN: 100, GB: 40 } });
   return {
-    searchByWarehouse: async (kw: string): Promise<CjSearchItem[]> => ([
+    searchByWarehouse: async (_kw: string): Promise<CjSearchItem[]> => ([
       { pid: 'GB1', nameEn: 'Dog Chew Toy', image: '', sellPriceUsd: 6, listedNum: 20, categoryName: 'pet-toys' },
       { pid: 'GB1', nameEn: 'Dog Chew Toy', image: '', sellPriceUsd: 6, listedNum: 20, categoryName: 'pet-toys' } // dup pid
     ]),

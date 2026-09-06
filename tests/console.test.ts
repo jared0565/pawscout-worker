@@ -168,6 +168,24 @@ describe('consolePage', () => {
     expect(out).not.toContain('<script>alert(1)</script>');
   });
 
+  // 2026-09-06, found by the first eslint run (no-useless-escape): partners-js.ts
+  // is a template literal, so `\/` in its source reaches the browser as `/` and
+  // the applicant channel-link scheme check arrived as `/^https?:///i.test(...)`,
+  // which is a regex followed by a LINE COMMENT. channelSafe was therefore the
+  // regex object itself (truthy) for every non-empty URL, so a javascript: URL
+  // submitted on an application rendered as a clickable link in the console.
+  // Assert over the emitted line, executed as the browser would execute it.
+  it('partners view links an applicant channel only when its scheme is http(s)', async () => {
+    const html = await consolePage('test-api-key').text();
+    const line = html.split('\n').find((l) => l.includes('channelSafe='));
+    expect(line).toBeDefined();
+    const probe = new Function('a', line + '\nreturn !!channelSafe;') as (a: { channelUrl: string }) => boolean;
+    expect(probe({ channelUrl: 'https://www.youtube.com/@activepaw' })).toBe(true);
+    expect(probe({ channelUrl: 'http://example.com' })).toBe(true);
+    expect(probe({ channelUrl: 'javascript:alert(1)' })).toBe(false);
+    expect(probe({ channelUrl: 'ftp://example.com' })).toBe(false);
+  });
+
   it('renders one AI-models block and no legacy/inbox model selectors', async () => {
     const html = await consolePage('test-key').text();
     expect(html).toContain('id="mdl-image"');

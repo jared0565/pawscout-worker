@@ -7,7 +7,7 @@ import type { CategoryAgent, Grounding } from '../../src/inbox/agents/types';
 function fakeLlm(capture: { system?: string }) {
   return {
     available: true,
-    async jsonChain<T>(opts: any) {
+    async jsonChain(opts: any) {
       capture.system = opts.system;
       const value = opts.validate({ customerAsks: ['x'], bodyText: 'Sure, here is the answer.', confidence: 88, quotesPriceOrOrder: false, commercialIntent: true });
       return { ok: true, value, usage: { model: 'm', promptTokens: 1, completionTokens: 1, costUsd: 0 } };

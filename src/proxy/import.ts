@@ -710,7 +710,7 @@ export function mediaSignature(mediaIds: string[]): string {
 export async function reconcileHeroImages(
   store: TenantStore,
   admin: AdminGraphql,
-  cfg: TenantConfig,
+  _cfg: TenantConfig,
   pickHero: (title: string, imageUrls: string[]) => Promise<HeroPick>,
   opts: { offset?: number; limit?: number } = {}
 ): Promise<{ scanned: number; fixed: number; total: number; next: number | null }> {
@@ -950,7 +950,7 @@ export function needsDescriptionRewrite(html: string): boolean {
 export async function reconcileDescriptions(
   store: TenantStore,
   admin: AdminGraphql,
-  cfg: TenantConfig,
+  _cfg: TenantConfig,
   rewrite: (title: string, rawHtml: string) => Promise<string | null>,
   opts: { offset?: number; limit?: number } = {}
 ): Promise<{ scanned: number; rewritten: number; total: number; next: number | null }> {

@@ -1,5 +1,5 @@
 import type { CategoryAgent, Grounding } from './types';
-import { AFFILIATE_APPLY_URL, PARTNERSHIP_STANCE } from '../partnership';
+import { PARTNERSHIP_STANCE } from '../partnership';
 
 export const affiliateAgent: CategoryAgent = {
   category: 'affiliate',

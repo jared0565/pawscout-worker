@@ -1,5 +1,5 @@
 /// <reference types="@cloudflare/vitest-pool-workers" />
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
 import { TenantStore } from '../src/tenant-store';
 import { runInboxClassifySweep, composeAgentDraft } from '../src/inbox/sweep';
@@ -93,7 +93,7 @@ describe('runInboxClassifySweep', () => {
     const tid = await seedShopWithThread();
     const store = new TenantStore(env.DB, SHOP);
     await store.setThreadClassification(tid, { status: 'needs_reply', primaryCategory: 'product-question', intentScore: 40, summary: 's', classifiedAt: '2026-06-18T10:05:00Z' });
-    const fetchImpl = (async (url: string) => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ bodyText: 'Yes, we ship there.', confidence: 95, quotesPriceOrOrder: false }) } }], usage: { cost: 0.0001 } }), { status: 200 })) as unknown as typeof fetch;
+    const fetchImpl = (async (_url: string) => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ bodyText: 'Yes, we ship there.', confidence: 95, quotesPriceOrOrder: false }) } }], usage: { cost: 0.0001 } }), { status: 200 })) as unknown as typeof fetch;
     await runInboxClassifySweep({ ...env, OPENROUTER_API_KEY: 'k' } as any, fetchImpl);
     const d = await store.getPendingDraft(tid);
     expect(d?.body_text).toContain('ship');           // drafted
@@ -168,7 +168,7 @@ describe('runInboxClassifySweep', () => {
     await store.setThreadLabels(tid, ['product-question']);
     const staleId = await store.insertDraft({ threadId: tid, bodyText: 'It fits large dogs.', bodyHtml: '<p>x</p>', confidence: 90, quotesPriceOrder: false, holdReasons: ['autosend_off'], model: 'm', status: 'pending' });
     await store.insertInboundMessageIfNew({ threadId: tid, messageId: '<m3@x>', inReplyTo: null, references: [], from: 'jane@x.com', to: 'support@activepaw.co.uk', subject: 'Re: Buy a bed', bodyText: 'And does it come in grey?', bodyHtml: null, headersJson: '{"authentication-results":"mx; spf=pass dkim=pass dmarc=pass"}', receivedAt: '2026-06-18T12:00:00Z' });
-    const fetchImpl = (async (url: string) => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ isHuman: true, category: 'product-question', intentScore: 45, summary: 'Colour question', labels: ['product-question'] }) } }], usage: { cost: 0.0001 } }), { status: 200 })) as unknown as typeof fetch;
+    const fetchImpl = (async (_url: string) => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ isHuman: true, category: 'product-question', intentScore: 45, summary: 'Colour question', labels: ['product-question'] }) } }], usage: { cost: 0.0001 } }), { status: 200 })) as unknown as typeof fetch;
     await runInboxClassifySweep({ ...env, OPENROUTER_API_KEY: 'k' } as any, fetchImpl);
 
     const got = await store.getThreadWithMessages(tid);
@@ -224,7 +224,7 @@ describe('runInboxClassifySweep', () => {
     await store.saveInbox({ ...DEFAULT_INBOX, autosend: true, agents: { 'product-question': { autosend: true } }, alertEmail: 'owner@gmail.com' });
     await store.setThreadClassification(tid, { status: 'needs_reply', primaryCategory: 'product-question', intentScore: 40, summary: 's', classifiedAt: '2026-06-18T10:05:00Z' });
     let sent = false;
-    const fetchImpl = (async (url: string, init: RequestInit) => {
+    const fetchImpl = (async (url: string, _init: RequestInit) => {
       if (String(url).includes('openrouter')) return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ bodyText: 'Yes, we ship there in a few days.', confidence: 95, quotesPriceOrOrder: false }) } }], usage: { cost: 0.0001 } }), { status: 200 });
       sent = true; return new Response(JSON.stringify({ id: 'em_1' }), { status: 200 }); // Resend
     }) as unknown as typeof fetch;

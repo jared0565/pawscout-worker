@@ -1,5 +1,5 @@
 /// <reference types="@cloudflare/vitest-pool-workers" />
-import { describe, it, expect, beforeEach } from 'vitest';
+import { it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
 import { TenantStore } from '../src/tenant-store';
 beforeEach(async () => { await applyD1Migrations(env.DB, env.TEST_MIGRATIONS); });

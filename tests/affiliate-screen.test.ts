@@ -2,7 +2,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
 import {
-  TenantStore, AFFILIATE_STAGE_SUBMITTED, AFFILIATE_STAGE_VERIFIED, AFFILIATE_STAGE_JUDGING, AFFILIATE_STAGE_APPROVED,
+  TenantStore, AFFILIATE_STAGE_VERIFIED, AFFILIATE_STAGE_JUDGING, AFFILIATE_STAGE_APPROVED,
   AFFILIATE_STAGE_APPROVED_PENDING_ISSUE, AFFILIATE_STAGE_DEFLECTED, AFFILIATE_STAGE_DECLINED, AFFILIATE_STAGE_OWNER_QUEUE,
   type AffiliateApplicationRow
 } from '../src/tenant-store';

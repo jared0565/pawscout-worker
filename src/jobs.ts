@@ -130,7 +130,7 @@ const SET_PRODUCT_ACTIVE = `mutation pawscoutActivate($input: ProductInput!) {
  * so a narrow window comes back all-dead.
  */
 export function buildGuardDeps(
-  env: Env, store: TenantStore, cfg: TenantConfig, admin: AdminGraphql, llm: LlmClient
+  _env: Env, store: TenantStore, cfg: TenantConfig, admin: AdminGraphql, llm: LlmClient
 ): GuardDeps {
   return {
     loadArticle: (articleId) => getArticleForEnrich(admin, articleId).catch(() => null),

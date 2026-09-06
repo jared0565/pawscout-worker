@@ -13,7 +13,7 @@ import {
   driveDailyChain, runDailyMaintenance, resumeDailyMaintenance,
   readDailyCursor, writeDailyCursor, chainDeadline,
   JOB_STAMP_DAILY, DAILY_SHOP_STAGES,
-  type DailyCursor, type DailyStage, type DailyGlobalStage, type DailyShopCtx
+  type DailyCursor, type DailyStage, type DailyShopCtx
 } from '../src/jobs';
 import { TenantStore } from '../src/tenant-store';
 import type { Env } from '../src/types';

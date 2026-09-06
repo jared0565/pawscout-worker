@@ -58,7 +58,7 @@ export const productAgent: CategoryAgent = {
         const override = await destAvailabilityOverride(ctx, v.title, v.productId);
         if (override) return { confident: true, quotesFigure: false, facts: override };
         const stock = v.availableQty > 0 ? 'in stock' : 'availability shown at checkout';
-        let baseFacts = `Resolved product "${v.title}${v.variantTitle ? ' - ' + v.variantTitle : ''}", price GBP ${v.priceGbp.toFixed(2)}, ${stock}. You MAY state these. Suggest one concrete next step (view the product page or reply with the variant they want).`;
+        const baseFacts = `Resolved product "${v.title}${v.variantTitle ? ' - ' + v.variantTitle : ''}", price GBP ${v.priceGbp.toFixed(2)}, ${stock}. You MAY state these. Suggest one concrete next step (view the product page or reply with the variant they want).`;
 
         // Supplement with grounded warehouse stock/specs from D1 (non-fatal if missing)
         let extra = '';
@@ -116,7 +116,7 @@ export const productAgent: CategoryAgent = {
       return hedge('Could not look up the catalog; answer generally and point to the website.');
     }
   },
-  promptFragment(g: Grounding): string {
+  promptFragment(_g: Grounding): string {
     return 'You are the product specialist. Answer the product question from the grounded facts only, leading with the answer. Never invent specs, prices, stock, or guarantees; if a detail is not grounded, say you will confirm it rather than guessing. End with exactly one concrete next step toward purchase, no pressure. Example: "The Blue Harness comes in small, medium, and large and is machine washable. Would you like the size guide?"';
   },
   deterministicAppendix(_g: Grounding): string | null { return null; }

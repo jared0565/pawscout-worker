@@ -227,7 +227,7 @@ describe('competitorSignal (delivered price = item + delivery)', () => {
   const CFG = { llm: { enabled: true, scoreThreshold: 60, models: {} }, profit: DEFAULT_PROFIT } as unknown as TenantConfig;
   const storeOf = (cached: string[]) => ({
     getSearchCache: async () => null,
-    putSearchCache: async (key: string, value: string) => { cached.push(value); },
+    putSearchCache: async (_key: string, value: string) => { cached.push(value); },
     logLlmUsage: async () => undefined
   } as unknown as TenantStore);
   const llmOf = (raw: unknown, provider: 'openrouter' | 'openai' = 'openrouter') => ({

@@ -23,7 +23,7 @@ import { recallAnswers, ensureAnswerBackfill } from './answer-memory';
 import { agentFor } from './agents/registry';
 import { resolveAgents } from './agents/config';
 import type { AgentContext, Department } from './agents/types';
-import type { ThreadRow, InvoiceLineItem, MessageRow } from './types';
+import type { ThreadRow, InvoiceLineItem } from './types';
 import { CjClient, CjTokenManager, cjFetchFromEnv } from '../cj';
 import { Vault } from '../vault';
 

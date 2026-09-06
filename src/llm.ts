@@ -1,7 +1,7 @@
 import { defaultFetch } from './safe-fetch';
 import type { TenantStore } from './tenant-store';
 import type { CjDetail } from './cj';
-import type { LlmConfig, TenantConfig } from './types';
+import type { TenantConfig } from './types';
 import { resolveChain } from './llm-resolve';
 
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';

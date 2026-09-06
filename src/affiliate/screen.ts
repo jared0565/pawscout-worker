@@ -260,7 +260,7 @@ export function applicationForConsole(a: AffiliateApplicationRow): ApplicationFo
  * at `verified` (spend-cap skip only) for a later tick to retry.
  */
 export async function screenOneApplication(deps: ScreenDeps, app: AffiliateApplicationRow): Promise<void> {
-  const { env, store, cfg, llm, admin, fetchImpl } = deps;
+  const { env, store, cfg, llm, fetchImpl } = deps;
   const sc = cfg.selfServe ?? DEFAULT_SELF_SERVE;
   const sinceIso = new Date(Date.now() - 86_400_000).toISOString();
 

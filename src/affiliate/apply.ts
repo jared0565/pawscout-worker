@@ -24,7 +24,7 @@ import { defaultFetch } from '../safe-fetch';
 import { sendEmail } from '../email';
 import { sanitizeOutbound } from '../inbox/draft';
 import {
-  PARTNERSHIP_FROM, PARTNERSHIP_ADDRESS, STANDARD_COMMISSION_PCT, TIER_REVIEW_ORDERS, TIER_MAX_PCT,
+  PARTNERSHIP_FROM, PARTNERSHIP_ADDRESS, STANDARD_COMMISSION_PCT, TIER_MAX_PCT,
   TRIAL_PCT_OFF_DEFAULT, COMMISSION_COMPUTATION_SENTENCE, COMMISSION_TIMING_SENTENCE, COMMISSION_TIERS_SENTENCE
 } from '../inbox/partnership';
 import { hmacHex } from '../retention';

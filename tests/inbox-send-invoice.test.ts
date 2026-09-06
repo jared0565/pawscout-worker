@@ -1,5 +1,5 @@
 /// <reference types="@cloudflare/vitest-pool-workers" />
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { it, expect, beforeEach, vi } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
 import { TenantStore } from '../src/tenant-store';
 import { sendInvoice } from '../src/inbox/send-invoice';

@@ -173,7 +173,7 @@ function prtAppRowHtml(a){
   var items='';
   if(a.stage==='owner_queue'||a.stage==='deflected') items+='<button type="button" data-prt-app-approve="'+esc(a.id)+'">Approve anyway</button>';
   if(a.stage!=='approved'&&a.stage!=='declined') items+='<button type="button" data-prt-app-decline="'+esc(a.id)+'">Decline</button>';
-  var channelSafe=a.channelUrl&&/^https?:\/\//i.test(a.channelUrl);
+  var channelSafe=a.channelUrl&&/^https?:\\/\\//i.test(a.channelUrl);
   var channel=a.channelUrl
     ?(channelSafe?('<a href="'+esc(a.channelUrl)+'" target="_blank" rel="noopener noreferrer">'+esc(a.channelUrl)+'</a>'):esc(a.channelUrl))
     :'<span class="muted">no channel</span>';

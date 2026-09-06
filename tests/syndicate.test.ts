@@ -336,7 +336,7 @@ function fakeBlotato(sent: unknown[]) {
 }
 
 describe('runSyndicationForShop', () => {
-  const deps = (store: ReturnType<typeof fakeSynStore>, blotato: unknown, copy = GOOD_COPY) => ({
+  const deps = (_store: ReturnType<typeof fakeSynStore>, blotato: unknown, copy = GOOD_COPY) => ({
     listPosts: async () => [POST],
     articles: async () => ART,
     blotato: blotato as never,

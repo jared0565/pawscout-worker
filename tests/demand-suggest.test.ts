@@ -9,7 +9,6 @@ import { LlmClient } from '../src/llm';
 import type { FactPack, GroundedProduct } from '../src/blog/types';
 
 const CFG: any = { llm: { models: {} } };
-const STORE: any = { logLlmUsage: async () => {}, saveDemandSnapshot: async () => {} };
 const WINDOW = { season: 'autumn', months: ['September', 'October', 'November'] };
 
 const prod = (title: string): GroundedProduct =>

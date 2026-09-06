@@ -12,7 +12,7 @@ function escapeHtml(s: string): string {
 /** One short high-signal nudge to the owner's Gmail (never per-enquiry noise). Lives in
  * its own module so both the classify sweep and the partnership funnel can alert without
  * a sweep.ts <-> partnership.ts import cycle. */
-export async function maybeAlertOwner(env: Env, cfg: TenantConfig, shop: string, thread: ThreadRow, summary: string, category?: string, fetchImpl: typeof fetch = defaultFetch): Promise<void> {
+export async function maybeAlertOwner(env: Env, cfg: TenantConfig, _shop: string, thread: ThreadRow, summary: string, category?: string, fetchImpl: typeof fetch = defaultFetch): Promise<void> {
   const to = cfg.inbox.alertEmail || cfg.fulfil.alertEmail;
   if (!to || !env.RESEND_API_KEY) return;
   const consoleUrl = `${env.SHOPIFY_APP_URL}/app`;

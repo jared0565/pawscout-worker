@@ -107,7 +107,7 @@ describe('cullStaleProducts', () => {
 
     const store = new TenantStore(env.DB, SHOP);
     const archived: string[] = [];
-    const admin: AdminGraphql = async (query, variables) => {
+    const admin: AdminGraphql = async (_query, variables) => {
       archived.push((variables!.input as { id: string }).id);
       return { productUpdate: { product: { id: 'x' }, userErrors: [] } };
     };
@@ -135,7 +135,7 @@ describe('cullStaleProducts', () => {
     await insertEvent('other', 'view', 5);       // a handful of events, far below the gate
     const store = new TenantStore(env.DB, SHOP);
     const archived: string[] = [];
-    const admin: AdminGraphql = async (query, variables) => {
+    const admin: AdminGraphql = async (_query, variables) => {
       archived.push((variables!.input as { id: string }).id);
       return { productUpdate: { product: { id: 'x' }, userErrors: [] } };
     };

@@ -39,7 +39,7 @@ import { env } from 'cloudflare:test';
 // enumerating tables at runtime is not available to us. The migrations are the
 // authoritative schema anyway, and they are already in the binding, so a table
 // added by a future migration is picked up here with no extra bookkeeping.
-const TABLE_RE = /CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?["'`\[]?([A-Za-z_][A-Za-z0-9_]*)["'`\]]?/gi;
+const TABLE_RE = /CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?["'`[]?([A-Za-z_][A-Za-z0-9_]*)["'`\]]?/gi;
 
 function tablesFromMigrations(migrations: unknown): string[] {
   const names = new Set<string>();

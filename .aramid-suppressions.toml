@@ -40,3 +40,20 @@ tool = "semgrep"
 rule = "owasp-top-ten.a03-injection.javascript-dangerous-function-constructor"
 path = "tests/console.test.ts"
 reason = "Test lifts the console's own esc() source out of consolePage() output to prove it escapes a crafted <script>; no external input, test-only, not in the Worker bundle."
+
+# 2026-09-06: third `new Function(...)` in tests/console.test.ts, same shape as
+# the two above. Verified at source: the compiled string is ONE LINE of the
+# console page's own inline script (the applicant channel-link scheme check in
+# src/console/partners-js.ts, produced by consolePage() in the same test run)
+# plus a fixed `return`. It exists because the defect it pins was invisible to
+# every other check: the template literal shipped `/^https?:///i.test(...)` to
+# the browser, a regex followed by a LINE COMMENT, so the scheme check never
+# ran and a javascript: channel URL rendered as a link. Only executing the
+# emitted line as JS can tell that apart from the fixed form. No external or
+# user-supplied input; test-only; vitest never ships to the Worker bundle.
+[[suppress]]
+id = "4d2c2f64de564a3837879469b6baaa1bdccdb06004ae223e197237d578d51b8a"
+tool = "semgrep"
+rule = "owasp-top-ten.a03-injection.javascript-dangerous-function-constructor"
+path = "tests/console.test.ts"
+reason = "Test executes one line of the console's own generated inline script (the channel-link scheme check from consolePage() output, same process) to prove the emitted regex is not swallowed by a line comment; no external input, test-only, not in the Worker bundle."
