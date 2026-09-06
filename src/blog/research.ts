@@ -433,6 +433,26 @@ export interface TopicResearchResult {
  *  owner choice: an automatic escalation would spend money nobody asked for. */
 export type DemandMode = 'fast' | 'deep';
 
+/** The llm_usage tag researchDemand writes: only the paid deep pass logs it
+ * (the fast source is a plain fetch), so it is the numerator of the cap. */
+export const DEEP_RESEARCH_TASK = 'blog-demand';
+/** Per-shop spend allowed on the deep pass in any 24-hour window, USD. About
+ * four runs at ~$0.21 each. A Shopify session token carries no role claim, so
+ * "an explicit owner choice" is enforced as a bound on what any session can
+ * spend, not as a role check (aramid review c1029563, 2026-09-07). */
+export const DEEP_RESEARCH_DAILY_CAP_USD = 1;
+
+/** Whether another deep run may start: the last 24 hours of the deep pass's
+ * own llm_usage rows against the cap. Read by the /api/blog/topics route
+ * before it selects the deep mode; the fast mode is never capped. */
+export async function deepResearchBudget(
+  store: TenantStore, nowMs = Date.now()
+): Promise<{ allowed: boolean; spentUsd: number; capUsd: number }> {
+  const sinceIso = new Date(nowMs - 86_400_000).toISOString();
+  const spentUsd = await store.sumTaskSpendUsdSince(DEEP_RESEARCH_TASK, sinceIso);
+  return { allowed: spentUsd < DEEP_RESEARCH_DAILY_CAP_USD, spentUsd, capUsd: DEEP_RESEARCH_DAILY_CAP_USD };
+}
+
 export async function proposeTopics(
   llm: LlmClient, store: TenantStore, cfg: TenantConfig,
   opts: {

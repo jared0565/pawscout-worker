@@ -22,6 +22,7 @@ import { validateEventRequest, findOverlappingPromo, createEventDiscount, buildE
 import { reservedWindowClash, templateByKey } from './event-catalogue';
 import { ensureRecurringDiscount, retireRecurringDiscount, refreshPublicEventFeed, listRecurringForConsole } from './recurring-events';
 import { runBlogPipeline, enrichBlogPost, proposeBlogTopics, listPostsSynced, regenerateArticle } from './blog/pipeline';
+import { deepResearchBudget } from './blog/research';
 import { runArticleHealth } from './blog/article-health';
 import type { BlogBrief } from './blog/types';
 import { issueVoucher, fetchActiveOrderPromos, voucherDateLabel, deactivateVoucherDiscount } from './affiliate-discounts';
@@ -374,6 +375,15 @@ app.post('/api/blog/topics', async (c) => {
   // money nobody asked for. Default is the deterministic autocomplete source.
   const body = await c.req.json().catch(() => ({} as Record<string, unknown>));
   const mode = (body as { deep?: unknown })?.deep === true ? 'deep' : 'fast';
+  // The session token says which shop, not who: the deep pass is bounded by a
+  // per-shop daily spend cap on its own usage rows rather than an owner role
+  // (aramid review c1029563). The fast source is never capped.
+  if (mode === 'deep') {
+    const budget = await deepResearchBudget(store);
+    if (!budget.allowed) {
+      return c.json({ ok: false, error: `Deep research is capped at $${budget.capUsd.toFixed(2)} a day and $${budget.spentUsd.toFixed(2)} has been spent in the last 24 hours; the standard suggestions still work` });
+    }
+  }
   const result = await proposeBlogTopics(c.env, store, cfg, { nowMonth0: new Date().getMonth(), mode });
   return c.json(result);
 });

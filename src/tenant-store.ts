@@ -2954,11 +2954,18 @@ export class TenantStore {
    *  callers elsewhere). Reads the existing llm_usage ledger, scoped to the
    *  AFFILIATE_SCREEN_LLM_TASK tag - the numerator behind selfServe.screenSpendCapGbpPerDay. */
   async sumScreenSpendTodayGbp(sinceIso: string, fxUsdToGbp: number): Promise<number> {
+    const usd = await this.sumTaskSpendUsdSince(AFFILIATE_SCREEN_LLM_TASK, sinceIso);
+    return Math.round(usd * fxUsdToGbp * 100) / 100;
+  }
+
+  /** USD spent on one llm_usage task tag since `sinceIso` - the numerator of
+   *  any per-task spend cap (affiliate screening above, deep blog research). */
+  async sumTaskSpendUsdSince(task: string, sinceIso: string): Promise<number> {
     const row = await this.db
       .prepare(`SELECT COALESCE(SUM(cost_usd), 0) AS usd FROM llm_usage WHERE shop = ?1 AND task = ?2 AND created_at >= ?3`)
-      .bind(this.shop, AFFILIATE_SCREEN_LLM_TASK, sinceIso)
+      .bind(this.shop, task, sinceIso)
       .first<{ usd: number }>();
-    return Math.round((row?.usd ?? 0) * fxUsdToGbp * 100) / 100;
+    return row?.usd ?? 0;
   }
 
   // --- W-INBOX-3: invoices ---
