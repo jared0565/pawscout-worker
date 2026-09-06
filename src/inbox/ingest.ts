@@ -21,7 +21,7 @@ export async function ingestParsed(store: TenantStore, p: ParsedEmail): Promise<
   // Sender-level block (owner rule 2026-09-04): a contact the repeat rule (or the
   // owner) blocked lands as spam before classification, drafting or alerting.
   const contact = await store.getContactByEmail(email);
-  const blocked = !!contact?.blocked_at;
+  let blocked = !!contact?.blocked_at;
 
   const matchedThreadId = await store.matchThread({
     contactEmail: email, inReplyTo: p.inReplyTo, references: p.references, subjectNorm
@@ -30,6 +30,15 @@ export async function ingestParsed(store: TenantStore, p: ParsedEmail): Promise<
 
   // Decide the initial status from the gates (LLM never decides spam).
   const auth = parseAuthResults(p.headers);
+  // A block is re-read on every arrival, not set once and forgotten (aramid
+  // review b4b33fbf): the same deterministic guard that keeps a customer from
+  // being blocked, an order-shaped message from an AUTHENTICATED sender, lets a
+  // wrongly blocked one back in. The block lifts here and the message is handled
+  // as a normal inbound. Contact-form posts stay out: their DMARC is the relay's.
+  if (blocked && !form && auth.dmarc === 'pass' && looksLikeCustomerMessage(bodyText)) {
+    await store.unblockContact(email);
+    blocked = false;
+  }
   // A Shopify contact-form notification arrives from a no-reply relay wrapping a
   // real human - so a form submission must NOT be gated as "automated" on the
   // envelope sender. The DMARC spam gate below still applies to everyone.

@@ -247,6 +247,33 @@ describe('repeat-sender block (ingest)', () => {
     expect((await store.getContactByEmail('cust2@x.com'))!.blocked_at).toBeNull();
   });
 
+  // aramid llm-review b4b33fbf (fixed 2026-09-07): a block was set once and
+  // never re-read, so a wrongly blocked contact who later wrote about an order
+  // was spam for ever. The same deterministic guard that stops a customer being
+  // blocked (an order-shaped message, from an authenticated sender) now lets
+  // one back in: the block lifts at ingest and the message enters the queue.
+  it('an order-shaped, DMARC-passing message from a blocked sender lifts the block and enters the queue', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await store.upsertContact({ email: VENDOR, name: 'Vendor', phone: null });
+    await store.blockContact(VENDOR, 'repeat message x3');
+    const r = await ingestParsed(store, pv({ messageId: '<ord1@x>', from: { email: VENDOR, name: 'Vendor' }, subject: 'Order 1042', text: 'Hi, I placed order #1042 last week and it has not arrived yet. Can you check the tracking for me?', date: '2026-09-06T10:00:00Z' }));
+    const got = (await store.getThreadWithMessages(r.threadId))!;
+    expect(got.thread.status).toBe('new');          // a normal inbound, not spam
+    expect(got.thread.classified_at).toBeNull();    // enters the LLM sweep like any customer message
+    expect(got.labels).not.toContain('spam');
+    const c = (await store.getContactByEmail(VENDOR))!;
+    expect(c.blocked_at).toBeNull();
+  });
+
+  it("a blocked sender's order-shaped message WITHOUT a passing DMARC result stays blocked", async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await store.upsertContact({ email: VENDOR, name: 'Vendor', phone: null });
+    await store.blockContact(VENDOR, 'repeat message x3');
+    const r = await ingestParsed(store, pe({ messageId: '<ord2@x>', from: { email: VENDOR, name: 'Vendor' }, subject: 'Order 1042', text: 'Hi, I placed order #1042 last week and it has not arrived yet.', date: '2026-09-06T10:00:00Z' }));
+    expect((await store.getThreadWithMessages(r.threadId))!.thread.status).toBe('spam');
+    expect((await store.getContactByEmail(VENDOR))!.blocked_at).not.toBeNull();
+  });
+
   it('linking the contact to a Shopify customer lifts an existing block', async () => {
     const store = new TenantStore(env.DB, SHOP);
     await store.upsertContact({ email: VENDOR, name: 'Vendor', phone: null });

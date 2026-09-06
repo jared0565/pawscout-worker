@@ -373,6 +373,61 @@ describe('applyDraftTemplate', () => {
     expect((await s.getApplicantByThread(tid))?.stage).toBe('passed_to_form');
   });
 
+  // aramid llm-review 785e4f91 (fixed 2026-09-07): the invite template staged
+  // 'passed_to_form' for ANY thread, so applied to an accepted partner's thread
+  // it re-entered them into the funnel as a fresh applicant. Someone who holds
+  // a live code, or is queued for one, is never re-invited from the picker;
+  // the neutral and decline templates still apply to their thread.
+  it('refuses the signup invite and its follow-up for a contact who already holds a live code', async () => {
+    const { s, tid } = await seedWithConfig();
+    const pid = await s.upsertAffiliatePartner({ contactEmail: 'jane@x.com' });
+    await s.createAffiliateVoucher({ partnerId: pid, code: 'JANE5', pctOff: 5, commissionPct: 2, endsAt: new Date(Date.now() + 30 * 86400000).toISOString() });
+    for (const key of ['signup_invite', 'signup_followup']) {
+      const r = await applyDraftTemplate(env.DB, SHOP, tid, key);
+      expect(r.ok, key).toBe(false);
+      expect((r as { error?: string }).error, key).toMatch(/already .*partner.*Partners view/i);
+    }
+    expect(await s.getApplicantByThread(tid)).toBeNull();   // stage untouched
+    expect(await s.getPendingDraft(tid)).toBeNull();        // nothing drafted
+    expect((await applyDraftTemplate(env.DB, SHOP, tid, 'keep_to_email')).ok).toBe(true);
+  });
+
+  it('refuses the signup invite for a contact who is queued for a code', async () => {
+    const { s, tid } = await seedWithConfig();
+    expect(await s.queueAffiliatePartner({ contactEmail: 'jane@x.com', name: 'Jane' })).toBe('queued');
+    const r = await applyDraftTemplate(env.DB, SHOP, tid, 'signup_invite');
+    expect(r.ok).toBe(false);
+    expect(await s.getApplicantByThread(tid)).toBeNull();
+  });
+
+  // aramid llm-review 63df9d97 (fixed 2026-09-07): whole-thread reading revived
+  // an off-platform ask we had already answered. The template now reads what
+  // the sender wrote SINCE our last sent reply, which still covers the ca4e307d
+  // shape above (ask, then a nudge, no reply between) and no longer re-answers
+  // a WhatsApp request from before our reply. The volume-pitch paragraph keeps
+  // reading the whole thread: the pitch is the context the invite answers.
+  it('does not re-answer an off-platform ask that sits before our last sent reply', async () => {
+    const { s, tid } = await seedWithConfig();
+    await s.insertInboundMessageIfNew({
+      threadId: tid, messageId: '<wa1@x>', inReplyTo: null, references: [],
+      from: 'jane@x.com', to: 'contact@activepaw.co.uk', subject: 'Re: Hi',
+      bodyText: 'Drop your WhatsApp number and I will guide you through the process.',
+      bodyHtml: null, headersJson: '{}', receivedAt: '2026-06-19T10:00:00Z'
+    });
+    await s.insertOutboundMessage({ threadId: tid, messageId: '<ours-wa@activepaw>', from: 'contact@activepaw.co.uk', to: 'jane@x.com', subject: 'Re: Hi', bodyText: 'We keep all of our conversations here on email, so everything is in one place.', bodyHtml: '<p>x</p>', sentAt: '2026-06-19T12:00:00Z' });
+    await s.insertInboundMessageIfNew({
+      threadId: tid, messageId: '<wa2@x>', inReplyTo: '<ours-wa@activepaw>', references: [],
+      from: 'jane@x.com', to: 'contact@activepaw.co.uk', subject: 'Re: Hi',
+      bodyText: 'Understood. I run a dog page with 20k followers and would like to promote your products.',
+      bodyHtml: null, headersJson: '{}', receivedAt: '2026-06-20T09:00:00Z'
+    });
+    const r = await applyDraftTemplate(env.DB, SHOP, tid, 'signup_invite');
+    expect(r.ok).toBe(true);
+    const body = (r as { draft?: { body_text?: string } }).draft?.body_text ?? '';
+    expect(body).toContain(AFFILIATE_APPLY_URL);
+    expect(body).not.toMatch(/WhatsApp or Telegram/);
+  });
+
   it('every registry template renders a pending draft (no key without a body)', async () => {
     for (const t of DRAFT_TEMPLATES) {
       const { s, tid } = await seedWithConfig();

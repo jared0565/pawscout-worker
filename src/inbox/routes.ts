@@ -6,7 +6,7 @@ import { sendReply } from './send';
 import { composeDraftForThread } from './sweep';
 import { maybePartnershipDraft, buildServiceDecline, buildOperationsDecline, buildCollaborationDecline, buildKeepToEmail, buildSignupInvite, detectVolumePitch, detectOffPlatformRequest, buildSecondTouch, buildPointerBack, type TouchTemplate } from './partnership';
 import { chooseTouch, outboundBodies, type TouchKind } from './repeat';
-import { renderReplyHtml } from './draft';
+import { renderReplyHtml, openInboundText } from './draft';
 import { stripQuotedReply } from './quote';
 import { defaultFetch } from '../safe-fetch';
 
@@ -237,18 +237,28 @@ export async function applyDraftTemplate(db: D1Database, shop: string, threadId:
   const contact = await store.getContactByEmail(got.thread.contact_email);
   const name = contact?.name ?? null;
 
-  // Whole-thread inbound text, quote-stripped. Both optional-paragraph triggers
-  // below read it. This DELIBERATELY differs from the funnel, which reads
-  // `offPlatform` from the LATEST message only: the funnel is reacting to the
-  // message that just arrived, whereas a template is applied by hand to a
-  // thread whose earlier asks may never have been answered by a sent reply.
-  // On ca4e307d the WhatsApp request sat in the second-to-last inbound and the
-  // last one was a bare nudge, so latest-only would have shipped a reply that
-  // silently dropped it. Matches how `volumePitch` has always been computed here.
+  // An accepted partner (a live code, or queued for one) is never re-invited
+  // from the picker: the invite would stage them 'passed_to_form' and the next
+  // inbound would treat them as a fresh applicant (aramid review 785e4f91).
+  // The neutral and decline templates still apply to their thread.
+  if (key === 'signup_invite' || key === 'signup_followup') {
+    const pool = await store.partnerPoolState(got.thread.contact_email);
+    if (pool === 'live' || pool === 'queued') {
+      return { ok: false as const, error: `This contact is already an approved partner (${pool}); manage them from the Partners view instead of re-inviting` };
+    }
+  }
+
+  // The volume-pitch paragraph reads the WHOLE thread, quote-stripped: the
+  // pitch is the context the invite answers, whenever it was made. The
+  // off-platform paragraph reads only what the sender wrote SINCE our last
+  // sent reply (openInboundText): that still covers ca4e307d, where the
+  // WhatsApp request sat in the second-to-last inbound and the last one was a
+  // bare nudge with no reply between, and it no longer re-answers a channel
+  // ask a sent reply already dealt with (aramid review 63df9d97).
   const inboundText = got.messages.filter((m) => m.direction === 'inbound')
     .map((m) => stripQuotedReply(m.body_text ?? '')).join('\n\n');
   const volumePitch = detectVolumePitch(inboundText);
-  const offPlatform = detectOffPlatformRequest(inboundText);
+  const offPlatform = detectOffPlatformRequest(openInboundText(got.messages));
 
   // The follow-up is the introduction's own shorter second touch promoted to a
   // picker entry; its next touch is therefore the one-line pointer.
