@@ -168,7 +168,10 @@ export async function backfillAnswerMemory(store: TenantStore): Promise<number> 
       const got = await store.getThreadWithMessages(t.id);
       if (!got) continue;
       const inboundToAddrs = got.messages.filter((m) => m.direction === 'inbound').map((m) => m.to_addr ?? '');
-      const lane = isPartnershipLane({ inboundToAddrs, declaredIntent: got.thread.declared_intent ?? null, primaryCategory: t.primary_category ?? null, inboundTexts: inboundTextsOf(got.messages) });
+      // Whole-thread scope on purpose: historical pairs are imported across the
+      // thread, so an ask anywhere in it (or an applicant row) marks the lane.
+      const lane = isPartnershipLane({ inboundToAddrs, declaredIntent: got.thread.declared_intent ?? null, primaryCategory: t.primary_category ?? null, inboundTexts: inboundTextsOf(got.messages) })
+        || !!(await store.getApplicantByThread(t.id));
       let lastInbound = '';
       for (const m of got.messages) {
         if (m.direction === 'inbound') { lastInbound = stripQuotedReply(m.body_text ?? ''); continue; }

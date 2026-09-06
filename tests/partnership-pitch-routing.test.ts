@@ -523,3 +523,25 @@ describe('classifier category alone does not open the funnel', () => {
     expect((await s.getApplicantByThread(tid))?.stage).toBe('passed_to_form');
   });
 });
+
+// aramid llm-review 2026-09-06 (finding ab7ce5d8): the lane gate read every
+// inbound message on the thread, so an ask we had ALREADY answered kept the
+// thread in the funnel and a later, unrelated follow-up got the signup invite.
+// Only what the sender has written since our last reply drives the gate now
+// (the same rule the drafter uses); a thread with an applicant row stays in
+// the funnel through its own check, as before.
+describe('an already-answered partnership ask does not keep the funnel open', () => {
+  it("affiliate category, ask before our reply, unrelated follow-up after it: no first touch, no applicant row", async () => {
+    const s = new TenantStore(env.DB, 'answered.myshopify.com');
+    await s.upsertContact({ email: 'cre@x.com', name: 'Cree', phone: null });
+    const tid = await s.createThread({ contactEmail: 'cre@x.com', subject: 'Hi', subjectNorm: 'hi', receivedAt: '2026-09-05T10:00:00Z', initialStatus: 'needs_reply' });
+    await s.insertInboundMessageIfNew({ threadId: tid, messageId: '<ans1@x>', inReplyTo: null, references: [], from: 'cre@x.com', to: 'contact@activepaw.co.uk', subject: 'Hi', bodyText: 'Do you have an affiliate programme I could join?', bodyHtml: null, headersJson: '{}', receivedAt: '2026-09-05T10:00:00Z' });
+    await s.insertOutboundMessage({ threadId: tid, messageId: '<ans-r1@x>', from: 'contact@activepaw.co.uk', to: 'cre@x.com', subject: 'Re: Hi', bodyText: 'Hi Cree,\n\nYes, the programme is open to anyone; the application is on our website.\n\nBest Regards,\nActive Paw Partnerships', bodyHtml: '<p>Yes</p>', sentAt: '2026-09-05T11:00:00Z' });
+    await s.insertInboundMessageIfNew({ threadId: tid, messageId: '<ans2@x>', inReplyTo: '<ans-r1@x>', references: [], from: 'cre@x.com', to: 'contact@activepaw.co.uk', subject: 'Re: Hi', bodyText: 'Thanks. Separate question: how long does delivery to Spain take?', bodyHtml: null, headersJson: '{}', receivedAt: '2026-09-06T09:00:00Z' });
+    await s.setThreadClassification(tid, { status: 'needs_reply', primaryCategory: 'affiliate', intentScore: 20, summary: null, classifiedAt: '2026-09-06T09:01:00Z' });
+    const got = (await s.getThreadWithMessages(tid))!;
+    const r = await maybePartnershipDraft({ ...env } as any, s, { ...CFG, inbox: { ...CFG.inbox, affiliateMode: 'signup_page' } }, got.thread, got, noFetch);
+    expect(r).toBeNull();
+    expect(await s.getApplicantByThread(tid)).toBeNull();
+  });
+});

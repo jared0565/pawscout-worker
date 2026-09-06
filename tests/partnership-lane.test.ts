@@ -58,3 +58,24 @@ describe('isPartnershipLane', () => {
     expect(isPartnershipLane({ inboundToAddrs: [], declaredIntent: null, primaryCategory: null, inboundTexts: [] })).toBe(false);
   });
 });
+
+// aramid llm-review 2026-09-06 (finding 252c4ecf): a bare "percentage" matched
+// "What percentage of the fabric is polyester?". The word counts only in
+// commission context: offered, paid, given, earned, per sale or per order.
+describe('detectPartnershipAsk: "percentage" needs commission context', () => {
+  it('fires when a percentage is asked for as a cut', () => {
+    for (const t of [
+      'What percentage would you offer if I bring you customers?',
+      'Is there a percentage per sale for people who send you buyers?',
+      'What commission percentage do you pay?',
+      'Could I earn a percentage on orders I refer?'
+    ]) expect(detectPartnershipAsk(t), t).toBe(true);
+  });
+  it('stays quiet on a product or delivery percentage', () => {
+    for (const t of [
+      'What percentage of the fabric is polyester?',
+      'What percentage of orders arrive within a week?',
+      'Is the 20% off code still valid, or what percentage is the sale?'
+    ]) expect(detectPartnershipAsk(t), t).toBe(false);
+  });
+});

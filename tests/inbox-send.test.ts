@@ -118,6 +118,31 @@ describe('sendReply', () => {
     expect(sentFrom).toBe('Active Paw <contact@activepaw.co.uk>');
   });
 
+  // aramid llm-review 2026-09-06 (finding ab7ce5d8): the lane gate now reads
+  // only what the sender wrote since our last reply, so the sales@ identity of
+  // a thread already IN the funnel must come from its applicant row, not from
+  // re-finding the original ask. A "thanks" after our invite still goes out as
+  // Active Paw Partnerships.
+  it("keeps the partnerships identity on a funnel thread whose latest message no longer asks (applicant row carries it)", async () => {
+    const s = new TenantStore(env.DB, 'applicant.myshopify.com');
+    await s.upsertContact({ email: 'cre@x.com', name: 'Cree', phone: null });
+    const tid = await s.createThread({ contactEmail: 'cre@x.com', subject: 'Hi', subjectNorm: 'hi', receivedAt: '2026-09-05T10:00:00Z', initialStatus: 'needs_reply' });
+    await s.setThreadClassification(tid, { status: 'needs_reply', primaryCategory: 'affiliate', intentScore: 20, summary: null, classifiedAt: '2026-09-05T10:00:01Z' });
+    await s.insertInboundMessageIfNew({ threadId: tid, messageId: '<ap1@x>', inReplyTo: null, references: [], from: 'cre@x.com', to: 'contact@activepaw.co.uk', subject: 'Hi', bodyText: 'Do you have an affiliate programme?', bodyHtml: null, headersJson: '{}', receivedAt: '2026-09-05T10:00:00Z' });
+    await s.insertOutboundMessage({ threadId: tid, messageId: '<ap-r1@x>', from: 'sales@activepaw.co.uk', to: 'cre@x.com', subject: 'Re: Hi', bodyText: 'Hi Cree,\n\nThe application is on our website.\n\nBest Regards,\nActive Paw Partnerships', bodyHtml: '<p>x</p>', sentAt: '2026-09-05T11:00:00Z' });
+    await s.upsertApplicant({ threadId: tid, contactEmail: 'cre@x.com', stage: 'passed_to_form' });
+    await s.insertInboundMessageIfNew({ threadId: tid, messageId: '<ap2@x>', inReplyTo: '<ap-r1@x>', references: [], from: 'cre@x.com', to: 'contact@activepaw.co.uk', subject: 'Re: Hi', bodyText: 'Okay thanks, will do.', bodyHtml: null, headersJson: '{}', receivedAt: '2026-09-06T09:00:00Z' });
+    const did = await s.insertDraft({ threadId: tid, bodyText: 'Great, we look forward to it.', bodyHtml: '<p>x</p>', confidence: null, quotesPriceOrder: false, holdReasons: [], model: 'partnership-screen', status: 'pending' });
+
+    let sentFrom: any = null;
+    const fetchImpl: typeof fetch = (async (_u: unknown, init: RequestInit) => { const b = JSON.parse(init.body as string); sentFrom = b.from; return new Response(JSON.stringify({ id: 'em_1' }), { status: 200 }); }) as unknown as typeof fetch;
+    const thread = (await s.getThreadWithMessages(tid))!.thread;
+    const draft = (await s.getDraft(did))!;
+    const r = await sendReply({ ...env, RESEND_API_KEY: 'rk' } as any, s, CFG, thread, draft, undefined, fetchImpl);
+    expect(r.ok).toBe(true);
+    expect(sentFrom).toBe('Active Paw Partnerships <sales@activepaw.co.uk>');
+  });
+
   it('does NOT clobber an explicit converted/closed status on send (preserves the merchant choice)', async () => {
     const s = new TenantStore(env.DB, 'd.myshopify.com');
     await s.upsertContact({ email: 'jane@x.com', name: null, phone: null });

@@ -3,9 +3,9 @@ import type { TenantStore } from '../tenant-store';
 import type { ThreadRow, DraftRow } from './types';
 import { INBOX_LABELS } from './types';
 import { sendEmail } from '../email';
-import { renderReplyHtml, sanitizeOutbound } from './draft';
+import { renderReplyHtml, sanitizeOutbound, openInboundTexts } from './draft';
 import { defaultFetch } from '../safe-fetch';
-import { isPartnershipLane, resolveFromAddress, inboundTextsOf } from './partnership';
+import { isPartnershipLane, resolveFromAddress } from './partnership';
 import { captureAnswerFromSend } from './answer-memory';
 
 /** Send a drafted reply (HITL approve OR Auto). To = the contact; threads via a
@@ -28,8 +28,11 @@ export async function sendReply(
 
   // Sender identity: partnership-lane threads reply from sales@ ("Active Paw Partnerships");
   // otherwise from the address the customer wrote to, else the support@ default.
+  // The lane is what the sender asked SINCE our last reply, or an applicant row:
+  // a thread already in the funnel keeps its identity on a bare "thanks".
   const inboundToAddrs = (got?.messages ?? []).filter((m) => m.direction === 'inbound').map((m) => m.to_addr ?? '');
-  const partnershipLane = isPartnershipLane({ inboundToAddrs, declaredIntent: got?.thread.declared_intent ?? null, primaryCategory: thread.primary_category, inboundTexts: inboundTextsOf(got?.messages ?? []) });
+  const partnershipLane = isPartnershipLane({ inboundToAddrs, declaredIntent: got?.thread.declared_intent ?? null, primaryCategory: thread.primary_category, inboundTexts: openInboundTexts(got?.messages ?? []) })
+    || !!(await store.getApplicantByThread(thread.id));
   const from = resolveFromAddress({ partnershipLane, toAddr: lastInbound?.to_addr ?? null });
 
   const r = await sendEmail(env.RESEND_API_KEY, {

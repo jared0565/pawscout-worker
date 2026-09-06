@@ -3,7 +3,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
 import { TenantStore } from '../src/tenant-store';
 import { LlmClient } from '../src/llm';
-import { draftReply, renderReplyHtml, openInboundText } from '../src/inbox/draft';
+import { draftReply, renderReplyHtml, openInboundText, openInboundTexts } from '../src/inbox/draft';
 import { DEFAULT_INBOX } from '../src/inbox/types';
 import type { CategoryAgent, Grounding } from '../src/inbox/agents/types';
 import { DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, type TenantConfig } from '../src/types';
@@ -232,6 +232,13 @@ describe('openInboundText', () => {
   it('after a reply from us, only the messages since then are open', () => {
     expect(openInboundText([inb('Do they arrive as shown?'), outb('Yes.'), inb('Great, and to Spain?')])).toBe('Great, and to Spain?');
     expect(openInboundText([inb('a?'), outb('A.'), inb('b?'), inb('c?')])).toBe('b?\n\nc?');
+  });
+  // aramid llm-review 2026-09-06 (finding ab7ce5d8): the lane gate needs the
+  // same "since our last reply" scope as the drafter, as a list per message.
+  it('openInboundTexts is the per-message form of the same scope', () => {
+    expect(openInboundTexts([inb('a?'), outb('A.'), inb('b?'), inb('c?')])).toEqual(['b?', 'c?']);
+    expect(openInboundTexts([inb('a?'), inb('b?')])).toEqual(['a?', 'b?']);
+    expect(openInboundTexts([inb('a?'), outb('A.')])).toEqual([]);
   });
   it('strips quoted chains and skips empty turns; empty when nothing is open', () => {
     expect(openInboundText([inb('New text\n\nOn Sat, 5 Sept 2026 Rose wrote:\n> old'), inb('   ')])).toBe('New text');

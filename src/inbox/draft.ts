@@ -221,14 +221,22 @@ export function buildDraftTranscript(messages: MessageRow[]): string {
  * question in her first message was skipped by every draft. A message we have
  * not answered is still the customer's current ask, whichever turn it sits in. */
 export function openInboundText(messages: ReadonlyArray<Pick<MessageRow, 'direction' | 'body_text'>>): string {
+  return openInboundTexts(messages).join('\n\n');
+}
+
+/** The same scope, one entry per message: the quote-stripped text of every
+ * inbound message since our last reply, oldest first, empty turns dropped. The
+ * partnership lane gate reads this (aramid review 2026-09-06): an ask we have
+ * already answered must not keep a thread in the funnel; a thread that IS in
+ * the funnel is known by its applicant row, not by re-finding the old ask. */
+export function openInboundTexts(messages: ReadonlyArray<Pick<MessageRow, 'direction' | 'body_text'>>): string[] {
   let lastOutbound = -1;
   messages.forEach((m, i) => { if (m.direction === 'outbound') lastOutbound = i; });
   return messages
     .slice(lastOutbound + 1)
     .filter((m) => m.direction === 'inbound')
     .map((m) => stripQuotedReply(m.body_text ?? '').trim())
-    .filter(Boolean)
-    .join('\n\n');
+    .filter(Boolean);
 }
 
 /** Shared JSON validator for a drafter response (initial draft AND revision). */

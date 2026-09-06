@@ -1,5 +1,5 @@
 import type { AffiliateMode, ScreenFacts, ScreenVerdict, ThreadRow, MessageRow } from './types';
-import { applySalutation, renderReplyHtml, applyFooter, draftReply, buildDraftTranscript } from './draft';
+import { applySalutation, renderReplyHtml, applyFooter, draftReply, buildDraftTranscript, openInboundTexts } from './draft';
 import { stripQuotedReply } from './quote';
 import { chooseTouch, outboundBodies, repeatsPriorOutbound, type TouchKind } from './repeat';
 import type { CategoryAgent, Grounding } from './agents/types';
@@ -97,7 +97,10 @@ const PARTNERSHIP_ASK_RES: RegExp[] = [
   /\bpromot(?:e|ing) (?:you|your)\b/i,
   /\breferral (?:fee|fees|programme|program|link|code|commission|partner)/i,
   /\bwork (?:together|with you)\b/i,
-  /\bpercentage\b/i,
+  // "percentage" only in commission context (aramid review 2026-09-06: the bare
+  // word matched "what percentage of the fabric is polyester?").
+  /\bpercentage\b[^.?!\n]{0,60}\b(?:offer|offered|pay|paid|give|given|earn|commission|cut|per (?:sale|order)|for (?:each|every) (?:sale|order))\b/i,
+  /\b(?:offer|pay|give|earn|commission)\b[^.?!\n]{0,40}\bpercentage\b/i,
   /\bmy (?:audience|followers|subscribers|channel|community|blog|tiktok|instagram|youtube)\b/i,
 ];
 export function detectPartnershipAsk(text: string): boolean {
@@ -122,9 +125,11 @@ export function isPartnershipLane(opts: {
   return opts.inboundToAddrs.some((t) => (t ?? '').toLowerCase() === PARTNERSHIP_ADDRESS);
 }
 
-/** The quote-stripped text of every inbound message, oldest first: the input the
- * lane gate reads. Shared by the funnel, the sender-identity resolver and the
- * answer memory so all three agree on what "the sender asked" means. */
+/** The quote-stripped text of EVERY inbound message, oldest first. Only the
+ * answer-memory backfill reads this whole-thread form (it imports historical
+ * pairs across the thread); the funnel gate and the sender-identity resolver
+ * read openInboundTexts (since our last reply) plus the applicant row, so an
+ * ask we already answered cannot re-open the funnel (aramid review 2026-09-06). */
 export function inboundTextsOf(messages: ReadonlyArray<Pick<MessageRow, 'direction' | 'body_text'>>): string[] {
   return messages.filter((m) => m.direction === 'inbound').map((m) => stripQuotedReply(m.body_text ?? '').trim());
 }
@@ -921,7 +926,7 @@ export async function maybePartnershipDraft(
   // rather than leaving half the message unanswered (2026-08-02).
   const offPlatformNow = detectOffPlatformRequest(latestNewText);
   if (!applicant && !servicePitch && !volumePitchNow
-      && !isPartnershipLane({ inboundToAddrs, declaredIntent, primaryCategory: thread.primary_category, inboundTexts: inboundTextsOf(got.messages) })) return null;
+      && !isPartnershipLane({ inboundToAddrs, declaredIntent, primaryCategory: thread.primary_category, inboundTexts: openInboundTexts(got.messages) })) return null;
 
   const contact = await store.getContactByEmail(thread.contact_email);
   const name = contact?.name ?? null;
