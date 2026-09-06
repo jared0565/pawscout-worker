@@ -22,11 +22,17 @@ describe('partnership composers', () => {
   it('falls back to a generic greeting when no name', () => {
     expect(buildQualifyingEmail(null).startsWith('Hi there,')).toBe(true);
   });
-  it('decline is warm, leaves a door open, signed by Partnerships', () => {
+  // 2026-09-07: the decline goes out automatically to self-serve applicants the
+  // hard gate turns down and on the owner's Decline click, so it must be true
+  // under the OPEN programme: their application is not a fit right now. It must
+  // never claim we take no partnerships (the old wording, false since the
+  // signup page went live).
+  it('decline is warm, truthful under the open programme, leaves a door open, signed by Partnerships', () => {
     const body = buildPartnershipDecline('Sam');
     expect(body.startsWith('Hi Sam,')).toBe(true);
     expect(body).toMatch(/appreciate/i);
-    expect(body).toMatch(/not taking on new partnerships/i);
+    expect(body).toMatch(/not a fit for our affiliate programme/i);
+    expect(body).not.toMatch(/not taking on new partnerships|no(t| longer) (accept|take|run)/i);
     expect(body).toMatch(/hear from you again/i);
     expect(body).toContain('Best Regards,\nActive Paw Partnerships');
   });
@@ -137,6 +143,12 @@ describe('second-touch and pointer variants', () => {
   it('the second-touch qualifying note does not carry the screening marker (it does not re-ask the questions)', () => {
     expect(buildSecondTouch('qualifying', 'Jo')).not.toContain(QUALIFYING_MARKER);
   });
+  // 2026-09-07: the shorter decline must tell the same truth as the full one.
+  it('the second-touch decline restates the fit decision, never that the programme is closed', () => {
+    const second = buildSecondTouch('partnership_decline', 'Jo');
+    expect(second).toMatch(/not a fit/i);
+    expect(second).not.toMatch(/not taking on new partnerships/i);
+  });
 });
 
 // Owner rule 2026-09-04 (Paul's thread): "if we have previously introduced the
@@ -158,7 +170,7 @@ describe('friendly collaboration decline (programme introduced twice, they insis
     expect(body).toMatch(/every success/i);
     expect(body).toContain('Best Regards,\nActive Paw Partnerships');
     // The old partnership decline's falsehood must not come back through here.
-    expect(body).not.toMatch(/not taking on new partnerships/i);
+    expect(body).not.toMatch(/not a fit for our affiliate programme/i);
     expect(body).not.toMatch(/[–—]/);
   });
 

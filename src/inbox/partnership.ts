@@ -415,12 +415,17 @@ If you have a question about our products or an existing order, we are always gl
 Best Regards,
 Active Paw Partnerships`;
 
+// 2026-09-07: this body goes out AUTOMATICALLY to self-serve applicants the hard
+// gate turns down and on the owner's Decline click, as well as from the legacy
+// funnel modes. It must be true under the OPEN programme, so it declines the
+// FIT, never claims we take no partnerships (the earlier wording, false since
+// the signup page went live), and leaves the door open on their side.
 const DECLINE_BODY =
 `Thank you for taking the time to reach out - we really do appreciate the interest in Active Paw.
 
-We're not taking on new partnerships or promotional collaborations at the moment, so we'll have to pass for now. That's no reflection on your work - just where we are as a store.
+Having looked at what you sent, it is not a fit for our affiliate programme right now, so we will have to pass on this one. That is no reflection on your work - the programme is built around a particular kind of channel and audience, and we keep it small.
 
-If that changes down the line, we'd be glad to hear from you again. Wishing you every success in the meantime.
+If your channel or audience changes down the line, we would be glad to hear from you again. Wishing you every success in the meantime.
 
 Best Regards,
 Active Paw Partnerships`;
@@ -682,7 +687,7 @@ Once it is in, we set things up from there.
 
 ${SIGNOFF_PARTNERSHIPS}`,
   partnership_decline:
-`Thank you for following up. Our position is unchanged: we are not taking on new partnerships at the moment, so we will have to pass for now. We do appreciate the interest, and wish you every success.
+`Thank you for following up. Our decision is unchanged: it is not a fit for our affiliate programme right now, so we will have to pass. We do appreciate the interest, and wish you every success.
 
 ${SIGNOFF_PARTNERSHIPS}`,
   service_decline:

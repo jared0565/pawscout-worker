@@ -33,7 +33,7 @@ describe('partnership first-touch, decline_all toggle (2026-07-03 policy, config
     expect(r).not.toBeNull();
     expect(r!.send).toBe(false); // HITL - owner approves
     const draft = await s.getPendingDraft(tid);
-    expect(draft!.body_text).toMatch(/not taking on new partnerships/i);
+    expect(draft!.body_text).toMatch(/not a fit for our affiliate programme/i);
     expect(draft!.body_text).not.toMatch(/where would you promote/i); // no qualifying questions
     expect(draft!.body_text).toContain('Best Regards,\nActive Paw Partnerships');
     expect((await s.getApplicantByThread(tid))!.stage).toBe('declined');
@@ -46,7 +46,7 @@ describe('partnership first-touch, decline_all toggle (2026-07-03 policy, config
     const r = await composeDraftForThread({ ...env } as any, s, DECLINE_CFG, thread, noFetch);
     expect(r).not.toBeNull();
     const draft = await s.getPendingDraft(tid);
-    expect(draft!.body_text).toMatch(/not taking on new partnerships/i);
+    expect(draft!.body_text).toMatch(/not a fit for our affiliate programme/i);
     expect((await s.getApplicantByThread(tid))!.stage).toBe('declined');
   });
 
@@ -72,7 +72,7 @@ describe('partnership first-touch, LIVE default (funnel_voucher, owner policy 20
     expect(draft!.body_text).toContain('when would your first post go live');
     expect(draft!.body_text).toContain('coupon or deal sites');
     expect(draft!.body_text).not.toMatch(/tracked with your own link/i); // link wording stays in the link variant
-    expect(draft!.body_text).not.toMatch(/not taking on new partnerships/i);
+    expect(draft!.body_text).not.toMatch(/not a fit for our affiliate programme/i);
     expect((await s.getApplicantByThread(tid))!.stage).toBe('screen_sent');
   });
 
@@ -85,7 +85,7 @@ describe('partnership first-touch, LIVE default (funnel_voucher, owner policy 20
     expect(r!.send).toBe(false);
     const draft = await s.getPendingDraft(tid);
     expect(draft!.body_text).toMatch(/reviewing|taking a look/i);
-    expect(draft!.body_text).not.toMatch(/not taking on new partnerships/i);
+    expect(draft!.body_text).not.toMatch(/not a fit for our affiliate programme/i);
   });
 });
 
@@ -101,7 +101,7 @@ describe('partnership first-touch, signup_page mode (owner policy 2026-07-18: se
     const draft = await s.getPendingDraft(tid);
     expect(draft!.body_text).toContain(AFFILIATE_APPLY_URL);
     expect(draft!.body_text).not.toMatch(/where would you promote/i);   // no email screening
-    expect(draft!.body_text).not.toMatch(/not taking on new partnerships/i);
+    expect(draft!.body_text).not.toMatch(/not a fit for our affiliate programme/i);
     // 2026-08-07 REVERSAL: this asserted `not.toMatch(/\d+\s?%/)` ("terms live
     // on the page, never in email"). The owner ruled the commission must be
     // stated in the reply, so the invite now carries the figures. They still

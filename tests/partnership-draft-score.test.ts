@@ -55,7 +55,7 @@ describe('partnership scoring branch (funnel_link mode, preserved programme)', (
   it('hard gate → respectful decline draft, applicant declined', async () => {
     const { s, tid } = await seedAnswered('b.myshopify.com');
     const r = await runFunnel(s, tid, llmReturning(factsJson({ channelUrls: [] })));
-    expect((await s.getPendingDraft(tid))!.body_text).toMatch(/not taking on new partnerships/i);
+    expect((await s.getPendingDraft(tid))!.body_text).toMatch(/not a fit for our affiliate programme/i);
     expect((await s.getApplicantByThread(tid))!.stage).toBe('declined');
     expect(r!.send).toBe(false);
   });
@@ -84,7 +84,7 @@ describe('partnership scoring branch (funnel_link mode, preserved programme)', (
     expect(r!.send).toBe(false);
     const draft = await s.getPendingDraft(tid);
     expect(draft!.body_text).toMatch(/where would you promote/i); // re-issued questions
-    expect(draft!.body_text).not.toMatch(/not taking on new partnerships/i); // NOT a decline
+    expect(draft!.body_text).not.toMatch(/not a fit for our affiliate programme/i); // NOT a decline
     expect((await s.getApplicantByThread(tid))!.stage).toBe('screen_sent'); // unchanged
   });
 });
@@ -121,7 +121,7 @@ describe('partnership scoring branch (funnel_voucher mode, live default)', () =>
     const { s, tid } = await seedAnswered('vg.myshopify.com');
     await runFunnel(s, tid, llmReturning(factsJson({ disqualifier: 'coupon_cashback' })), 'funnel_voucher');
     expect((await s.getApplicantByThread(tid))!.stage).toBe('declined');
-    expect((await s.getPendingDraft(tid))!.body_text).toMatch(/not taking on new partnerships/i);
+    expect((await s.getPendingDraft(tid))!.body_text).toMatch(/not a fit for our affiliate programme/i);
   });
 });
 
@@ -198,7 +198,7 @@ describe('decline_all toggle (config-driven) intercepts in-flight applicants too
     const cfg: TenantConfig = { ...CFG, inbox: { ...DEFAULT_INBOX, affiliateMode: 'decline_all' } };
     const r = await maybePartnershipDraft({ ...env, OPENROUTER_API_KEY: 'k' } as any, s, cfg, got.thread, got, llmReturning(factsJson({})));
     expect(r!.send).toBe(false);
-    expect((await s.getPendingDraft(tid))!.body_text).toMatch(/not taking on new partnerships/i);
+    expect((await s.getPendingDraft(tid))!.body_text).toMatch(/not a fit for our affiliate programme/i);
     expect((await s.getApplicantByThread(tid))!.stage).toBe('declined');
   });
 });

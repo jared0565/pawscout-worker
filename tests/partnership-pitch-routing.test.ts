@@ -170,7 +170,7 @@ describe('maybePartnershipDraft pitch routing (live default funnel_voucher)', ()
     const draft = await s.getPendingDraft(tid);
     expect(draft!.body_text).toMatch(/in-house/i);
     expect(draft!.body_text).not.toMatch(/where would you promote/i);
-    expect(draft!.body_text).not.toMatch(/not taking on new partnerships/i); // the service decline is its own wording
+    expect(draft!.body_text).not.toMatch(/not a fit for our affiliate programme/i); // the service decline is its own wording
     expect((await s.getApplicantByThread(tid))!.stage).toBe('declined');
   });
 
