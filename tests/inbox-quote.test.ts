@@ -54,3 +54,19 @@ describe('stripQuotedReply', () => {
     expect(stripQuotedReply(body)).toBe(body); // no "On ... wrote:" attribution => untouched
   });
 });
+
+// Rose thread (2026-09-05): Gmail put a bare "-- " signature delimiter between
+// her pasted product link and her actual question. Every draft skipped the
+// question: a model reads what follows "-- " as a signature block. The
+// delimiter carries no customer text, so it is dropped with the quoted lines.
+describe('stripQuotedReply drops a bare signature delimiter line', () => {
+  it('keeps the text on both sides and removes only the "--" line', () => {
+    const out = stripQuotedReply('https://activepaw.co.uk/products/bowl\n\n-- \n\nHey, do the products arrive exactly as shown?');
+    expect(out).toBe('https://activepaw.co.uk/products/bowl\n\nHey, do the products arrive exactly as shown?');
+    expect(out).not.toMatch(/^\s*--\s*$/m);
+    expect(out).toContain('arrive exactly as shown');
+  });
+  it('a double hyphen inside a sentence is untouched', () => {
+    expect(stripQuotedReply('sizes -- small and large -- are both in stock?')).toBe('sizes -- small and large -- are both in stock?');
+  });
+});

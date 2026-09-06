@@ -214,6 +214,23 @@ export function buildDraftTranscript(messages: MessageRow[]): string {
   return kept.join('\n\n');
 }
 
+/** What the customer is asking NOW: the quote-stripped text of every inbound
+ * message since our last reply, oldest first (all of them when we have never
+ * replied). Rose thread, 2026-09-05/06: two customer messages and no reply from
+ * us, and the drafter was handed only the bump as "the latest message", so the
+ * question in her first message was skipped by every draft. A message we have
+ * not answered is still the customer's current ask, whichever turn it sits in. */
+export function openInboundText(messages: ReadonlyArray<Pick<MessageRow, 'direction' | 'body_text'>>): string {
+  let lastOutbound = -1;
+  messages.forEach((m, i) => { if (m.direction === 'outbound') lastOutbound = i; });
+  return messages
+    .slice(lastOutbound + 1)
+    .filter((m) => m.direction === 'inbound')
+    .map((m) => stripQuotedReply(m.body_text ?? '').trim())
+    .filter(Boolean)
+    .join('\n\n');
+}
+
 /** Shared JSON validator for a drafter response (initial draft AND revision). */
 function validateDraft(v: unknown): DraftResult | null {
   const o = v as Record<string, unknown>;

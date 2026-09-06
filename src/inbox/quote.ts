@@ -36,10 +36,17 @@ export function stripQuotedReply(text: string | null | undefined): string {
     if (m && m.index !== undefined && m.index < cut) cut = m.index;
   }
 
+  // A bare "--" line is the email signature delimiter (RFC 3676 "-- "). Gmail can
+  // place it BEFORE the sender's text (Rose thread, 2026-09-05: link, "-- ",
+  // then the actual question), and a model reads what follows it as a signature
+  // block and skips it. The line carries no customer text, so it goes; the
+  // paragraph break around it collapses to one.
   const head = t
     .slice(0, cut)
     .split('\n')
     .filter((line) => !/^\s*>/.test(line)) // drop any stray quoted lines above the cut
-    .join('\n');
+    .filter((line) => !/^\s*--\s*$/.test(line))
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n');
   return head.trim();
 }

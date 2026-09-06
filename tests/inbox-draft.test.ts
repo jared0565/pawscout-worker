@@ -3,7 +3,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
 import { TenantStore } from '../src/tenant-store';
 import { LlmClient } from '../src/llm';
-import { draftReply, renderReplyHtml } from '../src/inbox/draft';
+import { draftReply, renderReplyHtml, openInboundText } from '../src/inbox/draft';
 import { DEFAULT_INBOX } from '../src/inbox/types';
 import type { CategoryAgent, Grounding } from '../src/inbox/agents/types';
 import { DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, type TenantConfig } from '../src/types';
@@ -215,5 +215,26 @@ describe('draftReply salutation', () => {
     const llm = capturingLlm({ bodyText: 'Yes.', confidence: 80, quotesPriceOrOrder: false }, sink);
     await draftReply(llm, store, CFG, { ...base, subject: 's', conversation: 'b', customerName: 'Jane' });
     expect(sink.system).toMatch(/Do NOT open with a greeting or salutation/i);
+  });
+});
+
+// Rose thread (2026-09-05/06): two customer messages, no reply from us, and the
+// drafter was handed only the bump as "what they are asking". Every customer
+// message since our last reply is still unanswered, so all of them together are
+// the latest ask; once we have replied, only what came after counts.
+describe('openInboundText', () => {
+  const inb = (t: string) => ({ direction: 'inbound', body_text: t }) as any;
+  const outb = (t: string) => ({ direction: 'outbound', body_text: t }) as any;
+  it('joins every inbound message when we have never replied', () => {
+    expect(openInboundText([inb('Do they arrive as shown?'), inb('Just checking back in, can I reach you directly?')]))
+      .toBe('Do they arrive as shown?\n\nJust checking back in, can I reach you directly?');
+  });
+  it('after a reply from us, only the messages since then are open', () => {
+    expect(openInboundText([inb('Do they arrive as shown?'), outb('Yes.'), inb('Great, and to Spain?')])).toBe('Great, and to Spain?');
+    expect(openInboundText([inb('a?'), outb('A.'), inb('b?'), inb('c?')])).toBe('b?\n\nc?');
+  });
+  it('strips quoted chains and skips empty turns; empty when nothing is open', () => {
+    expect(openInboundText([inb('New text\n\nOn Sat, 5 Sept 2026 Rose wrote:\n> old'), inb('   ')])).toBe('New text');
+    expect(openInboundText([inb('a?'), outb('A.')])).toBe('');
   });
 });

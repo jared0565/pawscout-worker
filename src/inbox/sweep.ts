@@ -5,7 +5,7 @@ import { resolveChain } from '../llm-resolve';
 import { defaultFetch } from '../safe-fetch';
 import { parseAuthResults } from './gates';
 import { classifyEmail, decideDisposition } from './classify';
-import { draftReply, renderReplyHtml, applyFooter, stripTrailingSignoff, sanitizeOutbound, buildDraftTranscript } from './draft';
+import { draftReply, renderReplyHtml, applyFooter, stripTrailingSignoff, sanitizeOutbound, buildDraftTranscript, openInboundText } from './draft';
 import { autoSendDecision, mentionsMoney } from './autosend';
 import { sendReply } from './send';
 import { maybePartnershipDraft, detectPartnershipAsk } from './partnership';
@@ -330,11 +330,14 @@ export async function composeDraftForThread(
   const cleaned = inbound.map((m) => stripQuotedReply(m.body_text ?? ''));
   const conversation = cleaned.filter(Boolean).join('\n\n---\n\n')
     || inbound.map((m) => m.body_text ?? '').filter(Boolean).join('\n\n---\n\n'); // fallback: all-quote thread
-  // The customer's LATEST inbound (messages are ASC by received_at) - the drafter and the
-  // freight line both ground to this so a multi-turn thread answers what they JUST asked,
-  // not a stale earlier turn or a now-irrelevant first classification. May be '' when the
-  // latest message was only a quote (drafter then falls back to a brief acknowledgement).
-  const latestInbound = cleaned.length ? cleaned[cleaned.length - 1] : '';
+  // What the customer is asking NOW: every inbound message since our last reply
+  // (messages are ASC by received_at), so a multi-turn thread answers what they
+  // JUST asked, not a stale earlier turn or a now-irrelevant first classification,
+  // and a follow-up sent before we ever replied still carries the first question
+  // (Rose thread, 2026-09-06: the bump alone was handed over and the question in
+  // her first message was skipped by every draft). May be '' when the open
+  // messages were only quotes (drafter then falls back to a brief acknowledgement).
+  const latestInbound = openInboundText(got.messages);
 
   const llm = new LlmClient({ openrouter: env.OPENROUTER_API_KEY, openai: env.OPENAI_API_KEY }, fetchImpl);
   const contact = await store.getContactByEmail(thread.contact_email);
