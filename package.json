@@ -8,6 +8,7 @@
     "test": "vitest run",
     "test:ci": "node scripts/test-ci.mjs",
     "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
     "migrate:local": "wrangler d1 migrations apply pawscout --local",
     "migrate:remote": "wrangler d1 migrations apply pawscout --remote"
   },
@@ -19,8 +20,12 @@
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.18.8",
     "@cloudflare/workers-types": "^4.20241106.0",
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.10.0",
+    "globals": "^17.12.0",
     "jose": "^5.10.0",
     "typescript": "^5.6.0",
+    "typescript-eslint": "^8.69.0",
     "vitest": "^4.1.10",
     "wrangler": "^3.90.0"
   }
