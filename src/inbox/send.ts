@@ -5,7 +5,7 @@ import { INBOX_LABELS } from './types';
 import { sendEmail } from '../email';
 import { renderReplyHtml, sanitizeOutbound } from './draft';
 import { defaultFetch } from '../safe-fetch';
-import { isPartnershipLane, resolveFromAddress } from './partnership';
+import { isPartnershipLane, resolveFromAddress, inboundTextsOf } from './partnership';
 import { captureAnswerFromSend } from './answer-memory';
 
 /** Send a drafted reply (HITL approve OR Auto). To = the contact; threads via a
@@ -29,7 +29,7 @@ export async function sendReply(
   // Sender identity: partnership-lane threads reply from sales@ ("Active Paw Partnerships");
   // otherwise from the address the customer wrote to, else the support@ default.
   const inboundToAddrs = (got?.messages ?? []).filter((m) => m.direction === 'inbound').map((m) => m.to_addr ?? '');
-  const partnershipLane = isPartnershipLane({ inboundToAddrs, declaredIntent: got?.thread.declared_intent ?? null, primaryCategory: thread.primary_category });
+  const partnershipLane = isPartnershipLane({ inboundToAddrs, declaredIntent: got?.thread.declared_intent ?? null, primaryCategory: thread.primary_category, inboundTexts: inboundTextsOf(got?.messages ?? []) });
   const from = resolveFromAddress({ partnershipLane, toAddr: lastInbound?.to_addr ?? null });
 
   const r = await sendEmail(env.RESEND_API_KEY, {

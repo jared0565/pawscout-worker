@@ -11,7 +11,7 @@
 
 import type { TenantStore } from '../tenant-store';
 import { stripQuotedReply } from './quote';
-import { isPartnershipLane } from './partnership';
+import { isPartnershipLane, inboundTextsOf } from './partnership';
 
 /** Categories whose sends are never remembered (no reusable substance). */
 const EXCLUDED_CATEGORIES = new Set(['spam', 'automated', 'affiliate']);
@@ -168,7 +168,7 @@ export async function backfillAnswerMemory(store: TenantStore): Promise<number> 
       const got = await store.getThreadWithMessages(t.id);
       if (!got) continue;
       const inboundToAddrs = got.messages.filter((m) => m.direction === 'inbound').map((m) => m.to_addr ?? '');
-      const lane = isPartnershipLane({ inboundToAddrs, declaredIntent: got.thread.declared_intent ?? null, primaryCategory: t.primary_category ?? null });
+      const lane = isPartnershipLane({ inboundToAddrs, declaredIntent: got.thread.declared_intent ?? null, primaryCategory: t.primary_category ?? null, inboundTexts: inboundTextsOf(got.messages) });
       let lastInbound = '';
       for (const m of got.messages) {
         if (m.direction === 'inbound') { lastInbound = stripQuotedReply(m.body_text ?? ''); continue; }

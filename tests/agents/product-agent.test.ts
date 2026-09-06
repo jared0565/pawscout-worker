@@ -181,3 +181,30 @@ describe('productAgent local-for-local availability (inquiry side of the market 
     expect(g.facts).toContain('12.00');
   });
 });
+
+// Rose thread (2026-09-05): the product agent searched titles with the first
+// 80 characters of a message that BEGAN with the product URL, matched nothing,
+// and told a sender who had named the exact product that we "cannot verify the
+// specific product details". A pasted link grounds the reply in that listing.
+describe('productAgent.ground with a pasted product link', () => {
+  const ROSE_1 = 'https://activepaw.co.uk/products/portable-dog-water-bowl-bottle-attachment\n\nI came across your store and I am considering recommending it to a few people who are looking for products in this category. Before I do, I wanted to ask do the products normally arrive exactly as shown and described on the website?';
+  const ROSE_2 = 'just checking back in. I think our conversation got a little buried. I am still open to recommending your store, but I wanted to make sure I can reach you directly if anyone has questions before ordering.';
+  const byHandleAdmin = async (query: string, vars?: Record<string, unknown>) => {
+    if (query.includes('productByHandle')) {
+      if (vars?.handle !== 'portable-dog-water-bowl-bottle-attachment') return { productByHandle: null };
+      return { productByHandle: { id: 'gid://shopify/Product/7', title: 'Portable Dog Water Bowl', handle: 'portable-dog-water-bowl-bottle-attachment', variants: { edges: [{ node: { id: 'gid://shopify/ProductVariant/70', title: 'Default Title', sku: 'PDWB', price: '11.99', availableForSale: true, inventoryQuantity: 12 } }] } } };
+    }
+    return { products: { edges: [] } };
+  };
+  it('resolves the linked product from the latest message', async () => {
+    const g = await productAgent.ground(mkCtx(byHandleAdmin, ROSE_1));
+    expect(g.confident).toBe(true);
+    expect(g.facts).toContain('Portable Dog Water Bowl');
+  });
+  it('resolves a link from an EARLIER message in the thread when the latest has none', async () => {
+    const ctx = { ...mkCtx(byHandleAdmin, ROSE_2), conversation: ROSE_1 + '\n\n' + ROSE_2 };
+    const g = await productAgent.ground(ctx);
+    expect(g.confident).toBe(true);
+    expect(g.facts).toContain('Portable Dog Water Bowl');
+  });
+});

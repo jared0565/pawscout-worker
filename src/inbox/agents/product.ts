@@ -1,5 +1,5 @@
 import type { CategoryAgent, AgentContext, Grounding } from './types';
-import { resolveLineRequest } from '../../shopify-catalog';
+import { resolveLineRequest, extractProductHandle } from '../../shopify-catalog';
 import { deriveDestinationCountry, countryLabel } from '../freight';
 import { localWarehousesFor, sellableToBuyer } from '../../local-markets';
 import type { CjDetail } from '../../cj';
@@ -42,7 +42,13 @@ export const productAgent: CategoryAgent = {
   async ground(ctx: AgentContext): Promise<Grounding> {
     try {
       if (!ctx.admin) return hedge('Catalog is not connected right now; answer generally and point the customer to the website to find the item.');
-      const query = ctx.latestMessage.slice(0, 80);
+      // A pasted product link is the most precise reference there is: read it
+      // from the latest message, or from an earlier one in the thread when the
+      // latest has none (a follow-up rarely repeats the link). Only without a
+      // link does the free-text title search run (Rose thread, 2026-09-05: a
+      // message that BEGAN with the URL was title-searched and hedged).
+      const linked = extractProductHandle(ctx.latestMessage) ?? extractProductHandle(ctx.conversation);
+      const query = linked ? `/products/${linked}` : ctx.latestMessage.slice(0, 80);
       if (!query.trim()) return hedge('No specific product named; ask which item they mean or point them to the website.');
       const r = await resolveLineRequest(ctx.admin, query);
       if (r.status === 'resolved' && r.variant) {

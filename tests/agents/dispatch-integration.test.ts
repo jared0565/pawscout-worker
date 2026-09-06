@@ -247,3 +247,61 @@ describe('composeDraftForThread (agent dispatch E2E)', () => {
     expect(d2.body_text).toContain('Active Paw Sales Team'); // footer still there
   });
 });
+
+// ---------------------------------------------------------------------------
+// Rose thread (2026-09-05/06). Two inbound messages, no outbound: a pasted
+// product link plus "do the products arrive exactly as shown and described?",
+// then a bump: "still open to recommending your store, but I wanted to make
+// sure I can reach you directly". The classifier called the bump 'affiliate'
+// and the category alone opened the partnership funnel, which drafted the full
+// signup invite (model partnership-screen) to someone who never asked to
+// partner. Owner: "make sure that all responses are properly grounded to the
+// context of the thread and not draft random replies". The funnel must stay
+// closed without an ask in the sender's own words, and the LLM path must not
+// then hand the thread to the affiliate agent (whose prompt sets out the
+// programme unasked): a category with no ask behind it is handled as a general
+// enquiry, whose prompt answers the question asked and raises the programme
+// only if the sender does.
+// ---------------------------------------------------------------------------
+describe('composeDraftForThread grounds an affiliate-classified thread in the message text', () => {
+  const ROSE_1 = 'https://activepaw.co.uk/products/portable-dog-water-bowl-bottle-attachment\n\nI came across your store and I am considering recommending it to a few people who are looking for products in this category. Before I do, I wanted to ask do the products normally arrive exactly as shown and described on the website?';
+  const ROSE_2 = 'just checking back in. I think our conversation got a little buried. I am still open to recommending your store, but I wanted to make sure I can reach you directly if anyone has questions before ordering. Whenever you get a chance, I would love to hear back from you';
+
+  it('no partnership ask in the thread: general agent, no signup invite, no applicant row', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedShop(store);
+    await store.saveInbox({ ...DEFAULT_INBOX, alertEmail: 'owner@example.com', affiliateMode: 'signup_page' });
+    await store.upsertContact({ email: 'rose@example.com', name: 'Rose', phone: null });
+    const tid = await store.createThread({ contactEmail: 'rose@example.com', subject: 'Quick question', subjectNorm: 'quick question', receivedAt: '2026-09-05T14:44:00Z', initialStatus: 'new' });
+    await store.insertInboundMessageIfNew({ threadId: tid, messageId: '<rose1@x>', inReplyTo: null, references: [], from: 'rose@example.com', to: 'contact@activepaw.co.uk', subject: 'Quick question', bodyText: ROSE_1, bodyHtml: null, headersJson: '{"authentication-results":"mx; spf=pass dkim=pass dmarc=pass"}', receivedAt: '2026-09-05T14:44:00Z' });
+    await store.insertInboundMessageIfNew({ threadId: tid, messageId: '<rose2@x>', inReplyTo: '<rose1@x>', references: [], from: 'rose@example.com', to: 'contact@activepaw.co.uk', subject: 'Re: Quick question', bodyText: ROSE_2, bodyHtml: null, headersJson: '{"authentication-results":"mx; spf=pass dkim=pass dmarc=pass"}', receivedAt: '2026-09-06T04:07:00Z' });
+    await store.setThreadClassification(tid, { status: 'needs_reply', primaryCategory: 'affiliate', intentScore: 20, summary: 'Wants to recommend the store; asks if products arrive as described', classifiedAt: '2026-09-06T04:15:00Z' });
+
+    const systems: string[] = [];
+    const fakeFetch = (async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? '{}'));
+      const sys = (body.messages ?? []).find((m: { role: string }) => m.role === 'system');
+      if (sys) systems.push(String(sys.content));
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: JSON.stringify({ customerAsks: ['reach you directly'], bodyText: 'Yes, you can reach us directly at contact@activepaw.co.uk and we reply within one working day.', confidence: 90, quotesPriceOrOrder: false, commercialIntent: false }) } }],
+        usage: { cost: 0.0001 }
+      }), { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const cfg = await store.getConfig();
+    const got = await store.getThreadWithMessages(tid);
+    const result = await composeDraftForThread({ ...env, OPENROUTER_API_KEY: 'k' } as any, store, cfg!, got!.thread, fakeFetch);
+    expect(result).not.toBeNull();
+    const draft = await store.getDraft(result!.draftId);
+    expect(draft?.model).not.toBe('partnership-screen');
+    expect(draft?.body_text).not.toContain('apply');
+    expect(draft?.body_text).toContain('Active Paw Customer Support');
+    expect(await store.getApplicantByThread(tid)).toBeNull();
+    expect(systems.length).toBeGreaterThan(0);
+    // The general agent's prompt, not the affiliate agent's programme-first one.
+    for (const s of systems) {
+      expect(s).not.toContain('This is an affiliate, influencer, or partnership enquiry');
+      expect(s).toContain('Judge the message by what the MESSAGE TEXT actually says');
+    }
+  });
+});

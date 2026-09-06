@@ -97,6 +97,27 @@ describe('sendReply', () => {
     expect(sentFrom).toBe('Active Paw Partnerships <sales@activepaw.co.uk>');
   });
 
+  // Rose thread (2026-09-06): classified 'affiliate' by the model, but nothing
+  // she wrote asks to partner. The reply is a customer-service answer and must
+  // come from the address she wrote to, not from "Active Paw Partnerships".
+  it("replies from the address written to when the category is affiliate but no message asks to partner", async () => {
+    const s = new TenantStore(env.DB, 'rose.myshopify.com');
+    await s.upsertContact({ email: 'rose@x.com', name: 'Rose', phone: null });
+    const tid = await s.createThread({ contactEmail: 'rose@x.com', subject: 'Quick question', subjectNorm: 'quick question', receivedAt: '2026-09-05T14:44:00Z', initialStatus: 'needs_reply' });
+    await s.setThreadClassification(tid, { status: 'needs_reply', primaryCategory: 'affiliate', intentScore: 20, summary: null, classifiedAt: '2026-09-06T04:15:00Z' });
+    await s.insertInboundMessageIfNew({ threadId: tid, messageId: '<rose-1@x>', inReplyTo: null, references: [], from: 'rose@x.com', to: 'contact@activepaw.co.uk', subject: 'Quick question', bodyText: 'I am considering recommending your store to a few people. Do the products arrive exactly as shown and described?', bodyHtml: null, headersJson: '{}', receivedAt: '2026-09-05T14:44:00Z' });
+    const did = await s.insertDraft({ threadId: tid, bodyText: 'Yes, they do.', bodyHtml: '<p>Yes, they do.</p>', confidence: 90, quotesPriceOrder: false, holdReasons: [], model: 'm', status: 'pending' });
+
+    let sentFrom: any = null;
+    const fetchImpl: typeof fetch = (async (_u: unknown, init: RequestInit) => { const b = JSON.parse(init.body as string); sentFrom = b.from; return new Response(JSON.stringify({ id: 'em_1' }), { status: 200 }); }) as unknown as typeof fetch;
+
+    const thread = (await s.getThreadWithMessages(tid))!.thread;
+    const draft = (await s.getDraft(did))!;
+    const r = await sendReply({ ...env, RESEND_API_KEY: 'rk' } as any, s, CFG, thread, draft, undefined, fetchImpl);
+    expect(r.ok).toBe(true);
+    expect(sentFrom).toBe('Active Paw <contact@activepaw.co.uk>');
+  });
+
   it('does NOT clobber an explicit converted/closed status on send (preserves the merchant choice)', async () => {
     const s = new TenantStore(env.DB, 'd.myshopify.com');
     await s.upsertContact({ email: 'jane@x.com', name: null, phone: null });

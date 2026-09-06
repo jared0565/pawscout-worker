@@ -114,6 +114,24 @@ describe('draftReply', () => {
     expect(sink.system).toContain('STUB-FRAGMENT');
   });
 
+  // Rose thread (2026-09-05/06): her first message asked whether products
+  // arrive as described, the reply to it was superseded before it went out, and
+  // her bump asked something else. "Answer the MOST RECENT message" alone lets
+  // the drafter drop a question we never answered. The prompt now names that
+  // case: a question in an earlier customer turn with no Active Paw reply after
+  // it is still open and gets answered too.
+  it('tells the drafter that an earlier customer question with no reply from us is still open', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const sink: { system?: string } = {};
+    const llm = capturingLlm({ bodyText: 'Yes.', confidence: 85, quotesPriceOrOrder: false }, sink);
+    await draftReply(llm, store, CFG, {
+      ...base, subject: 'Quick question',
+      conversation: 'Customer: Do the products arrive exactly as shown?\n\nCustomer: Just checking back in, can I reach you directly?',
+      latestMessage: 'Just checking back in, can I reach you directly?',
+    });
+    expect(sink.system).toMatch(/earlier customer message .* no "Active Paw:" reply .* still open/i);
+  });
+
   it('teaches the drafter the conversation is a two-sided role-labeled transcript, and passes it through', async () => {
     const store = new TenantStore(env.DB, 'a.myshopify.com');
     const sink: { system?: string; user?: string } = {};

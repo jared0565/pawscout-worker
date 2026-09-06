@@ -8,7 +8,7 @@ import { classifyEmail, decideDisposition } from './classify';
 import { draftReply, renderReplyHtml, applyFooter, stripTrailingSignoff, sanitizeOutbound, buildDraftTranscript } from './draft';
 import { autoSendDecision, mentionsMoney } from './autosend';
 import { sendReply } from './send';
-import { maybePartnershipDraft } from './partnership';
+import { maybePartnershipDraft, detectPartnershipAsk } from './partnership';
 import { maybeAlertOwner } from './alert';
 import { proposeInvoice } from './propose-invoice';
 import { adminForShop } from './invoice-routes';
@@ -366,7 +366,18 @@ export async function composeDraftForThread(
   // fragment + grounded facts to the generic drafter. A trusted appendix is appended
   // only when grounding is confident, and is exempt from the money-hold (it is our
   // own trusted figure, not an LLM-emitted price).
-  const agent = agentFor(thread.primary_category);
+  // A category is the classifier's guess about the sender; the message text is
+  // what they wrote. 'affiliate' with no partnership ask anywhere in the sender's
+  // own words (Rose thread, 2026-09-06: "I am considering recommending your
+  // store ... do the products arrive as shown?") is handled as a general
+  // enquiry: that agent answers the question asked and raises the programme
+  // only if the sender does, where the affiliate agent's prompt sets out the
+  // programme first regardless. The funnel above has already stood down for the
+  // same reason (its category on-ramp is text-gated by isPartnershipLane).
+  const groundedCategory = thread.primary_category === 'affiliate' && !cleaned.some(detectPartnershipAsk)
+    ? 'other'
+    : thread.primary_category;
+  const agent = agentFor(groundedCategory);
   // Grounding gets the INBOUND-ONLY `conversation`: deriveDestinationCountry
   // (product/shipping agents) reads ctx.conversation, and our own outbound text
   // ("...to the UK", "activepaw.co.uk") would corrupt the destination it infers.

@@ -74,14 +74,59 @@ export type FunnelVariant = 'link' | 'voucher';
 // exists. See spec §8.1 - narrowed from the spec's affiliate+wholesale on review.
 const PARTNERSHIP_CATEGORIES = new Set(['affiliate']);
 
+/** The ways a sender actually asks to partner, in their own words. Grounded in
+ * the message TEXT only (standing rule): a classifier category is a guess about
+ * the sender, this is what they wrote. Deliberately does NOT fire on "recommend"
+ * (a customer may recommend us to a friend and ask nothing of us), on "my
+ * partner" (a household, not a proposal), on "promotion" (a discount), or on
+ * "work with your lead" (a product question).
+ *
+ * Rose thread, 2026-09-05/06: "I am considering recommending your store to a
+ * few people ... do the products arrive exactly as shown?" was classified
+ * 'affiliate' and the category alone opened the funnel, which drafted the full
+ * signup invite to a sender who had asked a product question. The owner: every
+ * reply is grounded in what the sender wrote, never in a category. */
+const PARTNERSHIP_ASK_RES: RegExp[] = [
+  /\baffiliates?\b/i,
+  /\bcommissions?\b/i,
+  /\bpartnerships?\b|\bpartnering\b|\bpartner (?:with|up)\b|\b(?:become|be|as) (?:a|your) partner\b/i,
+  /\bcollab(?:s|oration|orations|orate|orating)?\b/i,
+  /\bambassadors?\b/i,
+  /\bsponsor(?:ship|ships|ed|ing)?\b/i,
+  /\binfluencers?\b|\bcontent creators?\b/i,
+  /\bpromot(?:e|ing) (?:you|your)\b/i,
+  /\breferral (?:fee|fees|programme|program|link|code|commission|partner)/i,
+  /\bwork (?:together|with you)\b/i,
+  /\bpercentage\b/i,
+  /\bmy (?:audience|followers|subscribers|channel|community|blog|tiktok|instagram|youtube)\b/i,
+];
+export function detectPartnershipAsk(text: string): boolean {
+  const t = (text ?? '').trim();
+  if (!t) return false;
+  return PARTNERSHIP_ASK_RES.some((re) => re.test(t));
+}
+
 /** Three converging on-ramps (OR). Declared intent reinforces but never overrides
- * the classifier; this is purely a routing signal. */
+ * the classifier; this is purely a routing signal.
+ *
+ * The category on-ramp is TEXT-GATED (2026-09-06, Rose thread): 'affiliate' from
+ * the classifier counts only when some inbound message in the thread actually
+ * asks to partner in the sender's own words. The other two on-ramps are the
+ * sender's explicit choices (the partnerships dropdown, writing to sales@) and
+ * need no text check. */
 export function isPartnershipLane(opts: {
-  inboundToAddrs: string[]; declaredIntent: string | null; primaryCategory: string | null;
+  inboundToAddrs: string[]; declaredIntent: string | null; primaryCategory: string | null; inboundTexts: ReadonlyArray<string>;
 }): boolean {
-  if (opts.primaryCategory && PARTNERSHIP_CATEGORIES.has(opts.primaryCategory)) return true;
+  if (opts.primaryCategory && PARTNERSHIP_CATEGORIES.has(opts.primaryCategory) && opts.inboundTexts.some(detectPartnershipAsk)) return true;
   if (opts.declaredIntent === 'partnerships') return true;
   return opts.inboundToAddrs.some((t) => (t ?? '').toLowerCase() === PARTNERSHIP_ADDRESS);
+}
+
+/** The quote-stripped text of every inbound message, oldest first: the input the
+ * lane gate reads. Shared by the funnel, the sender-identity resolver and the
+ * answer memory so all three agree on what "the sender asked" means. */
+export function inboundTextsOf(messages: ReadonlyArray<Pick<MessageRow, 'direction' | 'body_text'>>): string[] {
+  return messages.filter((m) => m.direction === 'inbound').map((m) => stripQuotedReply(m.body_text ?? '').trim());
 }
 
 /** Sender identity: partnership lane → sales@; otherwise reply from the address the
@@ -876,7 +921,7 @@ export async function maybePartnershipDraft(
   // rather than leaving half the message unanswered (2026-08-02).
   const offPlatformNow = detectOffPlatformRequest(latestNewText);
   if (!applicant && !servicePitch && !volumePitchNow
-      && !isPartnershipLane({ inboundToAddrs, declaredIntent, primaryCategory: thread.primary_category })) return null;
+      && !isPartnershipLane({ inboundToAddrs, declaredIntent, primaryCategory: thread.primary_category, inboundTexts: inboundTextsOf(got.messages) })) return null;
 
   const contact = await store.getContactByEmail(thread.contact_email);
   const name = contact?.name ?? null;

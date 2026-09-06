@@ -477,3 +477,49 @@ describe('detectVolumePitch on the 2026-08-06 live shapes', () => {
     expect(detectOffPlatformRequest('My audience is mostly on WhatsApp and Instagram groups')).toBe(false);
   });
 });
+
+// Rose thread (2026-09-05/06): a sender with a pasted product link asked whether
+// items arrive as shown, then bumped the thread. The classifier called the bump
+// 'affiliate' ("still open to recommending your store") and the category ALONE
+// opened the funnel, which drafted the full signup invite to someone who never
+// asked to partner. The owner's rule: every reply is grounded in what the
+// sender wrote, and a category is a guess, not a request. The funnel now needs
+// the sender's own words to ask for a partnership before it sends its canned
+// first touch; otherwise the thread goes to the grounded drafter untouched.
+describe('classifier category alone does not open the funnel', () => {
+  const ROSE_1 = 'https://activepaw.co.uk/products/portable-dog-water-bowl-bottle-attachment\n\nI came across your store and I am considering recommending it to a few people who are looking for products in this category. Before I do, I wanted to ask do the products normally arrive exactly as shown and described on the website?';
+  const ROSE_2 = 'just checking back in. I think our conversation got a little buried. I am still open to recommending your store, but I wanted to make sure I can reach you directly if anyone has questions before ordering. Whenever you get a chance, I would love to hear back from you';
+
+  async function seedRose(shop: string) {
+    const s = new TenantStore(env.DB, shop);
+    await s.upsertContact({ email: 'rose@x.com', name: 'Rose', phone: null });
+    const tid = await s.createThread({ contactEmail: 'rose@x.com', subject: 'Quick question', subjectNorm: 'quick question', receivedAt: '2026-09-05T14:44:00Z', initialStatus: 'needs_reply' });
+    await s.insertInboundMessageIfNew({ threadId: tid, messageId: `<rose1@${shop}>`, inReplyTo: null, references: [], from: 'rose@x.com', to: 'contact@activepaw.co.uk', subject: 'Quick question', bodyText: ROSE_1, bodyHtml: null, headersJson: '{}', receivedAt: '2026-09-05T14:44:00Z' });
+    await s.insertInboundMessageIfNew({ threadId: tid, messageId: `<rose2@${shop}>`, inReplyTo: `<rose1@${shop}>`, references: [], from: 'rose@x.com', to: 'contact@activepaw.co.uk', subject: 'Re: Quick question', bodyText: ROSE_2, bodyHtml: null, headersJson: '{}', receivedAt: '2026-09-06T04:07:00Z' });
+    await s.setThreadClassification(tid, { status: 'needs_reply', primaryCategory: 'affiliate', intentScore: 20, summary: null, classifiedAt: '2026-09-06T04:15:00Z' });
+    return { s, tid };
+  }
+
+  it("an 'affiliate'-classified thread whose messages never ask to partner stays out of the funnel and gets no applicant row", async () => {
+    const { s, tid } = await seedRose('rose-a.myshopify.com');
+    const got = (await s.getThreadWithMessages(tid))!;
+    const r = await maybePartnershipDraft({ ...env } as any, s, { ...CFG, inbox: { ...CFG.inbox, affiliateMode: 'signup_page' } }, got.thread, got, noFetch);
+    expect(r).toBeNull();
+    expect(await s.getApplicantByThread(tid)).toBeNull();
+    expect(await s.getPendingDraft(tid)).toBeNull();
+  });
+
+  it("the same category WITH a real ask in the message still gets the first touch", async () => {
+    const s = new TenantStore(env.DB, 'rose-b.myshopify.com');
+    await s.upsertContact({ email: 'cre@x.com', name: 'Cree', phone: null });
+    const tid = await s.createThread({ contactEmail: 'cre@x.com', subject: 'Hi', subjectNorm: 'hi', receivedAt: '2026-09-05T14:44:00Z', initialStatus: 'needs_reply' });
+    await s.insertInboundMessageIfNew({ threadId: tid, messageId: '<cre1@b>', inReplyTo: null, references: [], from: 'cre@x.com', to: 'contact@activepaw.co.uk', subject: 'Hi', bodyText: 'I run a dog account with 40k followers. Do you have an affiliate programme I could join?', bodyHtml: null, headersJson: '{}', receivedAt: '2026-09-05T14:44:00Z' });
+    await s.setThreadClassification(tid, { status: 'needs_reply', primaryCategory: 'affiliate', intentScore: 20, summary: null, classifiedAt: '2026-09-05T14:45:00Z' });
+    const got = (await s.getThreadWithMessages(tid))!;
+    const r = await maybePartnershipDraft({ ...env } as any, s, { ...CFG, inbox: { ...CFG.inbox, affiliateMode: 'signup_page' } }, got.thread, got, noFetch);
+    expect(r).not.toBeNull();
+    const d = await s.getDraft(r!.draftId);
+    expect(d?.body_text).toContain(AFFILIATE_APPLY_URL);
+    expect((await s.getApplicantByThread(tid))?.stage).toBe('passed_to_form');
+  });
+});

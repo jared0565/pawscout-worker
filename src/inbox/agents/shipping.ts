@@ -2,7 +2,7 @@
 import type { CategoryAgent, AgentContext, Grounding } from './types';
 import { isShippingIntent, deriveDestinationCountry, countryLabel, buildShippingLine } from '../freight';
 import { resolveLogistics, doorToDoorBand, formatBand, type DayRange, type LogisticsRoute } from '../../logistics';
-import { resolveLineRequest } from '../../shopify-catalog';
+import { resolveLineRequest, extractProductHandle } from '../../shopify-catalog';
 import { resolveNearestRoute } from '../../shipping/nearest-route';
 import { localWarehousesFor, laneVisibilityModeFor, normalizeOriginCode } from '../../local-markets';
 import type { CjDetail } from '../../cj';
@@ -13,7 +13,6 @@ export type ItemShippingResult =
   | { kind: 'resolved'; chosenOrigin: string; route: LogisticsRoute; cjPid: string; repVid: string | null; verifiedGbWarehouse: boolean }
   | { kind: 'unfulfillable'; dest: string; cjPid: string; verifiedGbWarehouse: boolean };
 
-const HANDLE_RE = /(?:activepaw\.co\.uk)?\/products\/([a-z0-9][a-z0-9-]{2,})/i;
 
 /**
  * Resolve the inquiry's product (high-confidence only) plus its nearest in-stock
@@ -36,9 +35,9 @@ export async function resolveItemShipping(ctx: AgentContext, dest: string): Prom
   try {
     // Signal 1: a product URL/handle in the message (strongest, most specific).
     let cjPid: string | null = null;
-    const m = ctx.latestMessage.match(HANDLE_RE); // .match, not regex-exec - the D1 guard greps that token
-    if (m) {
-      cjPid = (await ctx.store.getLinkByHandle(m[1]))?.cj_pid ?? null;
+    const handle = extractProductHandle(ctx.latestMessage); // shared with the product agent (shopify-catalog)
+    if (handle) {
+      cjPid = (await ctx.store.getLinkByHandle(handle))?.cj_pid ?? null;
       if (!cjPid) return null; // handle present but not in catalog -> do NOT fall through to free-text
     }
     // Signal 2: a confident single free-text catalog match (only when NO handle was present).

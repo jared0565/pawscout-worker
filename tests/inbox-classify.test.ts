@@ -25,6 +25,22 @@ function fakeLlm(content: unknown): LlmClient {
 }
 
 describe('classifyEmail', () => {
+  // Rose thread (2026-09-06): "I am still open to recommending your store" was
+  // classified affiliate. The prompt now says a recommendation that asks
+  // nothing of us is not a partnership enquiry: route by the question asked.
+  it('tells the classifier that recommending us without asking to partner is NOT affiliate', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    let system = '';
+    const fetchImpl = (async (_u: unknown, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? '{}'));
+      system = String((body.messages ?? []).find((m: { role: string }) => m.role === 'system')?.content ?? '');
+      return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ isHuman: true, category: 'other', intentScore: 20, summary: 's', labels: ['other'] }) } }], usage: { cost: 0.0001 } }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const llm = new LlmClient({ openrouter: 'test-key' }, fetchImpl);
+    await classifyEmail(llm, store, CFG, { subject: 'Quick question', body: 'I am considering recommending your store to a few people. Do the products arrive as described?', fromEmail: 'rose@x.com', auth: { spf: 'pass', dkim: 'pass', dmarc: 'pass' } });
+    expect(system).toMatch(/recommend[^.]*without asking[^.]*is NOT affiliate/i);
+  });
+
   it('returns a validated classification and logs usage', async () => {
     const store = new TenantStore(env.DB, 'a.myshopify.com');
     const llm = fakeLlm({ isHuman: true, category: 'lead', intentScore: 85, summary: 'Wants to buy a bed', labels: ['lead', 'product-question'] });
