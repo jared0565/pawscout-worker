@@ -51,6 +51,30 @@ describe('draftReply scaffolding invariants', () => {
     expect(sink.system).toContain('never answer a question they did not ask, and never invent one');
   });
 
+  // Rose thread (2026-09-06), first regeneration under the fixed routing: the
+  // draft answered only her bump and skipped the question in her first message
+  // (never answered by us), and answered "can I reach you directly" with "our
+  // website". WORKFLOW step (1) said "their latest message" and won over a
+  // later sentence; the step itself now includes an earlier customer question
+  // with no reply from us. And "how do I reach you" needs a grounded answer:
+  // the public support address is a store fact.
+  it('WORKFLOW step (1) covers an earlier customer question that we never answered', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const sink: { system?: string } = {};
+    const llm = capturingLlm({ bodyText: 'Hi.', confidence: 85, quotesPriceOrOrder: false }, sink);
+    await draftReply(llm, store, CFG, { agent: stubAgent(false), grounding: GROUNDING, subject: 'Test', conversation: 'Customer: a?\n\nCustomer: b?', latestMessage: 'b?' });
+    expect(sink.system).toMatch(/\(1\) identify exactly what the customer is actually asking in their latest message[^;]*earlier customer message[^;]*no reply from us/i);
+  });
+
+  it('store facts carry the public support address so "how do I reach you" is answerable', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const sink: { system?: string } = {};
+    const llm = capturingLlm({ bodyText: 'Hi.', confidence: 85, quotesPriceOrOrder: false }, sink);
+    await draftReply(llm, store, CFG, { agent: stubAgent(false), grounding: GROUNDING, subject: 'Test', conversation: 'How can I reach you?' });
+    expect(sink.system).toContain('contact@activepaw.co.uk');
+    expect(sink.system).toMatch(/one working day/);
+  });
+
   it('includes MOST RECENT grounding when latestMessage is provided', async () => {
     const store = new TenantStore(env.DB, 'a.myshopify.com');
     const sink: { system?: string } = {};
