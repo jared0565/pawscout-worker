@@ -118,6 +118,25 @@ describe('sendReply', () => {
     expect(sentFrom).toBe('Active Paw <contact@activepaw.co.uk>');
   });
 
+  // 2026-09-06: the wire From was right (resolveFromAddress) but the stored
+  // outbound row said support@ for every reply, so the thread record misreported
+  // which desk answered. The row must carry the bare address actually sent from.
+  it('records the resolved sender address on the stored outbound row, not the support@ default', async () => {
+    const s = new TenantStore(env.DB, 'rose2.myshopify.com');
+    await s.upsertContact({ email: 'rose@x.com', name: 'Rose', phone: null });
+    const tid = await s.createThread({ contactEmail: 'rose@x.com', subject: 'Quick question', subjectNorm: 'quick question', receivedAt: '2026-09-05T14:44:00Z', initialStatus: 'needs_reply' });
+    await s.insertInboundMessageIfNew({ threadId: tid, messageId: '<rose-1@x>', inReplyTo: null, references: [], from: 'rose@x.com', to: 'contact@activepaw.co.uk', subject: 'Quick question', bodyText: 'Do the products arrive exactly as shown and described?', bodyHtml: null, headersJson: '{}', receivedAt: '2026-09-05T14:44:00Z' });
+    const did = await s.insertDraft({ threadId: tid, bodyText: 'Yes, they do.', bodyHtml: '<p>Yes, they do.</p>', confidence: 90, quotesPriceOrder: false, holdReasons: [], model: 'm', status: 'pending' });
+    const fetchImpl: typeof fetch = (async () => new Response(JSON.stringify({ id: 'em_1' }), { status: 200 })) as unknown as typeof fetch;
+
+    const thread = (await s.getThreadWithMessages(tid))!.thread;
+    const draft = (await s.getDraft(did))!;
+    const r = await sendReply({ ...env, RESEND_API_KEY: 'rk' } as any, s, CFG, thread, draft, undefined, fetchImpl);
+    expect(r.ok).toBe(true);
+    const outbound = (await s.getThreadWithMessages(tid))!.messages.find((m) => m.direction === 'outbound')!;
+    expect(outbound.from_addr).toBe('contact@activepaw.co.uk');
+  });
+
   // aramid llm-review 2026-09-06 (finding ab7ce5d8): the lane gate now reads
   // only what the sender wrote since our last reply, so the sales@ identity of
   // a thread already IN the funnel must come from its applicant row, not from
@@ -141,6 +160,8 @@ describe('sendReply', () => {
     const r = await sendReply({ ...env, RESEND_API_KEY: 'rk' } as any, s, CFG, thread, draft, undefined, fetchImpl);
     expect(r.ok).toBe(true);
     expect(sentFrom).toBe('Active Paw Partnerships <sales@activepaw.co.uk>');
+    const outbound = (await s.getThreadWithMessages(tid))!.messages.filter((m) => m.direction === 'outbound').at(-1)!;
+    expect(outbound.from_addr).toBe('sales@activepaw.co.uk');
   });
 
   it('does NOT clobber an explicit converted/closed status on send (preserves the merchant choice)', async () => {

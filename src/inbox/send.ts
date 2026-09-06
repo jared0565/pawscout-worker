@@ -8,6 +8,14 @@ import { defaultFetch } from '../safe-fetch';
 import { isPartnershipLane, resolveFromAddress } from './partnership';
 import { captureAnswerFromSend } from './answer-memory';
 
+/** The bare mailbox inside a display-name From ("Active Paw <x@y>" -> "x@y").
+ * inbox_messages stores addresses without display names, so the outbound row
+ * must record what was actually sent from, not the support@ default. */
+function bareAddress(from: string): string {
+  const m = from.match(/<([^>]+)>/);
+  return (m ? m[1] : from).trim().toLowerCase();
+}
+
 /** Send a drafted reply (HITL approve OR Auto). To = the contact; threads via a
  * controlled Message-ID we store; records outbound + flips draft/thread. */
 export async function sendReply(
@@ -43,7 +51,7 @@ export async function sendReply(
   if (!r.ok) return { ok: false, error: r.error };
 
   const sentAt = new Date().toISOString();
-  await store.insertOutboundMessage({ threadId: thread.id, messageId: r.messageId, from: 'support@activepaw.co.uk', to: thread.contact_email, subject: `Re: ${subject}`, bodyText, bodyHtml, sentAt });
+  await store.insertOutboundMessage({ threadId: thread.id, messageId: r.messageId, from: bareAddress(from), to: thread.contact_email, subject: `Re: ${subject}`, bodyText, bodyHtml, sentAt });
   // Answer memory (2026-07-12): the FINAL sent text (owner edits included)
   // becomes a vetted Q->A pair for future recall. Never blocks the send.
   try {
