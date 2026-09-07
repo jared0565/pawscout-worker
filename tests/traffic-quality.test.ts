@@ -141,6 +141,10 @@ describe('getTrafficQuality', () => {
     expect(typeof r.at).toBe('string');
   });
 
+  // aramid llm-review 3c22be0b (fixed 2026-09-07): the raw upstream exception
+  // text used to travel to the console client. Each failure now carries a
+  // stable message of ours (the reason code decides the console state); the
+  // upstream text goes to the server log only.
   it('names the missing scope when Shopify denies the query, and never reads that as "no traffic"', async () => {
     const denying = async () => { throw new Error('Access denied for shopifyqlQuery field. Required access: `read_reports` access scope.'); };
     const r = await getTrafficQuality(denying);
@@ -148,23 +152,28 @@ describe('getTrafficQuality', () => {
     if (r.ok) return;
     expect(r.reason).toBe('scope_missing');
     expect(r.scope).toBe('read_reports');
+    expect(r.error).toContain('read_reports');
+    expect(r.error).not.toContain('shopifyqlQuery field');
   });
 
-  it('reports a parse error as a query error with Shopify\'s message', async () => {
+  it('reports a parse error as a query error without echoing the upstream text', async () => {
     const parseFail = async () => ({ shopifyqlQuery: { tableData: null, parseErrors: ['Unknown metric foo'] } });
     const r = await getTrafficQuality(parseFail);
     expect(r.ok).toBe(false);
     if (r.ok) return;
     expect(r.reason).toBe('query_error');
-    expect(r.error).toContain('Unknown metric foo');
+    expect(r.error).not.toContain('Unknown metric foo');
+    expect(r.error).toMatch(/sessions query/i);
   });
 
-  it('reports an unreachable Admin API as unavailable, distinct from a missing scope', async () => {
-    const down = async () => { throw new Error('Shopify HTTP 503'); };
+  it('reports an unreachable Admin API as unavailable, distinct from a missing scope, without the upstream text', async () => {
+    const down = async () => { throw new Error('Shopify HTTP 503 upstream-host-42'); };
     const r = await getTrafficQuality(down);
     expect(r.ok).toBe(false);
     if (r.ok) return;
     expect(r.reason).toBe('unavailable');
+    expect(r.error).not.toContain('upstream-host-42');
+    expect(r.error).toMatch(/analytics/i);
   });
 
   it('a shop with no token is not connected', async () => {

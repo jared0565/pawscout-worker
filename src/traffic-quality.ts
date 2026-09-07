@@ -153,16 +153,25 @@ export async function getTrafficQuality(
   const out: TrafficSummary[] = [];
   for (const days of windows) {
     let data: { shopifyqlQuery?: { tableData?: TableData | null; parseErrors?: string[] | null } };
+    // Upstream text is logged here and never returned: the reason code is what
+    // the console renders, and a vendor error can carry operational detail that
+    // has no business on a client (aramid review 3c22be0b).
     try {
       data = await admin(SHOPIFYQL, { q: buildTrafficQuery(days) }) as typeof data;
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      if (isReportsScopeDenial(msg)) return { ok: false, reason: 'scope_missing', scope: TRAFFIC_QUALITY_SCOPE, error: msg };
-      return { ok: false, reason: 'unavailable', error: msg };
+      console.warn(`[traffic-quality] sessions query (${days}d) failed: ${msg}`);
+      if (isReportsScopeDenial(msg)) {
+        return { ok: false, reason: 'scope_missing', scope: TRAFFIC_QUALITY_SCOPE, error: `Shopify has not granted the ${TRAFFIC_QUALITY_SCOPE} scope to this app yet` };
+      }
+      return { ok: false, reason: 'unavailable', error: 'Shopify analytics could not be reached; try again in a few minutes' };
     }
     const q = data.shopifyqlQuery;
     const parseErrors = (q?.parseErrors ?? []).filter((p) => typeof p === 'string' && p.length > 0);
-    if (parseErrors.length > 0) return { ok: false, reason: 'query_error', error: parseErrors.join('; ') };
+    if (parseErrors.length > 0) {
+      console.warn(`[traffic-quality] sessions query (${days}d) rejected: ${parseErrors.join('; ')}`);
+      return { ok: false, reason: 'query_error', error: 'Shopify rejected the sessions query; the worker logs carry the detail' };
+    }
     if (!q?.tableData) return { ok: false, reason: 'query_error', error: 'Shopify returned no table for the sessions query' };
     out.push(summarizeTraffic(days, parseTrafficTable(q.tableData)));
   }
