@@ -412,7 +412,9 @@ describe('applyDraftTemplate', () => {
     const { s, tid } = await seedWithConfig();
     const pid = await s.upsertAffiliatePartner({ contactEmail: 'jane@x.com' });
     await s.createAffiliateVoucher({ partnerId: pid, code: 'JANE5', pctOff: 5, commissionPct: 2, endsAt: new Date(Date.now() + 30 * 86400000).toISOString() });
-    for (const key of ['signup_invite', 'signup_followup']) {
+    // 2026-09-17: the prove-first answer stages passed_to_form too, so it is
+    // guarded the same way (it would re-enter a live partner as an applicant).
+    for (const key of ['signup_invite', 'signup_followup', 'service_prove_first']) {
       const r = await applyDraftTemplate(env.DB, SHOP, tid, key);
       expect(r.ok, key).toBe(false);
       expect((r as { error?: string }).error, key).toMatch(/already .*partner.*Partners view/i);
@@ -427,6 +429,7 @@ describe('applyDraftTemplate', () => {
     expect(await s.queueAffiliatePartner({ contactEmail: 'jane@x.com', name: 'Jane' })).toBe('queued');
     const r = await applyDraftTemplate(env.DB, SHOP, tid, 'signup_invite');
     expect(r.ok).toBe(false);
+    expect((await applyDraftTemplate(env.DB, SHOP, tid, 'service_prove_first')).ok).toBe(false);
     expect(await s.getApplicantByThread(tid)).toBeNull();
   });
 

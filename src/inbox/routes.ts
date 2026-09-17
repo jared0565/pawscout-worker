@@ -248,8 +248,10 @@ export async function applyDraftTemplate(db: D1Database, shop: string, threadId:
   // An accepted partner (a live code, or queued for one) is never re-invited
   // from the picker: the invite would stage them 'passed_to_form' and the next
   // inbound would treat them as a fresh applicant (aramid review 785e4f91).
-  // The neutral and decline templates still apply to their thread.
-  if (key === 'signup_invite' || key === 'signup_followup') {
+  // The neutral and decline templates still apply to their thread. The
+  // prove-first answer stages passed_to_form too (2026-09-17), so it is
+  // guarded the same way.
+  if (key === 'signup_invite' || key === 'signup_followup' || key === 'service_prove_first') {
     const pool = await store.partnerPoolState(got.thread.contact_email);
     if (pool === 'live' || pool === 'queued') {
       return { ok: false as const, error: `This contact is already an approved partner (${pool}); manage them from the Partners view instead of re-inviting` };
