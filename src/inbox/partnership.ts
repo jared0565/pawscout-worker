@@ -271,6 +271,31 @@ export function detectOffPlatformRequest(text: string): boolean {
     || channelNumber.test(t) || contactMe.test(t);
 }
 
+/** A request for STORE access in the sender's own words: collaborator, staff,
+ * admin or sub-admin accounts, the store's login details, or access to our
+ * admin, dashboard, theme or ad accounts. Deliberately admin-shaped: a customer
+ * locked out of their OWN account ("I cannot access my account"), asking about
+ * our staff, or unable to reach the website from abroad must never trip it, so
+ * bare "access", "login" and "store" are not signals on their own. Pure and
+ * deterministic; message TEXT only (standing rule). Owner follow-up 2026-09-17. */
+export function detectAccessRequest(text: string): boolean {
+  const t = (text ?? '').toLowerCase();
+  if (!t.trim()) return false;
+  const ACCESS_RES: RegExp[] = [
+    /\bcollaborator\b/,
+    /\bstaff (?:account|access|login|log-in|permissions?)\b/,
+    /\badmin (?:access|account|login|log-in|rights|permissions?|panel|dashboard)\b/,
+    /\bsub[- ]?admin\b/,
+    /\baccess to (?:your|the) (?:shopify|admin|back ?end|dashboard|theme|store admin|shop admin|(?:google |meta |facebook |tiktok )?ads? account|meta business|business manager|analytics)\b/,
+    /\b(?:shopify|admin|back ?end|dashboard|theme|store admin) access\b/,
+    /\badd (?:me|us|our team|my team) as (?:a |an )?(?:staff|collaborator|admin|user)\b/,
+    /\b(?:your|the) (?:store|shop|shopify|admin)(?:'s)? (?:login|log-in|credentials|password)\b/,
+    /\b(?:store|shop|shopify|admin) login details\b/,
+    /\bgrant (?:me|us) access\b/,
+  ];
+  return ACCESS_RES.some((re) => re.test(t));
+}
+
 function gateDecline(gate: string, reason: string): ScreenVerdict {
   return { decision: 'decline', score: null, gate, signals: {}, reasons: [reason] };
 }
@@ -402,7 +427,30 @@ Your code is set up through our partner page: ${AFFILIATE_APPLY_URL}
 
 It takes a few minutes, and your tracked orders and commission live in one place from then on. ${COMMISSION_COMPUTATION_SENTENCE} ${COMMISSION_TIERS_SENTENCE}
 
-If your approach works, your code will show it, and that track record is what opens any further conversation with us. If a tracked trial is not how you work, no reply is needed, and we wish you every success.
+Two things we should say up front so nobody wastes time. We do not give store, admin, collaborator or staff access to anyone outside the team, and that will not change; the code trial needs none of it. And changes to the store itself, from the theme and listings to apps and ad accounts, stay with our own team, so we do not review proposals, audits or sample work. What we can measure is demand: if your strategy brings customers, your code will show it.
+
+That track record is what opens any further conversation with us. If a tracked trial is not how you work, no reply is needed, and we wish you every success.
+
+Best Regards,
+Active Paw Partnerships`;
+
+// Access requests (owner follow-up 2026-09-17: "some of them need access to
+// the admin/sub-admin account, which I will never approve"). An applicant who
+// comes back asking for collaborator, staff or admin access gets this instead
+// of the form reminder, which would read as if nobody had read their message.
+// Final on ACCESS, never on the person: it is a fixed rule, not a question of
+// trust or timing, and the trial (which needs no access) stays open with its
+// link, so it counts as a programme introduction and the third insistence
+// lands on the friendly final decline. The collaborator request code is never
+// mentioned anywhere in outbound mail.
+const ACCESS_DECLINE_BODY =
+`Thank you for coming back to us.
+
+We do not give store, admin, collaborator or staff access to anyone outside the team. That is a fixed rule rather than a question of timing, so we would rather say it plainly than leave it open: any work that depends on access to the store is not something we can take up, in any form.
+
+The one route that stays open needs no access at all: your own affiliate discount code, set up through our partner page, with your tracked orders deciding what comes next: ${AFFILIATE_APPLY_URL}
+
+If that is not how you work, no reply is needed, and we wish you every success.
 
 Best Regards,
 Active Paw Partnerships`;
@@ -661,6 +709,7 @@ export function buildSignupInvite(
 }
 export function buildServiceProveFirst(name: string | null): string { return applySalutation(SERVICE_PROVE_FIRST_BODY, name); }
 export function buildSupplierAck(name: string | null): string { return applySalutation(SUPPLIER_ACK_BODY, name); }
+export function buildAccessDecline(name: string | null): string { return applySalutation(ACCESS_DECLINE_BODY, name); }
 export function buildOperationsDecline(name: string | null): string { return applySalutation(OPERATIONS_DECLINE_BODY, name); }
 export function buildFormInvite(name: string | null): string { return applySalutation(FORM_INVITE_BODY, name); }
 export function buildVoucherInvite(name: string | null): string { return applySalutation(VOUCHER_INVITE_BODY, name); }
@@ -691,7 +740,7 @@ export function countProgrammeIntroductions(
 export const TOUCH_TEMPLATES = [
   'signup_invite', 'qualifying', 'voucher_invite', 'form_invite', 'partnership_decline',
   'service_prove_first', 'operations_decline', 'keep_to_email', 'holding_ack', 'collaboration_decline',
-  'supplier_ack',
+  'supplier_ack', 'access_decline',
 ] as const;
 export type TouchTemplate = typeof TOUCH_TEMPLATES[number];
 
@@ -753,6 +802,12 @@ ${SIGNOFF_PARTNERSHIPS}`,
 `Thanks for sending the update. We have it on file for reference, and there is nothing you need to do from here.
 
 ${SIGNOFF_STORE}`,
+  access_decline:
+`Thanks for following up. Our answer is unchanged: we do not give store, admin, collaborator or staff access to anyone outside the team, in any form. The code trial needs no access and stays open to you: ${AFFILIATE_APPLY_URL}
+
+No reply is needed.
+
+${SIGNOFF_PARTNERSHIPS}`,
 };
 
 // One sentence each, pointing back to the earlier reply (the owner's choice for a
@@ -769,6 +824,7 @@ const POINTER_BACK: Record<TouchTemplate, string> = {
   holding_ack: `Our earlier note still stands: your application is in review, and we will write as soon as it is decided.`,
   collaboration_decline: `Our earlier reply on this thread still stands: we do not skip the trial for anyone, and the code trial stays open to you: ${AFFILIATE_APPLY_URL}`,
   supplier_ack: `As in our earlier reply, your product information is on file, and nothing more is needed.`,
+  access_decline: `Our earlier reply on this thread still stands: no store access of any kind, and the code trial stays open to you: ${AFFILIATE_APPLY_URL}`,
 };
 
 export function buildSecondTouch(key: TouchTemplate, name: string | null): string {
@@ -970,7 +1026,11 @@ export async function maybePartnershipDraft(
   // first-touch signup invite, which answers the channel-switch ask inline
   // rather than leaving half the message unanswered (2026-08-02).
   const offPlatformNow = detectOffPlatformRequest(latestNewText);
-  if (!applicant && !servicePitch && !volumePitchNow
+  // Owner follow-up 2026-09-17: a request for store access is a vendor's
+  // message wherever it lands (a customer never asks for collaborator or
+  // staff access), so it opens the lane like a pitch does.
+  const accessRequestNow = detectAccessRequest(latestNewText);
+  if (!applicant && !servicePitch && !volumePitchNow && !accessRequestNow
       && !isPartnershipLane({ inboundToAddrs, declaredIntent, primaryCategory: thread.primary_category, inboundTexts: openInboundTexts(got.messages) })) return null;
 
   const contact = await store.getContactByEmail(thread.contact_email);
@@ -1043,6 +1103,29 @@ export async function maybePartnershipDraft(
     return { draftId, send: false };
   }
 
+  // Access intercept (owner follow-up 2026-09-17: "some of them need access to
+  // the admin/sub-admin account, which I will never approve"). An IN-FLIGHT
+  // applicant who asks for collaborator, staff or admin access is answered on
+  // that point, never with the form reminder or the holding ack, which would
+  // read as if nobody had read their message. The access decline carries the
+  // trial link, so it counts as a programme introduction: the third insistence
+  // (prove-first, access decline, still asking) lands on the friendly final
+  // decline and the applicant is declined. Stage otherwise unchanged: the
+  // trial needs no access and stays open to them. Always HITL.
+  if (applicant && applicant.stage !== 'declined' && accessRequestNow) {
+    if (countProgrammeIntroductions(got.messages) >= 2) {
+      const { draftId } = await insertTouched('collaboration_decline', buildCollaborationDecline(name));
+      await store.setApplicantStage(thread.id, 'declined', null);
+      await maybeAlertOwner(env, cfg, thread.shop, thread,
+        'An applicant still asks for store access after two introductions - the friendly final decline is ready for your review.', 'affiliate', _fetchImpl);
+      return { draftId, send: false };
+    }
+    const { draftId } = await insertTouched('access_decline', buildAccessDecline(name));
+    await maybeAlertOwner(env, cfg, thread.shop, thread,
+      'An applicant asked for store access - the access decline is ready for your review. Never approve the request in Shopify.', 'affiliate', _fetchImpl);
+    return { draftId, send: false };
+  }
+
   // Pure service pitches (growth/SEO/CRO/listing/marketing vendors). Owner
   // rule 2026-09-17 (prove-first), replacing the 2026-09-04 hard decline: the
   // vendor is told that with the number of offers we receive, a tracked code
@@ -1057,6 +1140,18 @@ export async function maybePartnershipDraft(
   if (!applicant && servicePitch) {
     const { draftId } = await insertTouched('service_prove_first', buildServiceProveFirst(name));
     await store.upsertApplicant({ threadId: thread.id, contactEmail: thread.contact_email, stage: 'passed_to_form' });
+    return { draftId, send: false };
+  }
+
+  // A first touch that asks for store access WITHOUT pitching a service (the
+  // service pitch above takes precedence, since the prove-first body already
+  // carries the access boundary): the access decline, staged like an invited
+  // applicant because it points them at the trial. HITL.
+  if (!applicant && accessRequestNow) {
+    const { draftId } = await insertTouched('access_decline', buildAccessDecline(name));
+    await store.upsertApplicant({ threadId: thread.id, contactEmail: thread.contact_email, stage: 'passed_to_form' });
+    await maybeAlertOwner(env, cfg, thread.shop, thread,
+      'A sender asked for store access - the access decline is ready for your review. Never approve the request in Shopify.', 'affiliate', _fetchImpl);
     return { draftId, send: false };
   }
 

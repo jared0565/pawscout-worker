@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import {
   buildQualifyingEmail, buildPartnershipDecline, buildFormInvite, buildVoucherInvite, buildHoldingAck,
-  buildServiceProveFirst, buildSupplierAck, buildSignupInvite, buildOperationsDecline, buildKeepToEmail, buildSecondTouch, buildPointerBack,
-  buildCollaborationDecline, detectAlternativeCollaboration, countProgrammeIntroductions,
+  buildServiceProveFirst, buildSupplierAck, buildAccessDecline, buildSignupInvite, buildOperationsDecline, buildKeepToEmail, buildSecondTouch, buildPointerBack,
+  buildCollaborationDecline, detectAlternativeCollaboration, detectAccessRequest, countProgrammeIntroductions,
   TOUCH_TEMPLATES, QUALIFYING_MARKER, AFFILIATE_APPLY_URL, PARTNERSHIP_STANCE, STANDARD_COMMISSION_PCT, TIER_REVIEW_ORDERS, TIER_MAX_PCT
 } from '../src/inbox/partnership';
 import { countWords } from '../src/inbox/draft-quality';
@@ -64,6 +64,7 @@ describe('an affiliate mention always carries the apply link', () => {
   // here rather than shipping. Keep this list in step with any new body.
   const SURFACES: [string, string][] = [
     ['service prove-first', buildServiceProveFirst('Jo')],
+    ['access decline', buildAccessDecline('Jo')],
     ['signup invite', buildSignupInvite('Jo')],
     ['form invite', buildFormInvite('Jo')],
     ['agent stance', PARTNERSHIP_STANCE],
@@ -108,6 +109,36 @@ describe('an affiliate mention always carries the apply link', () => {
     expect(body).toContain('Best Regards,\nActive Paw Partnerships');
   });
 
+  // Owner follow-up 2026-09-17: "some of them need access to the admin/sub-admin
+  // account, which I will never approve, and some of them offer strategies and
+  // online store improvements." The first touch states both boundaries up front
+  // so an access-dependent vendor stops after one email: no store access of any
+  // kind, store changes stay with our team, proposals/audits/samples are not
+  // reviewed, and demand is the one thing the code can measure.
+  it('the prove-first answer states the access and store-change boundaries up front', () => {
+    const body = buildServiceProveFirst('Jo');
+    expect(body).toMatch(/do not give store, admin, collaborator or staff access/i);
+    expect(body).toMatch(/needs none of it/i);
+    expect(body).toMatch(/stay with our own team/i);
+    expect(body).toMatch(/proposals, audits or sample work/i);
+    expect(body).toMatch(/your code will show it/i);
+  });
+
+  // The dedicated reply for an applicant who comes back asking for access:
+  // final on access, never on the person, and the trial link stays.
+  it('the access decline is final on access, needs no access for the trial, links it, needs no reply', () => {
+    const body = buildAccessDecline('Jo');
+    expect(body.startsWith('Hi Jo,')).toBe(true);
+    expect(body).toMatch(/do not give store, admin, collaborator or staff access/i);
+    expect(body).toMatch(/not something we can take up, in any form/i);
+    expect(body).toMatch(/needs no access/i);
+    expect(body).toContain(AFFILIATE_APPLY_URL);
+    expect(body).toMatch(/no reply is needed/i);
+    expect(body).not.toMatch(/in-house|not a fit|trust/i);
+    expect(body).not.toMatch(/[\u2013\u2014]/);
+    expect(body).toContain('Best Regards,\nActive Paw Partnerships');
+  });
+
   // Owner rule 2026-09-17: a goods supplier (packaging, a "backup supplier"
   // with a catalogue) is neither declined nor sent to the code trial, which
   // cannot measure them. They are thanked for the listing and nothing is
@@ -134,7 +165,7 @@ describe('second-touch and pointer variants', () => {
     voucher_invite: buildVoucherInvite('Jo'), form_invite: buildFormInvite('Jo'),
     partnership_decline: buildPartnershipDecline('Jo'), service_prove_first: buildServiceProveFirst('Jo'),
     operations_decline: buildOperationsDecline('Jo'), keep_to_email: buildKeepToEmail('Jo'), holding_ack: buildHoldingAck('Jo'),
-    collaboration_decline: buildCollaborationDecline('Jo'), supplier_ack: buildSupplierAck('Jo'),
+    collaboration_decline: buildCollaborationDecline('Jo'), supplier_ack: buildSupplierAck('Jo'), access_decline: buildAccessDecline('Jo'),
   };
   it('every template has a second touch shorter than the first, and a pointer shorter still', () => {
     expect(TOUCH_TEMPLATES.length).toBe(Object.keys(firstOf).length);
@@ -152,7 +183,7 @@ describe('second-touch and pointer variants', () => {
     }
   });
   it('link-bearing templates keep the apply link in both shorter forms', () => {
-    for (const key of ['signup_invite', 'service_prove_first', 'form_invite', 'collaboration_decline'] as const) {
+    for (const key of ['signup_invite', 'service_prove_first', 'form_invite', 'collaboration_decline', 'access_decline'] as const) {
       expect(buildSecondTouch(key, 'Jo'), key).toContain(AFFILIATE_APPLY_URL);
       expect(buildPointerBack(key, 'Jo'), key).toContain(AFFILIATE_APPLY_URL);
     }
@@ -230,5 +261,36 @@ describe('friendly collaboration decline (programme introduced twice, they insis
     expect(countProgrammeIntroductions(msgs)).toBe(2);
     expect(countProgrammeIntroductions(msgs.slice(0, 2))).toBe(1);
     expect(countProgrammeIntroductions([])).toBe(0);
+  });
+});
+
+// Owner follow-up 2026-09-17: access requests are detected from the sender's
+// own words and only in admin/collaborator/staff terms. A CUSTOMER locked out
+// of their own account, or asking about our staff, must never trip it: the
+// positives are vendor phrasings, the negatives are ordinary customer mail.
+describe('detectAccessRequest', () => {
+  it('fires on admin, sub-admin, collaborator and staff access asks', () => {
+    for (const t of [
+      'Please send me collaborator access so I can start on the store.',
+      'I will need a staff account with full permissions.',
+      'Can you grant me admin access to your Shopify?',
+      'Add me as a collaborator and I will fix the speed issues.',
+      'A sub-admin login is enough for what I need to do.',
+      'I need access to your admin dashboard to set up the pixels.',
+      'Just share the store login details and I will handle everything.',
+      'Give me access to your Google Ads account and Meta Business Manager.',
+      'My collaborator request code is 1234, please approve it.',
+    ]) expect(detectAccessRequest(t), t).toBe(true);
+  });
+  it('stays silent on customers locked out of their own account or mentioning our staff', () => {
+    for (const t of [
+      'I cannot access my account, can you reset my password?',
+      'I lost my login details for my order history.',
+      'Your staff were very helpful, thank you.',
+      'Is there a staff discount for NHS workers?',
+      'I do not have access to your website from Canada, is it blocked?',
+      'Can I get access to my invoice?',
+      'Okay',
+    ]) expect(detectAccessRequest(t), t).toBe(false);
   });
 });

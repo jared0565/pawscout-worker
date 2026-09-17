@@ -15,7 +15,7 @@ import { env, applyD1Migrations } from 'cloudflare:test';
 import { TenantStore } from '../src/tenant-store';
 import {
   detectVolumePitch, detectServicePitch, detectOffPlatformRequest, buildQualifyingEmail, buildSignupInvite,
-  maybePartnershipDraft, QUALIFYING_MARKER, AFFILIATE_APPLY_URL, PARTNERSHIP_STANCE, buildAcceptedPartnerAck, buildServiceProveFirst,
+  maybePartnershipDraft, QUALIFYING_MARKER, AFFILIATE_APPLY_URL, PARTNERSHIP_STANCE, buildAcceptedPartnerAck, buildServiceProveFirst, buildAccessDecline,
   STANDARD_COMMISSION_PCT, TIER_REVIEW_ORDERS, TIER_MAX_PCT
 } from '../src/inbox/partnership';
 import { otherAgent } from '../src/inbox/agents/other';
@@ -254,6 +254,81 @@ describe('prove-first follow-ups', () => {
     const draft = await s.getPendingDraft(tid);
     expect(draft!.body_text).toMatch(/reviewing the fit|taking a look/i);
     expect(draft!.body_text).not.toContain(AFFILIATE_APPLY_URL);
+  });
+});
+
+// Owner follow-up 2026-09-17: "some of them need access to the admin/sub-admin
+// account, which I will never approve." An access ask is answered on its own
+// terms (never granted, trial needs none of it), never with the form reminder.
+describe('access requests', () => {
+  const SVC_PITCH = 'Our agency offers product listing services and can improve your site loading speed.';
+  async function seedProveFirstSent(shop: string) {
+    const { s, tid } = await seedFirstTouch(shop, SVC_PITCH);
+    const got = (await s.getThreadWithMessages(tid))!;
+    await maybePartnershipDraft({ ...env } as any, s, CFG, got.thread, got, noFetch);
+    await s.insertOutboundMessage({ threadId: tid, messageId: `<pf1@${shop}>`, from: 'sales@activepaw.co.uk', to: 'p@x.com', subject: 'Re: Partnership', bodyText: buildServiceProveFirst('Sam'), bodyHtml: '<p>x</p>', sentAt: '2026-07-05T11:00:00Z' });
+    return { s, tid };
+  }
+  async function inbound(s: TenantStore, tid: string, shop: string, id: string, text: string, at: string) {
+    await s.insertInboundMessageIfNew({ threadId: tid, messageId: `<${id}@${shop}>`, inReplyTo: null, references: [], from: 'p@x.com', to: 'sales@activepaw.co.uk', subject: 'Re: Partnership', bodyText: text, bodyHtml: null, headersJson: '{}', receivedAt: at });
+  }
+
+  it('an in-flight applicant asking for collaborator access gets the access decline, stage unchanged', async () => {
+    const shop = 'ac1.myshopify.com';
+    const { s, tid } = await seedProveFirstSent(shop);
+    await inbound(s, tid, shop, 'a1', 'Sure, but I need collaborator access to the store to make the changes.', '2026-07-06T09:00:00Z');
+    const got = (await s.getThreadWithMessages(tid))!;
+    const r = await maybePartnershipDraft({ ...env } as any, s, CFG, got.thread, got, noFetch);
+    expect(r).not.toBeNull();
+    expect(r!.send).toBe(false);
+    const draft = await s.getPendingDraft(tid);
+    expect(draft!.body_text).toMatch(/do not give store, admin, collaborator or staff access/i);
+    expect(draft!.body_text).toContain(AFFILIATE_APPLY_URL);
+    expect(draft!.body_text).not.toMatch(/next step is the application form|reviewing the fit/i);
+    expect((await s.getApplicantByThread(tid))!.stage).toBe('passed_to_form');
+  });
+
+  it('a second access ask after the access decline lands on the friendly final decline', async () => {
+    const shop = 'ac2.myshopify.com';
+    const { s, tid } = await seedProveFirstSent(shop);
+    await s.insertOutboundMessage({ threadId: tid, messageId: `<ad1@${shop}>`, from: 'sales@activepaw.co.uk', to: 'p@x.com', subject: 'Re: Partnership', bodyText: buildAccessDecline('Sam'), bodyHtml: '<p>x</p>', sentAt: '2026-07-06T11:00:00Z' });
+    await inbound(s, tid, shop, 'a2', 'I still need admin access, otherwise I cannot start.', '2026-07-07T09:00:00Z');
+    const got = (await s.getThreadWithMessages(tid))!;
+    const r = await maybePartnershipDraft({ ...env } as any, s, CFG, got.thread, got, noFetch);
+    expect(r).not.toBeNull();
+    const draft = await s.getPendingDraft(tid);
+    expect(draft!.body_text).toMatch(/do not skip the trial for anyone/i);
+    expect((await s.getApplicantByThread(tid))!.stage).toBe('declined');
+  });
+
+  it('a first touch that only asks for access gets the access decline and is staged passed_to_form', async () => {
+    const { s, tid } = await seedColdPitch('ac3.myshopify.com', 'Hi, please add me as a collaborator on your Shopify store so I can get started on the improvements we discussed.');
+    const got = (await s.getThreadWithMessages(tid))!;
+    const r = await maybePartnershipDraft({ ...env } as any, s, CFG, got.thread, got, noFetch);
+    expect(r).not.toBeNull();
+    expect(r!.send).toBe(false);
+    const draft = await s.getPendingDraft(tid);
+    expect(draft!.body_text).toMatch(/do not give store, admin, collaborator or staff access/i);
+    expect(draft!.body_text).toContain(AFFILIATE_APPLY_URL);
+    expect((await s.getApplicantByThread(tid))!.stage).toBe('passed_to_form');
+  });
+
+  it('a first touch that pitches a service AND asks for access gets the prove-first answer, which carries the boundary', async () => {
+    const { s, tid } = await seedFirstTouch('ac4.myshopify.com', 'Our agency offers SEO and store optimisation; just add me as a staff account and we can begin.');
+    const got = (await s.getThreadWithMessages(tid))!;
+    const r = await maybePartnershipDraft({ ...env } as any, s, CFG, got.thread, got, noFetch);
+    expect(r).not.toBeNull();
+    const draft = await s.getPendingDraft(tid);
+    expect(draft!.body_text).toMatch(/who can actually deliver/i);
+    expect(draft!.body_text).toMatch(/do not give store, admin, collaborator or staff access/i);
+    expect((await s.getApplicantByThread(tid))!.stage).toBe('passed_to_form');
+  });
+
+  it('a customer locked out of their own account never enters the funnel', async () => {
+    const { s, tid } = await seedBaitOpener('ac5.myshopify.com', 'Do you ship to the UK?', 'I cannot access my account to see my order, can you help?');
+    const got = (await s.getThreadWithMessages(tid))!;
+    expect(await maybePartnershipDraft({ ...env } as any, s, CFG, got.thread, got, noFetch)).toBeNull();
+    expect(await s.getApplicantByThread(tid)).toBeNull();
   });
 });
 

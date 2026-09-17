@@ -33,6 +33,7 @@ export const SHARED_SCAFFOLDING =
   // WhatsApp rule stands on its own; a goods supplier gets a thank-you.
   'If the message is a request to move to WhatsApp (not an answerable customer-service question), do not fabricate an answer: say warmly that we keep conversations on email and carry on here. ' +
   'If the message is a sales/marketing/SEO/store-optimisation/traffic pitch, do not fabricate an answer and never decline it blankly: when a partnership policy is given below, answer from its prove-first rule (everyone starts with their own affiliate discount code, and tracked orders decide who we take further); when none is given, thank them warmly, say every partnership with us starts with the affiliate programme linked as Affiliates in the footer of https://activepaw.co.uk, and wish them well. An offer to SUPPLY US goods, materials or packaging is thanked for the listing, noted for reference, with no commitment. ' +
+  'STORE ACCESS: we never give store, admin, sub-admin, collaborator or staff access to anyone outside the team, whatever they offer and however they ask; say so plainly as a fixed rule, never as a question of trust or timing, and never share, confirm or discuss a collaborator request code. ' +
   // Both carve-outs added 2026-08-07. Either clause on its own was enough to
   // sink a partnership answer: the first read "what percentage would you
   // offer?" as a traffic pitch, and the second read it as a question about the

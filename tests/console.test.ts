@@ -653,6 +653,7 @@ describe('consolePage', () => {
     expect(scripts).not.toContain('value="service_decline"');
     expect(scripts).toContain('value="service_prove_first"');
     expect(scripts).toContain('value="supplier_ack"');
+    expect(scripts).toContain('value="access_decline"');
   });
 
   it('Inbox carries the template picker wired to /inbox/template', async () => {

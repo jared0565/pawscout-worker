@@ -230,4 +230,11 @@ describe('shared scaffolding pitch rule (prove-first)', () => {
     // the WhatsApp rule survives on its own
     expect(SHARED_SCAFFOLDING).toContain('move to WhatsApp');
   });
+  // Owner follow-up 2026-09-17: every agent, with or without the partnership
+  // stance, refuses store access plainly; it is never a question of trust or
+  // timing, and it never leaks a collaborator request code.
+  it('tells every agent that store access is never granted and the request code is never shared', () => {
+    expect(SHARED_SCAFFOLDING).toContain('collaborator or staff access');
+    expect(SHARED_SCAFFOLDING).toContain('collaborator request code');
+  });
 });

@@ -4,7 +4,7 @@ import { DEFAULT_INBOX, type InboxConfig, type ThreadStatus } from './types';
 import type { Env } from '../types';
 import { sendReply } from './send';
 import { composeDraftForThread } from './sweep';
-import { maybePartnershipDraft, buildServiceProveFirst, buildSupplierAck, buildOperationsDecline, buildCollaborationDecline, buildKeepToEmail, buildSignupInvite, detectVolumePitch, detectOffPlatformRequest, buildSecondTouch, buildPointerBack, type TouchTemplate } from './partnership';
+import { maybePartnershipDraft, buildServiceProveFirst, buildSupplierAck, buildAccessDecline, buildOperationsDecline, buildCollaborationDecline, buildKeepToEmail, buildSignupInvite, detectVolumePitch, detectOffPlatformRequest, buildSecondTouch, buildPointerBack, type TouchTemplate } from './partnership';
 import { chooseTouch, outboundBodies, type TouchKind } from './repeat';
 import { renderReplyHtml, openInboundText } from './draft';
 import { stripQuotedReply } from './quote';
@@ -221,6 +221,9 @@ export const DRAFT_TEMPLATES: { key: string; label: string }[] = [
   // funnel drafts it by itself in that situation; the picker entry is for the
   // owner to apply it by hand on any other thread.
   { key: 'collaboration_decline', label: 'Friendly decline (programme already introduced)' },
+  // 2026-09-17 (later): for the vendor who asks for admin, sub-admin,
+  // collaborator or staff access. Never granted; the trial needs none of it.
+  { key: 'access_decline', label: 'Access request decline (never granted, trial link)' },
   { key: 'supplier_ack', label: 'Supplier: thanks for the listing (no commitment)' },
   { key: 'keep_to_email', label: 'Keep to email (decline WhatsApp)' },
 ];
@@ -281,6 +284,7 @@ export async function applyDraftTemplate(db: D1Database, shop: string, threadId:
   else if (key === 'operations_decline') body = buildOperationsDecline(name);
   else if (key === 'collaboration_decline') body = buildCollaborationDecline(name);
   else if (key === 'supplier_ack') body = buildSupplierAck(name);
+  else if (key === 'access_decline') body = buildAccessDecline(name);
   else body = buildKeepToEmail(name);
 
   // Owner rule 2026-09-04: never the same message twice on a thread. A template
@@ -311,6 +315,12 @@ export async function applyDraftTemplate(db: D1Database, shop: string, threadId:
   if (stage) {
     if (!applicant) await store.upsertApplicant({ threadId, contactEmail: got.thread.contact_email, stage });
     else await store.setApplicantStage(threadId, stage, null);
+  } else if (key === 'access_decline' && !applicant && (await store.partnerPoolState(got.thread.contact_email)) === 'none') {
+    // The access decline points a fresh sender at the trial, so a thread with
+    // no applicant is staged passed_to_form (their next reply rides the
+    // ladder). An existing applicant keeps its stage, and an accepted or
+    // queued partner is never turned into an applicant by it.
+    await store.upsertApplicant({ threadId, contactEmail: got.thread.contact_email, stage: 'passed_to_form' });
   }
   if (got.thread.status === 'closed') await store.setThreadStatus(threadId, 'needs_reply');
   return { ok: true as const, touch, draft: await store.getPendingDraft(threadId) };

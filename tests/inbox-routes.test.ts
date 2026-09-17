@@ -244,13 +244,42 @@ describe('applyDraftTemplate', () => {
   // 2026-09-17 (prove-first): the service decline becomes the prove-first
   // answer (the code trial is the filter, not a refusal), and a goods
   // supplier gets a thank-you for their listing rather than a decline.
-  it('offers exactly the seven live templates, the two programme ones first', () => {
-    expect(DRAFT_TEMPLATES.map((t) => t.key)).toEqual(['signup_invite', 'signup_followup', 'service_prove_first', 'operations_decline', 'collaboration_decline', 'supplier_ack', 'keep_to_email']);
+  // 2026-09-17 (later): the access decline joins, for the vendor who asks for
+  // admin, sub-admin, collaborator or staff access (never granted).
+  it('offers exactly the eight live templates, the two programme ones first', () => {
+    expect(DRAFT_TEMPLATES.map((t) => t.key)).toEqual(['signup_invite', 'signup_followup', 'service_prove_first', 'operations_decline', 'collaboration_decline', 'access_decline', 'supplier_ack', 'keep_to_email']);
     expect(DRAFT_TEMPLATES[0].label).toMatch(/^Affiliate programme: introduction/);
     expect(DRAFT_TEMPLATES[1].label).toMatch(/^Affiliate programme: follow-up/);
     expect(DRAFT_TEMPLATES[2].label).toMatch(/^Service pitch: prove first/);
     expect(DRAFT_TEMPLATES[4].label).toMatch(/^Friendly decline/);
-    expect(DRAFT_TEMPLATES[5].label).toMatch(/^Supplier: thanks for the listing/);
+    expect(DRAFT_TEMPLATES[5].label).toMatch(/^Access request decline/);
+    expect(DRAFT_TEMPLATES[6].label).toMatch(/^Supplier: thanks for the listing/);
+  });
+
+  it('the access decline renders with the link and stages a fresh thread passed_to_form', async () => {
+    const { s, tid } = await seedWithConfig();
+    const r = await applyDraftTemplate(env.DB, SHOP, tid, 'access_decline');
+    expect(r.ok).toBe(true);
+    const body = (r as { draft?: { body_text?: string } }).draft?.body_text ?? '';
+    expect(body).toContain('Hi Jane,');
+    expect(body).toMatch(/do not give store, admin, collaborator or staff access/i);
+    expect(body).toContain(AFFILIATE_APPLY_URL);
+    expect((await s.getApplicantByThread(tid))?.stage).toBe('passed_to_form');
+  });
+
+  it('the access decline leaves an existing applicant stage alone', async () => {
+    const { s, tid } = await seedWithConfig();
+    await s.upsertApplicant({ threadId: tid, contactEmail: 'jane@x.com', stage: 'escalated' });
+    expect((await applyDraftTemplate(env.DB, SHOP, tid, 'access_decline')).ok).toBe(true);
+    expect((await s.getApplicantByThread(tid))?.stage).toBe('escalated');
+  });
+
+  it('the access decline is allowed on an accepted partner\'s thread and never re-stages them', async () => {
+    const { s, tid } = await seedWithConfig();
+    const pid = await s.upsertAffiliatePartner({ contactEmail: 'jane@x.com' });
+    await s.createAffiliateVoucher({ partnerId: pid, code: 'JANE5', pctOff: 5, commissionPct: 2, endsAt: new Date(Date.now() + 30 * 86400000).toISOString() });
+    expect((await applyDraftTemplate(env.DB, SHOP, tid, 'access_decline')).ok).toBe(true);
+    expect(await s.getApplicantByThread(tid)).toBeNull();
   });
 
   it('the friendly collaboration decline renders with the apply link and stamps the applicant declined', async () => {
