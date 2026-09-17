@@ -18,9 +18,9 @@ import { listInboxThreads, getInboxThread, setInboxStatus, setInboxLabels, getIn
 import { buildInvoiceForThread, discardInvoice, searchCatalog, adminForShop } from './inbox/invoice-routes';
 import { validateCampaignPayload, resolveCampaignAudience, sendCampaignBatch, sendCampaignTest, campaignForUi, ownerTestAddress, campaignSendBlock, type CampaignAudience } from './campaigns';
 import { collectSystemStates } from './system-states';
-import { validateEventRequest, findOverlappingPromo, createEventDiscount, buildEventCampaign, publicEventPayload, eventDayLabel } from './storewide-event';
+import { validateEventRequest, findOverlappingPromo, createEventDiscount, buildEventCampaign, eventDayLabel } from './storewide-event';
 import { reservedWindowClash, templateByKey } from './event-catalogue';
-import { ensureRecurringDiscount, retireRecurringDiscount, refreshPublicEventFeed, listRecurringForConsole } from './recurring-events';
+import { ensureRecurringDiscount, retireRecurringDiscount, refreshPublicEventFeed, buildPublicEventFeed, listRecurringForConsole } from './recurring-events';
 import { runBlogPipeline, enrichBlogPost, proposeBlogTopics, listPostsSynced, regenerateArticle } from './blog/pipeline';
 import { deepResearchBudget } from './blog/research';
 import { runArticleHealth } from './blog/article-health';
@@ -293,7 +293,7 @@ app.post('/api/event/create', async (c) => {
     status: Date.parse(v.value.startsAt) <= Date.now() ? 'ACTIVE' : 'SCHEDULED',
     startsAt: v.value.startsAt, endsAt: v.value.endsAt, code: v.value.code
   }]);
-  await store.putSearchCache('public:event', JSON.stringify(publicEventPayload(synthetic)), 10 / 1440);
+  await store.putSearchCache('public:event', JSON.stringify(await buildPublicEventFeed(store, synthetic)), 10 / 1440);
   return c.json({ ok: true, code: v.value.code, startsAt: v.value.startsAt, endsAt: v.value.endsAt, campaignId });
 });
 // Recurring events: catalogue joined with the owner's enable flags. Enabling
@@ -343,7 +343,7 @@ app.post('/api/event/end', async (c) => {
   if (!d.ok) return c.json(d);
   const probe = await fetchActiveOrderPromos(admin);
   const remaining = probe.ok ? probe.promos.filter((p) => p.code !== code) : [];
-  await store.putSearchCache('public:event', JSON.stringify(publicEventPayload(remaining)), 10 / 1440);
+  await store.putSearchCache('public:event', JSON.stringify(await buildPublicEventFeed(store, remaining)), 10 / 1440);
   return c.json({ ok: true });
 });
 // Blog content pipeline (2026-07-07): the owner triggers the blog agents to
@@ -2066,7 +2066,7 @@ app.get('/public/event', async (c) => {
   if (!admin) return c.json({ error: 'unavailable' }, 503, headers);
   const probe = await fetchActiveOrderPromos(admin);
   if (!probe.ok) return c.json({ error: 'unavailable' }, 503, headers);
-  const payload = publicEventPayload(probe.promos);
+  const payload = await buildPublicEventFeed(store, probe.promos);
   await store.putSearchCache('public:event', JSON.stringify(payload), 10 / 1440);
   return c.json(payload, 200, headers);
 });

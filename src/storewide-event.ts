@@ -1,6 +1,6 @@
 import type { AdminGraphql } from './shopify-admin';
 import { type PromoWindow } from './affiliate-discounts';
-import { templateByCode, renderHeadline } from './event-catalogue';
+import { templateByCode, renderHeadline, type EventTemplate } from './event-catalogue';
 
 // Storewide events (2026-07-06, owner request after the WELCOME10 date drift):
 // create and end storewide percentage events from the console, with the
@@ -119,8 +119,23 @@ If your dog or cat is due a grooming refresh, a new toy or an everyday restock, 
   };
 }
 
+/** The next planned catalogue event, for the idle storefront and the inbox:
+ * NAME and DATES only. Its code and percentage are deliberately absent, since
+ * they are not announced ahead (the owner may still change the percentage). */
+export interface NextEventTease {
+  key: string;
+  name: string;
+  startsAt: string;
+  endsAt: string;
+  startsLabel: string; // 'Friday 28 August'
+  endsLabel: string;   // 'Monday 31 August'
+}
+
 export interface PublicEventPayload {
   active: boolean;
+  /** Display name: the catalogue event's name, else the code itself (2026-09-17,
+   * for the announcement bar, hero badge and inbox agents). */
+  name?: string;
   code?: string;
   pctOff?: number;
   endsAt?: string | null;
@@ -131,6 +146,22 @@ export interface PublicEventPayload {
   headline?: string;
   subline?: string;
   chips?: string[];
+  /** Earliest ENABLED catalogue window that has not started yet, if any. */
+  next?: NextEventTease;
+}
+
+/** The earliest window among `upcoming` whose start is still ahead of `nowMs`.
+ * A window that has already started (the running event, or one that ended
+ * this year with the next occurrence a year away) is never "next". */
+export function nextEventTease(upcoming: EventTemplate[], nowMs: number): NextEventTease | undefined {
+  let best: NextEventTease | undefined;
+  for (const t of upcoming) {
+    const w = t.nextWindow(nowMs);
+    if (Date.parse(w.startsAt) <= nowMs) continue;
+    if (best && Date.parse(w.startsAt) >= Date.parse(best.startsAt)) continue;
+    best = { key: t.key, name: t.name, startsAt: w.startsAt, endsAt: w.endsAt, startsLabel: eventDayLabel(w.startsAt), endsLabel: eventDayLabel(w.endsAt) };
+  }
+  return best;
 }
 
 /** What the storefront modal is allowed to advertise RIGHT NOW: the running
@@ -138,21 +169,26 @@ export interface PublicEventPayload {
  * automatic discounts (no code to advertise) and code-less rows are not shown.
  * active:false tears the modal down. Catalogue codes carry their pre-written
  * wording, with the headline percentage interpolated from the LIVE discount
- * so an owner-edited percentage can never disagree with the storefront. */
-export function publicEventPayload(promos: PromoWindow[], nowMs = Date.now()): PublicEventPayload {
+ * so an owner-edited percentage can never disagree with the storefront.
+ * `upcoming` (2026-09-17) is the owner's ENABLED catalogue templates: the feed
+ * then also teases the next planned event by name and dates so the storefront
+ * and the inbox can say what is coming without ever leaking its code. */
+export function publicEventPayload(promos: PromoWindow[], nowMs = Date.now(), upcoming: EventTemplate[] = []): PublicEventPayload {
+  const next = nextEventTease(upcoming, nowMs);
   const live = promos.filter((p) =>
     p.source === 'code' && p.code && p.status === 'ACTIVE'
     && (!p.startsAt || Date.parse(p.startsAt) <= nowMs)
     && (!p.endsAt || Date.parse(p.endsAt) > nowMs));
-  if (!live.length) return { active: false };
+  if (!live.length) return next ? { active: false, next } : { active: false };
   const best = live.slice().sort((a, b) => (b.percentage ?? 0) - (a.percentage ?? 0))[0];
   const endsLabel = best.endsAt ? eventDayLabel(best.endsAt).replace(/^\w+ /, '') : null;
-  const base: PublicEventPayload = { active: true, code: best.code!, pctOff: best.percentage ?? undefined, endsAt: best.endsAt, endsLabel };
   const t = templateByCode(best.code!);
+  const base: PublicEventPayload = { active: true, name: t?.name ?? best.code!, code: best.code!, pctOff: best.percentage ?? undefined, endsAt: best.endsAt, endsLabel };
   if (t) {
     base.headline = renderHeadline(t, best.percentage);
     base.subline = t.subline;
     base.chips = t.chips;
   }
+  if (next) base.next = next;
   return base;
 }

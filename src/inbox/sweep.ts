@@ -404,7 +404,7 @@ export async function composeDraftForThread(
   const draft = await draftReply(llm, store, cfg, {
     agent, grounding, subject: thread.subject ?? '', conversation: transcript, latestMessage: latestInbound,
     customerName: contact?.name ?? null, customerEmail: thread.contact_email, recall,
-    priorOutbound: outboundBodies(got.messages)
+    priorOutbound: outboundBodies(got.messages), admin
   });
   if (!draft) return null; // degrade: retry next sweep
 

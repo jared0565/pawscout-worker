@@ -1,8 +1,8 @@
 import type { AdminGraphql } from './shopify-admin';
 import type { TenantStore } from './tenant-store';
 import { EVENT_TEMPLATES, templateByKey, type EventTemplate, type EventWindow } from './event-catalogue';
-import { buildEventCampaign, publicEventPayload } from './storewide-event';
-import { fetchActiveOrderPromos } from './affiliate-discounts';
+import { buildEventCampaign, publicEventPayload, type PublicEventPayload } from './storewide-event';
+import { fetchActiveOrderPromos, type PromoWindow } from './affiliate-discounts';
 
 // Recurring-event rotation (2026-07-06): enabled catalogue events keep
 // themselves scheduled in Shopify year after year. The flow is UPSERT, not
@@ -117,10 +117,24 @@ export async function retireRecurringDiscount(admin: AdminGraphql, t: EventTempl
   }
 }
 
-/** Refresh the storefront modal feed from a fresh probe (post-change). */
+/** The catalogue templates the owner has ENABLED (the only ones that can run,
+ * so the only ones the storefront may tease as "next"). */
+export async function enabledEventTemplates(store: TenantStore): Promise<EventTemplate[]> {
+  const rows = await store.listRecurringEvents();
+  return rows.filter((r) => r.enabled === 1).map((r) => templateByKey(r.key)).filter((t): t is EventTemplate => t !== null);
+}
+
+/** The single builder of the public feed: the live promos plus the next enabled
+ * calendar event. Every writer of 'public:event' goes through here so the
+ * storefront and the inbox never see a feed missing the tease. */
+export async function buildPublicEventFeed(store: TenantStore, promos: PromoWindow[], nowMs = Date.now()): Promise<PublicEventPayload> {
+  return publicEventPayload(promos, nowMs, await enabledEventTemplates(store));
+}
+
+/** Refresh the storefront feed from a fresh probe (post-change). */
 export async function refreshPublicEventFeed(store: TenantStore, admin: AdminGraphql): Promise<void> {
   const probe = await fetchActiveOrderPromos(admin);
-  if (probe.ok) await store.putSearchCache('public:event', JSON.stringify(publicEventPayload(probe.promos)), 10 / 1440);
+  if (probe.ok) await store.putSearchCache('public:event', JSON.stringify(await buildPublicEventFeed(store, probe.promos)), 10 / 1440);
 }
 
 /**

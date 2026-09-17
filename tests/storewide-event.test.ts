@@ -3,6 +3,7 @@ import {
   validateEventRequest, findOverlappingPromo, buildEventCampaign, publicEventPayload, eventDayLabel
 } from '../src/storewide-event';
 import type { PromoWindow } from '../src/affiliate-discounts';
+import { templateByKey } from '../src/event-catalogue';
 
 const NOW = Date.parse('2026-07-06T12:00:00Z');
 
@@ -73,7 +74,7 @@ describe('buildEventCampaign', () => {
 describe('publicEventPayload', () => {
   it('advertises the running code event with a plain end label', () => {
     const p = publicEventPayload([promo({})], NOW);
-    expect(p).toEqual({ active: true, code: 'WELCOME10', pctOff: 10, endsAt: '2026-07-19T23:59:59Z', endsLabel: '19 July' });
+    expect(p).toEqual({ active: true, name: 'WELCOME10', code: 'WELCOME10', pctOff: 10, endsAt: '2026-07-19T23:59:59Z', endsLabel: '19 July' });
   });
   it('goes inactive when the event has ended - the modal tears itself down', () => {
     expect(publicEventPayload([promo({})], Date.parse('2026-07-20T00:00:01Z')).active).toBe(false);
@@ -97,6 +98,44 @@ describe('publicEventPayload', () => {
     const p = publicEventPayload([promo({})], NOW);
     expect(p.headline).toBeUndefined();
     expect(p.chips).toBeUndefined();
+  });
+});
+
+// Owner design 2026-09-17: the storefront's announcement bar and hero badge,
+// and the inbox agents, all read this feed. They need the event's NAME, and
+// when nothing runs they tease the NEXT enabled calendar event by name and
+// dates only (never its code or percentage, which are not announced ahead).
+describe('publicEventPayload: name and next event', () => {
+  const tpl = (k: string) => templateByKey(k)!;
+  it('a catalogue event carries its name; a custom code is its own name', () => {
+    const sale = publicEventPayload([promo({ title: 'SUMMERSALE', code: 'SUMMERSALE', percentage: 12, startsAt: '2026-07-01T00:00:00Z', endsAt: '2026-07-10T23:59:59Z' })], NOW);
+    expect(sale.name).toBe('Summer bank holiday');
+    expect(publicEventPayload([promo({})], NOW).name).toBe('WELCOME10');
+  });
+  it('when idle, next is the earliest enabled window that has not started, with UTC labels and no code or percentage', () => {
+    const p = publicEventPayload([], NOW, [tpl('black-friday'), tpl('summer-bank-holiday'), tpl('boxing-day-sale')]);
+    expect(p.active).toBe(false);
+    expect(p.next).toEqual({
+      key: 'summer-bank-holiday', name: 'Summer bank holiday',
+      startsAt: '2026-08-28T00:00:00.000Z', endsAt: '2026-08-31T23:59:59.000Z',
+      startsLabel: 'Friday 28 August', endsLabel: 'Monday 31 August'
+    });
+    expect(JSON.stringify(p.next)).not.toMatch(/SUMMERSALE|pct/);
+  });
+  it('the running event is never its own next: windows already started are skipped', () => {
+    const now = Date.parse('2026-08-29T12:00:00Z');
+    const p = publicEventPayload(
+      [promo({ title: 'SUMMERSALE', code: 'SUMMERSALE', percentage: 15, startsAt: '2026-08-28T00:00:00Z', endsAt: '2026-08-31T23:59:59Z' })],
+      now, [tpl('summer-bank-holiday'), tpl('black-friday')]
+    );
+    expect(p.active).toBe(true);
+    expect(p.name).toBe('Summer bank holiday');
+    expect(p.next?.key).toBe('black-friday');
+    expect(p.next?.startsAt).toBe('2026-11-27T00:00:00.000Z');
+  });
+  it('no enabled templates means no next', () => {
+    expect(publicEventPayload([], NOW).next).toBeUndefined();
+    expect(publicEventPayload([], NOW, []).next).toBeUndefined();
   });
 });
 

@@ -238,3 +238,32 @@ describe('shared scaffolding pitch rule (prove-first)', () => {
     expect(SHARED_SCAFFOLDING).toContain('collaborator request code');
   });
 });
+
+// Owner design 2026-09-17: "is there a running event?" must get a grounded
+// answer. Every draft carries the storewide event facts from the same feed the
+// storefront reads: the running event with its code and end date, or that
+// nothing runs (with the next event by name and dates only), or a hedge when
+// the feed is cold and Shopify is unreachable.
+describe('storewide event facts in the system prompt', () => {
+  it('injects the running event with its code and end date when the feed says so', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    await store.putSearchCache('public:event', JSON.stringify({
+      active: true, name: 'Black Friday to Cyber Monday', code: 'BLACKFRIDAY', pctOff: 15,
+      endsAt: '2026-11-30T23:59:59.000Z', endsLabel: '30 November'
+    }), 1);
+    const sink: { system?: string } = {};
+    const llm = capturingLlm({ bodyText: 'Hi.', confidence: 85, quotesPriceOrOrder: false }, sink);
+    await draftReply(llm, store, CFG, { agent: stubAgent(false), grounding: GROUNDING, subject: 'Sale?', conversation: 'Is there a sale on?' });
+    expect(sink.system).toContain('BLACKFRIDAY');
+    expect(sink.system).toContain('15%');
+    expect(sink.system).toContain('30 November');
+  });
+  it('hedges when the feed is cold and no Shopify client is available', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const sink: { system?: string } = {};
+    const llm = capturingLlm({ bodyText: 'Hi.', confidence: 85, quotesPriceOrOrder: false }, sink);
+    await draftReply(llm, store, CFG, { agent: stubAgent(false), grounding: GROUNDING, subject: 'Sale?', conversation: 'Is there a sale on?' });
+    expect(sink.system).toMatch(/not known to you/i);
+    expect(sink.system).toMatch(/do not invent a code/i);
+  });
+});

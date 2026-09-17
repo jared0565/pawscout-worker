@@ -7,6 +7,8 @@ import { SHARED_SCAFFOLDING, STORE_FACTS, COMMERCIAL_GUARDRAILS, OUTPUT_CONTRACT
 import type { CategoryAgent, Grounding } from './agents/types';
 import { refineUntilClean, asksDoYouDeliver, type DraftQualityContext } from './draft-quality';
 import { stripQuotedReply } from './quote';
+import { eventFacts } from './event-facts';
+import type { AdminGraphql } from '../shopify-admin';
 
 const DRAFT_MAX_WORDS = 110; // conciseness ceiling: a warm courtesy wrapper + a grounded answer
 
@@ -258,11 +260,12 @@ function validateDraft(v: unknown): DraftResult | null {
  * rewrites its previous reply to clear the quality reviewer's specific objections. */
 function buildDraftSystem(
   agent: CategoryAgent, grounding: Grounding,
-  opts: { hasLatest: boolean; guidance?: string; shippingFact?: string; revisionIssues?: string[]; recall?: { question: string; answer: string }[] }
+  opts: { hasLatest: boolean; guidance?: string; shippingFact?: string; eventFact?: string; revisionIssues?: string[]; recall?: { question: string; answer: string }[] }
 ): string {
   return (
     SHARED_SCAFFOLDING + ' ' + STORE_FACTS + ' ' +
     (opts.shippingFact ? opts.shippingFact + ' ' : '') +
+    (opts.eventFact ? opts.eventFact + ' ' : '') +
     agent.promptFragment(grounding) + ' ' +
     (grounding.facts ? `Grounded facts you MAY rely on for this reply: ${grounding.facts} ` : '') +
     (opts.recall?.length
@@ -287,10 +290,10 @@ function buildDraftSystem(
 async function reviseDraft(
   llm: LlmClient, store: TenantStore, chain: ReturnType<typeof resolveChain>,
   agent: CategoryAgent, grounding: Grounding, guidance: string | undefined,
-  latest: string, baseUser: string, previousBody: string, issues: string[], shippingFact: string,
+  latest: string, baseUser: string, previousBody: string, issues: string[], shippingFact: string, eventFact: string,
   recall: { question: string; answer: string }[] | undefined
 ): Promise<DraftResult | null> {
-  const system = buildDraftSystem(agent, grounding, { hasLatest: !!latest, guidance, shippingFact, revisionIssues: issues, recall });
+  const system = buildDraftSystem(agent, grounding, { hasLatest: !!latest, guidance, shippingFact, eventFact, revisionIssues: issues, recall });
   const user = JSON.stringify({ ...JSON.parse(baseUser), previousReply: previousBody.slice(0, 2000) });
   const result = await llm.jsonChain<DraftResult>({ chain, maxTokens: 700, system, user, validate: validateDraft });
   if (!result.ok) { console.warn(`inbox revise failed: ${result.error}`); return null; }
@@ -306,7 +309,7 @@ async function reviseDraft(
  * until it passes - the worker self-corrects in production, no dev tuning needed. */
 export async function draftReply(
   llm: LlmClient, store: TenantStore, cfg: TenantConfig,
-  input: { agent: CategoryAgent; grounding: Grounding; subject: string; conversation: string; latestMessage?: string; customerName?: string | null; customerEmail?: string | null; recall?: { question: string; answer: string }[]; priorOutbound?: ReadonlyArray<string | null> }
+  input: { agent: CategoryAgent; grounding: Grounding; subject: string; conversation: string; latestMessage?: string; customerName?: string | null; customerEmail?: string | null; recall?: { question: string; answer: string }[]; priorOutbound?: ReadonlyArray<string | null>; admin?: AdminGraphql | null }
 ): Promise<DraftResult | null> {
   if (!llm.available || !cfg.inbox.enabled) return null;
   const chain = resolveChain(cfg, 'text');
@@ -320,8 +323,13 @@ export async function draftReply(
   const shippingFact = cfg.fulfil?.gbFreeUkLive === true
     ? 'UK delivery is currently free (checkout charges GBP 0 to UK addresses); you MAY state that UK delivery is free. For all other destinations, shipping is calculated by location and shown at checkout before payment.'
     : '';
+  // Storewide event facts (owner design 2026-09-17): the running event with its
+  // code and end date, or that none runs (plus the next planned one by name and
+  // dates), or an honest hedge. Read from the same feed the storefront shows so
+  // "is there a sale on?" is answered from the live discount, never guessed.
+  const eventFact = await eventFacts(store, input.admin ?? null);
 
-  const system = buildDraftSystem(agent, grounding, { hasLatest: !!latest, guidance, shippingFact, recall: input.recall });
+  const system = buildDraftSystem(agent, grounding, { hasLatest: !!latest, guidance, shippingFact, eventFact, recall: input.recall });
   const baseUser = JSON.stringify({ subject: input.subject.slice(0, 200), category: agent.category, latestMessage: latest.slice(0, 2000), conversation: input.conversation.slice(0, 4000) });
 
   const result = await llm.jsonChain<DraftResult>({ chain, maxTokens: 700, system, user: baseUser, validate: validateDraft });
@@ -336,7 +344,7 @@ export async function draftReply(
   const qctx: DraftQualityContext = { maxWords: DRAFT_MAX_WORDS, askedDelivery: asksDoYouDeliver(latest), priorOutbound: input.priorOutbound };
   const refined = await refineUntilClean(
     result.value,
-    (prev, issues) => reviseDraft(llm, store, chain, agent, grounding, guidance, latest, baseUser, prev.bodyText, issues, shippingFact, input.recall),
+    (prev, issues) => reviseDraft(llm, store, chain, agent, grounding, guidance, latest, baseUser, prev.bodyText, issues, shippingFact, eventFact, input.recall),
     qctx, 2
   );
 
