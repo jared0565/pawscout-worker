@@ -648,6 +648,11 @@ describe('consolePage', () => {
     }
     expect(scripts).toContain('value="signup_followup"');
     expect(scripts).toContain('value="collaboration_decline"');
+    // 2026-09-17 (prove-first): the service decline is retired in favour of the
+    // prove-first answer, and the supplier thank-you joins the picker.
+    expect(scripts).not.toContain('value="service_decline"');
+    expect(scripts).toContain('value="service_prove_first"');
+    expect(scripts).toContain('value="supplier_ack"');
   });
 
   it('Inbox carries the template picker wired to /inbox/template', async () => {

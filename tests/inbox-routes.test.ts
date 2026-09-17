@@ -241,11 +241,16 @@ describe('applyDraftTemplate', () => {
   // 2026-09-04 (later): the friendly collaboration decline joins the declines,
   // for the applicant who was introduced to the programme twice and still
   // insists on a different arrangement (Paul's thread).
-  it('offers exactly the six live templates, the two programme ones first', () => {
-    expect(DRAFT_TEMPLATES.map((t) => t.key)).toEqual(['signup_invite', 'signup_followup', 'service_decline', 'operations_decline', 'collaboration_decline', 'keep_to_email']);
+  // 2026-09-17 (prove-first): the service decline becomes the prove-first
+  // answer (the code trial is the filter, not a refusal), and a goods
+  // supplier gets a thank-you for their listing rather than a decline.
+  it('offers exactly the seven live templates, the two programme ones first', () => {
+    expect(DRAFT_TEMPLATES.map((t) => t.key)).toEqual(['signup_invite', 'signup_followup', 'service_prove_first', 'operations_decline', 'collaboration_decline', 'supplier_ack', 'keep_to_email']);
     expect(DRAFT_TEMPLATES[0].label).toMatch(/^Affiliate programme: introduction/);
     expect(DRAFT_TEMPLATES[1].label).toMatch(/^Affiliate programme: follow-up/);
+    expect(DRAFT_TEMPLATES[2].label).toMatch(/^Service pitch: prove first/);
     expect(DRAFT_TEMPLATES[4].label).toMatch(/^Friendly decline/);
+    expect(DRAFT_TEMPLATES[5].label).toMatch(/^Supplier: thanks for the listing/);
   });
 
   it('the friendly collaboration decline renders with the apply link and stamps the applicant declined', async () => {
@@ -255,7 +260,7 @@ describe('applyDraftTemplate', () => {
     expect((r as { touch?: string }).touch).toBe('first');
     const body = (await s.getPendingDraft(tid))!.body_text;
     expect(body.startsWith('Hi Jane,')).toBe(true);
-    expect(body).toMatch(/do not take on other forms of collaboration/i);
+    expect(body).toMatch(/do not skip the trial for anyone/i);
     expect(body).toContain(AFFILIATE_APPLY_URL);
     expect(body).toMatch(/no reply is needed/i);
     expect((await s.getApplicantByThread(tid))?.stage).toBe('declined');
@@ -270,14 +275,39 @@ describe('applyDraftTemplate', () => {
     }
   });
 
-  it('decline templates stamp the applicant declined and reopen a closed thread', async () => {
+  // Owner rule 2026-09-17: the prove-first answer stages the vendor exactly as
+  // the signup invite does (they were pointed at the form), so their next reply
+  // rides the applicant ladder rather than a decision we never took.
+  it('the prove-first template stages the applicant passed_to_form and reopens a closed thread', async () => {
     const { s, tid } = await seedWithConfig();
     await s.setThreadStatus(tid, 'closed');
-    const r = await applyDraftTemplate(env.DB, SHOP, tid, 'service_decline');
+    const r = await applyDraftTemplate(env.DB, SHOP, tid, 'service_prove_first');
     expect(r.ok).toBe(true);
-    expect((r as { draft?: { body_text?: string } }).draft?.body_text).toContain('in-house');
-    expect((await s.getApplicantByThread(tid))?.stage).toBe('declined');
+    const body = (r as { draft?: { body_text?: string } }).draft?.body_text ?? '';
+    expect(body).toMatch(/who can actually deliver/i);
+    expect(body).toContain(AFFILIATE_APPLY_URL);
+    expect(body).not.toMatch(/in-house/);
+    expect((await s.getApplicantByThread(tid))?.stage).toBe('passed_to_form');
     expect((await s.getThreadWithMessages(tid))?.thread.status).toBe('needs_reply');
+  });
+
+  it('the supplier acknowledgement thanks them for the listing, never declines, and leaves the funnel untouched', async () => {
+    const { s, tid } = await seedWithConfig();
+    const r = await applyDraftTemplate(env.DB, SHOP, tid, 'supplier_ack');
+    expect(r.ok).toBe(true);
+    const body = (r as { draft?: { body_text?: string } }).draft?.body_text ?? '';
+    expect(body).toContain('Hi Jane,');
+    expect(body).toMatch(/thank you for sending/i);
+    expect(body).toMatch(/for reference/i);
+    expect(body).not.toMatch(/declin|not a fit|in-house|affiliate|commission/i);
+    expect(await s.getApplicantByThread(tid)).toBeNull(); // stage untouched
+  });
+
+  it('refuses the retired service decline key', async () => {
+    const { tid } = await seedWithConfig();
+    const r = await applyDraftTemplate(env.DB, SHOP, tid, 'service_decline');
+    expect(r.ok).toBe(false);
+    expect((r as { error?: string }).error).toBe('Unknown template');
   });
 
   it('the operations decline stays clear of the actual question asked and stamps declined', async () => {

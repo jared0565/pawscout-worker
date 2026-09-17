@@ -4,8 +4,9 @@
  *  - commission-for-volume pitches get the SAME funnel plus the earned-tier
  *    terms (tiers earned through the attribution ledger, never negotiated
  *    against promises);
- *  - pure service pitches (site-speed/SEO/listing vendors) get a dedicated,
- *    polite, final decline - never the affiliate qualifying questions;
+ *  - pure service pitches (site-speed/SEO/listing vendors) get the dedicated
+ *    prove-first answer (owner rule 2026-09-17: the code trial is the filter,
+ *    replacing the 2026-09-04 hard decline) - never the qualifying questions;
  *  - any creator signal stands the service detector down (when in doubt, the
  *    funnel; never a wrong decline - the standing grounded-reply rule).
  */
@@ -14,7 +15,7 @@ import { env, applyD1Migrations } from 'cloudflare:test';
 import { TenantStore } from '../src/tenant-store';
 import {
   detectVolumePitch, detectServicePitch, detectOffPlatformRequest, buildQualifyingEmail, buildSignupInvite,
-  maybePartnershipDraft, QUALIFYING_MARKER, AFFILIATE_APPLY_URL, PARTNERSHIP_STANCE, buildAcceptedPartnerAck,
+  maybePartnershipDraft, QUALIFYING_MARKER, AFFILIATE_APPLY_URL, PARTNERSHIP_STANCE, buildAcceptedPartnerAck, buildServiceProveFirst,
   STANDARD_COMMISSION_PCT, TIER_REVIEW_ORDERS, TIER_MAX_PCT
 } from '../src/inbox/partnership';
 import { otherAgent } from '../src/inbox/agents/other';
@@ -71,6 +72,20 @@ const OLATUNJI_PITCH = 'How are you doing? I have a strategy that can position y
 const AMJAD_PITCH = 'I would love the opportunity to demonstrate what I can bring to your store. If I can consistently generate 5-7 orders per day using my GSE marketing method, would you be willing to work with me long-term?';
 const SALMAN_PITCH = 'I am reaching out as a freelancer because I see the vision behind what you are building. With my 3+ years experience in the e-commerce ecosystem, I know I can change the current trajectory of your brands revenue structure in under 3 months of consistent marketing and optimization. Let me know your availability for a meeting.';
 const SAMLARRY_PITCH = 'Your store caught my attention because it can generate at least 25 sales per week. If I am able to consistently generate 15 sales per week for your store, would you be open to paying me a commission?';
+
+// Owner rule 2026-09-17 (prove-first): the stance every drafting agent shares
+// answers a service offer with the code trial instead of declining it, and
+// thanks a goods supplier for the listing instead of declining them.
+describe('partnership stance: prove-first', () => {
+  it('answers a service offer with the code trial, never a decline, and thanks a goods supplier', () => {
+    expect(PARTNERSHIP_STANCE).not.toMatch(/do not mention the affiliate programme/i);
+    expect(PARTNERSHIP_STANCE).not.toMatch(/is declined/i);
+    expect(PARTNERSHIP_STANCE).toContain('starts with their own affiliate discount code');
+    expect(PARTNERSHIP_STANCE).toContain('GOODS SUPPLIERS');
+    expect(PARTNERSHIP_STANCE).toContain('noted it for reference');
+    expect(PARTNERSHIP_STANCE).toContain('never granted');
+  });
+});
 
 describe('detectVolumePitch', () => {
   it('fires on commission negotiated against promised volume', () => {
@@ -161,17 +176,24 @@ describe('maybePartnershipDraft pitch routing (live default funnel_voucher)', ()
     expect(draft!.body_text).not.toContain('tracked orders');
   });
 
-  it('service pitch first touch -> dedicated decline (HITL), applicant declined, no qualifying questions', async () => {
+  // Owner rule 2026-09-17: the service pitch is answered with the prove-first
+  // filter (everyone starts with a tracked code), and the vendor is staged like
+  // any invited applicant so their next reply rides the applicant ladder
+  // (shorter reminder, then the friendly final decline) instead of falling to
+  // the generic drafter as a declined thread.
+  it('service pitch first touch -> prove-first answer (HITL), applicant passed_to_form, no qualifying questions', async () => {
     const { s, tid } = await seedFirstTouch('svc.myshopify.com', 'Our agency offers product listing services and can improve your site loading speed.');
     const got = (await s.getThreadWithMessages(tid))!;
     const r = await maybePartnershipDraft({ ...env } as any, s, CFG, got.thread, got, noFetch);
     expect(r).not.toBeNull();
-    expect(r!.send).toBe(false); // new template: HITL until owner validates it live
+    expect(r!.send).toBe(false); // HITL
     const draft = await s.getPendingDraft(tid);
-    expect(draft!.body_text).toMatch(/in-house/i);
+    expect(draft!.body_text).toMatch(/who can actually deliver/i);
+    expect(draft!.body_text).toContain(AFFILIATE_APPLY_URL);
+    expect(draft!.body_text).not.toMatch(/in-house|settled policy/i);
     expect(draft!.body_text).not.toMatch(/where would you promote/i);
-    expect(draft!.body_text).not.toMatch(/not a fit for our affiliate programme/i); // the service decline is its own wording
-    expect((await s.getApplicantByThread(tid))!.stage).toBe('declined');
+    expect(draft!.body_text).not.toMatch(/not a fit for our affiliate programme/i);
+    expect((await s.getApplicantByThread(tid))!.stage).toBe('passed_to_form');
   });
 
   it('a service vendor replying after the decline falls through to the generic drafter', async () => {
@@ -189,6 +211,49 @@ describe('maybePartnershipDraft pitch routing (live default funnel_voucher)', ()
     const draft = await s.getPendingDraft(tid);
     expect(draft!.body_text).toMatch(/where would you promote/i);
     expect((await s.getApplicantByThread(tid))!.stage).toBe('screen_sent');
+  });
+});
+
+// Owner rule 2026-09-17: after the prove-first answer the vendor is a
+// passed_to_form applicant. A vendor who accepts the filter and asks how to
+// proceed has NOT touched the form (partner pool state 'none'), so the holding
+// ack ("we are reviewing the fit") would be false for them: the right reply is
+// the shorter form reminder. Someone already queued for a code (form
+// submitted, owner yet to issue) still gets the holding ack, which is accurate.
+describe('prove-first follow-ups', () => {
+  const SVC_PITCH = 'Our agency offers product listing services and can improve your site loading speed.';
+  async function seedAfterProveFirst(shop: string, reply: string) {
+    const { s, tid } = await seedFirstTouch(shop, SVC_PITCH);
+    const got = (await s.getThreadWithMessages(tid))!;
+    await maybePartnershipDraft({ ...env } as any, s, CFG, got.thread, got, noFetch);
+    expect((await s.getApplicantByThread(tid))!.stage).toBe('passed_to_form');
+    await s.insertOutboundMessage({ threadId: tid, messageId: `<pf1@${shop}>`, from: 'sales@activepaw.co.uk', to: 'p@x.com', subject: 'Re: Partnership', bodyText: buildServiceProveFirst('Sam'), bodyHtml: '<p>x</p>', sentAt: '2026-07-05T11:00:00Z' });
+    await s.insertInboundMessageIfNew({ threadId: tid, messageId: `<pf2@${shop}>`, inReplyTo: `<pf1@${shop}>`, references: [], from: 'p@x.com', to: 'sales@activepaw.co.uk', subject: 'Re: Partnership', bodyText: reply, bodyHtml: null, headersJson: '{}', receivedAt: '2026-07-06T09:00:00Z' });
+    return { s, tid };
+  }
+
+  it('a vendor who accepts the filter and asks how to proceed gets the shorter form reminder, not the holding ack', async () => {
+    const { s, tid } = await seedAfterProveFirst('pf1.myshopify.com', 'Sounds fair. How do I get my discount code?');
+    const got = (await s.getThreadWithMessages(tid))!;
+    const r = await maybePartnershipDraft({ ...env } as any, s, CFG, got.thread, got, noFetch);
+    expect(r).not.toBeNull();
+    expect(r!.send).toBe(false);
+    const draft = await s.getPendingDraft(tid);
+    expect(draft!.body_text).toContain(AFFILIATE_APPLY_URL);
+    expect(draft!.body_text).toMatch(/next step is the application form/i);
+    expect(draft!.body_text).not.toMatch(/reviewing the fit|taking a look/i);
+    expect((await s.getApplicantByThread(tid))!.stage).toBe('passed_to_form');
+  });
+
+  it('a vendor who is already queued for a code still gets the holding ack', async () => {
+    const { s, tid } = await seedAfterProveFirst('pf2.myshopify.com', 'I have applied through the page. Any update?');
+    expect(await s.queueAffiliatePartner({ contactEmail: 'p@x.com', name: 'Sam' })).toBe('queued');
+    const got = (await s.getThreadWithMessages(tid))!;
+    const r = await maybePartnershipDraft({ ...env } as any, s, CFG, got.thread, got, noFetch);
+    expect(r).not.toBeNull();
+    const draft = await s.getPendingDraft(tid);
+    expect(draft!.body_text).toMatch(/reviewing the fit|taking a look/i);
+    expect(draft!.body_text).not.toContain(AFFILIATE_APPLY_URL);
   });
 });
 
@@ -219,16 +284,17 @@ describe('pitch on-ramp (contact@ + category other, after a bait opener)', () =>
     expect((await s.getApplicantByThread(tid))!.stage).toBe('screen_sent');
   });
 
-  it('a service pitch in the follow-up gets the dedicated decline', async () => {
+  it('a service pitch in the follow-up gets the prove-first answer and is staged passed_to_form', async () => {
     const { s, tid } = await seedBaitOpener('sal.myshopify.com', 'Can I speak with the owner of this brand?', SALMAN_PITCH);
     const got = (await s.getThreadWithMessages(tid))!;
     const r = await maybePartnershipDraft({ ...env } as any, s, CFG, got.thread, got, noFetch);
     expect(r).not.toBeNull();
     expect(r!.send).toBe(false); // HITL
     const draft = await s.getPendingDraft(tid);
-    expect(draft!.body_text).toMatch(/in-house/i);
+    expect(draft!.body_text).toMatch(/who can actually deliver/i);
+    expect(draft!.body_text).not.toMatch(/in-house/i);
     expect(draft!.body_text).not.toMatch(/where would you promote/i);
-    expect((await s.getApplicantByThread(tid))!.stage).toBe('declined');
+    expect((await s.getApplicantByThread(tid))!.stage).toBe('passed_to_form');
   });
 
   it('a bare "Okay" after our decline does NOT re-open the thread (latest-text grounding)', async () => {
@@ -343,11 +409,12 @@ describe('Yusuf-shape pitch (risk-free framing, no volume promise, cold at conta
     expect(detectOffPlatformRequest('hit me up on Telegram')).toBe(true);
   });
 
-  it('detectServicePitch STAYS false on it - the wrong lane would hard-decline', () => {
+  it('detectServicePitch STAYS false on it - the wrong lane would skip the answers this message needs', () => {
     // Its `service` clause already matches "grow your store"; only `offer` holds
     // it back. If someone loosens `offer`, this pitch starts getting
-    // SERVICE_DECLINE_BODY ("we keep development and marketing in-house"), which
-    // is a hard decline in the wrong lane. This assertion is the tripwire.
+    // SERVICE_PROVE_FIRST_BODY, which never answers the rate counter-offer or
+    // the channel-switch ask that the signup invite handles inline. This
+    // assertion is the tripwire.
     expect(detectServicePitch(YUSUF_PITCH)).toBe(false);
   });
 

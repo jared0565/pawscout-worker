@@ -1,9 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import {
   buildQualifyingEmail, buildPartnershipDecline, buildFormInvite, buildVoucherInvite, buildHoldingAck,
-  buildServiceDecline, buildSignupInvite, buildOperationsDecline, buildKeepToEmail, buildSecondTouch, buildPointerBack,
+  buildServiceProveFirst, buildSupplierAck, buildSignupInvite, buildOperationsDecline, buildKeepToEmail, buildSecondTouch, buildPointerBack,
   buildCollaborationDecline, detectAlternativeCollaboration, countProgrammeIntroductions,
-  TOUCH_TEMPLATES, QUALIFYING_MARKER, AFFILIATE_APPLY_URL, PARTNERSHIP_STANCE, STANDARD_COMMISSION_PCT
+  TOUCH_TEMPLATES, QUALIFYING_MARKER, AFFILIATE_APPLY_URL, PARTNERSHIP_STANCE, STANDARD_COMMISSION_PCT, TIER_REVIEW_ORDERS, TIER_MAX_PCT
 } from '../src/inbox/partnership';
 import { countWords } from '../src/inbox/draft-quality';
 
@@ -63,7 +63,7 @@ describe('an affiliate mention always carries the apply link', () => {
   // Driven off the URL constant, so a copy rewrite that drops the link fails
   // here rather than shipping. Keep this list in step with any new body.
   const SURFACES: [string, string][] = [
-    ['service decline', buildServiceDecline('Jo')],
+    ['service prove-first', buildServiceProveFirst('Jo')],
     ['signup invite', buildSignupInvite('Jo')],
     ['form invite', buildFormInvite('Jo')],
     ['agent stance', PARTNERSHIP_STANCE],
@@ -84,27 +84,44 @@ describe('an affiliate mention always carries the apply link', () => {
     }
   });
 
-  // The service decline is the one place the programme is raised inside a
-  // REFUSAL, so it has to stay a refusal: the link is an alternative door, not
-  // a softening of the in-house policy.
-  it('the service decline still declines the service while linking the programme', () => {
-    const body = buildServiceDecline('Jo');
-    expect(body).toMatch(/in-house/);
-    expect(body).toMatch(/do not grant store, admin, or collaborator access/);
+  // Owner rule 2026-09-17 ("we are receiving too many offers on their services
+  // and we are just declining them blankly"): a service pitch is no longer
+  // refused. The reply says we receive a lot of offers, that promised results
+  // cannot be checked in advance, and that everyone starts with their own
+  // affiliate discount code, so tracked orders decide who can actually deliver.
+  // It filters rather than declines, states the rate, and never claims the old
+  // in-house policy (which read as a blank no).
+  it('the service prove-first answer explains the filter, links the code trial and states the rate, without declining', () => {
+    const body = buildServiceProveFirst('Jo');
+    expect(body.startsWith('Hi Jo,')).toBe(true);
+    expect(body).toMatch(/receive a lot of offers/i);
+    expect(body).toMatch(/no way to check in advance/i);
+    expect(body).toMatch(/who can actually deliver/i);
+    expect(body).toContain(AFFILIATE_APPLY_URL);
+    expect(body).toContain(`${STANDARD_COMMISSION_PCT}% of the goods value`);
+    expect(body).toContain(`${TIER_REVIEW_ORDERS} tracked orders`);
+    expect(body).toContain(`up to ${TIER_MAX_PCT}%`);
+    expect(body).toMatch(/further conversation/i);
+    expect(body).toMatch(/no reply is needed/i);
+    expect(body).not.toMatch(/in-house|settled policy|not something we take up|not a fit/i);
+    expect(body).not.toMatch(/[\u2013\u2014]/);
+    expect(body).toContain('Best Regards,\nActive Paw Partnerships');
   });
 
-  // Owner rule 2026-09-04: vendors who keep offering their services are told
-  // about the ONE collaboration that exists, plainly and with its terms, so the
-  // answer is complete and there is nothing left to follow up on. The old body
-  // offered the programme only conditionally ("If you run a channel...") and
-  // gave no rate, which read as a door left ajar.
-  it('the service decline names the affiliate programme as the only collaboration on offer, with its rate', () => {
-    const body = buildServiceDecline('Jo');
-    expect(body).toMatch(/only collaboration we (?:currently )?run/i);
-    expect(body).toContain(AFFILIATE_APPLY_URL);
-    expect(body).toContain(`${STANDARD_COMMISSION_PCT}%`);
-    expect(body).not.toMatch(/If you run a channel or audience/);
-    expect(body).toMatch(/no reply is needed/i);
+  // Owner rule 2026-09-17: a goods supplier (packaging, a "backup supplier"
+  // with a catalogue) is neither declined nor sent to the code trial, which
+  // cannot measure them. They are thanked for the listing and nothing is
+  // promised.
+  it('the supplier acknowledgement thanks them for the product information and commits to nothing', () => {
+    const body = buildSupplierAck('Celia');
+    expect(body.startsWith('Hi Celia,')).toBe(true);
+    expect(body).toMatch(/thank you for sending/i);
+    expect(body).toMatch(/product (?:information|listing|catalogue)/i);
+    expect(body).toMatch(/for reference/i);
+    expect(body).not.toMatch(/declin|not a fit|not something we|in-house|affiliate|commission/i);
+    expect(body).not.toMatch(/we will (?:place|be placing) an order|order from you|next steps/i);
+    expect(body).not.toMatch(/[\u2013\u2014]/);
+    expect(body).toContain('Best Regards,\nActive Paw');
   });
 });
 
@@ -115,9 +132,9 @@ describe('second-touch and pointer variants', () => {
   const firstOf: Record<string, string> = {
     signup_invite: buildSignupInvite('Jo'), qualifying: buildQualifyingEmail('Jo', 'voucher'),
     voucher_invite: buildVoucherInvite('Jo'), form_invite: buildFormInvite('Jo'),
-    partnership_decline: buildPartnershipDecline('Jo'), service_decline: buildServiceDecline('Jo'),
+    partnership_decline: buildPartnershipDecline('Jo'), service_prove_first: buildServiceProveFirst('Jo'),
     operations_decline: buildOperationsDecline('Jo'), keep_to_email: buildKeepToEmail('Jo'), holding_ack: buildHoldingAck('Jo'),
-    collaboration_decline: buildCollaborationDecline('Jo'),
+    collaboration_decline: buildCollaborationDecline('Jo'), supplier_ack: buildSupplierAck('Jo'),
   };
   it('every template has a second touch shorter than the first, and a pointer shorter still', () => {
     expect(TOUCH_TEMPLATES.length).toBe(Object.keys(firstOf).length);
@@ -135,10 +152,17 @@ describe('second-touch and pointer variants', () => {
     }
   });
   it('link-bearing templates keep the apply link in both shorter forms', () => {
-    for (const key of ['signup_invite', 'service_decline', 'form_invite', 'collaboration_decline'] as const) {
+    for (const key of ['signup_invite', 'service_prove_first', 'form_invite', 'collaboration_decline'] as const) {
       expect(buildSecondTouch(key, 'Jo'), key).toContain(AFFILIATE_APPLY_URL);
       expect(buildPointerBack(key, 'Jo'), key).toContain(AFFILIATE_APPLY_URL);
     }
+  });
+  // 2026-09-17: the shorter prove-first touch tells the same filter story.
+  it('the shorter prove-first touch keeps the filter story and the link, never the old refusal', () => {
+    const second = buildSecondTouch('service_prove_first', 'Jo');
+    expect(second).toMatch(/tracked/i);
+    expect(second).toMatch(/deliver/i);
+    expect(second).not.toMatch(/outside services|in-house/i);
   });
   it('the second-touch qualifying note does not carry the screening marker (it does not re-ask the questions)', () => {
     expect(buildSecondTouch('qualifying', 'Jo')).not.toContain(QUALIFYING_MARKER);
@@ -156,16 +180,19 @@ describe('second-touch and pointer variants', () => {
 // collaboration, then our next reply is just to decline their offer but still
 // in a friendly manner." The decline is final on the other arrangement, keeps
 // the programme door open with its link, and asks for nothing back.
+// 2026-09-17: it is final on SKIPPING THE TRIAL, in the prove-first framing:
+// delivered results through a tracked code are the only basis we decide on.
 describe('friendly collaboration decline (programme introduced twice, they insist on another arrangement)', () => {
-  it('declines other arrangements plainly, keeps the programme door open with the link, needs no reply', () => {
+  it('declines skipping the trial plainly, keeps the code trial open with the link, needs no reply', () => {
     const body = buildCollaborationDecline('Paul');
     expect(body.startsWith('Hi Paul,')).toBe(true);
     expect(body).toMatch(/appreciate/i);
-    expect(body).toMatch(/do not take on other forms of collaboration/i);
+    expect(body).toMatch(/do not skip the trial for anyone/i);
+    expect(body).toMatch(/tracked code/i);
     expect(body).toMatch(/hands-on, consulting or results-based/i);
     expect(body).toMatch(/settled position/i);
     expect(body).toContain(AFFILIATE_APPLY_URL);
-    expect(body).toMatch(/door stays open/i);
+    expect(body).toMatch(/stays open to you/i);
     expect(body).toMatch(/no reply is needed/i);
     expect(body).toMatch(/every success/i);
     expect(body).toContain('Best Regards,\nActive Paw Partnerships');

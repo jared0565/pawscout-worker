@@ -141,10 +141,13 @@ describe('partnership first-touch, signup_page mode (owner policy 2026-07-18: se
   // with. The link is the LOWER-touch option, and the form's own Turnstile and
   // screener are what actually keep a non-creator out.
   //
-  // What still must hold is that this is a DECLINE, so the assertions below now
-  // pin the refusal itself plus the conditional framing of the offer, which is
-  // the thing that keeps it from reading as an invitation to a vendor.
-  it('a pure service pitch still gets the vendor decline, with the programme named as the only collaboration on offer', async () => {
+  // 2026-09-17, REVERSED AGAIN by owner rule: it is no longer a decline at all.
+  // "We are receiving too many offers on their services and we are just
+  // declining them blankly": the vendor now gets the prove-first answer (the
+  // code trial is the filter, tracked orders decide) and is staged like any
+  // invited applicant. The assertions pin the filter story, the link and the
+  // absence of the old in-house refusal.
+  it('a pure service pitch gets the prove-first answer with the link, staged passed_to_form', async () => {
     const s = new TenantStore(env.DB, 'sv.myshopify.com');
     await s.upsertContact({ email: 'seo@x.com', name: 'Sam', phone: null });
     const tid = await s.createThread({ contactEmail: 'seo@x.com', subject: 'Site speed', subjectNorm: 'site speed', receivedAt: '2026-06-22T10:00:00Z', initialStatus: 'needs_reply' });
@@ -154,16 +157,15 @@ describe('partnership first-touch, signup_page mode (owner policy 2026-07-18: se
     const r = await maybePartnershipDraft({ ...env } as any, s, SIGNUP_CFG, got.thread, got, noFetch);
     expect(r).not.toBeNull();
     const draft = await s.getPendingDraft(tid);
-    // Still a refusal of the SERVICE they actually pitched...
-    expect(draft!.body_text).toMatch(/in-house/);
-    expect(draft!.body_text).toMatch(/settled policy rather than a budget or timing question/);
+    // The filter, not a refusal of the service they pitched...
+    expect(draft!.body_text).toMatch(/receive a lot of offers/i);
+    expect(draft!.body_text).toMatch(/who can actually deliver/i);
+    expect(draft!.body_text).not.toMatch(/in-house|settled policy/);
     expect(draft!.body_text).not.toMatch(/great (?:potential )?fit|look forward to seeing your application/i);
-    // ...with the programme named as the ONLY collaboration on offer (owner rule
-    // 2026-09-04), actionable rather than a promise to send details later.
-    expect(draft!.body_text).toMatch(/only collaboration we (?:currently )?run/i);
+    // ...actionable rather than a promise to send details later.
     expect(draft!.body_text).toContain(AFFILIATE_APPLY_URL);
     expect(draft!.body_text).not.toMatch(/we will send you the details/i);
-    expect((await s.getApplicantByThread(tid))!.stage).toBe('declined');
+    expect((await s.getApplicantByThread(tid))!.stage).toBe('passed_to_form');
   });
 });
 
@@ -307,7 +309,7 @@ describe('an invited applicant who insists on another form of collaboration', ()
     expect(r).not.toBeNull();
     expect(r!.send).toBe(false);
     const draft = await s.getPendingDraft(tid);
-    expect(draft!.body_text).toMatch(/do not take on other forms of collaboration/i);
+    expect(draft!.body_text).toMatch(/do not skip the trial for anyone/i);
     expect(draft!.body_text).toContain(AFFILIATE_APPLY_URL);
     expect(draft!.body_text).not.toMatch(/reviewing the fit|taking a look/i);
     expect(JSON.parse(draft!.hold_reasons ?? '[]')).toEqual([]);
@@ -334,7 +336,7 @@ describe('an invited applicant who insists on another form of collaboration', ()
     expect(r).not.toBeNull();
     const draft = await s.getPendingDraft(tid);
     expect(draft!.body_text).toMatch(/reviewing|taking a look/i);
-    expect(draft!.body_text).not.toMatch(/do not take on other forms of collaboration/i);
+    expect(draft!.body_text).not.toMatch(/do not skip the trial for anyone/i);
     expect((await s.getApplicantByThread(tid))!.stage).toBe('passed_to_form');
   });
 });

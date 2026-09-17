@@ -28,7 +28,19 @@ describe('otherAgent', () => {
     expect(p).toContain('never a pre-emptive decline');
     // the worked ambiguous example from the live case
     expect(p).toContain('Is your store ready for order?');
-    // the decline branch survives for pitches made IN the message text
-    expect(p).toContain('not something we are looking into right now');
+  });
+
+  // Owner rule 2026-09-17 (prove-first): "we are receiving too many offers on
+  // their services and we are just declining them blankly". A service offer
+  // made IN the message text is no longer declined: it is answered with the
+  // filter (everyone starts with their own affiliate discount code, tracked
+  // orders decide). A goods supplier is thanked for the listing, not declined.
+  it('answers a service offer with the prove-first filter and thanks a goods supplier, never a blank decline', () => {
+    const p = otherAgent.promptFragment({} as any);
+    expect(p).not.toContain('Decline brief, WARM and gracious');
+    expect(p).not.toContain('You decline ONLY when');
+    expect(p).toContain('SERVICE OFFERS');
+    expect(p).toContain('GOODS SUPPLIERS');
+    expect(p).toContain('starts with their own affiliate discount code');
   });
 });

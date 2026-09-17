@@ -4,6 +4,7 @@ import { env, applyD1Migrations } from 'cloudflare:test';
 import { TenantStore } from '../../src/tenant-store';
 import { LlmClient } from '../../src/llm';
 import { draftReply } from '../../src/inbox/draft';
+import { SHARED_SCAFFOLDING } from '../../src/inbox/agents/scaffolding';
 import { DEFAULT_INBOX } from '../../src/inbox/types';
 import type { CategoryAgent, Grounding } from '../../src/inbox/agents/types';
 import { DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, type TenantConfig } from '../../src/types';
@@ -213,5 +214,20 @@ describe('draftReply scaffolding invariants', () => {
       agent: stubAgent(false), grounding: GROUNDING, subject: 'Shipping', conversation: 'Do you deliver worldwide?'
     });
     expect(sink.system).not.toContain('Previously approved answers');
+  });
+});
+
+// Owner rule 2026-09-17 (prove-first). The shared scaffolding beats every
+// agent's own prompt, so as long as it told every agent to decline a marketing
+// pitch with "not something we are looking into right now", 29 vendors in 30
+// days got exactly that blank decline. It now points a pitch at the prove-first
+// rule, and a goods supplier at a thank-you with no commitment.
+describe('shared scaffolding pitch rule (prove-first)', () => {
+  it('no longer tells every agent to decline a marketing pitch blankly', () => {
+    expect(SHARED_SCAFFOLDING).not.toContain('not something we are looking into right now');
+    expect(SHARED_SCAFFOLDING).toContain('prove-first');
+    expect(SHARED_SCAFFOLDING).toContain('SUPPLY US goods');
+    // the WhatsApp rule survives on its own
+    expect(SHARED_SCAFFOLDING).toContain('move to WhatsApp');
   });
 });

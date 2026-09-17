@@ -4,7 +4,7 @@ import { DEFAULT_INBOX, type InboxConfig, type ThreadStatus } from './types';
 import type { Env } from '../types';
 import { sendReply } from './send';
 import { composeDraftForThread } from './sweep';
-import { maybePartnershipDraft, buildServiceDecline, buildOperationsDecline, buildCollaborationDecline, buildKeepToEmail, buildSignupInvite, detectVolumePitch, detectOffPlatformRequest, buildSecondTouch, buildPointerBack, type TouchTemplate } from './partnership';
+import { maybePartnershipDraft, buildServiceProveFirst, buildSupplierAck, buildOperationsDecline, buildCollaborationDecline, buildKeepToEmail, buildSignupInvite, detectVolumePitch, detectOffPlatformRequest, buildSecondTouch, buildPointerBack, type TouchTemplate } from './partnership';
 import { chooseTouch, outboundBodies, type TouchKind } from './repeat';
 import { renderReplyHtml, openInboundText } from './draft';
 import { stripQuotedReply } from './quote';
@@ -207,13 +207,21 @@ export const DRAFT_TEMPLATES: { key: string; label: string }[] = [
   // those bodies for the legacy funnel modes; only the picker lost them.
   { key: 'signup_invite', label: 'Affiliate programme: introduction (apply link)' },
   { key: 'signup_followup', label: 'Affiliate programme: follow-up (shorter, apply link)' },
-  { key: 'service_decline', label: 'Service pitch decline' },
+  // 2026-09-17 (owner rule, prove-first): the service pitch decline is retired.
+  // A growth/marketing/SEO vendor is told that with the number of offers we
+  // receive, a tracked code trial is the only way we tell who can deliver, with
+  // the link and the rate; it stages them like the signup invite. A goods
+  // supplier (catalogue, packaging, "backup supplier") is thanked for the
+  // listing and nothing more: neither declined nor sent to a trial that cannot
+  // measure them.
+  { key: 'service_prove_first', label: 'Service pitch: prove first (code trial, apply link)' },
   { key: 'operations_decline', label: 'Internal operations decline' },
   // 2026-09-04 (later, Paul's thread): for the applicant who was introduced to
   // the programme twice and still insists on a different arrangement. The
   // funnel drafts it by itself in that situation; the picker entry is for the
   // owner to apply it by hand on any other thread.
   { key: 'collaboration_decline', label: 'Friendly decline (programme already introduced)' },
+  { key: 'supplier_ack', label: 'Supplier: thanks for the listing (no commitment)' },
   { key: 'keep_to_email', label: 'Keep to email (decline WhatsApp)' },
 ];
 
@@ -267,9 +275,10 @@ export async function applyDraftTemplate(db: D1Database, shop: string, threadId:
   let body: string;
   if (key === 'signup_invite') body = buildSignupInvite(name, { volumePitch, offPlatform });
   else if (followup) body = buildSecondTouch('signup_invite', name);
-  else if (key === 'service_decline') body = buildServiceDecline(name);
+  else if (key === 'service_prove_first') body = buildServiceProveFirst(name);
   else if (key === 'operations_decline') body = buildOperationsDecline(name);
   else if (key === 'collaboration_decline') body = buildCollaborationDecline(name);
+  else if (key === 'supplier_ack') body = buildSupplierAck(name);
   else body = buildKeepToEmail(name);
 
   // Owner rule 2026-09-04: never the same message twice on a thread. A template
@@ -291,8 +300,11 @@ export async function applyDraftTemplate(db: D1Database, shop: string, threadId:
   // signup_page first-touch branch does - the FORM now does the screening. Left
   // at a stale 'declined' the next inbound would route off a decision we just
   // reversed.
-  const stage = (key === 'signup_invite' || key === 'signup_followup') ? 'passed_to_form'
-    : (key === 'service_decline' || key === 'operations_decline' || key === 'collaboration_decline') ? 'declined'
+  // The prove-first answer stages passed_to_form too (2026-09-17): the vendor
+  // was pointed at the form, so their next reply rides the applicant ladder.
+  // The supplier thank-you, like keep-to-email, touches no stage at all.
+  const stage = (key === 'signup_invite' || key === 'signup_followup' || key === 'service_prove_first') ? 'passed_to_form'
+    : (key === 'operations_decline' || key === 'collaboration_decline') ? 'declined'
     : null;
   if (stage) {
     if (!applicant) await store.upsertApplicant({ threadId, contactEmail: got.thread.contact_email, stage });

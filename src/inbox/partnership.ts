@@ -165,9 +165,9 @@ export function resolveFromAddress(opts: { partnershipLane: boolean; toAddr: str
  * DELIBERATELY NOT FIXED HERE: `detectServicePitch` also misses this text (its
  * `service` clause matches "grow your store" but `offer` does not match "can we
  * agree"). Loosening `offer` would make the pair fire, and the service check runs
- * FIRST - the sender would get SERVICE_DECLINE_BODY ("we keep development,
- * listings and marketing in-house"), a hard decline in the wrong lane. This file's
- * standing rule holds: when in doubt, the funnel; never a wrong decline.
+ * FIRST - the sender would get SERVICE_PROVE_FIRST_BODY, which never answers the
+ * rate counter-offer or the channel-switch ask the signup invite handles inline:
+ * the wrong lane. This file's standing rule holds: when in doubt, the funnel.
  *
  * Pure and deterministic; grounded in the message TEXT only (standing rule). */
 export function detectVolumePitch(text: string): boolean {
@@ -379,26 +379,47 @@ Active Paw Partnerships`;
 const EARNED_TIERS_PARAGRAPH =
 `One thing worth being clear on, since you raised commission terms: every partnership starts at our standard rate - ${STANDARD_COMMISSION_PCT}% of the goods value of each paid order tracked to you, that is the price of the items before your code's discount and not counting shipping. We do not negotiate rates against promised volume, but rates are earned on delivered volume: after your first ${TIER_REVIEW_ORDERS} tracked orders in a 30-day window we review your tier, and consistent performers earn up to ${TIER_MAX_PCT}%. Your tracked results do the negotiating for you.`;
 
-// Vendors (site-speed/SEO/listing/marketing services) are not partnership
-// candidates. Owner rule 2026-09-04: someone who keeps offering their services
-// is told, plainly, about the ONE collaboration that exists and its terms, so
-// the answer is complete and leaves nothing to follow up on. Polite, final, and
-// does not invite a budget conversation. A sender who re-sends the same pitch
-// after this reply is blocked at ingest (see repeat.ts), so this body is the
-// last word they get from us.
-const SERVICE_DECLINE_BODY =
-`Thank you for reaching out, and for the offer - we appreciate you taking the time to write.
+// Service pitches (growth, marketing, SEO, CRO, content, ads, "we will bring
+// you sales"). Owner rule 2026-09-17, replacing the 2026-09-04 hard decline
+// ("we keep development, listings and marketing in-house"): "we are receiving
+// too many offers on their services and we are just declining them blankly. I
+// want to filter these services on who can actually deliver ... by starting
+// with our affiliate discount code. This is the only way for us to decide who
+// can really deliver against those who are just promising unproven
+// strategies." So the reply FILTERS instead of refusing: it says we receive a
+// lot of offers, that promised results cannot be checked in advance, and that
+// everyone starts with their own code so tracked orders decide. It states the
+// rate (owner ruling 2026-08-07) and carries the apply link (rule 2026-08-14).
+// It promises a further CONVERSATION on delivered results, never a contract or
+// a rate. Store, admin and collaborator access is still never granted; that
+// lives in the agent stance, since this body no longer argues policy at all.
+const SERVICE_PROVE_FIRST_BODY =
+`Thank you for reaching out, and for taking the time to look at Active Paw.
 
-We keep our store's development, product listings and marketing in-house with our own team, so outside services are not something we take up, and we do not grant store, admin, or collaborator access to anyone outside the team. That is a settled policy rather than a budget or timing question, so we would rather be straight with you than leave it open.
+We will be straight with you about where we are: we receive a lot of offers to grow the store, and most of them promise results we have no way to check in advance. So we no longer take anyone on the strength of a proposal. Everyone who wants to work with us starts the same way, with their own Active Paw affiliate discount code, and the tracked orders it brings in are what tell us who can actually deliver.
 
-The only collaboration we currently run is the Active Paw affiliate programme. It is open to anyone with an audience or channel, and you can apply directly here: ${AFFILIATE_APPLY_URL}
+Your code is set up through our partner page: ${AFFILIATE_APPLY_URL}
 
-${COMMISSION_COMPUTATION_SENTENCE} ${COMMISSION_TIERS_SENTENCE}
+It takes a few minutes, and your tracked orders and commission live in one place from then on. ${COMMISSION_COMPUTATION_SENTENCE} ${COMMISSION_TIERS_SENTENCE}
 
-If that is not a fit for you, no reply is needed - we wish you and your work every success.
+If your approach works, your code will show it, and that track record is what opens any further conversation with us. If a tracked trial is not how you work, no reply is needed, and we wish you every success.
 
 Best Regards,
 Active Paw Partnerships`;
+
+// Goods suppliers (packaging, a "backup supplier" with a catalogue, an updated
+// product listing). Owner rule 2026-09-17: "don't decline them. Just thank
+// them for providing the updated product listing or the likes." The code trial
+// cannot measure a supplier, so they get neither it nor a refusal: a thank-you
+// that commits to nothing and asks for nothing. Signed by the store, not the
+// partnerships desk, because nothing about it is a partnership.
+const SUPPLIER_ACK_BODY =
+`Thank you for sending over your product information - we appreciate you thinking of Active Paw.
+
+We have noted it and will keep it for reference. There is nothing you need to do from here, and if we ever have a question about your range we will get in touch.
+
+Best Regards,
+Active Paw`;
 
 // For messages that probe our goals/strategy/performance rather than pitch a
 // service outright (e.g. "what's your main priority, traffic or revenue?") -
@@ -465,7 +486,15 @@ export const PARTNERSHIP_STANCE =
   + `Anyone can apply, and the application is at ${AFFILIATE_APPLY_URL} - it takes a few minutes and asks where they would promote us and a little about their audience. `
   + `ALWAYS state the commission in figures, do not just point at the page: partners earn ${STANDARD_COMMISSION_PCT}% of the goods value of every paid order placed with their own discount code (the price of the items before their code's discount, not counting shipping), rising to ${TIER_MAX_PCT}% after their first ${TIER_REVIEW_ORDERS} tracked orders in a 30-day window. `
   + 'Never agree a different rate and never negotiate against promised sales, orders or traffic: the same terms apply to everyone and a higher rate is earned on delivered results. If they propose their own percentage, answer with ours rather than haggling. '
-  + 'A question about partnering or commission is an ANSWERABLE QUESTION, not a sales pitch to decline. Only an offer to SELL US a service (marketing, SEO, ads, email campaigns, store or web development, product listings, virtual assistance) is declined, and even then do not mention the affiliate programme unless they raise promoting us. '
+  + 'A question about partnering or commission is an ANSWERABLE QUESTION, not a sales pitch to decline. '
+  // Owner rule 2026-09-17 (prove-first), replacing "only an offer to SELL US a
+  // service is declined, and even then do not mention the affiliate programme":
+  // 29 vendors in 30 days got a blank "not something we are looking into". The
+  // code trial is now the filter for every service offer; a goods supplier is
+  // thanked for the listing and nothing more.
+  + 'SERVICE OFFERS (prove-first rule): an offer to SELL US a growth, marketing, SEO, ads, CRO, content, video, email, store-optimisation, listing or virtual-assistant service, or to bring us sales by any method, is neither declined nor accepted. Answer it with the filter: we receive a lot of offers like this and cannot tell promised results from real ones in advance, so everyone who wants to work with us starts with their own affiliate discount code, and the tracked orders it brings in decide who we take further. Give the link and the figures above. Do not book calls, ask for proposals or audits, accept a free sample of their work, or agree any other arrangement, and never say it is "not something we are looking into". '
+  + 'GOODS SUPPLIERS: someone offering to SUPPLY US products, materials or packaging (a catalogue, a price list, an updated product listing) is neither declined nor sent to the programme. Thank them for sending it, say we have noted it for reference, and commit to nothing: no order, no meeting, no next step. '
+  + 'Store, admin or collaborator access is never granted to anyone outside the team, whatever they offer. '
   + 'CONVERSATION FLOW: if we already sent them a general decline earlier in this thread and they have now asked a concrete partnership or commission question, ANSWER THE NEW QUESTION with the facts above. Do not simply repeat the earlier decline, which reads as ignoring them.';
 
 // signup_page mode (owner policy 2026-07-18): new partnership approaches are
@@ -554,12 +583,16 @@ Active Paw`;
 // never on the person: the programme door stays open with its link, and the
 // note asks for nothing back. Deliberately generic about the arrangement
 // (hands-on, consulting, results-based) so it drops onto any such thread.
+// 2026-09-17 (prove-first): what it is final on is SKIPPING THE TRIAL. The
+// reason is no longer "strategy stays in-house" but the filter itself: with
+// the number of offers we receive, delivered results through a tracked code
+// are the only basis we decide on, so no arrangement is agreed ahead of that.
 const COLLABORATION_DECLINE_BODY =
 `Thank you for coming back to us, and for being so clear about the kind of partnership you have in mind. We appreciate the thought you have put into it.
 
-We have to be straight with you, so we do not keep you waiting: we do not take on other forms of collaboration, whether hands-on, consulting or results-based, because our store's strategy, marketing and development stay with our own team. That is a settled position rather than a reflection on your proposal.
+We have to be straight with you, so we do not keep you waiting: we do not skip the trial for anyone. With the number of offers we receive, delivered results through a tracked code are the only basis we use to decide who we work with, so we do not take on hands-on, consulting or results-based arrangements ahead of that. That is a settled position rather than a reflection on your proposal.
 
-The affiliate programme we described is the one way we work with partners, and that door stays open to you at any time: ${AFFILIATE_APPLY_URL}
+The code trial stays open to you at any time: ${AFFILIATE_APPLY_URL}
 
 Thank you again for your interest in Active Paw. No reply is needed, and we wish you every success with your work.
 
@@ -626,7 +659,8 @@ export function buildSignupInvite(
     : SIGNUP_INVITE_BODY.replace('\n\nWe look forward', `\n\n${extras.join('\n\n')}\n\nWe look forward`);
   return applySalutation(body, name);
 }
-export function buildServiceDecline(name: string | null): string { return applySalutation(SERVICE_DECLINE_BODY, name); }
+export function buildServiceProveFirst(name: string | null): string { return applySalutation(SERVICE_PROVE_FIRST_BODY, name); }
+export function buildSupplierAck(name: string | null): string { return applySalutation(SUPPLIER_ACK_BODY, name); }
 export function buildOperationsDecline(name: string | null): string { return applySalutation(OPERATIONS_DECLINE_BODY, name); }
 export function buildFormInvite(name: string | null): string { return applySalutation(FORM_INVITE_BODY, name); }
 export function buildVoucherInvite(name: string | null): string { return applySalutation(VOUCHER_INVITE_BODY, name); }
@@ -656,7 +690,8 @@ export function countProgrammeIntroductions(
 // thread's outbound history; the guard runs in the funnel and the template route.
 export const TOUCH_TEMPLATES = [
   'signup_invite', 'qualifying', 'voucher_invite', 'form_invite', 'partnership_decline',
-  'service_decline', 'operations_decline', 'keep_to_email', 'holding_ack', 'collaboration_decline',
+  'service_prove_first', 'operations_decline', 'keep_to_email', 'holding_ack', 'collaboration_decline',
+  'supplier_ack',
 ] as const;
 export type TouchTemplate = typeof TOUCH_TEMPLATES[number];
 
@@ -690,10 +725,10 @@ ${SIGNOFF_PARTNERSHIPS}`,
 `Thank you for following up. Our decision is unchanged: it is not a fit for our affiliate programme right now, so we will have to pass. We do appreciate the interest, and wish you every success.
 
 ${SIGNOFF_PARTNERSHIPS}`,
-  service_decline:
-`Thanks again for the offer. As before, outside services are not something we take up. The affiliate programme is the only collaboration we run, open to anyone with an audience: ${AFFILIATE_APPLY_URL}
+  service_prove_first:
+`Thanks for coming back to us. Our position is the same: with the number of offers we receive, a tracked trial is the only way we can tell who can deliver, so every partnership starts with your own discount code from our partner page: ${AFFILIATE_APPLY_URL}
 
-No reply is needed.
+If the results are there, that is what we talk about next.
 
 ${SIGNOFF_PARTNERSHIPS}`,
   operations_decline:
@@ -709,11 +744,15 @@ ${SIGNOFF_STORE}`,
 
 ${SIGNOFF_PARTNERSHIPS}`,
   collaboration_decline:
-`Thank you for following up. Our answer is unchanged: we do not take on other forms of collaboration, and the affiliate programme remains the one way to work with us: ${AFFILIATE_APPLY_URL}
+`Thank you for following up. Our answer is unchanged: we do not skip the trial for anyone, and a tracked discount code remains the one way to work with us: ${AFFILIATE_APPLY_URL}
 
 No reply is needed, and we wish you every success.
 
 ${SIGNOFF_PARTNERSHIPS}`,
+  supplier_ack:
+`Thanks for sending the update. We have it on file for reference, and there is nothing you need to do from here.
+
+${SIGNOFF_STORE}`,
 };
 
 // One sentence each, pointing back to the earlier reply (the owner's choice for a
@@ -724,18 +763,19 @@ const POINTER_BACK: Record<TouchTemplate, string> = {
   voucher_invite: `Our earlier reply still stands: your trial code will come to you here, with its terms, as soon as it is ready.`,
   form_invite: `Our earlier reply still stands, and the partner application there remains the next step: ${AFFILIATE_APPLY_URL}`,
   partnership_decline: `Our earlier reply on this thread still stands, and there is nothing we can add to it.`,
-  service_decline: `Our earlier reply on this thread still stands: the affiliate programme is the only collaboration we run, and the form there is the way in: ${AFFILIATE_APPLY_URL}`,
+  service_prove_first: `Our earlier reply on this thread still stands: every partnership starts with a tracked discount code, and the partner page there is the way in: ${AFFILIATE_APPLY_URL}`,
   operations_decline: `Our earlier reply on this thread still stands, and there is nothing we are able to add to it.`,
   keep_to_email: `As in our earlier reply, we keep our conversations on email, so please carry on here whenever you are ready.`,
   holding_ack: `Our earlier note still stands: your application is in review, and we will write as soon as it is decided.`,
-  collaboration_decline: `Our earlier reply on this thread still stands: the affiliate programme is the only collaboration we run, and its form stays open to you: ${AFFILIATE_APPLY_URL}`,
+  collaboration_decline: `Our earlier reply on this thread still stands: we do not skip the trial for anyone, and the code trial stays open to you: ${AFFILIATE_APPLY_URL}`,
+  supplier_ack: `As in our earlier reply, your product information is on file, and nothing more is needed.`,
 };
 
 export function buildSecondTouch(key: TouchTemplate, name: string | null): string {
   return applySalutation(SECOND_TOUCH[key], name);
 }
 export function buildPointerBack(key: TouchTemplate, name: string | null): string {
-  const signoff = key === 'keep_to_email' ? SIGNOFF_STORE : SIGNOFF_PARTNERSHIPS;
+  const signoff = (key === 'keep_to_email' || key === 'supplier_ack') ? SIGNOFF_STORE : SIGNOFF_PARTNERSHIPS;
   return applySalutation(`${POINTER_BACK[key]}
 
 ${signoff}`, name);
@@ -1003,18 +1043,20 @@ export async function maybePartnershipDraft(
     return { draftId, send: false };
   }
 
-  // Pure service pitches (site-speed/SEO/listing vendors) are not partnership
-  // candidates: inviting a vendor to apply for a discount code is noise, and
-  // outside vendors are a settled no (development/listings/marketing stay
-  // in-house; collaborator access is never granted from cold outreach). The
-  // detector is grounded in the MESSAGE TEXT only and stands down on any
-  // creator signal - when in doubt, the funnel; never a wrong decline. First
-  // touch only; replies after the decline fall through to the generic drafter
-  // like every declined thread. Always HITL for now: flip to the decline_all
-  // switch logic once the owner has validated this template on live traffic.
+  // Pure service pitches (growth/SEO/CRO/listing/marketing vendors). Owner
+  // rule 2026-09-17 (prove-first), replacing the 2026-09-04 hard decline: the
+  // vendor is told that with the number of offers we receive, a tracked code
+  // trial is the only way we tell who can deliver, with the link and the rate.
+  // They are staged 'passed_to_form' exactly like a signup invite, so their
+  // next reply rides the applicant ladder below (shorter form reminder; the
+  // friendly final decline after two introductions if they insist on another
+  // arrangement) instead of falling to the generic drafter as a declined
+  // thread. The detector is grounded in the MESSAGE TEXT only and stands down
+  // on any creator signal - when in doubt, the funnel. First touch only.
+  // Always HITL: the owner validates this template on live traffic first.
   if (!applicant && servicePitch) {
-    const { draftId } = await insertTouched('service_decline', buildServiceDecline(name));
-    await store.upsertApplicant({ threadId: thread.id, contactEmail: thread.contact_email, stage: 'declined' });
+    const { draftId } = await insertTouched('service_prove_first', buildServiceProveFirst(name));
+    await store.upsertApplicant({ threadId: thread.id, contactEmail: thread.contact_email, stage: 'passed_to_form' });
     return { draftId, send: false };
   }
 
@@ -1159,7 +1201,8 @@ export async function maybePartnershipDraft(
     // context-aware acknowledgement, not the stale "still reviewing the fit"
     // holding ack. draftAcceptedPartnerReply grounds on the real thread + their
     // own code and never declines. HITL.
-    if ((await store.partnerPoolState(thread.contact_email)) === 'live') {
+    const pool = await store.partnerPoolState(thread.contact_email);
+    if (pool === 'live') {
       const body = await draftAcceptedPartnerReply(env, store, cfg, thread, got, name, latestNewText, _fetchImpl);
       // LLM body: no template variant to fall back to, so a repeat of an earlier
       // reply is named in the hold reasons for the owner (it is HITL regardless).
@@ -1194,9 +1237,31 @@ export async function maybePartnershipDraft(
         'An invited applicant wants a different arrangement - the shorter programme reminder is ready for your review.', 'affiliate', _fetchImpl);
       return { draftId, send: false };
     }
-    // NOT yet accepted: 'escalated' (owner may still decline) or 'passed_to_form'
-    // still awaiting the owner to issue the code in Partners. For them the
-    // holding ack IS accurate, so it is unchanged. Deterministic + owner alert.
+    // Owner rule 2026-09-17 (prove-first follow-up): a 'passed_to_form'
+    // applicant who was POINTED AT THE FORM (signup invite or the prove-first
+    // answer; no screening questions ever went out) and has not used it (no
+    // partner row, so pool 'none') is not "in review" by anyone. The holding
+    // ack ("we are reviewing the fit") would be false for them, and it would
+    // stall the one step the filter depends on. They get the shorter form
+    // reminder instead; the ladder starts at the second touch because the
+    // introduction itself already went out. HITL + owner alert. An applicant
+    // the legacy email funnel screened (QUALIFYING_MARKER went out) is awaiting
+    // the owner's code in Partners, and the holding ack stays accurate there.
+    // Positive signal on purpose: an outbound that carried the apply link. A
+    // test-seeded or legacy 'passed_to_form' row with no such outbound keeps
+    // the holding ack, so nothing that was not pointed at the form is moved.
+    const pointedAtForm = got.messages.some((m) => m.direction === 'outbound' && (m.body_text ?? '').includes(AFFILIATE_APPLY_URL));
+    const askedByEmail = got.messages.some((m) => m.direction === 'outbound' && (m.body_text ?? '').includes(QUALIFYING_MARKER));
+    if (applicant.stage === 'passed_to_form' && pool === 'none' && pointedAtForm && !askedByEmail) {
+      const { draftId } = await insertTouched('signup_invite', buildSignupInvite(name, { volumePitch, offPlatform: offPlatformNow }), { startAtSecond: true });
+      await maybeAlertOwner(env, cfg, thread.shop, thread,
+        'An invited applicant replied before using the application form - the shorter form reminder is ready for your review.', 'affiliate', _fetchImpl);
+      return { draftId, send: false };
+    }
+    // NOT yet accepted: 'escalated' (owner may still decline), or 'passed_to_form'
+    // with the form submitted (queued) or screened by email, awaiting the owner
+    // to issue the code in Partners. For them the holding ack IS accurate, so it
+    // is unchanged. Deterministic + owner alert.
     const { draftId } = await insertTouched('holding_ack', buildHoldingAck(name));
     await maybeAlertOwner(env, cfg, thread.shop, thread,
       variant === 'voucher'
