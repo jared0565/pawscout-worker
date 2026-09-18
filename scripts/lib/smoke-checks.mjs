@@ -42,6 +42,17 @@ export function checkApp(status, contentType) {
   return { name: 'app', ok, detail: `status ${status}, content-type ${contentType}` };
 }
 
+// A flag that takes a value must have one: end of the argument list, or the
+// next token itself starting with '--', is a missing value, not an empty or
+// absent one. Left unchecked, "--expect-version" as the last token silently
+// became null and skipped the one check it was there to enforce.
+function takeValue(flag, args) {
+  if (args.length === 0 || /^--/.test(String(args[0]))) {
+    throw new Error(`${flag} requires a value`);
+  }
+  return args.shift();
+}
+
 export function parseSmokeArgs(argv) {
   const args = [...argv];
   const baseUrlRaw = args.shift();
@@ -64,13 +75,13 @@ export function parseSmokeArgs(argv) {
     const flag = args.shift();
     switch (flag) {
       case '--expect-version':
-        result.expectVersion = args.shift() ?? null;
+        result.expectVersion = takeValue(flag, args);
         break;
       case '--allow-unavailable':
         result.allowUnavailable = true;
         break;
       case '--attempts': {
-        const n = Number(args.shift());
+        const n = Number(takeValue(flag, args));
         if (!Number.isInteger(n) || n < 1) {
           throw new Error('attempts must be an integer of at least 1');
         }
@@ -78,7 +89,7 @@ export function parseSmokeArgs(argv) {
         break;
       }
       case '--delay-ms': {
-        const n = Number(args.shift());
+        const n = Number(takeValue(flag, args));
         if (!Number.isInteger(n) || n < 0) {
           throw new Error('delay-ms must be an integer of at least 0');
         }

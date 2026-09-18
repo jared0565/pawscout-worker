@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import {
   parseDeployArgs, versionLabel, ciVerdict, evaluateGuards,
   wranglerDeployArgs, migrationsApplyArgs, rollbackCommand, pendingForGuards,
-  gitStateProblems, missingOnStaging
+  gitStateProblems, missingOnStaging, parsePorcelain, blockingUntracked,
+  untrackedOrModifiedPending, tolerateMissingMigrationsTable,
+  migrationsListCommand, d1ReadRefusalLines
 } from './deploy-guards.mjs';
 
 const SHA = 'abc123def4567890abc123def4567890abc123de';
@@ -199,4 +201,102 @@ test('phase two (after a real rehearsal ran): refuses when the rehearsal failed'
   });
   assert.equal(r.ok, false);
   assert.match(r.failures[0], /no passing rehearsal/);
+});
+
+test('args: --skip-ci trims its reason and refuses a blank one', () => {
+  assert.equal(parseDeployArgs(['--env', 'production', '--skip-ci', '  GitHub is down  ']).skipCiReason, 'GitHub is down');
+  assert.throws(() => parseDeployArgs(['--env', 'production', '--skip-ci', '   ']), /reason/i);
+});
+
+test('parsePorcelain: splits dirty (tracked-change) lines from untracked paths, CRLF tolerant', () => {
+  const stdout = ' M src/index.ts\r\n?? migrations/0041_x.sql\r\nA  src/health.ts\r\n?? cart-summary.png\r\n';
+  assert.deepEqual(parsePorcelain(stdout), {
+    dirty: [' M src/index.ts', 'A  src/health.ts'],
+    untracked: ['migrations/0041_x.sql', 'cart-summary.png']
+  });
+});
+
+test('parsePorcelain: strips git quoting from a path and normalises backslashes', () => {
+  const stdout = '?? "migrations/0041 has space.sql"\n?? src\\newdir\\file.ts\n';
+  assert.deepEqual(parsePorcelain(stdout).untracked, ['migrations/0041 has space.sql', 'src/newdir/file.ts']);
+});
+
+test('blockingUntracked: untracked migrations/ and src/ paths block; everything else is ignored', () => {
+  const untracked = ['migrations/0041_x.sql', 'src/health.ts', 'cart-summary.png', 'docs/RUNBOOK-DEPLOY.md', 'src/newdir/'];
+  assert.deepEqual(blockingUntracked(untracked), ['migrations/0041_x.sql', 'src/health.ts', 'src/newdir/']);
+});
+
+test('blockingUntracked: a path that merely STARTS LIKE migrations or src does not block', () => {
+  // Pins the rule as a directory prefix ("src/"), not a substring: a refactor
+  // to includes() or startsWith('src') would start refusing these.
+  assert.deepEqual(blockingUntracked(['migrations.bak/0041_x.sql', 'src-old/x.ts', 'docs/src/x.ts', 'notes/migrations/x.sql']), []);
+});
+
+test('blockingUntracked: nothing untracked is nothing blocking', () => {
+  assert.deepEqual(blockingUntracked([]), []);
+});
+
+test('production refuses on an untracked migration or source file', () => {
+  const r = evaluateGuards({ ...clean, blockingUntracked: ['migrations/0041_x.sql'] });
+  assert.equal(r.ok, false);
+  assert.equal(
+    r.failures[0],
+    'Untracked files that a deploy would ship or apply: migrations/0041_x.sql. Commit them (git add) or remove them: a migration or source file that is in no commit must never reach production.'
+  );
+});
+
+test('staging never evaluates the untracked-files guard', () => {
+  const r = evaluateGuards({ ...clean, env: 'staging', blockingUntracked: ['migrations/0041_x.sql'] });
+  assert.deepEqual(r, { ok: true, failures: [] });
+});
+
+test('the untracked-files guard is not deferred on a dry run', () => {
+  const r = evaluateGuards({
+    ...clean,
+    pending: pendingForGuards(['0041_x.sql'], true),
+    rehearsalOk: null,
+    blockingUntracked: ['migrations/0041_x.sql']
+  });
+  assert.equal(r.ok, false);
+  assert.match(r.failures[0], /Untracked files/);
+});
+
+test('untrackedOrModifiedPending: names pending migrations that are modified (by rename target) or untracked', () => {
+  const dirty = ['R  migrations/0039_old_name.sql -> migrations/0040_x.sql'];
+  const untracked = ['migrations/0041_y.sql'];
+  assert.deepEqual(
+    untrackedOrModifiedPending(['0040_x.sql', '0041_y.sql', '0042_z.sql'], dirty, untracked),
+    ['0040_x.sql', '0041_y.sql']
+  );
+  assert.deepEqual(untrackedOrModifiedPending(['0042_z.sql'], dirty, untracked), []);
+});
+
+test('untrackedOrModifiedPending: a rename AWAY from a pending path is not a false match', () => {
+  const dirty = ['R  migrations/0040_x.sql -> migrations/0040_x_renamed.sql'];
+  assert.deepEqual(untrackedOrModifiedPending(['0040_x.sql'], dirty, []), []);
+});
+
+test('untrackedOrModifiedPending: a wholly untracked migrations directory catches every pending file inside it', () => {
+  assert.deepEqual(
+    untrackedOrModifiedPending(['0041_y.sql', '0042_z.sql'], [], ['migrations/']),
+    ['0041_y.sql', '0042_z.sql']
+  );
+});
+
+test('tolerateMissingMigrationsTable: a missing table is only ever legitimate on the staging database', () => {
+  assert.equal(tolerateMissingMigrationsTable(true, 'D1_ERROR: no such table: d1_migrations'), true);
+  assert.equal(tolerateMissingMigrationsTable(false, 'no such table: d1_migrations'), false);
+  assert.equal(tolerateMissingMigrationsTable(true, 'auth error'), false);
+});
+
+test('migrationsListCommand: shows the truth after a failed apply', () => {
+  assert.equal(migrationsListCommand('production'), 'npx wrangler d1 migrations list pawscout --remote');
+  assert.equal(migrationsListCommand('staging'), 'npx wrangler d1 migrations list pawscout-staging --remote --env staging');
+});
+
+test('d1ReadRefusalLines: names the reason and the known transient-failure advice', () => {
+  const lines = d1ReadRefusalLines('Could not read applied migrations for pawscout (auth error).');
+  assert.equal(lines[0], 'REFUSED:');
+  assert.match(lines[1], /Could not read applied migrations for pawscout/);
+  assert.match(lines[2], /transiently/);
 });

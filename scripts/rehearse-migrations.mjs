@@ -3,16 +3,16 @@
 //
 // WHY: proves pending migrations apply cleanly to a full, throwaway copy of
 // production D1 data (customer messages, addresses) before a real deploy
-// touches it. DIVISION OF LABOUR (fix round 2, 2026-09-18): staging proves
-// "real D1 accepts this SQL" (the deploy script applies migrations there
-// first, over the real Workers/D1 stack); this proves "production's DATA
-// survives this SQL" - SQLite semantics (NOT NULL over an existing NULL, a
-// UNIQUE index over a duplicate, a lost row, a dangling foreign key). That
-// is why load/apply/checks now run on node:sqlite (scripts/lib/rehearsal-db.mjs)
-// instead of wrangler's local Workers runtime, which could not ingest the
-// real 15.5 MB dump (190 workerd HashIndex errors, then a 300s Body Timeout,
-// measured running this script for real on 2026-09-18). wrangler still does
-// exactly two things: read d1_migrations from production, and the export.
+// touches it. DIVISION OF LABOUR: staging proves "real D1 accepts this SQL"
+// (the deploy script applies migrations there first, over the real
+// Workers/D1 stack); this proves "production's DATA survives this SQL" -
+// SQLite semantics (NOT NULL over an existing NULL, a UNIQUE index over a
+// duplicate, a lost row, a dangling foreign key). That is why load/apply/checks
+// run on node:sqlite (scripts/lib/rehearsal-db.mjs) instead of wrangler's
+// local Workers runtime, which could not ingest the real 15.5 MB dump (190
+// workerd HashIndex errors, then a 300s Body Timeout, measured running this
+// script for real on 2026-09-18). wrangler still does exactly two things:
+// read d1_migrations from production, and the export.
 //
 // Usage: node scripts/rehearse-migrations.mjs [--force] [--allow-shrink t1,t2] [--keep]
 //   --force         rehearse even if nothing is pending
@@ -37,10 +37,10 @@ const DATABASE = 'pawscout';
 // fs.rmSync's `force` only swallows ENOENT; a handle still open on a
 // just-written file raises EBUSY/EPERM on Windows, so this retries briefly
 // then warns loudly and names the path rather than failing silently. Checks
-// existence first (fix round 3, minor 4) so it never claims a deletion that
-// did not happen - the mkdir-failure path calls this on a directory that
-// may never have existed, and that is the one output that must stay
-// trustworthy about whether production data is actually still on disk.
+// existence first so it never claims a deletion that did not happen - the
+// mkdir-failure path calls this on a directory that may never have existed,
+// and that is the one output that must stay trustworthy about whether
+// production data is actually still on disk.
 function removeScratch(target, whatItHolds) {
   const existed = fs.existsSync(target);
   try {
@@ -61,8 +61,8 @@ function removeScratch(target, whatItHolds) {
 // Sweeps leftovers from earlier runs: a `finally` never runs if the process
 // dies outright (Ctrl-C during the long export), so this is what actually
 // guarantees a leftover copy of production does not survive past the NEXT
-// run. A sweep failure now STOPS main() (fix round 2): it used to be
-// tolerated, which could let a run create a second unremoved copy.
+// run. A sweep failure STOPS main(): tolerating it could let a run create a
+// second unremoved copy.
 function sweepLeftoverScratchDirs() {
   const wranglerDir = path.join(ROOT, '.wrangler');
   let entries;
@@ -95,9 +95,9 @@ function sweepLeftoverScratchDirs() {
 // process.exit, and never removes `work` (runRehearsal does that once,
 // after this returns). db.close() runs here via finally, before the caller
 // can try to remove the directory it lives in - an open handle causes EBUSY.
-// `cleanupState.prodSqlCleanupOk` is written directly, not only returned
-// (fix round 3, minor 8): a throw anywhere after the early delete would
-// otherwise discard whatever this function had already learned about it.
+// `cleanupState.prodSqlCleanupOk` is written directly, not only returned:
+// a throw anywhere after the early delete would otherwise discard whatever
+// this function had already learned about it.
 function computeRehearsalCode(args, pending, localFiles, work, prodSql, rehearsalDb, cleanupState) {
   const { openCopy, userTables, rowCounts, appliedNames, applyMigration, integrityProblems } = rehearsalDb;
 
@@ -110,18 +110,18 @@ function computeRehearsalCode(args, pending, localFiles, work, prodSql, rehearsa
         "transient 'Authentication error [code: 10000]' that succeeded on retry ~50s later. Try again; " +
         'if it keeps failing, check `npx wrangler whoami`.'
     );
-    return 2; // the scratch directory is removed afterward regardless (minor 7)
+    return 2; // the scratch directory is removed afterward regardless
   }
 
   console.log('rehearse-migrations: loading the export into an in-memory SQLite copy ...');
   // The dump and this in-memory copy both scale with production (15.5 MB
   // today, measured 2026-09-18); a JS string cannot exceed roughly 512 MB,
   // at which point this whole design needs replacing - readFileSync will
-  // fail loudly here, exit 2, rather than silently (minor 12).
+  // fail loudly here, exit 2, rather than silently.
   const dumpText = fs.readFileSync(prodSql, 'utf8');
   const db = openCopy(dumpText, args.keep ? path.join(work, 'copy.sqlite') : ':memory:');
 
-  // No production data needs to sit on disk once it is loaded (step 8).
+  // No production data needs to sit on disk once it is loaded.
   if (!args.keep) {
     cleanupState.prodSqlCleanupOk = removeScratch(prodSql, 'is the exported production dump (customer data)');
   }
@@ -130,11 +130,11 @@ function computeRehearsalCode(args, pending, localFiles, work, prodSql, rehearsa
     console.log('rehearse-migrations: counting rows and checking integrity before migration ...');
     const before = rowCounts(db, userTables(db));
 
-    // Strict, by ruling (fix round 3): a rowid is not stable across a table
-    // rebuild, so a before/after STRING diff can mask a genuinely new
-    // foreign key violation with an old one's identity (measured by
-    // review - see the comment in rehearsal-db.mjs). Any problem here means
-    // nothing about this migration can be proven either way: stop, exit 2.
+    // Strict by design: a rowid is not stable across a table rebuild, so a
+    // before/after STRING diff can mask a genuinely new foreign key
+    // violation with an old one's identity (see the comment in
+    // rehearsal-db.mjs). Any problem here means nothing about this
+    // migration can be proven either way: stop, exit 2.
     const problemsBefore = integrityProblems(db);
     if (problemsBefore.length > 0) {
       console.error('rehearse-migrations: production already has integrity problems:');
@@ -161,7 +161,7 @@ function computeRehearsalCode(args, pending, localFiles, work, prodSql, rehearsa
       }
 
       // The copy's own bookkeeping, not production's pending list, is the
-      // honest source for what actually landed (fix round 1, IMPORTANT 2).
+      // honest source for what actually landed.
       const stillPending = pendingMigrations(localFiles, appliedNames(db));
       if (stillPending.length > 0) {
         console.error(`rehearse-migrations: these did not apply to the copy: ${stillPending.join(', ')}`);
@@ -179,8 +179,7 @@ function computeRehearsalCode(args, pending, localFiles, work, prodSql, rehearsa
 
       // Guaranteed new by construction: the copy was already proven clean
       // above, before the apply, so any problem found here was caused by
-      // these migrations. No before/after diff needed any more (fix round
-      // 3: newProblems is deleted - see rehearsal-db.mjs).
+      // these migrations.
       const problemsAfter = integrityProblems(db);
       if (problemsAfter.length > 0) {
         console.error('rehearse-migrations: integrity problems introduced by these migrations:');
@@ -188,10 +187,10 @@ function computeRehearsalCode(args, pending, localFiles, work, prodSql, rehearsa
         return 1;
       }
 
-      console.log(
-        `rehearsal passed: applied ${pending.join(', ')} to a copy of production, ` +
-          `${tablesAfter.length} tables, integrity ok`
-      );
+      const appliedPhrase = pending.length > 0
+        ? `applied ${pending.join(', ')} to a copy of production`
+        : 'no migrations pending';
+      console.log(`rehearsal passed: ${appliedPhrase}, ${tablesAfter.length} tables, integrity ok`);
       return 0;
     } catch (err) {
       console.error(`rehearse-migrations: rehearsal failed while applying or checking the copy: ${err.message}`);
@@ -215,9 +214,9 @@ function runRehearsal(args, pending, localFiles, rehearsalDb) {
   try {
     fs.mkdirSync(work, { recursive: true });
   } catch (err) {
-    // An environment problem, exit 2 - this used to be uncaught, crashing
+    // An environment problem, exit 2: an uncaught throw here would crash
     // with Node's default exit code 1, which the deploy script reads as
-    // "rehearsal FAILED" rather than "could not even start" (fix round 2).
+    // "rehearsal FAILED" rather than "could not even start".
     console.error(`rehearse-migrations: could not create the scratch work directory ${work}: ${err.message}`);
     return { code: 2, cleanupOk: removeScratch(work, 'may partially exist after a failed setup') };
   }
@@ -232,19 +231,33 @@ function runRehearsal(args, pending, localFiles, rehearsalDb) {
     code = 2;
   }
 
-  let dirCleanupOk;
   if (args.keep) {
     console.log(
       `rehearse-migrations: scratch copy kept at ${work} - it holds prod.sql and copy.sqlite, full copies ` +
         'of customer messages and addresses, and must be deleted BY HAND. The NEXT run of this script ' +
         'sweeps it away at startup (it matches rehearsal-<digits>), so copy anything you need out of it first.'
     );
-    dirCleanupOk = true;
-  } else {
-    dirCleanupOk = removeScratch(work, 'may still hold a copy of production data');
+    return { code, cleanupOk: true };
   }
 
-  return { code, cleanupOk: cleanupState.prodSqlCleanupOk && dirCleanupOk };
+  removeScratch(work, 'may still hold a copy of production data');
+
+  // The verified truth, not the two cleanup attempts' own separate claims:
+  // does the work directory - which contains prod.sql - still exist? An
+  // early prod.sql delete failure followed by a later whole-directory
+  // delete success is not a contradiction once checked this way: removing
+  // the directory took prod.sql with it, so a "must be deleted by hand"
+  // warning printed earlier about prod.sql no longer describes reality, and
+  // a clean pass must not be escalated to exit 2 over data that is gone.
+  const stillOnDisk = fs.existsSync(work);
+  if (!stillOnDisk && !cleanupState.prodSqlCleanupOk) {
+    console.log(
+      `rehearse-migrations: the earlier warning about ${prodSql} no longer applies - the whole scratch ` +
+        'directory, including that file, has since been deleted.'
+    );
+  }
+
+  return { code, cleanupOk: !stillOnDisk };
 }
 
 async function main() {
@@ -261,8 +274,8 @@ async function main() {
     return;
   }
 
-  // A sweep failure STOPS here (fix round 2 residual): carrying on would
-  // export a second, unremoved copy of production beside the first.
+  // A sweep failure STOPS here: carrying on would export a second,
+  // unremoved copy of production beside the first.
   if (!sweepLeftoverScratchDirs()) {
     process.exitCode = 2;
     return;
@@ -311,10 +324,9 @@ async function main() {
 
   const result = runRehearsal(args, pending, localFiles, rehearsalDb);
   // process.exitCode, not process.exit(): the cleanup and buffered output
-  // above must finish before the process actually exits (fix round 3: the
-  // previous comment here claimed this matters because the deploy script
-  // pipes stdout - it does not, scripts/deploy.mjs runs this with
-  // stdio: 'inherit'; the real reason was always this one).
+  // above must finish before the process actually exits. scripts/deploy.mjs
+  // runs this with stdio: 'inherit', not a pipe, so the ordering - not
+  // truncation - is the risk here.
   process.exitCode = finalExitCode(result.code, result.cleanupOk);
 }
 
@@ -322,7 +334,7 @@ main().catch((err) => {
   // A floating promise with no .catch would otherwise let an unexpected
   // throw fall through to Node's default exit code of 1, which
   // scripts/deploy.mjs reads as "the rehearsal FAILED" rather than "could
-  // not run at all" (fix round 3, minor 5).
+  // not run at all".
   console.error(`rehearse-migrations: unexpected error: ${err instanceof Error ? err.message : String(err)}`);
   process.exitCode = 2;
 });

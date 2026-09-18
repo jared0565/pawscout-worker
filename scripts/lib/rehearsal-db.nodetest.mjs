@@ -37,9 +37,9 @@ test('openCopy + userTables + rowCounts: sqlite_% and _cf_% tables are excluded'
 });
 
 test('rowCounts: rejects a table name that is not a valid identifier', () => {
-  // Restores the guard countsQuery used to carry before it was deleted in
-  // fix round 2 (fix round 3, minor 11): rowCounts has no parameter binding
-  // for identifiers, so this must still be checked here.
+  // SQLite cannot bind an identifier as a parameter, so rowCounts builds the
+  // table name into the statement text. The name must therefore be validated,
+  // and this pins that it is.
   const db = openCopy(freshDump());
   assert.throws(() => rowCounts(db, ['notes"; DROP TABLE tenants; --']), /bad table name/i);
   db.close();
@@ -48,8 +48,8 @@ test('rowCounts: rejects a table name that is not a valid identifier', () => {
 test('appliedNames reads d1_migrations by id order, not insertion order', () => {
   const db = openCopy(freshDump());
   // Inserted out of id order (5 then 2) so the assertion can only pass if
-  // appliedNames genuinely orders by id - with a single row (the original
-  // version of this test) ordering could never fail (fix round 3, minor 11).
+  // appliedNames genuinely orders by id. With a single row, ordering could
+  // never fail.
   db.exec("INSERT INTO d1_migrations (id, name, applied_at) VALUES (5, '0005_five.sql', '2026-01-02 00:00:00');");
   db.exec("INSERT INTO d1_migrations (id, name, applied_at) VALUES (2, '0002_two.sql', '2026-01-01 12:00:00');");
   assert.deepEqual(appliedNames(db), ['0001_init.sql', '0002_two.sql', '0005_five.sql']);
@@ -178,11 +178,11 @@ test('integrityProblems: a clean copy reports no problems', () => {
 });
 
 test('integrityProblems: a real dangling reference is reported with the exact string, including fkid', () => {
-  // Important 2, bullet 1: nothing before this asserted integrityProblems
-  // ever returns a NON-empty array, so an implementation that always
-  // returned [] would have passed every test above. foreign_keys=OFF lets
-  // the violation exist outside any transaction (mirrors how a real
-  // orphaned row can already sit in production - see fix round 3 header).
+  // Without this test nothing asserts that integrityProblems ever returns a
+  // NON-empty array, so an implementation that always returned [] would pass
+  // the whole file. foreign_keys=OFF lets the violation exist outside any
+  // transaction, which mirrors how an orphaned row can already sit in
+  // production.
   const db = openCopy(freshDump());
   db.exec('PRAGMA foreign_keys=OFF;');
   db.exec('DELETE FROM tenants WHERE id = 3;'); // orders row 3 (tenant_id=3) now dangles
@@ -190,17 +190,18 @@ test('integrityProblems: a real dangling reference is reported with the exact st
   db.close();
 });
 
-test('integrityProblems: reproduces the reviewer\'s pre-existing violation (table=notes rowid=2 parent=tenants) - this is exactly what the before-apply gate now refuses on', () => {
-  // Important 2, bullet 2. The reviewer measured that a table rebuild can
-  // make a NEW violation land on the exact same table/rowid/parent string
-  // as an OLD one, which is why newProblems (a set difference by string) is
-  // deleted rather than fixed - see the fix round 3 file header. Under the
-  // new strict rule this scenario no longer needs to be told apart from
-  // anything: a copy with ANY integrity problem before the apply is refused
-  // outright, so this test only needs to show that this exact case IS a
-  // non-empty integrityProblems() result - which is the wrapper's entire
-  // before-apply decision (its exit-2 branch is `if (problems.length > 0)`,
-  // asserted here directly rather than by spawning the wrapper).
+test('integrityProblems: a violation that exists before any migration runs (table=notes rowid=2 parent=tenants) is reported - this is what the before-apply gate refuses on', () => {
+  // Why the rule is strict. A table rebuild renumbers rowids, so a NEW
+  // violation can land on the exact same table/rowid/parent string as an OLD
+  // one (measured 2026-09-18). An earlier design compared the problem list
+  // before and after the apply and failed only on new strings; that set
+  // difference could PASS a migration that broke a foreign key, so it was
+  // deleted rather than fixed. Under the strict rule nothing needs telling
+  // apart: a copy with ANY integrity problem before the apply is refused
+  // outright. This test shows that this exact case IS a non-empty
+  // integrityProblems() result, which is the wrapper's whole before-apply
+  // decision (`if (problems.length > 0)`), asserted here directly rather than
+  // by spawning the wrapper.
   const db = openCopy(
     freshDump() +
       "CREATE TABLE notes (id INTEGER PRIMARY KEY, tenant_id INTEGER REFERENCES tenants(id), body TEXT);\n" +
@@ -210,7 +211,6 @@ test('integrityProblems: reproduces the reviewer\'s pre-existing violation (tabl
   db.exec('UPDATE notes SET tenant_id = 999 WHERE id = 2;');
   const problems = integrityProblems(db);
   assert.deepEqual(problems, ['foreign_key_check: table=notes rowid=2 parent=tenants fkid=0']);
-  assert.ok(problems.length > 0, 'a non-empty integrityProblems() before the apply is what stops the run with exit 2');
   db.close();
 });
 

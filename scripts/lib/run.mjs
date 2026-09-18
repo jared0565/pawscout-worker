@@ -29,13 +29,12 @@ export const runNode = (script, args, opts) => run(process.execPath, [path.join(
 // statement on success and an { error } object on failure; both are handled
 // here so no caller ever reads a failure as "zero rows".
 //
-// The `persistTo` option (wrangler's --local scratch DB path) was removed
-// 2026-09-18, fix round 2: the migration rehearsal was the only caller that
-// passed it, and it now loads dumps into node:sqlite directly instead of a
-// wrangler --local database (which could not ingest a real 15.5 MB dump -
-// see scripts/lib/rehearsal-db.mjs). No caller passes `remote: false` any
-// more either, but that option is untouched here: this edit is scoped to
-// the one dead option, not a broader cleanup of this shared file.
+// There is deliberately no option for a wrangler --local scratch database
+// path. The migration rehearsal used one until 2026-09-18, when wrangler's
+// local runtime turned out unable to ingest a real 15.5 MB dump; it loads
+// dumps into node:sqlite instead (see scripts/lib/rehearsal-db.mjs). Note
+// that `remote: false` therefore reads the repo's shared .wrangler/state dev
+// database, not a scratch copy; no caller uses it today.
 export function d1Rows(database, sql, { remote = true, envName = null } = {}) {
   const args = ['d1', 'execute', database, remote ? '--remote' : '--local', '--json', '--command', sql];
   if (envName) args.push('--env', envName);

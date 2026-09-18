@@ -1,8 +1,8 @@
 // scripts/lib/rehearsal-db.mjs
 //
-// Fix round 2 (2026-09-18): everything that touches SQLite for the migration
-// rehearsal, kept in one file so it is testable with `node --test` alone -
-// no wrangler, no filesystem beyond what the caller hands in as a string.
+// Everything that touches SQLite for the migration rehearsal, kept in one
+// file so it is testable with `node --test` alone - no wrangler, no
+// filesystem beyond what the caller hands in as a string.
 //
 // WHY THIS EXISTS. The rehearsal used to load production's exported dump
 // into a local D1 database through `wrangler d1 execute --local --file`,
@@ -22,10 +22,10 @@
 // left dangling). Those are SQLite semantics, not Workers-runtime behaviour,
 // so they do not need - and now no longer use - the Workers runtime at all.
 //
-// Fix round 3 (2026-09-18): this file used to export a `newProblems(before,
-// after)` set difference, so a violation already present before the apply
-// would not fail the run twice. Independent review measured a real false
-// PASS: `integrityProblems` strings a violation by table/rowid/parent, and a
+// This file used to export a `newProblems(before, after)` set difference, so
+// a violation already present before the apply would not fail the run
+// twice. That was measured (2026-09-18) to produce a real false PASS:
+// `integrityProblems` strings a violation by table/rowid/parent, and a
 // rowid is not stable across a table rebuild - a migration that rebuilt a
 // table, dropped the row holding the OLD violation, and orphaned a
 // DIFFERENT row produced the IDENTICAL string (the new row landed on the
@@ -43,8 +43,8 @@ import { DatabaseSync } from 'node:sqlite';
 // and returns the open handle. `file` defaults to an in-memory database;
 // callers doing a --keep run pass a real path so the copy survives for
 // inspection after the process exits. If the dump itself fails to load, the
-// handle is closed before rethrowing (fix round 3, minor 9) rather than
-// leaking an open file descriptor on the caller's `file` path.
+// handle is closed before rethrowing rather than leaking an open file
+// descriptor on the caller's `file` path.
 export function openCopy(dumpSql, file = ':memory:') {
   const db = new DatabaseSync(file);
   try {
@@ -105,9 +105,8 @@ export function appliedNames(db) {
 // it collides with the BEGIN/COMMIT this function already wraps it in. Both
 // are D1-illegal in a migration and both defeat the rollback this function
 // exists to guarantee, so the error gets a hint pointing at the real cause
-// instead of a bare SQLite message that names no file and no reason
-// (fix round 3, minor 2). This only matches known message text; it never
-// parses the migration's SQL.
+// instead of a bare SQLite message that names no file and no reason. This
+// only matches known message text; it never parses the migration's SQL.
 const TRANSACTION_COLLISION = /cannot commit - no transaction is active|cannot start a transaction within a transaction/i;
 
 // Applies one migration file as a single atomic unit, mirroring how wrangler
@@ -122,7 +121,7 @@ const TRANSACTION_COLLISION = /cannot commit - no transaction is active|cannot s
 // not apply.
 export function applyMigration(db, name, sql) {
   try {
-    db.exec('BEGIN'); // inside the try (fix round 3, minor 1): a failed BEGIN must still be named
+    db.exec('BEGIN'); // inside the try: a failed BEGIN must still be named
     db.exec(sql);
     db.prepare('INSERT INTO d1_migrations (name) VALUES (?)').run(name);
     db.exec('COMMIT');
@@ -145,8 +144,8 @@ export function applyMigration(db, name, sql) {
 // problem, each a plain string (or the single row 'ok' when clean);
 // foreign_key_check returns one row per dangling reference, with
 // table/rowid/parent/fkid columns - all four are included since identity no
-// longer matters (fix round 3: see the file header for why "old vs new"
-// was abandoned as a comparison).
+// longer matters (see the file header for why "old vs new" was abandoned as
+// a comparison).
 export function integrityProblems(db) {
   const problems = [];
   for (const row of db.prepare('PRAGMA quick_check').all()) {
