@@ -1,6 +1,13 @@
 name = "pawscout-worker"
 main = "src/index.ts"
-compatibility_date = "2024-11-01"
+# Raised from 2024-11-01 on 2026-09-18 (deploy-safety phase, task 9). The value
+# is deliberately the build date of the runtime the TEST SUITE runs on
+# (miniflare 4.20260722 / workerd 1.20260722, via @cloudflare/vitest-pool-workers):
+# a newer date would turn on runtime behaviour in production that no local test
+# can exercise. Raise it only together with that package, run the full suite,
+# deploy to staging, and ship it to production as ITS OWN deploy so a runtime
+# behaviour change is never confused with a code change.
+compatibility_date = "2026-07-22"
 compatibility_flags = ["nodejs_compat"]
 
 routes = [
