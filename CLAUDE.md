@@ -22,6 +22,35 @@ If a task needs Shopify Admin API access, **build or extend a capability in the 
 
 The owner has stated this repeatedly. Treat it as a firm, general rule.
 
+## Deploying (one supported path, production only on the owner's go)
+
+Read `docs/RUNBOOK-DEPLOY.md` before any deploy. The only supported command is
+the guarded script:
+
+```
+npm run deploy -- --env staging
+npm run deploy -- --env production      # ONLY on the owner's explicit go
+```
+
+- Never run `wrangler deploy` or `wrangler d1 migrations apply ... --remote`
+  directly. `npm run deploy:raw` and `npm run migrate:remote:raw` exist as an
+  emergency hatch, deploy to PRODUCTION with no guards, and need the owner's go
+  plus a written reason.
+- Staging first, always: production refuses a pending migration that staging
+  has not applied. Staging needs no go (own database, no store, no crons).
+- `npm run deploy -- --env production --dry-run` only reads (git, CI, and the
+  applied-migrations tables); it never writes, deploys or exports, and it says
+  exactly what a real deploy would refuse on.
+- `npm run migrate:rehearse` exports the production database, which blocks its
+  requests for a few seconds: keep it off the cron marks (minutes 0, 15, 30, 45
+  and 04:17 UTC). The guarded production deploy runs it by itself when
+  migrations are pending.
+- A migration file is never edited once any environment has applied it. A
+  change is a new migration.
+- What is live: `curl https://pawscout.activepaw.co.uk/healthz` reports the
+  deployed commit. CI (`.github/workflows/ci.yml`) must be green for the commit
+  being deployed.
+
 ## Knowledge graph: graphite only
 
 graphite is the default and only code-graph tool in this repo. For any

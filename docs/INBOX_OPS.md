@@ -23,8 +23,10 @@
 
 ## 4. Deploy
 - `npm run typecheck && npm test`
-- `npm run migrate:remote` (applies 0009_inbox.sql to the production D1)
-- `npm run deploy`
+- Deploy through the guarded path: `npm run deploy -- --env staging`, then
+  `npm run deploy -- --env production` on the owner's go (applies pending
+  migrations, including `0009_inbox.sql`, and deploys together). See
+  `docs/RUNBOOK-DEPLOY.md`.
 - Send a real test email to support@activepaw.co.uk → confirm a thread appears in the console within
   one cron cycle (≤15 min) and is classified.
 
@@ -40,10 +42,10 @@
 
 ### 1. Database migration + deploy
 
-```sh
-npm run migrate:remote    # applies 0010_inbox_drafts.sql to the production D1
-npm run deploy
-```
+See `docs/RUNBOOK-DEPLOY.md`: `npm run deploy -- --env staging`, then
+`npm run deploy -- --env production` on the owner's go. This applies pending
+migrations (including `0010_inbox_drafts.sql`) and deploys the worker
+together.
 
 `0010_inbox_drafts.sql` adds the `inbox_drafts` table and its indexes only. (The `inbox_contacts.message_count` column was added by `0009_inbox.sql` in W-INBOX-1.) The migration uses bare `CREATE TABLE`/`CREATE INDEX` - re-running it against an already-migrated database will error; run it once on production.
 
@@ -88,9 +90,9 @@ Optional ops sanity check: send a real test reply via "Approve", reply to it fro
 
 ### 1. Database migration
 
-```sh
-wrangler d1 migrations apply pawscout --remote
-```
+See `docs/RUNBOOK-DEPLOY.md`. Migrations go through the guarded deploy
+(`npm run deploy -- --env staging`, then `-- --env production` on the
+owner's go), not a direct `wrangler d1 migrations apply`.
 
 `0011_inbox_invoices.sql` adds the `inbox_invoices` and `inbox_invoice_lines` tables with their indexes. Run this once on production; re-running against an already-migrated database will error.
 
@@ -135,8 +137,7 @@ The primary `paid order → invoice thread` attribution relies on Shopify propag
 
 ### 5. Deploy
 
-```sh
-wrangler deploy
-```
+See `docs/RUNBOOK-DEPLOY.md`: `npm run deploy -- --env staging`, then
+`npm run deploy -- --env production` on the owner's go.
 
 Monitor the deployment logs and verify no errors. The console should immediately show the new **Drafts** tab once the service is live.

@@ -35,10 +35,9 @@ Staging has no shop connected to it, so `GET /public/event` answers 503 by
 design. The staging deploy tells the smoke test to expect this, so that
 answer still counts as a pass.
 
-Staging's URL is the one printed by the first staging deploy (recorded in
-`scripts/lib/deploy-guards.mjs`, `TARGETS.staging.url`). If that is empty,
-the script exits 2 and names the environment variable to set:
-`PAWSCOUT_STAGING_URL`.
+Staging's URL is recorded in `scripts/lib/deploy-guards.mjs`,
+`TARGETS.staging.url`. Set `PAWSCOUT_STAGING_URL` to override it, for
+example if the staging Worker is ever respun under a different subdomain.
 
 ## Deploy to production
 
@@ -48,11 +47,18 @@ npm run deploy -- --env production
 
 Production refuses to deploy unless all five of these are true:
 
-1. **The working tree is clean.** No uncommitted changes to files git already
-   tracks. Untracked files are ignored, because this repo carries
-   long-standing untracked stray files that must not block a deploy. If this
-   fails, the refusal names the modified tracked files. Commit or discard
-   them, then try again.
+1. **The working tree is clean.** Two checks, both checked even on a dry
+   run. First: no uncommitted changes to files git already tracks (most
+   untracked files are ignored, since this repo carries long-standing
+   untracked stray files that must not block a deploy); if this fails, the
+   refusal names the modified tracked files: "Commit or discard these files
+   before deploying to production: `<files>`." Second, one exception to
+   "untracked files are ignored": an untracked file under `migrations/` or
+   `src/` refuses the deploy too, because a migration or source file that
+   exists in no commit must never reach production; if this fails: "Untracked
+   files that a deploy would ship or apply: `<paths>`. Commit them (git add)
+   or remove them: a migration or source file that is in no commit must
+   never reach production." Any other untracked file is still ignored.
 2. **HEAD is pushed.** Your current commit must be what `origin/master`
    points to. If this fails, run `git push` and try again.
 3. **CI is green for HEAD.** If CI is failing, pending, or has no run for this
@@ -63,9 +69,10 @@ Production refuses to deploy unless all five of these are true:
    them for you (see "Rehearse migrations" below) before it will proceed. A
    dry run defers this guard, since it cannot rehearse anything (see below).
    If the rehearsal fails, the deploy is refused and says which kind: exit 1
-   means the migration is not safe for production's data, do not deploy;
-   exit 2 means the rehearsal could not run at all, so nothing was proven,
-   fix the environment and try again.
+   means the migration is not safe for production's data, do not deploy; any
+   other exit code means either the rehearsal could not run, or it ran and
+   could not clean up its own scratch copy afterward, so either way nothing
+   may be deployed on this result, fix the environment and try again.
 5. **Pending migrations are already applied to staging.** The rehearsal runs
    on Node's own SQLite copy, not real D1, so the only remaining proof that
    real D1 accepts the SQL is that staging has already taken the same
@@ -80,7 +87,8 @@ Add `--dry-run` to see what the script would do without doing it:
 npm run deploy -- --env production --dry-run
 ```
 
-A dry run checks the clean tree, pushed HEAD, green CI, and staging-first
+A dry run checks the clean tree (including the untracked-files-under-
+`migrations/`-or-`src/` check), pushed HEAD, green CI, and staging-first
 guards, so it can still refuse for any of those. It defers only the
 migration-rehearsal guard, since a dry run cannot rehearse anything: if
 migrations are pending it prints them and says a rehearsal would run before a
@@ -105,10 +113,33 @@ Exit code 0 means it deployed and the smoke test passed, or a dry run found
 nothing to refuse. Exit code 1 means it was refused or failed. Exit code 2
 means bad usage, for example a missing `--env`.
 
-## When migrations apply but the deploy fails
+## When a migration step fails partway
 
-Sometimes the migration step succeeds and the Worker deploy step right after
-it fails. If this happens:
+Two different partial failures can happen around the migration step, and it
+matters which one:
+
+**The migration apply step itself fails.** With two or more pending files,
+wrangler applies and records one migration file at a time, so some may
+already be applied when it fails. The Worker deploy never runs. The previous
+Worker version is still serving traffic. Migrations are forward-only: never
+try to undo whatever did apply. See what actually landed:
+
+```
+npx wrangler d1 migrations list pawscout --remote
+```
+
+For staging the database name changes too, not only the environment:
+
+```
+npx wrangler d1 migrations list pawscout-staging --remote --env staging
+```
+
+The deploy script prints the right one for the environment it was run for. Fix
+whatever made the apply fail, then run the same deploy command again: it only
+tries what is still pending.
+
+**Migrations apply cleanly, then the Worker deploy step fails.** If this
+happens:
 
 - The database is ahead of the code: the new migrations are already applied.
 - The previous Worker version is still serving traffic. Nothing is down.
@@ -117,11 +148,11 @@ it fails. If this happens:
   It finds no pending migrations left and goes straight to deploying the
   Worker.
 
-This is survivable by design, not by luck: the same forward-only migration
-policy that makes a rollback safe (see "Migration policy" below) also means
-the previous code keeps working against the newer schema. A half-deploy just
-means the code has not caught up to the database yet, and running the script
-again finishes that.
+Both cases are survivable by design, not by luck: the same forward-only
+migration policy that makes a rollback safe (see "Migration policy" below)
+also means the previous code keeps working against the newer schema. A
+half-deploy just means the code has not caught up to the database yet, and
+running the script again finishes that.
 
 ## Check what is live
 
@@ -149,6 +180,17 @@ For staging:
 npx wrangler rollback -y --env staging
 ```
 
+This was drilled on staging on 2026-09-18, not just written down: the command
+exited 0, and `/healthz` reported the previous version's label within 5
+seconds. The label is stored with each version, so after a rollback `/healthz`
+names the commit you rolled back TO. That is how you confirm a rollback landed.
+
+Rolling back the very first guarded production deploy lands on a version
+that predates the `/healthz` route entirely. A 404 there means the rollback
+landed on that earlier version, not that the Worker is down; check a route
+that existed before this phase (for example `/app`) to confirm the Worker
+itself is responding.
+
 A rollback reverts the Worker code only. It never touches the database.
 Anything a migration has already done to the schema or the data stays done.
 
@@ -162,6 +204,16 @@ column in the same release that stops using it.
 This is what makes a Worker rollback safe after a migration has already run:
 because the schema only ever grows first and shrinks later, the previous
 version of the code is still able to run against the migrated schema.
+
+A migration file is never edited once any environment, staging or
+production, has applied it. If a mistake needs fixing, write a new
+migration; do not change the old one. The guard that checks pending
+migrations are already on staging compares file NAMES, not their contents,
+and staging accepts a dirty tree, so an edited file can look identical to
+what staging already proved. When staging is about to apply a pending
+migration that is untracked or modified in the working tree, the deploy
+script prints a `deploy: WARNING` line naming the files: that is your signal
+that the SQL staging is about to prove may not be the SQL you think it is.
 
 ## Rehearse migrations
 
@@ -196,6 +248,12 @@ by an earlier run. If a leftover cannot be deleted, the run stops immediately
 copy looks empty, for example no tables or no rows, the run also stops as an
 environment error (exit 2), never as a pass, because an empty copy proves
 nothing.
+
+An interrupted run (Ctrl-C, a crash, a closed terminal) can leave an export
+sitting in `.wrangler/rehearsal-<digits>/` with nothing around to report it
+at that moment. The next run sweeps it automatically, so after an
+interruption either run `npm run migrate:rehearse` again or delete the
+directory yourself.
 
 If an integrity problem already exists in the copy before the migrations
 run, the rehearsal stops immediately as an environment error (exit 2) rather
@@ -261,8 +319,12 @@ how many. Exit code 1 means the rehearsal failed: do not deploy, and read
 the message, which names the migration file that failed. Exit code 2 means
 usage or environment error, for example an old Node version or a leftover
 directory that would not delete: nothing was proven either way, so fix the
-environment and run it again. A cleanup failure at the end turns a would-be
-0 into a 2, and never hides a 1.
+environment and run it again. Cleanup is judged by whether the scratch
+directory still exists at the end, not by whether every step along the way
+went cleanly: if an early step could not delete something but the directory
+is fully gone by the time the run finishes, that earlier warning no longer
+applies and a pass stays a 0; if the directory still exists, a pass is
+escalated to a 2, and a genuine failure (exit 1) is never masked either way.
 
 ## When the smoke test is red
 
@@ -270,10 +332,13 @@ Read which check failed: `healthz`, `public-event`, or `app`.
 
 - If `healthz` fails because the version does not match, the previous
   version is usually still being served: a request right after a deploy can
-  keep hitting the old version for about 15 seconds. Wait, then re-run with
-  `--expect-version` set to the label the deploy printed (`deployed <label>
-  to <env>`), so the re-run actually checks the version again instead of
-  passing without checking it:
+  keep hitting the old version for about 15 seconds. The label to compare
+  against is in the deploy's own `deploy: deploying <label> to <env>` line,
+  printed before the smoke test runs, and in the failing check's own detail
+  line; `deployed <label> to <env>` only prints on success, so it is not
+  there to read on a red smoke. Wait, then re-run with `--expect-version`
+  set to that label, so the re-run actually checks the version again
+  instead of passing without checking it:
 
   ```
   npm run smoke -- <base-url> --expect-version <label>
@@ -285,14 +350,43 @@ Read which check failed: `healthz`, `public-event`, or `app`.
 - If `healthz` reports the database check as false, roll back now. See
   "Roll back" above.
 
+- If `public-event` fails, check Shopify's status before rolling back.
+  `/public/event` answers 503 `unavailable` when its 10 minute cache is cold
+  and the live Shopify Admin probe fails, so a Shopify hiccup that outlasts
+  the smoke test's roughly 60 second retry window reads as a red smoke on an
+  otherwise healthy deploy. Re-run the smoke once Shopify recovers before
+  treating this failure alone as a reason to roll back.
+
+- If `app` fails, the deployed Worker is not serving its own console page at
+  all. Unlike `public-event`, this is not expected on a healthy deploy, so
+  treat it at least as seriously as a `healthz` failure rather than assuming
+  a re-run will clear it.
+
 ## Escape hatch
 
+`npm run deploy:raw` and `npm run migrate:remote:raw` skip every guard.
+Both act on PRODUCTION directly (no `--env` flag means the top-level,
+production config), and both need the owner's explicit go, exactly like any
+other production deploy.
+
+`npm run deploy:raw` alone does NOT apply migrations: it is a plain
+`wrangler deploy` with no clean tree check, no CI check, no migration
+rehearsal, and no smoke test. If a migration is pending, running `deploy:raw`
+by itself ships new code onto the OLD schema.
+
+The decision record's strict integrity rule (see "Rehearse migrations"
+above) can block a migration deploy outright even when the migration itself
+is fine, if production already has an unrelated integrity problem. If a
+migration genuinely needs to ship before that is cleaned up, the real
+emergency path is two commands, in order, both on the owner's go, both
+unguarded:
+
 ```
+npm run migrate:remote:raw
 npm run deploy:raw
 ```
 
-This is a plain `wrangler deploy` with no guards at all: no clean tree check,
-no CI check, no migration rehearsal, no smoke test. It leaves `/healthz`
-reporting `version: unknown`, because it does not inject the commit. Use it
-only with a written reason recorded in the commit message or the backlog, so
-there is a record of why the guarded path was bypassed.
+`deploy:raw` leaves `/healthz` reporting `version: unknown`, because it does
+not inject the commit. Use either command only with a written reason
+recorded in the commit message or the backlog, so there is a record of why
+the guarded path was bypassed.

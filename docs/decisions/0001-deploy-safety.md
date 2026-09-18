@@ -20,9 +20,12 @@ Build eight components, together called phase 1, deploy safety:
 
 - **C1, CI:** GitHub Actions runs `npm ci`, typecheck, lint,
   `npm run test:ci`, `npm run test:scripts`, on Node 24, ubuntu, triggered on
-  every push and on manual dispatch (there is no `pull_request` trigger),
-  with in-progress runs for the same ref cancelled and no path filters, so
-  every pushed commit gets a verdict.
+  every push and on manual dispatch. There is no `pull_request` trigger: with
+  one owner pushing every branch directly, `push` already covers every
+  commit, a `pull_request` trigger would run the same suite twice on the
+  same commit, and the repository is private, where Actions minutes are a
+  budget. In-progress runs for the same ref are cancelled and there are no
+  path filters, so every pushed commit gets a verdict.
 - **C2, `/healthz`:** a public, unauthenticated, `no-store` endpoint that
   answers `{ ok, env, version, db }`, where `version` is the commit injected
   at deploy and `db` is a real `SELECT 1` check, so the current commit is
@@ -122,9 +125,37 @@ problem before and one after, so a count would have passed it too).
 **Cost:** a production database that already has one integrity problem now
 blocks every migration deploy that touches it, until that row is fixed, even
 for a migration unrelated to it. This is a real defect worth fixing once at
-the source, not a permanent inconvenience, and production has none today.
-`npm run deploy:raw` remains the emergency hatch if a deploy is genuinely
-needed before that cleanup happens.
+the source, not a permanent inconvenience, and production has none today. If
+a migration is genuinely needed before that cleanup happens, the unguarded
+pair `npm run migrate:remote:raw` then `npm run deploy:raw` remains the
+emergency hatch (see `docs/RUNBOOK-DEPLOY.md`, "Escape hatch").
+
+## Addendum, 2026-09-18: every D1 read in the deploy scripts fails closed
+
+**Decision:** a D1 read in the guarded deploy that fails for any reason other
+than an expected empty result (a fresh database's missing `d1_migrations`
+table, and only on staging, never on production) refuses cleanly with the
+reason and a note that the Cloudflare API has been seen to refuse a read
+transiently, so try again and check `npx wrangler whoami` if it keeps
+happening. The rehearsal fails closed in the same way (its own read of
+`d1_migrations` prints the reason and exits 2, and its export failure carries
+the retry note); its `d1_migrations` read does not print the retry note yet.
+
+**Evidence:** two separate transient Cloudflare API failures, both on
+2026-09-18. The migration rehearsal's export endpoint returned
+`Authentication error [code: 10000]` once and succeeded on retry about 50
+seconds later. Separately, a staging deploy died when a D1 read returned
+"The given account is not valid or is not authorized to access this
+service"; the same read succeeded about 60 seconds later. In both cases
+every other authenticated call kept working throughout.
+
+**Rejected:** leaving the failure as an uncaught exception, which is what a
+production `d1_migrations` read failure used to do: the operator got a raw
+Node stack trace instead of a reason and a next step.
+
+**Cost:** one more error path to keep consistent across every D1 read in
+these scripts, in exchange for a clear "try again" instead of a stack trace
+on a failure that is usually gone within a minute.
 
 ## Consequences
 
