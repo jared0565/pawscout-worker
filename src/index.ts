@@ -68,6 +68,7 @@ import { getApplicationsConsole, approveApplicationAnyway, declineApplicationByI
 import { defaultFetch } from './safe-fetch';
 import { handlePortalLogin, handlePortalGet, handlePortalData, SESSION_COOKIE_NAME, SESSION_COOKIE_PATH, SESSION_MAX_AGE_SECONDS, PORTAL_DARK_HTML, GENERIC_LOGIN_HTML } from './affiliate/portal';
 import { getCookie, setCookie } from 'hono/cookie';
+import { healthReport } from './health';
 
 export const app = new Hono<{ Bindings: Env }>();
 
@@ -83,6 +84,13 @@ app.get('/auth/callback', async (c) => {
 });
 
 app.get('/app', (c) => consolePage(c.env.SHOPIFY_API_KEY));
+
+// Liveness + deployed commit for the smoke test and for anyone with curl.
+// Public by design: see src/health.ts for what it may and may not reveal.
+app.get('/healthz', async (c) => {
+  const report = await healthReport(c.env);
+  return c.json(report, report.ok ? 200 : 503, { 'Cache-Control': 'no-store' });
+});
 
 // Public one-click unsubscribe for ALL marketing email (reorder reminders and
 // campaigns share one suppression list - opting out once covers both). The

@@ -3455,3 +3455,12 @@ export async function purgeUnusedWarehouse(db: D1Database, beforeIso: string): P
     .run();
   return r.meta.changes ?? 0;
 }
+
+// Liveness round trip for /healthz (src/health.ts). Lives here because this is
+// the only file allowed to touch D1 directly (tests/guard.test.ts). No table,
+// no shop: it proves the binding answers, nothing more. Throws on any failure
+// so the caller decides how to report it.
+export async function pingDatabase(db: D1Database): Promise<void> {
+  const row = await db.prepare('SELECT 1 AS one').first<{ one: number }>();
+  if (row?.one !== 1) throw new Error(`unexpected liveness row: ${JSON.stringify(row)}`);
+}

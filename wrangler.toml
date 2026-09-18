@@ -87,5 +87,5 @@ migrations_dir = "migrations"
 [env.staging.vars]
 ENVIRONMENT = "staging"
 SHOPIFY_API_KEY = "staging-not-connected"
-SHOPIFY_APP_URL = "https://pawscout-worker-staging.workers.dev"
+SHOPIFY_APP_URL = "https://pawscout-worker-staging.bmorris0565.workers.dev"
 SHOPIFY_SCOPES = "read_products"
