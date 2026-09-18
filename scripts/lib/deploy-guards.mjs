@@ -131,7 +131,26 @@ export function evaluateGuards(state) {
     );
   }
 
+  const missingOnStaging = state.missingOnStaging || [];
+  if (missingOnStaging.length > 0) {
+    failures.push(
+      `These pending migrations have not been applied to staging yet: ${missingOnStaging.join(', ')}. Deploy to staging first (npm run deploy -- --env staging): staging is the only place that proves real D1 accepts the SQL.`
+    );
+  }
+
   return { ok: failures.length === 0, failures };
+}
+
+// The migration rehearsal was rebuilt on Node's built-in SQLite (2026-09-18):
+// it proves "production's data survives this SQL" but no longer touches D1
+// at all, so it can no longer prove "real D1 accepts this SQL". The only
+// thing left that proves that is staging having already taken the same
+// migration. This is the entries of `pending` that staging has not yet
+// applied, in `pending`'s own order; a name staging has that production does
+// not need is not this function's concern and is ignored.
+export function missingOnStaging(pending, stagingApplied) {
+  const applied = new Set(stagingApplied);
+  return pending.filter((name) => !applied.has(name));
 }
 
 const SHA_HEX = /^[0-9a-f]{40}$/i;

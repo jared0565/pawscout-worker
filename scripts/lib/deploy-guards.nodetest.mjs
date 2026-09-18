@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {
   parseDeployArgs, versionLabel, ciVerdict, evaluateGuards,
   wranglerDeployArgs, migrationsApplyArgs, rollbackCommand, pendingForGuards,
-  gitStateProblems
+  gitStateProblems, missingOnStaging
 } from './deploy-guards.mjs';
 
 const SHA = 'abc123def4567890abc123def4567890abc123de';
@@ -132,4 +132,71 @@ test('gitStateProblems: a failed fetch refuses production but not staging', () =
     gitStateProblems({ env: 'staging', fetch: badFetch, status: goodStatus, head: goodRead, upstream: goodRead }),
     []
   );
+});
+
+test('gitStateProblems: two failures at once are both reported', () => {
+  const notHex = { status: 0, stdout: 'error: detected dubious ownership\n', stderr: '' };
+  const problems = gitStateProblems({ env: 'production', fetch: goodStatus, status: failedRead, head: notHex, upstream: goodRead });
+  assert.equal(problems.length, 2);
+});
+
+test('missingOnStaging: nothing pending, all applied, some missing in order, staging extras ignored', () => {
+  assert.deepEqual(missingOnStaging([], ['0001_init.sql']), []);
+  assert.deepEqual(missingOnStaging(['0001_init.sql', '0002_x.sql'], ['0001_init.sql', '0002_x.sql']), []);
+  assert.deepEqual(
+    missingOnStaging(['0001_init.sql', '0002_x.sql', '0003_y.sql'], ['0001_init.sql']),
+    ['0002_x.sql', '0003_y.sql']
+  );
+  assert.deepEqual(missingOnStaging(['0001_init.sql'], ['0001_init.sql', '0099_staging_only.sql']), []);
+});
+
+test('production refuses when pending migrations have not reached staging first', () => {
+  const r = evaluateGuards({ ...clean, pending: ['0041_x.sql'], rehearsalOk: true, missingOnStaging: ['0041_x.sql'] });
+  assert.equal(r.ok, false);
+  assert.equal(
+    r.failures[0],
+    'These pending migrations have not been applied to staging yet: 0041_x.sql. Deploy to staging first (npm run deploy -- --env staging): staging is the only place that proves real D1 accepts the SQL.'
+  );
+});
+
+test('staging never evaluates the staging-first guard', () => {
+  const r = evaluateGuards({ ...clean, env: 'staging', missingOnStaging: ['0041_x.sql'] });
+  assert.deepEqual(r, { ok: true, failures: [] });
+});
+
+test('the staging-first guard is not deferred on a dry run, unlike the rehearsal guard', () => {
+  const r = evaluateGuards({
+    ...clean,
+    pending: pendingForGuards(['0041_x.sql'], true),
+    rehearsalOk: null,
+    missingOnStaging: ['0041_x.sql']
+  });
+  assert.equal(r.ok, false);
+  assert.match(r.failures[0], /have not been applied to staging yet/);
+});
+
+test('failures accumulate: dirty tree and missing on staging are both reported', () => {
+  const r = evaluateGuards({ ...clean, dirty: [' M a'], missingOnStaging: ['0041_x.sql'] });
+  assert.equal(r.failures.length, 2);
+});
+
+test('phase one (before any rehearsal runs): passes with the pending guard deferred and missingOnStaging clear', () => {
+  const r = evaluateGuards({
+    ...clean,
+    pending: pendingForGuards(['0041_x.sql'], true),
+    rehearsalOk: null,
+    missingOnStaging: []
+  });
+  assert.deepEqual(r, { ok: true, failures: [] });
+});
+
+test('phase two (after a real rehearsal ran): refuses when the rehearsal failed', () => {
+  const r = evaluateGuards({
+    ...clean,
+    pending: ['0041_x.sql'],
+    rehearsalOk: false,
+    missingOnStaging: []
+  });
+  assert.equal(r.ok, false);
+  assert.match(r.failures[0], /no passing rehearsal/);
 });

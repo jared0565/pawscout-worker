@@ -20,7 +20,7 @@ import { ROOT, runWrangler, runGit, runGh, runNode, d1Rows } from './lib/run.mjs
 import {
   TARGETS, parseDeployArgs, versionLabel, ciVerdict, evaluateGuards,
   wranglerDeployArgs, migrationsApplyArgs, rollbackCommand, pendingForGuards,
-  gitStateProblems
+  gitStateProblems, missingOnStaging
 } from './lib/deploy-guards.mjs';
 import { pendingMigrations } from './lib/rehearsal.mjs';
 
@@ -111,45 +111,69 @@ const pending = pendingMigrations(migrationFiles, appliedNames);
 
 console.log(`deploy: ${pending.length} pending migration(s)${pending.length ? ': ' + pending.join(', ') : ''}`);
 
-// The rehearsal only runs for a real production deploy: a dry run reports
-// the plan instead (rehearsalOk stays null, which evaluateGuards treats the
-// same as "not rehearsed" and refuses on if there is anything pending).
-let rehearsalOk = null;
-if (env === 'production' && pending.length > 0 && !dryRun) {
-  console.log('deploy: rehearsing pending migrations before touching production');
-  const rehearsalArgs = allowShrink.length ? ['--allow-shrink', allowShrink.join(',')] : [];
-  const rehearsalResult = runNode('scripts/rehearse-migrations.mjs', rehearsalArgs, { stdio: 'inherit' });
-  rehearsalOk = rehearsalResult.status === 0;
+// The migration rehearsal no longer touches D1 at all (it was rebuilt on
+// Node's in-memory SQLite after wrangler 3.114 could not ingest a
+// production-sized export); the only remaining proof that real D1 accepts
+// the SQL is that staging already took the same migration. This is a cheap
+// read, so unlike the rehearsal it is never deferred, not even on a dry
+// run, and it is read only for production with something pending: staging
+// itself has nothing to prove against, and an empty `pending` has nothing
+// to look up.
+let stagingMissing = [];
+if (env === 'production' && pending.length > 0) {
+  let stagingApplied = [];
+  try {
+    const rows = d1Rows(TARGETS.staging.database, 'SELECT name FROM d1_migrations ORDER BY id', { envName: TARGETS.staging.wranglerEnv });
+    stagingApplied = rows.map((row) => row.name);
+  } catch (err) {
+    if (/no such table/i.test(err.message)) {
+      stagingApplied = [];
+    } else {
+      console.error('REFUSED:');
+      console.error(`  Staging could not be read (${err.message}), so it cannot be proven these pending migrations reached staging first. Fail closed: fix staging access and try again.`);
+      process.exit(1);
+    }
+  }
+  stagingMissing = missingOnStaging(pending, stagingApplied);
+  console.log(`deploy: ${stagingMissing.length} of ${pending.length} pending migration(s) missing on staging${stagingMissing.length ? ': ' + stagingMissing.join(', ') : ''}`);
 }
 
 const label = versionLabel(head, dirty.length > 0);
 const smokeArgs = [target.url, '--expect-version', label, ...(env === 'staging' ? ['--allow-unavailable'] : [])];
 
-// A dry run cannot rehearse anything, so the pending-migrations guard is fed
-// an empty list on a dry run and deferred rather than failed; the other
-// three guards (dirty tree, unpushed HEAD, CI) still see the real state and
-// still refuse a dry run exactly as they refuse a real run (fix to a plan
-// defect found in review, 2026-09-18: see pendingForGuards in deploy-guards.mjs).
-const guardResult = evaluateGuards({
+// Printed only once the whole guard gate has actually passed for this run's
+// path (dry run: after phase one; real run: after phase two below), so a
+// run refused for some other reason never claims to have used the skip.
+// Staging has no CI check to skip in the first place, so this never prints
+// there even if --skip-ci was (needlessly) given.
+function announceSkipIfUsed() {
+  if (skipCiReason && env === 'production') {
+    console.log(`CI check SKIPPED: ${skipCiReason}`);
+  }
+}
+
+// Phase one: every guard that needs no rehearsal. The rehearsal briefly
+// exports and blocks the production database (measured ~7s for this one),
+// so nothing about production should be touched until every cheap guard -
+// clean tree, pushed HEAD, green CI, migrations already proven on staging -
+// has already passed. The pending-migrations (rehearsal) guard is deferred
+// here exactly the way a dry run defers it; missingOnStaging is NOT
+// deferred, since it is itself a cheap read (found in review, 2026-09-18).
+const phaseOne = evaluateGuards({
   env, dirty, head, upstreamHead, ci, skipCiReason,
-  pending: pendingForGuards(pending, dryRun),
-  rehearsalOk
+  pending: pendingForGuards(pending, true),
+  rehearsalOk: null,
+  missingOnStaging: stagingMissing
 });
 
-if (!guardResult.ok) {
+if (!phaseOne.ok) {
   console.error('REFUSED:');
-  for (const failure of guardResult.failures) console.error(`  ${failure}`);
+  for (const failure of phaseOne.failures) console.error(`  ${failure}`);
   process.exit(1);
 }
 
-// Printed here, next to the successful guard evaluation, rather than during
-// gathering: a run that gets refused for some other reason (dirty tree, for
-// example) never used the skip, so it should not claim it did.
-if (skipCiReason) {
-  console.log(`CI check SKIPPED: ${skipCiReason}`);
-}
-
 if (dryRun) {
+  announceSkipIfUsed();
   console.log(`deploy: dry run for ${env}, nothing refused`);
   console.log(`  version label: ${label}`);
   console.log(`  pending migrations: ${pending.length ? pending.join(', ') : 'none'}`);
@@ -161,6 +185,42 @@ if (dryRun) {
   console.log(`  would run: node scripts/smoke.mjs ${smokeArgs.join(' ')}`);
   process.exit(0);
 }
+
+// Phase two: only reached for a real deploy where every cheap guard already
+// passed. Only now does a production deploy with pending migrations run the
+// rehearsal - the one step that touches the production database before the
+// real migration apply.
+let rehearsalOk = null;
+let rehearsalExitCode = null;
+if (env === 'production' && pending.length > 0) {
+  console.log('deploy: rehearsing pending migrations before touching production');
+  const rehearsalArgs = allowShrink.length ? ['--allow-shrink', allowShrink.join(',')] : [];
+  const rehearsalResult = runNode('scripts/rehearse-migrations.mjs', rehearsalArgs, { stdio: 'inherit' });
+  rehearsalExitCode = rehearsalResult.status;
+  rehearsalOk = rehearsalResult.status === 0;
+}
+
+const phaseTwo = evaluateGuards({
+  env, dirty, head, upstreamHead, ci, skipCiReason,
+  pending,
+  rehearsalOk,
+  missingOnStaging: stagingMissing
+});
+
+if (!phaseTwo.ok) {
+  console.error('REFUSED:');
+  for (const failure of phaseTwo.failures) console.error(`  ${failure}`);
+  if (env === 'production' && pending.length > 0 && rehearsalOk !== true) {
+    if (rehearsalExitCode === 1) {
+      console.error('The rehearsal exited 1: this migration is NOT safe for production data. Do not deploy; read the rehearsal output above.');
+    } else {
+      console.error(`The rehearsal exited ${rehearsalExitCode}, meaning it could not run at all; nothing was proven either way. Fix the environment and run the deploy again.`);
+    }
+  }
+  process.exit(1);
+}
+
+announceSkipIfUsed();
 
 if (pending.length > 0) {
   console.log(`deploy: applying ${pending.length} migration(s) to ${target.database}`);
