@@ -1,8 +1,9 @@
 # Production-Grade Programme: PawScout + Active Paw (PRD)
 
-Status: DRAFT for owner review. Phase 1 is approved to build (owner, 2026-09-18:
-"proceed as per your recommendation"). Every later phase gets its own spec and
-plan before any code.
+Status: DRAFT for owner review. Phase 1 was approved to build (owner, 2026-09-18:
+"proceed as per your recommendation") and is COMPLETE: all five exit criteria met
+on 2026-09-18 (section 5.7). Every later phase gets its own spec and plan before
+any code.
 
 ## 1. Owner direction
 
@@ -155,6 +156,20 @@ release. This is what makes a worker rollback safe after a migration has run.
 3. `npm run migrate:rehearse` passes against a real production export and leaves no export behind.
 4. `npm run deploy -- --env production --dry-run` refuses on a dirty tree and on a commit without green CI, and says why.
 5. After the owner's go, production is deployed through the script and `/healthz` on production reports the commit.
+
+### 5.7 Outcome (2026-09-18)
+
+All five exit criteria were met, each by a check that was run and could have failed:
+
+1. A planted failing test on a throwaway branch produced a red CI run; master is green.
+2. Staging answers `/healthz` with `env: "staging"`, `db: true` and its commit label, and has no cron triggers.
+3. The rehearsal passed against a real production export (42 tables) and left nothing on disk. Two deliberately destructive probe migrations were refused.
+4. The production dry run refused on a dirty tree, on CI still running, on untracked files under `migrations/` and `src/`, and on a migration missing from staging. It passed on a clean green commit.
+5. On the owner's go, `npm run deploy -- --env production` deployed commit `8fcd948` (0 migrations) and the script's smoke test passed. Checked again outside the script: `/healthz` on production reports `env: "production"`, `db: true` and the label `8fcd948d16f3`; `/public/event` is unchanged; the applied migrations are unchanged.
+
+What acceptance against the real system caught, after every per-task review had come back clean: the first rehearsal could not load the real production dump at all, and the first integrity rule could pass a broken foreign key. Both were rebuilt (decision record `docs/decisions/0001-deploy-safety.md`). The final whole-branch review then found six holes at the seams between tasks; all six were fixed.
+
+Still open from phase 1: the runtime compatibility date (2024-11-01 to 2026-07-22) waits on branch `compat-date-2026-07-22` for its own owner go, because a runtime behaviour change is its own production deploy.
 
 ## 6. Cross-repository contract: theme and worker
 
