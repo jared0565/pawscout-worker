@@ -26,15 +26,15 @@ The owner has stated this repeatedly. Treat it as a firm, general rule.
 
 graphite is the default and only code-graph tool in this repo. For any
 graph or codebase-map request ("update the graph", "what calls X", "trace the
-data flow"), use graphite: `python -m graphite build .` to rebuild,
-`python -m graphite query "stats"` to inspect. See `GRAPHITE.md` for the full
-workflow.
+data flow"), use graphite: `python -P -m graphite build .` to rebuild,
+`python -P -m graphite query "stats"` to inspect. See `GRAPHITE.md` for the
+full workflow.
 
-The graphify skill is intentionally disabled to avoid a graph-tool collision
-(both trigger on the same phrasing). It is blocked machine-wide via
-`skillOverrides.graphify: "off"` in `~/.claude/settings.json`, and this repo
-also carries a committed `.claude/settings.json` with the same override so the
-policy travels with the repo. Do not re-enable graphify here.
+No other code-graph tool is used here. Do not install, enable or invoke one:
+graphite is the sole owner of `graph-out/`, and its hooks in the committed
+`.claude/settings.json` rebuild the graph on every turn. graphite itself is an
+installed package, not part of this repository; `GRAPHITE.md` is the
+reference.
 
 <!-- aramid:begin -- managed by `aramid init`; hand-edits inside the fence are overwritten -->
 ## Aramid (security & quality gate)
