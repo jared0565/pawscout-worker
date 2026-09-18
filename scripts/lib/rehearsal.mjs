@@ -66,20 +66,6 @@ export function parseRehearsalArgs(argv) {
   return out;
 }
 
-const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
-
-// One UNION ALL query that returns a row count per table in a single D1
-// round trip. Table names come from sqlite_master (not user input) but are
-// still validated against a strict identifier pattern before being spliced
-// into SQL, since d1Rows has no parameter binding for identifiers.
-export function countsQuery(tables) {
-  if (tables.length === 0) throw new Error('no tables to count');
-  for (const table of tables) {
-    if (!IDENTIFIER.test(table)) throw new Error(`bad table name: ${table}`);
-  }
-  return tables.map((table) => `SELECT '${table}' AS t, COUNT(*) AS n FROM "${table}"`).join(' UNION ALL ');
-}
-
 // Fix round 1 (2026-09-18), CRITICAL: a scratch copy of production can be
 // left on disk if the process dies before its own finally runs (Ctrl-C
 // during the long remote export, a hard crash) - a finally block only ever

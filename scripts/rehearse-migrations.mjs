@@ -1,84 +1,68 @@
 #!/usr/bin/env node
 // scripts/rehearse-migrations.mjs
 //
-// WHY THIS EXISTS. Production D1 holds customer messages and shipping
-// addresses. Before a deploy that carries pending migrations, this proves
-// they apply cleanly to a full, throwaway LOCAL copy of production data
-// rather than trusting "it worked on a mostly-empty local database" or, far
-// worse, finding out on production itself. The copy is exported once, loaded
-// into a scratch directory under the gitignored .wrangler/, migrated, and
-// checked, then deleted regardless of outcome. It never writes to production
-// and never leaves the scratch copy behind (deploy-safety phase 1, task 3,
-// 2026-09-18; fix round 1, same day, after review found the cleanup
-// guarantee had gaps - see the comments below marked "fix round 1").
+// WHY: proves pending migrations apply cleanly to a full, throwaway copy of
+// production D1 data (customer messages, addresses) before a real deploy
+// touches it. DIVISION OF LABOUR (fix round 2, 2026-09-18): staging proves
+// "real D1 accepts this SQL" (the deploy script applies migrations there
+// first, over the real Workers/D1 stack); this proves "production's DATA
+// survives this SQL" - SQLite semantics (NOT NULL over an existing NULL, a
+// UNIQUE index over a duplicate, a lost row, a dangling foreign key). That
+// is why load/apply/checks now run on node:sqlite (scripts/lib/rehearsal-db.mjs)
+// instead of wrangler's local Workers runtime, which could not ingest the
+// real 15.5 MB dump (190 workerd HashIndex errors, then a 300s Body Timeout,
+// measured running this script for real on 2026-09-18). wrangler still does
+// exactly two things: read d1_migrations from production, and the export.
 //
 // Usage: node scripts/rehearse-migrations.mjs [--force] [--allow-shrink t1,t2] [--keep]
-//   --force         rehearse even if nothing is pending (mostly for exercising this script)
-//   --allow-shrink  comma-separated table names allowed to shrink or vanish (e.g. a cache table)
-//   --keep          do not delete the scratch copy afterwards (debugging only)
+//   --force         rehearse even if nothing is pending
+//   --allow-shrink  comma-separated table names allowed to shrink or vanish
+//   --keep          keep the scratch copy on disk (as <work>/copy.sqlite) for debugging
 //
-// Exit 0: rehearsal passed, or nothing was pending. Exit 1: rehearsal failed
-// (this is the point of the script: catch it here, not on the real database).
-// Exit 2: bad usage or an environment problem (export/load failed, production
-// unreadable, or a scratch copy of production could not be deleted) that
-// never got as far as testing a migration, or that leaves production data on
-// disk even though the migration itself was fine.
+// Exit 0: passed, or nothing pending. Exit 1: the rehearsal failed (the
+// point of this script). Exit 2: bad usage or an environment problem that
+// never got as far as testing a migration, or that leaves production data
+// on disk regardless of outcome.
 
 import fs from 'node:fs';
 import path from 'node:path';
 import { ROOT, runWrangler, d1Rows } from './lib/run.mjs';
 import {
-  pendingMigrations, compareRowCounts, parseRehearsalArgs, countsQuery,
+  pendingMigrations, compareRowCounts, parseRehearsalArgs,
   leftoverRehearsalDirs, copyLooksLikeProduction, finalExitCode
 } from './lib/rehearsal.mjs';
 
 const DATABASE = 'pawscout';
 
-const TABLE_LIST_SQL =
-  "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' " +
-  "AND name NOT LIKE '_cf_%' AND name <> 'd1_migrations' ORDER BY name";
-
-function countsByTable(state) {
-  const tables = d1Rows(DATABASE, TABLE_LIST_SQL, { remote: false, persistTo: state }).map((r) => r.name);
-  if (tables.length === 0) return { tables, counts: {} };
-  const rows = d1Rows(DATABASE, countsQuery(tables), { remote: false, persistTo: state });
-  return { tables, counts: Object.fromEntries(rows.map((r) => [r.t, r.n])) };
-}
-
-function appliedNamesOnCopy(state) {
-  return d1Rows(DATABASE, 'SELECT name FROM d1_migrations ORDER BY id', { remote: false, persistTo: state }).map(
-    (r) => r.name
-  );
-}
-
-// Fix round 1, CRITICAL: fs.rmSync's `force` option only swallows ENOENT. On
-// Windows, a handle Miniflare or wrangler still holds open on the just-
-// written SQLite file under <dir>/state raises EBUSY/EPERM, and maxRetries
-// defaults to 0 - a single attempt right after the file was last touched can
-// lose that race. Retrying a few times with a short delay gives the handle a
-// chance to close; if it still cannot be removed, this says so loudly and
-// names the exact directory rather than letting the failure disappear into a
-// generic "unexpected error".
-function removeScratchDir(dir, whatItHolds) {
+// fs.rmSync's `force` only swallows ENOENT; a handle still open on a
+// just-written file raises EBUSY/EPERM on Windows, so this retries briefly
+// then warns loudly and names the path rather than failing silently. Checks
+// existence first (fix round 3, minor 4) so it never claims a deletion that
+// did not happen - the mkdir-failure path calls this on a directory that
+// may never have existed, and that is the one output that must stay
+// trustworthy about whether production data is actually still on disk.
+function removeScratch(target, whatItHolds) {
+  const existed = fs.existsSync(target);
   try {
-    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
-    console.log(`rehearse-migrations: scratch copy deleted (${dir})`);
+    fs.rmSync(target, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    console.log(
+      existed ? `rehearse-migrations: deleted ${target}` : `rehearse-migrations: nothing to delete at ${target}`
+    );
     return true;
   } catch (err) {
     console.error(
-      `rehearse-migrations: WARNING: could not delete ${dir} (${err.message}). ` +
-        `This directory ${whatItHolds} and must be deleted by hand.`
+      `rehearse-migrations: WARNING: could not delete ${target} (${err.message}). ` +
+        `This ${whatItHolds} and must be deleted by hand.`
     );
     return false;
   }
 }
 
-// Fix round 1, CRITICAL: covers the case a `finally` never can - the process
-// dying outright (Ctrl-C during the long `d1 export --remote`, a hard crash)
-// skips every JS-level cleanup, finally included, because the main thread is
-// blocked inside a synchronous spawnSync call when it happens. Sweeping
-// leftovers from earlier runs at the very start of every new run means that
-// death mode is cleaned up on the NEXT run, at the latest, instead of never.
+// Sweeps leftovers from earlier runs: a `finally` never runs if the process
+// dies outright (Ctrl-C during the long export), so this is what actually
+// guarantees a leftover copy of production does not survive past the NEXT
+// run. A sweep failure now STOPS main() (fix round 2): it used to be
+// tolerated, which could let a run create a second unremoved copy.
 function sweepLeftoverScratchDirs() {
   const wranglerDir = path.join(ROOT, '.wrangler');
   let entries;
@@ -99,197 +83,220 @@ function sweepLeftoverScratchDirs() {
   let removed = 0;
   let allOk = true;
   for (const name of leftovers) {
-    const full = path.join(wranglerDir, name);
-    const ok = removeScratchDir(full, 'may hold a copy of production data from an earlier interrupted run');
+    const ok = removeScratch(path.join(wranglerDir, name), 'may hold a copy of production data from an earlier run');
     if (ok) removed++;
     else allOk = false;
   }
-  console.log(
-    `rehearse-migrations: startup sweep: removed ${removed} of ${leftovers.length} leftover scratch ` +
-      `director${leftovers.length === 1 ? 'y' : 'ies'}`
-  );
+  console.log(`rehearse-migrations: startup sweep: removed ${removed} of ${leftovers.length} leftover dir(s)`);
   return allOk;
 }
 
-// Everything from the export through the final verdict. Returns a plain exit
-// code (0/1/2), never calls process.exit itself, and never does its own
-// cleanup - the caller (runRehearsal) does that unconditionally, once,
-// whether this returns normally or its own try/catch below has already
-// turned a thrown error into a code.
-function computeRehearsalCode(args, pending, localFiles, state, prodSql) {
+// Export through final verdict. Returns a plain exit code; never calls
+// process.exit, and never removes `work` (runRehearsal does that once,
+// after this returns). db.close() runs here via finally, before the caller
+// can try to remove the directory it lives in - an open handle causes EBUSY.
+// `cleanupState.prodSqlCleanupOk` is written directly, not only returned
+// (fix round 3, minor 8): a throw anywhere after the early delete would
+// otherwise discard whatever this function had already learned about it.
+function computeRehearsalCode(args, pending, localFiles, work, prodSql, rehearsalDb, cleanupState) {
+  const { openCopy, userTables, rowCounts, appliedNames, applyMigration, integrityProblems } = rehearsalDb;
+
   console.log(`rehearse-migrations: exporting production data to ${prodSql} ...`);
   const exportResult = runWrangler(['d1', 'export', DATABASE, '--remote', '--output', prodSql]);
   if (exportResult.status !== 0) {
     console.error(exportResult.stderr || exportResult.stdout);
-    return 2;
+    console.error(
+      "rehearse-migrations: Cloudflare's export endpoint has been observed (2026-09-18) returning a " +
+        "transient 'Authentication error [code: 10000]' that succeeded on retry ~50s later. Try again; " +
+        'if it keeps failing, check `npx wrangler whoami`.'
+    );
+    return 2; // the scratch directory is removed afterward regardless (minor 7)
   }
 
-  console.log('rehearse-migrations: loading the export into a throwaway local copy ...');
-  // --yes is a real d1 execute flag on this wrangler (3.114.17, verified with
-  // --help); measured 2026-09-18 that --local execute never actually prompts
-  // either way, so --yes is harmless insurance rather than load-bearing here.
-  const loadResult = runWrangler([
-    'd1', 'execute', DATABASE, '--local', '--persist-to', state, '--file', prodSql, '--yes'
-  ]);
-  if (loadResult.status !== 0) {
-    console.error(loadResult.stderr || loadResult.stdout);
-    return 2;
+  console.log('rehearse-migrations: loading the export into an in-memory SQLite copy ...');
+  // The dump and this in-memory copy both scale with production (15.5 MB
+  // today, measured 2026-09-18); a JS string cannot exceed roughly 512 MB,
+  // at which point this whole design needs replacing - readFileSync will
+  // fail loudly here, exit 2, rather than silently (minor 12).
+  const dumpText = fs.readFileSync(prodSql, 'utf8');
+  const db = openCopy(dumpText, args.keep ? path.join(work, 'copy.sqlite') : ':memory:');
+
+  // No production data needs to sit on disk once it is loaded (step 8).
+  if (!args.keep) {
+    cleanupState.prodSqlCleanupOk = removeScratch(prodSql, 'is the exported production dump (customer data)');
   }
 
-  console.log("rehearse-migrations: reading the copy's own applied-migrations record ...");
-  const appliedBeforeLocal = appliedNamesOnCopy(state);
-
-  console.log('rehearse-migrations: counting rows before migration ...');
-  const { counts: before } = countsByTable(state);
-
-  // Fix round 1, IMPORTANT 1: a schema-only or otherwise empty copy would
-  // otherwise sail through compareRowCounts (0 rows before, 0 after, nothing
-  // "shrank") and print "rehearsal passed" without a single row of production
-  // data ever having been touched. Caught here, before the copy is trusted
-  // for anything else, as an environment problem: the export or load did not
-  // do what it claimed, not a bad migration.
-  const shape = copyLooksLikeProduction(before);
-  if (!shape.ok) {
-    console.error(`rehearse-migrations: the loaded copy does not look like production: ${shape.reason}`);
-    return 2;
-  }
-
-  // Past this point the copy is loaded and verified to hold real data. A
-  // failure from here on - a migration that does not apply, a bad integrity
-  // check, even a read that throws - is the rehearsal doing its job, not an
-  // environment problem, so it is reported as a rehearsal failure (exit 1),
-  // never an environment error (exit 2).
   try {
-    console.log(`rehearse-migrations: applying ${pending.length} pending migration(s) to the copy ...`);
-    const applyResult = runWrangler(
-      ['d1', 'migrations', 'apply', DATABASE, '--local', '--persist-to', state],
-      { env: { ...process.env, CI: '1' } }
-    );
-    if (applyResult.status !== 0) {
-      console.error(applyResult.stdout);
-      console.error(applyResult.stderr);
-      return 1;
-    }
+    console.log('rehearse-migrations: counting rows and checking integrity before migration ...');
+    const before = rowCounts(db, userTables(db));
 
-    // Fix round 1, IMPORTANT 2: wrangler's own exit code says it did not
-    // error, but the copy's own bookkeeping is the only honest source for
-    // what actually landed - re-reading it here, instead of trusting
-    // production's pending list, is what lets the success line report what
-    // this run actually did rather than repeating what production needed.
-    const appliedAfterLocal = appliedNamesOnCopy(state);
-    const stillPending = pendingMigrations(localFiles, appliedAfterLocal);
-    if (stillPending.length > 0) {
+    // Strict, by ruling (fix round 3): a rowid is not stable across a table
+    // rebuild, so a before/after STRING diff can mask a genuinely new
+    // foreign key violation with an old one's identity (measured by
+    // review - see the comment in rehearsal-db.mjs). Any problem here means
+    // nothing about this migration can be proven either way: stop, exit 2.
+    const problemsBefore = integrityProblems(db);
+    if (problemsBefore.length > 0) {
+      console.error('rehearse-migrations: production already has integrity problems:');
+      for (const problem of problemsBefore) console.error(`  ${problem}`);
       console.error(
-        `rehearse-migrations: wrangler reported success but these did not apply to the copy: ${stillPending.join(', ')}`
+        'rehearse-migrations: across a table rebuild this rehearsal cannot tell an old violation from a ' +
+          'new one, so it refuses to guess. Fix these rows in production first, then run this again.'
       );
-      return 1;
-    }
-    const appliedCount = appliedAfterLocal.length - appliedBeforeLocal.length;
-
-    console.log('rehearse-migrations: checking integrity ...');
-    const quickCheck = d1Rows(DATABASE, 'PRAGMA quick_check', { remote: false, persistTo: state });
-    const fkCheck = d1Rows(DATABASE, 'PRAGMA foreign_key_check', { remote: false, persistTo: state });
-    const quickOk = quickCheck.length === 1 && Object.values(quickCheck[0])[0] === 'ok';
-    if (!quickOk || fkCheck.length !== 0) {
-      console.error('rehearse-migrations: integrity check failed');
-      console.error('quick_check:', JSON.stringify(quickCheck));
-      console.error('foreign_key_check:', JSON.stringify(fkCheck));
-      return 1;
+      return 2;
     }
 
-    console.log('rehearse-migrations: counting rows after migration ...');
-    const { tables: tablesAfter, counts: after } = countsByTable(state);
-
-    const cmp = compareRowCounts(before, after, args.allowShrink);
-    if (!cmp.ok) {
-      console.error('rehearse-migrations: row count problems:');
-      for (const problem of cmp.problems) console.error(`  ${problem}`);
-      return 1;
+    const shape = copyLooksLikeProduction(before);
+    if (!shape.ok) {
+      console.error(`rehearse-migrations: the loaded copy does not look like production: ${shape.reason}`);
+      return 2;
     }
 
-    console.log(
-      `rehearsal passed: ${appliedCount} migration(s) applied to a copy of production, ` +
-        `${tablesAfter.length} tables, integrity ok`
-    );
-    return 0;
-  } catch (err) {
-    console.error(`rehearse-migrations: rehearsal failed while checking the applied copy: ${err.message}`);
-    return 1;
+    // Past this point a failure - a migration that does not apply, a bad
+    // check, even a throw - is the rehearsal doing its job: exit 1, not 2.
+    try {
+      console.log(`rehearse-migrations: applying ${pending.length} pending migration(s) to the copy ...`);
+      for (const name of pending) {
+        applyMigration(db, name, fs.readFileSync(path.join(ROOT, 'migrations', name), 'utf8'));
+      }
+
+      // The copy's own bookkeeping, not production's pending list, is the
+      // honest source for what actually landed (fix round 1, IMPORTANT 2).
+      const stillPending = pendingMigrations(localFiles, appliedNames(db));
+      if (stillPending.length > 0) {
+        console.error(`rehearse-migrations: these did not apply to the copy: ${stillPending.join(', ')}`);
+        return 1;
+      }
+
+      console.log('rehearse-migrations: counting rows and checking integrity after migration ...');
+      const tablesAfter = userTables(db);
+      const cmp = compareRowCounts(before, rowCounts(db, tablesAfter), args.allowShrink);
+      if (!cmp.ok) {
+        console.error('rehearse-migrations: row count problems:');
+        for (const problem of cmp.problems) console.error(`  ${problem}`);
+        return 1;
+      }
+
+      // Guaranteed new by construction: the copy was already proven clean
+      // above, before the apply, so any problem found here was caused by
+      // these migrations. No before/after diff needed any more (fix round
+      // 3: newProblems is deleted - see rehearsal-db.mjs).
+      const problemsAfter = integrityProblems(db);
+      if (problemsAfter.length > 0) {
+        console.error('rehearse-migrations: integrity problems introduced by these migrations:');
+        for (const problem of problemsAfter) console.error(`  ${problem}`);
+        return 1;
+      }
+
+      console.log(
+        `rehearsal passed: applied ${pending.join(', ')} to a copy of production, ` +
+          `${tablesAfter.length} tables, integrity ok`
+      );
+      return 0;
+    } catch (err) {
+      console.error(`rehearse-migrations: rehearsal failed while applying or checking the copy: ${err.message}`);
+      return 1;
+    }
+  } finally {
+    try {
+      db.close();
+    } catch {
+      // Best-effort; must not mask whatever code was already decided above.
+    }
   }
 }
 
-// Runs the rehearsal and always cleans up the scratch directory afterward,
-// as a plain sequential step rather than a try/finally: computeRehearsalCode
-// never calls process.exit and reports its own thrown errors as a code, so
-// by the time execution reaches the cleanup line below, the rehearsal (pass,
-// fail, or environment error) is already fully decided and cleanup runs
-// unconditionally, once, with a result the caller can fold into the exit
-// code (fix round 1, CRITICAL: a cleanup failure must carry its own signal,
-// never silently disappear).
-function runRehearsal(args, pending, localFiles) {
+// Creates the scratch dir and always cleans up afterward as a plain
+// sequential step, not a finally: computeRehearsalCode never calls
+// process.exit and turns its own thrown errors into a code, so cleanup here
+// runs unconditionally, once, after the rehearsal is already decided.
+function runRehearsal(args, pending, localFiles, rehearsalDb) {
   const work = path.join(ROOT, '.wrangler', 'rehearsal-' + Date.now());
-  fs.mkdirSync(work, { recursive: true });
-  const state = path.join(work, 'state');
-  const prodSql = path.join(work, 'prod.sql');
+  try {
+    fs.mkdirSync(work, { recursive: true });
+  } catch (err) {
+    // An environment problem, exit 2 - this used to be uncaught, crashing
+    // with Node's default exit code 1, which the deploy script reads as
+    // "rehearsal FAILED" rather than "could not even start" (fix round 2).
+    console.error(`rehearse-migrations: could not create the scratch work directory ${work}: ${err.message}`);
+    return { code: 2, cleanupOk: removeScratch(work, 'may partially exist after a failed setup') };
+  }
 
+  const prodSql = path.join(work, 'prod.sql');
+  const cleanupState = { prodSqlCleanupOk: true };
   let code;
   try {
-    code = computeRehearsalCode(args, pending, localFiles, state, prodSql);
+    code = computeRehearsalCode(args, pending, localFiles, work, prodSql, rehearsalDb, cleanupState);
   } catch (err) {
     console.error(`rehearse-migrations: unexpected error before the copy could be checked: ${err.message}`);
     code = 2;
   }
 
-  let cleanupOk;
+  let dirCleanupOk;
   if (args.keep) {
-    console.log(`rehearse-migrations: scratch copy kept at ${work}`);
-    cleanupOk = true;
+    console.log(
+      `rehearse-migrations: scratch copy kept at ${work} - it holds prod.sql and copy.sqlite, full copies ` +
+        'of customer messages and addresses, and must be deleted BY HAND. The NEXT run of this script ' +
+        'sweeps it away at startup (it matches rehearsal-<digits>), so copy anything you need out of it first.'
+    );
+    dirCleanupOk = true;
   } else {
-    cleanupOk = removeScratchDir(work, 'holds a copy of production data');
+    dirCleanupOk = removeScratch(work, 'may still hold a copy of production data');
   }
 
-  return { code, cleanupOk };
+  return { code, cleanupOk: cleanupState.prodSqlCleanupOk && dirCleanupOk };
 }
 
-function main() {
-  // Fix round 1, CRITICAL: sweep before anything else, so a leftover from an
-  // earlier Ctrl-C or crash is cleaned up even if everything below this line
-  // fails immediately.
-  const sweepOk = sweepLeftoverScratchDirs();
+async function main() {
+  // node:sqlite now does all the local work; both this probe and the import
+  // of rehearsal-db.mjs (which needs it too) are dynamic, so an old Node
+  // version fails here with a clear message rather than crashing at load.
+  let rehearsalDb;
+  try {
+    await import('node:sqlite');
+    rehearsalDb = await import('./lib/rehearsal-db.mjs');
+  } catch (err) {
+    console.error(`rehearse-migrations: needs Node 22.13 or newer (node:sqlite not available): ${err.message}`);
+    process.exitCode = 2;
+    return;
+  }
+
+  // A sweep failure STOPS here (fix round 2 residual): carrying on would
+  // export a second, unremoved copy of production beside the first.
+  if (!sweepLeftoverScratchDirs()) {
+    process.exitCode = 2;
+    return;
+  }
 
   let args;
   try {
     args = parseRehearsalArgs(process.argv.slice(2));
   } catch (err) {
     console.error(`rehearse-migrations: ${err.message}`);
-    process.exitCode = finalExitCode(2, sweepOk);
+    process.exitCode = 2;
     return;
   }
 
   console.log('rehearse-migrations: reading applied migrations from production ...');
-  let appliedNames;
+  let appliedNamesOnProd;
   try {
-    appliedNames = d1Rows(DATABASE, 'SELECT name FROM d1_migrations ORDER BY id').map((r) => r.name);
+    appliedNamesOnProd = d1Rows(DATABASE, 'SELECT name FROM d1_migrations ORDER BY id').map((r) => r.name);
   } catch (err) {
     console.error(`rehearse-migrations: could not read applied migrations from production: ${err.message}`);
-    process.exitCode = finalExitCode(2, sweepOk);
+    process.exitCode = 2;
     return;
   }
 
-  // Fix round 1, MINOR: a missing/unreadable migrations/ directory is an
-  // environment problem (exit 2), not an uncaught crash with the default
-  // exit code of 1 - the deploy script branches on 1 meaning "rehearsal
-  // failed", which this is not.
   let localFiles;
   try {
     localFiles = fs.readdirSync(path.join(ROOT, 'migrations'));
   } catch (err) {
     console.error(`rehearse-migrations: could not list migrations/: ${err.message}`);
-    process.exitCode = finalExitCode(2, sweepOk);
+    process.exitCode = 2;
     return;
   }
 
-  const pending = pendingMigrations(localFiles, appliedNames);
+  const pending = pendingMigrations(localFiles, appliedNamesOnProd);
   console.log(
     pending.length
       ? `rehearse-migrations: pending migrations: ${pending.join(', ')}`
@@ -298,16 +305,24 @@ function main() {
 
   if (pending.length === 0 && !args.force) {
     console.log('no pending migrations, nothing to rehearse');
-    process.exitCode = finalExitCode(0, sweepOk);
+    process.exitCode = 0;
     return;
   }
 
-  const result = runRehearsal(args, pending, localFiles);
-  // Fix round 1, MINOR: process.exit() can truncate stdout when it is a pipe
-  // (which is how the guarded deploy script will run this). Setting
-  // process.exitCode and returning lets Node flush normally once the event
-  // loop drains, so the last printed lines are never lost.
-  process.exitCode = finalExitCode(result.code, sweepOk && result.cleanupOk);
+  const result = runRehearsal(args, pending, localFiles, rehearsalDb);
+  // process.exitCode, not process.exit(): the cleanup and buffered output
+  // above must finish before the process actually exits (fix round 3: the
+  // previous comment here claimed this matters because the deploy script
+  // pipes stdout - it does not, scripts/deploy.mjs runs this with
+  // stdio: 'inherit'; the real reason was always this one).
+  process.exitCode = finalExitCode(result.code, result.cleanupOk);
 }
 
-main();
+main().catch((err) => {
+  // A floating promise with no .catch would otherwise let an unexpected
+  // throw fall through to Node's default exit code of 1, which
+  // scripts/deploy.mjs reads as "the rehearsal FAILED" rather than "could
+  // not run at all" (fix round 3, minor 5).
+  console.error(`rehearse-migrations: unexpected error: ${err instanceof Error ? err.message : String(err)}`);
+  process.exitCode = 2;
+});

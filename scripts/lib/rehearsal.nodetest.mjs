@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  pendingMigrations, compareRowCounts, parseRehearsalArgs, countsQuery,
+  pendingMigrations, compareRowCounts, parseRehearsalArgs,
   leftoverRehearsalDirs, copyLooksLikeProduction, finalExitCode
 } from './rehearsal.mjs';
 
@@ -46,14 +46,6 @@ test('args', () => {
 test('args: --allow-shrink does not swallow the next flag as its value', () => {
   assert.throws(() => parseRehearsalArgs(['--allow-shrink', '--keep']), /allow-shrink/i);
   assert.throws(() => parseRehearsalArgs(['--allow-shrink', '--force']), /allow-shrink/i);
-});
-
-test('counts query quotes every table name and rejects a name that is not an identifier', () => {
-  const q = countsQuery(['orders', 'tenants']);
-  assert.match(q, /SELECT 'orders' AS t, COUNT\(\*\) AS n FROM "orders"/);
-  assert.match(q, /UNION ALL/);
-  assert.throws(() => countsQuery(['orders"; DROP TABLE x; --']), /table name/i);
-  assert.throws(() => countsQuery([]), /no tables/i);
 });
 
 test('leftoverRehearsalDirs: matches only rehearsal-<digits>, never state or tmp', () => {

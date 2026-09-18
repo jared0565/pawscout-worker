@@ -28,9 +28,16 @@ export const runNode = (script, args, opts) => run(process.execPath, [path.join(
 // Rows of ONE SQL statement. wrangler --json prints an array with one entry per
 // statement on success and an { error } object on failure; both are handled
 // here so no caller ever reads a failure as "zero rows".
-export function d1Rows(database, sql, { remote = true, persistTo = null, envName = null } = {}) {
+//
+// The `persistTo` option (wrangler's --local scratch DB path) was removed
+// 2026-09-18, fix round 2: the migration rehearsal was the only caller that
+// passed it, and it now loads dumps into node:sqlite directly instead of a
+// wrangler --local database (which could not ingest a real 15.5 MB dump -
+// see scripts/lib/rehearsal-db.mjs). No caller passes `remote: false` any
+// more either, but that option is untouched here: this edit is scoped to
+// the one dead option, not a broader cleanup of this shared file.
+export function d1Rows(database, sql, { remote = true, envName = null } = {}) {
   const args = ['d1', 'execute', database, remote ? '--remote' : '--local', '--json', '--command', sql];
-  if (persistTo) args.push('--persist-to', persistTo);
   if (envName) args.push('--env', envName);
   const r = runWrangler(args);
   let parsed;
