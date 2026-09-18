@@ -52,6 +52,13 @@ export interface Env {
   // widget will not validate) until the owner sets it, same dark-by-default
   // posture as the rest of selfServe.
   TURNSTILE_SITE_KEY?: string;
+  // Deploy safety (2026-09-18), both reported by /healthz (src/health.ts).
+  // GIT_SHA is the commit label the guarded deploy script injects with --var;
+  // ABSENT means this Worker was deployed some other way (`deploy:raw`), and
+  // /healthz then says 'unknown' rather than guessing. ENVIRONMENT is
+  // 'production' or 'staging', set per environment in wrangler.toml.
+  GIT_SHA?: string;
+  ENVIRONMENT?: string;
 }
 
 export interface TenantRow {

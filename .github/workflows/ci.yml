@@ -1,0 +1,40 @@
+# The gate that cannot be absent (deploy-safety phase, 2026-09-18).
+#
+# The local gate (aramid) lives in gitignored, machine-local hooks, so a second
+# clone of this repository has none. This workflow runs the same checks for
+# every pushed commit, and the guarded deploy script (scripts/deploy.mjs)
+# refuses a production deploy whose commit has no green run here. That is why
+# there are no path filters: the deploy guard needs a verdict for EVERY commit.
+#
+# Actions are pinned to full commit hashes (resolved 2026-09-18 with `gh api`),
+# not to tags: a moving tag is a supply-chain hole. Bump them deliberately.
+name: ci
+
+on:
+  push:
+  workflow_dispatch:
+
+# A newer push to the same ref makes the older run pointless. This repository
+# is private, so Actions minutes are a budget.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm run test:scripts
+      - run: npm run test:ci
