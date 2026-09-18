@@ -38,11 +38,12 @@ Bridge, session-token authed `/api/*`) is the operator cockpit.
 
 ### Deploy / operate commands (in `pawscout-worker/`)
 ```
-npm run typecheck        # tsc --noEmit
-npm test                 # vitest (264 tests)
-npm run deploy           # wrangler deploy  (push code live)
-npm run migrate:remote   # apply new D1 migrations to prod (only when migrations added)
+npm run typecheck                     # tsc --noEmit
+npm test                              # vitest (264 tests)
+npm run deploy -- --env staging       # guarded deploy - staging first
+npm run deploy -- --env production    # guarded deploy - production, owner's go required
 ```
+Full procedure, guards, and rollback: `docs/RUNBOOK-DEPLOY.md`.
 
 ## 3. Architecture & key facts
 

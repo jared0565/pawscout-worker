@@ -2,12 +2,13 @@
 //
 // The guarded deploy for the PawScout Worker. `npm run deploy` runs this
 // instead of a bare `wrangler deploy` (kept available as `npm run deploy:raw`
-// for emergencies). For production it refuses to run unless the tree is
-// clean, the commit is pushed to origin/master, CI is green (or an operator
-// gave an explicit reason to skip it), and any pending migrations have
-// passed a rehearsal; then it applies migrations, deploys with the commit
-// label injected, and runs the smoke test. Staging never refuses: it exists
-// to rehearse this exact pipeline (deploy-safety phase 1, 2026-09-18).
+// for emergencies). For production it refuses to run unless: the tree is
+// clean, with no untracked migration or source file either; the commit is
+// pushed to origin/master; CI is green (or an operator gave an explicit
+// reason to skip it); and any pending migrations have already reached
+// staging and passed a rehearsal. Only then does it apply migrations,
+// deploy with the commit label injected, and run the smoke test. Staging
+// never refuses: it exists to rehearse this exact pipeline.
 //
 // Every decision is a pure function in scripts/lib/deploy-guards.mjs; this
 // file only gathers state (git, gh, wrangler, the migration rehearsal) and
@@ -20,7 +21,9 @@ import { ROOT, runWrangler, runGit, runGh, runNode, d1Rows } from './lib/run.mjs
 import {
   TARGETS, parseDeployArgs, versionLabel, ciVerdict, evaluateGuards,
   wranglerDeployArgs, migrationsApplyArgs, rollbackCommand, pendingForGuards,
-  gitStateProblems, missingOnStaging
+  gitStateProblems, missingOnStaging, parsePorcelain, blockingUntracked,
+  untrackedOrModifiedPending, tolerateMissingMigrationsTable,
+  migrationsListCommand, d1ReadRefusalLines
 } from './lib/deploy-guards.mjs';
 import { pendingMigrations } from './lib/rehearsal.mjs';
 
@@ -35,11 +38,13 @@ try {
 const { env, dryRun, skipCiReason, allowShrink } = args;
 const target = TARGETS[env];
 
-// TARGETS.staging.url now defaults to the real staging Worker URL, so this
-// only fires if PAWSCOUT_STAGING_URL is explicitly set to an empty string.
-if (env === 'staging' && !target.url) {
-  console.error('Staging has no URL configured. Set PAWSCOUT_STAGING_URL to the staging Worker URL and run again.');
-  process.exit(2);
+// A D1 read that raised is not evaluable, and this exact class of failure
+// has already happened live and cleared on a retry (see d1ReadRefusalLines
+// in deploy-guards.mjs), so no D1 read in this script is allowed to surface
+// as an uncaught stack trace.
+function refuseOnUnreadableD1(reason) {
+  for (const line of d1ReadRefusalLines(reason)) console.error(line);
+  process.exit(1);
 }
 
 console.log(`deploy: gathering state for ${env}${dryRun ? ' (dry run)' : ''}`);
@@ -69,10 +74,13 @@ if (gitProblems.length > 0) {
   process.exit(1);
 }
 
-const dirty = statusResult.stdout
-  .split('\n')
-  .map((line) => line.replace(/\r$/, ''))
-  .filter((line) => line.length > 0 && !line.startsWith('??'));
+const { dirty, untracked } = parsePorcelain(statusResult.stdout);
+
+// A migration file or source file that is in no commit must never reach
+// production: fs.readdirSync('migrations') and `wrangler d1 migrations
+// apply` both see an untracked file, so the dirty-tree guard's blanket "??
+// lines are long-standing strays, ignore them" rule cannot cover this case.
+const blockingUntrackedPaths = blockingUntracked(untracked);
 
 const head = headResult.stdout.trim();
 const upstreamHead = upstreamResult.stdout.trim();
@@ -92,17 +100,18 @@ if (env === 'production') {
 
 console.log(`deploy: HEAD ${head}, origin/master ${upstreamHead}, dirty files ${dirty.length}, CI ${ci.state} (${ci.detail})`);
 
-// A fresh database (staging, most often) has no d1_migrations table yet;
-// that is not a query failure, it is zero applied migrations.
+// A fresh STAGING database has no d1_migrations table yet; that is zero
+// applied migrations, not a failure. The same error on production is never
+// legitimate (see tolerateMissingMigrationsTable).
 let appliedNames = [];
 try {
   const rows = d1Rows(target.database, 'SELECT name FROM d1_migrations ORDER BY id', { envName: target.wranglerEnv });
   appliedNames = rows.map((row) => row.name);
 } catch (err) {
-  if (/no such table/i.test(err.message)) {
+  if (tolerateMissingMigrationsTable(target.wranglerEnv === 'staging', err.message)) {
     appliedNames = [];
   } else {
-    throw err;
+    refuseOnUnreadableD1(`Could not read applied migrations for ${target.database} (${err.message}).`);
   }
 }
 
@@ -110,6 +119,18 @@ const migrationFiles = fs.readdirSync(path.join(ROOT, 'migrations'));
 const pending = pendingMigrations(migrationFiles, appliedNames);
 
 console.log(`deploy: ${pending.length} pending migration(s)${pending.length ? ': ' + pending.join(', ') : ''}`);
+
+// missingOnStaging proves a migration NAME reached staging, not that the
+// SQL staging validated is the SQL that will later reach production, since
+// staging deploys from a dirty tree. This is the cheap half of that same
+// finding: staging never refuses, but it warns when a migration it is
+// about to apply is untracked or modified in the working tree right now.
+if (env === 'staging' && pending.length > 0) {
+  const risky = untrackedOrModifiedPending(pending, dirty, untracked);
+  if (risky.length > 0) {
+    console.error(`deploy: WARNING - staging is about to apply migration(s) that are untracked or modified in the working tree: ${risky.join(', ')}. The SQL staging validates may differ from the SQL that later reaches production.`);
+  }
+}
 
 // The migration rehearsal no longer touches D1 at all (it was rebuilt on
 // Node's in-memory SQLite after wrangler 3.114 could not ingest a
@@ -126,12 +147,10 @@ if (env === 'production' && pending.length > 0) {
     const rows = d1Rows(TARGETS.staging.database, 'SELECT name FROM d1_migrations ORDER BY id', { envName: TARGETS.staging.wranglerEnv });
     stagingApplied = rows.map((row) => row.name);
   } catch (err) {
-    if (/no such table/i.test(err.message)) {
+    if (tolerateMissingMigrationsTable(true, err.message)) {
       stagingApplied = [];
     } else {
-      console.error('REFUSED:');
-      console.error(`  Staging could not be read (${err.message}), so it cannot be proven these pending migrations reached staging first. Fail closed: fix staging access and try again.`);
-      process.exit(1);
+      refuseOnUnreadableD1(`Staging could not be read (${err.message}), so it cannot be proven these pending migrations reached staging first.`);
     }
   }
   stagingMissing = missingOnStaging(pending, stagingApplied);
@@ -155,15 +174,17 @@ function announceSkipIfUsed() {
 // Phase one: every guard that needs no rehearsal. The rehearsal briefly
 // exports and blocks the production database (measured ~7s for this one),
 // so nothing about production should be touched until every cheap guard -
-// clean tree, pushed HEAD, green CI, migrations already proven on staging -
-// has already passed. The pending-migrations (rehearsal) guard is deferred
-// here exactly the way a dry run defers it; missingOnStaging is NOT
-// deferred, since it is itself a cheap read (found in review, 2026-09-18).
+// clean tree, no untracked migration or source file, pushed HEAD, green CI,
+// migrations already proven on staging - has already passed. The
+// pending-migrations (rehearsal) guard is deferred here exactly the way a
+// dry run defers it; blockingUntracked and missingOnStaging are NOT
+// deferred, since both are cheap reads.
 const phaseOne = evaluateGuards({
   env, dirty, head, upstreamHead, ci, skipCiReason,
   pending: pendingForGuards(pending, true),
   rehearsalOk: null,
-  missingOnStaging: stagingMissing
+  missingOnStaging: stagingMissing,
+  blockingUntracked: blockingUntrackedPaths
 });
 
 if (!phaseOne.ok) {
@@ -204,7 +225,8 @@ const phaseTwo = evaluateGuards({
   env, dirty, head, upstreamHead, ci, skipCiReason,
   pending,
   rehearsalOk,
-  missingOnStaging: stagingMissing
+  missingOnStaging: stagingMissing,
+  blockingUntracked: blockingUntrackedPaths
 });
 
 if (!phaseTwo.ok) {
@@ -214,7 +236,7 @@ if (!phaseTwo.ok) {
     if (rehearsalExitCode === 1) {
       console.error('The rehearsal exited 1: this migration is NOT safe for production data. Do not deploy; read the rehearsal output above.');
     } else {
-      console.error(`The rehearsal exited ${rehearsalExitCode}, meaning it could not run at all; nothing was proven either way. Fix the environment and run the deploy again.`);
+      console.error(`The rehearsal exited ${rehearsalExitCode}: either it could not run, or it ran and could not clean up its scratch copy (its own WARNING is above). Either way, nothing may be deployed on this result. Fix the environment and run the deploy again.`);
     }
   }
   process.exit(1);
@@ -226,7 +248,12 @@ if (pending.length > 0) {
   console.log(`deploy: applying ${pending.length} migration(s) to ${target.database}`);
   const migrateResult = runWrangler(migrationsApplyArgs(env), { stdio: 'inherit', env: { ...process.env, CI: '1' } });
   if (migrateResult.status !== 0) {
-    console.error('deploy: migration apply FAILED. The Worker was NOT deployed.');
+    console.error('deploy: migration apply FAILED. The Worker was NOT deployed; the previous Worker version is still serving traffic.');
+    if (pending.length > 1) {
+      console.error('wrangler applies and records migration files one at a time: earlier files in this batch may already be applied.');
+    }
+    console.error('Migrations are forward-only: do not try to undo them.');
+    console.error(`Check what actually applied: ${migrationsListCommand(env)}`);
     process.exit(1);
   }
 }

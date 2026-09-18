@@ -78,7 +78,7 @@ Last updated: 2026-06-17.
             data approval (app config) - without it the address is redacted and we
             can't fulfil; (2) add `read_orders` + `write_merchant_managed_fulfillment_orders`
             scopes, then clear `tenants.access_token_enc` to re-mint; (3) top up
-            the CJ wallet. Deploy needs `npm run migrate:remote` (new 0007).
+            the CJ wallet. Deploy needs `npm run migrate:remote` (new 0007). (Historical: that script is now `migrate:remote:raw`, and deploys go through `docs/RUNBOOK-DEPLOY.md`.)
             **CJ wallet funding (updated 2026-06-15):** wire min **$2000** (too
             high); **Payoneer DROPPED** by owner (too cumbersome - KYC/docs not
             worth a one-off). Path forward = **PayPal top-up via CJ support**

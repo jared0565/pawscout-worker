@@ -5,7 +5,7 @@
 > is enough to continue. Keep it updated: tick checkboxes as tasks land, and
 > append to the Decision Log when anything is decided differently.
 >
-> Last updated: 2026-06-12 (W1+W2+W3 complete - deploy: migrate:remote applies 0005, deploy, and set OPENROUTER_API_KEY secret) · Working branch (both repos): `claude/stoic-pasteur-a2ol7z`
+> Last updated: 2026-06-12 (W1+W2+W3 complete - deploy: migrate:remote applies 0005, deploy, and set OPENROUTER_API_KEY secret; historical, the supported path since 2026-09-18 is `docs/RUNBOOK-DEPLOY.md`) · Working branch (both repos): `claude/stoic-pasteur-a2ol7z`
 
 ---
 
@@ -1147,8 +1147,11 @@ cd pawscout-worker
 git pull origin claude/stoic-pasteur-a2ol7z
 npm install
 npm test && npm run typecheck
-npm run migrate:remote     # only when a new migrations/000X file landed
-npm run deploy
+```
+Deploy through the guarded path, full procedure in `docs/RUNBOOK-DEPLOY.md`:
+```bash
+npm run deploy -- --env staging
+npm run deploy -- --env production   # owner's go required; applies any pending migrations too
 # new secrets (W3): wrangler secret put OPENROUTER_API_KEY
 ```
 Verify: `https://activepaw.co.uk/apps/pawscout/search?q=dog+toy` → `{"ok":true,...}`.

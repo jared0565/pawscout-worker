@@ -2,8 +2,7 @@
 //
 // Pure helpers for the migration rehearsal (scripts/rehearse-migrations.mjs).
 // Kept side-effect free and separate from that script so they can be unit
-// tested without touching wrangler, D1, or the filesystem (2026-09-18,
-// deploy-safety phase 1, task 3).
+// tested without touching wrangler, D1, or the filesystem.
 
 // Local .sql files not yet recorded as applied, sorted so they run in the
 // same order wrangler's own migration numbering implies. Non-.sql files
@@ -66,28 +65,27 @@ export function parseRehearsalArgs(argv) {
   return out;
 }
 
-// Fix round 1 (2026-09-18), CRITICAL: a scratch copy of production can be
-// left on disk if the process dies before its own finally runs (Ctrl-C
-// during the long remote export, a hard crash) - a finally block only ever
-// protects against a normal JS exception, not against the process itself
-// being killed. The real fix is sweeping leftovers from EARLIER runs at the
-// start of every new run. This is the pure "which names count as a leftover"
-// rule, kept narrow on purpose so it can never match the shared `state` or
-// `tmp` directories that also live under .wrangler/.
+// A scratch copy of production can be left on disk if the process dies
+// before its own finally runs (Ctrl-C during the long remote export, a hard
+// crash) - a finally block only ever protects against a normal JS
+// exception, not against the process itself being killed. The real fix is
+// sweeping leftovers from EARLIER runs at the start of every new run. This
+// is the pure "which names count as a leftover" rule, kept narrow on
+// purpose so it can never match the shared `state` or `tmp` directories
+// that also live under .wrangler/.
 const LEFTOVER_DIR = /^rehearsal-\d+$/;
 
 export function leftoverRehearsalDirs(entries) {
   return entries.filter((name) => LEFTOVER_DIR.test(name));
 }
 
-// Fix round 1 (2026-09-18), IMPORTANT 1: a copy that loaded no tables, or
-// loaded tables with zero rows in every one, is not a copy of production at
-// all - it is a schema-only shell, most likely because the export or the
-// load into the local database silently produced nothing. Treating that as
-// "rehearsal passed" would be worse than not rehearsing: it is exactly the
-// false confidence this script exists to prevent. ok is true as soon as ONE
-// table carries at least one row; that is enough to prove data actually
-// moved.
+// A copy that loaded no tables, or loaded tables with zero rows in every
+// one, is not a copy of production at all - it is a schema-only shell, most
+// likely because the export or the load into the local database silently
+// produced nothing. Treating that as "rehearsal passed" would be worse than
+// not rehearsing: it is exactly the false confidence this script exists to
+// prevent. ok is true as soon as ONE table carries at least one row; that is
+// enough to prove data actually moved.
 export function copyLooksLikeProduction(before) {
   const tables = Object.keys(before);
   if (tables.length === 0) {
@@ -100,11 +98,11 @@ export function copyLooksLikeProduction(before) {
   return { ok: true, reason: null };
 }
 
-// Fix round 1 (2026-09-18), CRITICAL: the exit code a failed cleanup produces
-// must never mask a genuine rehearsal failure (1 always wins), but a clean
-// pass whose scratch copy could not be deleted is not actually a clean run -
-// production data is still sitting on disk - so that case is escalated to 2
-// (environment problem), same as any other cleanup-adjacent failure.
+// The exit code a failed cleanup produces must never mask a genuine
+// rehearsal failure (1 always wins), but a clean pass whose scratch copy
+// could not be deleted is not actually a clean run - production data is
+// still sitting on disk - so that case is escalated to 2 (environment
+// problem), same as any other cleanup-adjacent failure.
 export function finalExitCode(code, cleanupOk) {
   if (code === 1) return 1;
   if (!cleanupOk) return 2;

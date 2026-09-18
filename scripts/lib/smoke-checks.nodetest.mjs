@@ -67,6 +67,17 @@ test('args: base url is required, trailing slash is dropped, flags are read', ()
   assert.throws(() => parseSmokeArgs(['https://x.example', '--attempts', '0']), /attempts/i);
 });
 
+test('args: a flag needing a value throws when none follows (end of args or another flag)', () => {
+  assert.throws(() => parseSmokeArgs(['https://x.example', '--expect-version']), /--expect-version/);
+  assert.throws(() => parseSmokeArgs(['https://x.example', '--expect-version', '--allow-unavailable']), /--expect-version/);
+  assert.throws(() => parseSmokeArgs(['https://x.example', '--attempts']), /--attempts/);
+  assert.throws(() => parseSmokeArgs(['https://x.example', '--delay-ms']), /--delay-ms/);
+  assert.deepEqual(
+    parseSmokeArgs(['https://x.example', '--expect-version', 'abc123def456', '--allow-unavailable', '--attempts', '3', '--delay-ms', '10']),
+    { baseUrl: 'https://x.example', expectVersion: 'abc123def456', allowUnavailable: true, attempts: 3, delayMs: 10 }
+  );
+});
+
 test('allPassed is true only when every result is ok and there is at least one', () => {
   assert.equal(allPassed([{ ok: true }, { ok: true }]), true);
   assert.equal(allPassed([{ ok: true }, { ok: false }]), false);

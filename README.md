@@ -352,8 +352,8 @@ npm run dev
 |---|---|
 | `npm test` | Full suite, inside workerd |
 | `npm run typecheck` | `tsc --noEmit` (strict) |
-| `npm run migrate:local` / `migrate:remote` | Apply D1 migrations |
-| `npm run deploy` | Deploy to Cloudflare |
+| `npm run migrate:local` | Apply D1 migrations locally (dev). Production migrations run through the guarded deploy - see `docs/RUNBOOK-DEPLOY.md` |
+| `npm run deploy` | Guarded deploy to Cloudflare - see `docs/RUNBOOK-DEPLOY.md` |
 
 ### Production secrets
 
@@ -376,10 +376,14 @@ The theme then calls `/apps/pawscout/*` on the store's own domain and Shopify si
 
 ### Deploying
 
-1. `npm run migrate:remote` (runs all pending D1 migrations)
-2. `npm run deploy` (deploys the worker + registers cron triggers)
-3. Configure the App Proxy (above) if not already set
-4. Ship the theme half (`active-paw-theme`: `pawscout.js`, search/product/layout wiring)
+Full procedure, guards, and rollback: **`docs/RUNBOOK-DEPLOY.md`**. Short
+version:
+
+1. `npm run deploy -- --env staging` first, then `npm run deploy -- --env production`
+   on the owner's go. This applies any pending D1 migrations and deploys the
+   worker together.
+2. Configure the App Proxy (above) if not already set
+3. Ship the theme half (`active-paw-theme`: `pawscout.js`, search/product/layout wiring)
 
 ### Testing notes
 

@@ -4,11 +4,13 @@
 // scripts/deploy.mjs stays a thin wrapper that only gathers state (git, gh,
 // wrangler, the rehearsal) and prints what these functions decide. Pure
 // functions are what scripts/lib/deploy-guards.nodetest.mjs pins, with no
-// process spawning in the tests (deploy-safety phase 1, 2026-09-18).
+// process spawning in the tests.
 
-// The staging URL is the one the orchestrator's first staging deploy printed
-// (task 7); PAWSCOUT_STAGING_URL still overrides it for a future respin of
-// the staging Worker under a different subdomain.
+// The staging URL defaults to the real staging Worker URL from the first
+// staging deploy; PAWSCOUT_STAGING_URL overrides it for a future respin
+// under a different subdomain. Because `||` treats an empty string as
+// unset, this default can never actually be empty, so nothing downstream
+// needs to guard against an empty staging URL.
 export const TARGETS = {
   production: { url: 'https://pawscout.activepaw.co.uk', database: 'pawscout', wranglerEnv: null },
   staging: { url: process.env.PAWSCOUT_STAGING_URL || 'https://pawscout-worker-staging.bmorris0565.workers.dev', database: 'pawscout-staging', wranglerEnv: 'staging' }
@@ -43,7 +45,11 @@ export function parseDeployArgs(argv) {
       dryRun = true;
       i += 1;
     } else if (arg === '--skip-ci') {
-      skipCiReason = readFlagValue(argv, i, '--skip-ci', 'a reason describing why CI is being skipped');
+      const reason = readFlagValue(argv, i, '--skip-ci', 'a reason describing why CI is being skipped').trim();
+      if (reason.length === 0) {
+        throw new Error(`--skip-ci needs a reason describing why CI is being skipped; a blank one is not a reason. ${USAGE}`);
+      }
+      skipCiReason = reason;
       i += 2;
     } else if (arg === '--allow-shrink') {
       const value = readFlagValue(argv, i, '--allow-shrink', 'a comma-separated list of table names');
@@ -113,6 +119,13 @@ export function evaluateGuards(state) {
     );
   }
 
+  const blockingUntrackedFiles = state.blockingUntracked || [];
+  if (blockingUntrackedFiles.length > 0) {
+    failures.push(
+      `Untracked files that a deploy would ship or apply: ${blockingUntrackedFiles.join(', ')}. Commit them (git add) or remove them: a migration or source file that is in no commit must never reach production.`
+    );
+  }
+
   if (state.upstreamHead !== state.head) {
     failures.push(
       `HEAD (${state.head}) does not match origin/master (${state.upstreamHead}). Push your commit before deploying to production.`
@@ -153,6 +166,71 @@ export function missingOnStaging(pending, stagingApplied) {
   return pending.filter((name) => !applied.has(name));
 }
 
+// git quotes a path that needs escaping (a space, in this repo's usage) in
+// double quotes with C-style backslash escapes, and can print a
+// backslash-separated path on Windows from some codepaths. Both are
+// normalised to a plain forward-slash path so a prefix check against it is
+// a plain string comparison.
+function normalizeGitPath(rawPath) {
+  let path = rawPath;
+  if (path.startsWith('"') && path.endsWith('"')) {
+    path = path.slice(1, -1).replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+  }
+  return path.replace(/\\/g, '/');
+}
+
+// Turns `git status --porcelain` output into the two things the guards
+// need: `dirty`, the tracked-change lines exactly as printed (a rename
+// keeps its "old -> new" form; the dirty-tree guard's message names these
+// lines verbatim), and `untracked`, the plain PATHS of the `??` lines. CRLF
+// tolerant: a trailing \r from a Windows git is stripped from every line
+// before it is classified.
+export function parsePorcelain(stdout) {
+  const lines = stdout.split('\n').map((line) => line.replace(/\r$/, '')).filter((line) => line.length > 0);
+  const dirty = [];
+  const untracked = [];
+  for (const line of lines) {
+    if (line.startsWith('??')) {
+      untracked.push(normalizeGitPath(line.slice(3)));
+    } else {
+      dirty.push(line);
+    }
+  }
+  return { dirty, untracked };
+}
+
+// The untracked entries of `parsePorcelain`'s output that a deploy would
+// ship (a migration file) or apply (source under src/). git collapses a
+// wholly untracked directory into one line ending in `/` (for example
+// `src/newdir/`); this prefix check still catches that. Every other
+// untracked path (an image, a doc, a long-standing untracked stray) is
+// ignored, exactly as before this guard existed.
+export function blockingUntracked(untracked) {
+  return untracked.filter((path) => path.startsWith('migrations/') || path.startsWith('src/'));
+}
+
+// The subset of `pending` (migration file basenames) that the working tree
+// shows as untracked or modified. `missingOnStaging` proves a NAME reached
+// staging, not that the SQL staging validated is the SQL that will later
+// reach production, since staging deploys from a dirty tree; this is the
+// cheap half of that same finding. A tracked change is matched
+// on the CHANGED path only: a porcelain rename line prints "old -> new",
+// and only the new path is what is about to be applied. An untracked match
+// is either the exact path or a collapsed untracked directory (a `??` line
+// ending in `/`) that the path falls under.
+export function untrackedOrModifiedPending(pending, dirty, untracked) {
+  return pending.filter((name) => {
+    const relPath = `migrations/${name}`;
+    const isUntracked = untracked.some((path) => path === relPath || (path.endsWith('/') && relPath.startsWith(path)));
+    if (isUntracked) return true;
+    return dirty.some((line) => {
+      const pathPart = line.slice(3);
+      const changedPath = pathPart.includes(' -> ') ? pathPart.split(' -> ').pop() : pathPart;
+      return changedPath === relPath;
+    });
+  });
+}
+
 const SHA_HEX = /^[0-9a-f]{40}$/i;
 
 // A state that could not be READ cannot be EVALUATED: `run()` in
@@ -167,7 +245,7 @@ const SHA_HEX = /^[0-9a-f]{40}$/i;
 // for production: a stale origin/master that happens to already equal HEAD
 // is exactly the failure the production push guard exists to catch. Staging
 // has no push guard, so a failed fetch there is a wrapper-printed warning,
-// never a refusal here (found in review, 2026-09-18).
+// never a refusal here.
 export function gitStateProblems({ env, fetch, status, head, upstream }) {
   const problems = [];
 
@@ -204,9 +282,10 @@ export function gitStateProblems({ env, fetch, status, head, upstream }) {
 // print. The pending-migrations guard is DEFERRED on a dry run, not passed
 // and not failed: the wrapper prints the real list and a note that the
 // rehearsal would run on the real deploy, but does not let this guard alone
-// decide the dry run's exit code (fix to a plan defect found in review,
-// 2026-09-18). The other three guards (dirty tree, unpushed HEAD, CI) are
-// unaffected and still refuse a dry run exactly as they refuse a real run.
+// decide the dry run's exit code. Every other guard (dirty tree, untracked
+// files, unpushed HEAD, CI, and migrations already proven on staging) is a
+// cheap read, unaffected by this, and still refuses a dry run exactly as it
+// refuses a real run.
 export function pendingForGuards(pending, dryRun) {
   return dryRun ? [] : pending;
 }
@@ -228,10 +307,46 @@ export function migrationsApplyArgs(env) {
   return args;
 }
 
-// Migrations are forward-only (see scripts/deploy.mjs step 8): a rollback
-// undoes the CODE, not the schema. This is only ever printed, never run by
-// this script, so it goes through npx rather than scripts/lib/run.mjs.
+// Migrations are forward-only: a rollback undoes the CODE, not the schema.
+// This is only ever printed, never run by this script, so it goes through
+// npx rather than scripts/lib/run.mjs.
 export function rollbackCommand(env) {
   const target = TARGETS[env];
   return target.wranglerEnv ? `npx wrangler rollback -y --env ${target.wranglerEnv}` : 'npx wrangler rollback -y';
+}
+
+// wrangler applies and records migration files one at a time, so a failed
+// apply with more than one file pending can leave the earlier ones already
+// applied. This is the command that shows the truth, printed rather than
+// run: `npx wrangler d1 migrations list <database> --remote[ --env <name>]`.
+export function migrationsListCommand(env) {
+  const target = TARGETS[env];
+  const suffix = target.wranglerEnv ? ` --env ${target.wranglerEnv}` : '';
+  return `npx wrangler d1 migrations list ${target.database} --remote${suffix}`;
+}
+
+// A missing `d1_migrations` table is legitimate only for a database that has
+// never taken a migration yet, which in this script only ever happens on a
+// fresh staging database. The same error against production means
+// production's own migrations table is gone, which is never a state to
+// silently read as "nothing applied". The caller passes whether the
+// database it just read IS staging, not which environment this run targets:
+// production's own missingOnStaging read of staging's table is still
+// staging's table, even on a production run.
+export function tolerateMissingMigrationsTable(databaseIsStaging, errorMessage) {
+  return databaseIsStaging && /no such table/i.test(errorMessage);
+}
+
+// Every D1 read in this script fails this same way: a raw stack trace tells
+// the operator nothing they can act on, and this exact class of failure has
+// already happened live and cleared itself on a retry - the Cloudflare API
+// answered "The given account is not valid or is not authorized to access
+// this service" once, and the same read worked 60 seconds later (twice on
+// 2026-09-18).
+export function d1ReadRefusalLines(reason) {
+  return [
+    'REFUSED:',
+    `  ${reason}`,
+    '  The Cloudflare API has been seen to refuse a D1 read transiently (twice on 2026-09-18); run this again, and check `npx wrangler whoami` if it repeats.'
+  ];
 }
