@@ -1,10 +1,10 @@
 import type { TenantStore, OrderRow } from './tenant-store';
 import { alertState, type TrailEvent } from './order-alert';
 
-// Task 4 (Phase 2 part 1, "close the holes"): decide what happens to our
-// order row when Shopify reports a cancel or a refund, and whether the
-// owner needs to be told about it. Pure decision logic against the store -
-// no network and no email here, the caller (a later task) sends the alert.
+// Decides what happens to our order row when Shopify reports a cancel or a
+// refund, and whether the owner needs to be told about it. Pure decision
+// logic against the store - no network and no email here, the caller sends
+// the alert.
 
 export interface OwnerAlert { subject: string; text: string }
 

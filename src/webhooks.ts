@@ -22,7 +22,7 @@ export type RegisterWebhook = (shop: string, accessToken: string) => Promise<Reg
 
 export interface WebhookStatus {
   ok: boolean; // true when nothing required is missing after the read-back. Can only be true when verified is true.
-  verified: boolean; // true when present/missing come from a successful read of the FINAL state (fix round 1, I-4):
+  verified: boolean; // true when present/missing come from a successful read of the FINAL state:
   // the first list succeeded and nothing needed creating, or the read-back after the creates succeeded.
   // False when the first list threw, or the read-back threw - "unknown" is not "missing".
   present: string[]; // required topics registered at OUR uri
@@ -65,8 +65,8 @@ function isOurs(list: { topic: string; uri: string }[], appUrl: string, topic: s
 
 /** Idempotent webhook assurance: lists what is registered, creates whatever
  *  required topic is missing at our uri, and reports the final state. The
- *  read-back is conditional, not unconditional (fix round 2, N-5): when
- *  nothing needed creating, the first list already IS the final state and no
+ *  read-back is conditional, not unconditional: when nothing needed
+ *  creating, the first list already IS the final state and no
  *  second call is made; only when something needed creating does it list
  *  again and report from that read-back rather than from what the create
  *  calls claimed. Never throws; a failed list or create is recorded in
@@ -115,7 +115,7 @@ export async function ensureWebhooks(admin: AdminGraphql, appUrl: string): Promi
     }
   }
 
-  // I-4 (fix round 1): "unknown" is not "missing". When nothing needed
+  // "unknown" is not "missing". When nothing needed
   // creating, the first list already IS the final state - no second call is
   // needed or made, and the state is verified. When something did need
   // creating, only a successful read-back can confirm the final state; a

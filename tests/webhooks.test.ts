@@ -101,7 +101,7 @@ describe('ensureWebhooks', () => {
     expect(status.present.sort()).toEqual(requiredTopicNames().sort());
     expect(status.created).toEqual([]);
     expect(calls.some((c) => c.query.includes('webhookSubscriptionCreate('))).toBe(false);
-    // I-4: everything present on the first list -> the first list IS the final
+    // Everything present on the first list -> the first list IS the final
     // state, so this is verified without needing a second (redundant) call.
     expect(status.verified).toBe(true);
   });
@@ -121,7 +121,7 @@ describe('ensureWebhooks', () => {
     expect(status.missing).toEqual(['ORDERS_PAID']);
     expect(status.errors).toEqual(['Not approved for orders']);
     expect(status.created.sort()).toEqual(['APP_UNINSTALLED', 'ORDERS_CANCELLED', 'REFUNDS_CREATE'].sort());
-    // I-4: the create failed, but the READ-BACK that follows it succeeded and
+    // The create failed, but the READ-BACK that follows it succeeded and
     // is the one that reports ORDERS_PAID missing - that is a real, known gap,
     // not an unknown, so verified is true even though ok is false.
     expect(status.verified).toBe(true);
@@ -154,7 +154,7 @@ describe('ensureWebhooks', () => {
     const status = await ensureWebhooks(admin, APP_URL);
     expect(status.ok).toBe(false);
     expect(status.errors).toEqual(['network down']);
-    // I-4: nothing is known when the very first read fails - unverified, and
+    // Nothing is known when the very first read fails - unverified, and
     // ok can never be true while unverified.
     expect(status.verified).toBe(false);
   });
@@ -167,7 +167,7 @@ describe('ensureWebhooks', () => {
     expect(status.errors).toEqual(['read-back unavailable']);
     expect(status.present).toEqual(['APP_UNINSTALLED']);
     expect(status.missing.sort()).toEqual(['ORDERS_CANCELLED', 'ORDERS_PAID', 'REFUNDS_CREATE'].sort());
-    // I-4: creates were attempted (three topics were missing from the first
+    // Creates were attempted (three topics were missing from the first
     // list) and the read-back that was supposed to confirm them failed, so the
     // three "missing" topics reported here are not actually known to be
     // missing - unverified, even though the fallback keeps reporting them.

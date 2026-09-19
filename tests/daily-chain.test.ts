@@ -22,7 +22,7 @@ import { REQUIRED_TOPICS } from '../src/webhooks';
 import type { AdminGraphql } from '../src/shopify-admin';
 
 beforeEach(async () => { await applyD1Migrations(env.DB, env.TEST_MIGRATIONS); });
-// I-3 (fix round 1): the order-webhooks stage's own alertOwner call is a real
+// The order-webhooks stage's own alertOwner call is a real
 // no-op without a RESEND_API_KEY, so a call and a non-call are indistinguishable
 // from the outside unless the actual Resend HTTP call is captured. vi.mock on a
 // relative src module does not intercept under the Workers pool (tried first,
@@ -261,23 +261,22 @@ describe('DAILY_SHOP_STAGES ordering', () => {
     expect(s.needsCj).toBe(false);
   });
 
-  // I-3: the order-webhooks stage must be FIRST (Task 6's brief calls this out
-  // explicitly) and must not need CJ (a shop with no CJ credential still needs
-  // its order-event subscriptions checked).
+  // The order-webhooks stage must be FIRST and must not need CJ (a shop with
+  // no CJ credential still needs its order-event subscriptions checked).
   it('order-webhooks is first, and does not need CJ', () => {
     expect(DAILY_SHOP_STAGES[0].name).toBe('order-webhooks');
     expect(DAILY_SHOP_STAGES[0].needsCj).toBe(false);
   });
 });
 
-// I-3 (fix round 1): the order-webhooks stage itself, driven directly with a
-// fake ctx.admin - the "unknown is not missing" behaviour (I-4) and the daily
-// cache write, exercised end to end through the real, exported stage.
+// The order-webhooks stage itself, driven directly with a fake ctx.admin -
+// the "unknown is not missing" behaviour and the daily cache write,
+// exercised end to end through the real, exported stage.
 describe('order-webhooks stage', () => {
   const HOOK_APP_URL = 'https://hook-test.pawscout.example.com';
   const orderWebhooksStage = DAILY_SHOP_STAGES.find((s) => s.name === 'order-webhooks')!;
 
-  // N-3 (fix round 2): every test in this describe stubs fetch by default,
+  // Every test in this describe stubs fetch by default,
   // throwing on any call, so a reordering of the stage's own internals can
   // never let a test reach the real network (api.resend.com) even if it
   // forgets to call captureAlerts() itself. captureAlerts() below re-stubs
@@ -343,7 +342,7 @@ describe('order-webhooks stage', () => {
     return sent;
   }
 
-  it('a verified status with ORDERS_CANCELLED missing stores it under JOB_STAMP_ORDER_HOOKS and sends the brief\'s exact alert', async () => {
+  it('a verified status with ORDERS_CANCELLED missing stores it under JOB_STAMP_ORDER_HOOKS and sends an alert with the exact subject and body', async () => {
     const sent = captureAlerts();
     const admin = hookAdmin({ missingTopics: ['ORDERS_CANCELLED'], failCreateFor: new Set(['ORDERS_CANCELLED']) });
     await orderWebhooksStage.run(hookCtx(admin), 0, Date.now() + 10 * MIN);
@@ -424,13 +423,13 @@ describe('order-webhooks stage', () => {
   });
 });
 
-// N-4 (fix round 2): nextConsecutiveFailures's defensive branches, pinned
-// directly rather than only relied on by reading. Every case here is an
-// UNVERIFIED night (verified: true always short-circuits to 0, already
-// covered by the night-4 assertion above), so each of these should give 1 -
-// a missing or unusable previous value counts as though there were no prior
-// failed night, and this is the first one.
-describe('nextConsecutiveFailures (N-4)', () => {
+// nextConsecutiveFailures's defensive branches, pinned directly rather than
+// only relied on by reading. Every case here is an UNVERIFIED night
+// (verified: true always short-circuits to 0, already covered by the
+// night-4 assertion above), so each of these should give 1 - a missing or
+// unusable previous value counts as though there were no prior failed
+// night, and this is the first one.
+describe('nextConsecutiveFailures', () => {
   it('a missing previous value (first night) gives 1', () => {
     expect(nextConsecutiveFailures(null, false)).toBe(1);
   });

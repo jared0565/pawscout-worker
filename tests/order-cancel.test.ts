@@ -807,9 +807,9 @@ describe('owner alert text is safe to send as-is', () => {
     }
   });
 
-  // Proven able to fail (see task-4-report.md, "Fix round 1"): the implementation
-  // was temporarily edited to interpolate the seeded address name into one alert,
-  // this test went red on that build, then the edit was reverted.
+  // Proven able to fail: the implementation was temporarily edited to
+  // interpolate the seeded address name into one alert, this test went red
+  // on that build, then the edit was reverted.
   it('never leaks the order address (name, street, postcode, phone) into an alert or an event detail, across every alerting path', async () => {
     const store = new TenantStore(env.DB, SHOP);
     const pii = { name: 'Jane Example', address1: '42 Example Street', zip: 'SW1A 1AA', phone: '020 7123 4567' };

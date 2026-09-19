@@ -796,7 +796,7 @@ describe('Stage-B live-order gate (2026-09-19: readOrderGate/decideGate, fetched
     expect(JSON.parse(o!.hold_reasons!)).toEqual(['mixed-origin']);
     const events = await store.listOrderEvents('O1');
     expect(events.some((e) => e.kind === 'gate-held' && e.detail?.startsWith('mixed-origin:'))).toBe(true);
-    expect(alerts).toHaveLength(0); // fix round 2, NEW-1: no supplier order exists, so no alert
+    expect(alerts).toHaveLength(0); // no supplier order exists, so no alert
   });
 
   it('a changed Shopify address is used for creation and persisted with an address-refreshed event - a row with NO supplier order yet proceeds and creates it with the new address', async () => {
@@ -929,7 +929,7 @@ describe('Stage-B live-order gate (2026-09-19: readOrderGate/decideGate, fetched
   });
 });
 
-describe('I-3 (fix round 1): a cancelled row stays cancelled', () => {
+describe('a cancelled row stays cancelled', () => {
   it('createOnly: the row is cancelled during createOrder - held not awaiting, no notify, exact alert', async () => {
     const store = new TenantStore(env.DB, SHOP);
     await seedWarehouse(store, 'CJ1', 'S1', 'v1');
@@ -1055,7 +1055,7 @@ describe('I-3 (fix round 1): a cancelled row stays cancelled', () => {
   });
 });
 
-describe('I-1 (fix round 1): a gate stop on a row with an existing supplier order alerts', () => {
+describe('a gate stop on a row with an existing supplier order alerts', () => {
   it('a queued row with cj_order_id whose gate says cancelled: exact alert, row cancelled, no create/pay', async () => {
     const store = new TenantStore(env.DB, SHOP);
     await seedWarehouse(store, 'CJ1', 'S1', 'v1');
@@ -1126,7 +1126,7 @@ describe('I-1 (fix round 1): a gate stop on a row with an existing supplier orde
   });
 });
 
-describe('I-2 (fix round 1): the gate-unreadable alert is true wherever it fires', () => {
+describe('the gate-unreadable alert is true wherever it fires', () => {
   it('the pre-pay position: four failing pre-pay reads in a row alert once with the supplier-order text and the cj order id; nothing paid', async () => {
     const store = new TenantStore(env.DB, SHOP);
     await seedWarehouse(store, 'CJ1', 'S1', 'v1');
@@ -1174,7 +1174,7 @@ describe('I-2 (fix round 1): the gate-unreadable alert is true wherever it fires
   });
 });
 
-describe('M-2 (fix round 1): no latch - a >= 4 comparison, not === 4', () => {
+describe('no latch - a >= 4 comparison, not === 4', () => {
   it('seeding FIVE trailing gate-unreadable events (a lost alert marker) still alerts on the next failure', async () => {
     const store = new TenantStore(env.DB, SHOP);
     await seedWarehouse(store, 'CJ1', 'S1', 'v1');
@@ -1210,7 +1210,7 @@ describe('M-2 (fix round 1): no latch - a >= 4 comparison, not === 4', () => {
   });
 });
 
-describe('I-4 (fix round 1): trail detail is classified, never a copy of the raw error', () => {
+describe('trail detail is classified, never a copy of the raw error', () => {
   it('a createOrder rejection holding a marker phone and street: no event detail contains either marker, and the error event reads "failed at create"', async () => {
     const store = new TenantStore(env.DB, SHOP);
     await seedWarehouse(store, 'CJ1', 'S1', 'v1');
@@ -1257,7 +1257,7 @@ describe('I-4 (fix round 1): trail detail is classified, never a copy of the raw
   });
 });
 
-describe('M-7 (fix round 1): operator release skips the FRAUD check only when the hold WAS a fraud hold', () => {
+describe('operator release skips the FRAUD check only when the hold WAS a fraud hold', () => {
   it('a released row whose history is ["mixed-origin"] and whose gate now says CANCEL on risk is HELD for high-risk', async () => {
     const store = new TenantStore(env.DB, SHOP);
     await seedWarehouse(store, 'CJ1', 'S1', 'v1');
@@ -1280,8 +1280,8 @@ describe('M-7 (fix round 1): operator release skips the FRAUD check only when th
   });
 });
 
-describe('NEW-1 (fix round 2): a mixed-origin hold on a row with an existing supplier order alerts', () => {
-  it('a queued row WITH cj_order_id whose lines now resolve to two origins: held, the exact I-1 alert with the mixed-origin reason, nothing paid', async () => {
+describe('a mixed-origin hold on a row with an existing supplier order alerts', () => {
+  it('a queued row WITH cj_order_id whose lines now resolve to two origins: held, the same stopped-order alert with the mixed-origin reason, nothing paid', async () => {
     const store = new TenantStore(env.DB, SHOP);
     await seedWarehouse(store, 'CJ1', 'S1', 'v1'); // origin CN
     const detailGb: CjDetail = { pid: 'CJ2', nameEn: 'Y', images: [], descriptionHtml: '', variants: [{ vid: 'v2', name: 'Blue', sellPriceUsd: 10, sku: 'S2' }], listedNum: 1, categoryName: 'Pet Toys', origin: 'GB' };
@@ -1304,7 +1304,7 @@ describe('NEW-1 (fix round 2): a mixed-origin hold on a row with an existing sup
   });
 });
 
-describe('NEW-3 (fix round 2): step starts at "gate", not "resolve"', () => {
+describe('step starts at "gate", not "resolve"', () => {
   it('invalid line_items_json throws before resolution begins: the error event reads exactly "failed at gate"', async () => {
     const store = new TenantStore(env.DB, SHOP);
     await store.insertOrderIfNew({

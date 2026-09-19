@@ -110,11 +110,10 @@ export const JOB_STAMP_ORDER_HOOKS = 'job:order-webhooks';
 export const JOB_STAMP_TTL_DAYS = 30;
 
 /** A stored order-webhooks check: the raw WebhookStatus plus how many checks
- *  in a row have failed to read the FINAL state (fix round 1, I-4). Read by
- *  both the daily stage and /api/ensure-webhooks, but they do NOT follow the
- *  same rule for computing the next value (fix round 2, N-2 corrects a
- *  mistake in the round 1 brief that said they did): only this nightly stage
- *  increments on a failure, via nextConsecutiveFailures below. A failed
+ *  in a row have failed to read the FINAL state. Read by both the daily
+ *  stage and /api/ensure-webhooks, but they do NOT follow the same rule for
+ *  computing the next value: only this nightly stage increments on a
+ *  failure, via nextConsecutiveFailures below. A failed
  *  manual check on the button (src/index.ts's manualCheckConsecutiveFailures)
  *  leaves the stored value unchanged instead - a button press is not a
  *  night. */
@@ -124,9 +123,9 @@ export interface StoredWebhookStatus extends WebhookStatus {
 
 /** The next `consecutiveFailures` to store FOR THE NIGHTLY STAGE ONLY: 0 when
  *  the current check is verified, otherwise the previous stored value plus 1.
- *  A missing or unparseable previous value counts as 0 (fix round 1, I-4). Do
- *  not call this from a manual/button check - see the comment on
- *  StoredWebhookStatus above and src/index.ts's manualCheckConsecutiveFailures. */
+ *  A missing or unparseable previous value counts as 0. Do not call this
+ *  from a manual/button check - see the comment on StoredWebhookStatus above
+ *  and src/index.ts's manualCheckConsecutiveFailures. */
 export function nextConsecutiveFailures(previousRaw: string | null, verified: boolean): number {
   if (verified) return 0;
   if (!previousRaw) return 1;
@@ -1587,7 +1586,7 @@ export const DAILY_GLOBAL_STAGES: DailyGlobalStage[] = [
 ];
 
 export const DAILY_SHOP_STAGES: DailyStage[] = [
-  // FIRST in the chain (Task 6): assure the order-event webhook subscriptions
+  // FIRST in the chain: assure the order-event webhook subscriptions
   // before anything else runs, the same idempotent check the console's "Check
   // order events" button (/api/ensure-webhooks) triggers on demand. Does not
   // need CJ - it only talks to Shopify. Alerts the owner when a cancel/refund
@@ -1597,7 +1596,7 @@ export const DAILY_SHOP_STAGES: DailyStage[] = [
     name: 'order-webhooks', maxMs: 1 * MIN_MS, needsCj: false,
     run: async (ctx) => {
       const hooks = await ensureWebhooks(ctx.admin, ctx.env.SHOPIFY_APP_URL);
-      // I-4 (fix round 1): "unknown" is not "missing". A failed check (unverified)
+      // "unknown" is not "missing". A failed check (unverified)
       // must never be reported or alerted as a confident "not reaching" - it is
       // tracked instead as a run of consecutive failures, and only THAT gets an
       // alert, worded as "could not be checked" rather than "not reaching".

@@ -33,8 +33,8 @@ describe('consolePage', () => {
     expect(scripts).toContain('Dead product links found');
   });
 
-  // 2026-09-19 (phase 2 task 7): orders card surfaces webhook subscription
-  // health, a re-check button, and a per-order event timeline.
+  // 2026-09-19: orders card surfaces webhook subscription health, a re-check
+  // button, and a per-order event timeline.
   it('orders card surfaces order-events webhook status, a recheck button, and per-order timelines', async () => {
     const html = await consolePage('test-api-key').text();
     // Static markup: hookline/hookbtn live in the ops card (src/console/views/ops.ts),

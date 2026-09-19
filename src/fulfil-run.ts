@@ -52,8 +52,8 @@ const FULFILLMENT_ORDERS = `query pawscoutFOs($id: ID!) {
 
 /** True only when the order's PRIOR hold reasons include a FRAUD hold
  *  (high-risk or medium-risk-value): only then does an operator's release
- *  outrank the automated fraud check (fix round 1, M-7 - their decision was on
- *  THAT hold, not on every possible hold). A hold for any other reason
+ *  outrank the automated fraud check (their decision was on THAT hold, not on
+ *  every possible hold). A hold for any other reason
  *  (mixed-origin, not-paid, already-fulfilled, incomplete-address, on-hold,
  *  order-missing, refunded) never bypasses fraud. A corrupt hold_reasons value
  *  does NOT count as fraud history - err toward running the fraud check, not
@@ -69,7 +69,7 @@ function hasFraudHoldHistory(holdReasonsJson: string | null): boolean {
 
 /** Write a cancel/hold gate decision to the row + trail in one place, so the
  *  pre-create and pre-pay checks (points 2 and 5 below) stay identical. Uses
- *  updateOrderUnlessCancelled (fix round 1, I-3): a row that meanwhile became
+ *  updateOrderUnlessCancelled: a row that meanwhile became
  *  'cancelled' from a concurrent cancel is left alone - nothing more to do,
  *  the trail event is still written either way. `detail` overrides the trail
  *  text when it needs to carry more than the hold reason (mixed-origin).
@@ -91,7 +91,7 @@ async function writeGateStop(
   await store.addOrderEvent(shopifyOrderId, 'gate-held', detail);
 }
 
-/** Fix round 1, I-1: a pre-create gate stop on a row that already has a
+/** A pre-create gate stop on a row that already has a
  *  supplier order must tell the owner. A release can put a row back to
  *  'queued' with cj_order_id still set (an unpaid awaiting-payment row, or a
  *  paid submitted row), and nothing else alerts for that case. Make no claim
@@ -274,10 +274,10 @@ export async function processDueOrders(
   let held = 0;
   let errored = 0;
   const markAwaiting = async (o: typeof due[number], cjOrderId: string, reason: string) => {
-    // Fix round 1, I-3: a cancel can land in Shopify while createOrder (or an
-    // insufficient-balance retry) is in flight. updateOrderUnlessCancelled is
-    // the one atomic check-and-write; if it refuses, the row is already
-    // 'cancelled' and must NOT be told to the owner as "pay it".
+    // A cancel can land in Shopify while createOrder (or an insufficient-
+    // balance retry) is in flight. updateOrderUnlessCancelled is the one
+    // atomic check-and-write; if it refuses, the row is already 'cancelled'
+    // and must NOT be told to the owner as "pay it".
     const wrote = await store.updateOrderUnlessCancelled(o.shopify_order_id, { status: 'awaiting-payment', hold_reasons: JSON.stringify([reason]) });
     if (!wrote) {
       held++;
@@ -302,12 +302,12 @@ export async function processDueOrders(
   };
   for (const o of due) {
     let lineItems: OrderLineItem[] = [];
-    // Fix round 1, I-4: tracks how far the order got, so a catch that is NOT a
-    // classified stockout writes "failed at <step>" instead of ever copying a
-    // supplier's raw error text (which can echo the address or phone we sent).
-    // Fix round 2, NEW-3: starts at 'gate' (before the address/line-items JSON
-    // parses below), not 'resolve' - a throw there has resolved nothing yet.
-    // It becomes 'resolve' only once the line-resolution loop begins (below).
+    // Tracks how far the order got, so a catch that is NOT a classified
+    // stockout writes "failed at <step>" instead of ever copying a supplier's
+    // raw error text (which can echo the address or phone we sent). Starts at
+    // 'gate' (before the address/line-items JSON parses below), not 'resolve'
+    // - a throw there has resolved nothing yet. It becomes 'resolve' only
+    // once the line-resolution loop begins (below).
     let step: 'gate' | 'resolve' | 'stock' | 'freight' | 'create' | 'pay' | 'record' = 'gate';
     try {
       // Live-order gate (2026-09-19): a whitelist on Shopify's own state, read HERE,
@@ -315,7 +315,7 @@ export async function processDueOrders(
       // applies; only the fraud-risk sub-check is skipped for a pay-retry (already has
       // a CJ order) or an operator-released order with FRAUD hold history (their call
       // outranks the automated fraud gate, but not a genuine cancellation, and not a
-      // hold for any other reason - fix round 1, M-7).
+      // hold for any other reason.
       const skipRisk = !!o.cj_order_id || hasFraudHoldHistory(o.hold_reasons);
       const storedAddress = o.address_json ? (JSON.parse(o.address_json) as OrderAddress) : null;
 
@@ -326,17 +326,17 @@ export async function processDueOrders(
       }
       const decision = decideGate(gateRead.snapshot, { address: storedAddress, totalPrice: o.total_price ?? 0, skipRisk });
       if (decision.action !== 'proceed') {
-        // Fix round 1, M-1: require 'proceed' rather than reach it by excluding
-        // 'cancel'/'hold' - a future fourth variant fails the build below
-        // instead of silently falling through to create or pay.
+        // Require 'proceed' rather than reach it by excluding 'cancel'/'hold'
+        // - a future fourth variant fails the build below instead of
+        // silently falling through to create or pay.
         if (decision.action === 'cancel') {
           await writeGateStop(store, o.shopify_order_id, 'cancelled', decision.reason, null);
           held++;
-          await alertIfSupplierOrderExists(store, o, decision.reason, opts.alert); // fix round 1, I-1
+          await alertIfSupplierOrderExists(store, o, decision.reason, opts.alert);
         } else if (decision.action === 'hold') {
           await writeGateStop(store, o.shopify_order_id, 'held', decision.reason, decision.riskLevel);
           held++;
-          await alertIfSupplierOrderExists(store, o, decision.reason, opts.alert); // fix round 1, I-1
+          await alertIfSupplierOrderExists(store, o, decision.reason, opts.alert);
         } else {
           const _exhaustive: never = decision;
         }
@@ -345,9 +345,9 @@ export async function processDueOrders(
 
       // Written once, on first submission only: a pay-retry re-evaluates the
       // same milestones every tick, and repeating this on every retry would
-      // both spam the trail and (fix round 1, I-2) make the pre-pay
-      // gate-unreadable counter below unable to ever see a clean run of 4
-      // consecutive failures, since this write would break the run every time.
+      // both spam the trail and make the pre-pay gate-unreadable counter
+      // below unable to ever see a clean run of 4 consecutive failures, since
+      // this write would break the run every time.
       if (!o.cj_order_id) await store.addOrderEvent(o.shopify_order_id, 'gate-passed');
       const address: OrderAddress = decision.address;
       if (decision.addressChanged) {
@@ -398,12 +398,12 @@ export async function processDueOrders(
         const detail = `mixed-origin: ${uniqueOrigins.join(', ')}`;
         await writeGateStop(store, o.shopify_order_id, 'held', 'mixed-origin', null, detail);
         held++;
-        // Fix round 2, NEW-1: reachable on a pay-retry (only the numeric stock
-        // sub-check is skipped for one, not line resolution, and the resolved
-        // origin is a function of live stock, so it can disagree with the
-        // origin the existing supplier order was created against). Same alert
-        // as the two pre-create stop branches (fix round 1, I-1), with the
-        // hold's own detail text as the reason.
+        // Reachable on a pay-retry (only the numeric stock sub-check is
+        // skipped for one, not line resolution, and the resolved origin is a
+        // function of live stock, so it can disagree with the origin the
+        // existing supplier order was created against). Same alert as the
+        // two pre-create stop branches, with the hold's own detail text as
+        // the reason.
         await alertIfSupplierOrderExists(store, o, detail, opts.alert);
         continue;
       }
@@ -487,7 +487,7 @@ export async function processDueOrders(
         throw payErr; // genuine pay failure → error branch
       }
       step = 'record';
-      // Fix round 1, I-3: money already moved - if the row became 'cancelled'
+      // Money already moved - if the row became 'cancelled'
       // while payBalance was in flight, still record that it was paid (the
       // trail must say so), but count it as held (not submitted) and tell the
       // owner it needs handling as a return/cancellation at the supplier.
@@ -518,12 +518,11 @@ export async function processDueOrders(
       const reason = stockout ? `stockout: ${msg}` : `fulfil: ${msg}`;
       await store.updateOrderUnlessCancelled(o.shopify_order_id, { status: 'error', hold_reasons: JSON.stringify([reason.slice(0, 200)]) });
 
-      // Fix round 1, I-4 (ruling: constraint beats brief point 4 - classify,
-      // never copy): order_events.detail must never carry a supplier's or
-      // Shopify's raw error text - a rejection can echo the address or phone
-      // number sent with the order. The raw text still goes to console.warn
-      // above; hold_reasons above is unchanged, existing behaviour, out of
-      // this ruling's scope.
+      // order_events.detail must never carry a supplier's or Shopify's raw
+      // error text - a rejection can echo the address or phone number sent
+      // with the order, so classify it instead of copying it. The raw text
+      // still goes to console.warn above; hold_reasons above is unchanged,
+      // existing behaviour.
       let eventKind: 'stockout' | 'error';
       let eventDetail: string;
       if (e instanceof StockoutError) {

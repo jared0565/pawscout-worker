@@ -107,7 +107,7 @@ describe('decideGate', () => {
   });
 });
 
-describe('decideGate - payment whitelist (fix round 1)', () => {
+describe('decideGate - payment whitelist', () => {
   it('exists true, every other snapshot field null: holds not-paid', () => {
     const s: OrderSnapshot = { exists: true, cancelledAt: null, financialStatus: null, fulfillmentStatus: null, riskRecommendation: null, address: null };
     expect(decideGate(s, stored())).toMatchObject({ action: 'hold', reason: 'not-paid' });
@@ -160,7 +160,7 @@ describe('decideGate - payment whitelist (fix round 1)', () => {
   });
 });
 
-describe('decideGate - null address fields do not throw (fix round 1, Important 1)', () => {
+describe('decideGate - null address fields do not throw', () => {
   it('a stored address with null address2/phone does not throw, and null vs empty string is not a change', () => {
     const storedAddr = { ...ADDR, address2: null, phone: null } as unknown as OrderAddress;
     const shopifyAddr: OrderAddress = { ...ADDR, address2: '', phone: '' };
@@ -178,7 +178,7 @@ describe('decideGate - null address fields do not throw (fix round 1, Important 
   });
 });
 
-describe('decideGate - riskHold reason mapped explicitly, no unchecked cast (fix round 1, Minor 3)', () => {
+describe('decideGate - riskHold reason mapped explicitly, no unchecked cast', () => {
   it('CANCEL maps to high-risk and INVESTIGATE-over-threshold maps to medium-risk-value', () => {
     expect(decideGate(snapshot({ riskRecommendation: 'CANCEL' }), stored())).toMatchObject({ reason: 'high-risk' });
     expect(decideGate(snapshot({ riskRecommendation: 'INVESTIGATE' }), stored({ totalPrice: 41 }))).toMatchObject({ reason: 'medium-risk-value' });

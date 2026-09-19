@@ -1,14 +1,13 @@
 /// <reference types="@cloudflare/vitest-pool-workers" />
-// Task 6 (phase 2 part 1, "close the holes"): the two new Shopify order
-// webhook routes (orders-cancelled, refunds-create) plus HTTP-level coverage
-// of orders-paid's new trail writes. Drives the real Hono app with
-// HMAC-signed requests, same pattern as tests/affiliate-console.test.ts (see
-// hmacBase64 there, from line 240 - copied here since no shared test helper
-// module exists for it).
+// The two new Shopify order webhook routes (orders-cancelled, refunds-create)
+// plus HTTP-level coverage of orders-paid's new trail writes. Drives the real
+// Hono app with HMAC-signed requests, same pattern as
+// tests/affiliate-console.test.ts (see hmacBase64 there, from line 240 -
+// copied here since no shared test helper module exists for it).
 //
-// Also pins the orchestrator's seam-closing rule from task 3: every entry in
-// REQUIRED_TOPICS must answer 401 (never 404) to an unsigned POST, so a topic
-// added later without a route is caught here rather than in production.
+// Also pins the seam-closing rule that every entry in REQUIRED_TOPICS must
+// answer 401 (never 404) to an unsigned POST, so a topic added later without
+// a route is caught here rather than in production.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
 import { SignJWT } from 'jose';
@@ -56,7 +55,7 @@ async function hmacBase64(secret: string, body: string): Promise<string> {
 // caught by the handler's try/catch, but that would silently skip every write
 // that happens to be coded after the throwing line. A stub keeps the route's
 // real control flow intact instead of relying on an incidental catch, and
-// (fix round 1, I-1) records what it is handed so a test can pin the alert door.
+// records what it is handed so a test can pin the alert door.
 const FAKE_CTX = { waitUntil: (p: Promise<unknown>) => { waitUntilCalls.push(p); } } as unknown as ExecutionContext;
 
 async function postWebhook(path: string, rawBody: string, opts: { topic?: string; badSignature?: boolean; webhookId?: string } = {}): Promise<Response> {
@@ -127,7 +126,7 @@ describe('POST /webhooks/orders-cancelled', () => {
     const res = await postWebhook('/webhooks/orders-cancelled', JSON.stringify({ id: 'O1' }), { topic: 'orders/cancelled' });
     expect(res.status).toBe(200);
     expect((await store.getOrder('O1'))?.status).toBe('cancelled');
-    // I-1: a queued row with no supplier order carries no alert (see
+    // A queued row with no supplier order carries no alert (see
     // src/order-cancel.ts's applyCancel) - the alert door must stay shut.
     expect(waitUntilCalls).toHaveLength(0);
   });
@@ -142,7 +141,7 @@ describe('POST /webhooks/orders-cancelled', () => {
     expect(events.filter((e) => e.kind === 'cancel-received')).toHaveLength(1);
   });
 
-  it('a valid cancel for an unknown order answers 200 and creates no row or trail (M-6)', async () => {
+  it('a valid cancel for an unknown order answers 200 and creates no row or trail', async () => {
     await seedConfig();
     const res = await postWebhook('/webhooks/orders-cancelled', JSON.stringify({ id: 'GHOST' }), { topic: 'orders/cancelled' });
     expect(res.status).toBe(200);
@@ -226,7 +225,7 @@ describe('POST /webhooks/orders-cancelled', () => {
 });
 
 describe('POST /webhooks/refunds-create', () => {
-  it('a bad signature answers 401 and changes nothing (mirrors the orders-cancelled twin, M-6)', async () => {
+  it('a bad signature answers 401 and changes nothing (mirrors the orders-cancelled twin)', async () => {
     const store = await seedConfig();
     await seedOrder(store, 'O1', 'queued');
     const res = await postWebhook('/webhooks/refunds-create', JSON.stringify({ id: 1, order_id: 'O1', transactions: [] }), { topic: 'refunds/create', badSignature: true });
@@ -244,7 +243,7 @@ describe('POST /webhooks/refunds-create', () => {
     const order = await store.getOrder('O1');
     expect(order?.status).toBe('held');
     expect(JSON.parse(order?.hold_reasons ?? '[]')).toEqual(['refunded']);
-    // I-1: no supplier order exists yet, so applyRefund raises no alert.
+    // No supplier order exists yet, so applyRefund raises no alert.
     expect(waitUntilCalls).toHaveLength(0);
   });
 
@@ -646,10 +645,10 @@ describe('order webhook routes answer for a retry when processing throws', () =>
   });
 });
 
-// I-2 (fix round 1): two shops, each holding an order with the SAME order id
-// and its own trail. A correctly signed delivery for one shop must leave the
-// other's row and trail byte for byte as they were.
-describe('tenant isolation (I-2)', () => {
+// Two shops, each holding an order with the SAME order id and its own
+// trail. A correctly signed delivery for one shop must leave the other's
+// row and trail byte for byte as they were.
+describe('tenant isolation', () => {
   const SHOP_B = 'b.myshopify.com';
 
   it('(a) a correctly signed cancel for shop A leaves shop B\'s same-id row and trail untouched', async () => {
@@ -707,11 +706,11 @@ describe('tenant isolation (I-2)', () => {
   // session-authed HTTP request truly cannot be built in this test file
   // without reimplementing that library's private signing internals.
   //
-  // orderEventsForOrder was extracted from the route for exactly this reason
-  // (M-5 needed it too): the route ALWAYS builds its store from the
-  // session-resolved shop, never from the request body (see the review's Q3),
-  // so calling orderEventsForOrder with two different shops' stores exercises
-  // the identical isolation property one call below the HTTP boundary.
+  // orderEventsForOrder was extracted from the route for exactly this reason:
+  // the route ALWAYS builds its store from the session-resolved shop, never
+  // from the request body, so calling orderEventsForOrder with two different
+  // shops' stores exercises the identical isolation property one call below
+  // the HTTP boundary.
   it('(c) orderEventsForOrder never returns one shop\'s events for another shop\'s store', async () => {
     const storeA = new TenantStore(env.DB, SHOP);
     const storeB = new TenantStore(env.DB, SHOP_B);
@@ -730,10 +729,10 @@ describe('tenant isolation (I-2)', () => {
   });
 });
 
-// M-5 (fix round 1): orderEventsForOrder is /api/order-events's whole logic
-// (the Hono handler is a thin wrapper - see its doc comment), so this is the
-// direct test for the route's validation and not-found behaviour.
-describe('orderEventsForOrder (M-5)', () => {
+// orderEventsForOrder is /api/order-events's whole logic (the Hono handler
+// is a thin wrapper - see its doc comment), so this is the direct test for
+// the route's validation and not-found behaviour.
+describe('orderEventsForOrder', () => {
   it('a missing, non-string or empty id answers 400 { ok: false, error: "Missing order id" }', async () => {
     const store = new TenantStore(env.DB, SHOP);
     expect(await orderEventsForOrder(store, undefined)).toEqual({ status: 400, body: { ok: false, error: 'Missing order id' } });
@@ -747,13 +746,13 @@ describe('orderEventsForOrder (M-5)', () => {
   });
 });
 
-// M-2 (fix round 1): /api/orders trusts a stored order-webhooks payload only
-// after checking its shape. parseStoredHooks holds that check.
-describe('parseStoredHooks (M-2, I-4)', () => {
+// /api/orders trusts a stored order-webhooks payload only after checking
+// its shape. parseStoredHooks holds that check.
+describe('parseStoredHooks', () => {
   it('null, unparseable JSON, and a parseable payload of the wrong shape all give null', () => {
     expect(parseStoredHooks(null)).toBeNull();
     expect(parseStoredHooks('not json {{{')).toBeNull();
-    // Pre-fix-round-1 shape: no `verified` field at all.
+    // A shape with no `verified` field at all.
     expect(parseStoredHooks(JSON.stringify({ ok: true, missing: [], checkedAt: 'x' }))).toBeNull();
     expect(parseStoredHooks(JSON.stringify({ ok: true, verified: true, missing: 'not-an-array', checkedAt: 'x' }))).toBeNull();
     expect(parseStoredHooks(JSON.stringify({ ok: true, verified: true, missing: [], checkedAt: 123 }))).toBeNull();
@@ -775,38 +774,38 @@ describe('parseStoredHooks (M-2, I-4)', () => {
   });
 });
 
-// N-1 (fix round 2). Before this round, /api/ensure-webhooks answered the raw
-// WebhookStatus while /api/orders answered parseStoredHooks's projection, so
-// pressing "Check order events" during an outage still printed the console's
-// confident MISSING line I-4 had removed from the page-load path. Both routes
-// now share one projection function.
+// Before this, /api/ensure-webhooks answered the raw WebhookStatus while
+// /api/orders answered parseStoredHooks's projection, so pressing "Check
+// order events" during an outage still printed the console's confident
+// MISSING line the page-load path had removed. Both routes now share one
+// projection function.
 //
-// /api/ensure-webhooks is session-token authed like /api/order-events, so the
-// same limitation documented at length in the tenant isolation (I-2) describe
+// /api/ensure-webhooks is session-token authed like /api/order-events, so
+// the same limitation documented at length in the tenant isolation describe
 // above applies: this repo has no established way to drive its FULL body
 // (ensureWebhooks's own outbound Admin GraphQL calls included) through
 // app.request without either minting a real session token AND seeding a
 // genuinely vault-wrapped access token AND stubbing global fetch for the
-// Shopify Admin endpoint - a materially bigger rig than this "small" round
-// justifies for a route whose OWN new logic, after ensureWebhooks returns, is
-// two lines (manualCheckConsecutiveFailures below, and
-// `c.json({ ok: true, hooks: projectHooks(hooks) })`). Per the brief's own
-// escape hatch, this tests projectHooks directly; the route's use of it is
-// confirmed by reading src/index.ts's /api/ensure-webhooks handler, which
-// calls `projectHooks(hooks)` on the FRESH status with no other
-// transformation before it goes into the response.
+// Shopify Admin endpoint - a materially bigger rig than justified for a
+// route whose OWN new logic, after ensureWebhooks returns, is two lines
+// (manualCheckConsecutiveFailures below, and
+// `c.json({ ok: true, hooks: projectHooks(hooks) })`). So this tests
+// projectHooks directly; the route's use of it is confirmed by reading
+// src/index.ts's /api/ensure-webhooks handler, which calls
+// `projectHooks(hooks)` on the FRESH status with no other transformation
+// before it goes into the response.
 //
-// (Worth recording since it revises something stated in an earlier round: a
+// (Worth recording since it revises an earlier claim in this file: a
 // session-authed route CAN be driven through app.request with a genuinely
-// minted token when a tenant is seeded - tests/traffic-quality.test.ts and the
-// "answers" routes in tests/inbox-routes.test.ts both do this with a real
-// SignJWT HS256 token over SHOPIFY_API_SECRET. What remains true for THIS
-// route is narrower: reaching the projectHooks call specifically also
+// minted token when a tenant is seeded - tests/traffic-quality.test.ts and
+// the "answers" routes in tests/inbox-routes.test.ts both do this with a
+// real SignJWT HS256 token over SHOPIFY_API_SECRET. What remains true for
+// THIS route is narrower: reaching the projectHooks call specifically also
 // requires a working Admin client, which those two examples do not need.)
-describe('projectHooks (N-1)', () => {
+describe('projectHooks', () => {
   const CHECKED_AT = '2026-09-19T00:00:00.000Z';
 
-  it('a first-list failure (unverified, all four topics listed missing) projects to ok: false, an EMPTY missing, and the stored error - the button route must not repeat the confident MISSING list I-4 removed', () => {
+  it('a first-list failure (unverified, all four topics listed missing) projects to ok: false, an EMPTY missing, and the stored error - the button route must not repeat the confident MISSING list the page-load path removed', () => {
     const status = {
       verified: false,
       missing: ['APP_UNINSTALLED', 'ORDERS_PAID', 'ORDERS_CANCELLED', 'REFUNDS_CREATE'],
@@ -835,11 +834,10 @@ describe('projectHooks (N-1)', () => {
   });
 });
 
-// N-2 (fix round 2, corrects a mistake in the round 1 brief): a failed manual
-// check must not inflate the counter the nightly alert calls "days in a row" -
-// a button press is not a night. Only a successful manual check may change it,
-// resetting it to 0 like the nightly stage does.
-describe('manualCheckConsecutiveFailures (N-2)', () => {
+// A failed manual check must not inflate the counter the nightly alert
+// calls "days in a row" - a button press is not a night. Only a successful
+// manual check may change it, resetting it to 0 like the nightly stage does.
+describe('manualCheckConsecutiveFailures', () => {
   it('a failed press leaves a previously stored 2 unchanged', () => {
     const previousRaw = JSON.stringify({ consecutiveFailures: 2 });
     expect(manualCheckConsecutiveFailures(previousRaw, false)).toBe(2);
@@ -855,11 +853,10 @@ describe('manualCheckConsecutiveFailures (N-2)', () => {
   });
 });
 
-// New test (fix round 2, R4 follow-up): an unauthenticated request must never
-// reach any of these three routes' logic. Passes today; exists to catch a
-// future regression that removes the session gate. Can-fail proof is in the
-// fix round 2 report section (one gate temporarily commented out, observed
-// red, restored).
+// An unauthenticated request must never reach any of these three routes'
+// logic. Passes today; exists to catch a future regression that removes the
+// session gate. Proven able to fail: one gate was temporarily commented
+// out, observed red, then restored.
 describe('unauthenticated POST answers 401 on every session-authed order route', () => {
   const ROUTES = ['/api/orders', '/api/order-events', '/api/ensure-webhooks'];
   for (const path of ROUTES) {
@@ -874,16 +871,16 @@ describe('unauthenticated POST answers 401 on every session-authed order route',
   }
 });
 
-// Fix round 3: the session-authed order routes (/api/order-events,
-// /api/orders), driven through the real Hono app with a genuinely minted
-// session token - the same pattern tests/traffic-quality.test.ts and
-// tests/inbox-routes.test.ts already use (SignJWT, HS256, over
-// SHOPIFY_API_SECRET, aud = SHOPIFY_API_KEY, dest = the shop). This app is
-// installed on many shops with no data bleed between them; the one thing the
-// round 1/2 substitution (orderEventsForOrder called directly with two
-// shops' stores) cannot catch is a route that one day starts taking the shop
-// from the REQUEST BODY instead of the session - these tests drive the full
-// route, session included, to close exactly that gap.
+// The session-authed order routes (/api/order-events, /api/orders), driven
+// through the real Hono app with a genuinely minted session token - the
+// same pattern tests/traffic-quality.test.ts and tests/inbox-routes.test.ts
+// already use (SignJWT, HS256, over SHOPIFY_API_SECRET, aud =
+// SHOPIFY_API_KEY, dest = the shop). This app is installed on many shops
+// with no data bleed between them; the one thing the earlier substitution
+// above (orderEventsForOrder called directly with two shops' stores) cannot
+// catch is a route that one day starts taking the shop from the REQUEST
+// BODY instead of the session - these tests drive the full route, session
+// included, to close exactly that gap.
 //
 // Neither /api/order-events nor /api/orders calls adminForShop, so - unlike
 // /api/ensure-webhooks - an opaque, non-decryptable placeholder access token
@@ -892,7 +889,7 @@ describe('unauthenticated POST answers 401 on every session-authed order route',
 // access_token_enc returns immediately, no real token exchange or Admin call
 // needed). This is the same seeding tests/traffic-quality.test.ts uses for
 // its own HTTP-level not_connected test.
-describe('session-authed HTTP isolation (fix round 3)', () => {
+describe('session-authed HTTP isolation', () => {
   const SESSION_SHOP_A = 'session-a.myshopify.com';
   const SESSION_SHOP_B = 'session-b.myshopify.com';
   const SESSION_SECRET = 'test-session-round3-secret';

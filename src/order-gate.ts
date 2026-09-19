@@ -1,12 +1,12 @@
 import { riskHold, addressComplete, type OrderAddress } from './fulfil';
 import type { AdminGraphql } from './shopify-admin';
 
-// Task 2 (Phase 2 part 1, "close the holes"): the live-order gate. Pure
-// decision logic evaluated just before money is spent on a supplier order -
-// is the Shopify order still live (not cancelled, refunded or already
-// fulfilled), does its fraud risk allow spend, and which shipping address to
-// trust. No database, no network here: readOrderGate takes an AdminGraphql
-// caller injected by the wiring task, and decideGate is a pure function.
+// The live-order gate. Pure decision logic evaluated just before money is
+// spent on a supplier order - is the Shopify order still live (not
+// cancelled, refunded or already fulfilled), does its fraud risk allow
+// spend, and which shipping address to trust. No database, no network here:
+// readOrderGate takes an injected AdminGraphql caller, and decideGate is a
+// pure function.
 
 export const ORDER_GATE_QUERY = `query pawscoutOrderGate($id: ID!) {
   order(id: $id) {
@@ -123,8 +123,8 @@ function mapRiskHoldReason(hold: string): GateHoldReason {
  * 3. financial status is a WHITELIST on PAID (case-insensitive), not a blacklist
  *    on the refunded family: refunded/partially refunded/voided -> hold refunded;
  *    anything else that is not PAID (including null and '') -> hold not-paid.
- *    Fix round 1: an unpaid order with every status field null used to fall
- *    through every blacklist check and proceed - the whitelist closes that.
+ *    An unpaid order with every status field null used to fall through every
+ *    blacklist check and proceed - the whitelist closes that.
  * 4. fulfillment status (case-insensitive): already (partially) fulfilled -> hold;
  *    ON_HOLD (the merchant paused it in Shopify) -> hold; any other value, and
  *    null, passes - the fulfillment vocabulary is wide and merchant-driven

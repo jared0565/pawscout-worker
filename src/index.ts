@@ -137,11 +137,11 @@ async function handleOrderWebhookFailure(
 
 /** ORDER_EVENT_TOPICS-scoped projection of a fresh or stored WebhookStatus,
  *  shared by /api/orders (via parseStoredHooks below) and the "Check order
- *  events" button (/api/ensure-webhooks) - fix round 2, N-1. Before this, the
- *  button route handed the console the raw status while /api/orders handed it
- *  this projection, so pressing the button during an outage reintroduced the
- *  exact confident MISSING list I-4 had just removed from the page-load path.
- *  One function, both doors.
+ *  events" button (/api/ensure-webhooks). Before this, the button route
+ *  handed the console the raw status while /api/orders handed it this
+ *  projection, so pressing the button during an outage reintroduced the
+ *  exact confident MISSING list the page-load path had just removed. One
+ *  function, both doors.
  *
  *  The projection is scoped to ORDER_EVENT_TOPICS specifically because that is
  *  what the console's "Order events: ..." line is about: a missing
@@ -163,13 +163,12 @@ export function projectHooks(
   return { ok: missing.length === 0, missing, checkedAt: status.checkedAt, error: null };
 }
 
-/** Validates a stored order-webhooks payload's shape - fix round 1 (I-4, M-2):
- *  requires boolean `ok`, boolean `verified`, array `missing`, string
- *  `checkedAt` before trusting anything in it; a parseable but wrong-shaped
- *  value (including anything stored before that round, which never had
- *  `verified`) is reported as never checked, not as a false status - and then
- *  hands the validated shape to projectHooks (fix round 2, N-1) for the same
- *  ORDER_EVENT_TOPICS-scoped projection the button route now shares. */
+/** Validates a stored order-webhooks payload's shape: requires boolean `ok`,
+ *  boolean `verified`, array `missing`, string `checkedAt` before trusting
+ *  anything in it; a parseable but wrong-shaped value (including anything
+ *  stored before `verified` existed) is reported as never checked, not as a
+ *  false status - and then hands the validated shape to projectHooks for the
+ *  same ORDER_EVENT_TOPICS-scoped projection the button route shares. */
 export function parseStoredHooks(raw: string | null): { ok: boolean; missing: string[]; checkedAt: string; error: string | null } | null {
   if (!raw) return null;
   let parsed: Record<string, unknown>;
@@ -192,11 +191,11 @@ export function parseStoredHooks(raw: string | null): { ok: boolean; missing: st
  *  thin wrapper, because no test drives a session-token route through
  *  app.request - there is no way to mint a session token
  *  `shopify.session.decodeSessionToken` will accept without the real signing
- *  internals @shopify/shopify-api keeps private. M-5 (fix round 1): a missing
- *  or non-string id is a bad request, distinct from a well-formed id with no
- *  row. `store` is always built from the session-resolved shop, never from
- *  the request body, so calling this with two different shops' stores is
- *  exactly what pins tenant isolation (I-2c) for this route. */
+ *  internals @shopify/shopify-api keeps private. A missing or non-string id
+ *  is a bad request, distinct from a well-formed id with no row. `store` is
+ *  always built from the session-resolved shop, never from the request body,
+ *  so calling this with two different shops' stores is exactly what pins
+ *  tenant isolation for this route. */
 export async function orderEventsForOrder(
   store: TenantStore, rawId: unknown
 ): Promise<{ status: 200 | 400 | 404; body: { ok: true; events: { seq: number; at: string; kind: string; detail: string | null }[] } | { ok: false; error: string } }> {
@@ -1572,8 +1571,8 @@ app.post('/api/orders', async (c) => {
   }));
   // Webhook-subscription health (the daily stage, or the console's own
   // "Check order events" button) - null when never checked, unparseable, or
-  // shaped wrong (M-2); "unknown" (unverified) reads as an explicit error
-  // rather than a confident MISSING (I-4, fix round 1).
+  // shaped wrong; "unknown" (unverified) reads as an explicit error rather
+  // than a confident MISSING.
   const hooks = parseStoredHooks(await store.getSearchCache(JOB_STAMP_ORDER_HOOKS));
   return c.json({ ok: true, orders, mode: cfg?.fulfil.mode ?? 'manual', createOnly: cfg?.fulfil.createOnly === true, alertEmail: cfg?.fulfil.alertEmail ?? '', hooks });
 });
@@ -1588,9 +1587,8 @@ app.post('/api/order-events', async (c) => {
   const r = await orderEventsForOrder(store, body.id);
   return c.json(r.body, r.status);
 });
-/** What /api/ensure-webhooks stores for consecutiveFailures on a manual check
- *  (fix round 2, N-2 - corrects the round 1 brief's "same rule" mistake): a
- *  verified check resets to 0, exactly like the nightly stage
+/** What /api/ensure-webhooks stores for consecutiveFailures on a manual
+ *  check: a verified check resets to 0, exactly like the nightly stage
  *  (nextConsecutiveFailures in src/jobs.ts). An unverified one does NOT
  *  increment - a button press is not a night, and letting it increment would
  *  both falsify the nightly alert's "N days in a row" text and let a press
@@ -1610,14 +1608,13 @@ export function manualCheckConsecutiveFailures(previousRaw: string | null, verif
 
 // Owner-triggered webhook-subscription check ("Check order events" button):
 // runs the same idempotent assurance the daily stage runs, stores the result
-// under the same cache key so /api/orders reflects it immediately. Fix round
-// 2 (N-1): answers the same ORDER_EVENT_TOPICS-scoped projection /api/orders
-// does, via projectHooks, instead of the raw status - a failed button press
-// during an outage must not show the console a confident MISSING list either.
-// Fix round 2 (N-2): a failed press leaves consecutiveFailures unchanged
-// rather than incrementing it, unlike the nightly stage - see
-// manualCheckConsecutiveFailures above. Never emails - only the daily stage
-// does that.
+// under the same cache key so /api/orders reflects it immediately. Answers
+// the same ORDER_EVENT_TOPICS-scoped projection /api/orders does, via
+// projectHooks, instead of the raw status - a failed button press during an
+// outage must not show the console a confident MISSING list either. A failed
+// press leaves consecutiveFailures unchanged rather than incrementing it,
+// unlike the nightly stage - see manualCheckConsecutiveFailures above. Never
+// emails - only the daily stage does that.
 app.post('/api/ensure-webhooks', async (c) => {
   const s = await shopOf(c); if (typeof s !== 'string') return s;
   const store = new TenantStore(c.env.DB, s);
