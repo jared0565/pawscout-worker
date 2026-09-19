@@ -754,6 +754,21 @@ Changes:
 - [ ] **Step 3: Implement**, after `python -P -m graphite impact` on every file you modify.
 - [ ] **Step 4: Green**: the five test files above, `tests/fulfil.test.ts`, `tests/webhook-retry.test.ts`, `tests/webhooks.test.ts`, `tests/console.test.ts`, `tests/guard.test.ts`, then the FULL suite once, then `npm run typecheck` and `npm run lint`.
 
+## As built: amendments made during review (2026-09-19)
+
+One review round changed this task. Where this section and the text above differ, this section is what the code does.
+
+1. **"Nobody to tell" is its own trail kind.** Change 3 kept the `unconfigured` result as an `error` line. Read strictly, change 2 then left that alert's `due` row pending for ever, so the sweep would have re-sent it, and written a fresh error line, on every run for 24 hours. The first repair cleared the subject when the walk met that error line's text, and the review showed three faults in matching on text: the candidate query had no counterpart (an unconfigured shop's orders stayed candidates for 24 hours and, once alerting was configured, could crowd a live alert out of the oldest-first list), a subject longer than 272 characters was cut at a different point in the two rows and never matched, and one unchecked write carried the whole clearing. So `OrderEventKind` gains `owner-alert-unconfigured` (detail: the subject), written through the same write-twice-then-log helper as the other markers; `pendingAlerts` clears on it by exact match; `alertState` answers `nobody-to-tell` on it; and the candidate query's one anti-join reads `d.kind IN ('owner-alerted', 'owner-alert-unconfigured')`. The clear is not sticky: a later `due` or `failed` row for the same subject makes it pending again, in the walk and in the query alike. The `error` line `owner alert not configured: <subject>` is no longer written anywhere. The `abandoned` line stays an `error` line, because nothing parses it.
+2. **Ten unsafe catch reads, not six.** Change 10's list was incomplete. Four more reads of the same shape sat in `src/fulfil-run.ts` (the payment catch, two inside the stockout branch, the tracking write-back catch), and the two in the stockout branch run INSIDE the per-order catch with no guard of their own, so a rejection with `null` there ended the whole run for that shop. All ten are fixed, and so is the one in `addOrderEvent`'s own catch in `src/tenant-store.ts`, which every trail write funnels through and whose contract is "answers false, never throws". Tested: a stockout whose product link read rejects with `null` still lands in `error` and the next order in the batch is still processed; a write-back that rejects with `null` still records its failure; `addOrderEvent` answers false when the database rejects with `null` or `undefined`. The payment catch and the stockout notify catch have no test of their own (same one-line shape, same block; accepted by the review).
+3. **The tracking write-back failure is classified, not copied.** `tracking-write-failed` used to carry Shopify's raw error message as its detail, which breaks the trail's own rule. The detail is now the fixed text `write to Shopify failed`; the raw message stays in the worker log and in the owner's email.
+4. **Tests added by the review:** a pipeline alert site asserts that `owner-alert-due` precedes `owner-alerted`; `deliverOrderAlert` with no options and a refused `due` write still sends and still marks; each layer of change 1 has its own break-proof, because breaking the walk alone leaves the end-to-end sweep test green (the query has already left the order out) and the reverse is true too.
+
+Accepted and left as they are, for the runbook:
+- When an `owner-alerted` marker is refused twice by the database, the sweep sends that alert again on the next run: duplicate emails while the refusal lasts. This is the intended direction of the trade.
+- Two simultaneous deliveries of one cancel can both alert (older than this task; duplicates only).
+- If the 15 minute schedule stops, a due alert waits until it runs again.
+- A refund alert in flight across the first deploy of this change would be told twice; no environment has run the older subject, so this cannot happen.
+
 ---
 
 ### Task 7: Console
