@@ -49,6 +49,61 @@ describe('consolePage', () => {
     expect(scripts).toContain('Order events: all 3 subscribed');
     expect(scripts).toContain('Order events: MISSING ');
     expect(scripts).toContain('A cancel or refund can go unnoticed.');
+    expect(scripts).toContain('the check failed (');
+    expect(scripts).toContain('so nothing is known. Checked ');
+  });
+
+  // 2026-09-19 follow-up: the server now distinguishes "check failed" (nothing
+  // known about order-events subscriptions) from "missing" (topics genuinely
+  // absent) via a new hooks.error field. Source-text checks can't verify which
+  // branch wins when both error and a non-empty missing list are present, so
+  // this extracts the shipped renderHookLine and drives it against a fake DOM
+  // node directly.
+  it('renderHookLine: a check failure takes precedence over MISSING, and each state renders exactly', async () => {
+    const html = await consolePage('test-api-key').text();
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+    const marker = 'function renderHookLine(';
+    const start = scripts.indexOf(marker);
+    expect(start).toBeGreaterThanOrEqual(0);
+    let depth = 0;
+    let end = scripts.indexOf('{', start);
+    for (let i = end; i < scripts.length; i++) {
+      if (scripts[i] === '{') depth++;
+      else if (scripts[i] === '}') {
+        depth--;
+        if (depth === 0) { end = i + 1; break; }
+      }
+    }
+    const fnSrc = scripts.slice(start, end);
+    const node = { textContent: '', className: '' };
+    const fakeEl = (id: string) => (id === 'hookline' ? node : null);
+    const esc = (s: unknown) => String(s);
+    const renderHookLine = new Function('el', 'esc', fnSrc + '\nreturn renderHookLine;')(fakeEl, esc);
+    const checkedAt = '2026-09-19T12:00:00.000Z';
+    const localTime = new Date(checkedAt).toLocaleString();
+
+    // Branch order: BOTH an error and a non-empty missing list -> check-failed line, not MISSING.
+    renderHookLine({ ok: false, missing: ['ORDERS_CANCELLED'], checkedAt, error: 'Shopify API unavailable' });
+    expect(node.textContent).toBe(
+      'Order events: the check failed (Shopify API unavailable), so nothing is known. Checked ' + localTime + '.'
+    );
+    expect(node.textContent).not.toContain('MISSING');
+    expect(node.className).toBe('msg no');
+
+    // null: unchanged.
+    renderHookLine(null);
+    expect(node.textContent).toBe('Order events: not checked yet');
+    expect(node.className).toBe('msg muted');
+
+    // ok true: unchanged.
+    renderHookLine({ ok: true, missing: [], checkedAt, error: null });
+    expect(node.textContent).toBe('Order events: all 3 subscribed (checked ' + localTime + ')');
+    expect(node.className).toBe('msg ok');
+
+    // error null/absent, ok false, non-empty missing: MISSING line, unchanged.
+    renderHookLine({ ok: false, missing: ['ORDERS_CANCELLED', 'REFUNDS_CREATE'], checkedAt, error: null });
+    expect(node.textContent).toBe('Order events: MISSING ORDERS_CANCELLED, REFUNDS_CREATE. A cancel or refund can go unnoticed.');
+    expect(node.className).toBe('msg no');
   });
 
   // 2026-07-04: optional margin cap (smooth high-end taper) in the pricing card.

@@ -635,15 +635,18 @@ async function verifyCjOrders(){
   }catch(e){ setMsg('ordmsg','Failed: '+errText(e),'no'); }
   finally{ b.disabled=false; }
 }
-// Task 7 (phase 2 money loop): the "Order events" webhook status line
-// (id="hookline") and its recheck button (id="hookbtn") are static markup in
-// the ops card (src/console/views/ops.ts), right after the Fulfilment mode
-// line. The functions below only fill the line's text/class and wire the
-// button and the per-order timeline toggle - no markup is built here.
+// The "Order events" webhook status line (id="hookline") and its recheck
+// button (id="hookbtn") are static markup in the ops card
+// (src/console/views/ops.ts), right after the Fulfilment mode line. The
+// functions below only fill the line's text/class and wire the button and
+// the per-order timeline toggle - no markup is built here.
 function renderHookLine(hooks){
   var n=el('hookline'); if(!n) return;
   if(!hooks){ n.textContent='Order events: not checked yet'; n.className='msg muted'; return; }
-  if(hooks.ok){
+  if(hooks.error){
+    n.textContent='Order events: the check failed ('+hooks.error+'), so nothing is known. Checked '+new Date(hooks.checkedAt).toLocaleString()+'.';
+    n.className='msg no';
+  } else if(hooks.ok){
     n.textContent='Order events: all 3 subscribed (checked '+new Date(hooks.checkedAt).toLocaleString()+')';
     n.className='msg ok';
   } else {
