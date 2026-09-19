@@ -129,6 +129,16 @@ async function holdForAddressChangeAfterSupplierOrder(
   }, alert);
 }
 
+/** What a failed gate read leaves in the trail. The trail classifies, it
+ *  never copies: the message can be Shopify's own GraphQL error text. Our own
+ *  "Shopify HTTP <status>" wording carries a status code and nothing else,
+ *  so it is kept; anything else becomes a fixed phrase. The real message goes
+ *  to the worker log here, and to the owner's email on the fourth failure in
+ *  a row. */
+function gateUnreadableDetail(error: string): string {
+  return /^Shopify HTTP \d{3}$/.test(error) ? error : 'read failed';
+}
+
 /** A gate read failure means "could not tell" - fail CLOSED (never proceed to
  *  spend). The row is left untouched so the next 15-minute tick retries it.
  *  On the 4th-or-later consecutive failure (>= 4, not === 4, so one swallowed
@@ -151,7 +161,8 @@ async function handleGateUnreadable(
   alert?: AlertSend,
   opts?: { ownerPays?: boolean }
 ): Promise<void> {
-  await store.addOrderEvent(o.shopify_order_id, 'gate-unreadable', error);
+  console.warn(`gate unreadable for ${o.order_name ?? o.shopify_order_id}: ${error}`);
+  await store.addOrderEvent(o.shopify_order_id, 'gate-unreadable', gateUnreadableDetail(error));
   if ((await store.countTrailingOrderEvents(o.shopify_order_id, 'gate-unreadable')) < 4) return;
   const name = o.order_name ?? o.shopify_order_id;
   if (!alert) return;

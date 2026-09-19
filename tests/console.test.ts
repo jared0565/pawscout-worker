@@ -53,6 +53,21 @@ describe('consolePage', () => {
     expect(scripts).toContain('so nothing is known. Checked ');
   });
 
+  // The owner pays the supplier by hand and PawScout cannot see that payment:
+  // an order stays awaiting-payment until its tracking number arrives. So the
+  // banner must not read as an instruction to pay everything it lists, and a
+  // supplier order id must show on EVERY row that has one: a held, errored or
+  // cancelled row with a supplier order is exactly the one the owner has to
+  // act on at the supplier.
+  it('orders card: the awaiting-payment banner says a hand payment is invisible, and every row with a supplier order shows its id', async () => {
+    const html = await consolePage('test-api-key').text();
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+    expect(scripts).toContain('PawScout cannot see a payment you make by hand');
+    expect(scripts).toContain('check its state at the supplier before you pay');
+    expect(scripts).not.toContain('Pay these CJ order(s)');
+    expect(scripts).toContain("var cjid=o.cj?(' · CJ '+esc(o.cj)):'';");
+  });
+
   // 2026-09-19 follow-up: the server now distinguishes "check failed" (nothing
   // known about order-events subscriptions) from "missing" (topics genuinely
   // absent) via a new hooks.error field. Source-text checks can't verify which

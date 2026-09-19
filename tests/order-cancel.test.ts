@@ -192,7 +192,7 @@ describe('applyCancel', () => {
     expect(outcome.changed).toBe(true);
     expect(outcome.alert).toEqual({
       subject: 'Order #O1 was cancelled: do NOT pay the supplier',
-      text: 'Order #O1 was cancelled in Shopify. Supplier order CJ-1 was created for it and is still unpaid. Do NOT pay it. Cancel it at the supplier. Nothing has been spent.'
+      text: 'Order #O1 was cancelled in Shopify. Supplier order CJ-1 was created for it and PawScout has not paid it. Do NOT pay it. If it is still unpaid, cancel it at the supplier. If you have already paid it by hand, PawScout cannot see that: ask the supplier to cancel and refund it, and treat it as a return if it has shipped.'
     });
     const order = await store.getOrder('O1');
     expect(order?.status).toBe('cancelled');
@@ -391,7 +391,7 @@ describe('applyCancel writes the marker before the status', () => {
     expect(second.changed).toBe(true);
     expect(second.alert).toEqual({
       subject: 'Order #O1 was cancelled: do NOT pay the supplier',
-      text: 'Order #O1 was cancelled in Shopify. Supplier order CJ-1 was created for it and is still unpaid. Do NOT pay it. Cancel it at the supplier. Nothing has been spent.'
+      text: 'Order #O1 was cancelled in Shopify. Supplier order CJ-1 was created for it and PawScout has not paid it. Do NOT pay it. If it is still unpaid, cancel it at the supplier. If you have already paid it by hand, PawScout cannot see that: ask the supplier to cancel and refund it, and treat it as a return if it has shipped.'
     });
     expect((await store.getOrder('O1'))?.status).toBe('cancelled');
     expect((await store.listOrderEvents('O1')).filter((e) => e.kind === 'cancel-received')).toHaveLength(1);
@@ -411,7 +411,7 @@ describe('applyCancel writes the marker before the status', () => {
     expect(second.changed).toBe(true);
     expect(second.alert).toEqual({
       subject: 'Order #O1 was cancelled: do NOT pay the supplier',
-      text: 'Order #O1 was cancelled in Shopify. Supplier order CJ-1 was created for it and is still unpaid. Do NOT pay it. Cancel it at the supplier. Nothing has been spent.'
+      text: 'Order #O1 was cancelled in Shopify. Supplier order CJ-1 was created for it and PawScout has not paid it. Do NOT pay it. If it is still unpaid, cancel it at the supplier. If you have already paid it by hand, PawScout cannot see that: ask the supplier to cancel and refund it, and treat it as a return if it has shipped.'
     });
     expect((await store.getOrder('O1'))?.status).toBe('cancelled');
     expect((await store.listOrderEvents('O1')).filter((e) => e.kind === 'cancel-received')).toHaveLength(1);

@@ -670,6 +670,23 @@ describe('Stage-B live-order gate (2026-09-19: readOrderGate/decideGate, fetched
     expect(alerts).toHaveLength(0);
   });
 
+  // The trail classifies, it never copies. A failed read's message can be
+  // Shopify's own GraphQL error text, so only our own "Shopify HTTP <status>"
+  // wording (a status code and nothing else) is kept; anything else is
+  // recorded as a fixed phrase. The owner's email still carries the real
+  // message, which the four-in-a-row test below pins.
+  it('a gate-unreadable trail line never copies the raw error: our own HTTP status wording is kept, anything else becomes a fixed phrase', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedWarehouse(store, 'CJ1', 'S1', 'v1');
+    await seedOrder(store, 'O1', [{ sku: 'S1', quantity: 1, cjPid: 'CJ1' }]);
+    const spy = { create: [] as unknown[], pay: [] as string[] };
+    await processDueOrders(store, fakeCj(spy), liveAdmin({ throws: 'Field RAWMARKER does not exist on type Order' }), cfg('pawscout'), {});
+    await processDueOrders(store, fakeCj(spy), liveAdmin({ throws: 'Shopify HTTP 503' }), cfg('pawscout'), {});
+    const details = (await store.listOrderEvents('O1')).filter((e) => e.kind === 'gate-unreadable').map((e) => e.detail);
+    expect(details).toEqual(['read failed', 'Shopify HTTP 503']);
+    expect(spy.create.length).toBe(0);
+  });
+
   it('gate read throws on four consecutive runs: exactly ONE alert, on the fourth', async () => {
     const store = new TenantStore(env.DB, SHOP);
     await seedWarehouse(store, 'CJ1', 'S1', 'v1');

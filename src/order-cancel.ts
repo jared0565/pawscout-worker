@@ -72,10 +72,14 @@ function statusFromCancelReceived(detail: string | null): OrderRow['status'] | n
 function cancelAlertFor(firstStatus: OrderRow['status'], order: OrderRow): OwnerAlert | null {
   const name = displayName(order);
   if (firstStatus === 'awaiting-payment') {
+    // 'awaiting-payment' means WE have not paid it. When the owner pays the
+    // supplier by hand we never learn of it (the row only moves on when a
+    // tracking number arrives), so the text must not claim the supplier order
+    // is unpaid or that nothing has been spent: it says what to do either way.
     const cj = order.cj_order_id ?? NOT_RECORDED;
     return {
       subject: `Order ${name} was cancelled: do NOT pay the supplier`,
-      text: `Order ${name} was cancelled in Shopify. Supplier order ${cj} was created for it and is still unpaid. Do NOT pay it. Cancel it at the supplier. Nothing has been spent.`
+      text: `Order ${name} was cancelled in Shopify. Supplier order ${cj} was created for it and PawScout has not paid it. Do NOT pay it. If it is still unpaid, cancel it at the supplier. If you have already paid it by hand, PawScout cannot see that: ask the supplier to cancel and refund it, and treat it as a return if it has shipped.`
     };
   }
   if (firstStatus === 'submitted') {

@@ -696,7 +696,7 @@ async function loadOrders(){
       if(awaiting.length){
         var ids=awaiting.map(function(o){return esc(o.cj||o.name||o.id);}).join(', ');
         banner.className='msg no'; banner.style.display='';
-        banner.textContent='⚠ '+awaiting.length+' order(s) created in CJ awaiting your payment. Pay these CJ order(s) in app.cjdropshipping.com: '+ids+'. Tracking will sync back automatically once paid.';
+        banner.textContent='⚠ '+awaiting.length+' order(s) have a CJ order that PawScout has not paid: '+ids+'. Pay any you have not paid yet in app.cjdropshipping.com. PawScout cannot see a payment you make by hand, so an order stays in this list until its tracking number arrives: check its state at the supplier before you pay. Tracking will sync back automatically.';
       } else { banner.style.display='none'; banner.textContent=''; }
     }
     if(!r.orders.length){ list.innerHTML=''; setMsg('ordmsg','No orders yet.','muted'); return; }
@@ -707,7 +707,7 @@ async function loadOrders(){
       if(o.status==='held') act='<button class="ghost" data-act="release" data-id="'+esc(o.id)+'">Release</button> <button class="ghost" data-act="cancel" data-id="'+esc(o.id)+'">Cancel</button>';
       else if(o.status==='queued') act='<button class="ghost" data-act="cancel" data-id="'+esc(o.id)+'">Cancel</button>';
       var tn=o.tracking?(' · '+esc(o.tracking)):'';
-      var cjid=((o.status==='awaiting-payment'||o.status==='submitted')&&o.cj)?(' · CJ '+esc(o.cj)):'';
+      var cjid=o.cj?(' · CJ '+esc(o.cj)):'';
       return '<tr><td><button class="ghost" data-ev="'+esc(o.id)+'">'+esc(o.name||o.id)+'</button></td><td>'+esc((o.currency||'')+' '+(o.total!=null?o.total:''))+'</td><td><strong>'+esc(o.status)+'</strong>'+esc(holds)+cjid+tn+'</td><td>'+act+'</td></tr>';
     }).join('');
     list.innerHTML='<table style="width:100%;border-collapse:collapse;font-size:13px"><thead><tr><th style="text-align:left">Order</th><th style="text-align:left">Total</th><th style="text-align:left">Status</th><th></th></tr></thead><tbody>'+rows+'</tbody></table>';
