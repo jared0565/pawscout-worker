@@ -433,6 +433,210 @@ Changes:
 
 ---
 
+### Task 6c: An order event is not lost when its processing fails
+
+Added during execution (2026-09-19) by an orchestrator ruling. Runs right after Task 6.
+
+**The hole (H8).** The three order webhook routes answer 200 even when their own processing threw. Shopify redelivers only a delivery that did NOT get a 2xx, so a database blip loses a paid order, a cancel or a refund for good, although every handler is idempotent and a redelivery would have healed it.
+
+**Files:**
+- Create: `src/webhook-retry.ts`, `tests/webhook-retry.test.ts`
+- Modify: `src/index.ts`, `tests/order-webhook-routes.test.ts`
+
+**Verified facts (shopify.dev, 2026-09-19):** any answer outside 2xx is a failed delivery; Shopify allows 1 second to connect and 5 seconds for the whole request; a failed delivery is retried up to 8 times over 4 hours with backoff, and if failures persist the subscription is REMOVED; the header `X-Shopify-Webhook-Id` identifies one delivery and stays the same across its retries.
+
+**Interfaces:**
+- Consumes: `TenantStore.getSearchCache(key)`, `TenantStore.putSearchCache(key, payload, ttlDays)`, `OwnerAlert` from `src/order-cancel.ts`, `alertOwner`, and the three order webhook handlers Task 6 left structurally alike in `src/index.ts`.
+- Produces:
+
+```ts
+// src/webhook-retry.ts
+export const MAX_WEBHOOK_FAILURES = 3;
+export function onWebhookFailure(
+  store: Pick<TenantStore, 'getSearchCache' | 'putSearchCache'>,
+  input: { webhookId: string | null; topic: string; orderId: string }
+): Promise<{ status: 200 | 500; alert: OwnerAlert | null }>;
+```
+
+Changes:
+
+1. **The failure contract** of `/webhooks/orders-paid`, `/webhooks/orders-cancelled` and `/webhooks/refunds-create`. It replaces "always answer 200" for these three routes only:
+   - Bad signature: 401, as now.
+   - A body that is not JSON, or has no usable order id, or a shop with no installation or config: 200, nothing written, as now. It can never succeed, so asking for a retry is pointless.
+   - Processing THROWS: log the error with `console.error`, then answer what `onWebhookFailure` says. When it returns an alert, send it with plain `alertOwner` inside `c.executionCtx.waitUntil` (there may be no order row to hang a trail on).
+   - If the shop's store cannot even be built, answer 500.
+
+2. **`onWebhookFailure`** counts the failures of ONE delivery under the cache key `whfail:<webhookId>` (the value is the count as a string; `putSearchCache` with a lifetime of 1 day):
+   - `webhookId` is null or empty: `{ status: 500, alert: null }`.
+   - Reading or writing the counter throws: `{ status: 500, alert: null }` (a store that is down is a passing fault by nature).
+   - The new count is 1, 2 or 3: `{ status: 500, alert: null }`. Shopify redelivers; the handlers are idempotent.
+   - The new count is 4 or more: `{ status: 200, alert }`, so the failures stop well short of the 8 that make Shopify remove the subscription. The alert is returned ONLY when the new count is exactly 4 (one alert per delivery); above 4 the alert is null. Subject `An order event from Shopify could not be processed`. Text `PawScout failed <count> times to process a Shopify <topic> event (order <orderId>). It has stopped asking Shopify to resend it, because repeated failures make Shopify remove the subscription. Check this order in Shopify and in the PawScout console.`, with `(unknown)` in place of an empty `orderId`.
+   - It never throws.
+
+3. Never copy a thrown error's message into an alert or into a trail detail. It goes to `console.error` only.
+
+- [ ] **Step 1: Write the failing tests.**
+  `tests/webhook-retry.test.ts` (real D1 store for the counting tests): calls 1, 2 and 3 for one `webhookId` answer 500 with no alert; call 4 answers 200 with the exact subject and text (assert both whole); call 5 answers 200 with no alert; a different `webhookId` counts separately from 1; a null and an empty `webhookId` answer 500; a store whose `getSearchCache` rejects answers 500 and does not throw; a store whose `putSearchCache` rejects answers 500 and does not throw; an empty `orderId` prints `(unknown)`.
+  `tests/order-webhook-routes.test.ts`: a valid cancel whose processing throws (make `TenantStore.prototype.getOrder` reject once with `vi.spyOn`, and restore it) answers 500; the SAME delivery id sent again, now succeeding, answers 200 and the order is `cancelled` with one `cancel-received` event; four failures of one delivery id answer 500, 500, 500, 200; the same first-failure 500 on `/webhooks/orders-paid` and on `/webhooks/refunds-create`; a malformed JSON body on all three routes still answers 200; a bad signature still answers 401 and counts nothing.
+- [ ] **Step 2: Run them and see each fail for the right reason.**
+- [ ] **Step 3: Implement**, after `python -P -m graphite impact src/index.ts`.
+- [ ] **Step 4: Green**: both test files, `tests/webhooks.test.ts`, `tests/order-cancel.test.ts`, `tests/guard.test.ts`, then `npm run typecheck` and `npm run lint`.
+
+---
+
+### Task 6b: An owner alert is confirmed or retried
+
+Added during execution (2026-09-19) by an orchestrator ruling. Runs after Task 6c and before Task 6d.
+
+**The hole (H7).** `alertOwner` answers `void` and only logs a failed send, and every caller then writes `owner-alerted`. While the owner pays the supplier by hand, an email is the only thing that stops a payment for an order the customer cancelled. A provider failure at the wrong moment loses "do NOT pay the supplier" for good, and the trail says the owner was told.
+
+**The principle:** the marker that stops retrying is written only after the thing it records has happened.
+
+Not used as the retry driver: Shopify's webhook redelivery. Answering 500 because OUR email failed would spend Shopify's 8 allowed failures on a fault Shopify cannot heal.
+
+**Files:**
+- Create: `src/order-alert.ts`, `tests/order-alert.test.ts`
+- Modify: `src/owner-alert.ts`, `src/order-cancel.ts`, `src/tenant-store.ts`, `src/fulfil-run.ts`, `src/index.ts`
+- Modify tests: `tests/order-cancel.test.ts`, `tests/fulfil-run.test.ts`, `tests/order-webhook-routes.test.ts`, `tests/order-events-store.test.ts`, and the existing test of `alertOwner` if there is one (find it with `python -P -m graphite query "callers alertOwner"`).
+
+**Interfaces:**
+- Consumes: Task 1 (`addOrderEvent`, `listOrderEvents`), Task 4 (`OwnerAlert`, `applyCancel`, `applyRefund`), Task 5 (every alert site in `src/fulfil-run.ts`, and `runOrderPipelineForShop`), Task 6 (the one alert door `sendOrderAlert` in `src/index.ts`).
+- Produces:
+
+```ts
+// src/owner-alert.ts
+export type AlertResult = 'sent' | 'failed' | 'unconfigured';
+export function alertOwner(env: Env, cfg: TenantConfig, subject: string, text: string, fetchImpl?: typeof fetch): Promise<AlertResult>;
+
+// src/order-alert.ts
+export type AlertSend = (subject: string, text: string) => Promise<AlertResult>;
+export const MAX_ALERT_ATTEMPTS = 12;
+export const ALERT_RETRY_WINDOW_HOURS = 24;
+export function deliverOrderAlert(store: TenantStore, shopifyOrderId: string, alert: OwnerAlert, send: AlertSend): Promise<AlertResult>;
+export function retryOrderAlerts(store: TenantStore, send: AlertSend, now?: Date): Promise<{ retried: number; delivered: number }>;
+
+// src/tenant-store.ts
+// OrderEventKind gains 'owner-alert-failed'. No migration: order_events.kind is TEXT with no CHECK.
+listOrderIdsWithEventSince(kind: OrderEventKind, sinceIso: string): Promise<string[]>;
+```
+
+Changes:
+
+1. **`alertOwner`** answers what happened and still never throws. No alert address or no Resend key: `'unconfigured'`. `sendEmail` answered ok: `'sent'`. `sendEmail` answered not ok, or threw: log the existing warning and answer `'failed'`. The other callers ignore the result; leave them alone unless the compiler objects.
+
+2. **Trail meaning, from now on:**
+   - `owner-alerted`, detail = the alert's subject: the email provider ACCEPTED this alert.
+   - `owner-alert-failed`, detail = the subject: one send of this alert failed. It will be retried.
+   - `error`, detail `owner alert not configured: <subject>`: there is nobody to tell. Never retried.
+   - `error`, detail `owner alert abandoned after 12 attempts: <subject>`: written once, together with the 12th failure.
+   A subject holds an order name and an instruction, never customer data. Never put an alert's TEXT in the trail.
+
+3. **`deliverOrderAlert`** calls `send`, writes exactly one of the markers above for its result (plus the `abandoned` line when this failure is the 12th for that subject on that order), and answers the result. A `send` that throws counts as `'failed'`. It never throws.
+
+4. **`retryOrderAlerts`**: take the order ids from `listOrderIdsWithEventSince('owner-alert-failed', now minus 24 hours)`. For each, read the whole trail in `seq` order and keep a map from subject to `{ firstAt, failures }`: an `owner-alert-failed` with detail S sets or increments S (`firstAt` is the `at` of the FIRST failure); an `owner-alerted` with detail S deletes S. After the walk, every subject still in the map with `failures < 12` and `firstAt` inside the window gets ONE re-send through `deliverOrderAlert`, with the same subject and this text (the row's values; the literal `(not recorded)` where a value is null):
+
+   ```
+   This alert was first raised at <firstAt> and could not be delivered then.
+
+   <subject>.
+
+   Supplier order: <cj_order_id>. Tracking: <tracking_number>. Status here: <status>.
+
+   Open the PawScout console, Orders, and open this order's trail for the full history.
+   ```
+
+   An order id with no row is skipped. One order failing never stops the sweep. `retried` counts re-sends, `delivered` counts those that answered `'sent'`.
+
+5. **Every order alert goes through `deliverOrderAlert`**: `applyCancel` and `applyRefund` STOP writing `owner-alerted` (they still return the alert, and their dedupe rules do not change); every site in `src/fulfil-run.ts` that awaits the alert and then writes `owner-alerted` becomes one `deliverOrderAlert(store, id, { subject, text }, alert)` with its subject and text unchanged, and the `alert` option's type becomes `AlertSend`; the one alert door in `src/index.ts` sends through `deliverOrderAlert` (still inside `waitUntil`, still exactly one `waitUntil` per alert, because the route tests count them).
+
+6. **The alert counters in `src/fulfil-run.ts`** (`>= 4` trailing `gate-unreadable` or `tracking-write-failed`): an `owner-alert-failed` marker breaks the trailing run exactly as `owner-alerted` does, so a failed alert is retried by the sweep in change 4, not raised again on the next tick. Check that this holds and pin it with a test.
+
+7. **`runOrderPipelineForShop`** builds `alert` from `alertOwner` and, BEFORE `processDueOrders`, runs `retryOrderAlerts(store, alert)` inside its own try/catch with a `console.warn`, so it runs whatever `fulfil.mode` is and cannot stop the pipeline.
+
+- [ ] **Step 1: Write the failing tests.**
+  `tests/order-alert.test.ts` (real D1 store, a fake `send`):
+  1. `'sent'` writes one `owner-alerted` whose detail is the subject.
+  2. `'failed'` writes one `owner-alert-failed` whose detail is the subject, and no `owner-alerted`.
+  3. `'unconfigured'` writes one `error` with detail `owner alert not configured: <subject>` and nothing else.
+  4. A `send` that throws is treated as `'failed'`, and `deliverOrderAlert` does not throw.
+  5. `retryOrderAlerts` re-sends a failed alert once, with the same subject and the text above built from the row (assert the whole text for a row with a supplier order id and no tracking number).
+  6. After a retry answers `'sent'`, a second `retryOrderAlerts` sends nothing.
+  7. Two different failed subjects on one order are both retried; delivering one leaves the other pending.
+  8. A subject with 12 failures is not retried, and the 12th failure wrote exactly one `abandoned` line.
+  9. A failure whose FIRST failure is older than 24 hours is not retried (pass `now`).
+  10. An `owner-alerted` for subject A does not clear a pending subject B.
+  11. No alert TEXT ever appears in the trail (seed a text holding a marker word, assert no detail contains it).
+  `tests/order-cancel.test.ts`: every expectation of `['cancel-received', 'owner-alerted']` becomes `['cancel-received']`, and the refund equivalents likewise, with the returned alerts unchanged.
+  `tests/fulfil-run.test.ts`: at each alert site, a `send` answering `'failed'` leaves `owner-alert-failed` and NO `owner-alerted`, and a `send` answering `'sent'` leaves `owner-alerted` with the subject as its detail; change 6's pin.
+  `tests/order-webhook-routes.test.ts`: the alerting cancel on an `awaiting-payment` order now leaves `error` with detail `owner alert not configured: ...` in the trail (the tests have no Resend key) instead of `owner-alerted`; the `waitUntil` counts are unchanged.
+  `tests/order-events-store.test.ts`: `listOrderIdsWithEventSince` returns each order id once, honours the time bound and the kind, and never returns another shop's orders.
+- [ ] **Step 2: Run them and see each fail for the right reason.**
+- [ ] **Step 3: Implement**, after `python -P -m graphite impact` on every file you modify, and `python -P -m graphite query "callers alertOwner"` to see every caller of the function whose return type changes.
+- [ ] **Step 4: Green**: the five test files above, `tests/guard.test.ts`, `tests/webhooks.test.ts`, `tests/webhook-retry.test.ts`, `tests/console.test.ts`, then `npm run typecheck` and `npm run lint`.
+
+---
+
+### Task 6d: A supplier order that must not be paid as it stands is always flagged
+
+Added during execution (2026-09-19) by orchestrator rulings, from the Task 5 review and from three findings the security gate's own reviewer opened on the pushed branch. Runs LAST among the code tasks, after Task 6b (its alerts go out through `deliverOrderAlert`).
+
+While the owner pays the supplier by hand, there is no moment "just before the payment" for a gate to stand at. So whenever a supplier order exists and something makes paying it wrong, the owner must be told, by every path that can notice.
+
+- **H9.** `applyCancel` alerts only for `awaiting-payment`, `submitted` and `fulfilled`. Rows in other statuses hold a supplier order too: an operator release maps a row back to `queued` and keeps `cj_order_id`; a pre-pay gate hold writes `held` and keeps it; a failed or timed-out payment lands in `error` and keeps it. A cancel of any of these tells nobody.
+- **H10.** `applyCancel` decides from a status it read BEFORE its own write. The pipeline side was made atomic; the webhook side was not. Sequence: the pipeline is waiting on `createOrder`; the cancel reads `queued` and chooses no alert; the pipeline's conditional write succeeds (the row is not cancelled yet) and emails "pay it"; the cancel then writes `cancelled`. Nobody is told not to pay.
+- **H11.** A cancel reaches us by webhook only. If that delivery is lost, or the subscription was removed and the nightly check has not healed it yet, an order sits in `awaiting-payment` while Shopify says cancelled, and the owner pays it.
+- **H12.** A delivery address changed after the supplier order was created is saved here and then ignored: the pipeline pays (or asks the owner to pay) a supplier order that still carries the OLD address, while the trail shows the new one.
+
+**Files:**
+- Modify: `src/order-cancel.ts`, `src/fulfil-run.ts`
+- Modify tests: `tests/order-cancel.test.ts`, `tests/fulfil-run.test.ts`
+
+**Interfaces:**
+- Consumes: Task 2 (`readOrderGate`, `decideGate`), Task 4 (`applyCancel`, `OwnerAlert`), Task 5 (`processDueOrders`, `runOrderPipelineForShop`, `updateOrderUnlessCancelled`), Task 6b (`deliverOrderAlert`, `AlertSend`).
+- Produces:
+
+```ts
+// src/fulfil-run.ts
+export function recheckAwaitingPayment(
+  store: TenantStore, admin: AdminGraphql, send: AlertSend, opts?: { max?: number }
+): Promise<{ checked: number; cancelled: number; addressChanged: number }>;
+// GateHoldReason is NOT widened; the new hold reason is a plain string written by this file:
+//   'address-changed-after-supplier-order'
+```
+
+## Part A: `applyCancel` writes first, then decides from a fresh read (H9, H10)
+
+1. Order of work on a first delivery (the dedupe on an existing `cancel-received` stays first and unchanged): read the row; write `cancelled` with `["shopify-cancelled"]` unless the row is `fulfilled` or already `cancelled`; write `cancel-received`; READ THE ROW AGAIN; decide the alert from both reads:
+   - the FIRST read's status was `awaiting-payment`, `submitted` or `fulfilled`: that status's alert, texts unchanged, with the supplier order id and tracking number taken from the SECOND read;
+   - otherwise, the SECOND read has a `cj_order_id`: subject `Order <name> was cancelled and a supplier order exists for it`, text `Order <name> was cancelled in Shopify. Supplier order <cj order id> exists for it. Do NOT pay it. Check its state at the supplier: cancel it there if it is unpaid, and treat it as a return if it has been paid.` (No claim about payment: such a row can be unpaid or paid.)
+   - otherwise none.
+   An already `cancelled` row still raises nothing. Why this closes the race: if the pipeline wrote its supplier order id before our second read, we alert; if it writes after, its own conditional status write is refused (the row is cancelled) and the pipeline alerts. Say that in the function's comment.
+
+## Part B: a changed address never reaches a payment silently (H12)
+
+2. In `processDueOrders`, whenever the row ALREADY has a supplier order (`o.cj_order_id` at the pre-create position, which is every pay-retry, or the id just created at the pre-pay position) and the gate's `proceed` decision says `addressChanged`: save the new address and write `address-refreshed` as today, then STOP: set the row `held` with hold reason `address-changed-after-supplier-order` through `updateOrderUnlessCancelled`, write `gate-held` with that reason as its detail, count it as `held`, do NOT pay, do NOT call `opts.notify`, and alert:
+   - subject: `Order <name>: the delivery address changed after the supplier order was created`
+   - text: `The delivery address of order <name> was changed in Shopify after supplier order <cj order id> was created, so the supplier order still carries the old address. Do NOT pay it as it stands. Correct the address on the supplier order at the supplier, then release the order in the PawScout console. If the supplier cannot change it, cancel the supplier order there and handle this order by hand.`
+   Because the new address is saved before the hold, a later release no longer sees a change and carries on. A row with NO supplier order keeps today's behaviour (refresh the address and carry on: the supplier order is then created with the new one). The alert never holds the address itself.
+
+## Part C: rows awaiting a hand payment are re-read in Shopify on every tick (H11, H12)
+
+3. **`recheckAwaitingPayment`**: for each row of `listOrders('awaiting-payment')` (at most `max`, default 20): `readOrderGate(admin, id)`.
+   - Unreadable: skip the row and write nothing (the next tick tries again).
+   - `cancelledAt` is set: `applyCancel(store, id)` and, when it returns an alert, `deliverOrderAlert`. Count `cancelled`. Because `applyCancel` dedupes on the trail, a cancel that ALSO arrives by webhook is handled exactly once, whichever comes first.
+   - Otherwise, Shopify's shipping address is present and differs from the stored one (use `decideGate` with the stored address and `skipRisk: true`, and act only on a `proceed` decision whose `addressChanged` is true): exactly change 2's save, hold and alert. Count `addressChanged`.
+   - Anything else (including a gate `hold` such as `refunded`): nothing. A refund without a cancel stays with the webhook path on purpose: it is not an instruction to stop, and the gate read carries no refund identity to dedupe on.
+4. **`runOrderPipelineForShop`** runs `recheckAwaitingPayment(store, admin, alert)` right after `retryOrderAlerts` and BEFORE `processDueOrders`, inside its own try/catch with a `console.warn`, so it runs whatever `fulfil.mode` is and cannot stop the pipeline.
+
+- [ ] **Step 1: Write the failing tests.**
+  `tests/order-cancel.test.ts`: for EACH of `held`, `queued`, `received` and `error`, a row WITH a supplier order gets the exact Part A generic alert on the first delivery and none on the second, and a row WITHOUT one gets none; the race: a store wrapper whose `updateOrder` (the cancel's own write) first lets a simulated pipeline set `cj_order_id` and `awaiting-payment` on the row, so the first read says `queued` with no supplier order and the second read has one: the generic alert IS returned and the row ends `cancelled`; the three per-status alerts are unchanged and take the supplier order id from the second read.
+  `tests/fulfil-run.test.ts`: a pay-retry (`queued` with `cj_order_id`) whose Shopify address differs: the row ends `held` with `["address-changed-after-supplier-order"]`, the stored address is the NEW one, nothing is paid, `notify` is not called, the exact alert is delivered, and the alert text contains neither the old nor the new street; the same at the pre-pay position (the address changes between the two gate reads); after a release the same row proceeds (no second hold); a row WITHOUT a supplier order whose address differs proceeds and creates the supplier order with the new address (today's behaviour, pinned). `recheckAwaitingPayment`: a cancelled row becomes `cancelled` and the "do NOT pay the supplier" alert is delivered once across two runs; a cancel already handled by the webhook path sends nothing; a changed address holds and alerts once across two runs; a live unchanged row is untouched and nothing is sent; an unreadable gate writes nothing; a gate `hold` (`refunded`) does nothing; the `max` bound is honoured; and `runOrderPipelineForShop`-level wiring is pinned the way the file already pins its other steps (or, if that function is not drivable in tests, say so in the report and pin the call order by reading).
+- [ ] **Step 2: Run them and see each fail for the right reason.**
+- [ ] **Step 3: Implement**, after `python -P -m graphite impact src/order-cancel.ts` and `python -P -m graphite impact src/fulfil-run.ts`.
+- [ ] **Step 4: Green**: both test files, `tests/order-alert.test.ts`, `tests/order-webhook-routes.test.ts`, `tests/order-gate.test.ts`, `tests/guard.test.ts`, then `npm run typecheck` and `npm run lint`.
+
+---
+
 ### Task 7: Console
 
 **Files:**

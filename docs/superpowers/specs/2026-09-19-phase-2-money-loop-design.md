@@ -40,6 +40,12 @@ Live state:
 | H4 | The tracking write-back has never run and uses a deprecated mutation | `fulfillmentCreateV2`; Shopify's schema validator says "use `fulfillmentCreate`". `src/shopify-admin.ts` records that API 2026-04 has runtime rules that schema validation cannot see (the `@idempotent` break). A failure today is a `console.warn` and nothing else | The customer never gets tracking and nobody is told |
 | H5 | An order leaves no trail | The row holds only its current status. There is no record of what happened, when, or why | The phase's exit criterion ("each with an evidence trail") cannot be met, and a failed order cannot be reconstructed |
 | H6 | A multi-item order silently takes one origin | `origin = resolved.origin; // last wins`, and freight is estimated from the first line only | A wrong-warehouse order with no warning |
+| H7 | An owner alert that fails to send is lost, and the trail says it was sent (found during the build, 2026-09-19) | `alertOwner` answers `void` and only logs a failed send; every caller then writes `owner-alerted` | While the owner pays the supplier by hand, "do NOT pay the supplier" is the only barrier, and it can vanish without a trace |
+| H8 | An order event whose processing fails here is lost (found during the build, 2026-09-19) | The order webhook routes answer 200 even when their own processing threw, and Shopify redelivers only a delivery that did not get a 2xx | A database blip loses a paid order, a cancel or a refund, although every handler is idempotent and a redelivery would have healed it |
+| H9 | A cancel of a released row that has a supplier order tells nobody (found by the Task 5 review, 2026-09-19) | An operator release maps `awaiting-payment` or `submitted` back to `queued` and keeps the supplier order id; the cancel path alerted only for three statuses, and the pipeline's gate stop alerted for none | An unpaid supplier order stays live while the last email the owner holds says "pay it" |
+| H10 | A cancel that lands while the pipeline is mid-flight on the same order can be lost from either side (found by the Task 5 review and by the security gate's reviewer, 2026-09-19) | Every status write in `processDueOrders` was blind, so it could write over the cancel and then email "pay it". And the cancel path decides its alert from a status it read before its own write, so the pipeline can slip a supplier order in between and nobody is told | The owner pays the supplier for an order the customer cancelled |
+| H11 | A cancel reaches us by webhook only (found during the build, 2026-09-19) | If that one delivery is lost, or the subscription was removed and the nightly check has not healed it yet, nothing ever re-reads an `awaiting-payment` order | Same |
+| H12 | An address changed after the supplier order was created is saved here and then ignored (found by the Task 5 review and by the security gate's reviewer, 2026-09-19) | The gate reports `addressChanged`; the pipeline stores the new address and then pays, or asks the owner to pay, a supplier order that still carries the old one | The parcel goes to the old address while the trail shows the new one |
 
 Not holes for this phase (section 9): the supplier client cannot read the wallet balance or cancel a supplier order; the app holds `read_orders` only, so cancelling or refunding in Shopify stays with the owner in the admin.
 
@@ -141,7 +147,7 @@ CREATE TABLE order_events (
 );
 ```
 
-- Kinds: `received`, `held`, `queued`, `released`, `gate-passed`, `gate-held`, `gate-unreadable`, `address-refreshed`, `stock-ok`, `stockout`, `supplier-order-created`, `awaiting-payment`, `paid`, `tracking-found`, `tracking-written`, `tracking-write-failed`, `cancel-received`, `refund-received`, `owner-alerted`, `operator-action`, `error`.
+- Kinds: `received`, `held`, `queued`, `released`, `gate-passed`, `gate-held`, `gate-unreadable`, `address-refreshed`, `stock-ok`, `stockout`, `supplier-order-created`, `awaiting-payment`, `paid`, `tracking-found`, `tracking-written`, `tracking-write-failed`, `cancel-received`, `refund-received`, `owner-alerted`, `owner-alert-failed` (added with 5.7), `operator-action`, `error`.
 - Every status change and every money-adjacent step writes exactly one event. Writing an event never fails the step that raised it.
 - All access goes through `src/tenant-store.ts`, so the tenant-isolation tripwire (`tests/guard.test.ts`) keeps holding. `shop` leads the primary key.
 - `detail` never holds a name, an address, an email or a phone number. The privacy webhooks already erase `orders` rows; they are extended to erase `order_events` rows for the same orders.
@@ -151,6 +157,27 @@ CREATE TABLE order_events (
 ### 5.6 Mixed-origin hold (H6)
 
 If the lines of one order resolve to more than one origin, the row is `held` with reason `mixed-origin` and nothing is sent to the supplier. Splitting an order across warehouses is phase 5 work; until then a human decides.
+
+### 5.7 Confirmed or retried (H7, H8)
+
+Added during the build. One principle closes both holes: the marker that stops retrying is written only after the thing it records has happened. It is the same principle as the webhook read-back in 5.3.
+
+**Outbound (H7).** `alertOwner` answers `sent`, `failed` or `unconfigured`. Every order alert goes through one function that sends and then writes what happened: `owner-alerted` (detail: the subject) only when the email provider accepted it, `owner-alert-failed` when a send failed, and an `error` line when there is nobody to tell. The 15 minute order tick re-sends every failed order alert until one is accepted, at most 12 attempts and for at most 24 hours, and it does so whatever `fulfil.mode` is. The trail holds the alert's subject, never its text.
+
+**Inbound (H8).** When the processing of an order webhook throws, the route answers 500 so that Shopify redelivers, which is safe because every handler is idempotent. It is bounded, because 8 failed deliveries in 4 hours make Shopify REMOVE the subscription: failures are counted per delivery (`X-Shopify-Webhook-Id`), the first three answer 500, and from the fourth the route answers 200 and tells the owner that an order event could not be processed. A payload that can never succeed (not JSON, no order id, unknown shop) still answers 200 at once.
+
+Not used as the retry driver for H7: Shopify's redelivery. Answering 500 because OUR email failed would spend the 8 failures on a fault Shopify cannot heal.
+
+### 5.8 A cancel always wins, and hand payment gets a pull check (H9 to H12)
+
+Added during the build, from the review of the pipeline wiring and from findings the security gate's own reviewer opened on the pushed branch.
+
+- **The cancel path writes first and decides from a fresh read.** It sets the row `cancelled`, then reads it again and alerts whenever a supplier order is there. If the pipeline wrote its supplier order before that second read, the cancel path alerts; if it writes after, its own conditional write is refused and the pipeline alerts. Either way someone tells the owner.
+- **A changed address never reaches a payment silently.** When a supplier order already exists and Shopify's delivery address differs from the one it was created with, the new address is saved, the row is held (`address-changed-after-supplier-order`), nothing is paid, and the owner is told to correct the address at the supplier and then release the order. Because the new address is saved first, the release carries on. An order with no supplier order yet is simply created with the new address. The same check runs on every tick for orders awaiting a hand payment.
+- **`cancelled` is sticky.** Every status write in the pipeline goes through one atomic conditional write that never touches a `cancelled` row and says whether it wrote. No lock and no re-read: the check and the write are one statement. When the write is refused after the supplier order was created, the "pay it" email is NOT sent and the owner is told "cancelled while its supplier order was being created. Do NOT pay it". When it is refused after a payment went through, the trail still records the payment and the owner is told to ask the supplier to cancel.
+- **Any cancel of a row that has a supplier order tells the owner**, whatever the row's status, with wording that makes no claim about payment (a released row can be unpaid or paid). The same holds for a gate stop inside the pipeline.
+- **Pull check for hand payment.** The gate stands just before the money when the worker pays. When the owner pays by hand there is no such moment, so every 15 minute tick re-reads each `awaiting-payment` order in Shopify and runs the cancel path when Shopify says cancelled. The cancel path dedupes on the trail, so a cancel that also arrives by webhook is handled once, whichever comes first. A lost webhook now costs at most 15 minutes instead of the payment. Refunds without a cancel stay with the webhook path: a refund alone is not an instruction to stop.
+- **Trail details are classified, never copied.** A failed order's trail says `failed at <step>`; the supplier's raw error text, which can echo the address sent with the order, stays in the worker's logs. Trail text is pasted into the decision record as evidence, so it must be safe to commit.
 
 ## 6. Design, part 2: the supervised proof
 
@@ -211,6 +238,8 @@ Every run's evidence (the trail rows, the Shopify order timeline, the supplier o
 5. Run 2 ends with no supplier order for the cancelled order.
 6. Run 3 ends with the "DO NOT pay" alert received and the row `cancelled`.
 7. A decision record `docs/decisions/0002-money-loop.md` holds the evidence of each run and every ruling made along the way.
+8. With the email send stubbed to fail, no test ends with `owner-alerted` in the trail, and the next tick sends the alert again. With the processing of an order webhook stubbed to throw, the route answers 500 three times and 200 with an owner alert on the fourth.
+9. With a cancel landing while the supplier order is being created, no test ends with the row `awaiting-payment` or with the "pay it" email sent. With no cancel webhook delivered at all, an `awaiting-payment` order that Shopify shows as cancelled ends `cancelled` with the "do NOT pay" alert after one tick. With the delivery address changed after the supplier order exists, no test reaches `payBalance` or the "pay it" email, and the row ends held with the owner told.
 
 ## 11. Rulings made in this document, for the owner to overturn
 
@@ -221,6 +250,10 @@ Every run's evidence (the trail rows, the Shopify order timeline, the supplier o
 | A refund without a cancel holds the order instead of cancelling it | A partial refund can be a goodwill gesture on an order that should still ship | One extra operator click on a fully refunded order |
 | A mixed-origin order is held | Guessing the warehouse is worse than asking | Multi-item orders need a human until phase 5 |
 | Three real orders, not one | The exit criterion names a rehearsed cancel and refund; a happy path alone proves half the property | Card fees on two refunded orders |
+| Cancel and refund events dedupe on the event's own identity, read from the whole trail, with no lock (made during the build) | Webhooks repeat and arrive out of order. Two truly simultaneous deliveries could both pass the check, and the worst case of that is a duplicate owner email; a claim-first lock would turn a crash into a LOST alert, which is the harmful direction | The owner gets the same alert twice |
+| A `cancelled` row is never written over by the pipeline, and `awaiting-payment` orders are re-read in Shopify on every tick (made during the build, section 5.8) | A cancel must win against a writer that read the row seconds earlier, and money that moves by hand has no "just before" for a gate to stand at | One Shopify read per order awaiting payment per tick; an order cancelled here can only be revived by hand |
+| A trail detail never holds a supplier's raw error text (made during the build, section 5.8; it overrules the plan's own Task 5 text) | A supplier rejection can echo the address or phone sent with the order, and trail text goes into a committed record | The trail says where an order failed; the why is only in the worker's logs |
+| Order alerts are confirmed or retried by the 15 minute tick; failed webhook processing answers 500 at most three times per delivery (made during the build, section 5.7) | "Marked as told" before the email was accepted can lose the one alert that stops a payment; an always-200 route throws away the redelivery Shopify offers | A duplicate email after a provider hiccup; up to three redeliveries of an event that can never succeed |
 
 ## 12. Open owner decisions
 
