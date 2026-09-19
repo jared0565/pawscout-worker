@@ -1,6 +1,6 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
-import { processDueOrders, pollTracking, isStockoutError, type StockoutNotice } from '../src/fulfil-run';
+import { processDueOrders, pollTracking, recheckUnsettledSupplierOrders, isStockoutError, type StockoutNotice } from '../src/fulfil-run';
 import { TenantStore } from '../src/tenant-store';
 import { DEFAULT_GATES, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_INBOX, type TenantConfig } from '../src/types';
 import type { CjClient, CjDetail } from '../src/cj';
@@ -523,6 +523,18 @@ describe('Stage-B live-order gate (2026-09-19: readOrderGate/decideGate, fetched
     expect(JSON.parse(o!.hold_reasons!)).toEqual(['refunded']);
   });
 
+  it('a stop here still REPLACES the row\'s hold reasons, not merges (pinned so this default cannot drift)', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedWarehouse(store, 'CJ1', 'S1', 'v1');
+    await seedOrder(store, 'O1', [{ sku: 'S1', quantity: 1, cjPid: 'CJ1' }], { holdReasons: ['some-old-reason'] });
+    const spy = { create: [] as unknown[], pay: [] as string[] };
+    const r = await processDueOrders(store, fakeCj(spy), liveAdmin({ order: { displayFinancialStatus: 'REFUNDED' } }), cfg('pawscout'));
+    expect(r).toMatchObject({ held: 1 });
+    const o = await store.getOrder('O1');
+    expect(o?.status).toBe('held');
+    expect(JSON.parse(o!.hold_reasons!)).toEqual(['refunded']); // NOT ['some-old-reason', 'refunded']
+  });
+
   it('gate says FULFILLED: no createOrder, row held', async () => {
     const store = new TenantStore(env.DB, SHOP);
     await seedWarehouse(store, 'CJ1', 'S1', 'v1');
@@ -676,19 +688,111 @@ describe('Stage-B live-order gate (2026-09-19: readOrderGate/decideGate, fetched
     expect(alerts).toHaveLength(0); // fix round 2, NEW-1: no supplier order exists, so no alert
   });
 
-  it('a changed Shopify address is used for creation and persisted with an address-refreshed event', async () => {
+  it('a changed Shopify address is used for creation and persisted with an address-refreshed event - a row with NO supplier order yet proceeds and creates it with the new address', async () => {
     const store = new TenantStore(env.DB, SHOP);
     await seedWarehouse(store, 'CJ1', 'S1', 'v1');
     await seedOrder(store, 'O1', [{ sku: 'S1', quantity: 1, cjPid: 'CJ1' }]);
     const spy = { create: [] as any[], pay: [] as string[] };
     const newAddr = { name: ADDRESS.name, address1: ADDRESS.address1, address2: ADDRESS.address2, city: 'Manchester', province: ADDRESS.province, zip: ADDRESS.zip, countryCodeV2: 'GB', phone: ADDRESS.phone };
     const r = await processDueOrders(store, fakeCj(spy), liveAdmin({ order: { shippingAddress: newAddr } }), cfg('pawscout', true));
-    expect(r).toMatchObject({ awaiting: 1 });
+    expect(r).toMatchObject({ awaiting: 1, held: 0 });
     expect(spy.create[0].address).toMatchObject({ city: 'Manchester' });
     const o = await store.getOrder('O1');
     expect(JSON.parse(o!.address_json!)).toMatchObject({ city: 'Manchester' });
     const events = await store.listOrderEvents('O1');
     expect(events.some((e) => e.kind === 'address-refreshed')).toBe(true);
+  });
+
+  it('a pay-retry whose Shopify address has changed is held (not paid), the new address is stored, notify is not called, and the alert never carries the address', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedWarehouse(store, 'CJ1', 'S1', 'v1');
+    await seedOrder(store, 'O1', [{ sku: 'S1', quantity: 1, cjPid: 'CJ1' }]);
+    await store.updateOrder('O1', { cj_order_id: 'CJORD-EXISTING' }); // a supplier order already exists
+    const newAddr = { name: ADDRESS.name, address1: '99 New Road', address2: ADDRESS.address2, city: 'Manchester', province: ADDRESS.province, zip: ADDRESS.zip, countryCodeV2: 'GB', phone: ADDRESS.phone };
+    const spy = { create: [] as unknown[], pay: [] as string[] };
+    const alerts: { subject: string; text: string }[] = [];
+    const notifies: unknown[] = [];
+    const r = await processDueOrders(store, fakeCj(spy), liveAdmin({ order: { shippingAddress: newAddr } }), cfg('pawscout'), {
+      alert: async (subject, text) => { alerts.push({ subject, text }); return 'sent'; },
+      notify: async (n) => { notifies.push(n); }
+    });
+    expect(r).toMatchObject({ held: 1, submitted: 0, awaiting: 0 });
+    expect(spy.create.length).toBe(0); // no re-create
+    expect(spy.pay.length).toBe(0); // not paid
+    expect(notifies).toHaveLength(0);
+    const o = await store.getOrder('O1');
+    expect(o?.status).toBe('held');
+    expect(JSON.parse(o!.hold_reasons!)).toEqual(['address-changed-after-supplier-order']);
+    expect(JSON.parse(o!.address_json!)).toMatchObject({ city: 'Manchester', address1: '99 New Road' });
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].subject).toBe('Order #O1: the delivery address changed after the supplier order was created');
+    expect(alerts[0].text).toBe('The delivery address of order #O1 was changed in Shopify after supplier order CJORD-EXISTING was created, so the supplier order still carries the old address. Do NOT pay it as it stands. Correct the address on the supplier order at the supplier, then release the order in the PawScout console. If the supplier cannot change it, cancel the supplier order there and handle this order by hand.');
+    expect(alerts[0].text).not.toContain('99 New Road');
+    expect(alerts[0].text).not.toContain(ADDRESS.address1);
+    expect(alerts[0].text).not.toContain('Manchester');
+    const events = await store.listOrderEvents('O1');
+    expect(events.map((e) => e.kind)).toContain('address-refreshed');
+    const gateHeld = events.find((e) => e.kind === 'gate-held');
+    expect(gateHeld?.detail).toBe('address-changed-after-supplier-order');
+    expect(events.map((e) => e.kind)).toContain('owner-alerted');
+  });
+
+  it('the pre-pay position: an address that changes between the two gate reads holds instead of paying, with the new address stored and no leak into the alert', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedWarehouse(store, 'CJ1', 'S1', 'v1');
+    await seedOrder(store, 'O1', [{ sku: 'S1', quantity: 1, cjPid: 'CJ1' }]);
+    const newAddr = { name: ADDRESS.name, address1: ADDRESS.address1, address2: ADDRESS.address2, city: 'Bristol', province: ADDRESS.province, zip: ADDRESS.zip, countryCodeV2: 'GB', phone: ADDRESS.phone };
+    let calls = 0;
+    const admin: AdminGraphql = (async (query: string) => {
+      if (query.includes('pawscoutOrderGate')) {
+        calls++;
+        if (calls === 1) return { order: { ...LIVE_ORDER } }; // unchanged at the pre-create check
+        return { order: { ...LIVE_ORDER, shippingAddress: newAddr } }; // changed just before pay
+      }
+      return {};
+    }) as unknown as AdminGraphql;
+    const spy = { create: [] as unknown[], pay: [] as string[] };
+    const alerts: { subject: string; text: string }[] = [];
+    const r = await processDueOrders(store, fakeCj(spy), admin, cfg('pawscout'), {
+      alert: async (subject, text) => { alerts.push({ subject, text }); return 'sent'; }
+    });
+    expect(r).toMatchObject({ held: 1, submitted: 0 });
+    expect(spy.create.length).toBe(1); // the supplier order was created before the address changed
+    expect(spy.pay.length).toBe(0); // not paid
+    const o = await store.getOrder('O1');
+    expect(o?.status).toBe('held');
+    expect(JSON.parse(o!.hold_reasons!)).toEqual(['address-changed-after-supplier-order']);
+    expect(JSON.parse(o!.address_json!)).toMatchObject({ city: 'Bristol' });
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].text).toContain('CJORD-O1');
+    expect(alerts[0].text).not.toContain('Bristol');
+    expect(alerts[0].text).not.toContain(ADDRESS.address1);
+  });
+
+  it('after a release, the same row proceeds with no second hold once the stored address matches Shopify again', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedWarehouse(store, 'CJ1', 'S1', 'v1');
+    await seedOrder(store, 'O1', [{ sku: 'S1', quantity: 1, cjPid: 'CJ1' }]);
+    await store.updateOrder('O1', { cj_order_id: 'CJORD-EXISTING' });
+    const newAddr = { name: ADDRESS.name, address1: ADDRESS.address1, address2: ADDRESS.address2, city: 'Leeds', province: ADDRESS.province, zip: ADDRESS.zip, countryCodeV2: 'GB', phone: ADDRESS.phone };
+    const spy = { create: [] as unknown[], pay: [] as string[] };
+    const r1 = await processDueOrders(store, fakeCj(spy), liveAdmin({ order: { shippingAddress: newAddr } }), cfg('pawscout'), {
+      alert: async () => 'sent'
+    });
+    expect(r1).toMatchObject({ held: 1 });
+    expect((await store.getOrder('O1'))?.status).toBe('held');
+
+    // Operator release: back to queued. cj_order_id and the already-updated
+    // address are left as they are.
+    await store.updateOrder('O1', { status: 'queued' });
+
+    const r2 = await processDueOrders(store, fakeCj(spy), liveAdmin({ order: { shippingAddress: newAddr } }), cfg('pawscout'), {
+      alert: async () => 'sent'
+    });
+    expect(r2).toMatchObject({ submitted: 1, held: 0 });
+    expect(spy.pay).toEqual(['CJORD-EXISTING']);
+    const events = await store.listOrderEvents('O1');
+    expect(events.filter((e) => e.kind === 'gate-held')).toHaveLength(1); // no second hold
   });
 
   it('a happy createOnly run leaves the trail: gate-passed, stock-ok, supplier-order-created, awaiting-payment', async () => {
@@ -1103,5 +1207,326 @@ describe('NEW-3 (fix round 2): step starts at "gate", not "resolve"', () => {
     const events = await store.listOrderEvents('O1');
     const errorEvent = events.find((e) => e.kind === 'error');
     expect(errorEvent?.detail).toBe('failed at gate');
+  });
+});
+
+describe('recheckUnsettledSupplierOrders: unsettled supplier orders are re-read on a rotation', () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  async function seedAwaiting(store: TenantStore, id: string, cjOrderId: string, addressJson: string | null = JSON.stringify(ADDRESS)): Promise<void> {
+    await store.insertOrderIfNew({
+      shopifyOrderId: id, orderName: '#' + id, totalPrice: 15, currency: 'GBP', financialStatus: 'paid', riskLevel: null,
+      status: 'awaiting-payment', holdReasons: [], addressJson, lineItemsJson: null, fulfilAfter: null
+    });
+    await store.updateOrder(id, { cj_order_id: cjOrderId });
+  }
+
+  it('an empty backlog answers all zeros without dividing by zero', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const admin = liveAdmin();
+    const send = async () => 'sent' as const;
+    const r = await recheckUnsettledSupplierOrders(store, admin, send);
+    expect(r).toEqual({ checked: 0, cancelled: 0, addressChanged: 0, stopped: 0, unreadable: 0 });
+  });
+
+  it('a cancelled row becomes cancelled and the do-NOT-pay alert is delivered exactly once across two runs', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedAwaiting(store, 'O1', 'CJORD-O1');
+    const admin = liveAdmin({ order: { cancelledAt: '2026-09-19T00:00:00Z' } });
+    const alerts: { subject: string; text: string }[] = [];
+    const send = async (subject: string, text: string) => { alerts.push({ subject, text }); return 'sent' as const; };
+
+    const r1 = await recheckUnsettledSupplierOrders(store, admin, send);
+    expect(r1).toMatchObject({ checked: 1, cancelled: 1, addressChanged: 0, stopped: 0, unreadable: 0 });
+    expect((await store.getOrder('O1'))?.status).toBe('cancelled');
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].subject).toBe('Order #O1 was cancelled: do NOT pay the supplier');
+
+    const r2 = await recheckUnsettledSupplierOrders(store, admin, send);
+    expect(r2).toMatchObject({ checked: 0, cancelled: 0 }); // 'cancelled' is settled - not selected any more
+    expect(alerts).toHaveLength(1); // still exactly one
+  });
+
+  it('a cancel already alerted by the webhook path (cancel-received plus a marker already in the trail) sends nothing here, but still counts as cancelled', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedAwaiting(store, 'O1', 'CJORD-O1');
+    await store.addOrderEvent('O1', 'cancel-received', 'was awaiting-payment');
+    await store.addOrderEvent('O1', 'owner-alerted', 'Order #O1 was cancelled: do NOT pay the supplier');
+    const admin = liveAdmin({ order: { cancelledAt: '2026-09-19T00:00:00Z' } });
+    const alerts: unknown[] = [];
+    const send = async (subject: string, text: string) => { alerts.push({ subject, text }); return 'sent' as const; };
+
+    const r = await recheckUnsettledSupplierOrders(store, admin, send);
+    expect(r).toMatchObject({ checked: 1, cancelled: 1 });
+    expect(alerts).toHaveLength(0);
+  });
+
+  it('a held row that is cancelled in Shopify gets the generic cancelled-with-a-supplier-order alert', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await store.insertOrderIfNew({ shopifyOrderId: 'O1', orderName: '#O1', totalPrice: 15, currency: 'GBP', financialStatus: 'paid', riskLevel: null, status: 'held', holdReasons: ['not-paid'], addressJson: JSON.stringify(ADDRESS), lineItemsJson: null, fulfilAfter: null });
+    await store.updateOrder('O1', { cj_order_id: 'CJORD-O1' });
+    const admin = liveAdmin({ order: { cancelledAt: '2026-09-19T00:00:00Z' } });
+    const alerts: { subject: string; text: string }[] = [];
+    const send = async (subject: string, text: string) => { alerts.push({ subject, text }); return 'sent' as const; };
+
+    const r = await recheckUnsettledSupplierOrders(store, admin, send);
+    expect(r).toMatchObject({ checked: 1, cancelled: 1 });
+    expect((await store.getOrder('O1'))?.status).toBe('cancelled');
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].subject).toBe('Order #O1 was cancelled and a supplier order exists for it');
+  });
+
+  it('a row with corrupt address_json does not stop it, or a later row, from being cancelled and alerted', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedAwaiting(store, 'A-corrupt', 'CJORD-A', 'not valid json{');
+    await seedAwaiting(store, 'B-normal', 'CJORD-B');
+    const admin = liveAdmin({ order: { cancelledAt: '2026-09-19T00:00:00Z' } });
+    const send = async () => 'sent' as const;
+
+    const r = await recheckUnsettledSupplierOrders(store, admin, send);
+    expect(r).toMatchObject({ checked: 2, cancelled: 2 });
+    expect((await store.getOrder('A-corrupt'))?.status).toBe('cancelled');
+    expect((await store.getOrder('B-normal'))?.status).toBe('cancelled');
+  });
+
+  it('a row with corrupt address_json whose gate answers hold with refunded still ends held with that reason and one stop alert', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedAwaiting(store, 'O1', 'CJORD-O1', 'not valid json{');
+    const admin = liveAdmin({ order: { displayFinancialStatus: 'REFUNDED' } });
+    const alerts: { subject: string; text: string }[] = [];
+    const send = async (subject: string, text: string) => { alerts.push({ subject, text }); return 'sent' as const; };
+
+    const r = await recheckUnsettledSupplierOrders(store, admin, send);
+    expect(r).toMatchObject({ checked: 1, cancelled: 0, addressChanged: 0, stopped: 1, unreadable: 0 });
+    const o = await store.getOrder('O1');
+    expect(o?.status).toBe('held');
+    expect(JSON.parse(o!.hold_reasons!)).toEqual(['refunded']);
+    expect(alerts).toHaveLength(1);
+  });
+
+  it('a row with corrupt address_json whose gate would proceed with a different address is not alerted about an address change and its stored address is left alone', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedAwaiting(store, 'O1', 'CJORD-O1', 'not valid json{');
+    const newAddr = { name: ADDRESS.name, address1: ADDRESS.address1, address2: ADDRESS.address2, city: 'Cardiff', province: ADDRESS.province, zip: ADDRESS.zip, countryCodeV2: 'GB', phone: ADDRESS.phone };
+    const admin = liveAdmin({ order: { shippingAddress: newAddr } });
+    const alerts: { subject: string; text: string }[] = [];
+    const send = async (subject: string, text: string) => { alerts.push({ subject, text }); return 'sent' as const; };
+
+    const r = await recheckUnsettledSupplierOrders(store, admin, send);
+    expect(r).toMatchObject({ checked: 1, cancelled: 0, addressChanged: 0, stopped: 0, unreadable: 0 });
+    expect(alerts).toHaveLength(0);
+    expect((await store.getOrder('O1'))?.address_json).toBe('not valid json{');
+  });
+
+  it('held and error rows carrying a supplier order are watched; without one they are not', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await store.insertOrderIfNew({ shopifyOrderId: 'HELD-WITH', orderName: '#HELD-WITH', totalPrice: 15, currency: 'GBP', financialStatus: 'paid', riskLevel: null, status: 'held', holdReasons: ['not-paid'], addressJson: JSON.stringify(ADDRESS), lineItemsJson: null, fulfilAfter: null });
+    await store.updateOrder('HELD-WITH', { cj_order_id: 'CJORD-HELD' });
+    await store.insertOrderIfNew({ shopifyOrderId: 'HELD-WITHOUT', orderName: '#HELD-WITHOUT', totalPrice: 15, currency: 'GBP', financialStatus: 'paid', riskLevel: null, status: 'held', holdReasons: ['not-paid'], addressJson: JSON.stringify(ADDRESS), lineItemsJson: null, fulfilAfter: null });
+    await store.insertOrderIfNew({ shopifyOrderId: 'ERROR-WITH', orderName: '#ERROR-WITH', totalPrice: 15, currency: 'GBP', financialStatus: 'paid', riskLevel: null, status: 'error', holdReasons: ['fulfil: x'], addressJson: JSON.stringify(ADDRESS), lineItemsJson: null, fulfilAfter: null });
+    await store.updateOrder('ERROR-WITH', { cj_order_id: 'CJORD-ERROR' });
+    await store.insertOrderIfNew({ shopifyOrderId: 'ERROR-WITHOUT', orderName: '#ERROR-WITHOUT', totalPrice: 15, currency: 'GBP', financialStatus: 'paid', riskLevel: null, status: 'error', holdReasons: ['fulfil: x'], addressJson: JSON.stringify(ADDRESS), lineItemsJson: null, fulfilAfter: null });
+
+    const admin = liveAdmin();
+    const send = async () => 'sent' as const;
+    const r = await recheckUnsettledSupplierOrders(store, admin, send);
+    expect(r.checked).toBe(2); // only HELD-WITH and ERROR-WITH carry a supplier order
+  });
+
+  it('a changed address is saved and alerted exactly once across two runs, and the row is never held here', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedAwaiting(store, 'O1', 'CJORD-O1');
+    const newAddr = { name: ADDRESS.name, address1: ADDRESS.address1, address2: ADDRESS.address2, city: 'Cardiff', province: ADDRESS.province, zip: ADDRESS.zip, countryCodeV2: 'GB', phone: ADDRESS.phone };
+    const admin = liveAdmin({ order: { shippingAddress: newAddr } });
+    const alerts: { subject: string; text: string }[] = [];
+    const send = async (subject: string, text: string) => { alerts.push({ subject, text }); return 'sent' as const; };
+
+    const r1 = await recheckUnsettledSupplierOrders(store, admin, send);
+    expect(r1).toMatchObject({ checked: 1, cancelled: 0, addressChanged: 1, stopped: 0, unreadable: 0 });
+    const o = await store.getOrder('O1');
+    expect(o?.status).toBe('awaiting-payment'); // the pull check never holds a row for an address change
+    expect(o?.hold_reasons).toBe(JSON.stringify([])); // unchanged
+    expect(JSON.parse(o!.address_json!)).toMatchObject({ city: 'Cardiff' });
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].subject).toBe('Order #O1: the delivery address changed after the supplier order was created');
+    expect(alerts[0].text).toBe(
+      'The delivery address of order #O1 was changed in Shopify after supplier order CJORD-O1 was created, so the supplier order still carries the old address. If it is not paid yet, correct the address on the supplier order at the supplier before you pay it. If it is already paid, ask the supplier to change the address before it ships. If the supplier cannot change it, handle this order by hand.'
+    );
+    expect(alerts[0].text).not.toContain('Cardiff');
+    expect(alerts[0].text).not.toContain(ADDRESS.address1);
+
+    // The row is still watched (still awaiting-payment with a supplier order),
+    // but the stored address now matches Shopify's - the saved address is the
+    // dedupe, not the row leaving this check.
+    const r2 = await recheckUnsettledSupplierOrders(store, admin, send);
+    expect(r2).toMatchObject({ checked: 1, addressChanged: 0 });
+    expect(alerts).toHaveLength(1);
+  });
+
+  it('a live, unchanged row is untouched and nothing is sent', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedAwaiting(store, 'O1', 'CJORD-O1');
+    const admin = liveAdmin();
+    const alerts: unknown[] = [];
+    const send = async () => { alerts.push(1); return 'sent' as const; };
+
+    const r = await recheckUnsettledSupplierOrders(store, admin, send);
+    expect(r).toEqual({ checked: 1, cancelled: 0, addressChanged: 0, stopped: 0, unreadable: 0 });
+    expect((await store.getOrder('O1'))?.status).toBe('awaiting-payment');
+    expect(await store.listOrderEvents('O1')).toEqual([]);
+    expect(alerts).toHaveLength(0);
+  });
+
+  it('already-fulfilled does nothing here', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedAwaiting(store, 'F1', 'CJORD-F1');
+    const admin = liveAdmin({ order: { displayFulfillmentStatus: 'FULFILLED' } });
+    const send = async () => 'sent' as const;
+    const r = await recheckUnsettledSupplierOrders(store, admin, send);
+    expect(r).toMatchObject({ checked: 1, cancelled: 0, addressChanged: 0, stopped: 0, unreadable: 0 });
+    expect((await store.getOrder('F1'))?.status).toBe('awaiting-payment');
+    expect(await store.listOrderEvents('F1')).toEqual([]);
+  });
+
+  it('order-missing does nothing here', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedAwaiting(store, 'M1', 'CJORD-M1');
+    const admin = liveAdmin({ order: null });
+    const send = async () => 'sent' as const;
+    const r = await recheckUnsettledSupplierOrders(store, admin, send);
+    expect(r).toMatchObject({ checked: 1, cancelled: 0, addressChanged: 0, stopped: 0, unreadable: 0 });
+    expect((await store.getOrder('M1'))?.status).toBe('awaiting-payment');
+    expect(await store.listOrderEvents('M1')).toEqual([]);
+  });
+
+  it('a gate hold such as refunded now stops and alerts, held once across two runs', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedAwaiting(store, 'O1', 'CJORD-O1');
+    const admin = liveAdmin({ order: { displayFinancialStatus: 'REFUNDED' } });
+    const alerts: { subject: string; text: string }[] = [];
+    const send = async (subject: string, text: string) => { alerts.push({ subject, text }); return 'sent' as const; };
+
+    const r1 = await recheckUnsettledSupplierOrders(store, admin, send);
+    expect(r1).toMatchObject({ checked: 1, cancelled: 0, addressChanged: 0, stopped: 1, unreadable: 0 });
+    const o = await store.getOrder('O1');
+    expect(o?.status).toBe('held');
+    expect(JSON.parse(o!.hold_reasons!)).toEqual(['refunded']);
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].subject).toBe('Order #O1 was stopped and a supplier order exists for it');
+    expect(alerts[0].text).toBe('Order #O1 was stopped by the check against Shopify (refunded). Supplier order CJORD-O1 already exists for it. Do NOT pay it. Check its state at the supplier: cancel it there if it is unpaid, and treat it as a return if it has been paid.');
+
+    // Already held for this exact reason - left alone, no repeat alert.
+    const r2 = await recheckUnsettledSupplierOrders(store, admin, send);
+    expect(r2).toMatchObject({ checked: 1, stopped: 0 });
+    expect(alerts).toHaveLength(1);
+  });
+
+  it('an error row keeps its recorded failure reason when the pull check stops it: hold reasons hold both, the failure reason first', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await store.insertOrderIfNew({ shopifyOrderId: 'O1', orderName: '#O1', totalPrice: 15, currency: 'GBP', financialStatus: 'paid', riskLevel: null, status: 'error', holdReasons: ['fulfil: CJ returned 500 for order O1'], addressJson: JSON.stringify(ADDRESS), lineItemsJson: null, fulfilAfter: null });
+    await store.updateOrder('O1', { cj_order_id: 'CJORD-O1' });
+    const admin = liveAdmin({ order: { displayFinancialStatus: 'REFUNDED' } });
+    const alerts: { subject: string; text: string }[] = [];
+    const send = async (subject: string, text: string) => { alerts.push({ subject, text }); return 'sent' as const; };
+
+    const r = await recheckUnsettledSupplierOrders(store, admin, send);
+    expect(r).toMatchObject({ checked: 1, stopped: 1 });
+    const o = await store.getOrder('O1');
+    expect(o?.status).toBe('held');
+    expect(JSON.parse(o!.hold_reasons!)).toEqual(['fulfil: CJ returned 500 for order O1', 'refunded']);
+    expect(alerts).toHaveLength(1);
+  });
+
+  it('a row held for address-changed-after-supplier-order keeps that reason when Shopify then says not-paid: both reasons, and the stop alert is delivered once across two runs', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await store.insertOrderIfNew({ shopifyOrderId: 'O1', orderName: '#O1', totalPrice: 15, currency: 'GBP', financialStatus: 'paid', riskLevel: null, status: 'held', holdReasons: ['address-changed-after-supplier-order'], addressJson: JSON.stringify(ADDRESS), lineItemsJson: null, fulfilAfter: null });
+    await store.updateOrder('O1', { cj_order_id: 'CJORD-O1' });
+    const admin = liveAdmin({ order: { displayFinancialStatus: 'PENDING' } });
+    const alerts: { subject: string; text: string }[] = [];
+    const send = async (subject: string, text: string) => { alerts.push({ subject, text }); return 'sent' as const; };
+
+    const r1 = await recheckUnsettledSupplierOrders(store, admin, send);
+    expect(r1).toMatchObject({ checked: 1, stopped: 1 });
+    const o = await store.getOrder('O1');
+    expect(o?.status).toBe('held');
+    expect(JSON.parse(o!.hold_reasons!)).toEqual(['address-changed-after-supplier-order', 'not-paid']);
+    expect(alerts).toHaveLength(1);
+
+    // The dedupe still works once the row carries more than one reason.
+    const r2 = await recheckUnsettledSupplierOrders(store, admin, send);
+    expect(r2).toMatchObject({ checked: 1, stopped: 0 });
+    expect(alerts).toHaveLength(1);
+  });
+
+  it('an unreadable gate writes gate-unreadable each tick and alerts once, on the fourth consecutive failure', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedAwaiting(store, 'O1', 'CJORD-O1');
+    const admin = liveAdmin({ throws: 'gate api down' });
+    const alerts: { subject: string; text: string }[] = [];
+    const send = async (subject: string, text: string) => { alerts.push({ subject, text }); return 'sent' as const; };
+
+    let last;
+    for (let i = 0; i < 4; i++) {
+      last = await recheckUnsettledSupplierOrders(store, admin, send);
+    }
+    expect(last).toMatchObject({ checked: 1, cancelled: 0, addressChanged: 0, stopped: 0, unreadable: 1 });
+    const events = await store.listOrderEvents('O1');
+    expect(events.filter((e) => e.kind === 'gate-unreadable')).toHaveLength(4);
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].subject).toBe('Order #O1 cannot be checked against Shopify');
+    expect(alerts[0].text).toBe('Order #O1 could not be checked against Shopify on the last 4 checks (gate api down). Supplier order CJORD-O1 exists for it. Check the order in Shopify before you pay or settle anything for it at the supplier. It is retried every 15 minutes.');
+    expect((await store.getOrder('O1'))?.status).toBe('awaiting-payment'); // an unreadable gate never holds the row
+  });
+
+  it('one row whose handling throws does not stop the next row in the same tick', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedAwaiting(store, 'A-throws', 'CJORD-A');
+    await seedAwaiting(store, 'B-ok', 'CJORD-B');
+    const admin = liveAdmin({ order: { cancelledAt: '2026-09-19T00:00:00Z' } });
+    const send = async () => 'sent' as const;
+
+    const originalAddOrderEvent = TenantStore.prototype.addOrderEvent;
+    vi.spyOn(TenantStore.prototype, 'addOrderEvent').mockImplementation(function (this: TenantStore, id: string, kind: string, detail?: string | null) {
+      if (id === 'A-throws' && kind === 'cancel-received') return Promise.resolve(false);
+      return originalAddOrderEvent.call(this, id, kind as Parameters<typeof originalAddOrderEvent>[1], detail);
+    });
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    const r = await recheckUnsettledSupplierOrders(store, admin, send);
+
+    expect(r.checked).toBe(2);
+    expect((await store.getOrder('A-throws'))?.status).toBe('awaiting-payment'); // untouched by the throw
+    expect((await store.getOrder('B-ok'))?.status).toBe('cancelled'); // the next row still processed
+    expect(warnSpy).toHaveBeenCalled();
+  });
+
+  it('rotates through a backlog larger than one page: 25 rows with max 10, three consecutive ticks (15 minutes apart) each read a distinct page, covering every row exactly once', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    for (let i = 1; i <= 25; i++) {
+      const id = 'O' + String(i).padStart(2, '0');
+      await seedAwaiting(store, id, 'CJORD-' + id);
+    }
+    const seenIds: string[] = [];
+    const admin: AdminGraphql = (async (query: string, variables?: Record<string, unknown>) => {
+      if (query.includes('pawscoutOrderGate')) {
+        const gid = (variables as { id?: string } | undefined)?.id ?? '';
+        seenIds.push(gid.replace('gid://shopify/Order/', ''));
+        return { order: { ...LIVE_ORDER } };
+      }
+      return {};
+    }) as unknown as AdminGraphql;
+    const send = async () => 'sent' as const;
+
+    const TICK_MS = 900_000;
+    const base = Date.parse('2026-01-01T00:00:00.000Z');
+    const checkedCounts: number[] = [];
+    for (let i = 0; i < 3; i++) {
+      const r = await recheckUnsettledSupplierOrders(store, admin, send, { max: 10, now: new Date(base + i * TICK_MS) });
+      checkedCounts.push(r.checked);
+    }
+
+    expect(checkedCounts.sort((a, b) => a - b)).toEqual([5, 10, 10]);
+    expect(seenIds).toHaveLength(25);
+    expect(new Set(seenIds).size).toBe(25); // every row read exactly once - none starved, none repeated
   });
 });

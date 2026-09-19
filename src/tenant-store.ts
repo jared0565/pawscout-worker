@@ -995,6 +995,34 @@ export class TenantStore {
     return rs.results ?? [];
   }
 
+  /** Rows that hold a supplier order and are not settled: cj_order_id is not
+   *  null and status is awaiting-payment, held or error. Oldest first
+   *  (created_at, then shopify_order_id) so a paged reader can rotate through
+   *  a backlog larger than one page without starving the oldest rows. */
+  async listUnsettledSupplierOrders(limit: number, offset: number): Promise<OrderRow[]> {
+    const rs = await this.db
+      .prepare(
+        `SELECT * FROM orders
+         WHERE shop = ?1 AND cj_order_id IS NOT NULL AND status IN ('awaiting-payment', 'held', 'error')
+         ORDER BY created_at ASC, shopify_order_id ASC
+         LIMIT ?2 OFFSET ?3`
+      )
+      .bind(this.shop, limit, offset)
+      .all<OrderRow>();
+    return rs.results ?? [];
+  }
+
+  async countUnsettledSupplierOrders(): Promise<number> {
+    const row = await this.db
+      .prepare(
+        `SELECT COUNT(*) AS n FROM orders
+         WHERE shop = ?1 AND cj_order_id IS NOT NULL AND status IN ('awaiting-payment', 'held', 'error')`
+      )
+      .bind(this.shop)
+      .first<{ n: number }>();
+    return row?.n ?? 0;
+  }
+
   async updateOrder(shopifyOrderId: string, fields: Partial<Pick<OrderRow, 'status' | 'hold_reasons' | 'cj_order_id' | 'tracking_number' | 'risk_level' | 'address_json'>>): Promise<void> {
     const now = new Date().toISOString();
     await this.db

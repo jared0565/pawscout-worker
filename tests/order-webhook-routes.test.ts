@@ -172,6 +172,36 @@ describe('POST /webhooks/orders-cancelled', () => {
     const res = await postWebhook('/webhooks/orders-cancelled', 'not json {{{', { topic: 'orders/cancelled' });
     expect(res.status).toBe(200);
   });
+
+  // End-to-end proof that a repeat delivery heals a lost alert: the trail
+  // already holds cancel-received (from a first delivery) but no marker for
+  // the alert it raised - the process could have died, or the route could
+  // have failed, between that write and delivery. A second delivery (a
+  // genuinely new webhook id, since Shopify's own redelivery of the SAME id
+  // would just be deduped upstream of this route by the webhook id cache)
+  // must still hand the alert to the alert door, and a third must go quiet
+  // once that delivery leaves its own marker.
+  it('a repeat cancel delivery heals a lost alert: the trail holds cancel-received but no marker, a second delivery raises it, a third goes quiet', async () => {
+    const store = await seedConfig();
+    await seedOrder(store, 'O1', 'awaiting-payment', { cjOrderId: 'CJ-1' });
+    await store.addOrderEvent('O1', 'cancel-received', 'was awaiting-payment');
+    expect(await store.listOrderEvents('O1')).toHaveLength(1); // no alert marker yet
+
+    const res2 = await postWebhook('/webhooks/orders-cancelled', JSON.stringify({ id: 'O1' }), { topic: 'orders/cancelled', webhookId: 'whk-heal-2' });
+    expect(res2.status).toBe(200);
+    expect(waitUntilCalls).toHaveLength(1);
+    await Promise.all(waitUntilCalls);
+    const eventsAfterSecond = await store.listOrderEvents('O1');
+    expect(eventsAfterSecond.map((e) => e.kind)).toEqual(['cancel-received', 'error']);
+    expect(eventsAfterSecond[1].detail).toBe('owner alert not configured: Order #O1 was cancelled: do NOT pay the supplier');
+
+    const waitUntilBeforeThird = waitUntilCalls.length;
+    const res3 = await postWebhook('/webhooks/orders-cancelled', JSON.stringify({ id: 'O1' }), { topic: 'orders/cancelled', webhookId: 'whk-heal-3' });
+    expect(res3.status).toBe(200);
+    expect(waitUntilCalls.length).toBe(waitUntilBeforeThird); // nothing new handed to waitUntil
+    const eventsAfterThird = await store.listOrderEvents('O1');
+    expect(eventsAfterThird).toEqual(eventsAfterSecond); // unchanged
+  });
 });
 
 describe('POST /webhooks/refunds-create', () => {
@@ -288,6 +318,28 @@ describe('order webhook routes answer for a retry when processing throws', () =>
     expect(await store.listOrderEvents('O1')).toEqual([]);
 
     const res2 = await postWebhook('/webhooks/orders-cancelled', payload, { topic: 'orders/cancelled', webhookId: 'whk-retry-1' });
+    expect(res2.status).toBe(200);
+    expect((await store.getOrder('O1'))?.status).toBe('cancelled');
+    const events = await store.listOrderEvents('O1');
+    expect(events.filter((e) => e.kind === 'cancel-received')).toHaveLength(1);
+  });
+
+  it('orders-cancelled: a refused cancel-received write answers 500, and the same delivery id sent again, now succeeding, answers 200 with one cancel-received event', async () => {
+    const store = await seedConfig();
+    await seedOrder(store, 'O1', 'queued');
+    const payload = JSON.stringify({ id: 'O1' });
+
+    const spy = vi.spyOn(TenantStore.prototype, 'addOrderEvent').mockResolvedValueOnce(false);
+    const res1 = await postWebhook('/webhooks/orders-cancelled', payload, { topic: 'orders/cancelled', webhookId: 'whk-marker-refused-1' });
+    expect(res1.status).toBe(500);
+    expect(spy).toHaveBeenCalled(); // confirms the stub really ran inside the app under test
+    spy.mockRestore();
+
+    // Nothing was written by the throwing attempt.
+    expect((await store.getOrder('O1'))?.status).toBe('queued');
+    expect(await store.listOrderEvents('O1')).toEqual([]);
+
+    const res2 = await postWebhook('/webhooks/orders-cancelled', payload, { topic: 'orders/cancelled', webhookId: 'whk-marker-refused-1' });
     expect(res2.status).toBe(200);
     expect((await store.getOrder('O1'))?.status).toBe('cancelled');
     const events = await store.listOrderEvents('O1');

@@ -11,6 +11,7 @@ import type { OrderLineItem, OrderAddress } from './fulfil';
 import { readOrderGate, decideGate, type RiskLevel } from './order-gate';
 import { alertOwner } from './owner-alert';
 import { deliverOrderAlert, retryOrderAlerts, type AlertSend } from './order-alert';
+import { applyCancel } from './order-cancel';
 
 // W-FULFIL Stage B: turn queued orders into paid CJ orders, then write tracking
 // back to Shopify. The money leg (createOrder + payBalance) only runs when
@@ -73,11 +74,20 @@ function hasFraudHoldHistory(holdReasonsJson: string | null): boolean {
  *  the trail event is still written either way. `detail` overrides the trail
  *  text when it needs to carry more than the hold reason (mixed-origin).
  *  riskLevel is descriptive only - never gate on it here, just stamp it when
- *  known. */
+ *  known. `keepReasons`, when passed, keeps those reasons ahead of the new
+ *  one (deduped) instead of replacing hold_reasons outright - the pull check
+ *  is the only caller that passes it, because it reads rows that were
+ *  already parked and whose existing reasons (an error row's failure text, an
+ *  address-changed hold) are the only persisted record of why. The two
+ *  processDueOrders stop branches call this with no such argument and keep
+ *  replacing, because there the gate's decision IS the row's whole reason at
+ *  that moment. The gate-held trail detail stays the new reason alone either
+ *  way. */
 async function writeGateStop(
-  store: TenantStore, shopifyOrderId: string, status: 'cancelled' | 'held', reason: string, riskLevel: RiskLevel, detail: string = reason
+  store: TenantStore, shopifyOrderId: string, status: 'cancelled' | 'held', reason: string, riskLevel: RiskLevel, detail: string = reason, keepReasons?: string[]
 ): Promise<void> {
-  await store.updateOrderUnlessCancelled(shopifyOrderId, { status, hold_reasons: JSON.stringify([reason]), ...(riskLevel ? { risk_level: riskLevel } : {}) });
+  const reasons = keepReasons ? [...new Set([...keepReasons, reason])] : [reason];
+  await store.updateOrderUnlessCancelled(shopifyOrderId, { status, hold_reasons: JSON.stringify(reasons), ...(riskLevel ? { risk_level: riskLevel } : {}) });
   await store.addOrderEvent(shopifyOrderId, 'gate-held', detail);
 }
 
@@ -100,6 +110,25 @@ async function alertIfSupplierOrderExists(
   }, alert);
 }
 
+/** A delivery address changed in Shopify after a supplier order already
+ *  exists for this row. The caller has already saved the fresh address and
+ *  recorded address-refreshed; this stops the row here rather than let it
+ *  pay (or be paid by hand) against a supplier order that still carries the
+ *  address it was created with. Shared by processDueOrders' pre-create and
+ *  pre-pay positions, so both read the same hold reason, trail detail and
+ *  alert text. The alert never repeats the address itself. */
+async function holdForAddressChangeAfterSupplierOrder(
+  store: TenantStore, o: { shopify_order_id: string; order_name: string | null }, cjOrderId: string, alert?: AlertSend
+): Promise<void> {
+  await writeGateStop(store, o.shopify_order_id, 'held', 'address-changed-after-supplier-order', null);
+  if (!alert) return;
+  const name = o.order_name ?? o.shopify_order_id;
+  await deliverOrderAlert(store, o.shopify_order_id, {
+    subject: `Order ${name}: the delivery address changed after the supplier order was created`,
+    text: `The delivery address of order ${name} was changed in Shopify after supplier order ${cjOrderId} was created, so the supplier order still carries the old address. Do NOT pay it as it stands. Correct the address on the supplier order at the supplier, then release the order in the PawScout console. If the supplier cannot change it, cancel the supplier order there and handle this order by hand.`
+  }, alert);
+}
+
 /** A gate read failure means "could not tell" - fail CLOSED (never proceed to
  *  spend). The row is left untouched so the next 15-minute tick retries it.
  *  On the 4th-or-later consecutive failure (>= 4, not === 4, so one swallowed
@@ -108,21 +137,28 @@ async function alertIfSupplierOrderExists(
  *  passed by the caller, since only the caller knows whether it is at the
  *  pre-create position (o.cj_order_id, set on a pay-retry) or the pre-pay
  *  position (always set by then) - and picks which of the two texts is
- *  actually true. Delivery (and the trail marker for it) goes through
+ *  actually true. `opts.ownerPays`, when true, swaps in the text that is
+ *  true for the pull check's own callers: those rows are not ones PawScout is
+ *  about to pay, the owner is, so the text says to check Shopify before
+ *  paying or settling at the supplier rather than claiming PawScout will not
+ *  pay it. Delivery (and the trail marker for it) goes through
  *  deliverOrderAlert, which never throws. */
 async function handleGateUnreadable(
   store: TenantStore,
   o: { shopify_order_id: string; order_name: string | null },
   error: string,
   cjOrderId: string | null,
-  alert?: AlertSend
+  alert?: AlertSend,
+  opts?: { ownerPays?: boolean }
 ): Promise<void> {
   await store.addOrderEvent(o.shopify_order_id, 'gate-unreadable', error);
   if ((await store.countTrailingOrderEvents(o.shopify_order_id, 'gate-unreadable')) < 4) return;
   const name = o.order_name ?? o.shopify_order_id;
   if (!alert) return;
   const text = cjOrderId
-    ? `Order ${name} could not be checked against Shopify on the last 4 checks (${error}). Supplier order ${cjOrderId} exists for it, and PawScout will not pay it until the check succeeds. It is retried every 15 minutes.`
+    ? (opts?.ownerPays
+        ? `Order ${name} could not be checked against Shopify on the last 4 checks (${error}). Supplier order ${cjOrderId} exists for it. Check the order in Shopify before you pay or settle anything for it at the supplier. It is retried every 15 minutes.`
+        : `Order ${name} could not be checked against Shopify on the last 4 checks (${error}). Supplier order ${cjOrderId} exists for it, and PawScout will not pay it until the check succeeds. It is retried every 15 minutes.`)
     : `Order ${name} is due, but its state in Shopify could not be read on the last 4 checks (${error}). Nothing has been sent to the supplier. It is retried every 15 minutes.`;
   await deliverOrderAlert(store, o.shopify_order_id, { subject: `Order ${name} cannot be checked against Shopify`, text }, alert);
 }
@@ -317,6 +353,14 @@ export async function processDueOrders(
       if (decision.addressChanged) {
         await store.updateOrder(o.shopify_order_id, { address_json: JSON.stringify(address) });
         await store.addOrderEvent(o.shopify_order_id, 'address-refreshed');
+        if (o.cj_order_id) {
+          // A pay-retry: a supplier order already exists and it still carries
+          // the address that has just been replaced. Stop here rather than
+          // carry it through to line resolution and a payment.
+          await holdForAddressChangeAfterSupplierOrder(store, o, o.cj_order_id, opts.alert);
+          held++;
+          continue;
+        }
       }
       if (decision.riskLevel) await store.updateOrder(o.shopify_order_id, { risk_level: decision.riskLevel }); // console visibility on clean flows too
 
@@ -417,6 +461,16 @@ export async function processDueOrders(
         } else {
           const _exhaustive: never = payDecision;
         }
+        continue;
+      }
+      if (payDecision.addressChanged) {
+        // The address changed in the gap between the two gate reads (line
+        // resolution + CJ create) - the supplier order that now exists still
+        // carries the OLD address. Stop before paying it.
+        await store.updateOrder(o.shopify_order_id, { address_json: JSON.stringify(payDecision.address) });
+        await store.addOrderEvent(o.shopify_order_id, 'address-refreshed');
+        await holdForAddressChangeAfterSupplierOrder(store, o, cjOrderId, opts.alert);
+        held++;
         continue;
       }
 
@@ -585,6 +639,138 @@ export async function pollTracking(
   return { checked, fulfilled };
 }
 
+/** Reads a row's hold_reasons JSON defensively - a syntax error or a
+ *  non-array value both read as "no reasons recorded" rather than throwing. */
+function parseHoldReasons(json: string | null): string[] {
+  if (!json) return [];
+  try {
+    const parsed = JSON.parse(json) as unknown;
+    return Array.isArray(parsed) ? parsed.filter((r): r is string => typeof r === 'string') : [];
+  } catch { return []; }
+}
+
+/**
+ * A cancel or a refund reaches us by webhook only, so a lost delivery (the
+ * subscription removed, the process down at the wrong moment) leaves a row
+ * sitting on an unsettled supplier order (awaiting-payment, or held/error
+ * while a supplier order still exists) with nobody told. This re-reads every
+ * such row against Shopify on a rotation, independently of the webhook path,
+ * paging through the backlog via listUnsettledSupplierOrders /
+ * countUnsettledSupplierOrders so a backlog larger than one page still gets
+ * every row read in turn rather than starving the oldest ones. It watches
+ * held and error rows with a supplier order too, not only awaiting-payment.
+ *
+ * One row's failure - a throw from applyCancel (it can throw now, since its
+ * own marker write can be refused), a bad gate read, anything - is caught
+ * per row and never stops the rest of the tick; the failure is logged, never
+ * written to the row's own trail (a trail write here could be the very thing
+ * that just failed).
+ *
+ * Per row: an unreadable gate is handled the same way the pipeline's own
+ * pre-pay gate read is (handleGateUnreadable - a trail marker, and an alert
+ * on the fourth consecutive failure), but with its text saying truthfully
+ * that the OWNER is the one who would pay, not PawScout. Cancelled in
+ * Shopify: applyCancel decides and dedupes on the trail, so a cancel that
+ * also arrives by webhook is handled exactly once, whichever gets there
+ * first. A hold for any reason other than already-fulfilled or order-missing
+ * - refunded, not-paid, on-hold or incomplete-address, the only ones
+ * reachable here since this check skips the risk gate - is a financial stop
+ * signal Shopify is sending us, not a reason to keep waiting: it is written
+ * and alerted the same way the pipeline's own pre-create stop is, once per
+ * reason (a row already held for that exact reason is left alone), keeping
+ * any reason the row already carried alongside the new one rather than
+ * erasing it - a row parked here already, by an error or by an earlier stop,
+ * has its own reason as the only persisted record of why. An address that
+ * changed after the supplier order was created is never held here - unlike
+ * the pipeline's own two positions, holding here would pull the row out of
+ * this very check and out of the tracking poll while the owner still pays it
+ * by hand - so the row's status is left alone; only the stored address and
+ * the alert are updated, and the stored address is itself the dedupe (the
+ * next tick sees no change). A corrupt address_json never blocks the cancel
+ * or stop checks for that row - only the address-changed comparison is
+ * skipped.
+ */
+export async function recheckUnsettledSupplierOrders(
+  store: TenantStore, admin: AdminGraphql, send: AlertSend, opts: { max?: number; now?: Date } = {}
+): Promise<{ checked: number; cancelled: number; addressChanged: number; stopped: number; unreadable: number }> {
+  const max = opts.max ?? 20;
+  const now = opts.now ?? new Date();
+  let checked = 0;
+  let cancelled = 0;
+  let addressChanged = 0;
+  let stopped = 0;
+  let unreadable = 0;
+
+  const count = await store.countUnsettledSupplierOrders();
+  if (count === 0) return { checked, cancelled, addressChanged, stopped, unreadable };
+  const pages = Math.ceil(count / max);
+  const page = Math.floor(now.getTime() / 900_000) % pages;
+  const rows = await store.listUnsettledSupplierOrders(max, page * max);
+
+  for (const o of rows) {
+    checked++;
+    try {
+      const gateRead = await readOrderGate(admin, o.shopify_order_id);
+      if (!gateRead.ok) {
+        await handleGateUnreadable(store, o, gateRead.error, o.cj_order_id, send, { ownerPays: true });
+        unreadable++;
+        continue;
+      }
+
+      if (gateRead.snapshot.cancelledAt) {
+        const outcome = await applyCancel(store, o.shopify_order_id);
+        if (outcome.alert) await deliverOrderAlert(store, o.shopify_order_id, outcome.alert, send);
+        cancelled++;
+        continue;
+      }
+
+      let storedAddress: OrderAddress | null = null;
+      let addressReadable = true;
+      if (o.address_json) {
+        try { storedAddress = JSON.parse(o.address_json) as OrderAddress; }
+        catch { addressReadable = false; }
+      }
+
+      const decision = decideGate(gateRead.snapshot, { address: addressReadable ? storedAddress : null, totalPrice: o.total_price ?? 0, skipRisk: true });
+
+      if (decision.action === 'hold') {
+        if (decision.reason !== 'already-fulfilled' && decision.reason !== 'order-missing') {
+          const existingReasons = parseHoldReasons(o.hold_reasons);
+          const alreadyHeldForThis = o.status === 'held' && existingReasons.includes(decision.reason);
+          if (!alreadyHeldForThis) {
+            await writeGateStop(store, o.shopify_order_id, 'held', decision.reason, decision.riskLevel, decision.reason, existingReasons);
+            await alertIfSupplierOrderExists(store, o, decision.reason, send);
+            stopped++;
+          }
+        }
+        continue;
+      }
+      if (decision.action === 'cancel') {
+        // Unreachable in practice: decideGate's cancel branch keys off the
+        // exact same snapshot.cancelledAt already handled above. Kept so a
+        // future change to decideGate's ordering fails this check instead of
+        // silently doing nothing.
+        continue;
+      }
+
+      // decision.action === 'proceed' here - the only remaining variant.
+      if (decision.addressChanged && addressReadable && o.cj_order_id) {
+        await store.updateOrder(o.shopify_order_id, { address_json: JSON.stringify(decision.address) });
+        await store.addOrderEvent(o.shopify_order_id, 'address-refreshed');
+        const name = o.order_name ?? o.shopify_order_id;
+        await deliverOrderAlert(store, o.shopify_order_id, {
+          subject: `Order ${name}: the delivery address changed after the supplier order was created`,
+          text: `The delivery address of order ${name} was changed in Shopify after supplier order ${o.cj_order_id} was created, so the supplier order still carries the old address. If it is not paid yet, correct the address on the supplier order at the supplier before you pay it. If it is already paid, ask the supplier to change the address before it ships. If the supplier cannot change it, handle this order by hand.`
+        }, send);
+        addressChanged++;
+      }
+    } catch (e) {
+      console.warn(`unsettled supplier order recheck failed for ${o.order_name ?? o.shopify_order_id}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  return { checked, cancelled, addressChanged, stopped, unreadable };
+}
+
 /** Build the awaiting-payment email callback, or undefined when email isn't configured. */
 function makeAwaitingPaymentNotify(env: Env, alertEmail: string | undefined): ((n: AwaitingPaymentNotice) => Promise<void>) | undefined {
   if (!env.RESEND_API_KEY || !alertEmail) return undefined;
@@ -648,6 +834,21 @@ export async function runOrderPipelineForShop(env: Env, vault: Vault, shop: stri
   if (!(await store.getSupplierCredential('cj'))) return null;
   const accessToken = await vault.open(tenant.dek_wrapped, tenant.access_token_enc);
   const admin = makeAdminGraphql(shop, accessToken);
+  // Runs as soon as the admin client exists, and whatever fulfil.mode is set
+  // to (unlike processDueOrders, which is pawscout-only): any row that
+  // already has a supplier order and is not yet settled - awaiting-payment,
+  // held or error - always needs telling about, mode aside. Cannot sit next
+  // to the alert retry sweep above, which runs before the vault open this
+  // needs. Its own try/catch so a failure here can never stop the pipeline
+  // it rides on.
+  try {
+    const r = await recheckUnsettledSupplierOrders(store, admin, alert);
+    if (r.cancelled || r.addressChanged || r.stopped) {
+      console.log(`unsettled supplier order recheck for ${shop}: cancelled=${r.cancelled} addressChanged=${r.addressChanged} stopped=${r.stopped}`);
+    }
+  } catch (e) {
+    console.warn(`unsettled supplier order recheck failed for ${shop}: ${e instanceof Error ? e.message : String(e)}`);
+  }
   const f = cjFetchFromEnv(env);
   const cj = new CjClient(() => new CjTokenManager(store, vault, f).getToken(), f);
   const notify = makeAwaitingPaymentNotify(env, cfg.fulfil.alertEmail);

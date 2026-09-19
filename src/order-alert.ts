@@ -31,6 +31,11 @@ export const ALERT_SEND_TIMEOUT_MS = 10_000;
 
 const NOT_RECORDED = '(not recorded)';
 
+/** One trail event as the functions in this file need it: its kind, detail
+ *  and timestamp. A structural subset of OrderEventRow, so a caller can pass
+ *  either the real row shape or a hand-built one for testing. */
+export interface TrailEvent { kind: string; detail: string | null; at: string }
+
 /** One pending alert's retry state while walking a trail: firstAt is when it
  *  FIRST failed (an owner-alerted for the same subject clears the entry, so
  *  a later failure of the same wording starts a fresh count), failures is
@@ -44,9 +49,7 @@ export interface PendingAlert { firstAt: string; failures: number }
  * retryOrderAlerts both call this so they can never disagree about what
  * "still pending" means for a given subject.
  */
-export function pendingAlerts(
-  trail: { kind: string; detail: string | null; at: string }[]
-): Map<string, PendingAlert> {
+export function pendingAlerts(trail: TrailEvent[]): Map<string, PendingAlert> {
   const pending = new Map<string, PendingAlert>();
   for (const e of trail) {
     if (e.kind === 'owner-alert-failed' && e.detail != null) {
@@ -58,6 +61,33 @@ export function pendingAlerts(
     }
   }
   return pending;
+}
+
+/**
+ * What a trail (or a slice of one) says about one alert subject - the answer
+ * to "does a repeat delivery still need to hand this alert back". `delivered`:
+ * an owner-alerted marker whose detail is exactly this subject - somebody was
+ * actually told, for good. Else `nobody-to-tell`: an error line reading
+ * exactly `owner alert not configured: <subject>` - there was never anyone to
+ * tell, so no future delivery should try again either. Else `retrying`: a
+ * failed send is still within its retry budget (pendingAlerts has an entry
+ * for this subject, its failures are under MAX_ALERT_ATTEMPTS, and its
+ * firstAt is within ALERT_RETRY_WINDOW_HOURS of `now`) - the sweep will pick
+ * it up, so a repeat delivery must not hand it back too and duplicate the
+ * send. Else `untold`: nobody was told and nothing will retry - this covers
+ * both an abandoned alert (failures reached MAX_ALERT_ATTEMPTS) and one whose
+ * first failure aged out of the window, and a repeat delivery must hand the
+ * alert back so it is not lost for good.
+ */
+export function alertState(trail: TrailEvent[], subject: string, now: Date = new Date()): 'delivered' | 'nobody-to-tell' | 'retrying' | 'untold' {
+  if (trail.some((e) => e.kind === 'owner-alerted' && e.detail === subject)) return 'delivered';
+  if (trail.some((e) => e.kind === 'error' && e.detail === `owner alert not configured: ${subject}`)) return 'nobody-to-tell';
+  const pending = pendingAlerts(trail).get(subject);
+  if (pending) {
+    const sinceIso = new Date(now.getTime() - ALERT_RETRY_WINDOW_HOURS * 3_600_000).toISOString();
+    if (pending.failures < MAX_ALERT_ATTEMPTS && pending.firstAt >= sinceIso) return 'retrying';
+  }
+  return 'untold';
 }
 
 /** Races `send` against a timer: whichever settles first (a resolve, a

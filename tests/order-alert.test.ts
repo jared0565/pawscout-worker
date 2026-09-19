@@ -2,9 +2,9 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
 import { TenantStore } from '../src/tenant-store';
 import {
-  deliverOrderAlert, retryOrderAlerts, pendingAlerts,
+  deliverOrderAlert, retryOrderAlerts, pendingAlerts, alertState,
   MAX_ALERT_ATTEMPTS, MAX_ALERT_RESENDS_PER_TICK,
-  type AlertResult, type AlertSend
+  type AlertResult, type AlertSend, type TrailEvent
 } from '../src/order-alert';
 
 beforeEach(async () => { await applyD1Migrations(env.DB, env.TEST_MIGRATIONS); });
@@ -335,6 +335,54 @@ describe('pendingAlerts', () => {
     const pending = pendingAlerts(trail);
     expect(pending.has('A')).toBe(false);
     expect(pending.get('B')).toEqual({ firstAt: 't2', failures: 1 });
+  });
+});
+
+describe('alertState', () => {
+  const now = new Date('2026-01-02T00:00:00.000Z');
+
+  it('delivered: an owner-alerted whose detail is the subject', () => {
+    const trail: TrailEvent[] = [{ kind: 'owner-alerted', detail: 'S', at: 't1' }];
+    expect(alertState(trail, 'S', now)).toBe('delivered');
+  });
+
+  it('nobody-to-tell: an error with detail exactly "owner alert not configured: <subject>"', () => {
+    const trail: TrailEvent[] = [{ kind: 'error', detail: 'owner alert not configured: S', at: 't1' }];
+    expect(alertState(trail, 'S', now)).toBe('nobody-to-tell');
+  });
+
+  it('retrying: a failed send is still within its attempt budget and retry window', () => {
+    const trail: TrailEvent[] = [{ kind: 'owner-alert-failed', detail: 'S', at: now.toISOString() }];
+    expect(alertState(trail, 'S', now)).toBe('retrying');
+  });
+
+  it('untold: no trail event for this subject at all (a clean first delivery)', () => {
+    expect(alertState([], 'S', now)).toBe('untold');
+  });
+
+  it('untold: 12 failures have reached the abandonment cap', () => {
+    const trail: TrailEvent[] = Array.from({ length: MAX_ALERT_ATTEMPTS }, () => ({ kind: 'owner-alert-failed', detail: 'S', at: now.toISOString() }));
+    expect(alertState(trail, 'S', now)).toBe('untold');
+  });
+
+  it('untold: the first failure is 25 hours older than now, outside the retry window', () => {
+    const firstAt = new Date(now.getTime() - 25 * 3_600_000).toISOString();
+    const trail: TrailEvent[] = [{ kind: 'owner-alert-failed', detail: 'S', at: firstAt }];
+    expect(alertState(trail, 'S', now)).toBe('untold');
+  });
+
+  it('delivered takes precedence over a failure of the same subject regardless of order', () => {
+    const trail: TrailEvent[] = [
+      { kind: 'owner-alert-failed', detail: 'S', at: 't1' },
+      { kind: 'owner-alerted', detail: 'S', at: 't2' }
+    ];
+    expect(alertState(trail, 'S', now)).toBe('delivered');
+  });
+
+  it('defaults now to the current time when omitted', () => {
+    const recent = new Date().toISOString();
+    const trail: TrailEvent[] = [{ kind: 'owner-alert-failed', detail: 'S', at: recent }];
+    expect(alertState(trail, 'S')).toBe('retrying');
   });
 });
 

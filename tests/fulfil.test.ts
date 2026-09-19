@@ -101,6 +101,57 @@ describe('order store', () => {
     expect((await store.listOrders('submitted')).length).toBe(1);
     expect((await store.listOrders('queued')).length).toBe(0);
   });
+
+  it('listUnsettledSupplierOrders and countUnsettledSupplierOrders read only awaiting-payment, held and error rows that carry a supplier order', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const base = { orderName: null, totalPrice: 10, currency: 'GBP', financialStatus: 'paid', riskLevel: null, holdReasons: [], addressJson: null, lineItemsJson: null, fulfilAfter: null };
+    await store.insertOrderIfNew({ ...base, shopifyOrderId: 'unpaid', status: 'queued' });
+    await store.updateOrder('unpaid', { status: 'awaiting-payment', cj_order_id: 'CJ-1' });
+    await store.insertOrderIfNew({ ...base, shopifyOrderId: 'stuck-held', status: 'queued' });
+    await store.updateOrder('stuck-held', { status: 'held', cj_order_id: 'CJ-2' });
+    await store.insertOrderIfNew({ ...base, shopifyOrderId: 'stuck-error', status: 'queued' });
+    await store.updateOrder('stuck-error', { status: 'error', cj_order_id: 'CJ-3' });
+    await store.insertOrderIfNew({ ...base, shopifyOrderId: 'no-supplier-order', status: 'awaiting-payment' });
+    await store.insertOrderIfNew({ ...base, shopifyOrderId: 'done', status: 'queued' });
+    await store.updateOrder('done', { status: 'fulfilled', cj_order_id: 'CJ-4' });
+    await store.insertOrderIfNew({ ...base, shopifyOrderId: 'still-queued', status: 'queued' });
+
+    const rows = await store.listUnsettledSupplierOrders(20, 0);
+    expect(rows.map((r) => r.shopify_order_id).sort()).toEqual(['stuck-error', 'stuck-held', 'unpaid']);
+    expect(await store.countUnsettledSupplierOrders()).toBe(3);
+  });
+
+  it('listUnsettledSupplierOrders orders oldest first by created_at, then by order id, and honours limit/offset', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const base = { orderName: null, totalPrice: 10, currency: 'GBP', financialStatus: 'paid', riskLevel: null, holdReasons: [], addressJson: null, lineItemsJson: null, fulfilAfter: null };
+    for (const id of ['b', 'a', 'c-later']) {
+      await store.insertOrderIfNew({ ...base, shopifyOrderId: id, status: 'awaiting-payment' });
+      await store.updateOrder(id, { cj_order_id: 'CJ-' + id });
+    }
+    // Pin created_at directly so the ordering is deterministic: 'a' and 'b' tie
+    // (tie-break falls to shopify_order_id), 'c-later' is strictly newest.
+    await env.DB.prepare(`UPDATE orders SET created_at = ?2 WHERE shop = ?1 AND shopify_order_id IN ('a', 'b')`).bind(SHOP, '2026-01-01T00:00:00.000Z').run();
+    await env.DB.prepare(`UPDATE orders SET created_at = ?2 WHERE shop = ?1 AND shopify_order_id = 'c-later'`).bind(SHOP, '2026-01-02T00:00:00.000Z').run();
+
+    const rows = await store.listUnsettledSupplierOrders(20, 0);
+    expect(rows.map((r) => r.shopify_order_id)).toEqual(['a', 'b', 'c-later']);
+    expect((await store.listUnsettledSupplierOrders(2, 0)).map((r) => r.shopify_order_id)).toEqual(['a', 'b']);
+    expect((await store.listUnsettledSupplierOrders(2, 2)).map((r) => r.shopify_order_id)).toEqual(['c-later']);
+  });
+
+  it('listUnsettledSupplierOrders and countUnsettledSupplierOrders never return another shop\'s rows', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const other = new TenantStore(env.DB, 'other-shop.myshopify.com');
+    const base = { orderName: null, totalPrice: 10, currency: 'GBP', financialStatus: 'paid', riskLevel: null, holdReasons: [], addressJson: null, lineItemsJson: null, fulfilAfter: null };
+    await store.insertOrderIfNew({ ...base, shopifyOrderId: 'mine', status: 'awaiting-payment' });
+    await store.updateOrder('mine', { cj_order_id: 'CJ-MINE' });
+    await other.insertOrderIfNew({ ...base, shopifyOrderId: 'theirs', status: 'awaiting-payment' });
+    await other.updateOrder('theirs', { cj_order_id: 'CJ-THEIRS' });
+
+    const rows = await store.listUnsettledSupplierOrders(20, 0);
+    expect(rows.map((r) => r.shopify_order_id)).toEqual(['mine']);
+    expect(await store.countUnsettledSupplierOrders()).toBe(1);
+  });
 });
 
 describe('GDPR redaction', () => {
