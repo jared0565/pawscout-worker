@@ -31,7 +31,9 @@ import { buildVoucherInviteWithCode } from './inbox/partnership';
 import { renderReplyHtml } from './inbox/draft';
 import { consolePage } from './console/page';
 import { validateCjKey, CjClient, CjTokenManager, cjFetchFromEnv, chooseOrigin } from './cj';
-import { registerWebhooks, type RegisterWebhook } from './webhooks';
+import { registerWebhooks, ensureWebhooks, ORDER_EVENT_TOPICS, type RegisterWebhook } from './webhooks';
+import { cancelledOrderId, refundInfo, applyCancel, applyRefund, type OwnerAlert } from './order-cancel';
+import { alertOwner } from './owner-alert';
 import { validateGatesPayload, validatePricingPayload, validateLlmPayload, validateAddonsPayload, validateCollectionMap, validatePartnerPayload, validateSelfServePayload } from './validate';
 import { sendEmail, SENDING_DOMAIN } from './email';
 import { verifySvixSignature, parseResendEvent, applyResendEvent, getTrackingStatus, enableTracking, ensureEventsWebhook } from './resend-events';
@@ -51,7 +53,7 @@ import { productInventoryItems } from './proxy/inventory';
 import { readDeliveryConfig, syncSignatureProfiles } from './shipping/delivery-profile';
 import { resolveShipConfig } from './shipping/ship-config';
 import { resolveLogistics } from './logistics';
-import { runDailyMaintenance, resumeDailyMaintenance, runMarketVisibilityReconcile, runProfitAgentSweep, restoreCulledProducts, syncStoreInventory, refillCollections, backfillArchivedRedirects } from './jobs';
+import { runDailyMaintenance, resumeDailyMaintenance, runMarketVisibilityReconcile, runProfitAgentSweep, restoreCulledProducts, syncStoreInventory, refillCollections, backfillArchivedRedirects, JOB_STAMP_TTL_DAYS, JOB_STAMP_ORDER_HOOKS } from './jobs';
 import { maybeAffiliatePayoutReminder } from './affiliate-payout-reminder';
 import { debrandCatalog } from './catalog-debrand';
 import { runOrderPipeline, runOrderPipelineForShop } from './fulfil-run';
@@ -74,6 +76,90 @@ export const app = new Hono<{ Bindings: Env }>();
 
 function makeRegistrar(env: Env): RegisterWebhook {
   return (shop, accessToken) => registerWebhooks(shop, accessToken, env.SHOPIFY_APP_URL);
+}
+
+// ONE door for every order-webhook owner alert (orders-cancelled, refunds-create).
+// A later task changes how these alerts are confirmed; keeping every send behind
+// this one helper means that task has exactly one place to change. The email
+// itself rides in waitUntil - only the trail decision (applyCancel/applyRefund)
+// is awaited before the webhook answers. M-3 (fix round 1): the promise handed
+// to waitUntil carries its own .catch, like its neighbour a few lines below in
+// /webhooks/orders-paid (store.recordEvent(...).catch(() => undefined)) - a
+// future throw inside alertOwner's chain must not become an unhandled rejection.
+function sendOrderAlert(c: Context<{ Bindings: Env }>, cfg: TenantConfig, alert: OwnerAlert): void {
+  c.executionCtx.waitUntil(alertOwner(c.env, cfg, alert.subject, alert.text).catch(() => undefined));
+}
+
+/** ORDER_EVENT_TOPICS-scoped projection of a fresh or stored WebhookStatus,
+ *  shared by /api/orders (via parseStoredHooks below) and the "Check order
+ *  events" button (/api/ensure-webhooks) - fix round 2, N-1. Before this, the
+ *  button route handed the console the raw status while /api/orders handed it
+ *  this projection, so pressing the button during an outage reintroduced the
+ *  exact confident MISSING list I-4 had just removed from the page-load path.
+ *  One function, both doors.
+ *
+ *  The projection is scoped to ORDER_EVENT_TOPICS specifically because that is
+ *  what the console's "Order events: ..." line is about: a missing
+ *  APP_UNINSTALLED alone must never print "a cancel or refund can go
+ *  unnoticed" - only ORDERS_PAID / ORDERS_CANCELLED / REFUNDS_CREATE do. `ok`
+ *  is computed from the FILTERED list, never passed through the raw status's
+ *  own `ok`, precisely so an unrelated missing APP_UNINSTALLED cannot flip it.
+ *  An unverified status is unknown, not missing: `missing` comes back empty
+ *  regardless of what the underlying check found, and `error` carries the
+ *  first stored message (or a generic fallback) instead. */
+export function projectHooks(
+  status: { verified: boolean; missing: string[]; errors: string[]; checkedAt: string }
+): { ok: boolean; missing: string[]; checkedAt: string; error: string | null } {
+  if (!status.verified) {
+    const firstError = typeof status.errors[0] === 'string' && status.errors[0] ? status.errors[0] : 'check failed';
+    return { ok: false, missing: [], checkedAt: status.checkedAt, error: firstError };
+  }
+  const missing = status.missing.filter((t) => ORDER_EVENT_TOPICS.includes(t));
+  return { ok: missing.length === 0, missing, checkedAt: status.checkedAt, error: null };
+}
+
+/** Validates a stored order-webhooks payload's shape - fix round 1 (I-4, M-2):
+ *  requires boolean `ok`, boolean `verified`, array `missing`, string
+ *  `checkedAt` before trusting anything in it; a parseable but wrong-shaped
+ *  value (including anything stored before that round, which never had
+ *  `verified`) is reported as never checked, not as a false status - and then
+ *  hands the validated shape to projectHooks (fix round 2, N-1) for the same
+ *  ORDER_EVENT_TOPICS-scoped projection the button route now shares. */
+export function parseStoredHooks(raw: string | null): { ok: boolean; missing: string[]; checkedAt: string; error: string | null } | null {
+  if (!raw) return null;
+  let parsed: Record<string, unknown>;
+  try { parsed = JSON.parse(raw) as Record<string, unknown>; } catch { return null; }
+  if (
+    typeof parsed.ok !== 'boolean' ||
+    typeof parsed.verified !== 'boolean' ||
+    !Array.isArray(parsed.missing) ||
+    typeof parsed.checkedAt !== 'string'
+  ) {
+    return null;
+  }
+  const errors = Array.isArray(parsed.errors) ? (parsed.errors as string[]) : [];
+  return projectHooks({ verified: parsed.verified, missing: parsed.missing as string[], errors, checkedAt: parsed.checkedAt });
+}
+
+/** Core of /api/order-events, factored out for direct testing. This repo's
+ *  convention (see tests/affiliate-console.test.ts) is that a session-authed
+ *  /api route is tested as a plain function with the Hono handler left as a
+ *  thin wrapper, because no test drives a session-token route through
+ *  app.request - there is no way to mint a session token
+ *  `shopify.session.decodeSessionToken` will accept without the real signing
+ *  internals @shopify/shopify-api keeps private. M-5 (fix round 1): a missing
+ *  or non-string id is a bad request, distinct from a well-formed id with no
+ *  row. `store` is always built from the session-resolved shop, never from
+ *  the request body, so calling this with two different shops' stores is
+ *  exactly what pins tenant isolation (I-2c) for this route. */
+export async function orderEventsForOrder(
+  store: TenantStore, rawId: unknown
+): Promise<{ status: 200 | 400 | 404; body: { ok: true; events: { seq: number; at: string; kind: string; detail: string | null }[] } | { ok: false; error: string } }> {
+  const id = typeof rawId === 'string' && rawId ? rawId : '';
+  if (!id) return { status: 400, body: { ok: false, error: 'Missing order id' } };
+  if (!(await store.getOrder(id))) return { status: 404, body: { ok: false, error: 'Order not found' } };
+  const events = (await store.listOrderEvents(id)).map((e) => ({ seq: e.seq, at: e.at, kind: e.kind, detail: e.detail }));
+  return { status: 200, body: { ok: true, events } };
 }
 
 app.get('/auth', (c) => beginAuth(makeShopify(c.env), c.req.raw));
@@ -1439,7 +1525,63 @@ app.post('/api/orders', async (c) => {
     id: o.shopify_order_id, name: o.order_name, total: o.total_price, currency: o.currency,
     status: o.status, holds: o.hold_reasons ? JSON.parse(o.hold_reasons) : [], cj: o.cj_order_id, tracking: o.tracking_number
   }));
-  return c.json({ ok: true, orders, mode: cfg?.fulfil.mode ?? 'manual', createOnly: cfg?.fulfil.createOnly === true, alertEmail: cfg?.fulfil.alertEmail ?? '' });
+  // Webhook-subscription health (the daily stage, or the console's own
+  // "Check order events" button) - null when never checked, unparseable, or
+  // shaped wrong (M-2); "unknown" (unverified) reads as an explicit error
+  // rather than a confident MISSING (I-4, fix round 1).
+  const hooks = parseStoredHooks(await store.getSearchCache(JOB_STAMP_ORDER_HOOKS));
+  return c.json({ ok: true, orders, mode: cfg?.fulfil.mode ?? 'manual', createOnly: cfg?.fulfil.createOnly === true, alertEmail: cfg?.fulfil.alertEmail ?? '', hooks });
+});
+// The order trail for one order - the append-only reconstruction of what
+// happened to it (received/held/queued/... through cancel/refund/operator
+// actions), for the console's per-order detail view.
+app.post('/api/order-events', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: { id?: unknown } = {};
+  try { body = await c.req.json(); } catch { /* id stays undefined -> 400 below */ }
+  const store = new TenantStore(c.env.DB, s);
+  const r = await orderEventsForOrder(store, body.id);
+  return c.json(r.body, r.status);
+});
+/** What /api/ensure-webhooks stores for consecutiveFailures on a manual check
+ *  (fix round 2, N-2 - corrects the round 1 brief's "same rule" mistake): a
+ *  verified check resets to 0, exactly like the nightly stage
+ *  (nextConsecutiveFailures in src/jobs.ts). An unverified one does NOT
+ *  increment - a button press is not a night, and letting it increment would
+ *  both falsify the nightly alert's "N days in a row" text and let a press
+ *  silently consume one of that alert's 3/6/9 slots, delaying or even
+ *  skipping a genuine outage's email. The previous value is kept unchanged,
+ *  defaulting to 0 when there is none or it cannot be read. */
+export function manualCheckConsecutiveFailures(previousRaw: string | null, verified: boolean): number {
+  if (verified) return 0;
+  if (!previousRaw) return 0;
+  try {
+    const prev = JSON.parse(previousRaw) as { consecutiveFailures?: unknown };
+    return typeof prev.consecutiveFailures === 'number' ? prev.consecutiveFailures : 0;
+  } catch {
+    return 0;
+  }
+}
+
+// Owner-triggered webhook-subscription check ("Check order events" button):
+// runs the same idempotent assurance the daily stage runs, stores the result
+// under the same cache key so /api/orders reflects it immediately. Fix round
+// 2 (N-1): answers the same ORDER_EVENT_TOPICS-scoped projection /api/orders
+// does, via projectHooks, instead of the raw status - a failed button press
+// during an outage must not show the console a confident MISSING list either.
+// Fix round 2 (N-2): a failed press leaves consecutiveFailures unchanged
+// rather than incrementing it, unlike the nightly stage - see
+// manualCheckConsecutiveFailures above. Never emails - only the daily stage
+// does that.
+app.post('/api/ensure-webhooks', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  const store = new TenantStore(c.env.DB, s);
+  const admin = await adminForShop(c.env, store);
+  if (!admin) return c.json({ ok: false, error: 'Shopify connection unavailable' });
+  const hooks = await ensureWebhooks(admin, c.env.SHOPIFY_APP_URL);
+  const consecutiveFailures = manualCheckConsecutiveFailures(await store.getSearchCache(JOB_STAMP_ORDER_HOOKS), hooks.verified);
+  await store.putSearchCache(JOB_STAMP_ORDER_HOOKS, JSON.stringify({ ...hooks, consecutiveFailures }), JOB_STAMP_TTL_DAYS);
+  return c.json({ ok: true, hooks: projectHooks(hooks) });
 });
 // Read-only CJ order-API check: lists recent CJ orders to verify the order
 // endpoints + field names work, WITHOUT creating or paying anything.
@@ -1504,6 +1646,8 @@ app.post('/api/order-action', async (c) => {
   const store = new TenantStore(c.env.DB, s);
   if (!(await store.getOrder(body.id))) return c.json({ ok: false, error: 'Order not found' }, 404);
   await store.updateOrder(body.id, { status });
+  await store.addOrderEvent(body.id, 'operator-action', body.action);
+  if (body.action === 'release') await store.addOrderEvent(body.id, 'released');
   return c.json({ ok: true, status });
 });
 app.post('/api/collections', async (c) => {
@@ -1989,6 +2133,18 @@ app.post('/webhooks/orders-paid', async (c) => {
       fulfilAfter: holds.length ? null : fulfilAfter
     });
     if (isNew) console.log(`order ${order.orderName} ${holds.length ? 'HELD (' + holds.join(',') + ')' : 'queued'}`);
+    // Order trail (phase 2): received, then held/queued - recorded only on
+    // first receipt (isNew) so webhook retries never double the trail. Detail
+    // carries only the hold reasons or the fulfil-after time, never anything
+    // from the payload (no name, address, email or phone).
+    if (isNew) {
+      await store.addOrderEvent(order.shopifyOrderId, 'received');
+      if (holds.length) {
+        await store.addOrderEvent(order.shopifyOrderId, 'held', holds.join(','));
+      } else {
+        await store.addOrderEvent(order.shopifyOrderId, 'queued', `fulfil after ${fulfilAfter}`);
+      }
+    }
     // Real ORDER events feed the deterministic "Selling fast" badge and the 30-day
     // cull. Recorded only on first receipt (isNew) so webhook retries never double
     // count; best-effort, never blocks the ack.
@@ -2000,6 +2156,56 @@ app.post('/webhooks/orders-paid', async (c) => {
     c.executionCtx.waitUntil(attributePaidOrder(store, order).then(() => undefined));
   } catch (e) {
     console.warn(`orders-paid handler failed for ${shop}: ${(e as Error).message}`);
+  }
+  return c.text('ok'); // always 200 - a non-2xx makes Shopify retry the webhook
+});
+
+// --- orders/cancelled webhook (Task 4's decision, wired to the outside world).
+// Same shape as orders-paid: validate, read the shop, one try block, log,
+// ALWAYS answer 200 so Shopify never retries into a duplicate alert storm.
+// applyCancel writes its own trail (cancel-received, owner-alerted) and
+// dedupes on it, so redelivery of the same event is a no-op here. ---
+app.post('/webhooks/orders-cancelled', async (c) => {
+  const shopify = makeShopify(c.env);
+  const body = await c.req.text();
+  const valid = await shopify.webhooks.validate({ rawBody: body, rawRequest: c.req.raw });
+  if (!valid.valid) return c.text('invalid', 401);
+  const shop = c.req.header('X-Shopify-Shop-Domain') ?? '';
+  try {
+    const store = new TenantStore(c.env.DB, shop);
+    const cfg = await store.getConfig();
+    if (!cfg) return c.text('ok'); // not configured - ack so Shopify stops retrying
+    const orderId = cancelledOrderId(JSON.parse(body));
+    if (!orderId) return c.text('ok');
+    const outcome = await applyCancel(store, orderId);
+    if (outcome.alert) sendOrderAlert(c, cfg, outcome.alert);
+  } catch (e) {
+    console.warn(`orders-cancelled handler failed for ${shop}: ${(e as Error).message}`);
+  }
+  return c.text('ok'); // always 200 - a non-2xx makes Shopify retry the webhook
+});
+
+// --- refunds/create webhook (Task 4's decision, wired to the outside world).
+// Same shape as orders-cancelled. applyRefund writes its own trail
+// (refund-received, owner-alerted) and dedupes on the refund's own identity
+// read from the whole trail, so any number of redeliveries change nothing
+// after the first. ---
+app.post('/webhooks/refunds-create', async (c) => {
+  const shopify = makeShopify(c.env);
+  const body = await c.req.text();
+  const valid = await shopify.webhooks.validate({ rawBody: body, rawRequest: c.req.raw });
+  if (!valid.valid) return c.text('invalid', 401);
+  const shop = c.req.header('X-Shopify-Shop-Domain') ?? '';
+  try {
+    const store = new TenantStore(c.env.DB, shop);
+    const cfg = await store.getConfig();
+    if (!cfg) return c.text('ok'); // not configured - ack so Shopify stops retrying
+    const info = refundInfo(JSON.parse(body));
+    if (!info.orderId) return c.text('ok');
+    const outcome = await applyRefund(store, info);
+    if (outcome.alert) sendOrderAlert(c, cfg, outcome.alert);
+  } catch (e) {
+    console.warn(`refunds-create handler failed for ${shop}: ${(e as Error).message}`);
   }
   return c.text('ok'); // always 200 - a non-2xx makes Shopify retry the webhook
 });

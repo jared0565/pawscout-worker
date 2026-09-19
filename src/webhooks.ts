@@ -21,10 +21,13 @@ export type RegisterResult = { ok: true } | { ok: false; error: string };
 export type RegisterWebhook = (shop: string, accessToken: string) => Promise<RegisterResult>;
 
 export interface WebhookStatus {
-  ok: boolean; // true when nothing required is missing after the read-back
+  ok: boolean; // true when nothing required is missing after the read-back. Can only be true when verified is true.
+  verified: boolean; // true when present/missing come from a successful read of the FINAL state (fix round 1, I-4):
+  // the first list succeeded and nothing needed creating, or the read-back after the creates succeeded.
+  // False when the first list threw, or the read-back threw - "unknown" is not "missing".
   present: string[]; // required topics registered at OUR uri
   created: string[]; // topics this call created
-  missing: string[]; // required topics still absent after the read-back
+  missing: string[]; // required topics still absent after the read-back (or the pre-create list, when unverified)
   errors: string[]; // one message per failed create or list
   checkedAt: string; // ISO time
 }
@@ -61,10 +64,13 @@ function isOurs(list: { topic: string; uri: string }[], appUrl: string, topic: s
 }
 
 /** Idempotent webhook assurance: lists what is registered, creates whatever
- *  required topic is missing at our uri, then LISTS AGAIN and reports from
- *  that read-back rather than from what the create calls claimed. Never
- *  throws; a failed list or create is recorded in `errors` and does not stop
- *  the remaining topics. */
+ *  required topic is missing at our uri, and reports the final state. The
+ *  read-back is conditional, not unconditional (fix round 2, N-5): when
+ *  nothing needed creating, the first list already IS the final state and no
+ *  second call is made; only when something needed creating does it list
+ *  again and report from that read-back rather than from what the create
+ *  calls claimed. Never throws; a failed list or create is recorded in
+ *  `errors` and does not stop the remaining topics. */
 export async function ensureWebhooks(admin: AdminGraphql, appUrl: string): Promise<WebhookStatus> {
   const baseUrl = appUrl.replace(/\/+$/, '');
   let before: { topic: string; uri: string }[];
@@ -73,6 +79,7 @@ export async function ensureWebhooks(admin: AdminGraphql, appUrl: string): Promi
   } catch (e) {
     return {
       ok: false,
+      verified: false, // nothing is known: the very first read failed
       present: [],
       created: [],
       missing: REQUIRED_TOPICS.map((t) => t.topic),
@@ -83,9 +90,11 @@ export async function ensureWebhooks(admin: AdminGraphql, appUrl: string): Promi
 
   const created: string[] = [];
   const errors: string[] = [];
+  let neededCreate = false;
 
   for (const { topic, path } of REQUIRED_TOPICS) {
     if (isOurs(before, baseUrl, topic, path)) continue;
+    neededCreate = true;
     try {
       const data = await admin(CREATE_MUTATION, { topic, uri: ourUri(baseUrl, path) });
       const userErrors =
@@ -106,18 +115,33 @@ export async function ensureWebhooks(admin: AdminGraphql, appUrl: string): Promi
     }
   }
 
+  // I-4 (fix round 1): "unknown" is not "missing". When nothing needed
+  // creating, the first list already IS the final state - no second call is
+  // needed or made, and the state is verified. When something did need
+  // creating, only a successful read-back can confirm the final state; a
+  // failed read-back falls back to the pre-create snapshot (unchanged from
+  // before) but is marked unverified, since what it reports as missing might
+  // only be unconfirmed, not actually missing.
   let after = before;
-  try {
-    after = await listWebhookTopics(admin);
-  } catch (e) {
-    errors.push((e as Error).message);
+  let verified: boolean;
+  if (!neededCreate) {
+    verified = true;
+  } else {
+    try {
+      after = await listWebhookTopics(admin);
+      verified = true;
+    } catch (e) {
+      errors.push((e as Error).message);
+      verified = false;
+    }
   }
 
   const present = REQUIRED_TOPICS.filter((t) => isOurs(after, baseUrl, t.topic, t.path)).map((t) => t.topic);
   const missing = REQUIRED_TOPICS.map((t) => t.topic).filter((t) => !present.includes(t));
 
   return {
-    ok: missing.length === 0,
+    ok: verified && missing.length === 0,
+    verified,
     present,
     created,
     missing,

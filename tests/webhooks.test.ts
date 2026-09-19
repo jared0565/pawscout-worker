@@ -90,6 +90,7 @@ describe('ensureWebhooks', () => {
     expect(status.ok).toBe(true);
     expect(status.created.sort()).toEqual(requiredTopicNames().sort());
     expect(status.missing).toEqual([]);
+    expect(status.verified).toBe(true);
   });
 
   it('makes no create call when all four are already present at our uri', async () => {
@@ -100,6 +101,9 @@ describe('ensureWebhooks', () => {
     expect(status.present.sort()).toEqual(requiredTopicNames().sort());
     expect(status.created).toEqual([]);
     expect(calls.some((c) => c.query.includes('webhookSubscriptionCreate('))).toBe(false);
+    // I-4: everything present on the first list -> the first list IS the final
+    // state, so this is verified without needing a second (redundant) call.
+    expect(status.verified).toBe(true);
   });
 
   it('creates ORDERS_PAID when it is registered at a different uri', async () => {
@@ -117,6 +121,10 @@ describe('ensureWebhooks', () => {
     expect(status.missing).toEqual(['ORDERS_PAID']);
     expect(status.errors).toEqual(['Not approved for orders']);
     expect(status.created.sort()).toEqual(['APP_UNINSTALLED', 'ORDERS_CANCELLED', 'REFUNDS_CREATE'].sort());
+    // I-4: the create failed, but the READ-BACK that follows it succeeded and
+    // is the one that reports ORDERS_PAID missing - that is a real, known gap,
+    // not an unknown, so verified is true even though ok is false.
+    expect(status.verified).toBe(true);
   });
 
   it('treats an already-taken userError as success, not an error, and does not count it as created', async () => {
@@ -146,6 +154,9 @@ describe('ensureWebhooks', () => {
     const status = await ensureWebhooks(admin, APP_URL);
     expect(status.ok).toBe(false);
     expect(status.errors).toEqual(['network down']);
+    // I-4: nothing is known when the very first read fails - unverified, and
+    // ok can never be true while unverified.
+    expect(status.verified).toBe(false);
   });
 
   it('does not throw when only the second (read-back) list fails: present stays at the first list, every created-but-unconfirmed topic is missing', async () => {
@@ -156,6 +167,11 @@ describe('ensureWebhooks', () => {
     expect(status.errors).toEqual(['read-back unavailable']);
     expect(status.present).toEqual(['APP_UNINSTALLED']);
     expect(status.missing.sort()).toEqual(['ORDERS_CANCELLED', 'ORDERS_PAID', 'REFUNDS_CREATE'].sort());
+    // I-4: creates were attempted (three topics were missing from the first
+    // list) and the read-back that was supposed to confirm them failed, so the
+    // three "missing" topics reported here are not actually known to be
+    // missing - unverified, even though the fallback keeps reporting them.
+    expect(status.verified).toBe(false);
   });
 
   it('normalises a trailing slash in appUrl: matches already-registered topics with no double slash', async () => {
