@@ -163,7 +163,7 @@ export type GateRead = { ok: true; snapshot: OrderSnapshot } | { ok: false; erro
 /** Never throws. ok:false means "could not tell", which the caller treats as DO NOT SPEND. */
 export function readOrderGate(admin: AdminGraphql, shopifyOrderId: string): Promise<GateRead>;
 
-export type GateHoldReason = 'refunded' | 'already-fulfilled' | 'order-missing' | 'incomplete-address' | 'high-risk' | 'medium-risk-value';
+export type GateHoldReason = 'refunded' | 'not-paid' | 'already-fulfilled' | 'on-hold' | 'order-missing' | 'incomplete-address' | 'high-risk' | 'medium-risk-value';
 export type RiskLevel = 'LOW' | 'MEDIUM' | 'HIGH' | null;
 
 export type GateDecision =
@@ -196,8 +196,8 @@ Decision order (first match wins):
 
 1. `exists` false: hold `order-missing`.
 2. `cancelledAt` set: cancel `shopify-cancelled`.
-3. `financialStatus` is `REFUNDED`, `PARTIALLY_REFUNDED` or `VOIDED`: hold `refunded`.
-4. `fulfillmentStatus` is `FULFILLED` or `PARTIALLY_FULFILLED`: hold `already-fulfilled`.
+3. `financialStatus`, compared in upper case: `REFUNDED`, `PARTIALLY_REFUNDED` or `VOIDED` hold `refunded`; anything other than `PAID`, including null, holds `not-paid` (amended in fix round 1: the gate is a whitelist on payment).
+4. `fulfillmentStatus`, compared in upper case: `FULFILLED` or `PARTIALLY_FULFILLED` hold `already-fulfilled`; `ON_HOLD` holds `on-hold` (added in fix round 1); any other value, and null, passes this step.
 5. Address: take `s.address` when Shopify returned one, else the stored one (a missing Shopify address is NOT a change). If the chosen address fails `addressComplete`: hold `incomplete-address`. `addressChanged` is true only when Shopify returned an address and it differs from the stored one after trimming and lower-casing every field.
 6. Risk, unless `skipRisk`: `riskHold(s.riskRecommendation, stored.totalPrice)`; a value holds with that reason. `riskLevel` is `HIGH` for `CANCEL`, `MEDIUM` for `INVESTIGATE`, `LOW` for any other non-null value, else null.
 7. Otherwise proceed.
@@ -312,12 +312,14 @@ export interface CancelOutcome { changed: boolean; alert: OwnerAlert | null }
 
 /** Order id from an orders/cancelled payload ('' when absent). */
 export function cancelledOrderId(raw: unknown): string;
-/** Order id and refunded amount from a refunds/create payload. */
-export function refundInfo(raw: unknown): { orderId: string; amount: number; currency: string };
+/** Order id, the refund's own id, and the refunded amount from a refunds/create payload. */
+export function refundInfo(raw: unknown): { orderId: string; refundId: string; amount: number; currency: string };
 
 export function applyCancel(store: TenantStore, shopifyOrderId: string): Promise<CancelOutcome>;
-export function applyRefund(store: TenantStore, info: { orderId: string; amount: number; currency: string }): Promise<CancelOutcome>;
+export function applyRefund(store: TenantStore, info: { orderId: string; refundId: string; amount: number; currency: string }): Promise<CancelOutcome>;
 ```
+
+**Amended in fix round 1 (2026-09-19), and binding on Task 6.** The task review showed that "skip when the last event matches" re-alerts on a redelivered cancel for a `fulfilled` row and on a third identical refund. Dedupe is on the identity of the event, read from the WHOLE trail: a cancel is deduped by an existing `cancel-received` event; a refund by Shopify's own refund id, which is written into the event detail as `refund <refundId>: <currency> <amount>`. Every refund on a known row writes `refund-received`, including on a `cancelled` row, which never alerts. Where the tables below disagree with this paragraph, this paragraph wins.
 
 `refundInfo`: `orderId` is `order_id`; `amount` is the sum of `transactions[].amount` where `kind === 'refund'` (numbers may arrive as strings); `currency` is the first such transaction's `currency`, else `''`.
 

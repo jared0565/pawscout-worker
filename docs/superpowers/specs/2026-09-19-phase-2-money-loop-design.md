@@ -78,7 +78,9 @@ A pure function decides, so the whole table is unit tested without a network:
 |---|---|
 | `cancelledAt` is set | Row becomes `cancelled`. Never sent to the supplier |
 | Financial status is `REFUNDED`, `PARTIALLY_REFUNDED` or `VOIDED` | Row becomes `held`, reason `refunded`. An operator decides |
+| Financial status is anything other than `PAID`, including unreadable | Row becomes `held`, reason `not-paid`. The gate is a whitelist on payment: it proceeds only when Shopify positively says the order is paid (amended 2026-09-19 after the task review showed that an order with unreadable statuses would otherwise proceed) |
 | Fulfillment status is `FULFILLED` or `PARTIALLY_FULFILLED` | Row becomes `held`, reason `already-fulfilled` (someone shipped it another way) |
+| Fulfillment status is `ON_HOLD` | Row becomes `held`, reason `on-hold`. The merchant paused this order in Shopify; a paused order is never bought (added 2026-09-19) |
 | The order does not exist | Row becomes `held`, reason `order-missing` |
 | Shipping address differs from the stored one | The fresh address is used and stored. If it is now incomplete, the row is `held`, reason `incomplete-address` |
 | Risk recommendation | Exactly today's `riskHold` policy, unchanged |

@@ -117,7 +117,7 @@ export function parseOrderWebhook(raw: unknown): OrderRecord {
   };
 }
 
-function addressComplete(a: OrderAddress | null): boolean {
+export function addressComplete(a: OrderAddress | null): boolean {
   return !!a && !!a.name && !!a.address1 && !!a.city && !!a.zip && !!a.countryCode;
 }
 
