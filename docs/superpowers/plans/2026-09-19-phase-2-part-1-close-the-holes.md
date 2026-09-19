@@ -574,6 +574,27 @@ Changes:
 - [ ] **Step 3: Implement**, after `python -P -m graphite impact` on every file you modify, and `python -P -m graphite query "callers alertOwner"` to see every caller of the function whose return type changes.
 - [ ] **Step 4: Green**: the five test files above, `tests/guard.test.ts`, `tests/webhooks.test.ts`, `tests/webhook-retry.test.ts`, `tests/console.test.ts`, then `npm run typecheck` and `npm run lint`.
 
+## As built: amendments made during review (2026-09-19)
+
+Two review rounds changed this task. Where this section and the text above differ, this section is what the code does.
+
+1. **One walk decides what is pending.** `pendingAlerts(trail)` in `src/order-alert.ts` is used by the sweep AND by the `abandoned` decision, so "12 attempts" always means 12 failures since that subject's last delivery. The first build counted every failure ever recorded for the `abandoned` line, which wrote it while the sweep was still retrying and could never write a second one.
+2. **The candidate query.** `listOrderIdsWithEventSince` does not exist. The store offers `listOrderIdsWithPendingAlerts(sinceIso, maxAttempts, limit = 100)`, whose SQL leaves out every subject that was delivered since it failed, that has reached `maxAttempts`, or whose first undelivered failure is older than `sinceIso`, oldest first. A plain "orders with a failure in the last 24 hours" list lets resolved orders fill every place and starve a live alert. The query only chooses which orders the sweep reads; the walk in item 1 stays the one authority on what is re-sent, and a test pins that the two agree. Both of its shop predicates are tested, including two shops holding the same order id.
+3. **A send cannot hang.** `deliverOrderAlert` races the send against `ALERT_SEND_TIMEOUT_MS = 10_000` (an optional fifth parameter `opts?: { timeoutMs?: number }` exists for tests). The production send ends in a fetch with no timeout, and at the webhook door the send and its marker both live inside `waitUntil`, which the platform ends about 30 seconds after the response. A send that has not answered in time counts as `failed`; a late success costs one duplicate email.
+4. **The sweep is bounded.** `MAX_ALERT_RESENDS_PER_TICK = 10`. The rest waits for the next tick.
+5. **The sweep runs for every shop.** In `runOrderPipelineForShop` it sits right after the tenant and config guard and BEFORE the supplier-credential guard and the vault open, because a shop whose supplier credential is gone is exactly the shop with a pending "the payment went through" alert.
+6. **A marker that did not land.** `TenantStore.addOrderEvent` answers `Promise<boolean>` (true when the row was written; it still never throws). `deliverOrderAlert` writes `owner-alerted` and `owner-alert-failed` at most twice and then logs one `console.error` with the order id, the marker kind and the subject.
+7. **The re-sent text** ends with: `Do not pay or settle anything for this order at the supplier until you have read its trail: open the PawScout console, Orders, and open this order's trail for the full history.` The original text is deliberately not stored, and four of the six subjects do not carry the instruction themselves.
+8. **Nothing in the alert path can throw.** Every catch reads the error as `e instanceof Error ? e.message : String(e)`, and the timer is cleared on every path.
+9. **Migration `0042_order_events_kind_at_index.sql`**: `CREATE INDEX IF NOT EXISTS idx_order_events_shop_kind_at ON order_events (shop, kind, at);`. So this release carries two pending migrations, 0041 and 0042.
+
+**Known residuals, accepted and recorded for the orders runbook:**
+- The platform can still end a webhook's deferred task before the marker is written (an evicted isolate). A marker written and awaited before the 200 would close it; not built.
+- While one subject is being retried on an order, another alert counter on the same order is held at 1, for at most about 3 hours.
+- A subject that ages past 24 hours on fewer than 12 attempts leaves no line. With item 2 nothing can crowd it out, so it needs a backlog above 10 re-sends per tick sustained for a day.
+- When the database commits a marker but reports a failure, the marker is written twice, which costs one of the twelve attempts.
+- SQLite does not use the index of item 9 until statistics exist (measured on a copy of the schema with 326 thousand rows: no gain before `ANALYZE`, about five times faster after). On a small table it does not matter. When `order_events` has grown, run `PRAGMA optimize` and check the plan. The query also reads the shop's whole failure history, so its cost follows retention of `order_events`, not the 24 hour backlog.
+
 ---
 
 ### Task 6d: A supplier order that must not be paid as it stands is always flagged
@@ -632,7 +653,7 @@ export function recheckAwaitingPayment(
    - `cancelledAt` is set: `applyCancel(store, id)` and, when it returns an alert, `deliverOrderAlert`. Count `cancelled`. Because `applyCancel` dedupes on the trail, a cancel that ALSO arrives by webhook is handled exactly once, whichever comes first.
    - Otherwise, Shopify's shipping address is present and differs from the stored one (use `decideGate` with the stored address and `skipRisk: true`, and act only on a `proceed` decision whose `addressChanged` is true): exactly change 2's save, hold and alert. Count `addressChanged`.
    - Anything else (including a gate `hold` such as `refunded`): nothing. A refund without a cancel stays with the webhook path on purpose: it is not an instruction to stop, and the gate read carries no refund identity to dedupe on.
-4. **`runOrderPipelineForShop`** runs `recheckAwaitingPayment(store, admin, alert)` right after `retryOrderAlerts` and BEFORE `processDueOrders`, inside its own try/catch with a `console.warn`, so it runs whatever `fulfil.mode` is and cannot stop the pipeline.
+4. **`runOrderPipelineForShop`** runs `recheckAwaitingPayment(store, admin, alert)` as soon as the Shopify admin client exists and BEFORE `processDueOrders`, inside its own try/catch with a `console.warn` (read the error as `e instanceof Error ? e.message : String(e)`), so it runs whatever `fulfil.mode` is and cannot stop the pipeline. It cannot sit next to the alert re-send sweep: that sweep runs above the supplier-credential guard and the vault open, and this check needs the client the vault open makes possible. Leave the sweep where it is.
 
 - [ ] **Step 1: Write the failing tests.**
   `tests/order-cancel.test.ts`: for EACH of `held`, `queued`, `received` and `error`, a row WITH a supplier order gets the exact Part A generic alert on the first delivery and none on the second, and a row WITHOUT one gets none; the race: a store wrapper whose `updateOrder` (the cancel's own write) first lets a simulated pipeline set `cj_order_id` and `awaiting-payment` on the row, so the first read says `queued` with no supplier order and the second read has one: the generic alert IS returned and the row ends `cancelled`; the three per-status alerts are unchanged and take the supplier order id from the second read.

@@ -133,7 +133,7 @@ Both handlers are idempotent: a repeated delivery finds the row already in its f
 
 ### 5.5 Order event trail (H5)
 
-New table, migration `0041_order_events.sql`, append only:
+New table, migration `0041_order_events.sql`, append only (migration `0042_order_events_kind_at_index.sql` adds an index on `(shop, kind, at)` for the alert re-send query of 5.7):
 
 ```sql
 CREATE TABLE order_events (
@@ -162,7 +162,7 @@ If the lines of one order resolve to more than one origin, the row is `held` wit
 
 Added during the build. One principle closes both holes: the marker that stops retrying is written only after the thing it records has happened. It is the same principle as the webhook read-back in 5.3.
 
-**Outbound (H7).** `alertOwner` answers `sent`, `failed` or `unconfigured`. Every order alert goes through one function that sends and then writes what happened: `owner-alerted` (detail: the subject) only when the email provider accepted it, `owner-alert-failed` when a send failed, and an `error` line when there is nobody to tell. The 15 minute order tick re-sends every failed order alert until one is accepted, at most 12 attempts and for at most 24 hours, and it does so whatever `fulfil.mode` is. The trail holds the alert's subject, never its text.
+**Outbound (H7).** `alertOwner` answers `sent`, `failed` or `unconfigured`. Every order alert goes through one function that sends and then writes what happened: `owner-alerted` (detail: the subject) only when the email provider accepted it, `owner-alert-failed` when a send failed, and an `error` line when there is nobody to tell. The 15 minute order tick re-sends every failed order alert until one is accepted, at most 12 attempts since that subject's last delivery and for at most 24 hours, at most 10 re-sends per tick, and it does so whatever `fulfil.mode` is and whatever the shop's supplier credential state is. One walk of the trail decides what is pending, for the re-send and for the `abandoned` line alike, and the store's candidate query leaves delivered, abandoned and expired subjects out so that resolved orders cannot crowd out a live alert. A send that has not answered in 10 seconds counts as failed, because a webhook's deferred task is ended about 30 seconds after the response and a hanging provider would otherwise lose the alert and its marker together. A marker the database refused is written once more and then logged as an error. The trail holds the alert's subject, never its text, so a re-sent alert carries a fixed instruction not to pay or settle anything at the supplier until the trail has been read.
 
 **Inbound (H8).** When the processing of an order webhook throws, the route answers 500 so that Shopify redelivers, which is safe because every handler is idempotent. It is bounded, because 8 failed deliveries in 4 hours make Shopify REMOVE the subscription: failures are counted per delivery (`X-Shopify-Webhook-Id`), the first three answer 500, and from the fourth the route answers 200 and tells the owner that an order event could not be processed. A payload that can never succeed (not JSON, no order id, unknown shop) still answers 200 at once.
 
