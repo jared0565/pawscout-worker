@@ -687,6 +687,75 @@ Two review rounds changed this task, and most of the changes correct this brief 
 
 ---
 
+### Task 6e: An owner alert is recorded as due before it is attempted
+
+Added during execution (2026-09-19) by an orchestrator ruling. Three independent reviews (the review of the confirmed-or-retried task, the review of the always-flagged task, and the security gate's own reviewer on the pushed branch) named the same residual, so it is no longer parked. Runs after Task 6d and before the docs task.
+
+**The hole.** An alert's trail marker is written only AFTER its send settled. At the webhook door the send and the marker both live inside `waitUntil`, after the route has already answered 200. If the platform ends that deferred task first (an evicted isolate), nothing was written: the retry sweep has nothing to find, Shopify will not resend because it got its 200, and for a cancel the row is now `cancelled`, which the pull check does not watch. The owner was told "pay it" and is never told "do NOT pay it". The same is true, more rarely, of a pipeline invocation killed between raising an alert and the send settling.
+
+**The principle,** the other half of "the marker that stops retrying is written only after the thing it records has happened": **the intent is recorded before the attempt.** (A transactional outbox, in one table we already have.)
+
+Two smaller things of the same family ride along, because they are about an alert's identity:
+- Two refunds of the same amount on one order produce the same alert subject, and a subject is an alert's retry identity, so delivering one clears the other's pending state. The security gate's reviewer opened a finding on it.
+- Six older catch blocks in `src/fulfil-run.ts` read `(e as Error).message`, which itself throws when something rejects with `null` or `undefined`; one of them is the per-order catch of `processDueOrders`.
+
+**Files:**
+- Modify: `src/order-alert.ts`, `src/tenant-store.ts`, `src/index.ts`, `src/order-cancel.ts` (the refund subject only), `src/fulfil-run.ts` (the six catch reads only)
+- Modify tests: `tests/order-alert.test.ts`, `tests/order-events-store.test.ts`, `tests/order-webhook-routes.test.ts`, `tests/order-cancel.test.ts`, `tests/fulfil-run.test.ts`
+- Only if the console maps trail kinds to labels or colours: the one file that holds that map, plus its test. Find out with `python -P -m graphite search "owner-alert-failed"` and by reading; say in the report what you found.
+
+**Interfaces:**
+- Consumes: `deliverOrderAlert`, `retryOrderAlerts`, `pendingAlerts`, `alertState`, `AlertSend` (`src/order-alert.ts`); `listOrderIdsWithPendingAlerts`, `addOrderEvent` answering `Promise<boolean>` (`src/tenant-store.ts`); the one alert door `sendOrderAlert` and the shared failure helper `handleOrderWebhookFailure` (`src/index.ts`).
+- Produces:
+
+```ts
+// src/tenant-store.ts
+// OrderEventKind gains 'owner-alert-due'. No migration: order_events.kind is TEXT with no CHECK.
+
+// src/order-alert.ts
+export const ALERT_DUE_GRACE_MS = 60_000;
+/** Records that this alert must reach the owner. Answers false when the row could not be written (after one retry). Never throws. */
+export function recordAlertDue(store: TenantStore, shopifyOrderId: string, alert: OwnerAlert): Promise<boolean>;
+export function deliverOrderAlert(
+  store: TenantStore, shopifyOrderId: string, alert: OwnerAlert, send: AlertSend,
+  opts?: { timeoutMs?: number; dueRecorded?: boolean }
+): Promise<AlertResult>;
+```
+
+Changes:
+
+1. **The new kind.** `owner-alert-due`, detail = the alert's SUBJECT (never its text): this alert must reach the owner, and no send has been confirmed yet.
+
+2. **`pendingAlerts`.** An `owner-alert-due` with detail S creates S with `{ firstAt: <its at>, failures: 0 }` when S is not pending yet, and changes nothing when it is. `owner-alert-failed` sets or increments as now (so `firstAt` is the `at` of whichever came first). `owner-alerted` deletes S as now. `failures` still counts failed sends only, so "12 attempts" keeps its meaning.
+
+3. **`deliverOrderAlert`.** Unless `opts.dueRecorded` is true it FIRST writes `owner-alert-due` through the same write-twice-then-`console.error` helper the other two markers use, then sends, then writes `owner-alerted` or `owner-alert-failed` exactly as now. The `unconfigured` result still writes its one `error` line. It still never throws. The `abandoned` decision does not change.
+
+4. **`recordAlertDue`** writes that same `owner-alert-due` marker through the same helper and answers whether it landed.
+
+5. **The webhook door.** `sendOrderAlert` in `src/index.ts` becomes async: it AWAITS `recordAlertDue` before the route answers, and only then hands ONE promise to `waitUntil`: `deliverOrderAlert(..., { dueRecorded: true })`. When `recordAlertDue` answers false it throws (`new Error('owner alert could not be recorded as due')`), inside the route's existing main `try`, so the shared failure helper answers 500 and Shopify resends; the redelivery takes the repeat branch of `applyCancel` / `applyRefund`, which hands the alert back because nobody was told. Both routes `await` the door. The give-up alert inside `handleOrderWebhookFailure` is NOT touched: it may have no order row to hang a trail on.
+
+6. **The sweep.** `retryOrderAlerts` re-sends with `dueRecorded: true` (the pending state already exists; a second `due` row per retry would be noise). It skips a subject whose `failures` is 0 and whose `firstAt` is younger than `ALERT_DUE_GRACE_MS` before `now`: that send is probably still in flight in another invocation, and re-sending it would only duplicate the email. Everything else in the sweep is unchanged, and `pendingAlerts` stays the ONE authority on what is re-sent.
+
+7. **The candidate query.** `listOrderIdsWithPendingAlerts` must also find an order whose only pending row is a `due` one, and must keep counting FAILED sends only: `f.kind IN ('owner-alert-failed', 'owner-alert-due')`, and `HAVING SUM(CASE WHEN f.kind = 'owner-alert-failed' THEN 1 ELSE 0 END) < ?3 AND MIN(f.at) >= ?2`. The `NOT EXISTS` anti-join on a later `owner-alerted` with the same detail, BOTH shop predicates, the ordering and the limit stay exactly as they are. If D1 objects to any part, keep the meaning and say what you changed.
+
+8. **`alertState`** needs no change if change 2 is right: a subject with only a `due` row is `retrying` while it is inside the window, so a repeat delivery does not duplicate a send that is in flight or about to be swept; once it ages out it is `untold`. Pin both.
+
+9. **A refund's alert names the refund.** In `src/order-cancel.ts` the refund subject becomes `Order <name> was refunded <currency> <amount> (refund <refund id>)` when Shopify sent a refund id, and stays as now when it did not. The text is unchanged. Thread the refund id into `refundAlertFor`. The slice the repeat branch already takes (events after this refund's own `refund-received`) stays.
+
+10. **Six catch reads in `src/fulfil-run.ts`** (`awaiting-payment notify failed`, the per-order catch of `processDueOrders`, `tracking poll failed`, `low-stock resync failed`, `affiliate attribution failed`, `order pipeline failed`): `e instanceof Error ? e.message : String(e)`, inline. Nothing else in those blocks changes.
+
+- [ ] **Step 1: Write the failing tests** (a real D1 store, fake `send` functions, the scoped fake clock `toFake: ['Date']` with `useRealTimers` in a `finally` wherever time matters).
+  `tests/order-alert.test.ts`: `pendingAlerts` on hand-built trails (a `due` alone is pending with 0 failures; `due` then two `failed` keeps the `due`'s `at` and counts 2; `failed` then `due` keeps the `failed`'s `at` and counts 1; `alerted` clears it); `deliverOrderAlert` writes `owner-alert-due` BEFORE it calls `send` (a `send` that reads the trail sees exactly one `due` row) and then `owner-alerted`; with `dueRecorded: true` it writes no `due` row; a `send` that never settles leaves `due` then `owner-alert-failed` after the timeout; `recordAlertDue` answers true and writes one row, and answers false after two refused writes with one `console.error`; **the kill, end to end:** `recordAlertDue` and then NOTHING (the deferred task never ran): a sweep 30 seconds later sends nothing, a sweep 2 minutes later re-sends it with the usual re-send text and the trail ends `owner-alerted`, and a third sweep sends nothing; a sweep re-send writes no second `due` row; 12 failures after a `due` still write exactly one `abandoned` line on the 12th FAILURE; `alertState` answers `retrying` for a fresh `due`-only subject and `untold` for one older than 24 hours.
+  `tests/order-events-store.test.ts`: `listOrderIdsWithPendingAlerts` returns an order whose only pending row is `due`; does not return it once `owner-alerted` follows; `maxAttempts` counts failures only (a `due` plus `maxAttempts - 1` failures IS returned, a `due` plus `maxAttempts` failures is not); tenant isolation still holds for a `due` row (different order ids per shop, and the same order id in two shops where the other shop's delivery must not clear this shop's `due`).
+  `tests/order-webhook-routes.test.ts`: an alerting cancel leaves `owner-alert-due` in the trail BEFORE the deferred promise is awaited (assert on the trail before `await Promise.all(waitUntilCalls)`), still hands exactly ONE promise to `waitUntil`, and ends with its marker after the await; a refused `owner-alert-due` write (a spy answering false for that kind only) answers 500 and hands nothing to `waitUntil`; the same delivery again answers 200 and the alert goes out; the same for the refund route.
+  `tests/order-cancel.test.ts`: the refund subject with an id and without one; two refunds of the same amount now have DIFFERENT subjects, and delivering the first leaves the second pending in `pendingAlerts`.
+  `tests/fulfil-run.test.ts`: every alert site now leaves `owner-alert-due` before its `owner-alerted` or `owner-alert-failed` (update the existing expectations honestly and say which); the two trailing-counter pins still hold with the extra row; a per-order step that rejects with `null` lands the row in `error` and does NOT stop the loop over the remaining orders.
+- [ ] **Step 2: Run them and see each fail for its own reason.**
+- [ ] **Step 3: Implement**, after `python -P -m graphite impact` on every file you modify.
+- [ ] **Step 4: Green**: the five test files above, `tests/fulfil.test.ts`, `tests/webhook-retry.test.ts`, `tests/webhooks.test.ts`, `tests/console.test.ts`, `tests/guard.test.ts`, then the FULL suite once, then `npm run typecheck` and `npm run lint`.
+
+---
+
 ### Task 7: Console
 
 **Files:**
