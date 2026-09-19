@@ -254,6 +254,54 @@ describe('retryOrderAlerts', () => {
     expect(r).toEqual({ retried: 0, delivered: 0 });
   });
 
+  // The failure count can step OVER the limit in one call: when the database
+  // commits a marker but reports failure, the marker is written a second time,
+  // so 11 becomes 13. A give-up decided on "exactly 12" would then never fire,
+  // and a money alert would be retired with nothing in the trail saying so.
+  it('a failure count that steps over the limit (11 to 13) still writes the abandoned line, exactly once, and a later failure writes no second one', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedOrder(store, 'O1', { cjOrderId: 'CJ-1' });
+    const subject = 'Order #O1 needs attention';
+    for (let i = 0; i < MAX_ALERT_ATTEMPTS - 1; i++) {
+      await deliverOrderAlert(store, 'O1', { subject, text: 'body' }, sendAnswering('failed'));
+    }
+    expect((await store.listOrderEvents('O1')).filter((e) => e.kind === 'error')).toHaveLength(0);
+
+    // The next failed marker is committed but reported as refused, once.
+    const real = TenantStore.prototype.addOrderEvent;
+    let lied = false;
+    const spy = vi.spyOn(TenantStore.prototype, 'addOrderEvent').mockImplementation(async function (this: TenantStore, id, kind, detail) {
+      const ok = await real.call(this, id, kind, detail);
+      if (kind === 'owner-alert-failed' && !lied) { lied = true; return false; }
+      return ok;
+    });
+    try {
+      await deliverOrderAlert(store, 'O1', { subject, text: 'body' }, sendAnswering('failed'));
+    } finally {
+      spy.mockRestore();
+    }
+    expect(lied).toBe(true);
+    let events = await store.listOrderEvents('O1');
+    expect(events.filter((e) => e.kind === 'owner-alert-failed')).toHaveLength(MAX_ALERT_ATTEMPTS + 1);
+    expect(events.filter((e) => e.kind === 'error').map((e) => e.detail)).toEqual([`owner alert abandoned after ${MAX_ALERT_ATTEMPTS} attempts: ${subject}`]);
+
+    // A repeat webhook delivery hands the alert back (nobody was told) and it fails again.
+    await deliverOrderAlert(store, 'O1', { subject, text: 'body' }, sendAnswering('failed'));
+    events = await store.listOrderEvents('O1');
+    expect(events.filter((e) => e.kind === 'error')).toHaveLength(1);
+  });
+
+  it('a subject that is delivered and later fails all over again earns a second abandoned line', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedOrder(store, 'O1', { cjOrderId: 'CJ-1' });
+    const subject = 'Order #O1 needs attention';
+    for (let i = 0; i < MAX_ALERT_ATTEMPTS; i++) await deliverOrderAlert(store, 'O1', { subject, text: 'body' }, sendAnswering('failed'));
+    await deliverOrderAlert(store, 'O1', { subject, text: 'body' }, sendAnswering('sent'));
+    for (let i = 0; i < MAX_ALERT_ATTEMPTS; i++) await deliverOrderAlert(store, 'O1', { subject, text: 'body' }, sendAnswering('failed'));
+    const events = await store.listOrderEvents('O1');
+    expect(events.filter((e) => e.kind === 'error')).toHaveLength(2);
+  });
+
   it('a failure whose FIRST failure is older than 24 hours is not retried, even when a second, recent subject on the same order keeps the order itself a candidate', async () => {
     const store = new TenantStore(env.DB, SHOP);
     await seedOrder(store, 'O1', { cjOrderId: 'CJ-1' });

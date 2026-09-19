@@ -126,6 +126,31 @@ function sendWithTimeout(send: AlertSend, subject: string, text: string, timeout
   return Promise.race([Promise.resolve().then(() => send(subject, text)), timeout]).finally(() => clearTimeout(timer));
 }
 
+/** The store cuts every trail detail at this length, so a line built here is
+ *  compared in its cut form. */
+const TRAIL_DETAIL_MAX = 300;
+
+/** The trail line that records an alert was given up on. Nothing parses it to
+ *  decide what is pending (an abandoned alert is `untold` because of its
+ *  failure count); it exists so the trail says out loud that nobody was told. */
+function abandonedLine(subject: string): string {
+  return `owner alert abandoned after ${MAX_ALERT_ATTEMPTS} attempts: ${subject}`.slice(0, TRAIL_DETAIL_MAX);
+}
+
+/** True when the give-up line for this subject already stands in the current
+ *  run of failures, that is, since the subject was last delivered or found to
+ *  have nobody to tell. A subject that is delivered and later fails all over
+ *  again earns a new line. */
+function abandonedSinceLastClear(trail: TrailEvent[], subject: string): boolean {
+  const line = abandonedLine(subject);
+  for (let i = trail.length - 1; i >= 0; i--) {
+    const e = trail[i];
+    if ((e.kind === 'owner-alerted' || e.kind === 'owner-alert-unconfigured') && e.detail === subject) return false;
+    if (e.kind === 'error' && e.detail === line) return true;
+  }
+  return false;
+}
+
 /** Writes one trail marker; if the database refuses it, writes it once more;
  *  if it is still refused, logs loudly so a lost marker is at least visible
  *  instead of silently dropping the alert from the retry sweep (a failed
@@ -194,9 +219,16 @@ export async function deliverOrderAlert(
     } else {
       await writeAlertMarker(store, shopifyOrderId, 'owner-alert-failed', alert.subject);
       const trail = await store.listOrderEvents(shopifyOrderId);
-      const failures = pendingAlerts(trail).get(alert.subject)?.failures;
-      if (failures === MAX_ALERT_ATTEMPTS) {
-        await store.addOrderEvent(shopifyOrderId, 'error', `owner alert abandoned after ${MAX_ALERT_ATTEMPTS} attempts: ${alert.subject}`);
+      const failures = pendingAlerts(trail).get(alert.subject)?.failures ?? 0;
+      // At or over the limit, never exactly at it: the count can step OVER
+      // the limit in one call (a marker the database committed but reported
+      // as refused is written twice, and two sends of one subject can race),
+      // and a give-up decided on equality would then never be recorded - the
+      // alert would be retired with nothing in the trail saying so. Written
+      // once per run of failures: a line already standing since this
+      // subject's last delivery is not repeated.
+      if (failures >= MAX_ALERT_ATTEMPTS && !abandonedSinceLastClear(trail, alert.subject)) {
+        await store.addOrderEvent(shopifyOrderId, 'error', abandonedLine(alert.subject));
       }
     }
   } catch (e) {
