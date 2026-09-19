@@ -33,6 +33,24 @@ describe('consolePage', () => {
     expect(scripts).toContain('Dead product links found');
   });
 
+  // 2026-09-19 (phase 2 task 7): orders card surfaces webhook subscription
+  // health, a re-check button, and a per-order event timeline.
+  it('orders card surfaces order-events webhook status, a recheck button, and per-order timelines', async () => {
+    const html = await consolePage('test-api-key').text();
+    // Static markup: hookline/hookbtn live in the ops card (src/console/views/ops.ts),
+    // right after the Fulfilment mode line - not built by the inline script.
+    expect(html).toContain('id="hookline"');
+    expect(html).toContain('id="hookbtn"');
+    expect(html).toContain('Check order events');
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+    expect(scripts).toContain("api('/ensure-webhooks',{})");
+    expect(scripts).toContain("api('/order-events',{id:id})");
+    expect(scripts).toContain('Order events: not checked yet');
+    expect(scripts).toContain('Order events: all 3 subscribed');
+    expect(scripts).toContain('Order events: MISSING ');
+    expect(scripts).toContain('A cancel or refund can go unnoticed.');
+  });
+
   // 2026-07-04: optional margin cap (smooth high-end taper) in the pricing card.
   it('pricing card exposes the optional margin cap and only sends it when set', async () => {
     const html = await consolePage('test-api-key').text();

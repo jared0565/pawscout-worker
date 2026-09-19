@@ -6,6 +6,10 @@ export const opsView = `  <section class="card">
     <h2>Fulfilment</h2>
     <p class="sub" style="margin:0 0 10px">Paid orders flow here. Guardrails (unmapped item, incomplete address, high fraud risk, over £100) put an order on <strong>hold</strong> for you; clean ones queue.</p>
     <p class="sub" style="margin:0 0 6px">Fulfilment mode: <strong id="modelabel">…</strong></p>
+    <p id="hookline" class="msg muted">Order events: not checked yet</p>
+    <div class="row" style="margin-top:6px">
+      <button class="ghost" id="hookbtn" onclick="checkOrderHooks()">Check order events</button>
+    </div>
     <div class="row">
       <button class="ghost" onclick="setMode('manual')">Manual</button>
       <button class="ghost" onclick="setMode('cj')">CJ app</button>
