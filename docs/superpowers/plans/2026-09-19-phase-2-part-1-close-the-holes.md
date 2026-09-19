@@ -662,6 +662,29 @@ export function recheckAwaitingPayment(
 - [ ] **Step 3: Implement**, after `python -P -m graphite impact src/order-cancel.ts` and `python -P -m graphite impact src/fulfil-run.ts`.
 - [ ] **Step 4: Green**: both test files, `tests/order-alert.test.ts`, `tests/order-webhook-routes.test.ts`, `tests/order-gate.test.ts`, `tests/guard.test.ts`, then `npm run typecheck` and `npm run lint`.
 
+## As built: amendments made during review (2026-09-19)
+
+Two review rounds changed this task, and most of the changes correct this brief rather than its implementation. Where this section and the text above differ, this section is what the code does.
+
+1. **The cancel marker goes first.** Part A's order of work was wrong: with the status written before `cancel-received`, a kill between the two left a `cancelled` row with no marker, the redelivery recorded `was cancelled` and raised nothing, and the "pay it" email was never contradicted. `applyCancel` now writes `cancel-received` with `was <status>` FIRST and throws when that write is refused (the route answers 500 and Shopify resends into a clean first delivery); then the status write; then the second read. A repeat delivery RE-APPLIES the status write when the row is not yet `cancelled` (never for a `fulfilled` row), so a kill at any point heals on redelivery or on the next tick.
+2. **A marker counts only when it is true.** `alertState(trail, subject, now)` in `src/order-alert.ts` answers `delivered`, `nobody-to-tell`, `retrying` or `untold`, and a repeat delivery hands its alert back only when the answer is `untold`. A failed send that the sweep has abandoned, or that aged past 24 hours, is `untold`. The refund heal reads only the events after that refund's own `refund-received`, so an earlier refund of the same amount cannot mask a later one. `hasAlertMarker` does not exist.
+3. **The pull check is `recheckUnsettledSupplierOrders`**, and it differs from Part C in five ways:
+   - one row can never stop the others (a per-row guard, and the stored address is parsed inside its own guard: when it cannot be read only the address comparison is skipped);
+   - it reads rows in rotating pages, oldest first, through `listUnsettledSupplierOrders(limit, offset)` and `countUnsettledSupplierOrders()`: `pages = ceil(count / max)`, this tick's page is `floor(now / 15 minutes) % pages`. The store's `listOrders` answers the NEWEST rows, so a backlog over `max` would have starved the oldest for ever;
+   - it watches every row that holds a supplier order and is not settled: `awaiting-payment`, `held` and `error`;
+   - it NEVER holds a row for an address change. Holding took the row out of this very check and out of the tracking poll while the owner still pays it by hand. It saves the address, writes `address-refreshed` and alerts, with a text of its own that makes no claim about payment: `The delivery address of order <name> was changed in Shopify after supplier order <cj order id> was created, so the supplier order still carries the old address. If it is not paid yet, correct the address on the supplier order at the supplier before you pay it. If it is already paid, ask the supplier to change the address before it ships. If the supplier cannot change it, handle this order by hand.` The two positions inside `processDueOrders` keep their hold and their text;
+   - "anything else: nothing" was wrong. A gate `hold` other than `already-fulfilled` and `order-missing` (with `skipRisk: true` the reachable ones are `refunded`, `not-paid`, `on-hold` and `incomplete-address`) holds the row and raises the existing "was stopped and a supplier order exists for it" alert once, ADDING its reason to the row's existing hold reasons (an `error` row's hold reasons are the only stored copy of why it failed). An order that cannot be read goes through `handleGateUnreadable`, which alerts on the fourth consecutive failure with a text that is true when the owner is the payer: `... Supplier order <cj order id> exists for it. Check the order in Shopify before you pay or settle anything for it at the supplier. It is retried every 15 minutes.`
+   It answers `{ checked, cancelled, addressChanged, stopped, unreadable }`, and the pipeline writes one log line when it acted.
+
+**Known residuals, accepted and recorded for the orders runbook:**
+- A `submitted` row is re-read by nobody after payment, and a `held` row that holds a supplier order is not polled for tracking until it is released.
+- Releasing an `address-changed-after-supplier-order` hold is the owner's assertion that the supplier order now carries the new address; nothing verifies it.
+- The manual "Run fulfilment now" button re-reads the same page inside one 15 minute window.
+- The stop and address-change dedupes look at the row, not at the trail, so an alert ABANDONED after 12 failed sends is not raised again by them. After an email outage, look for `abandoned` lines in the console.
+- An alert recorded as `not configured` stays quiet when alerting is configured later: configure the alert address and the email key BEFORE turning on `pawscout` mode.
+- During a Shopify or token outage each watched row writes one `gate-unreadable` line per tick (about 96 a day) and raises one email per four consecutive failures.
+- If the pipeline dies between creating the supplier order and saving its id, the supplier order exists and our row cannot name it (older than this task).
+
 ---
 
 ### Task 7: Console
