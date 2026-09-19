@@ -189,13 +189,20 @@ function refundReceivedDetail(refundId: string, currency: string, amount: number
  *  order, using the row's CURRENT status and supplier order id - null when
  *  no supplier order exists (no alert is ever due in that case, whatever
  *  the status). Shared by the first delivery and by a repeat delivery's
- *  heal check, so both compute the identical subject/text. */
-function refundAlertFor(order: OrderRow, currency: string, amount: number): OwnerAlert | null {
+ *  heal check, so both compute the identical subject/text. The subject
+ *  names the refund id when Shopify sent one, so two refunds of the same
+ *  amount and currency get different retry identities instead of one
+ *  delivery clearing the other's pending state; the text is unchanged
+ *  either way. */
+function refundAlertFor(order: OrderRow, currency: string, amount: number, refundId: string): OwnerAlert | null {
   if (!order.cj_order_id) return null;
   const name = displayName(order);
   const amountStr = amount.toFixed(2);
+  const subject = refundId
+    ? `Order ${name} was refunded ${currency} ${amountStr} (refund ${refundId})`
+    : `Order ${name} was refunded ${currency} ${amountStr}`;
   return {
-    subject: `Order ${name} was refunded ${currency} ${amountStr}`,
+    subject,
     text: `Order ${name} was refunded ${currency} ${amountStr} in Shopify. Supplier order ${order.cj_order_id} exists for it (status here: ${order.status}). Decide whether the supplier order should still go ahead.`
   };
 }
@@ -250,7 +257,7 @@ export async function applyRefund(
     )
   );
   if (matchIndex !== -1) {
-    const alert = order.status === 'cancelled' ? null : refundAlertFor(order, info.currency, amount);
+    const alert = order.status === 'cancelled' ? null : refundAlertFor(order, info.currency, amount, info.refundId);
     const afterThisRefund: TrailEvent[] = trail.slice(matchIndex + 1);
     if (!alert || alertState(afterThisRefund, alert.subject) !== 'untold') return { changed: false, alert: null };
     return { changed: false, alert };
@@ -260,7 +267,7 @@ export async function applyRefund(
 
   if (order.status === 'cancelled') return { changed: false, alert: null };
 
-  const alert = refundAlertFor(order, info.currency, amount);
+  const alert = refundAlertFor(order, info.currency, amount, info.refundId);
   if (alert) return { changed: true, alert };
 
   if (order.status === 'held' || order.status === 'queued' || order.status === 'received') {

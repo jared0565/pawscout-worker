@@ -34,7 +34,7 @@ import { validateCjKey, CjClient, CjTokenManager, cjFetchFromEnv, chooseOrigin }
 import { registerWebhooks, ensureWebhooks, ORDER_EVENT_TOPICS, type RegisterWebhook } from './webhooks';
 import { cancelledOrderId, refundInfo, applyCancel, applyRefund, type OwnerAlert } from './order-cancel';
 import { alertOwner } from './owner-alert';
-import { deliverOrderAlert } from './order-alert';
+import { deliverOrderAlert, recordAlertDue } from './order-alert';
 import { onWebhookFailure } from './webhook-retry';
 import { validateGatesPayload, validatePricingPayload, validateLlmPayload, validateAddonsPayload, validateCollectionMap, validatePartnerPayload, validateSelfServePayload } from './validate';
 import { sendEmail, SENDING_DOMAIN } from './email';
@@ -81,17 +81,23 @@ function makeRegistrar(env: Env): RegisterWebhook {
 }
 
 // ONE door for every order-webhook owner alert (orders-cancelled, refunds-create).
-// Delivery and its trail marker both go through deliverOrderAlert, so a send
-// that fails leaves owner-alert-failed rather than looking, in the trail,
-// like the owner was told - the retry sweep in runOrderPipelineForShop picks
-// it up later. The whole thing rides in waitUntil - only the trail decision
-// (applyCancel/applyRefund) is awaited before the webhook answers - and the
-// promise handed to waitUntil carries its own .catch, like its neighbour a
-// few lines below in /webhooks/orders-paid (store.recordEvent(...).catch(()
-// => undefined)), even though deliverOrderAlert itself never throws.
-function sendOrderAlert(c: Context<{ Bindings: Env }>, store: TenantStore, cfg: TenantConfig, shopifyOrderId: string, alert: OwnerAlert): void {
+// The intent to alert is recorded BEFORE this route answers: recordAlertDue
+// is awaited here, on the route's own turn, so it survives even if the
+// platform ends this isolate right after the response - only the send itself
+// (and its own trail marker) rides in waitUntil, past dueRecorded: true so it
+// writes no second due row. When recordAlertDue cannot record the alert as
+// due, this throws so the caller's try/catch answers 500 and Shopify
+// redelivers into what applyCancel/applyRefund will treat as an untold
+// repeat. The promise handed to waitUntil carries its own .catch, like its
+// neighbour a few lines below in /webhooks/orders-paid
+// (store.recordEvent(...).catch(() => undefined)), even though
+// deliverOrderAlert itself never throws.
+async function sendOrderAlert(c: Context<{ Bindings: Env }>, store: TenantStore, cfg: TenantConfig, shopifyOrderId: string, alert: OwnerAlert): Promise<void> {
+  if (!(await recordAlertDue(store, shopifyOrderId, alert))) {
+    throw new Error('owner alert could not be recorded as due');
+  }
   c.executionCtx.waitUntil(
-    deliverOrderAlert(store, shopifyOrderId, alert, (subject, text) => alertOwner(c.env, cfg, subject, text)).catch(() => undefined)
+    deliverOrderAlert(store, shopifyOrderId, alert, (subject, text) => alertOwner(c.env, cfg, subject, text), { dueRecorded: true }).catch(() => undefined)
   );
 }
 
@@ -2270,7 +2276,7 @@ app.post('/webhooks/orders-cancelled', async (c) => {
     orderId = cancelledOrderId(parsedBody);
     if (!orderId) return c.text('ok');
     const outcome = await applyCancel(store, orderId);
-    if (outcome.alert) sendOrderAlert(c, store, cfg, orderId, outcome.alert);
+    if (outcome.alert) await sendOrderAlert(c, store, cfg, orderId, outcome.alert);
   } catch (e) {
     return handleOrderWebhookFailure(c, store, cfg, webhookId, 'orders/cancelled', orderId, e);
   }
@@ -2302,7 +2308,7 @@ app.post('/webhooks/refunds-create', async (c) => {
     orderId = info.orderId;
     if (!orderId) return c.text('ok');
     const outcome = await applyRefund(store, info);
-    if (outcome.alert) sendOrderAlert(c, store, cfg, orderId, outcome.alert);
+    if (outcome.alert) await sendOrderAlert(c, store, cfg, orderId, outcome.alert);
   } catch (e) {
     return handleOrderWebhookFailure(c, store, cfg, webhookId, 'refunds/create', orderId, e);
   }

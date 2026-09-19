@@ -120,6 +120,30 @@ describe('processDueOrders', () => {
     expect((await store.getOrder('O1'))?.status).toBe('error');
   });
 
+  // A per-order step that rejects with a non-Error value (null, here) must
+  // not itself throw while the catch is building its log line - that second,
+  // unhandled throw would escape the per-order try/catch and end the whole
+  // loop early, silently skipping every order still due after the one that
+  // rejected with null.
+  it('a per-order step that rejects with null lands the row in error and does not stop the loop over the remaining orders', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedWarehouse(store, 'CJ1', 'S1', 'v1');
+    await seedOrder(store, 'O1', [{ sku: 'S1', quantity: 1, cjPid: 'CJ1' }]);
+    await seedOrder(store, 'O2', [{ sku: 'S1', quantity: 1, cjPid: 'CJ1' }]);
+    const spy = { create: [] as unknown[], pay: [] as string[] };
+    const cj = fakeCj(spy, {
+      createOrder: async (input: { orderNumber: string }) => {
+        if (input.orderNumber === 'O1') return Promise.reject(null);
+        spy.create.push(input);
+        return { orderId: 'CJORD-' + input.orderNumber, orderNum: input.orderNumber };
+      }
+    });
+    const r = await processDueOrders(store, cj, liveAdmin(), cfg('pawscout'));
+    expect(r).toMatchObject({ errored: 1, submitted: 1 });
+    expect((await store.getOrder('O1'))?.status).toBe('error');
+    expect((await store.getOrder('O2'))?.status).toBe('submitted');
+  });
+
   it('createOnly: creates the CJ order but does NOT pay (awaiting-payment)', async () => {
     const store = new TenantStore(env.DB, SHOP);
     await seedWarehouse(store, 'CJ1', 'S1', 'v1');
@@ -262,6 +286,39 @@ describe('source-stockout handling (sold out at CJ after we sold it)', () => {
     expect(notices).toHaveLength(1);
   });
 
+  it('a stockout whose link read rejects with null still lands the row in error, and the next due order in the same batch is still processed', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedWarehouse(store, 'CJ1', 'S1', 'v1');
+    await seedWarehouse(store, 'CJ2', 'S2', 'v2');
+    await store.putLink({ cjPid: 'CJ1', state: 'imported', shopifyProductId: 'gid://shopify/Product/100', handle: 'x', category: 'pet-toys' });
+    await seedOrder(store, 'O1', [{ sku: 'S1', quantity: 1, cjPid: 'CJ1' }]);
+    await seedOrder(store, 'O2', [{ sku: 'S2', quantity: 1, cjPid: 'CJ2' }]);
+    const spy = { create: [] as unknown[], pay: [] as string[] };
+    const cj = fakeCj(spy, {
+      stockByPid: async () => new Map([['v1', 50], ['v2', 50]]), // pre-flight passes for both...
+      createOrder: async (input: { orderNumber: string }) => {
+        if (input.orderNumber === 'O1') throw new Error('the product is out of stock'); // ...CJ still rejects O1
+        spy.create.push(input);
+        return { orderId: 'CJORD-' + input.orderNumber, orderNum: input.orderNumber };
+      }
+    });
+    // The stockout branch's inventory-zero step reads the product link first;
+    // a rejection with null there (not an Error) used to throw a bare
+    // TypeError reading .message from inside a catch with no enclosing try
+    // in the loop, ending the whole batch for this shop.
+    const getLinkSpy = vi.spyOn(TenantStore.prototype, 'getLink').mockRejectedValue(null);
+    let r;
+    try {
+      r = await processDueOrders(store, cj, liveAdmin(), cfg('pawscout'));
+    } finally {
+      getLinkSpy.mockRestore();
+    }
+    expect(r).toMatchObject({ errored: 1, submitted: 1 });
+    expect((await store.getOrder('O1'))?.status).toBe('error');
+    expect(JSON.parse((await store.getOrder('O1'))!.hold_reasons ?? '[]')[0]).toMatch(/^stockout:/);
+    expect((await store.getOrder('O2'))?.status).toBe('submitted');
+  });
+
   it('a stockout with plenty of source stock never fires: normal orders are untouched', async () => {
     const store = new TenantStore(env.DB, SHOP);
     await seedWarehouse(store, 'CJ1', 'S1', 'v1');
@@ -372,8 +429,56 @@ describe('pollTracking', () => {
     expect(alerts[0].text).toBe('Supplier order CJORD-O6 has shipped with tracking TRK1, but writing it to Shopify failed on the last 4 attempts (write failed). The customer has not been told. It is retried every 15 minutes.');
     const events = await store.listOrderEvents('O6');
     expect(events.filter((e) => e.kind === 'tracking-write-failed')).toHaveLength(4);
+    // The trail classifies, never copies: Shopify's own error text is
+    // evidence in the alert (asserted above), not in the decision record.
+    for (const e of events.filter((ev) => ev.kind === 'tracking-write-failed')) expect(e.detail).toBe('write to Shopify failed');
     expect(events.map((e) => e.kind)).toContain('owner-alerted');
     expect(events.find((e) => e.kind === 'owner-alerted')?.detail).toBe(alerts[0].subject);
+    expect((await store.getOrder('O6'))?.status).toBe('submitted');
+  });
+
+  it('a write-back failure whose message contains a marker word leaves no trail detail containing that word (the alert text still carries it)', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await store.insertOrderIfNew({ shopifyOrderId: 'O6', orderName: '#6', totalPrice: 15, currency: 'GBP', financialStatus: 'paid', riskLevel: null, status: 'submitted', holdReasons: [], addressJson: null, lineItemsJson: null, fulfilAfter: null });
+    await store.updateOrder('O6', { cj_order_id: 'CJORD-O6' });
+    const MARKER = 'ADDRESSLEAKMARKER';
+    const failAdmin: AdminGraphql = (async (query: string) => {
+      if (query.includes('fulfillmentOrders')) throw new Error(`write failed: ${MARKER}`);
+      return {};
+    }) as unknown as AdminGraphql;
+    const alerts: { subject: string; text: string }[] = [];
+    await pollTracking(store, fakeCj({ create: [], pay: [] }), failAdmin, {
+      alert: async (subject, text) => { alerts.push({ subject, text }); return 'sent'; }
+    });
+    const events = await store.listOrderEvents('O6');
+    const failure = events.find((e) => e.kind === 'tracking-write-failed');
+    expect(failure?.detail).not.toContain(MARKER);
+    expect(failure?.detail).toBe('write to Shopify failed');
+  });
+
+  it('a write-back that rejects with null still writes tracking-write-failed, so the fourth consecutive one still alerts', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await store.insertOrderIfNew({ shopifyOrderId: 'O6', orderName: '#6', totalPrice: 15, currency: 'GBP', financialStatus: 'paid', riskLevel: null, status: 'submitted', holdReasons: [], addressJson: null, lineItemsJson: null, fulfilAfter: null });
+    await store.updateOrder('O6', { cj_order_id: 'CJORD-O6' });
+    // A non-Error rejection here used to throw a bare TypeError reading
+    // .message from inside the write-back's own catch, so addOrderEvent for
+    // tracking-write-failed was never reached and the trailing count never
+    // moved.
+    const nullFailAdmin: AdminGraphql = (async (query: string) => {
+      if (query.includes('fulfillmentOrders')) return Promise.reject(null);
+      return {};
+    }) as unknown as AdminGraphql;
+    const alerts: { subject: string; text: string }[] = [];
+    for (let i = 0; i < 4; i++) {
+      await pollTracking(store, fakeCj({ create: [], pay: [] }), nullFailAdmin, {
+        alert: async (subject, text) => { alerts.push({ subject, text }); return 'sent'; }
+      });
+    }
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].subject).toBe('Order #6: tracking could not be written to Shopify');
+    const events = await store.listOrderEvents('O6');
+    expect(events.filter((e) => e.kind === 'tracking-write-failed')).toHaveLength(4);
+    expect(events.map((e) => e.kind)).toContain('owner-alerted');
     expect((await store.getOrder('O6'))?.status).toBe('submitted');
   });
 
@@ -584,6 +689,12 @@ describe('Stage-B live-order gate (2026-09-19: readOrderGate/decideGate, fetched
     expect(events.map((e) => e.kind)).toContain('owner-alerted');
     expect(events.find((e) => e.kind === 'owner-alerted')?.detail).toBe(alerts[0].subject);
     expect((await store.getOrder('O1'))?.status).toBe('queued');
+    // The outbox row lands before the outcome marker, at this pipeline alert
+    // site too - not only at the door in src/index.ts.
+    const dueIdx = events.findIndex((e) => e.kind === 'owner-alert-due');
+    const alertedIdx = events.findIndex((e) => e.kind === 'owner-alerted');
+    expect(dueIdx).toBeGreaterThanOrEqual(0);
+    expect(dueIdx).toBeLessThan(alertedIdx);
   });
 
   it('a failed alert on the 4th gate-unreadable failure leaves owner-alert-failed, not owner-alerted, and does not fire again on the 5th failure (the failure marker breaks the trailing run the same way a delivered one does)', async () => {

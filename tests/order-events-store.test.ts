@@ -57,6 +57,17 @@ describe('order events (order trail)', () => {
     await expect(store.addOrderEvent('O1', 'error')).resolves.toBe(false);
   });
 
+  // A rejection is not always an Error. Every trail write in the order loop
+  // leans on "answers false, never throws", so the catch itself must survive
+  // being handed nothing at all.
+  it('addOrderEvent answers false when the database rejects with null or undefined', async () => {
+    for (const nothing of [null, undefined]) {
+      const fakeDb = { prepare: () => ({ bind: () => ({ run: () => Promise.reject(nothing) }) }) };
+      const store = new TenantStore(fakeDb as unknown as D1Database, SHOP);
+      await expect(store.addOrderEvent('O1', 'error')).resolves.toBe(false);
+    }
+  });
+
   it('countTrailingOrderEvents counts the run of a matching kind at the tail', async () => {
     const store = new TenantStore(env.DB, SHOP);
     expect(await store.countTrailingOrderEvents('O1', 'gate-unreadable')).toBe(0);
@@ -207,6 +218,98 @@ describe('order events (order trail)', () => {
     await storeB.addOrderEvent('O1', 'owner-alerted', 'S');
     expect(await storeA.listOrderIdsWithPendingAlerts(EPOCH, 12)).toEqual(['O1']);
     expect(await storeB.listOrderIdsWithPendingAlerts(EPOCH, 12)).toEqual([]);
+  });
+
+  // An alert's trail marker is now written BEFORE it is attempted
+  // (owner-alert-due), so the candidate query must also find an order whose
+  // ONLY pending row is a due one - not just a failed one - while still
+  // counting failed sends only against maxAttempts.
+  it('an order whose only pending row is a due one is returned', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await store.addOrderEvent('O1', 'owner-alert-due', 'S');
+    expect(await store.listOrderIdsWithPendingAlerts(EPOCH, 12)).toEqual(['O1']);
+  });
+
+  it('a due-only order is not returned once owner-alerted follows', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await store.addOrderEvent('O1', 'owner-alert-due', 'S');
+    await store.addOrderEvent('O1', 'owner-alerted', 'S');
+    expect(await store.listOrderIdsWithPendingAlerts(EPOCH, 12)).toEqual([]);
+  });
+
+  it('maxAttempts counts failures only: a due plus maxAttempts - 1 failures IS returned, a due plus maxAttempts failures is not', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await store.addOrderEvent('O1', 'owner-alert-due', 'S');
+    for (let i = 0; i < 2; i++) await store.addOrderEvent('O1', 'owner-alert-failed', 'S'); // maxAttempts - 1
+    expect(await store.listOrderIdsWithPendingAlerts(EPOCH, 3)).toEqual(['O1']);
+
+    await store.addOrderEvent('O1', 'owner-alert-failed', 'S'); // now maxAttempts (3) failures
+    expect(await store.listOrderIdsWithPendingAlerts(EPOCH, 3)).toEqual([]);
+  });
+
+  it('tenant isolation holds for a due row: different order ids per shop, and the same order id in two shops where the other shop\'s delivery must not clear this shop\'s due', async () => {
+    const storeA = new TenantStore(env.DB, SHOP);
+    const storeB = new TenantStore(env.DB, SHOP2);
+    await storeA.addOrderEvent('O1', 'owner-alert-due', 'S');
+    await storeB.addOrderEvent('B1', 'owner-alert-due', 'S');
+    expect(await storeA.listOrderIdsWithPendingAlerts(EPOCH, 12)).toEqual(['O1']);
+    expect(await storeB.listOrderIdsWithPendingAlerts(EPOCH, 12)).toEqual(['B1']);
+
+    // Same order id under both shops - shop B delivering its own copy must
+    // not clear shop A's still-due alert.
+    await storeA.addOrderEvent('O2', 'owner-alert-due', 'T');
+    await storeB.addOrderEvent('O2', 'owner-alert-due', 'T');
+    await storeB.addOrderEvent('O2', 'owner-alerted', 'T');
+    expect(await storeA.listOrderIdsWithPendingAlerts(EPOCH, 12)).toEqual(['O1', 'O2']);
+    expect(await storeB.listOrderIdsWithPendingAlerts(EPOCH, 12)).toEqual(['B1']);
+  });
+
+  // Nobody was ever able to tell this alert (no address or key configured),
+  // recorded as its own trail kind rather than matched on error text - the
+  // query's anti-join needs to know about it too, the same way it already
+  // knows about owner-alerted, or an unconfigured shop's dead candidates
+  // would sit in the query's result for the full 24 hour window.
+  it('a due-then-unconfigured order is not returned, and is returned again once a later due follows it', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await store.addOrderEvent('O1', 'owner-alert-due', 'S');
+    await store.addOrderEvent('O1', 'owner-alert-unconfigured', 'S');
+    expect(await store.listOrderIdsWithPendingAlerts(EPOCH, 12)).toEqual([]);
+
+    // Alerting was configured since - a fresh due row for the same subject
+    // makes it a candidate again, exactly as the in-code walk treats it.
+    await store.addOrderEvent('O1', 'owner-alert-due', 'S');
+    expect(await store.listOrderIdsWithPendingAlerts(EPOCH, 12)).toEqual(['O1']);
+  });
+
+  it('the squat case for unconfigured: three older unconfigured orders are excluded, leaving only the live pending one, even under a tight limit', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
+      for (const id of ['R1', 'R2', 'R3']) await store.addOrderEvent(id, 'owner-alert-due', 'S');
+      vi.setSystemTime(new Date('2026-01-01T00:05:00.000Z'));
+      for (const id of ['R1', 'R2', 'R3']) await store.addOrderEvent(id, 'owner-alert-unconfigured', 'S');
+      vi.setSystemTime(new Date('2026-01-02T00:00:00.000Z'));
+      await store.addOrderEvent('LIVE', 'owner-alert-failed', 'S');
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(await store.listOrderIdsWithPendingAlerts(EPOCH, 12, 2)).toEqual(['LIVE']);
+  });
+
+  // The old text-matching approach (an 'error' line reading "owner alert not
+  // configured: <subject>") truncated the due row's detail and the error
+  // line's detail at different points past 272 characters, so a long enough
+  // subject was never cleared. Both rows now store the SAME raw subject
+  // through the SAME 300 character truncation, so a 290 character subject
+  // truncates identically on both sides and the exclusion holds.
+  it('a 290 character subject is excluded by the query once ruled unconfigured', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const subject = 'Order #O1 ' + 'x'.repeat(280);
+    expect(subject.length).toBe(290);
+    await store.addOrderEvent('O1', 'owner-alert-due', subject);
+    await store.addOrderEvent('O1', 'owner-alert-unconfigured', subject);
+    expect(await store.listOrderIdsWithPendingAlerts(EPOCH, 12)).toEqual([]);
   });
 
   it('updateOrder changes address_json and leaves status alone', async () => {

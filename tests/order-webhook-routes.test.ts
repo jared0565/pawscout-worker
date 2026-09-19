@@ -150,7 +150,7 @@ describe('POST /webhooks/orders-cancelled', () => {
     expect(await new TenantStore(env.DB, SHOP).listOrderEvents('GHOST')).toEqual([]);
   });
 
-  it('a valid cancel for an awaiting-payment order makes it cancelled and sends exactly one alert; with no Resend key in this test env, delivery leaves an unconfigured error rather than owner-alerted', async () => {
+  it('a valid cancel for an awaiting-payment order makes it cancelled and sends exactly one alert; with no Resend key in this test env, delivery leaves owner-alert-unconfigured rather than owner-alerted', async () => {
     const store = await seedConfig();
     await seedOrder(store, 'O1', 'awaiting-payment', { cjOrderId: 'CJ-1' });
     const res = await postWebhook('/webhooks/orders-cancelled', JSON.stringify({ id: 'O1' }), { topic: 'orders/cancelled' });
@@ -160,11 +160,32 @@ describe('POST /webhooks/orders-cancelled', () => {
     // supplier") - it must actually reach the alert door.
     expect(waitUntilCalls).toHaveLength(1);
     // delivery itself now runs inside waitUntil, so it must be awaited before
-    // the trail write it produces can be read.
+    // the trail write it produces can be read. The alert is recorded as DUE
+    // before the route even answers - see the dedicated test below - so the
+    // settled trail carries that marker too, ahead of the send outcome.
     await Promise.all(waitUntilCalls);
     const events = await store.listOrderEvents('O1');
-    expect(events.map((e) => e.kind)).toEqual(['cancel-received', 'error']);
-    expect(events[1].detail).toBe('owner alert not configured: Order #O1 was cancelled: do NOT pay the supplier');
+    expect(events.map((e) => e.kind)).toEqual(['cancel-received', 'owner-alert-due', 'owner-alert-unconfigured']);
+    expect(events[2].detail).toBe('Order #O1 was cancelled: do NOT pay the supplier');
+  });
+
+  // The whole point of this route's alert door: the alert's trail marker is
+  // recorded as DUE before the route answers, not only after the deferred
+  // send settles. This asserts on the trail BEFORE awaiting the deferred
+  // promise handed to waitUntil, so it can only pass if recordAlertDue
+  // already landed while the route itself was still running.
+  it('an alerting cancel leaves owner-alert-due in the trail before the deferred delivery promise is awaited, and its own outcome marker after', async () => {
+    const store = await seedConfig();
+    await seedOrder(store, 'O1', 'awaiting-payment', { cjOrderId: 'CJ-1' });
+    const res = await postWebhook('/webhooks/orders-cancelled', JSON.stringify({ id: 'O1' }), { topic: 'orders/cancelled' });
+    expect(res.status).toBe(200);
+    expect(waitUntilCalls).toHaveLength(1); // still exactly ONE promise handed to waitUntil
+    const beforeAwait = await store.listOrderEvents('O1');
+    expect(beforeAwait.map((e) => e.kind)).toEqual(['cancel-received', 'owner-alert-due']);
+
+    await Promise.all(waitUntilCalls);
+    const afterAwait = await store.listOrderEvents('O1');
+    expect(afterAwait.map((e) => e.kind)).toEqual(['cancel-received', 'owner-alert-due', 'owner-alert-unconfigured']);
   });
 
   it('a malformed JSON body still answers 200', async () => {
@@ -192,8 +213,8 @@ describe('POST /webhooks/orders-cancelled', () => {
     expect(waitUntilCalls).toHaveLength(1);
     await Promise.all(waitUntilCalls);
     const eventsAfterSecond = await store.listOrderEvents('O1');
-    expect(eventsAfterSecond.map((e) => e.kind)).toEqual(['cancel-received', 'error']);
-    expect(eventsAfterSecond[1].detail).toBe('owner alert not configured: Order #O1 was cancelled: do NOT pay the supplier');
+    expect(eventsAfterSecond.map((e) => e.kind)).toEqual(['cancel-received', 'owner-alert-due', 'owner-alert-unconfigured']);
+    expect(eventsAfterSecond[2].detail).toBe('Order #O1 was cancelled: do NOT pay the supplier');
 
     const waitUntilBeforeThird = waitUntilCalls.length;
     const res3 = await postWebhook('/webhooks/orders-cancelled', JSON.stringify({ id: 'O1' }), { topic: 'orders/cancelled', webhookId: 'whk-heal-3' });
@@ -227,7 +248,7 @@ describe('POST /webhooks/refunds-create', () => {
     expect(waitUntilCalls).toHaveLength(0);
   });
 
-  it('a valid refund for a row with a supplier order sends exactly one alert; with no Resend key in this test env, delivery leaves an unconfigured error rather than owner-alerted', async () => {
+  it('a valid refund for a row with a supplier order sends exactly one alert; with no Resend key in this test env, delivery leaves owner-alert-unconfigured rather than owner-alerted', async () => {
     const store = await seedConfig();
     await seedOrder(store, 'O1', 'submitted', { cjOrderId: 'CJ-1' });
     const payload = JSON.stringify({ id: 777, order_id: 'O1', transactions: [{ kind: 'refund', amount: '12.50', currency: 'GBP' }] });
@@ -238,17 +259,100 @@ describe('POST /webhooks/refunds-create', () => {
     // the supplier - it must actually reach the alert door.
     expect(waitUntilCalls).toHaveLength(1);
     // delivery itself now runs inside waitUntil, so it must be awaited before
-    // the trail write it produces can be read.
+    // the trail write it produces can be read. The alert is recorded as DUE
+    // before the route even answers, so the settled trail carries that
+    // marker too, ahead of the send outcome.
     await Promise.all(waitUntilCalls);
     const events = await store.listOrderEvents('O1');
-    expect(events.map((e) => e.kind)).toEqual(['refund-received', 'error']);
-    expect(events[1].detail).toBe('owner alert not configured: Order #O1 was refunded GBP 12.50');
+    expect(events.map((e) => e.kind)).toEqual(['refund-received', 'owner-alert-due', 'owner-alert-unconfigured']);
+    expect(events[2].detail).toBe('Order #O1 was refunded GBP 12.50 (refund 777)');
+  });
+
+  // Same shape as the orders-cancelled pair above, for the refund door.
+  it('an alerting refund leaves owner-alert-due in the trail before the deferred delivery promise is awaited, and its own outcome marker after', async () => {
+    const store = await seedConfig();
+    await seedOrder(store, 'O1', 'submitted', { cjOrderId: 'CJ-1' });
+    const payload = JSON.stringify({ id: 778, order_id: 'O1', transactions: [{ kind: 'refund', amount: '12.50', currency: 'GBP' }] });
+    const res = await postWebhook('/webhooks/refunds-create', payload, { topic: 'refunds/create' });
+    expect(res.status).toBe(200);
+    expect(waitUntilCalls).toHaveLength(1);
+    const beforeAwait = await store.listOrderEvents('O1');
+    expect(beforeAwait.map((e) => e.kind)).toEqual(['refund-received', 'owner-alert-due']);
+
+    await Promise.all(waitUntilCalls);
+    const afterAwait = await store.listOrderEvents('O1');
+    expect(afterAwait.map((e) => e.kind)).toEqual(['refund-received', 'owner-alert-due', 'owner-alert-unconfigured']);
   });
 
   it('a malformed JSON body still answers 200', async () => {
     await seedConfig();
     const res = await postWebhook('/webhooks/refunds-create', 'not json {{{', { topic: 'refunds/create' });
     expect(res.status).toBe(200);
+  });
+});
+
+// A refused owner-alert-due write must stop the route the same way a refused
+// cancel-received or refund-received write does: 500, nothing handed to
+// waitUntil, and a redelivery of the SAME webhook id finishes the job. Its
+// own describe (with an afterEach safety net) because the spy answers false
+// for only one event kind and calls through to the real implementation for
+// every other - if an assertion above a missing mockRestore() ever throws,
+// the spy must not leak into a later test.
+describe('a refused owner-alert-due write', () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  function refuseDueWrites(): ReturnType<typeof vi.spyOn> {
+    const original = TenantStore.prototype.addOrderEvent;
+    return vi.spyOn(TenantStore.prototype, 'addOrderEvent').mockImplementation(
+      function (this: TenantStore, id: string, kind: string, detail?: string | null) {
+        if (kind === 'owner-alert-due') return Promise.resolve(false);
+        return original.call(this, id, kind as never, detail);
+      }
+    );
+  }
+
+  it('orders-cancelled: answers 500 and hands nothing to waitUntil; the same delivery id again answers 200 and the alert goes out', async () => {
+    const store = await seedConfig();
+    await seedOrder(store, 'O1', 'awaiting-payment', { cjOrderId: 'CJ-1' });
+    const payload = JSON.stringify({ id: 'O1' });
+
+    const spy = refuseDueWrites();
+    const res1 = await postWebhook('/webhooks/orders-cancelled', payload, { topic: 'orders/cancelled', webhookId: 'whk-due-refused-1' });
+    expect(res1.status).toBe(500);
+    expect(waitUntilCalls).toHaveLength(0);
+    spy.mockRestore();
+
+    // Nothing but the (unconditional) cancel-received marker was written by
+    // the failed attempt - the due write itself never landed.
+    expect((await store.listOrderEvents('O1')).map((e) => e.kind)).toEqual(['cancel-received']);
+
+    const res2 = await postWebhook('/webhooks/orders-cancelled', payload, { topic: 'orders/cancelled', webhookId: 'whk-due-refused-1' });
+    expect(res2.status).toBe(200);
+    expect(waitUntilCalls).toHaveLength(1);
+    await Promise.all(waitUntilCalls);
+    const events = await store.listOrderEvents('O1');
+    expect(events.map((e) => e.kind)).toEqual(['cancel-received', 'owner-alert-due', 'owner-alert-unconfigured']);
+  });
+
+  it('refunds-create: answers 500 and hands nothing to waitUntil; the same delivery id again answers 200 and the alert goes out', async () => {
+    const store = await seedConfig();
+    await seedOrder(store, 'O1', 'submitted', { cjOrderId: 'CJ-1' });
+    const payload = JSON.stringify({ id: 779, order_id: 'O1', transactions: [{ kind: 'refund', amount: '12.50', currency: 'GBP' }] });
+
+    const spy = refuseDueWrites();
+    const res1 = await postWebhook('/webhooks/refunds-create', payload, { topic: 'refunds/create', webhookId: 'whk-refund-due-refused-1' });
+    expect(res1.status).toBe(500);
+    expect(waitUntilCalls).toHaveLength(0);
+    spy.mockRestore();
+
+    expect((await store.listOrderEvents('O1')).map((e) => e.kind)).toEqual(['refund-received']);
+
+    const res2 = await postWebhook('/webhooks/refunds-create', payload, { topic: 'refunds/create', webhookId: 'whk-refund-due-refused-1' });
+    expect(res2.status).toBe(200);
+    expect(waitUntilCalls).toHaveLength(1);
+    await Promise.all(waitUntilCalls);
+    const events = await store.listOrderEvents('O1');
+    expect(events.map((e) => e.kind)).toEqual(['refund-received', 'owner-alert-due', 'owner-alert-unconfigured']);
   });
 });
 
@@ -582,7 +686,7 @@ describe('tenant isolation (I-2)', () => {
     // the trail write it produces can be read.
     await Promise.all(waitUntilCalls);
     const eventsA = await storeA.listOrderEvents('O1');
-    expect(eventsA.map((e) => e.kind)).toEqual(['refund-received', 'error']);
+    expect(eventsA.map((e) => e.kind)).toEqual(['refund-received', 'owner-alert-due', 'owner-alert-unconfigured']);
 
     const bAfter = await storeB.getOrder('O1');
     expect(bAfter).toEqual(bBefore); // byte for byte: shop B's row is untouched

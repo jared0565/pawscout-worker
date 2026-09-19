@@ -225,7 +225,7 @@ export type OrderEventKind =
   | 'gate-passed' | 'gate-held' | 'gate-unreadable' | 'address-refreshed'
   | 'stock-ok' | 'stockout' | 'supplier-order-created' | 'awaiting-payment' | 'paid'
   | 'tracking-found' | 'tracking-written' | 'tracking-write-failed'
-  | 'cancel-received' | 'refund-received' | 'owner-alerted' | 'owner-alert-failed' | 'operator-action' | 'error';
+  | 'cancel-received' | 'refund-received' | 'owner-alert-due' | 'owner-alerted' | 'owner-alert-unconfigured' | 'owner-alert-failed' | 'operator-action' | 'error';
 
 /** One append-only row of the order trail - `detail` is short plain text and
  *  must never hold a name, an address, an email or a phone number. */
@@ -1086,7 +1086,7 @@ export class TenantStore {
         .run();
       return true;
     } catch (err) {
-      console.warn(`order event not recorded for ${shopifyOrderId} (${kind}): ${(err as Error).message}`);
+      console.warn(`order event not recorded for ${shopifyOrderId} (${kind}): ${err instanceof Error ? err.message : String(err)}`);
       return false;
     }
   }
@@ -1115,28 +1115,35 @@ export class TenantStore {
   }
 
   /** Order ids (this shop only) that still hold at least one owner alert
-   *  worth re-sending: a subject with a failed send that has not been
-   *  delivered since, fewer than `maxAttempts` failures since that delivery,
-   *  and its first such failure at or after `sinceIso`. Oldest first, at
-   *  most `limit`. This only CHOOSES which orders the sweep looks at; what
-   *  is actually re-sent is still decided by the sweep's own walk of each
-   *  order's trail (`pendingAlerts`). A subject that has since been
-   *  delivered is left out entirely by the database, rather than merely
-   *  sorted behind live ones, so a resolved order can never occupy a slot
-   *  that a still-failing one needs. */
+   *  worth re-sending: a subject with a due or a failed send that has not
+   *  been delivered, AND has not been ruled unconfigured (nobody was ever
+   *  able to tell), since; fewer than `maxAttempts` FAILURES since that
+   *  point (a due row alone never counts against the cap - it is not a
+   *  failure), and its first such row at or after `sinceIso`. Oldest first,
+   *  at most `limit`. This only CHOOSES which orders the sweep looks at;
+   *  what is actually re-sent is still decided by the sweep's own walk of
+   *  each order's trail (`pendingAlerts`), which the anti-join below is kept
+   *  in step with: a subject the walk would treat as cleared (owner-alerted
+   *  OR owner-alert-unconfigured) is left out entirely by the database,
+   *  rather than merely sorted behind live ones, so a resolved order or an
+   *  unconfigured shop's dead candidates can never occupy a slot that a
+   *  still-failing one needs. A LATER due row for the same subject (alerting
+   *  was configured since) still makes it a candidate again, because the
+   *  anti-join only looks for a clearing row AFTER that specific due row's
+   *  own seq - the same chronological, non-sticky behaviour the walk has. */
   async listOrderIdsWithPendingAlerts(sinceIso: string, maxAttempts: number, limit = 100): Promise<string[]> {
     const rs = await this.db
       .prepare(
         `SELECT shopify_order_id FROM (
            SELECT f.shopify_order_id AS shopify_order_id, MIN(f.at) AS first_at
            FROM order_events f
-           WHERE f.shop = ?1 AND f.kind = 'owner-alert-failed' AND f.detail IS NOT NULL
+           WHERE f.shop = ?1 AND f.kind IN ('owner-alert-failed', 'owner-alert-due') AND f.detail IS NOT NULL
              AND NOT EXISTS (
                SELECT 1 FROM order_events d
                WHERE d.shop = f.shop AND d.shopify_order_id = f.shopify_order_id
-                 AND d.kind = 'owner-alerted' AND d.detail = f.detail AND d.seq > f.seq)
+                 AND d.kind IN ('owner-alerted', 'owner-alert-unconfigured') AND d.detail = f.detail AND d.seq > f.seq)
            GROUP BY f.shopify_order_id, f.detail
-           HAVING COUNT(*) < ?3 AND MIN(f.at) >= ?2
+           HAVING SUM(CASE WHEN f.kind = 'owner-alert-failed' THEN 1 ELSE 0 END) < ?3 AND MIN(f.at) >= ?2
          )
          GROUP BY shopify_order_id
          ORDER BY MIN(first_at) ASC, shopify_order_id ASC

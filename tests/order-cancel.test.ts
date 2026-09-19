@@ -471,11 +471,11 @@ describe('a repeat delivery heals a lost alert (cancel)', () => {
     expect(await applyCancel(store, 'O1')).toEqual({ changed: false, alert: null });
   });
 
-  it('once an error marker ENDING WITH the subject is in the trail (the "not configured" line), the next delivery goes quiet', async () => {
+  it('once an owner-alert-unconfigured marker for the subject is in the trail, the next delivery goes quiet', async () => {
     const store = new TenantStore(env.DB, SHOP);
     await seedOrder(store, 'O1', 'awaiting-payment', { cjOrderId: 'CJ-1' });
     const first = await applyCancel(store, 'O1');
-    await store.addOrderEvent('O1', 'error', `owner alert not configured: ${first.alert!.subject}`);
+    await store.addOrderEvent('O1', 'owner-alert-unconfigured', first.alert!.subject);
     expect(await applyCancel(store, 'O1')).toEqual({ changed: false, alert: null });
   });
 
@@ -547,11 +547,11 @@ describe('a repeat delivery heals a lost alert (refund)', () => {
     expect(second).toEqual({ changed: false, alert: null });
   });
 
-  it('once an error marker reading exactly "owner alert not configured: <subject>" is in the trail, the next delivery of the same refund id goes quiet', async () => {
+  it('once an owner-alert-unconfigured marker for the subject is in the trail, the next delivery of the same refund id goes quiet', async () => {
     const store = new TenantStore(env.DB, SHOP);
     await seedOrder(store, 'O1', 'submitted', { cjOrderId: 'CJ-1' });
     const first = await applyRefund(store, { orderId: 'O1', refundId: 'R-1', amount: 7.25, currency: 'GBP' });
-    await store.addOrderEvent('O1', 'error', `owner alert not configured: ${first.alert!.subject}`);
+    await store.addOrderEvent('O1', 'owner-alert-unconfigured', first.alert!.subject);
     const second = await applyRefund(store, { orderId: 'O1', refundId: 'R-1', amount: 7.25, currency: 'GBP' });
     expect(second).toEqual({ changed: false, alert: null });
   });
@@ -565,7 +565,15 @@ describe('a repeat delivery heals a lost alert (refund)', () => {
     expect(second.alert).toEqual(first.alert);
   });
 
-  it('two refunds of the same amount and currency: an earlier one being delivered does not mask a later, lost one on its own repeat delivery', async () => {
+  // Before the refund id was folded into the subject, two refunds of the same
+  // amount and currency produced the IDENTICAL subject text, so delivering
+  // the earlier one's alert cleared the later one's pending state too - a
+  // subject is an alert's retry identity, and identical subjects collide.
+  // Now each refund's subject carries its own refund id, so they are
+  // distinct identities from the start; the slice the repeat branch takes
+  // (events after THIS refund's own refund-received) still guards the case
+  // where a refund carries no id at all and falls back to the shared subject.
+  it('two refunds of the same amount and currency now get different subjects (their own refund id), so delivering one never masks the other', async () => {
     const store = new TenantStore(env.DB, SHOP);
     await seedOrder(store, 'O1', 'submitted', { cjOrderId: 'CJ-1' });
 
@@ -574,7 +582,8 @@ describe('a repeat delivery heals a lost alert (refund)', () => {
     await store.addOrderEvent('O1', 'owner-alerted', first.alert!.subject); // R-1's alert confirmed delivered
 
     const second = await applyRefund(store, { orderId: 'O1', refundId: 'R-2', amount: 10, currency: 'GBP' });
-    expect(second.alert).toEqual(first.alert); // identical subject text, but a genuinely new refund id
+    expect(second.alert).not.toBeNull();
+    expect(second.alert!.subject).not.toBe(first.alert!.subject); // distinct subjects: each carries its own refund id
     // R-2's own alert is never confirmed delivered - simulate its webhook being redelivered.
     const secondRepeat = await applyRefund(store, { orderId: 'O1', refundId: 'R-2', amount: 10, currency: 'GBP' });
     expect(secondRepeat.alert).toEqual(second.alert);
@@ -636,7 +645,7 @@ describe('applyRefund', () => {
       const outcome = await applyRefund(store, { orderId: id, refundId: 'R-' + id, amount: 12.5, currency: 'GBP' });
       expect(outcome.changed).toBe(true);
       expect(outcome.alert).toEqual({
-        subject: `Order #${id} was refunded GBP 12.50`,
+        subject: `Order #${id} was refunded GBP 12.50 (refund R-${id})`,
         text: `Order #${id} was refunded GBP 12.50 in Shopify. Supplier order CJ-${status} exists for it (status here: ${status}). Decide whether the supplier order should still go ahead.`
       });
       const order = await store.getOrder(id);
@@ -644,6 +653,23 @@ describe('applyRefund', () => {
       const events = await store.listOrderEvents(id);
       expect(events.map((e) => e.kind)).toEqual(['refund-received']);
     }
+  });
+
+  it('the refund subject includes the refund id when Shopify sent one, and omits it when Shopify sent none (the text is unchanged either way)', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedOrder(store, 'O1', 'submitted', { cjOrderId: 'CJ-1' });
+    const withId = await applyRefund(store, { orderId: 'O1', refundId: 'R-99', amount: 5, currency: 'GBP' });
+    expect(withId.alert).toEqual({
+      subject: 'Order #O1 was refunded GBP 5.00 (refund R-99)',
+      text: 'Order #O1 was refunded GBP 5.00 in Shopify. Supplier order CJ-1 exists for it (status here: submitted). Decide whether the supplier order should still go ahead.'
+    });
+
+    await seedOrder(store, 'O2', 'submitted', { cjOrderId: 'CJ-2' });
+    const noId = await applyRefund(store, { orderId: 'O2', refundId: '', amount: 5, currency: 'GBP' });
+    expect(noId.alert).toEqual({
+      subject: 'Order #O2 was refunded GBP 5.00',
+      text: 'Order #O2 was refunded GBP 5.00 in Shopify. Supplier order CJ-2 exists for it (status here: submitted). Decide whether the supplier order should still go ahead.'
+    });
   });
 
   it('five identical deliveries of one refund on a row with a supplier order give exactly one alert and one refund-received event, once the alert is confirmed delivered', async () => {

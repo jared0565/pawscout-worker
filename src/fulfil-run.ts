@@ -296,7 +296,7 @@ export async function processDueOrders(
       try {
         await opts.notify({ shopifyOrderId: o.shopify_order_id, orderName: o.order_name ?? o.shopify_order_id, cjOrderId, total: o.total_price, currency: o.currency, reason });
       } catch (e) {
-        console.warn(`awaiting-payment notify failed for ${o.order_name ?? o.shopify_order_id}: ${(e as Error).message}`);
+        console.warn(`awaiting-payment notify failed for ${o.order_name ?? o.shopify_order_id}: ${e instanceof Error ? e.message : String(e)}`);
       }
     }
   };
@@ -478,7 +478,7 @@ export async function processDueOrders(
       try {
         await cj.payBalance(cjOrderId);
       } catch (payErr) {
-        const msg = (payErr as Error).message;
+        const msg = payErr instanceof Error ? payErr.message : String(payErr);
         if (looksLikeInsufficientBalance(msg)) {
           // The CJ order exists; the owner can top up + pay it manually. Don't error.
           await markAwaiting(o, cjOrderId, `awaiting-payment: fund CJ wallet, then pay CJ order ${cjOrderId}`);
@@ -506,7 +506,7 @@ export async function processDueOrders(
         submitted++;
       }
     } catch (e) {
-      const msg = (e as Error).message;
+      const msg = e instanceof Error ? e.message : String(e);
       // Classify a stock-caused failure: the pre-flight throws a typed StockoutError
       // (exact line known); a CJ createOrder rejection is matched by phrasing, and
       // pinpointed only when the order has a single line.
@@ -557,7 +557,7 @@ export async function processDueOrders(
               }
             }
           } catch (ze) {
-            console.warn(`stockout inventory zero failed for ${stockout.cjPid}: ${(ze as Error).message}`);
+            console.warn(`stockout inventory zero failed for ${stockout.cjPid}: ${ze instanceof Error ? ze.message : String(ze)}`);
           }
         }
         if (opts.notifyStockout) {
@@ -570,7 +570,7 @@ export async function processDueOrders(
               zeroed
             });
           } catch (ne) {
-            console.warn(`stockout notify failed for ${o.order_name ?? o.shopify_order_id}: ${(ne as Error).message}`);
+            console.warn(`stockout notify failed for ${o.order_name ?? o.shopify_order_id}: ${ne instanceof Error ? ne.message : String(ne)}`);
           }
         }
       }
@@ -617,11 +617,17 @@ export async function pollTracking(
         await store.addOrderEvent(o.shopify_order_id, 'tracking-written');
         fulfilled++;
       } catch (writeErr) {
-        const msg = (writeErr as Error).message;
+        const msg = writeErr instanceof Error ? writeErr.message : String(writeErr);
         console.warn(`tracking poll failed for ${o.order_name ?? o.shopify_order_id}: ${msg}`);
-        await store.addOrderEvent(o.shopify_order_id, 'tracking-write-failed', msg);
-        // Fix round 1, M-2: >= 4, not === 4 - a single swallowed addOrderEvent
-        // write must never permanently silence this order's alert.
+        // The trail classifies, it never copies: order_events.detail must
+        // never carry a supplier's or Shopify's raw error text (it can echo
+        // an address or phone number sent with the order), so the trail gets
+        // a fixed, classified line and the raw message stays in console.warn
+        // above and in the alert text below, which goes to the owner's
+        // inbox, not into the trail.
+        await store.addOrderEvent(o.shopify_order_id, 'tracking-write-failed', 'write to Shopify failed');
+        // >= 4, not === 4, so a single swallowed addOrderEvent write can
+        // never permanently silence this order's alert.
         if ((await store.countTrailingOrderEvents(o.shopify_order_id, 'tracking-write-failed')) >= 4) {
           const name = o.order_name ?? o.shopify_order_id;
           if (opts.alert) {
@@ -633,7 +639,7 @@ export async function pollTracking(
         }
       }
     } catch (e) {
-      console.warn(`tracking poll failed for ${o.order_name ?? o.shopify_order_id}: ${(e as Error).message}`);
+      console.warn(`tracking poll failed for ${o.order_name ?? o.shopify_order_id}: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
   return { checked, fulfilled };
@@ -861,7 +867,7 @@ export async function runOrderPipelineForShop(env: Env, vault: Vault, shop: stri
   try {
     await resyncLowStockInventory(store, cj, admin, cfg);
   } catch (e) {
-    console.warn(`low-stock resync failed for ${shop}: ${(e as Error).message}`);
+    console.warn(`low-stock resync failed for ${shop}: ${e instanceof Error ? e.message : String(e)}`);
   }
   // Affiliate voucher ledger also rides this entry (same admin client). It
   // early-exits without a Shopify call when no vouchers are registered, and a
@@ -870,7 +876,7 @@ export async function runOrderPipelineForShop(env: Env, vault: Vault, shop: stri
     const a = await attributeAffiliateOrders(store, admin, env.SHOPIFY_API_SECRET);
     if (a.matched) console.log(`affiliate attribution for ${shop}: ${a.matched} matched of ${a.scanned} scanned`);
   } catch (e) {
-    console.warn(`affiliate attribution failed for ${shop}: ${(e as Error).message}`);
+    console.warn(`affiliate attribution failed for ${shop}: ${e instanceof Error ? e.message : String(e)}`);
   }
   // Console health stamp (Glance): record the completed run; best-effort.
   try { await store.putSearchCache(JOB_STAMP_PIPELINE, new Date().toISOString(), JOB_STAMP_TTL_DAYS); } catch { /* never affects the pipeline result */ }
@@ -884,7 +890,7 @@ export async function runOrderPipeline(env: Env): Promise<void> {
     try {
       await runOrderPipelineForShop(env, vault, shop);
     } catch (e) {
-      console.warn(`order pipeline failed for ${shop}: ${(e as Error).message}`);
+      console.warn(`order pipeline failed for ${shop}: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 }
