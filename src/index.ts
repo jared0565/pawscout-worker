@@ -34,6 +34,7 @@ import { validateCjKey, CjClient, CjTokenManager, cjFetchFromEnv, chooseOrigin }
 import { registerWebhooks, ensureWebhooks, ORDER_EVENT_TOPICS, type RegisterWebhook } from './webhooks';
 import { cancelledOrderId, refundInfo, applyCancel, applyRefund, type OwnerAlert } from './order-cancel';
 import { alertOwner } from './owner-alert';
+import { onWebhookFailure } from './webhook-retry';
 import { validateGatesPayload, validatePricingPayload, validateLlmPayload, validateAddonsPayload, validateCollectionMap, validatePartnerPayload, validateSelfServePayload } from './validate';
 import { sendEmail, SENDING_DOMAIN } from './email';
 import { verifySvixSignature, parseResendEvent, applyResendEvent, getTrackingStatus, enableTracking, ensureEventsWebhook } from './resend-events';
@@ -88,6 +89,40 @@ function makeRegistrar(env: Env): RegisterWebhook {
 // future throw inside alertOwner's chain must not become an unhandled rejection.
 function sendOrderAlert(c: Context<{ Bindings: Env }>, cfg: TenantConfig, alert: OwnerAlert): void {
   c.executionCtx.waitUntil(alertOwner(c.env, cfg, alert.subject, alert.text).catch(() => undefined));
+}
+
+// The shared failure contract for the three order webhook routes below
+// (orders-paid, orders-cancelled, refunds-create). Shopify only redelivers a
+// delivery that did NOT get a 2xx, so before this a database blip while a
+// handler ran could lose a paid order, a cancel or a refund for good, even
+// though every handler is idempotent and a redelivery would have healed it.
+// This is the one place that decides what "processing threw" answers with:
+// log the error server side only (the thrown message never goes into an
+// alert or a trail - a supplier's or Shopify's error text can echo customer
+// data), then let onWebhookFailure count this delivery and say whether to
+// ask Shopify to try again. cfg can be null when the throw happened before a
+// config was even found; in that case, and only when onWebhookFailure has
+// decided this delivery has earned an alert, one more config read is tried
+// here (a blip that has already cleared by now is common enough to be worth
+// the extra read). If that also comes back empty, the event is being given
+// up on with nobody to tell - the one thing this route can still do is say
+// so loudly, with the topic and the order id, never the thrown error's
+// message and never anything from the payload.
+async function handleOrderWebhookFailure(
+  c: Context<{ Bindings: Env }>, store: TenantStore, cfg: TenantConfig | null,
+  webhookId: string | null, topic: string, orderId: string, err: unknown
+): Promise<Response> {
+  console.error(`${topic} webhook processing failed for ${store.shop}: ${err instanceof Error ? err.message : String(err)}`);
+  const result = await onWebhookFailure(store, { webhookId, topic, orderId });
+  if (result.alert) {
+    const target = cfg ?? await store.getConfig().catch(() => null);
+    if (target) {
+      c.executionCtx.waitUntil(alertOwner(c.env, target, result.alert.subject, result.alert.text).catch(() => undefined));
+    } else {
+      console.error(`${topic} webhook order ${orderId || '(unknown)'} was abandoned after repeated failures - the owner could not be alerted because no tenant config could be read`);
+    }
+  }
+  return c.text(result.status === 200 ? 'ok' : 'error', result.status);
 }
 
 /** ORDER_EVENT_TOPICS-scoped projection of a fresh or stored WebhookStatus,
@@ -2104,19 +2139,30 @@ app.post('/webhooks/uninstall', async (c) => {
   return c.text('ok');
 });
 
-// --- orders/paid webhook (W-FULFIL Stage A: receive + validate, no money leg) ---
+// --- orders/paid webhook (W-FULFIL Stage A: receive + validate, no money leg).
+// A bad signature still answers 401; a body that is not JSON, or has no
+// usable order id, or a shop with no config, answers 200 with nothing written
+// - it can never succeed, so asking for a retry is pointless. Anything else
+// that throws gets whatever handleOrderWebhookFailure/onWebhookFailure
+// decides, instead of always 200 - see webhook-retry.ts. ---
 app.post('/webhooks/orders-paid', async (c) => {
   const shopify = makeShopify(c.env);
   const body = await c.req.text();
   const valid = await shopify.webhooks.validate({ rawBody: body, rawRequest: c.req.raw });
   if (!valid.valid) return c.text('invalid', 401);
   const shop = c.req.header('X-Shopify-Shop-Domain') ?? '';
+  const webhookId = c.req.header('X-Shopify-Webhook-Id') ?? null;
+  const store = new TenantStore(c.env.DB, shop);
+  let cfg: TenantConfig | null = null;
+  let orderId = '';
   try {
-    const store = new TenantStore(c.env.DB, shop);
-    const cfg = await store.getConfig();
+    cfg = await store.getConfig();
     if (!cfg) return c.text('ok'); // not configured - ack so Shopify stops retrying
-    const order = parseOrderWebhook(JSON.parse(body));
-    if (!order.shopifyOrderId) return c.text('ok');
+    let parsedBody: unknown;
+    try { parsedBody = JSON.parse(body); } catch { return c.text('ok'); } // not JSON - can never succeed, no retry
+    const order = parseOrderWebhook(parsedBody);
+    orderId = order.shopifyOrderId;
+    if (!orderId) return c.text('ok');
     const { holds, lineItems } = await validateOrder(order, store, cfg);
     const fulfilAfter = new Date(Date.now() + FULFIL_GRACE_MINUTES * 60_000).toISOString();
     const isNew = await store.insertOrderIfNew({
@@ -2144,6 +2190,41 @@ app.post('/webhooks/orders-paid', async (c) => {
       } else {
         await store.addOrderEvent(order.shopifyOrderId, 'queued', `fulfil after ${fulfilAfter}`);
       }
+    } else {
+      // The row already existed, which usually means a genuine duplicate
+      // delivery. But a prior delivery can also have inserted the row and
+      // then never got to write the trail, because it died or timed out
+      // before it answered - Shopify only redelivers a request that never
+      // got a response, not one that answered while a write on its own side
+      // silently failed (addOrderEvent swallows its own errors, so that kind
+      // of gap cannot be healed from here). An empty trail is how the
+      // half-done insert is told apart from a real duplicate, and the healed
+      // trail is built from the STORED row only, never from this delivery's
+      // own payload, so it matches whatever the successful insert actually
+      // wrote.
+      const existingTrail = await store.listOrderEvents(order.shopifyOrderId);
+      if (existingTrail.length === 0) {
+        const storedOrder = await store.getOrder(order.shopifyOrderId);
+        if (storedOrder) {
+          await store.addOrderEvent(order.shopifyOrderId, 'received');
+          if (storedOrder.status === 'held') {
+            let reasons: string[] = [];
+            // Keep the array check and the stringify INSIDE the guard, the
+            // same way hasFraudHoldHistory treats this column in
+            // fulfil-run.ts: a stored value that parses cleanly to something
+            // other than an array must still fall back to an empty list
+            // instead of crashing the join below.
+            try {
+              const parsed = JSON.parse(storedOrder.hold_reasons ?? '[]');
+              reasons = Array.isArray(parsed) ? parsed.map((r: unknown) => String(r)) : [];
+            } catch { /* best-effort detail only */ }
+            await store.addOrderEvent(order.shopifyOrderId, 'held', reasons.join(','));
+          } else if (storedOrder.status === 'queued') {
+            const detail = storedOrder.fulfil_after ? `fulfil after ${storedOrder.fulfil_after}` : null;
+            await store.addOrderEvent(order.shopifyOrderId, 'queued', detail);
+          }
+        }
+      }
     }
     // Real ORDER events feed the deterministic "Selling fast" badge and the 30-day
     // cull. Recorded only on first receipt (isNew) so webhook retries never double
@@ -2155,34 +2236,40 @@ app.post('/webhooks/orders-paid', async (c) => {
     }
     c.executionCtx.waitUntil(attributePaidOrder(store, order).then(() => undefined));
   } catch (e) {
-    console.warn(`orders-paid handler failed for ${shop}: ${(e as Error).message}`);
+    return handleOrderWebhookFailure(c, store, cfg, webhookId, 'orders/paid', orderId, e);
   }
-  return c.text('ok'); // always 200 - a non-2xx makes Shopify retry the webhook
+  return c.text('ok');
 });
 
-// --- orders/cancelled webhook (Task 4's decision, wired to the outside world).
+// --- orders/cancelled webhook: applies the cancel decision to our order row
+// and alerts the owner when needed, wired to the outside world.
 // Same shape as orders-paid: validate, read the shop, one try block, log,
-// ALWAYS answer 200 so Shopify never retries into a duplicate alert storm.
-// applyCancel writes its own trail (cancel-received, owner-alerted) and
-// dedupes on it, so redelivery of the same event is a no-op here. ---
+// answer per the failure contract above. applyCancel writes its own trail
+// (cancel-received, owner-alerted) and dedupes on it, so redelivery of the
+// same event is a no-op here. ---
 app.post('/webhooks/orders-cancelled', async (c) => {
   const shopify = makeShopify(c.env);
   const body = await c.req.text();
   const valid = await shopify.webhooks.validate({ rawBody: body, rawRequest: c.req.raw });
   if (!valid.valid) return c.text('invalid', 401);
   const shop = c.req.header('X-Shopify-Shop-Domain') ?? '';
+  const webhookId = c.req.header('X-Shopify-Webhook-Id') ?? null;
+  const store = new TenantStore(c.env.DB, shop);
+  let cfg: TenantConfig | null = null;
+  let orderId = '';
   try {
-    const store = new TenantStore(c.env.DB, shop);
-    const cfg = await store.getConfig();
+    cfg = await store.getConfig();
     if (!cfg) return c.text('ok'); // not configured - ack so Shopify stops retrying
-    const orderId = cancelledOrderId(JSON.parse(body));
+    let parsedBody: unknown;
+    try { parsedBody = JSON.parse(body); } catch { return c.text('ok'); } // not JSON - can never succeed, no retry
+    orderId = cancelledOrderId(parsedBody);
     if (!orderId) return c.text('ok');
     const outcome = await applyCancel(store, orderId);
     if (outcome.alert) sendOrderAlert(c, cfg, outcome.alert);
   } catch (e) {
-    console.warn(`orders-cancelled handler failed for ${shop}: ${(e as Error).message}`);
+    return handleOrderWebhookFailure(c, store, cfg, webhookId, 'orders/cancelled', orderId, e);
   }
-  return c.text('ok'); // always 200 - a non-2xx makes Shopify retry the webhook
+  return c.text('ok');
 });
 
 // --- refunds/create webhook (Task 4's decision, wired to the outside world).
@@ -2196,18 +2283,24 @@ app.post('/webhooks/refunds-create', async (c) => {
   const valid = await shopify.webhooks.validate({ rawBody: body, rawRequest: c.req.raw });
   if (!valid.valid) return c.text('invalid', 401);
   const shop = c.req.header('X-Shopify-Shop-Domain') ?? '';
+  const webhookId = c.req.header('X-Shopify-Webhook-Id') ?? null;
+  const store = new TenantStore(c.env.DB, shop);
+  let cfg: TenantConfig | null = null;
+  let orderId = '';
   try {
-    const store = new TenantStore(c.env.DB, shop);
-    const cfg = await store.getConfig();
+    cfg = await store.getConfig();
     if (!cfg) return c.text('ok'); // not configured - ack so Shopify stops retrying
-    const info = refundInfo(JSON.parse(body));
-    if (!info.orderId) return c.text('ok');
+    let parsedBody: unknown;
+    try { parsedBody = JSON.parse(body); } catch { return c.text('ok'); } // not JSON - can never succeed, no retry
+    const info = refundInfo(parsedBody);
+    orderId = info.orderId;
+    if (!orderId) return c.text('ok');
     const outcome = await applyRefund(store, info);
     if (outcome.alert) sendOrderAlert(c, cfg, outcome.alert);
   } catch (e) {
-    console.warn(`refunds-create handler failed for ${shop}: ${(e as Error).message}`);
+    return handleOrderWebhookFailure(c, store, cfg, webhookId, 'refunds/create', orderId, e);
   }
-  return c.text('ok'); // always 200 - a non-2xx makes Shopify retry the webhook
+  return c.text('ok');
 });
 
 // --- GDPR mandatory webhooks (HMAC-verified; all return 200) ---

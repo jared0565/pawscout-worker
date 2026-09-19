@@ -9,7 +9,7 @@
 // Also pins the orchestrator's seam-closing rule from task 3: every entry in
 // REQUIRED_TOPICS must answer 401 (never 404) to an unsigned POST, so a topic
 // added later without a route is caught here rather than in production.
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
 import { SignJWT } from 'jose';
 import { TenantStore, type OrderRow } from '../src/tenant-store';
@@ -20,10 +20,13 @@ import { REQUIRED_TOPICS } from '../src/webhooks';
 import { JOB_STAMP_ORDER_HOOKS, JOB_STAMP_TTL_DAYS } from '../src/jobs';
 import { app, parseStoredHooks, orderEventsForOrder, projectHooks, manualCheckConsecutiveFailures } from '../src/index';
 
-// I-1 (fix round 1): every waitUntil call across a request is recorded here so
-// a test can assert exactly how many alert sends a route made (orders-cancelled
-// and refunds-create call waitUntil ONLY through sendOrderAlert, so this count
-// is exactly the alert-send count for those two routes). Reset per test.
+// Every waitUntil call across a request is recorded here so a test can
+// assert exactly how many alert sends a route made. On a SUCCESSFUL delivery
+// of orders-cancelled or refunds-create, this count is exactly the alert-send
+// count for that route (both call waitUntil only through sendOrderAlert on
+// success). On a FAILED delivery, any of the three order routes can also hand
+// the give-up alert to waitUntil, through the shared failure helper. Reset
+// per test.
 let waitUntilCalls: Promise<unknown>[] = [];
 
 beforeEach(async () => {
@@ -56,7 +59,7 @@ async function hmacBase64(secret: string, body: string): Promise<string> {
 // (fix round 1, I-1) records what it is handed so a test can pin the alert door.
 const FAKE_CTX = { waitUntil: (p: Promise<unknown>) => { waitUntilCalls.push(p); } } as unknown as ExecutionContext;
 
-async function postWebhook(path: string, rawBody: string, opts: { topic?: string; badSignature?: boolean } = {}): Promise<Response> {
+async function postWebhook(path: string, rawBody: string, opts: { topic?: string; badSignature?: boolean; webhookId?: string } = {}): Promise<Response> {
   const hmac = opts.badSignature ? 'not-a-real-signature==' : await hmacBase64(WEBHOOK_SECRET, rawBody);
   return app.request(`${APP_URL}${path}`, {
     method: 'POST',
@@ -65,7 +68,7 @@ async function postWebhook(path: string, rawBody: string, opts: { topic?: string
       'X-Shopify-Hmac-Sha256': hmac,
       'X-Shopify-Topic': opts.topic ?? '',
       'X-Shopify-Shop-Domain': SHOP,
-      'X-Shopify-Webhook-Id': 'whk-1',
+      'X-Shopify-Webhook-Id': opts.webhookId ?? 'whk-1',
       'X-Shopify-API-Version': '2025-07',
     },
     body: rawBody,
@@ -247,6 +250,235 @@ describe('POST /webhooks/orders-paid (HTTP level)', () => {
     await seedConfig();
     const res = await postWebhook('/webhooks/orders-paid', 'not json {{{', { topic: 'orders/paid' });
     expect(res.status).toBe(200);
+  });
+});
+
+// Before this, all three routes answered 200 even when their own processing
+// threw, so Shopify never redelivered and a database blip lost a paid order,
+// a cancel or a refund for good. These force a genuine throw with vi.spyOn on
+// the TenantStore prototype and check the app under test actually took the
+// stubbed rejection (asserting the 500) rather than assuming it did; every
+// spy is restored, most in afterEach as a backstop.
+describe('order webhook routes answer for a retry when processing throws', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('orders-cancelled: a valid cancel whose processing throws answers 500, and the same delivery id sent again, now succeeding, answers 200 with one cancel-received event', async () => {
+    const store = await seedConfig();
+    await seedOrder(store, 'O1', 'queued');
+    const payload = JSON.stringify({ id: 'O1' });
+
+    const spy = vi.spyOn(TenantStore.prototype, 'getOrder').mockRejectedValueOnce(new Error('D1 is down'));
+    const res1 = await postWebhook('/webhooks/orders-cancelled', payload, { topic: 'orders/cancelled', webhookId: 'whk-retry-1' });
+    expect(res1.status).toBe(500);
+    expect(spy).toHaveBeenCalled(); // confirms the stub really ran inside the app under test
+    spy.mockRestore();
+
+    // Nothing was written by the throwing attempt.
+    expect((await store.getOrder('O1'))?.status).toBe('queued');
+    expect(await store.listOrderEvents('O1')).toEqual([]);
+
+    const res2 = await postWebhook('/webhooks/orders-cancelled', payload, { topic: 'orders/cancelled', webhookId: 'whk-retry-1' });
+    expect(res2.status).toBe(200);
+    expect((await store.getOrder('O1'))?.status).toBe('cancelled');
+    const events = await store.listOrderEvents('O1');
+    expect(events.filter((e) => e.kind === 'cancel-received')).toHaveLength(1);
+  });
+
+  it('orders-cancelled: five failures of one delivery id answer 500, 500, 500, 200, 200, and the give-up alert reaches waitUntil exactly once, on the 4th, not before and not again on the 5th', async () => {
+    const store = await seedConfig();
+    await seedOrder(store, 'O1', 'queued');
+    const payload = JSON.stringify({ id: 'O1' });
+    const spy = vi.spyOn(TenantStore.prototype, 'getOrder').mockRejectedValue(new Error('D1 is down'));
+
+    const statuses: number[] = [];
+    const waitUntilCountAfterEach: number[] = [];
+    for (let i = 0; i < 5; i++) {
+      const res = await postWebhook('/webhooks/orders-cancelled', payload, { topic: 'orders/cancelled', webhookId: 'whk-retry-4' });
+      statuses.push(res.status);
+      waitUntilCountAfterEach.push(waitUntilCalls.length);
+    }
+    expect(statuses).toEqual([500, 500, 500, 200, 200]);
+    expect(waitUntilCountAfterEach).toEqual([0, 0, 0, 1, 1]);
+    expect(spy).toHaveBeenCalledTimes(5);
+  });
+
+  it('refunds-create: a valid refund whose processing throws answers 500 (the same first-failure contract as orders-cancelled)', async () => {
+    const store = await seedConfig();
+    await seedOrder(store, 'O1', 'submitted', { cjOrderId: 'CJ-1' });
+    const payload = JSON.stringify({ id: 900, order_id: 'O1', transactions: [{ kind: 'refund', amount: '9.00', currency: 'GBP' }] });
+
+    const spy = vi.spyOn(TenantStore.prototype, 'getOrder').mockRejectedValueOnce(new Error('D1 is down'));
+    const res = await postWebhook('/webhooks/refunds-create', payload, { topic: 'refunds/create', webhookId: 'whk-retry-2' });
+    expect(res.status).toBe(500);
+    expect(spy).toHaveBeenCalled();
+  });
+
+  // orders-paid's own processing never calls TenantStore.getOrder (it inserts
+  // a NEW row rather than reading an existing one), so getOrder is not a spy
+  // target here - insertOrderIfNew is stubbed instead, an honest throw inside
+  // this route's own real processing path.
+  it('orders-paid: a valid body whose processing throws answers 500', async () => {
+    await seedConfig();
+    const payload = {
+      id: 999003, name: '#1003', total_price: '25.00', currency: 'GBP', financial_status: 'paid',
+      shipping_address: { name: 'A B', address1: '1 St', city: 'London', zip: 'E1 1AA', country_code: 'GB' },
+      line_items: []
+    };
+    const spy = vi.spyOn(TenantStore.prototype, 'insertOrderIfNew').mockRejectedValueOnce(new Error('D1 is down'));
+    const res = await postWebhook('/webhooks/orders-paid', JSON.stringify(payload), { topic: 'orders/paid', webhookId: 'whk-retry-3' });
+    expect(res.status).toBe(500);
+    expect(spy).toHaveBeenCalled();
+  });
+
+  it('a bad signature still answers 401 and counts nothing (no whfail cache row is created)', async () => {
+    const store = await seedConfig();
+    const res = await postWebhook('/webhooks/orders-cancelled', JSON.stringify({ id: 'O1' }), {
+      topic: 'orders/cancelled', badSignature: true, webhookId: 'whk-bad-sig'
+    });
+    expect(res.status).toBe(401);
+    expect(await store.getSearchCache('whfail:whk-bad-sig')).toBeNull();
+  });
+
+  // A config read that throws every time is the one case where the give-up
+  // alert has nowhere to go: there is no config to read an alert address
+  // from. The route must still stop asking for a retry at the same count,
+  // and it must say so loudly in the logs, because that log line is the
+  // owner's only remaining signal that the event was dropped.
+  it('a config read that keeps failing logs the abandonment exactly once and hands nothing to waitUntil', async () => {
+    await seedConfig();
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    vi.spyOn(TenantStore.prototype, 'getConfig').mockRejectedValue(new Error('D1 is down'));
+    const payload = JSON.stringify({ id: 'O1' });
+
+    const statuses: number[] = [];
+    for (let i = 0; i < 4; i++) {
+      const res = await postWebhook('/webhooks/orders-cancelled', payload, { topic: 'orders/cancelled', webhookId: 'whk-giveup-1' });
+      statuses.push(res.status);
+    }
+    expect(statuses).toEqual([500, 500, 500, 200]);
+    expect(waitUntilCalls).toHaveLength(0);
+
+    const abandonCalls = errorSpy.mock.calls.filter(
+      ([msg]) => typeof msg === 'string' && msg.toLowerCase().includes('abandoned')
+    );
+    expect(abandonCalls).toHaveLength(1);
+    expect(abandonCalls[0][0]).toContain('orders/cancelled');
+    expect(abandonCalls[0][0]).toContain('(unknown)'); // no order id was ever resolved - the config read failed first
+    errorSpy.mockRestore();
+  });
+
+  // The give-up delivery's OWN config read can fail while a second, later read
+  // succeeds (a blip that has already cleared by the time the route tries
+  // again) - that must still reach the owner, not be treated as no-config.
+  it('a config read that fails only on the give-up delivery itself, and succeeds on a second try, still sends the alert', async () => {
+    const store = await seedConfig();
+    await seedOrder(store, 'O1', 'queued');
+    const payload = JSON.stringify({ id: 'O1' });
+
+    // Bring this delivery id to 3 failures for a reason unrelated to config.
+    const getOrderSpy = vi.spyOn(TenantStore.prototype, 'getOrder').mockRejectedValue(new Error('D1 is down'));
+    for (let i = 0; i < 3; i++) {
+      const res = await postWebhook('/webhooks/orders-cancelled', payload, { topic: 'orders/cancelled', webhookId: 'whk-giveup-2' });
+      expect(res.status).toBe(500);
+    }
+    getOrderSpy.mockRestore();
+
+    // The 4th delivery: the route's own config read fails once; the retry
+    // inside the failure handler is a separate call, unmocked, so it succeeds
+    // against the real, seeded config.
+    const cfgSpy = vi.spyOn(TenantStore.prototype, 'getConfig').mockRejectedValueOnce(new Error('D1 is down'));
+    const res4 = await postWebhook('/webhooks/orders-cancelled', payload, { topic: 'orders/cancelled', webhookId: 'whk-giveup-2' });
+    expect(res4.status).toBe(200);
+    expect(waitUntilCalls).toHaveLength(1);
+    cfgSpy.mockRestore();
+  });
+
+  // orders-paid gates its trail writes on the insert being new, so a throw
+  // right after a successful insert used to lose the "received"/"queued"
+  // trail for good: the redelivery finds the row already there and writes
+  // nothing. addOrderEvent swallows its own D1 errors internally, but
+  // vi.spyOn replaces the whole method for the call it targets, bypassing
+  // that internal try/catch entirely, so mocking it here IS an honest throw
+  // reaching the route's own try/catch, confirmed below by the 500 and by
+  // the spy call count.
+  it('orders-paid: a throw right after a successful insert leaves an empty trail, and a redelivery heals it to received, queued, with a third delivery adding nothing more', async () => {
+    const store = await seedConfig();
+    const payload = {
+      id: 999010, name: '#1010', total_price: '25.00', currency: 'GBP', financial_status: 'paid',
+      shipping_address: { name: 'A B', address1: '1 St', city: 'London', zip: 'E1 1AA', country_code: 'GB' },
+      line_items: []
+    };
+
+    const spy = vi.spyOn(TenantStore.prototype, 'addOrderEvent').mockRejectedValueOnce(new Error('D1 is down'));
+    const res1 = await postWebhook('/webhooks/orders-paid', JSON.stringify(payload), { topic: 'orders/paid', webhookId: 'whk-imp5' });
+    expect(res1.status).toBe(500);
+    expect(spy).toHaveBeenCalled(); // confirms the stub really ran inside the app under test
+    spy.mockRestore();
+
+    const orderAfterThrow = await store.getOrder('999010');
+    expect(orderAfterThrow?.status).toBe('queued'); // the insert itself succeeded
+    expect(await store.listOrderEvents('999010')).toEqual([]); // but nothing was written to the trail
+
+    const res2 = await postWebhook('/webhooks/orders-paid', JSON.stringify(payload), { topic: 'orders/paid', webhookId: 'whk-imp5' });
+    expect(res2.status).toBe(200);
+    const eventsAfterHeal = await store.listOrderEvents('999010');
+    expect(eventsAfterHeal.map((e) => e.kind)).toEqual(['received', 'queued']);
+
+    const res3 = await postWebhook('/webhooks/orders-paid', JSON.stringify(payload), { topic: 'orders/paid', webhookId: 'whk-imp5' });
+    expect(res3.status).toBe(200);
+    const eventsAfterThirdDelivery = await store.listOrderEvents('999010');
+    expect(eventsAfterThirdDelivery.map((e) => e.kind)).toEqual(['received', 'queued']); // unchanged, no duplicate
+  });
+
+  // The healing branch reads hold_reasons back with JSON.parse, which only
+  // guards against a SYNTAX error - a value that parses cleanly to something
+  // other than an array (here, a JSON string) must still produce a usable
+  // detail rather than crash the consuming .join call.
+  it('orders-paid: a held row whose stored hold_reasons is not an array heals to received, held with an empty detail rather than a deterministic 500', async () => {
+    const store = await seedConfig();
+    const payload = {
+      id: 999011, name: '#1011', total_price: '25.00', currency: 'GBP', financial_status: 'paid',
+      shipping_address: { name: 'A B', address1: '1 St', city: 'London', zip: 'E1 1AA', country_code: 'GB' },
+      line_items: []
+    };
+    await store.insertOrderIfNew({
+      shopifyOrderId: '999011', orderName: '#1011', totalPrice: 25, currency: 'GBP', financialStatus: 'paid', riskLevel: null,
+      status: 'held', holdReasons: ['incomplete-address'], addressJson: null, lineItemsJson: null, fulfilAfter: null
+    });
+    // Overwrite with a value that parses cleanly but is not an array - the
+    // shape a corrupt out-of-band write could leave behind.
+    await store.updateOrder('999011', { hold_reasons: '"oops"' });
+    expect(await store.listOrderEvents('999011')).toEqual([]);
+
+    const res = await postWebhook('/webhooks/orders-paid', JSON.stringify(payload), { topic: 'orders/paid', webhookId: 'whk-new1' });
+    expect(res.status).toBe(200);
+    const events = await store.listOrderEvents('999011');
+    expect(events.map((e) => e.kind)).toEqual(['received', 'held']);
+    expect(events[1].detail).toBe('');
+  });
+
+  // A queued row's fulfil_after can be null (any writer that never set it);
+  // the healed detail must not literally read "fulfil after null".
+  it('orders-paid: a queued row whose fulfil_after is null heals to queued with no detail', async () => {
+    const store = await seedConfig();
+    const payload = {
+      id: 999012, name: '#1012', total_price: '25.00', currency: 'GBP', financial_status: 'paid',
+      shipping_address: { name: 'A B', address1: '1 St', city: 'London', zip: 'E1 1AA', country_code: 'GB' },
+      line_items: []
+    };
+    await store.insertOrderIfNew({
+      shopifyOrderId: '999012', orderName: '#1012', totalPrice: 25, currency: 'GBP', financialStatus: 'paid', riskLevel: null,
+      status: 'queued', holdReasons: [], addressJson: null, lineItemsJson: null, fulfilAfter: null
+    });
+    expect(await store.listOrderEvents('999012')).toEqual([]);
+
+    const res = await postWebhook('/webhooks/orders-paid', JSON.stringify(payload), { topic: 'orders/paid', webhookId: 'whk-new3' });
+    expect(res.status).toBe(200);
+    const events = await store.listOrderEvents('999012');
+    expect(events.map((e) => e.kind)).toEqual(['received', 'queued']);
+    expect(events[1].detail).toBeNull();
   });
 });
 
