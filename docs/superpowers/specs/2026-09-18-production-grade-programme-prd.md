@@ -169,7 +169,11 @@ All five exit criteria were met, each by a check that was run and could have fai
 
 What acceptance against the real system caught, after every per-task review had come back clean: the first rehearsal could not load the real production dump at all, and the first integrity rule could pass a broken foreign key. Both were rebuilt (decision record `docs/decisions/0001-deploy-safety.md`). The final whole-branch review then found six holes at the seams between tasks; all six were fixed.
 
-Still open from phase 1: the runtime compatibility date (2024-11-01 to 2026-07-22) waits on branch `compat-date-2026-07-22` for its own owner go, because a runtime behaviour change is its own production deploy.
+The runtime compatibility date (2024-11-01 to 2026-07-22) shipped afterwards as its own production deploy, on its own owner go, because a runtime behaviour change must never be confused with a code change. Merge commit `642ed1f`, where the only file is `wrangler.toml`; staging first; production at 23:54Z on 2026-09-18. How it was checked:
+
+- Six endpoints were read before and after, and matched: `/healthz`, `/public/event`, `/app`, and the storefront proxy routes for search, the affiliate terms and the add-ons feed.
+- Production logs were streamed live across the first scheduled run on the new date: every invocation ended `ok`, with no exceptions, and the job stamps advanced.
+- Not observed at the time of writing: the daily 04:17 UTC maintenance chain on the new date.
 
 ## 6. Cross-repository contract: theme and worker
 
