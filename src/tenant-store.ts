@@ -220,6 +220,19 @@ export interface OrderRow {
   updated_at: string;
 }
 
+export type OrderEventKind =
+  | 'received' | 'held' | 'queued' | 'released'
+  | 'gate-passed' | 'gate-held' | 'gate-unreadable' | 'address-refreshed'
+  | 'stock-ok' | 'stockout' | 'supplier-order-created' | 'awaiting-payment' | 'paid'
+  | 'tracking-found' | 'tracking-written' | 'tracking-write-failed'
+  | 'cancel-received' | 'refund-received' | 'owner-alerted' | 'operator-action' | 'error';
+
+/** One append-only row of the order trail - `detail` is short plain text and
+ *  must never hold a name, an address, an email or a phone number. */
+export interface OrderEventRow {
+  shop: string; shopify_order_id: string; seq: number; at: string; kind: OrderEventKind; detail: string | null;
+}
+
 /** One row of the Audit view's landing list: a contact rolled up across all
  *  their threads - display name, latest activity and the categories seen. */
 export interface AuditContactRow {
@@ -691,6 +704,10 @@ export class TenantStore {
         .bind(this.shop, ...chunk)
         .run();
       removed += r.meta.changes ?? 0;
+      await this.db
+        .prepare(`DELETE FROM order_events WHERE shop = ?1 AND shopify_order_id IN (${ph})`)
+        .bind(this.shop, ...chunk)
+        .run();
     }
     return removed;
   }
@@ -737,6 +754,7 @@ export class TenantStore {
   async redactShop(): Promise<void> {
     await this.db.batch([
       this.db.prepare(`DELETE FROM orders WHERE shop = ?1`).bind(this.shop),
+      this.db.prepare(`DELETE FROM order_events WHERE shop = ?1`).bind(this.shop),
       this.db.prepare(`DELETE FROM product_events WHERE shop = ?1`).bind(this.shop),
       this.db.prepare(`DELETE FROM product_links WHERE shop = ?1`).bind(this.shop),
       this.db.prepare(`DELETE FROM warehouse_products WHERE shop = ?1`).bind(this.shop),
@@ -977,7 +995,7 @@ export class TenantStore {
     return rs.results ?? [];
   }
 
-  async updateOrder(shopifyOrderId: string, fields: Partial<Pick<OrderRow, 'status' | 'hold_reasons' | 'cj_order_id' | 'tracking_number' | 'risk_level'>>): Promise<void> {
+  async updateOrder(shopifyOrderId: string, fields: Partial<Pick<OrderRow, 'status' | 'hold_reasons' | 'cj_order_id' | 'tracking_number' | 'risk_level' | 'address_json'>>): Promise<void> {
     const now = new Date().toISOString();
     await this.db
       .prepare(
@@ -987,11 +1005,58 @@ export class TenantStore {
            cj_order_id = COALESCE(?5, cj_order_id),
            tracking_number = COALESCE(?6, tracking_number),
            risk_level = COALESCE(?8, risk_level),
+           address_json = COALESCE(?9, address_json),
            updated_at = ?7
          WHERE shop = ?1 AND shopify_order_id = ?2`
       )
-      .bind(this.shop, shopifyOrderId, fields.status ?? null, fields.hold_reasons ?? null, fields.cj_order_id ?? null, fields.tracking_number ?? null, now, fields.risk_level ?? null)
+      .bind(this.shop, shopifyOrderId, fields.status ?? null, fields.hold_reasons ?? null, fields.cj_order_id ?? null, fields.tracking_number ?? null, now, fields.risk_level ?? null, fields.address_json ?? null)
       .run();
+  }
+
+  // --- order trail (phase 2): append-only steps, for reconstructing a failed
+  // or disputed order without reading logs ---
+
+  /** Records one step of the order trail. Never throws - a trail-write
+   *  failure must not fail the step that raised it. One statement so the
+   *  per-order sequence number cannot collide with a concurrent write. */
+  async addOrderEvent(shopifyOrderId: string, kind: OrderEventKind, detail?: string | null): Promise<void> {
+    try {
+      const now = new Date().toISOString();
+      const d = detail != null ? detail.slice(0, 300) : null;
+      await this.db
+        .prepare(
+          `INSERT INTO order_events (shop, shopify_order_id, seq, at, kind, detail)
+           SELECT ?1, ?2, COALESCE(MAX(seq), 0) + 1, ?3, ?4, ?5
+           FROM order_events WHERE shop = ?1 AND shopify_order_id = ?2`
+        )
+        .bind(this.shop, shopifyOrderId, now, kind, d)
+        .run();
+    } catch (err) {
+      console.warn(`order event not recorded for ${shopifyOrderId} (${kind}): ${(err as Error).message}`);
+    }
+  }
+
+  async listOrderEvents(shopifyOrderId: string): Promise<OrderEventRow[]> {
+    const rs = await this.db
+      .prepare(`SELECT * FROM order_events WHERE shop = ?1 AND shopify_order_id = ?2 ORDER BY seq ASC`)
+      .bind(this.shop, shopifyOrderId)
+      .all<OrderEventRow>();
+    return rs.results ?? [];
+  }
+
+  /** Counts the matching-kind run at the tail of the trail (most recent
+   *  events first), stopping at the first event that does not match. */
+  async countTrailingOrderEvents(shopifyOrderId: string, kind: OrderEventKind): Promise<number> {
+    const rs = await this.db
+      .prepare(`SELECT kind FROM order_events WHERE shop = ?1 AND shopify_order_id = ?2 ORDER BY seq DESC LIMIT 20`)
+      .bind(this.shop, shopifyOrderId)
+      .all<{ kind: string }>();
+    let n = 0;
+    for (const row of rs.results ?? []) {
+      if (row.kind !== kind) break;
+      n++;
+    }
+    return n;
   }
 
   async getLinks(cjPids: string[]): Promise<Map<string, ProductLink>> {
