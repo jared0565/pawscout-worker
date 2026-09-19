@@ -225,7 +225,7 @@ export type OrderEventKind =
   | 'gate-passed' | 'gate-held' | 'gate-unreadable' | 'address-refreshed'
   | 'stock-ok' | 'stockout' | 'supplier-order-created' | 'awaiting-payment' | 'paid'
   | 'tracking-found' | 'tracking-written' | 'tracking-write-failed'
-  | 'cancel-received' | 'refund-received' | 'owner-alerted' | 'operator-action' | 'error';
+  | 'cancel-received' | 'refund-received' | 'owner-alerted' | 'owner-alert-failed' | 'operator-action' | 'error';
 
 /** One append-only row of the order trail - `detail` is short plain text and
  *  must never hold a name, an address, an email or a phone number. */
@@ -1039,10 +1039,12 @@ export class TenantStore {
   // --- order trail (phase 2): append-only steps, for reconstructing a failed
   // or disputed order without reading logs ---
 
-  /** Records one step of the order trail. Never throws - a trail-write
-   *  failure must not fail the step that raised it. One statement so the
-   *  per-order sequence number cannot collide with a concurrent write. */
-  async addOrderEvent(shopifyOrderId: string, kind: OrderEventKind, detail?: string | null): Promise<void> {
+  /** Records one step of the order trail. Never throws - answers true when
+   *  the row was written, false when the database refused it (a trail-write
+   *  failure must not fail the step that raised it, but the caller can still
+   *  tell the two apart). One statement so the per-order sequence number
+   *  cannot collide with a concurrent write. */
+  async addOrderEvent(shopifyOrderId: string, kind: OrderEventKind, detail?: string | null): Promise<boolean> {
     try {
       const now = new Date().toISOString();
       const d = detail != null ? detail.slice(0, 300) : null;
@@ -1054,8 +1056,10 @@ export class TenantStore {
         )
         .bind(this.shop, shopifyOrderId, now, kind, d)
         .run();
+      return true;
     } catch (err) {
       console.warn(`order event not recorded for ${shopifyOrderId} (${kind}): ${(err as Error).message}`);
+      return false;
     }
   }
 
@@ -1080,6 +1084,39 @@ export class TenantStore {
       n++;
     }
     return n;
+  }
+
+  /** Order ids (this shop only) that still hold at least one owner alert
+   *  worth re-sending: a subject with a failed send that has not been
+   *  delivered since, fewer than `maxAttempts` failures since that delivery,
+   *  and its first such failure at or after `sinceIso`. Oldest first, at
+   *  most `limit`. This only CHOOSES which orders the sweep looks at; what
+   *  is actually re-sent is still decided by the sweep's own walk of each
+   *  order's trail (`pendingAlerts`). A subject that has since been
+   *  delivered is left out entirely by the database, rather than merely
+   *  sorted behind live ones, so a resolved order can never occupy a slot
+   *  that a still-failing one needs. */
+  async listOrderIdsWithPendingAlerts(sinceIso: string, maxAttempts: number, limit = 100): Promise<string[]> {
+    const rs = await this.db
+      .prepare(
+        `SELECT shopify_order_id FROM (
+           SELECT f.shopify_order_id AS shopify_order_id, MIN(f.at) AS first_at
+           FROM order_events f
+           WHERE f.shop = ?1 AND f.kind = 'owner-alert-failed' AND f.detail IS NOT NULL
+             AND NOT EXISTS (
+               SELECT 1 FROM order_events d
+               WHERE d.shop = f.shop AND d.shopify_order_id = f.shopify_order_id
+                 AND d.kind = 'owner-alerted' AND d.detail = f.detail AND d.seq > f.seq)
+           GROUP BY f.shopify_order_id, f.detail
+           HAVING COUNT(*) < ?3 AND MIN(f.at) >= ?2
+         )
+         GROUP BY shopify_order_id
+         ORDER BY MIN(first_at) ASC, shopify_order_id ASC
+         LIMIT ?4`
+      )
+      .bind(this.shop, sinceIso, maxAttempts, limit)
+      .all<{ shopify_order_id: string }>();
+    return (rs.results ?? []).map((r) => r.shopify_order_id);
   }
 
   async getLinks(cjPids: string[]): Promise<Map<string, ProductLink>> {

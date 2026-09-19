@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
 import { TenantStore } from '../src/tenant-store';
 
@@ -51,10 +51,10 @@ describe('order events (order trail)', () => {
     expect(rows[0].detail).toBe('a'.repeat(300));
   });
 
-  it('addOrderEvent does not throw when the database throws', async () => {
+  it('addOrderEvent does not throw when the database throws, and answers false', async () => {
     const fakeDb = { prepare: () => { throw new Error('db unavailable'); } };
     const store = new TenantStore(fakeDb as unknown as D1Database, SHOP);
-    await expect(store.addOrderEvent('O1', 'error')).resolves.toBeUndefined();
+    await expect(store.addOrderEvent('O1', 'error')).resolves.toBe(false);
   });
 
   it('countTrailingOrderEvents counts the run of a matching kind at the tail', async () => {
@@ -85,6 +85,128 @@ describe('order events (order trail)', () => {
     await storeA.redactShop();
     expect(await storeA.listOrderEvents('O1')).toEqual([]);
     expect((await storeB.listOrderEvents('O1')).length).toBe(1);
+  });
+
+  const EPOCH = new Date(0).toISOString();
+
+  it('listOrderIdsWithPendingAlerts excludes a subject once delivered, and includes it again if it fails after that delivery', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
+      await store.addOrderEvent('O1', 'owner-alert-failed', 'S');
+      expect(await store.listOrderIdsWithPendingAlerts(EPOCH, 12)).toEqual(['O1']);
+
+      vi.setSystemTime(new Date('2026-01-01T00:01:00.000Z'));
+      await store.addOrderEvent('O1', 'owner-alerted', 'S');
+      expect(await store.listOrderIdsWithPendingAlerts(EPOCH, 12)).toEqual([]);
+
+      vi.setSystemTime(new Date('2026-01-01T00:02:00.000Z'));
+      await store.addOrderEvent('O1', 'owner-alert-failed', 'S');
+      expect(await store.listOrderIdsWithPendingAlerts(EPOCH, 12)).toEqual(['O1']);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('an order with two subjects, one delivered and one still pending, is returned once', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    // the delivery of A comes AFTER B's failure, so a delivery-match that
+    // ignored the subject (matched by order id alone) would wrongly count
+    // as delivering B too.
+    await store.addOrderEvent('O1', 'owner-alert-failed', 'A');
+    await store.addOrderEvent('O1', 'owner-alert-failed', 'B');
+    await store.addOrderEvent('O1', 'owner-alerted', 'A');
+    expect(await store.listOrderIdsWithPendingAlerts(EPOCH, 12)).toEqual(['O1']);
+  });
+
+  it('maxAttempts failures since the last delivery excludes a subject, but the same total spread across a delivery still counts as pending', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    // three consecutive failures, no delivery: excluded once the count reaches maxAttempts (3)
+    await store.addOrderEvent('O1', 'owner-alert-failed', 'A');
+    await store.addOrderEvent('O1', 'owner-alert-failed', 'A');
+    await store.addOrderEvent('O1', 'owner-alert-failed', 'A');
+    expect(await store.listOrderIdsWithPendingAlerts(EPOCH, 3)).toEqual([]);
+
+    // 2 failures, delivered, 2 more failures: only 2 failures SINCE the delivery, still under maxAttempts (3)
+    await store.addOrderEvent('O2', 'owner-alert-failed', 'B');
+    await store.addOrderEvent('O2', 'owner-alert-failed', 'B');
+    await store.addOrderEvent('O2', 'owner-alerted', 'B');
+    await store.addOrderEvent('O2', 'owner-alert-failed', 'B');
+    await store.addOrderEvent('O2', 'owner-alert-failed', 'B');
+    expect(await store.listOrderIdsWithPendingAlerts(EPOCH, 3)).toEqual(['O2']);
+  });
+
+  it('a subject whose first undelivered failure is older than sinceIso is excluded, even with a later failure inside the window', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
+      await store.addOrderEvent('O1', 'owner-alert-failed', 'S');
+      vi.setSystemTime(new Date('2026-01-01T23:00:00.000Z'));
+      await store.addOrderEvent('O1', 'owner-alert-failed', 'S');
+    } finally {
+      vi.useRealTimers();
+    }
+    const sinceIso = new Date('2026-01-01T01:00:00.000Z').toISOString();
+    expect(await store.listOrderIdsWithPendingAlerts(sinceIso, 12)).toEqual([]);
+  });
+
+  it('the squat case: orders whose alerts have all been delivered never occupy a slot, even with a tight limit', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
+      for (const id of ['R1', 'R2', 'R3']) await store.addOrderEvent(id, 'owner-alert-failed', 'S');
+      vi.setSystemTime(new Date('2026-01-01T00:05:00.000Z'));
+      for (const id of ['R1', 'R2', 'R3']) await store.addOrderEvent(id, 'owner-alerted', 'S');
+      vi.setSystemTime(new Date('2026-01-02T00:00:00.000Z'));
+      await store.addOrderEvent('LIVE', 'owner-alert-failed', 'S');
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(await store.listOrderIdsWithPendingAlerts(EPOCH, 12, 2)).toEqual(['LIVE']);
+  });
+
+  it('orders pending alerts oldest first (not by order id), and ignores a failure row with a null detail', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await store.addOrderEvent('O1', 'owner-alert-failed', null); // no subject recorded - must never become a candidate
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      // O3 fails FIRST and O2 fails SECOND, so alphabetical and chronological
+      // order disagree: the assertion below can only pass if the ordering is
+      // genuinely by time, not by id.
+      vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
+      await store.addOrderEvent('O3', 'owner-alert-failed', 'S');
+      vi.setSystemTime(new Date('2026-01-01T00:01:00.000Z'));
+      await store.addOrderEvent('O2', 'owner-alert-failed', 'S');
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(await store.listOrderIdsWithPendingAlerts(EPOCH, 12)).toEqual(['O3', 'O2']);
+  });
+
+  it('never returns another shop\'s orders (different order ids per shop)', async () => {
+    const storeA = new TenantStore(env.DB, SHOP);
+    const storeB = new TenantStore(env.DB, SHOP2);
+    await storeA.addOrderEvent('O1', 'owner-alert-failed', 'S');
+    await storeB.addOrderEvent('B1', 'owner-alert-failed', 'S');
+    expect(await storeA.listOrderIdsWithPendingAlerts(EPOCH, 12)).toEqual(['O1']);
+    expect(await storeB.listOrderIdsWithPendingAlerts(EPOCH, 12)).toEqual(['B1']);
+  });
+
+  it('another shop\'s delivery never clears this shop\'s pending alert, even under the same order id', async () => {
+    // The trail's key is (shop, order id, seq), so two shops may hold the same
+    // order id. Shop B's later delivery of the same subject must not make shop
+    // A's failed alert look delivered: that would silently drop a "do not pay"
+    // alert because of another tenant's data.
+    const storeA = new TenantStore(env.DB, SHOP);
+    const storeB = new TenantStore(env.DB, SHOP2);
+    await storeA.addOrderEvent('O1', 'owner-alert-failed', 'S');
+    await storeB.addOrderEvent('O1', 'received');
+    await storeB.addOrderEvent('O1', 'owner-alerted', 'S');
+    expect(await storeA.listOrderIdsWithPendingAlerts(EPOCH, 12)).toEqual(['O1']);
+    expect(await storeB.listOrderIdsWithPendingAlerts(EPOCH, 12)).toEqual([]);
   });
 
   it('updateOrder changes address_json and leaves status alone', async () => {

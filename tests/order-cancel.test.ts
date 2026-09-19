@@ -109,7 +109,7 @@ describe('applyCancel', () => {
     }
   });
 
-  it('awaiting-payment becomes cancelled, alerts do NOT pay the supplier, and writes cancel-received then owner-alerted', async () => {
+  it('awaiting-payment becomes cancelled, alerts do NOT pay the supplier, and writes cancel-received (the alert itself is delivered and confirmed separately)', async () => {
     const store = new TenantStore(env.DB, SHOP);
     await seedOrder(store, 'O1', 'awaiting-payment', { cjOrderId: 'CJ-1' });
     const outcome = await applyCancel(store, 'O1');
@@ -122,7 +122,7 @@ describe('applyCancel', () => {
     expect(order?.status).toBe('cancelled');
     expect(order?.hold_reasons).toBe(JSON.stringify(['shopify-cancelled']));
     const events = await store.listOrderEvents('O1');
-    expect(events.map((e) => e.kind)).toEqual(['cancel-received', 'owner-alerted']);
+    expect(events.map((e) => e.kind)).toEqual(['cancel-received']);
   });
 
   it('submitted becomes cancelled and alerts that it was cancelled after it was paid at the supplier', async () => {
@@ -137,7 +137,7 @@ describe('applyCancel', () => {
     const order = await store.getOrder('O1');
     expect(order?.status).toBe('cancelled');
     const events = await store.listOrderEvents('O1');
-    expect(events.map((e) => e.kind)).toEqual(['cancel-received', 'owner-alerted']);
+    expect(events.map((e) => e.kind)).toEqual(['cancel-received']);
   });
 
   it('fulfilled stays fulfilled but alerts that it was cancelled after it shipped, and treats the row as changed', async () => {
@@ -152,7 +152,7 @@ describe('applyCancel', () => {
     const order = await store.getOrder('O1');
     expect(order?.status).toBe('fulfilled');
     const events = await store.listOrderEvents('O1');
-    expect(events.map((e) => e.kind)).toEqual(['cancel-received', 'owner-alerted']);
+    expect(events.map((e) => e.kind)).toEqual(['cancel-received']);
   });
 
   it('a cancelled row with no trail yet takes the normal path once (writes cancel-received, no alert), then dedupes on the next delivery', async () => {
@@ -192,33 +192,33 @@ describe('applyCancel', () => {
     expect(await store.listOrderEvents('O1')).toEqual(eventsAfterFirst);
   });
 
-  it('three deliveries of the same cancel for a fulfilled row give exactly one alert and one cancel-received/owner-alerted pair', async () => {
+  it('three deliveries of the same cancel for a fulfilled row give exactly one alert and one cancel-received event', async () => {
     const store = new TenantStore(env.DB, SHOP);
     await seedOrder(store, 'F1', 'fulfilled', { cjOrderId: 'CJ-F1', trackingNumber: 'TRK-F1' });
     const alerts: (OwnerAlert | null)[] = [];
     for (let i = 0; i < 3; i++) alerts.push((await applyCancel(store, 'F1')).alert);
     expect(alerts.filter((a) => a !== null)).toHaveLength(1);
-    expect((await store.listOrderEvents('F1')).map((e) => e.kind)).toEqual(['cancel-received', 'owner-alerted']);
+    expect((await store.listOrderEvents('F1')).map((e) => e.kind)).toEqual(['cancel-received']);
     expect((await store.getOrder('F1'))?.status).toBe('fulfilled');
   });
 
-  it('three deliveries of the same cancel for an awaiting-payment row give exactly one alert and one cancel-received/owner-alerted pair', async () => {
+  it('three deliveries of the same cancel for an awaiting-payment row give exactly one alert and one cancel-received event', async () => {
     const store = new TenantStore(env.DB, SHOP);
     await seedOrder(store, 'F2', 'awaiting-payment', { cjOrderId: 'CJ-F2' });
     const alerts: (OwnerAlert | null)[] = [];
     for (let i = 0; i < 3; i++) alerts.push((await applyCancel(store, 'F2')).alert);
     expect(alerts.filter((a) => a !== null)).toHaveLength(1);
-    expect((await store.listOrderEvents('F2')).map((e) => e.kind)).toEqual(['cancel-received', 'owner-alerted']);
+    expect((await store.listOrderEvents('F2')).map((e) => e.kind)).toEqual(['cancel-received']);
     expect((await store.getOrder('F2'))?.status).toBe('cancelled');
   });
 
-  it('three deliveries of the same cancel for a submitted row give exactly one alert and one cancel-received/owner-alerted pair', async () => {
+  it('three deliveries of the same cancel for a submitted row give exactly one alert and one cancel-received event', async () => {
     const store = new TenantStore(env.DB, SHOP);
     await seedOrder(store, 'F3', 'submitted', { cjOrderId: 'CJ-F3' });
     const alerts: (OwnerAlert | null)[] = [];
     for (let i = 0; i < 3; i++) alerts.push((await applyCancel(store, 'F3')).alert);
     expect(alerts.filter((a) => a !== null)).toHaveLength(1);
-    expect((await store.listOrderEvents('F3')).map((e) => e.kind)).toEqual(['cancel-received', 'owner-alerted']);
+    expect((await store.listOrderEvents('F3')).map((e) => e.kind)).toEqual(['cancel-received']);
     expect((await store.getOrder('F3'))?.status).toBe('cancelled');
   });
 
@@ -297,11 +297,11 @@ describe('applyRefund', () => {
       const order = await store.getOrder(id);
       expect(order?.status).toBe(status);
       const events = await store.listOrderEvents(id);
-      expect(events.map((e) => e.kind)).toEqual(['refund-received', 'owner-alerted']);
+      expect(events.map((e) => e.kind)).toEqual(['refund-received']);
     }
   });
 
-  it('five identical deliveries of one refund on a row with a supplier order give exactly one alert, one refund-received and one owner-alerted', async () => {
+  it('five identical deliveries of one refund on a row with a supplier order give exactly one alert and one refund-received event', async () => {
     const store = new TenantStore(env.DB, SHOP);
     await seedOrder(store, 'O1', 'submitted', { cjOrderId: 'CJ-1' });
     const alerts: (OwnerAlert | null)[] = [];
@@ -310,7 +310,7 @@ describe('applyRefund', () => {
     }
     expect(alerts.filter((a) => a !== null)).toHaveLength(1);
     const events = await store.listOrderEvents('O1');
-    expect(events.map((e) => e.kind)).toEqual(['refund-received', 'owner-alerted']);
+    expect(events.map((e) => e.kind)).toEqual(['refund-received']);
   });
 
   it('two different refunds (different ids) of the same amount and currency both alert (dedup keys on refund id, not amount)', async () => {
@@ -321,7 +321,7 @@ describe('applyRefund', () => {
     expect(first.alert).not.toBeNull();
     expect(second.alert).not.toBeNull();
     const events = await store.listOrderEvents('O1');
-    expect(events.map((e) => e.kind)).toEqual(['refund-received', 'owner-alerted', 'refund-received', 'owner-alerted']);
+    expect(events.map((e) => e.kind)).toEqual(['refund-received', 'refund-received']);
   });
 
   it('when refundId is empty, dedup falls back to an exact match on currency and amount', async () => {
@@ -337,7 +337,7 @@ describe('applyRefund', () => {
     expect(third.alert).not.toBeNull();
 
     const events = await store.listOrderEvents('O1');
-    expect(events.map((e) => e.kind)).toEqual(['refund-received', 'owner-alerted', 'refund-received', 'owner-alerted']);
+    expect(events.map((e) => e.kind)).toEqual(['refund-received', 'refund-received']);
   });
 
   it('refund-received detail is exactly "refund <id>: <currency> <amount>", using unknown when the id is empty', async () => {

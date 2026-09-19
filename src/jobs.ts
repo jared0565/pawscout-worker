@@ -1724,7 +1724,7 @@ export const DAILY_SHOP_STAGES: DailyStage[] = [
       // A rollover that fails verification leaves a discount in the wrong
       // window (the 2026-09-05 SUMMERSALE fault); the log line above has short
       // retention, so the owner is emailed, once per distinct failure set.
-      await alertRotationErrors(ctx.store, r.errors, (subject, text) => alertOwner(ctx.env, ctx.cfg, subject, text));
+      await alertRotationErrors(ctx.store, r.errors, (subject, text) => alertOwner(ctx.env, ctx.cfg, subject, text).then(() => undefined));
     }
   },
   // The catalog-walking sweeps checkpoint their offset against the deadline, so

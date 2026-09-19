@@ -10,6 +10,7 @@ import type { Env, TenantConfig } from './types';
 import type { OrderLineItem, OrderAddress } from './fulfil';
 import { readOrderGate, decideGate, type RiskLevel } from './order-gate';
 import { alertOwner } from './owner-alert';
+import { deliverOrderAlert, retryOrderAlerts, type AlertSend } from './order-alert';
 
 // W-FULFIL Stage B: turn queued orders into paid CJ orders, then write tracking
 // back to Shopify. The money leg (createOrder + payBalance) only runs when
@@ -89,37 +90,32 @@ async function alertIfSupplierOrderExists(
   store: TenantStore,
   o: { shopify_order_id: string; order_name: string | null; cj_order_id: string | null },
   reason: string,
-  alert?: (subject: string, text: string) => Promise<void>
+  alert?: AlertSend
 ): Promise<void> {
   if (!o.cj_order_id || !alert) return;
   const name = o.order_name ?? o.shopify_order_id;
-  try {
-    await alert(
-      `Order ${name} was stopped and a supplier order exists for it`,
-      `Order ${name} was stopped by the check against Shopify (${reason}). Supplier order ${o.cj_order_id} already exists for it. Do NOT pay it. Check its state at the supplier: cancel it there if it is unpaid, and treat it as a return if it has been paid.`
-    );
-    await store.addOrderEvent(o.shopify_order_id, 'owner-alerted');
-  } catch (e) {
-    console.warn(`owner alert failed for ${name}: ${(e as Error).message}`);
-  }
+  await deliverOrderAlert(store, o.shopify_order_id, {
+    subject: `Order ${name} was stopped and a supplier order exists for it`,
+    text: `Order ${name} was stopped by the check against Shopify (${reason}). Supplier order ${o.cj_order_id} already exists for it. Do NOT pay it. Check its state at the supplier: cancel it there if it is unpaid, and treat it as a return if it has been paid.`
+  }, alert);
 }
 
 /** A gate read failure means "could not tell" - fail CLOSED (never proceed to
  *  spend). The row is left untouched so the next 15-minute tick retries it.
- *  On the 4th-or-later consecutive failure (fix round 1, M-2: >= 4, not === 4,
- *  so one swallowed addOrderEvent write can never permanently silence an
- *  order) tell the owner once. `cjOrderId` (fix round 1, I-2) is the row's
- *  supplier order id when one exists - passed by the caller, since only the
- *  caller knows whether it is at the pre-create position (o.cj_order_id, set
- *  on a pay-retry) or the pre-pay position (always set by then) - and picks
- *  which of the two texts is actually true. A throwing alert callback is
- *  swallowed so it can never fail the order. */
+ *  On the 4th-or-later consecutive failure (>= 4, not === 4, so one swallowed
+ *  addOrderEvent write can never permanently silence an order) tell the
+ *  owner once. `cjOrderId` is the row's supplier order id when one exists -
+ *  passed by the caller, since only the caller knows whether it is at the
+ *  pre-create position (o.cj_order_id, set on a pay-retry) or the pre-pay
+ *  position (always set by then) - and picks which of the two texts is
+ *  actually true. Delivery (and the trail marker for it) goes through
+ *  deliverOrderAlert, which never throws. */
 async function handleGateUnreadable(
   store: TenantStore,
   o: { shopify_order_id: string; order_name: string | null },
   error: string,
   cjOrderId: string | null,
-  alert?: (subject: string, text: string) => Promise<void>
+  alert?: AlertSend
 ): Promise<void> {
   await store.addOrderEvent(o.shopify_order_id, 'gate-unreadable', error);
   if ((await store.countTrailingOrderEvents(o.shopify_order_id, 'gate-unreadable')) < 4) return;
@@ -128,12 +124,7 @@ async function handleGateUnreadable(
   const text = cjOrderId
     ? `Order ${name} could not be checked against Shopify on the last 4 checks (${error}). Supplier order ${cjOrderId} exists for it, and PawScout will not pay it until the check succeeds. It is retried every 15 minutes.`
     : `Order ${name} is due, but its state in Shopify could not be read on the last 4 checks (${error}). Nothing has been sent to the supplier. It is retried every 15 minutes.`;
-  try {
-    await alert(`Order ${name} cannot be checked against Shopify`, text);
-    await store.addOrderEvent(o.shopify_order_id, 'owner-alerted');
-  } catch (e) {
-    console.warn(`owner alert failed for ${name}: ${(e as Error).message}`);
-  }
+  await deliverOrderAlert(store, o.shopify_order_id, { subject: `Order ${name} cannot be checked against Shopify`, text }, alert);
 }
 
 const FULFILL = `mutation pawscoutFulfill($f: FulfillmentInput!) {
@@ -235,7 +226,7 @@ export async function processDueOrders(
   opts: {
     now?: () => number; max?: number;
     notify?: (n: AwaitingPaymentNotice) => Promise<void>; notifyStockout?: (n: StockoutNotice) => Promise<void>;
-    alert?: (subject: string, text: string) => Promise<void>;
+    alert?: AlertSend;
   } = {}
 ): Promise<{ submitted: number; awaiting: number; held: number; errored: number; skipped: boolean }> {
   if (cfg.fulfil.mode !== 'pawscout') return { submitted: 0, awaiting: 0, held: 0, errored: 0, skipped: true }; // 'manual'/'cj' → PawScout doesn't pay
@@ -256,15 +247,10 @@ export async function processDueOrders(
       held++;
       const name = o.order_name ?? o.shopify_order_id;
       if (opts.alert) {
-        try {
-          await opts.alert(
-            `Order ${name} was cancelled while its supplier order was being created`,
-            `Order ${name} was cancelled in Shopify while supplier order ${cjOrderId} was being created. Do NOT pay it. Cancel it at the supplier.`
-          );
-          await store.addOrderEvent(o.shopify_order_id, 'owner-alerted');
-        } catch (e) {
-          console.warn(`owner alert failed for ${name}: ${(e as Error).message}`);
-        }
+        await deliverOrderAlert(store, o.shopify_order_id, {
+          subject: `Order ${name} was cancelled while its supplier order was being created`,
+          text: `Order ${name} was cancelled in Shopify while supplier order ${cjOrderId} was being created. Do NOT pay it. Cancel it at the supplier.`
+        }, opts.alert);
       }
       return;
     }
@@ -423,15 +409,10 @@ export async function processDueOrders(
           held++;
           const name = o.order_name ?? o.shopify_order_id;
           if (opts.alert) {
-            try {
-              await opts.alert(
-                `Order ${name}: payment to the supplier was stopped`,
-                `Order ${name} changed in Shopify (${payDecision.reason}) after supplier order ${cjOrderId} was created and before it was paid. It has NOT been paid. Cancel it at the supplier.`
-              );
-              await store.addOrderEvent(o.shopify_order_id, 'owner-alerted');
-            } catch (e) {
-              console.warn(`owner alert failed for ${name}: ${(e as Error).message}`);
-            }
+            await deliverOrderAlert(store, o.shopify_order_id, {
+              subject: `Order ${name}: payment to the supplier was stopped`,
+              text: `Order ${name} changed in Shopify (${payDecision.reason}) after supplier order ${cjOrderId} was created and before it was paid. It has NOT been paid. Cancel it at the supplier.`
+            }, opts.alert);
           }
         } else {
           const _exhaustive: never = payDecision;
@@ -462,15 +443,10 @@ export async function processDueOrders(
         held++;
         const name = o.order_name ?? o.shopify_order_id;
         if (opts.alert) {
-          try {
-            await opts.alert(
-              `Order ${name} was cancelled while its supplier order was being paid`,
-              `Order ${name} was cancelled in Shopify while supplier order ${cjOrderId} was being paid. The payment went through. Ask the supplier to cancel it if it has not shipped. If it has shipped, this is a return.`
-            );
-            await store.addOrderEvent(o.shopify_order_id, 'owner-alerted');
-          } catch (e) {
-            console.warn(`owner alert failed for ${name}: ${(e as Error).message}`);
-          }
+          await deliverOrderAlert(store, o.shopify_order_id, {
+            subject: `Order ${name} was cancelled while its supplier order was being paid`,
+            text: `Order ${name} was cancelled in Shopify while supplier order ${cjOrderId} was being paid. The payment went through. Ask the supplier to cancel it if it has not shipped. If it has shipped, this is a return.`
+          }, opts.alert);
         }
       } else {
         submitted++;
@@ -554,7 +530,7 @@ export async function pollTracking(
   store: TenantStore,
   cj: CjClient,
   admin: AdminGraphql,
-  opts: { max?: number; alert?: (subject: string, text: string) => Promise<void> } = {}
+  opts: { max?: number; alert?: AlertSend } = {}
 ): Promise<{ checked: number; fulfilled: number }> {
   // Poll both PS-paid ('submitted') and owner-pays-manually ('awaiting-payment')
   // orders: in either case a tracking number means CJ has shipped it. Once an
@@ -595,15 +571,10 @@ export async function pollTracking(
         if ((await store.countTrailingOrderEvents(o.shopify_order_id, 'tracking-write-failed')) >= 4) {
           const name = o.order_name ?? o.shopify_order_id;
           if (opts.alert) {
-            try {
-              await opts.alert(
-                `Order ${name}: tracking could not be written to Shopify`,
-                `Supplier order ${o.cj_order_id} has shipped with tracking ${detail.trackNumber}, but writing it to Shopify failed on the last 4 attempts (${msg}). The customer has not been told. It is retried every 15 minutes.`
-              );
-              await store.addOrderEvent(o.shopify_order_id, 'owner-alerted');
-            } catch (e) {
-              console.warn(`owner alert failed for ${name}: ${(e as Error).message}`);
-            }
+            await deliverOrderAlert(store, o.shopify_order_id, {
+              subject: `Order ${name}: tracking could not be written to Shopify`,
+              text: `Supplier order ${o.cj_order_id} has shipped with tracking ${detail.trackNumber}, but writing it to Shopify failed on the last 4 attempts (${msg}). The customer has not been told. It is retried every 15 minutes.`
+            }, opts.alert);
           }
         }
       }
@@ -662,6 +633,18 @@ export async function runOrderPipelineForShop(env: Env, vault: Vault, shop: stri
   const tenant = await store.getTenant();
   const cfg = await store.getConfig();
   if (!tenant?.access_token_enc || !cfg) return null;
+  const alert: AlertSend = (subject, text) => alertOwner(env, cfg, subject, text);
+  // Runs before the supplier-credential guard and the vault open below (and
+  // regardless of fulfil.mode, which processDueOrders gates on) so a shop
+  // whose CJ credential is missing, rotated out or failing to open still
+  // gets its pending alerts re-sent - it needs only the store, the config
+  // and the environment. Best-effort: a retry sweep failure must never stop
+  // the pipeline it rides on.
+  try {
+    await retryOrderAlerts(store, alert);
+  } catch (e) {
+    console.warn(`owner alert retry sweep failed for ${shop}: ${e instanceof Error ? e.message : String(e)}`);
+  }
   if (!(await store.getSupplierCredential('cj'))) return null;
   const accessToken = await vault.open(tenant.dek_wrapped, tenant.access_token_enc);
   const admin = makeAdminGraphql(shop, accessToken);
@@ -669,7 +652,6 @@ export async function runOrderPipelineForShop(env: Env, vault: Vault, shop: stri
   const cj = new CjClient(() => new CjTokenManager(store, vault, f).getToken(), f);
   const notify = makeAwaitingPaymentNotify(env, cfg.fulfil.alertEmail);
   const notifyStockout = makeStockoutNotify(env, cfg.fulfil.alertEmail);
-  const alert = (subject: string, text: string) => alertOwner(env, cfg, subject, text);
   const p = await processDueOrders(store, cj, admin, cfg, { ...(notify ? { notify } : {}), ...(notifyStockout ? { notifyStockout } : {}), alert });
   const t = await pollTracking(store, cj, admin, { alert });
   // Low-band fast re-sync piggybacks on this 15-minute entry (same clients): items

@@ -34,6 +34,7 @@ import { validateCjKey, CjClient, CjTokenManager, cjFetchFromEnv, chooseOrigin }
 import { registerWebhooks, ensureWebhooks, ORDER_EVENT_TOPICS, type RegisterWebhook } from './webhooks';
 import { cancelledOrderId, refundInfo, applyCancel, applyRefund, type OwnerAlert } from './order-cancel';
 import { alertOwner } from './owner-alert';
+import { deliverOrderAlert } from './order-alert';
 import { onWebhookFailure } from './webhook-retry';
 import { validateGatesPayload, validatePricingPayload, validateLlmPayload, validateAddonsPayload, validateCollectionMap, validatePartnerPayload, validateSelfServePayload } from './validate';
 import { sendEmail, SENDING_DOMAIN } from './email';
@@ -80,15 +81,18 @@ function makeRegistrar(env: Env): RegisterWebhook {
 }
 
 // ONE door for every order-webhook owner alert (orders-cancelled, refunds-create).
-// A later task changes how these alerts are confirmed; keeping every send behind
-// this one helper means that task has exactly one place to change. The email
-// itself rides in waitUntil - only the trail decision (applyCancel/applyRefund)
-// is awaited before the webhook answers. M-3 (fix round 1): the promise handed
-// to waitUntil carries its own .catch, like its neighbour a few lines below in
-// /webhooks/orders-paid (store.recordEvent(...).catch(() => undefined)) - a
-// future throw inside alertOwner's chain must not become an unhandled rejection.
-function sendOrderAlert(c: Context<{ Bindings: Env }>, cfg: TenantConfig, alert: OwnerAlert): void {
-  c.executionCtx.waitUntil(alertOwner(c.env, cfg, alert.subject, alert.text).catch(() => undefined));
+// Delivery and its trail marker both go through deliverOrderAlert, so a send
+// that fails leaves owner-alert-failed rather than looking, in the trail,
+// like the owner was told - the retry sweep in runOrderPipelineForShop picks
+// it up later. The whole thing rides in waitUntil - only the trail decision
+// (applyCancel/applyRefund) is awaited before the webhook answers - and the
+// promise handed to waitUntil carries its own .catch, like its neighbour a
+// few lines below in /webhooks/orders-paid (store.recordEvent(...).catch(()
+// => undefined)), even though deliverOrderAlert itself never throws.
+function sendOrderAlert(c: Context<{ Bindings: Env }>, store: TenantStore, cfg: TenantConfig, shopifyOrderId: string, alert: OwnerAlert): void {
+  c.executionCtx.waitUntil(
+    deliverOrderAlert(store, shopifyOrderId, alert, (subject, text) => alertOwner(c.env, cfg, subject, text)).catch(() => undefined)
+  );
 }
 
 // The shared failure contract for the three order webhook routes below
@@ -2245,8 +2249,9 @@ app.post('/webhooks/orders-paid', async (c) => {
 // and alerts the owner when needed, wired to the outside world.
 // Same shape as orders-paid: validate, read the shop, one try block, log,
 // answer per the failure contract above. applyCancel writes its own trail
-// (cancel-received, owner-alerted) and dedupes on it, so redelivery of the
-// same event is a no-op here. ---
+// (cancel-received) and dedupes on it, so redelivery of the same event is a
+// no-op here; the alert it returns is delivered and confirmed separately,
+// through sendOrderAlert. ---
 app.post('/webhooks/orders-cancelled', async (c) => {
   const shopify = makeShopify(c.env);
   const body = await c.req.text();
@@ -2265,18 +2270,19 @@ app.post('/webhooks/orders-cancelled', async (c) => {
     orderId = cancelledOrderId(parsedBody);
     if (!orderId) return c.text('ok');
     const outcome = await applyCancel(store, orderId);
-    if (outcome.alert) sendOrderAlert(c, cfg, outcome.alert);
+    if (outcome.alert) sendOrderAlert(c, store, cfg, orderId, outcome.alert);
   } catch (e) {
     return handleOrderWebhookFailure(c, store, cfg, webhookId, 'orders/cancelled', orderId, e);
   }
   return c.text('ok');
 });
 
-// --- refunds/create webhook (Task 4's decision, wired to the outside world).
+// --- refunds/create webhook, wired to the outside world.
 // Same shape as orders-cancelled. applyRefund writes its own trail
-// (refund-received, owner-alerted) and dedupes on the refund's own identity
-// read from the whole trail, so any number of redeliveries change nothing
-// after the first. ---
+// (refund-received) and dedupes on the refund's own identity read from the
+// whole trail, so any number of redeliveries change nothing after the
+// first; the alert it returns is delivered and confirmed separately,
+// through sendOrderAlert. ---
 app.post('/webhooks/refunds-create', async (c) => {
   const shopify = makeShopify(c.env);
   const body = await c.req.text();
@@ -2296,7 +2302,7 @@ app.post('/webhooks/refunds-create', async (c) => {
     orderId = info.orderId;
     if (!orderId) return c.text('ok');
     const outcome = await applyRefund(store, info);
-    if (outcome.alert) sendOrderAlert(c, cfg, outcome.alert);
+    if (outcome.alert) sendOrderAlert(c, store, cfg, orderId, outcome.alert);
   } catch (e) {
     return handleOrderWebhookFailure(c, store, cfg, webhookId, 'refunds/create', orderId, e);
   }

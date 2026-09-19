@@ -92,7 +92,6 @@ export async function applyCancel(store: TenantStore, shopifyOrderId: string): P
     await store.updateOrder(shopifyOrderId, { status: 'cancelled', hold_reasons: JSON.stringify(['shopify-cancelled']) });
   }
   await store.addOrderEvent(shopifyOrderId, 'cancel-received');
-  if (alert) await store.addOrderEvent(shopifyOrderId, 'owner-alerted');
 
   return { changed: true, alert };
 }
@@ -146,7 +145,6 @@ export async function applyRefund(
   if (order.cj_order_id) {
     const name = displayName(order);
     const amountStr = amount.toFixed(2);
-    await store.addOrderEvent(info.orderId, 'owner-alerted');
     return {
       changed: true,
       alert: {

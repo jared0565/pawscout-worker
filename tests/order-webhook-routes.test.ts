@@ -150,17 +150,21 @@ describe('POST /webhooks/orders-cancelled', () => {
     expect(await new TenantStore(env.DB, SHOP).listOrderEvents('GHOST')).toEqual([]);
   });
 
-  it('a valid cancel for an awaiting-payment order makes it cancelled, writes owner-alerted, and sends exactly one alert', async () => {
+  it('a valid cancel for an awaiting-payment order makes it cancelled and sends exactly one alert; with no Resend key in this test env, delivery leaves an unconfigured error rather than owner-alerted', async () => {
     const store = await seedConfig();
     await seedOrder(store, 'O1', 'awaiting-payment', { cjOrderId: 'CJ-1' });
     const res = await postWebhook('/webhooks/orders-cancelled', JSON.stringify({ id: 'O1' }), { topic: 'orders/cancelled' });
     expect(res.status).toBe(200);
     expect((await store.getOrder('O1'))?.status).toBe('cancelled');
-    const events = await store.listOrderEvents('O1');
-    expect(events.map((e) => e.kind)).toEqual(['cancel-received', 'owner-alerted']);
-    // I-1: this is the alert the whole route exists to send (Task 4's "do NOT
-    // pay the supplier" warning) - it must actually reach the alert door.
+    // this is the alert the whole route exists to send ("do NOT pay the
+    // supplier") - it must actually reach the alert door.
     expect(waitUntilCalls).toHaveLength(1);
+    // delivery itself now runs inside waitUntil, so it must be awaited before
+    // the trail write it produces can be read.
+    await Promise.all(waitUntilCalls);
+    const events = await store.listOrderEvents('O1');
+    expect(events.map((e) => e.kind)).toEqual(['cancel-received', 'error']);
+    expect(events[1].detail).toBe('owner alert not configured: Order #O1 was cancelled: do NOT pay the supplier');
   });
 
   it('a malformed JSON body still answers 200', async () => {
@@ -193,18 +197,22 @@ describe('POST /webhooks/refunds-create', () => {
     expect(waitUntilCalls).toHaveLength(0);
   });
 
-  it('a valid refund for a row with a supplier order sends exactly one alert', async () => {
+  it('a valid refund for a row with a supplier order sends exactly one alert; with no Resend key in this test env, delivery leaves an unconfigured error rather than owner-alerted', async () => {
     const store = await seedConfig();
     await seedOrder(store, 'O1', 'submitted', { cjOrderId: 'CJ-1' });
     const payload = JSON.stringify({ id: 777, order_id: 'O1', transactions: [{ kind: 'refund', amount: '12.50', currency: 'GBP' }] });
     const res = await postWebhook('/webhooks/refunds-create', payload, { topic: 'refunds/create' });
     expect(res.status).toBe(200);
     expect((await store.getOrder('O1'))?.status).toBe('submitted'); // applyRefund leaves it as-is, alerts instead
-    const events = await store.listOrderEvents('O1');
-    expect(events.map((e) => e.kind)).toEqual(['refund-received', 'owner-alerted']);
-    // I-1: this is the alert the route exists to send when money already left
-    // for the supplier - it must actually reach the alert door.
+    // this is the alert the route exists to send when money already left for
+    // the supplier - it must actually reach the alert door.
     expect(waitUntilCalls).toHaveLength(1);
+    // delivery itself now runs inside waitUntil, so it must be awaited before
+    // the trail write it produces can be read.
+    await Promise.all(waitUntilCalls);
+    const events = await store.listOrderEvents('O1');
+    expect(events.map((e) => e.kind)).toEqual(['refund-received', 'error']);
+    expect(events[1].detail).toBe('owner alert not configured: Order #O1 was refunded GBP 12.50');
   });
 
   it('a malformed JSON body still answers 200', async () => {
@@ -518,8 +526,11 @@ describe('tenant isolation (I-2)', () => {
     const payload = JSON.stringify({ id: 900, order_id: 'O1', transactions: [{ kind: 'refund', amount: '9.00', currency: 'GBP' }] });
     const res = await postWebhook('/webhooks/refunds-create', payload, { topic: 'refunds/create' });
     expect(res.status).toBe(200);
+    // delivery itself now runs inside waitUntil, so it must be awaited before
+    // the trail write it produces can be read.
+    await Promise.all(waitUntilCalls);
     const eventsA = await storeA.listOrderEvents('O1');
-    expect(eventsA.map((e) => e.kind)).toEqual(['refund-received', 'owner-alerted']);
+    expect(eventsA.map((e) => e.kind)).toEqual(['refund-received', 'error']);
 
     const bAfter = await storeB.getOrder('O1');
     expect(bAfter).toEqual(bBefore); // byte for byte: shop B's row is untouched

@@ -364,7 +364,7 @@ describe('pollTracking', () => {
     const alerts: { subject: string; text: string }[] = [];
     for (let i = 0; i < 4; i++) {
       await pollTracking(store, fakeCj({ create: [], pay: [] }), failAdmin, {
-        alert: async (subject, text) => { alerts.push({ subject, text }); }
+        alert: async (subject, text) => { alerts.push({ subject, text }); return 'sent'; }
       });
     }
     expect(alerts).toHaveLength(1);
@@ -373,7 +373,34 @@ describe('pollTracking', () => {
     const events = await store.listOrderEvents('O6');
     expect(events.filter((e) => e.kind === 'tracking-write-failed')).toHaveLength(4);
     expect(events.map((e) => e.kind)).toContain('owner-alerted');
+    expect(events.find((e) => e.kind === 'owner-alerted')?.detail).toBe(alerts[0].subject);
     expect((await store.getOrder('O6'))?.status).toBe('submitted');
+  });
+
+  it('a failed send at the tracking-write-failed alert leaves owner-alert-failed, not owner-alerted, and does not fire again on the very next poll (the failure marker breaks the trailing run the same way a delivered one does)', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await store.insertOrderIfNew({ shopifyOrderId: 'O6', orderName: '#6', totalPrice: 15, currency: 'GBP', financialStatus: 'paid', riskLevel: null, status: 'submitted', holdReasons: [], addressJson: null, lineItemsJson: null, fulfilAfter: null });
+    await store.updateOrder('O6', { cj_order_id: 'CJORD-O6' });
+    const failAdmin: AdminGraphql = (async (query: string) => {
+      if (query.includes('fulfillmentOrders')) throw new Error('write failed');
+      return {};
+    }) as unknown as AdminGraphql;
+    const alerts: { subject: string; text: string }[] = [];
+    for (let i = 0; i < 4; i++) {
+      await pollTracking(store, fakeCj({ create: [], pay: [] }), failAdmin, {
+        alert: async (subject, text) => { alerts.push({ subject, text }); return 'failed'; }
+      });
+    }
+    expect(alerts).toHaveLength(1);
+    const events = await store.listOrderEvents('O6');
+    expect(events.map((e) => e.kind)).toContain('owner-alert-failed');
+    expect(events.map((e) => e.kind)).not.toContain('owner-alerted');
+    expect(events.find((e) => e.kind === 'owner-alert-failed')?.detail).toBe(alerts[0].subject);
+
+    await pollTracking(store, fakeCj({ create: [], pay: [] }), failAdmin, {
+      alert: async (subject, text) => { alerts.push({ subject, text }); return 'failed'; }
+    });
+    expect(alerts).toHaveLength(1); // the failure marker already broke the trailing run
   });
 
   it('write-back succeeds: tracking-found then tracking-written; a second poll of the fulfilled order writes nothing', async () => {
@@ -516,7 +543,7 @@ describe('Stage-B live-order gate (2026-09-19: readOrderGate/decideGate, fetched
     const spy = { create: [] as unknown[], pay: [] as string[] };
     const alerts: unknown[] = [];
     const r = await processDueOrders(store, fakeCj(spy), liveAdmin({ throws: 'gate api down' }), cfg('pawscout'), {
-      alert: async (s, t) => { alerts.push({ s, t }); }
+      alert: async (s, t) => { alerts.push({ s, t }); return 'sent'; }
     });
     expect(r).toMatchObject({ submitted: 0, held: 0, errored: 0 });
     expect(spy.create.length).toBe(0);
@@ -534,7 +561,7 @@ describe('Stage-B live-order gate (2026-09-19: readOrderGate/decideGate, fetched
     const alerts: { subject: string; text: string }[] = [];
     for (let i = 0; i < 4; i++) {
       await processDueOrders(store, fakeCj({ create: [], pay: [] }), admin, cfg('pawscout'), {
-        alert: async (subject, text) => { alerts.push({ subject, text }); }
+        alert: async (subject, text) => { alerts.push({ subject, text }); return 'sent'; }
       });
     }
     expect(alerts).toHaveLength(1);
@@ -543,7 +570,31 @@ describe('Stage-B live-order gate (2026-09-19: readOrderGate/decideGate, fetched
     const events = await store.listOrderEvents('O1');
     expect(events.filter((e) => e.kind === 'gate-unreadable')).toHaveLength(4);
     expect(events.map((e) => e.kind)).toContain('owner-alerted');
+    expect(events.find((e) => e.kind === 'owner-alerted')?.detail).toBe(alerts[0].subject);
     expect((await store.getOrder('O1'))?.status).toBe('queued');
+  });
+
+  it('a failed alert on the 4th gate-unreadable failure leaves owner-alert-failed, not owner-alerted, and does not fire again on the 5th failure (the failure marker breaks the trailing run the same way a delivered one does)', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedWarehouse(store, 'CJ1', 'S1', 'v1');
+    await seedOrder(store, 'O1', [{ sku: 'S1', quantity: 1, cjPid: 'CJ1' }]);
+    const admin = liveAdmin({ throws: 'gate api down' });
+    const alerts: { subject: string; text: string }[] = [];
+    for (let i = 0; i < 4; i++) {
+      await processDueOrders(store, fakeCj({ create: [], pay: [] }), admin, cfg('pawscout'), {
+        alert: async (subject, text) => { alerts.push({ subject, text }); return 'failed'; }
+      });
+    }
+    expect(alerts).toHaveLength(1);
+    const events = await store.listOrderEvents('O1');
+    expect(events.map((e) => e.kind)).toContain('owner-alert-failed');
+    expect(events.map((e) => e.kind)).not.toContain('owner-alerted');
+    expect(events.find((e) => e.kind === 'owner-alert-failed')?.detail).toBe(alerts[0].subject);
+
+    await processDueOrders(store, fakeCj({ create: [], pay: [] }), admin, cfg('pawscout'), {
+      alert: async (subject, text) => { alerts.push({ subject, text }); return 'failed'; }
+    });
+    expect(alerts).toHaveLength(1); // the failure marker already broke the trailing run
   });
 
   it('a pay retry whose gate now says cancelled: payBalance is NOT called, the alert is sent, row cancelled keeps cj_order_id', async () => {
@@ -563,7 +614,7 @@ describe('Stage-B live-order gate (2026-09-19: readOrderGate/decideGate, fetched
     const spy = { create: [] as unknown[], pay: [] as string[] };
     const alerts: { subject: string; text: string }[] = [];
     const r = await processDueOrders(store, fakeCj(spy), admin, cfg('pawscout'), {
-      alert: async (subject, text) => { alerts.push({ subject, text }); }
+      alert: async (subject, text) => { alerts.push({ subject, text }); return 'sent'; }
     });
     expect(r).toMatchObject({ held: 1 });
     expect(spy.create.length).toBe(0); // no re-create (already existed)
@@ -576,6 +627,32 @@ describe('Stage-B live-order gate (2026-09-19: readOrderGate/decideGate, fetched
     expect(o?.cj_order_id).toBe('CJORD-EXISTING');
     const events = await store.listOrderEvents('O1');
     expect(events.map((e) => e.kind)).toContain('owner-alerted');
+    expect(events.find((e) => e.kind === 'owner-alerted')?.detail).toBe(alerts[0].subject);
+  });
+
+  it('a failed send at the payment-stopped alert leaves owner-alert-failed, not owner-alerted', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedWarehouse(store, 'CJ1', 'S1', 'v1');
+    await seedOrder(store, 'O1', [{ sku: 'S1', quantity: 1, cjPid: 'CJ1' }]);
+    await store.updateOrder('O1', { cj_order_id: 'CJORD-EXISTING' });
+    let calls = 0;
+    const admin: AdminGraphql = (async (query: string) => {
+      if (query.includes('pawscoutOrderGate')) {
+        calls++;
+        if (calls === 1) return { order: { ...LIVE_ORDER } };
+        return { order: { ...LIVE_ORDER, cancelledAt: '2026-09-19T00:00:00Z' } };
+      }
+      return {};
+    }) as unknown as AdminGraphql;
+    const spy = { create: [] as unknown[], pay: [] as string[] };
+    const r = await processDueOrders(store, fakeCj(spy), admin, cfg('pawscout'), {
+      alert: async () => 'failed'
+    });
+    expect(r).toMatchObject({ held: 1 });
+    expect(spy.pay.length).toBe(0);
+    const events = await store.listOrderEvents('O1');
+    expect(events.map((e) => e.kind)).toContain('owner-alert-failed');
+    expect(events.map((e) => e.kind)).not.toContain('owner-alerted');
   });
 
   it('two lines resolving to different origins hold as mixed-origin (no supplier order)', async () => {
@@ -587,7 +664,7 @@ describe('Stage-B live-order gate (2026-09-19: readOrderGate/decideGate, fetched
     const spy = { create: [] as unknown[], pay: [] as string[] };
     const alerts: unknown[] = [];
     const r = await processDueOrders(store, fakeCj(spy), liveAdmin(), cfg('pawscout'), {
-      alert: async (s, t) => { alerts.push({ s, t }); }
+      alert: async (s, t) => { alerts.push({ s, t }); return 'sent'; }
     });
     expect(r).toMatchObject({ held: 1 });
     expect(spy.create.length).toBe(0);
@@ -655,7 +732,7 @@ describe('I-3 (fix round 1): a cancelled row stays cancelled', () => {
     const alerts: { subject: string; text: string }[] = [];
     const r = await processDueOrders(store, cj, liveAdmin(), cfg('pawscout', true), {
       notify: async (n) => { notifies.push(n); },
-      alert: async (subject, text) => { alerts.push({ subject, text }); }
+      alert: async (subject, text) => { alerts.push({ subject, text }); return 'sent'; }
     });
     expect(r).toMatchObject({ held: 1, awaiting: 0 });
     expect(notifies).toHaveLength(0);
@@ -669,6 +746,29 @@ describe('I-3 (fix round 1): a cancelled row stays cancelled', () => {
     expect(kinds).toContain('supplier-order-created');
     expect(kinds).not.toContain('awaiting-payment');
     expect(kinds).toContain('owner-alerted');
+    expect(events.find((e) => e.kind === 'owner-alerted')?.detail).toBe(alerts[0].subject);
+  });
+
+  it('a failed send at the cancelled-during-create alert leaves owner-alert-failed, not owner-alerted', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedWarehouse(store, 'CJ1', 'S1', 'v1');
+    await seedOrder(store, 'O1', [{ sku: 'S1', quantity: 1, cjPid: 'CJ1' }]);
+    const spy = { create: [] as unknown[], pay: [] as string[] };
+    const cj = fakeCj(spy, {
+      createOrder: async (input: { orderNumber: string }) => {
+        await store.updateOrder('O1', { status: 'cancelled', hold_reasons: JSON.stringify(['shopify-cancelled']) });
+        spy.create.push(input);
+        return { orderId: 'CJORD-O1', orderNum: input.orderNumber };
+      }
+    });
+    const r = await processDueOrders(store, cj, liveAdmin(), cfg('pawscout', true), {
+      alert: async () => 'failed'
+    });
+    expect(r).toMatchObject({ held: 1, awaiting: 0 });
+    const events = await store.listOrderEvents('O1');
+    const kinds = events.map((e) => e.kind);
+    expect(kinds).toContain('owner-alert-failed');
+    expect(kinds).not.toContain('owner-alerted');
   });
 
   it('auto-pay: the row is cancelled during payBalance - held not submitted, paid event still written, exact alert', async () => {
@@ -684,7 +784,7 @@ describe('I-3 (fix round 1): a cancelled row stays cancelled', () => {
     });
     const alerts: { subject: string; text: string }[] = [];
     const r = await processDueOrders(store, cj, liveAdmin(), cfg('pawscout'), {
-      alert: async (subject, text) => { alerts.push({ subject, text }); }
+      alert: async (subject, text) => { alerts.push({ subject, text }); return 'sent'; }
     });
     expect(r).toMatchObject({ held: 1, submitted: 0 });
     expect(alerts).toHaveLength(1);
@@ -696,6 +796,28 @@ describe('I-3 (fix round 1): a cancelled row stays cancelled', () => {
     const kinds = events.map((e) => e.kind);
     expect(kinds).toContain('paid');
     expect(kinds).toContain('owner-alerted');
+    expect(events.find((e) => e.kind === 'owner-alerted')?.detail).toBe(alerts[0].subject);
+  });
+
+  it('a failed send at the cancelled-during-pay alert leaves owner-alert-failed, not owner-alerted', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedWarehouse(store, 'CJ1', 'S1', 'v1');
+    await seedOrder(store, 'O1', [{ sku: 'S1', quantity: 1, cjPid: 'CJ1' }]);
+    const spy = { create: [] as unknown[], pay: [] as string[] };
+    const cj = fakeCj(spy, {
+      payBalance: async (id: string) => {
+        await store.updateOrder('O1', { status: 'cancelled', hold_reasons: JSON.stringify(['shopify-cancelled']) });
+        spy.pay.push(id);
+      }
+    });
+    const r = await processDueOrders(store, cj, liveAdmin(), cfg('pawscout'), {
+      alert: async () => 'failed'
+    });
+    expect(r).toMatchObject({ held: 1, submitted: 0 });
+    const events = await store.listOrderEvents('O1');
+    const kinds = events.map((e) => e.kind);
+    expect(kinds).toContain('owner-alert-failed');
+    expect(kinds).not.toContain('owner-alerted');
   });
 
   it('the row is cancelled during createOrder and createOrder then throws: stays cancelled, not error', async () => {
@@ -727,7 +849,7 @@ describe('I-1 (fix round 1): a gate stop on a row with an existing supplier orde
     const spy = { create: [] as unknown[], pay: [] as string[] };
     const alerts: { subject: string; text: string }[] = [];
     const r = await processDueOrders(store, fakeCj(spy), liveAdmin({ order: { cancelledAt: '2026-09-19T00:00:00Z' } }), cfg('pawscout'), {
-      alert: async (subject, text) => { alerts.push({ subject, text }); }
+      alert: async (subject, text) => { alerts.push({ subject, text }); return 'sent'; }
     });
     expect(r).toMatchObject({ held: 1 });
     expect(spy.create.length + spy.pay.length).toBe(0);
@@ -738,6 +860,22 @@ describe('I-1 (fix round 1): a gate stop on a row with an existing supplier orde
     expect(o?.status).toBe('cancelled');
     const events = await store.listOrderEvents('O1');
     expect(events.map((e) => e.kind)).toContain('owner-alerted');
+    expect(events.find((e) => e.kind === 'owner-alerted')?.detail).toBe(alerts[0].subject);
+  });
+
+  it('a failed send at the supplier-order-exists alert leaves owner-alert-failed, not owner-alerted', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedWarehouse(store, 'CJ1', 'S1', 'v1');
+    await seedOrder(store, 'O1', [{ sku: 'S1', quantity: 1, cjPid: 'CJ1' }]);
+    await store.updateOrder('O1', { cj_order_id: 'CJORD-RELEASED' });
+    const spy = { create: [] as unknown[], pay: [] as string[] };
+    const r = await processDueOrders(store, fakeCj(spy), liveAdmin({ order: { cancelledAt: '2026-09-19T00:00:00Z' } }), cfg('pawscout'), {
+      alert: async () => 'failed'
+    });
+    expect(r).toMatchObject({ held: 1 });
+    const events = await store.listOrderEvents('O1');
+    expect(events.map((e) => e.kind)).toContain('owner-alert-failed');
+    expect(events.map((e) => e.kind)).not.toContain('owner-alerted');
   });
 
   it('a queued row with cj_order_id whose gate holds (refunded): same alert shape with the hold reason', async () => {
@@ -748,7 +886,7 @@ describe('I-1 (fix round 1): a gate stop on a row with an existing supplier orde
     const spy = { create: [] as unknown[], pay: [] as string[] };
     const alerts: { subject: string; text: string }[] = [];
     const r = await processDueOrders(store, fakeCj(spy), liveAdmin({ order: { displayFinancialStatus: 'REFUNDED' } }), cfg('pawscout'), {
-      alert: async (subject, text) => { alerts.push({ subject, text }); }
+      alert: async (subject, text) => { alerts.push({ subject, text }); return 'sent'; }
     });
     expect(r).toMatchObject({ held: 1 });
     expect(spy.create.length + spy.pay.length).toBe(0);
@@ -766,7 +904,7 @@ describe('I-1 (fix round 1): a gate stop on a row with an existing supplier orde
     const spy = { create: [] as unknown[], pay: [] as string[] };
     const alerts: unknown[] = [];
     const r = await processDueOrders(store, fakeCj(spy), liveAdmin({ order: { cancelledAt: '2026-09-19T00:00:00Z' } }), cfg('pawscout'), {
-      alert: async (s, t) => { alerts.push({ s, t }); }
+      alert: async (s, t) => { alerts.push({ s, t }); return 'sent'; }
     });
     expect(r).toMatchObject({ held: 1 });
     expect(alerts).toHaveLength(0);
@@ -792,7 +930,7 @@ describe('I-2 (fix round 1): the gate-unreadable alert is true wherever it fires
     const alerts: { subject: string; text: string }[] = [];
     for (let i = 0; i < 4; i++) {
       await processDueOrders(store, fakeCj(spy), admin, cfg('pawscout'), {
-        alert: async (subject, text) => { alerts.push({ subject, text }); }
+        alert: async (subject, text) => { alerts.push({ subject, text }); return 'sent'; }
       });
     }
     expect(spy.create.length).toBe(0);
@@ -812,7 +950,7 @@ describe('I-2 (fix round 1): the gate-unreadable alert is true wherever it fires
     const alerts: { subject: string; text: string }[] = [];
     for (let i = 0; i < 4; i++) {
       await processDueOrders(store, fakeCj(spy), admin, cfg('pawscout'), {
-        alert: async (subject, text) => { alerts.push({ subject, text }); }
+        alert: async (subject, text) => { alerts.push({ subject, text }); return 'sent'; }
       });
     }
     expect(spy.pay.length).toBe(0);
@@ -829,7 +967,7 @@ describe('M-2 (fix round 1): no latch - a >= 4 comparison, not === 4', () => {
     for (let i = 0; i < 5; i++) await store.addOrderEvent('O1', 'gate-unreadable', 'prior failure');
     const alerts: { subject: string; text: string }[] = [];
     const r = await processDueOrders(store, fakeCj({ create: [], pay: [] }), liveAdmin({ throws: 'gate api down' }), cfg('pawscout'), {
-      alert: async (subject, text) => { alerts.push({ subject, text }); }
+      alert: async (subject, text) => { alerts.push({ subject, text }); return 'sent'; }
     });
     expect(r).toMatchObject({ submitted: 0, held: 0, errored: 0 });
     expect(alerts).toHaveLength(1);
@@ -849,7 +987,7 @@ describe('M-2 (fix round 1): no latch - a >= 4 comparison, not === 4', () => {
     }) as unknown as AdminGraphql;
     const alerts: { subject: string; text: string }[] = [];
     await pollTracking(store, fakeCj({ create: [], pay: [] }), failAdmin, {
-      alert: async (subject, text) => { alerts.push({ subject, text }); }
+      alert: async (subject, text) => { alerts.push({ subject, text }); return 'sent'; }
     });
     expect(alerts).toHaveLength(1);
     const events = await store.listOrderEvents('O8');
@@ -938,7 +1076,7 @@ describe('NEW-1 (fix round 2): a mixed-origin hold on a row with an existing sup
     const spy = { create: [] as unknown[], pay: [] as string[] };
     const alerts: { subject: string; text: string }[] = [];
     const r = await processDueOrders(store, fakeCj(spy), liveAdmin(), cfg('pawscout'), {
-      alert: async (subject, text) => { alerts.push({ subject, text }); }
+      alert: async (subject, text) => { alerts.push({ subject, text }); return 'sent'; }
     });
     expect(r).toMatchObject({ held: 1 });
     expect(spy.create.length + spy.pay.length).toBe(0);
