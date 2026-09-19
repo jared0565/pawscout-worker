@@ -7,7 +7,9 @@ import { resyncLowStockInventory, JOB_STAMP_PIPELINE, JOB_STAMP_TTL_DAYS } from 
 import { attributeAffiliateOrders } from './affiliate-attribution';
 import { sendEmail } from './email';
 import type { Env, TenantConfig } from './types';
-import { riskHold, type OrderLineItem, type OrderAddress } from './fulfil';
+import type { OrderLineItem, OrderAddress } from './fulfil';
+import { readOrderGate, decideGate, type RiskLevel } from './order-gate';
+import { alertOwner } from './owner-alert';
 
 // W-FULFIL Stage B: turn queued orders into paid CJ orders, then write tracking
 // back to Shopify. The money leg (createOrder + payBalance) only runs when
@@ -45,34 +47,97 @@ async function resolveLine(store: TenantStore, cj: CjClient, cjPid: string, sku:
 const FULFILLMENT_ORDERS = `query pawscoutFOs($id: ID!) {
   order(id: $id) { fulfillmentOrders(first: 10) { nodes { id status } } }
 }`;
-const ORDER_RISK = `query pawscoutOrderRisk($id: ID!) {
-  order(id: $id) { risk { recommendation } }
-}`;
 
-/** Shopify's fraud recommendation for an order, or null when unavailable
- *  (fail-open - riskHold treats null as no hold). */
-async function fetchOrderRisk(admin: AdminGraphql, shopifyOrderId: string): Promise<string | null> {
+/** True only when the order's PRIOR hold reasons include a FRAUD hold
+ *  (high-risk or medium-risk-value): only then does an operator's release
+ *  outrank the automated fraud check (fix round 1, M-7 - their decision was on
+ *  THAT hold, not on every possible hold). A hold for any other reason
+ *  (mixed-origin, not-paid, already-fulfilled, incomplete-address, on-hold,
+ *  order-missing, refunded) never bypasses fraud. A corrupt hold_reasons value
+ *  does NOT count as fraud history - err toward running the fraud check, not
+ *  skipping it. Every OTHER gate check (cancelled/paid/fulfilled/address)
+ *  always applies regardless - see decideGate's skipRisk parameter. */
+function hasFraudHoldHistory(holdReasonsJson: string | null): boolean {
+  if (!holdReasonsJson) return false;
   try {
-    const data = await admin(ORDER_RISK, { id: `gid://shopify/Order/${shopifyOrderId}` }) as {
-      order?: { risk?: { recommendation?: string } };
-    };
-    return data.order?.risk?.recommendation ?? null;
+    const reasons = JSON.parse(holdReasonsJson) as unknown[];
+    return reasons.includes('high-risk') || reasons.includes('medium-risk-value');
+  } catch { return false; }
+}
+
+/** Write a cancel/hold gate decision to the row + trail in one place, so the
+ *  pre-create and pre-pay checks (points 2 and 5 below) stay identical. Uses
+ *  updateOrderUnlessCancelled (fix round 1, I-3): a row that meanwhile became
+ *  'cancelled' from a concurrent cancel is left alone - nothing more to do,
+ *  the trail event is still written either way. `detail` overrides the trail
+ *  text when it needs to carry more than the hold reason (mixed-origin).
+ *  riskLevel is descriptive only - never gate on it here, just stamp it when
+ *  known. */
+async function writeGateStop(
+  store: TenantStore, shopifyOrderId: string, status: 'cancelled' | 'held', reason: string, riskLevel: RiskLevel, detail: string = reason
+): Promise<void> {
+  await store.updateOrderUnlessCancelled(shopifyOrderId, { status, hold_reasons: JSON.stringify([reason]), ...(riskLevel ? { risk_level: riskLevel } : {}) });
+  await store.addOrderEvent(shopifyOrderId, 'gate-held', detail);
+}
+
+/** Fix round 1, I-1: a pre-create gate stop on a row that already has a
+ *  supplier order must tell the owner. A release can put a row back to
+ *  'queued' with cj_order_id still set (an unpaid awaiting-payment row, or a
+ *  paid submitted row), and nothing else alerts for that case. Make no claim
+ *  about payment either way - the owner must check at the supplier. */
+async function alertIfSupplierOrderExists(
+  store: TenantStore,
+  o: { shopify_order_id: string; order_name: string | null; cj_order_id: string | null },
+  reason: string,
+  alert?: (subject: string, text: string) => Promise<void>
+): Promise<void> {
+  if (!o.cj_order_id || !alert) return;
+  const name = o.order_name ?? o.shopify_order_id;
+  try {
+    await alert(
+      `Order ${name} was stopped and a supplier order exists for it`,
+      `Order ${name} was stopped by the check against Shopify (${reason}). Supplier order ${o.cj_order_id} already exists for it. Do NOT pay it. Check its state at the supplier: cancel it there if it is unpaid, and treat it as a return if it has been paid.`
+    );
+    await store.addOrderEvent(o.shopify_order_id, 'owner-alerted');
   } catch (e) {
-    console.warn(`order risk read failed for ${shopifyOrderId}: ${(e as Error).message}`);
-    return null;
+    console.warn(`owner alert failed for ${name}: ${(e as Error).message}`);
   }
 }
 
-/** True when the order has EVER carried hold reasons: it reached the queue via an
- *  operator's explicit release, and their decision outranks the automated gate
- *  (re-holding here would trap them in a release/re-hold loop). A corrupt
- *  hold_reasons value also counts as history - err on respecting the operator. */
-function hasHoldHistory(holdReasonsJson: string | null): boolean {
-  if (!holdReasonsJson) return false;
-  try { return (JSON.parse(holdReasonsJson) as unknown[]).length > 0; } catch { return true; }
+/** A gate read failure means "could not tell" - fail CLOSED (never proceed to
+ *  spend). The row is left untouched so the next 15-minute tick retries it.
+ *  On the 4th-or-later consecutive failure (fix round 1, M-2: >= 4, not === 4,
+ *  so one swallowed addOrderEvent write can never permanently silence an
+ *  order) tell the owner once. `cjOrderId` (fix round 1, I-2) is the row's
+ *  supplier order id when one exists - passed by the caller, since only the
+ *  caller knows whether it is at the pre-create position (o.cj_order_id, set
+ *  on a pay-retry) or the pre-pay position (always set by then) - and picks
+ *  which of the two texts is actually true. A throwing alert callback is
+ *  swallowed so it can never fail the order. */
+async function handleGateUnreadable(
+  store: TenantStore,
+  o: { shopify_order_id: string; order_name: string | null },
+  error: string,
+  cjOrderId: string | null,
+  alert?: (subject: string, text: string) => Promise<void>
+): Promise<void> {
+  await store.addOrderEvent(o.shopify_order_id, 'gate-unreadable', error);
+  if ((await store.countTrailingOrderEvents(o.shopify_order_id, 'gate-unreadable')) < 4) return;
+  const name = o.order_name ?? o.shopify_order_id;
+  if (!alert) return;
+  const text = cjOrderId
+    ? `Order ${name} could not be checked against Shopify on the last 4 checks (${error}). Supplier order ${cjOrderId} exists for it, and PawScout will not pay it until the check succeeds. It is retried every 15 minutes.`
+    : `Order ${name} is due, but its state in Shopify could not be read on the last 4 checks (${error}). Nothing has been sent to the supplier. It is retried every 15 minutes.`;
+  try {
+    await alert(`Order ${name} cannot be checked against Shopify`, text);
+    await store.addOrderEvent(o.shopify_order_id, 'owner-alerted');
+  } catch (e) {
+    console.warn(`owner alert failed for ${name}: ${(e as Error).message}`);
+  }
 }
-const FULFILL = `mutation pawscoutFulfill($f: FulfillmentV2Input!) {
-  fulfillmentCreateV2(fulfillment: $f) { fulfillment { id status } userErrors { field message } }
+
+const FULFILL = `mutation pawscoutFulfill($f: FulfillmentInput!) {
+  fulfillmentCreate(fulfillment: $f) { fulfillment { id status } userErrors { field message } }
 }`;
 
 /** Build the buyer-facing tracking URL: prefer CJ's own URL, else a universal
@@ -100,8 +165,8 @@ async function writeTracking(admin: AdminGraphql, orderGid: string, trackNumber:
       trackingInfo: { number: trackNumber, ...(company ? { company } : {}), ...(url ? { url } : {}) },
       notifyCustomer: true
     }
-  }) as { fulfillmentCreateV2?: { userErrors?: { message: string }[] } };
-  const errs = r.fulfillmentCreateV2?.userErrors ?? [];
+  }) as { fulfillmentCreate?: { userErrors?: { message: string }[] } };
+  const errs = r.fulfillmentCreate?.userErrors ?? [];
   if (errs.length) throw new Error(errs.map((e) => e.message).join('; '));
 }
 
@@ -167,7 +232,11 @@ export async function processDueOrders(
   cj: CjClient,
   admin: AdminGraphql,
   cfg: TenantConfig,
-  opts: { now?: () => number; max?: number; notify?: (n: AwaitingPaymentNotice) => Promise<void>; notifyStockout?: (n: StockoutNotice) => Promise<void> } = {}
+  opts: {
+    now?: () => number; max?: number;
+    notify?: (n: AwaitingPaymentNotice) => Promise<void>; notifyStockout?: (n: StockoutNotice) => Promise<void>;
+    alert?: (subject: string, text: string) => Promise<void>;
+  } = {}
 ): Promise<{ submitted: number; awaiting: number; held: number; errored: number; skipped: boolean }> {
   if (cfg.fulfil.mode !== 'pawscout') return { submitted: 0, awaiting: 0, held: 0, errored: 0, skipped: true }; // 'manual'/'cj' → PawScout doesn't pay
   const createOnly = cfg.fulfil.createOnly === true;
@@ -178,7 +247,28 @@ export async function processDueOrders(
   let held = 0;
   let errored = 0;
   const markAwaiting = async (o: typeof due[number], cjOrderId: string, reason: string) => {
-    await store.updateOrder(o.shopify_order_id, { status: 'awaiting-payment', hold_reasons: JSON.stringify([reason]) });
+    // Fix round 1, I-3: a cancel can land in Shopify while createOrder (or an
+    // insufficient-balance retry) is in flight. updateOrderUnlessCancelled is
+    // the one atomic check-and-write; if it refuses, the row is already
+    // 'cancelled' and must NOT be told to the owner as "pay it".
+    const wrote = await store.updateOrderUnlessCancelled(o.shopify_order_id, { status: 'awaiting-payment', hold_reasons: JSON.stringify([reason]) });
+    if (!wrote) {
+      held++;
+      const name = o.order_name ?? o.shopify_order_id;
+      if (opts.alert) {
+        try {
+          await opts.alert(
+            `Order ${name} was cancelled while its supplier order was being created`,
+            `Order ${name} was cancelled in Shopify while supplier order ${cjOrderId} was being created. Do NOT pay it. Cancel it at the supplier.`
+          );
+          await store.addOrderEvent(o.shopify_order_id, 'owner-alerted');
+        } catch (e) {
+          console.warn(`owner alert failed for ${name}: ${(e as Error).message}`);
+        }
+      }
+      return;
+    }
+    await store.addOrderEvent(o.shopify_order_id, 'awaiting-payment');
     awaiting++;
     if (opts.notify) {
       try {
@@ -190,31 +280,66 @@ export async function processDueOrders(
   };
   for (const o of due) {
     let lineItems: OrderLineItem[] = [];
+    // Fix round 1, I-4: tracks how far the order got, so a catch that is NOT a
+    // classified stockout writes "failed at <step>" instead of ever copying a
+    // supplier's raw error text (which can echo the address or phone we sent).
+    // Fix round 2, NEW-3: starts at 'gate' (before the address/line-items JSON
+    // parses below), not 'resolve' - a throw there has resolved nothing yet.
+    // It becomes 'resolve' only once the line-resolution loop begins (below).
+    let step: 'gate' | 'resolve' | 'stock' | 'freight' | 'create' | 'pay' | 'record' = 'gate';
     try {
-      // Fraud gate (2026-07-19): the orders/paid webhook carries no risk data, so
-      // Shopify's assessment is read HERE, just before money moves - and only on
-      // first submission (a pay-retry has a CJ order; an operator-released order
-      // has hold history and their call outranks the gate).
-      if (!o.cj_order_id && !hasHoldHistory(o.hold_reasons)) {
-        const rec = await fetchOrderRisk(admin, o.shopify_order_id);
-        const level = rec === 'CANCEL' ? 'HIGH' : rec === 'INVESTIGATE' ? 'MEDIUM' : rec ? 'LOW' : null;
-        const hold = riskHold(rec, o.total_price ?? 0);
-        if (hold) {
-          await store.updateOrder(o.shopify_order_id, { status: 'held', hold_reasons: JSON.stringify([hold]), ...(level ? { risk_level: level } : {}) });
+      // Live-order gate (2026-09-19): a whitelist on Shopify's own state, read HERE,
+      // just before money moves. Every check (cancelled/paid/fulfilled/address) always
+      // applies; only the fraud-risk sub-check is skipped for a pay-retry (already has
+      // a CJ order) or an operator-released order with FRAUD hold history (their call
+      // outranks the automated fraud gate, but not a genuine cancellation, and not a
+      // hold for any other reason - fix round 1, M-7).
+      const skipRisk = !!o.cj_order_id || hasFraudHoldHistory(o.hold_reasons);
+      const storedAddress = o.address_json ? (JSON.parse(o.address_json) as OrderAddress) : null;
+
+      const gateRead = await readOrderGate(admin, o.shopify_order_id);
+      if (!gateRead.ok) {
+        await handleGateUnreadable(store, o, gateRead.error, o.cj_order_id ?? null, opts.alert);
+        continue; // NOT an error status - stays queued, retried next tick
+      }
+      const decision = decideGate(gateRead.snapshot, { address: storedAddress, totalPrice: o.total_price ?? 0, skipRisk });
+      if (decision.action !== 'proceed') {
+        // Fix round 1, M-1: require 'proceed' rather than reach it by excluding
+        // 'cancel'/'hold' - a future fourth variant fails the build below
+        // instead of silently falling through to create or pay.
+        if (decision.action === 'cancel') {
+          await writeGateStop(store, o.shopify_order_id, 'cancelled', decision.reason, null);
           held++;
-          console.log(`order ${o.order_name ?? o.shopify_order_id} HELD pre-spend (${hold}, Shopify recommends ${rec})`);
-          continue;
+          await alertIfSupplierOrderExists(store, o, decision.reason, opts.alert); // fix round 1, I-1
+        } else if (decision.action === 'hold') {
+          await writeGateStop(store, o.shopify_order_id, 'held', decision.reason, decision.riskLevel);
+          held++;
+          await alertIfSupplierOrderExists(store, o, decision.reason, opts.alert); // fix round 1, I-1
+        } else {
+          const _exhaustive: never = decision;
         }
-        if (level) await store.updateOrder(o.shopify_order_id, { risk_level: level }); // console visibility on clean flows too
+        continue;
       }
 
+      // Written once, on first submission only: a pay-retry re-evaluates the
+      // same milestones every tick, and repeating this on every retry would
+      // both spam the trail and (fix round 1, I-2) make the pre-pay
+      // gate-unreadable counter below unable to ever see a clean run of 4
+      // consecutive failures, since this write would break the run every time.
+      if (!o.cj_order_id) await store.addOrderEvent(o.shopify_order_id, 'gate-passed');
+      const address: OrderAddress = decision.address;
+      if (decision.addressChanged) {
+        await store.updateOrder(o.shopify_order_id, { address_json: JSON.stringify(address) });
+        await store.addOrderEvent(o.shopify_order_id, 'address-refreshed');
+      }
+      if (decision.riskLevel) await store.updateOrder(o.shopify_order_id, { risk_level: decision.riskLevel }); // console visibility on clean flows too
+
       lineItems = JSON.parse(o.line_items_json ?? '[]') as OrderLineItem[];
-      const address = o.address_json ? (JSON.parse(o.address_json) as OrderAddress) : null;
-      if (!address) throw new Error('no address on order');
 
       const products: { vid: string; quantity: number }[] = [];
-      let origin = 'CN';
+      const origins: string[] = [];
       for (const li of lineItems) {
+        step = 'resolve';
         const resolved = li.cjPid ? await resolveLine(store, cj, li.cjPid, li.sku ?? '', cfg.floors.stockFloor) : null;
         if (!resolved) throw new Error(`could not resolve vid for ${li.sku ?? li.cjPid}`);
         // Pre-flight source-stock check (deterministic): CJ stock is shared across
@@ -223,6 +348,7 @@ export async function processDueOrders(
         // already has a CJ order). An unreachable stock endpoint is UNKNOWN, not zero:
         // proceed and rely on the createOrder error backstop (isStockoutError).
         if (!o.cj_order_id) {
+          step = 'stock';
           let avail: number | undefined;
           try {
             avail = (await cj.stockByPid(li.cjPid!)).get(resolved.vid);
@@ -232,12 +358,33 @@ export async function processDueOrders(
           }
         }
         products.push({ vid: resolved.vid, quantity: li.quantity });
-        origin = resolved.origin; // last wins; CJ order ships from one origin
+        origins.push(resolved.origin);
       }
+
+      // A CJ order ships from ONE origin - if the lines resolved to more than one,
+      // an operator has to split or choose, so hold instead of guessing.
+      const uniqueOrigins = [...new Set(origins)];
+      if (uniqueOrigins.length > 1) {
+        const detail = `mixed-origin: ${uniqueOrigins.join(', ')}`;
+        await writeGateStop(store, o.shopify_order_id, 'held', 'mixed-origin', null, detail);
+        held++;
+        // Fix round 2, NEW-1: reachable on a pay-retry (only the numeric stock
+        // sub-check is skipped for one, not line resolution, and the resolved
+        // origin is a function of live stock, so it can disagree with the
+        // origin the existing supplier order was created against). Same alert
+        // as the two pre-create stop branches (fix round 1, I-1), with the
+        // hold's own detail text as the reason.
+        await alertIfSupplierOrderExists(store, o, detail, opts.alert);
+        continue;
+      }
+      const origin = uniqueOrigins[0] ?? 'CN';
+      if (!o.cj_order_id) await store.addOrderEvent(o.shopify_order_id, 'stock-ok'); // see gate-passed comment above
 
       let cjOrderId = o.cj_order_id ?? '';
       if (!cjOrderId) {
+        step = 'freight';
         const freight = await cj.freightEstimate(products[0].vid, origin).catch(() => null);
+        step = 'create';
         const created = await cj.createOrder({
           orderNumber: o.shopify_order_id,
           address,
@@ -247,7 +394,9 @@ export async function processDueOrders(
           remark: 'Active Paw'
         });
         cjOrderId = created.orderId;
+        step = 'record';
         await store.updateOrder(o.shopify_order_id, { cj_order_id: cjOrderId }); // persist BEFORE paying (no re-create on retry)
+        await store.addOrderEvent(o.shopify_order_id, 'supplier-order-created', cjOrderId);
       }
 
       if (createOnly) {
@@ -256,6 +405,41 @@ export async function processDueOrders(
         continue;
       }
 
+      // Gate again, immediately before spending: the gap since the first check
+      // (line resolution + CJ create) is exactly where a cancellation in the
+      // interim would otherwise slip through un-caught. Risk is always skipped
+      // here - it was already decided (or deliberately bypassed) above.
+      const rePay = await readOrderGate(admin, o.shopify_order_id);
+      if (!rePay.ok) {
+        await handleGateUnreadable(store, o, rePay.error, cjOrderId, opts.alert);
+        continue;
+      }
+      const payDecision = decideGate(rePay.snapshot, { address, totalPrice: o.total_price ?? 0, skipRisk: true });
+      if (payDecision.action !== 'proceed') {
+        if (payDecision.action === 'cancel' || payDecision.action === 'hold') {
+          const status = payDecision.action === 'cancel' ? 'cancelled' : 'held';
+          const riskLevel = payDecision.action === 'hold' ? payDecision.riskLevel : null;
+          await writeGateStop(store, o.shopify_order_id, status, payDecision.reason, riskLevel);
+          held++;
+          const name = o.order_name ?? o.shopify_order_id;
+          if (opts.alert) {
+            try {
+              await opts.alert(
+                `Order ${name}: payment to the supplier was stopped`,
+                `Order ${name} changed in Shopify (${payDecision.reason}) after supplier order ${cjOrderId} was created and before it was paid. It has NOT been paid. Cancel it at the supplier.`
+              );
+              await store.addOrderEvent(o.shopify_order_id, 'owner-alerted');
+            } catch (e) {
+              console.warn(`owner alert failed for ${name}: ${(e as Error).message}`);
+            }
+          }
+        } else {
+          const _exhaustive: never = payDecision;
+        }
+        continue;
+      }
+
+      step = 'pay';
       try {
         await cj.payBalance(cjOrderId);
       } catch (payErr) {
@@ -267,8 +451,30 @@ export async function processDueOrders(
         }
         throw payErr; // genuine pay failure → error branch
       }
-      await store.updateOrder(o.shopify_order_id, { status: 'submitted' });
-      submitted++;
+      step = 'record';
+      // Fix round 1, I-3: money already moved - if the row became 'cancelled'
+      // while payBalance was in flight, still record that it was paid (the
+      // trail must say so), but count it as held (not submitted) and tell the
+      // owner it needs handling as a return/cancellation at the supplier.
+      const wrote = await store.updateOrderUnlessCancelled(o.shopify_order_id, { status: 'submitted' });
+      await store.addOrderEvent(o.shopify_order_id, 'paid');
+      if (!wrote) {
+        held++;
+        const name = o.order_name ?? o.shopify_order_id;
+        if (opts.alert) {
+          try {
+            await opts.alert(
+              `Order ${name} was cancelled while its supplier order was being paid`,
+              `Order ${name} was cancelled in Shopify while supplier order ${cjOrderId} was being paid. The payment went through. Ask the supplier to cancel it if it has not shipped. If it has shipped, this is a return.`
+            );
+            await store.addOrderEvent(o.shopify_order_id, 'owner-alerted');
+          } catch (e) {
+            console.warn(`owner alert failed for ${name}: ${(e as Error).message}`);
+          }
+        }
+      } else {
+        submitted++;
+      }
     } catch (e) {
       const msg = (e as Error).message;
       // Classify a stock-caused failure: the pre-flight throws a typed StockoutError
@@ -280,7 +486,27 @@ export async function processDueOrders(
 
       console.warn(`fulfil failed for ${o.order_name ?? o.shopify_order_id}: ${msg}`);
       const reason = stockout ? `stockout: ${msg}` : `fulfil: ${msg}`;
-      await store.updateOrder(o.shopify_order_id, { status: 'error', hold_reasons: JSON.stringify([reason.slice(0, 200)]) });
+      await store.updateOrderUnlessCancelled(o.shopify_order_id, { status: 'error', hold_reasons: JSON.stringify([reason.slice(0, 200)]) });
+
+      // Fix round 1, I-4 (ruling: constraint beats brief point 4 - classify,
+      // never copy): order_events.detail must never carry a supplier's or
+      // Shopify's raw error text - a rejection can echo the address or phone
+      // number sent with the order. The raw text still goes to console.warn
+      // above; hold_reasons above is unchanged, existing behaviour, out of
+      // this ruling's scope.
+      let eventKind: 'stockout' | 'error';
+      let eventDetail: string;
+      if (e instanceof StockoutError) {
+        eventKind = 'stockout';
+        eventDetail = msg.slice(0, 200); // our own message: sku/pid only
+      } else if (isStockoutError(msg)) {
+        eventKind = 'stockout';
+        eventDetail = 'supplier reported no stock' + (lineItems.length === 1 && lineItems[0].sku ? ` for ${lineItems[0].sku}` : '');
+      } else {
+        eventKind = 'error';
+        eventDetail = `failed at ${step}`;
+      }
+      await store.addOrderEvent(o.shopify_order_id, eventKind, eventDetail);
       errored++;
 
       if (stockout) {
@@ -328,10 +554,11 @@ export async function pollTracking(
   store: TenantStore,
   cj: CjClient,
   admin: AdminGraphql,
-  opts: { max?: number } = {}
+  opts: { max?: number; alert?: (subject: string, text: string) => Promise<void> } = {}
 ): Promise<{ checked: number; fulfilled: number }> {
   // Poll both PS-paid ('submitted') and owner-pays-manually ('awaiting-payment')
-  // orders: in either case a tracking number means CJ has shipped it.
+  // orders: in either case a tracking number means CJ has shipped it. Once an
+  // order is fulfilled it drops out of both lists, so it is never polled again.
   const max = opts.max ?? 30;
   const submitted = [
     ...(await store.listOrders('submitted', max)),
@@ -344,10 +571,42 @@ export async function pollTracking(
     try {
       const detail = await cj.getOrderDetail(o.cj_order_id!);
       if (!detail?.trackNumber) continue;
+
+      // tracking-found is written ONCE - a write-back that keeps failing polls the
+      // same order every 15 minutes, and re-writing this on every poll would spam
+      // the trail with no new information.
+      const events = await store.listOrderEvents(o.shopify_order_id);
+      if (!events.some((ev) => ev.kind === 'tracking-found')) {
+        await store.addOrderEvent(o.shopify_order_id, 'tracking-found');
+      }
+
       const url = trackingUrlFor(detail.trackNumber, detail.trackUrl);
-      await writeTracking(admin, `gid://shopify/Order/${o.shopify_order_id}`, detail.trackNumber, detail.logisticName, url);
-      await store.updateOrder(o.shopify_order_id, { status: 'fulfilled', tracking_number: detail.trackNumber });
-      fulfilled++;
+      try {
+        await writeTracking(admin, `gid://shopify/Order/${o.shopify_order_id}`, detail.trackNumber, detail.logisticName, url);
+        await store.updateOrder(o.shopify_order_id, { status: 'fulfilled', tracking_number: detail.trackNumber });
+        await store.addOrderEvent(o.shopify_order_id, 'tracking-written');
+        fulfilled++;
+      } catch (writeErr) {
+        const msg = (writeErr as Error).message;
+        console.warn(`tracking poll failed for ${o.order_name ?? o.shopify_order_id}: ${msg}`);
+        await store.addOrderEvent(o.shopify_order_id, 'tracking-write-failed', msg);
+        // Fix round 1, M-2: >= 4, not === 4 - a single swallowed addOrderEvent
+        // write must never permanently silence this order's alert.
+        if ((await store.countTrailingOrderEvents(o.shopify_order_id, 'tracking-write-failed')) >= 4) {
+          const name = o.order_name ?? o.shopify_order_id;
+          if (opts.alert) {
+            try {
+              await opts.alert(
+                `Order ${name}: tracking could not be written to Shopify`,
+                `Supplier order ${o.cj_order_id} has shipped with tracking ${detail.trackNumber}, but writing it to Shopify failed on the last 4 attempts (${msg}). The customer has not been told. It is retried every 15 minutes.`
+              );
+              await store.addOrderEvent(o.shopify_order_id, 'owner-alerted');
+            } catch (e) {
+              console.warn(`owner alert failed for ${name}: ${(e as Error).message}`);
+            }
+          }
+        }
+      }
     } catch (e) {
       console.warn(`tracking poll failed for ${o.order_name ?? o.shopify_order_id}: ${(e as Error).message}`);
     }
@@ -410,8 +669,9 @@ export async function runOrderPipelineForShop(env: Env, vault: Vault, shop: stri
   const cj = new CjClient(() => new CjTokenManager(store, vault, f).getToken(), f);
   const notify = makeAwaitingPaymentNotify(env, cfg.fulfil.alertEmail);
   const notifyStockout = makeStockoutNotify(env, cfg.fulfil.alertEmail);
-  const p = await processDueOrders(store, cj, admin, cfg, { ...(notify ? { notify } : {}), ...(notifyStockout ? { notifyStockout } : {}) });
-  const t = await pollTracking(store, cj, admin);
+  const alert = (subject: string, text: string) => alertOwner(env, cfg, subject, text);
+  const p = await processDueOrders(store, cj, admin, cfg, { ...(notify ? { notify } : {}), ...(notifyStockout ? { notifyStockout } : {}), alert });
+  const t = await pollTracking(store, cj, admin, { alert });
   // Low-band fast re-sync piggybacks on this 15-minute entry (same clients): items
   // at <=LOW_STOCK_BAND get their source stock re-checked in minutes, not tomorrow
   // at 04:17. Best-effort - a failure never affects the order pipeline result.

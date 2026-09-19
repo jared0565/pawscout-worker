@@ -99,3 +99,50 @@ describe('order events (order trail)', () => {
     expect(order?.status).toBe('queued');
   });
 });
+
+describe('updateOrderUnlessCancelled', () => {
+  it('writes a queued row and answers true', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await store.insertOrderIfNew({
+      shopifyOrderId: 'O1', orderName: '#1', totalPrice: 10, currency: 'GBP', financialStatus: 'paid',
+      riskLevel: null, status: 'queued', holdReasons: [], addressJson: null, lineItemsJson: null, fulfilAfter: null
+    });
+    const wrote = await store.updateOrderUnlessCancelled('O1', { status: 'submitted' });
+    expect(wrote).toBe(true);
+    expect((await store.getOrder('O1'))?.status).toBe('submitted');
+  });
+
+  it('leaves a cancelled row byte for byte and answers false', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await store.insertOrderIfNew({
+      shopifyOrderId: 'O1', orderName: '#1', totalPrice: 10, currency: 'GBP', financialStatus: 'paid',
+      riskLevel: null, status: 'cancelled', holdReasons: ['shopify-cancelled'], addressJson: null, lineItemsJson: null, fulfilAfter: null
+    });
+    await store.updateOrder('O1', { cj_order_id: 'CJORD-1' });
+    const before = await store.getOrder('O1');
+    const wrote = await store.updateOrderUnlessCancelled('O1', { status: 'submitted', hold_reasons: JSON.stringify(['x']), cj_order_id: 'CJORD-2' });
+    expect(wrote).toBe(false);
+    const after = await store.getOrder('O1');
+    expect(after?.status).toBe(before?.status);
+    expect(after?.hold_reasons).toBe(before?.hold_reasons);
+    expect(after?.cj_order_id).toBe(before?.cj_order_id);
+  });
+
+  it('an unknown order answers false', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const wrote = await store.updateOrderUnlessCancelled('NOPE', { status: 'submitted' });
+    expect(wrote).toBe(false);
+  });
+
+  it('does not touch another shop\'s row with the same order id', async () => {
+    const storeA = new TenantStore(env.DB, SHOP);
+    const storeB = new TenantStore(env.DB, SHOP2);
+    await storeA.insertOrderIfNew({
+      shopifyOrderId: 'O1', orderName: '#1', totalPrice: 10, currency: 'GBP', financialStatus: 'paid',
+      riskLevel: null, status: 'queued', holdReasons: [], addressJson: null, lineItemsJson: null, fulfilAfter: null
+    });
+    const wrote = await storeB.updateOrderUnlessCancelled('O1', { status: 'submitted' });
+    expect(wrote).toBe(false);
+    expect((await storeA.getOrder('O1'))?.status).toBe('queued');
+  });
+});

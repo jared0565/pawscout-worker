@@ -1013,6 +1013,29 @@ export class TenantStore {
       .run();
   }
 
+  /** Like updateOrder, but never touches a row whose status is 'cancelled' - one
+   *  statement, so a concurrent cancel cannot land between a check and this write.
+   *  Answers whether the row was written: false when it was cancelled, unknown, or
+   *  belongs to another shop. */
+  async updateOrderUnlessCancelled(shopifyOrderId: string, fields: Partial<Pick<OrderRow, 'status' | 'hold_reasons' | 'cj_order_id' | 'tracking_number' | 'risk_level' | 'address_json'>>): Promise<boolean> {
+    const now = new Date().toISOString();
+    const r = await this.db
+      .prepare(
+        `UPDATE orders SET
+           status = COALESCE(?3, status),
+           hold_reasons = COALESCE(?4, hold_reasons),
+           cj_order_id = COALESCE(?5, cj_order_id),
+           tracking_number = COALESCE(?6, tracking_number),
+           risk_level = COALESCE(?8, risk_level),
+           address_json = COALESCE(?9, address_json),
+           updated_at = ?7
+         WHERE shop = ?1 AND shopify_order_id = ?2 AND status <> 'cancelled'`
+      )
+      .bind(this.shop, shopifyOrderId, fields.status ?? null, fields.hold_reasons ?? null, fields.cj_order_id ?? null, fields.tracking_number ?? null, now, fields.risk_level ?? null, fields.address_json ?? null)
+      .run();
+    return (r.meta.changes ?? 0) > 0;
+  }
+
   // --- order trail (phase 2): append-only steps, for reconstructing a failed
   // or disputed order without reading logs ---
 
