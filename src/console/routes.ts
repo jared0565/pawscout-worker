@@ -166,7 +166,12 @@ export interface Glance {
   markets: { at: string; markets: { name: string; excluded: number }[] } | null;
 }
 
-function parseHoldReasons(json: string | null): string[] {
+/** Reads an order's stored reasons defensively: unparseable JSON, and a value
+ *  that parses to anything but an array, both read as "no reasons recorded".
+ *  Every writer stores an array, so only a hand edit of the database can put
+ *  anything else there - but the console joins whatever comes back, and one
+ *  such value used to take the whole card down with it. */
+export function parseHoldReasons(json: string | null): string[] {
   if (!json) return [];
   try { const a = JSON.parse(json); return Array.isArray(a) ? a.map(String) : []; } catch { return []; }
 }
@@ -382,9 +387,13 @@ export async function getGlance(db: D1Database, shop: string): Promise<Glance> {
     });
   }
   if (awaiting) {
+    // A row stays here until its tracking number arrives, including one the
+    // owner paid by hand days ago, because PawScout cannot see such a
+    // payment. So this says what PawScout knows and sends the owner to look,
+    // rather than telling them to pay something they may already have paid.
     attention.push({
-      level: 'warn', title: `${awaiting} CJ order${awaiting === 1 ? '' : 's'} awaiting payment`,
-      detail: 'Created in CJ and waiting for you to pay - tracking syncs back once paid.', route: 'ops'
+      level: 'warn', title: `${awaiting} CJ order${awaiting === 1 ? '' : 's'} PawScout has not paid`,
+      detail: 'PawScout did not pay these, and it cannot see a payment you make by hand, so check each one at the supplier before you pay it. Tracking syncs back once it ships.', route: 'ops'
     });
   }
   if (drafts.n) {

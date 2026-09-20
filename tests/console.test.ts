@@ -33,6 +33,107 @@ describe('consolePage', () => {
     expect(scripts).toContain('Dead product links found');
   });
 
+  // 2026-09-19: orders card surfaces webhook subscription health, a re-check
+  // button, and a per-order event timeline.
+  it('orders card surfaces order-events webhook status, a recheck button, and per-order timelines', async () => {
+    const html = await consolePage('test-api-key').text();
+    // Static markup: hookline/hookbtn live in the ops card (src/console/views/ops.ts),
+    // right after the Fulfilment mode line - not built by the inline script.
+    expect(html).toContain('id="hookline"');
+    expect(html).toContain('id="hookbtn"');
+    expect(html).toContain('Check order events');
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+    expect(scripts).toContain("api('/ensure-webhooks',{})");
+    expect(scripts).toContain("api('/order-events',{id:id})");
+    expect(scripts).toContain('Order events: not checked yet');
+    expect(scripts).toContain('Order events: all 3 subscribed');
+    expect(scripts).toContain('Order events: MISSING ');
+    expect(scripts).toContain('A cancel or refund can go unnoticed.');
+    expect(scripts).toContain('the check failed (');
+    expect(scripts).toContain('so nothing is known. Checked ');
+  });
+
+  // The owner pays the supplier by hand and PawScout cannot see that payment:
+  // an order stays awaiting-payment until its tracking number arrives. So the
+  // banner must not read as an instruction to pay everything it lists, and a
+  // supplier order id must show on EVERY row that has one: a held, errored or
+  // cancelled row with a supplier order is exactly the one the owner has to
+  // act on at the supplier.
+  it('orders card: the awaiting-payment banner says a hand payment is invisible, and every row with a supplier order shows its id', async () => {
+    const html = await consolePage('test-api-key').text();
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+    expect(scripts).toContain('PawScout cannot see a payment you make by hand');
+    expect(scripts).toContain('check its state at the supplier before you pay');
+    expect(scripts).not.toContain('Pay these CJ order(s)');
+    expect(scripts).toContain("var cjid=o.cj?(' · CJ '+esc(o.cj)):'';");
+  });
+
+  // Every remaining place the console names this status has to agree with the
+  // banner above: PawScout has not paid it, and a payment made by hand is
+  // invisible here, so nothing may read as "this is unpaid, go and pay it".
+  it('the status label and the fulfilment-mode help never call an awaiting-payment row simply unpaid', async () => {
+    const html = await consolePage('test-api-key').text();
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+    expect(scripts).toContain("'awaiting-payment':'not paid by PawScout'");
+    expect(scripts).not.toContain('awaiting CJ payment');
+    expect(html).toContain('it stays in that list until its tracking number arrives because PawScout cannot see a payment you make by hand');
+    expect(html).not.toContain('Any order sitting unpaid shows');
+    expect(html).not.toContain('a supplier order that is waiting for you to pay it');
+  });
+
+  // 2026-09-19 follow-up: the server now distinguishes "check failed" (nothing
+  // known about order-events subscriptions) from "missing" (topics genuinely
+  // absent) via a new hooks.error field. Source-text checks can't verify which
+  // branch wins when both error and a non-empty missing list are present, so
+  // this extracts the shipped renderHookLine and drives it against a fake DOM
+  // node directly.
+  it('renderHookLine: a check failure takes precedence over MISSING, and each state renders exactly', async () => {
+    const html = await consolePage('test-api-key').text();
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+    const marker = 'function renderHookLine(';
+    const start = scripts.indexOf(marker);
+    expect(start).toBeGreaterThanOrEqual(0);
+    let depth = 0;
+    let end = scripts.indexOf('{', start);
+    for (let i = end; i < scripts.length; i++) {
+      if (scripts[i] === '{') depth++;
+      else if (scripts[i] === '}') {
+        depth--;
+        if (depth === 0) { end = i + 1; break; }
+      }
+    }
+    const fnSrc = scripts.slice(start, end);
+    const node = { textContent: '', className: '' };
+    const fakeEl = (id: string) => (id === 'hookline' ? node : null);
+    const esc = (s: unknown) => String(s);
+    const renderHookLine = new Function('el', 'esc', fnSrc + '\nreturn renderHookLine;')(fakeEl, esc);
+    const checkedAt = '2026-09-19T12:00:00.000Z';
+    const localTime = new Date(checkedAt).toLocaleString();
+
+    // Branch order: BOTH an error and a non-empty missing list -> check-failed line, not MISSING.
+    renderHookLine({ ok: false, missing: ['ORDERS_CANCELLED'], checkedAt, error: 'Shopify API unavailable' });
+    expect(node.textContent).toBe(
+      'Order events: the check failed (Shopify API unavailable), so nothing is known. Checked ' + localTime + '.'
+    );
+    expect(node.textContent).not.toContain('MISSING');
+    expect(node.className).toBe('msg no');
+
+    // null: unchanged.
+    renderHookLine(null);
+    expect(node.textContent).toBe('Order events: not checked yet');
+    expect(node.className).toBe('msg muted');
+
+    // ok true: unchanged.
+    renderHookLine({ ok: true, missing: [], checkedAt, error: null });
+    expect(node.textContent).toBe('Order events: all 3 subscribed (checked ' + localTime + ')');
+    expect(node.className).toBe('msg ok');
+
+    // error null/absent, ok false, non-empty missing: MISSING line, unchanged.
+    renderHookLine({ ok: false, missing: ['ORDERS_CANCELLED', 'REFUNDS_CREATE'], checkedAt, error: null });
+    expect(node.textContent).toBe('Order events: MISSING ORDERS_CANCELLED, REFUNDS_CREATE. A cancel or refund can go unnoticed.');
+    expect(node.className).toBe('msg no');
+  });
+
   // 2026-07-04: optional margin cap (smooth high-end taper) in the pricing card.
   it('pricing card exposes the optional margin cap and only sends it when set', async () => {
     const html = await consolePage('test-api-key').text();

@@ -6,6 +6,10 @@ export const opsView = `  <section class="card">
     <h2>Fulfilment</h2>
     <p class="sub" style="margin:0 0 10px">Paid orders flow here. Guardrails (unmapped item, incomplete address, high fraud risk, over £100) put an order on <strong>hold</strong> for you; clean ones queue.</p>
     <p class="sub" style="margin:0 0 6px">Fulfilment mode: <strong id="modelabel">…</strong></p>
+    <p id="hookline" class="msg muted">Order events: not checked yet</p>
+    <div class="row" style="margin-top:6px">
+      <button class="ghost" id="hookbtn" onclick="checkOrderHooks()">Check order events</button>
+    </div>
     <div class="row">
       <button class="ghost" onclick="setMode('manual')">Manual</button>
       <button class="ghost" onclick="setMode('cj')">CJ app</button>
@@ -21,7 +25,7 @@ export const opsView = `  <section class="card">
       <button class="ghost" id="testemailbtn" onclick="sendTestEmail()">Send test email</button>
     </div>
     <p class="sub" style="margin:6px 0 0">PawScout emails this address whenever it creates an order in CJ that is awaiting your payment, so you can pay it ASAP.</p>
-    <p class="sub" style="margin:0 0 8px"><strong>Manual</strong>: orders just queue - you pay in CJ by hand. <strong>CJ app</strong>: CJ's own Shopify app fulfils; PawScout stays out. <strong>PawScout auto</strong>: PawScout creates + pays + tracks automatically - only after the CJ wallet is funded AND CJ's native order-import is OFF (else duplicate orders). <strong>Create-only</strong> (PawScout mode only): PawScout creates the CJ order but does NOT pay it - it shows below as <em>awaiting-payment</em> with the CJ order id, you pay it in CJ, and tracking still flows back automatically. Use this until the wallet is funded.</p>
+    <p class="sub" style="margin:0 0 8px"><strong>Manual</strong>: orders just queue - you pay in CJ by hand. <strong>CJ app</strong>: CJ's own Shopify app fulfils; PawScout stays out. <strong>PawScout auto</strong>: PawScout creates + pays + tracks automatically - only after the CJ wallet is funded AND CJ's native order-import is OFF (else duplicate orders). <strong>Create-only</strong> (PawScout mode only): PawScout creates the CJ order but does NOT pay it - it shows below as <em>awaiting-payment</em> with the CJ order id and you pay it in CJ; it stays in that list until its tracking number arrives because PawScout cannot see a payment you make by hand, and tracking still flows back automatically. Use this until the wallet is funded.</p>
     <div id="awaitbanner" class="msg" style="display:none"></div>
     <div id="ordlist"></div>
     <p id="ordmsg" class="msg muted"></p>

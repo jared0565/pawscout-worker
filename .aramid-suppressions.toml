@@ -57,3 +57,19 @@ tool = "semgrep"
 rule = "owasp-top-ten.a03-injection.javascript-dangerous-function-constructor"
 path = "tests/console.test.ts"
 reason = "Test executes one line of the console's own generated inline script (the channel-link scheme check from consolePage() output, same process) to prove the emitted regex is not swallowed by a line comment; no external input, test-only, not in the Worker bundle."
+
+# 2026-09-19: fourth `new Function(...)` in tests/console.test.ts, same shape as
+# the three above. Verified at source: the compiled string is the console page's
+# OWN renderHookLine function, cut out of consolePage() output in the same test
+# run by brace matching, plus a fixed `return`; it is called with a fake element
+# lookup and a fake esc. It exists because only executing the emitted function
+# can show which branch wins when a payload carries BOTH an error and a
+# non-empty missing list: the "check failed" line must beat "MISSING", or an
+# outage of the subscription check reads as missing order events. No external
+# or user-supplied input; test-only; vitest never ships to the Worker bundle.
+[[suppress]]
+id = "17644a59ad2cf2c9667875d12200f2e571ccedb9cbbb66b6c5fa60c7f0813225"
+tool = "semgrep"
+rule = "owasp-top-ten.a03-injection.javascript-dangerous-function-constructor"
+path = "tests/console.test.ts"
+reason = "Test executes the console's own renderHookLine function (cut from consolePage() output, same process) against a fake DOM node to prove the check-failed branch beats the MISSING branch; no external input, test-only, not in the Worker bundle."

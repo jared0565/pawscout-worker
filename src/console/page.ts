@@ -635,12 +635,59 @@ async function verifyCjOrders(){
   }catch(e){ setMsg('ordmsg','Failed: '+errText(e),'no'); }
   finally{ b.disabled=false; }
 }
+// The "Order events" webhook status line (id="hookline") and its recheck
+// button (id="hookbtn") are static markup in the ops card
+// (src/console/views/ops.ts), right after the Fulfilment mode line. The
+// functions below only fill the line's text/class and wire the button and
+// the per-order timeline toggle - no markup is built here.
+function renderHookLine(hooks){
+  var n=el('hookline'); if(!n) return;
+  if(!hooks){ n.textContent='Order events: not checked yet'; n.className='msg muted'; return; }
+  if(hooks.error){
+    n.textContent='Order events: the check failed ('+hooks.error+'), so nothing is known. Checked '+new Date(hooks.checkedAt).toLocaleString()+'.';
+    n.className='msg no';
+  } else if(hooks.ok){
+    n.textContent='Order events: all 3 subscribed (checked '+new Date(hooks.checkedAt).toLocaleString()+')';
+    n.className='msg ok';
+  } else {
+    n.textContent='Order events: MISSING '+esc((hooks.missing||[]).join(', '))+'. A cancel or refund can go unnoticed.';
+    n.className='msg no';
+  }
+}
+async function checkOrderHooks(){
+  var b=el('hookbtn'); if(b) b.disabled=true;
+  try{
+    var r=await api('/ensure-webhooks',{});
+    if(!r.ok){ setMsg('ordmsg','Failed: '+(r.error||'unknown error'),'no'); return; }
+    renderHookLine(r.hooks);
+  }catch(e){ setMsg('ordmsg','Failed: '+errText(e),'no'); }
+  finally{ if(b) b.disabled=false; }
+}
+async function toggleOrderEvents(id,btn){
+  var tr=btn.closest?btn.closest('tr'):null;
+  if(!tr) return;
+  var next=tr.nextSibling;
+  if(next&&next.getAttribute&&next.getAttribute('data-ev-row')===id){ tr.parentNode.removeChild(next); return; }
+  var row=document.createElement('tr'); row.setAttribute('data-ev-row',id);
+  var td=document.createElement('td'); td.colSpan=4; td.textContent='Loading';
+  row.appendChild(td);
+  tr.parentNode.insertBefore(row,tr.nextSibling);
+  try{
+    var r=await api('/order-events',{id:id});
+    if(!r.ok){ td.textContent='Failed: '+(r.error||'unknown error'); return; }
+    if(!r.events.length){ td.textContent='No events yet.'; return; }
+    td.innerHTML=r.events.map(function(e){
+      return esc(new Date(e.at).toLocaleString())+' · '+esc(e.kind)+' · '+esc(e.detail||'')+'<br>';
+    }).join('');
+  }catch(e){ td.textContent='Failed: '+errText(e); }
+}
 async function loadOrders(){
   var btn=el('ordbtn'); btn.disabled=true;
   try{
     var r=await api('/orders',{});
     if(!r.ok){ setMsg('ordmsg','Failed: '+(r.error||'unknown error'),'no'); return; }
     currentMode=r.mode||'manual'; currentCreateOnly=!!r.createOnly; renderMode();
+    renderHookLine(r.hooks||null);
     if(r.alertEmail&&el('alertemail')) el('alertemail').value=r.alertEmail;
     var list=el('ordlist');
     var awaiting=(r.orders||[]).filter(function(o){return o.status==='awaiting-payment';});
@@ -649,7 +696,7 @@ async function loadOrders(){
       if(awaiting.length){
         var ids=awaiting.map(function(o){return esc(o.cj||o.name||o.id);}).join(', ');
         banner.className='msg no'; banner.style.display='';
-        banner.textContent='⚠ '+awaiting.length+' order(s) created in CJ awaiting your payment. Pay these CJ order(s) in app.cjdropshipping.com: '+ids+'. Tracking will sync back automatically once paid.';
+        banner.textContent='⚠ '+awaiting.length+' order(s) have a CJ order that PawScout has not paid: '+ids+'. Pay any you have not paid yet in app.cjdropshipping.com. PawScout cannot see a payment you make by hand, so an order stays in this list until its tracking number arrives: check its state at the supplier before you pay. Tracking will sync back automatically.';
       } else { banner.style.display='none'; banner.textContent=''; }
     }
     if(!r.orders.length){ list.innerHTML=''; setMsg('ordmsg','No orders yet.','muted'); return; }
@@ -660,12 +707,14 @@ async function loadOrders(){
       if(o.status==='held') act='<button class="ghost" data-act="release" data-id="'+esc(o.id)+'">Release</button> <button class="ghost" data-act="cancel" data-id="'+esc(o.id)+'">Cancel</button>';
       else if(o.status==='queued') act='<button class="ghost" data-act="cancel" data-id="'+esc(o.id)+'">Cancel</button>';
       var tn=o.tracking?(' · '+esc(o.tracking)):'';
-      var cjid=((o.status==='awaiting-payment'||o.status==='submitted')&&o.cj)?(' · CJ '+esc(o.cj)):'';
-      return '<tr><td>'+esc(o.name||o.id)+'</td><td>'+esc((o.currency||'')+' '+(o.total!=null?o.total:''))+'</td><td><strong>'+esc(o.status)+'</strong>'+esc(holds)+cjid+tn+'</td><td>'+act+'</td></tr>';
+      var cjid=o.cj?(' · CJ '+esc(o.cj)):'';
+      return '<tr><td><button class="ghost" data-ev="'+esc(o.id)+'">'+esc(o.name||o.id)+'</button></td><td>'+esc((o.currency||'')+' '+(o.total!=null?o.total:''))+'</td><td><strong>'+esc(o.status)+'</strong>'+esc(holds)+cjid+tn+'</td><td>'+act+'</td></tr>';
     }).join('');
     list.innerHTML='<table style="width:100%;border-collapse:collapse;font-size:13px"><thead><tr><th style="text-align:left">Order</th><th style="text-align:left">Total</th><th style="text-align:left">Status</th><th></th></tr></thead><tbody>'+rows+'</tbody></table>';
     var bts=list.querySelectorAll('button[data-act]');
     for(var i=0;i<bts.length;i++){ bts[i].onclick=function(){ orderAction(this.getAttribute('data-id'), this.getAttribute('data-act')); }; }
+    var evbts=list.querySelectorAll('button[data-ev]');
+    for(var k=0;k<evbts.length;k++){ evbts[k].onclick=function(){ toggleOrderEvents(this.getAttribute('data-ev'), this); }; }
   }catch(e){ setMsg('ordmsg','Failed: '+errText(e),'no'); }
   finally{ btn.disabled=false; }
 }

@@ -220,6 +220,19 @@ export interface OrderRow {
   updated_at: string;
 }
 
+export type OrderEventKind =
+  | 'received' | 'held' | 'queued' | 'released'
+  | 'gate-passed' | 'gate-held' | 'gate-unreadable' | 'address-refreshed'
+  | 'stock-ok' | 'stockout' | 'supplier-order-created' | 'awaiting-payment' | 'paid'
+  | 'tracking-found' | 'tracking-written' | 'tracking-write-failed'
+  | 'cancel-received' | 'refund-received' | 'owner-alert-due' | 'owner-alerted' | 'owner-alert-unconfigured' | 'owner-alert-failed' | 'operator-action' | 'error';
+
+/** One append-only row of the order trail - `detail` is short plain text and
+ *  must never hold a name, an address, an email or a phone number. */
+export interface OrderEventRow {
+  shop: string; shopify_order_id: string; seq: number; at: string; kind: OrderEventKind; detail: string | null;
+}
+
 /** One row of the Audit view's landing list: a contact rolled up across all
  *  their threads - display name, latest activity and the categories seen. */
 export interface AuditContactRow {
@@ -686,11 +699,15 @@ export class TenantStore {
     for (let i = 0; i < orderIds.length; i += 50) {
       const chunk = orderIds.slice(i, i + 50);
       const ph = chunk.map((_, j) => `?${j + 2}`).join(',');
-      const r = await this.db
-        .prepare(`DELETE FROM orders WHERE shop = ?1 AND shopify_order_id IN (${ph})`)
-        .bind(this.shop, ...chunk)
-        .run();
-      removed += r.meta.changes ?? 0;
+      // One batch, the way redactShop already erases: the privacy route that
+      // calls this swallows a failure and still answers 200, so a refusal
+      // between two separate statements would leave trail rows standing for
+      // orders that are gone, with nothing to come back and finish the job.
+      const res = await this.db.batch([
+        this.db.prepare(`DELETE FROM orders WHERE shop = ?1 AND shopify_order_id IN (${ph})`).bind(this.shop, ...chunk),
+        this.db.prepare(`DELETE FROM order_events WHERE shop = ?1 AND shopify_order_id IN (${ph})`).bind(this.shop, ...chunk)
+      ]);
+      removed += res[0]?.meta.changes ?? 0;
     }
     return removed;
   }
@@ -737,6 +754,7 @@ export class TenantStore {
   async redactShop(): Promise<void> {
     await this.db.batch([
       this.db.prepare(`DELETE FROM orders WHERE shop = ?1`).bind(this.shop),
+      this.db.prepare(`DELETE FROM order_events WHERE shop = ?1`).bind(this.shop),
       this.db.prepare(`DELETE FROM product_events WHERE shop = ?1`).bind(this.shop),
       this.db.prepare(`DELETE FROM product_links WHERE shop = ?1`).bind(this.shop),
       this.db.prepare(`DELETE FROM warehouse_products WHERE shop = ?1`).bind(this.shop),
@@ -977,7 +995,55 @@ export class TenantStore {
     return rs.results ?? [];
   }
 
-  async updateOrder(shopifyOrderId: string, fields: Partial<Pick<OrderRow, 'status' | 'hold_reasons' | 'cj_order_id' | 'tracking_number' | 'risk_level'>>): Promise<void> {
+  /** Take one due queued row for this run, by pushing its own due time into
+   *  the future in the SAME statement that checks it is still due. Two runs
+   *  can select the same row moments apart (the 15 minute tick and the
+   *  console's own button, say); only the first one to reach here is told it
+   *  owns the row, and the second is refused and must leave it alone, so one
+   *  Shopify order can never become two supplier orders. No new status: a run
+   *  that dies after claiming leaves nothing to clean up, and the row simply
+   *  comes due again once `untilIso` has passed. Answers whether this caller
+   *  now owns the row. */
+  async claimDueOrder(shopifyOrderId: string, nowIso: string, untilIso: string): Promise<boolean> {
+    const r = await this.db
+      .prepare(
+        `UPDATE orders SET fulfil_after = ?3, updated_at = ?4
+         WHERE shop = ?1 AND shopify_order_id = ?2 AND status = 'queued' AND (fulfil_after IS NULL OR fulfil_after <= ?4)`
+      )
+      .bind(this.shop, shopifyOrderId, untilIso, nowIso)
+      .run();
+    return (r.meta.changes ?? 0) > 0;
+  }
+
+  /** Rows that hold a supplier order and are not settled: cj_order_id is not
+   *  null and status is awaiting-payment, held or error. Oldest first
+   *  (created_at, then shopify_order_id) so a paged reader can rotate through
+   *  a backlog larger than one page without starving the oldest rows. */
+  async listUnsettledSupplierOrders(limit: number, offset: number): Promise<OrderRow[]> {
+    const rs = await this.db
+      .prepare(
+        `SELECT * FROM orders
+         WHERE shop = ?1 AND cj_order_id IS NOT NULL AND status IN ('awaiting-payment', 'held', 'error')
+         ORDER BY created_at ASC, shopify_order_id ASC
+         LIMIT ?2 OFFSET ?3`
+      )
+      .bind(this.shop, limit, offset)
+      .all<OrderRow>();
+    return rs.results ?? [];
+  }
+
+  async countUnsettledSupplierOrders(): Promise<number> {
+    const row = await this.db
+      .prepare(
+        `SELECT COUNT(*) AS n FROM orders
+         WHERE shop = ?1 AND cj_order_id IS NOT NULL AND status IN ('awaiting-payment', 'held', 'error')`
+      )
+      .bind(this.shop)
+      .first<{ n: number }>();
+    return row?.n ?? 0;
+  }
+
+  async updateOrder(shopifyOrderId: string, fields: Partial<Pick<OrderRow, 'status' | 'hold_reasons' | 'cj_order_id' | 'tracking_number' | 'risk_level' | 'address_json'>>): Promise<void> {
     const now = new Date().toISOString();
     await this.db
       .prepare(
@@ -987,11 +1053,125 @@ export class TenantStore {
            cj_order_id = COALESCE(?5, cj_order_id),
            tracking_number = COALESCE(?6, tracking_number),
            risk_level = COALESCE(?8, risk_level),
+           address_json = COALESCE(?9, address_json),
            updated_at = ?7
          WHERE shop = ?1 AND shopify_order_id = ?2`
       )
-      .bind(this.shop, shopifyOrderId, fields.status ?? null, fields.hold_reasons ?? null, fields.cj_order_id ?? null, fields.tracking_number ?? null, now, fields.risk_level ?? null)
+      .bind(this.shop, shopifyOrderId, fields.status ?? null, fields.hold_reasons ?? null, fields.cj_order_id ?? null, fields.tracking_number ?? null, now, fields.risk_level ?? null, fields.address_json ?? null)
       .run();
+  }
+
+  /** Like updateOrder, but never touches a row whose status is 'cancelled' - one
+   *  statement, so a concurrent cancel cannot land between a check and this write.
+   *  Answers whether the row was written: false when it was cancelled, unknown, or
+   *  belongs to another shop. */
+  async updateOrderUnlessCancelled(shopifyOrderId: string, fields: Partial<Pick<OrderRow, 'status' | 'hold_reasons' | 'cj_order_id' | 'tracking_number' | 'risk_level' | 'address_json'>>): Promise<boolean> {
+    const now = new Date().toISOString();
+    const r = await this.db
+      .prepare(
+        `UPDATE orders SET
+           status = COALESCE(?3, status),
+           hold_reasons = COALESCE(?4, hold_reasons),
+           cj_order_id = COALESCE(?5, cj_order_id),
+           tracking_number = COALESCE(?6, tracking_number),
+           risk_level = COALESCE(?8, risk_level),
+           address_json = COALESCE(?9, address_json),
+           updated_at = ?7
+         WHERE shop = ?1 AND shopify_order_id = ?2 AND status <> 'cancelled'`
+      )
+      .bind(this.shop, shopifyOrderId, fields.status ?? null, fields.hold_reasons ?? null, fields.cj_order_id ?? null, fields.tracking_number ?? null, now, fields.risk_level ?? null, fields.address_json ?? null)
+      .run();
+    return (r.meta.changes ?? 0) > 0;
+  }
+
+  // --- order trail (phase 2): append-only steps, for reconstructing a failed
+  // or disputed order without reading logs ---
+
+  /** Records one step of the order trail. Never throws - answers true when
+   *  the row was written, false when the database refused it (a trail-write
+   *  failure must not fail the step that raised it, but the caller can still
+   *  tell the two apart). One statement so the per-order sequence number
+   *  cannot collide with a concurrent write. */
+  async addOrderEvent(shopifyOrderId: string, kind: OrderEventKind, detail?: string | null): Promise<boolean> {
+    try {
+      const now = new Date().toISOString();
+      const d = detail != null ? detail.slice(0, 300) : null;
+      await this.db
+        .prepare(
+          `INSERT INTO order_events (shop, shopify_order_id, seq, at, kind, detail)
+           SELECT ?1, ?2, COALESCE(MAX(seq), 0) + 1, ?3, ?4, ?5
+           FROM order_events WHERE shop = ?1 AND shopify_order_id = ?2`
+        )
+        .bind(this.shop, shopifyOrderId, now, kind, d)
+        .run();
+      return true;
+    } catch (err) {
+      console.warn(`order event not recorded for ${shopifyOrderId} (${kind}): ${err instanceof Error ? err.message : String(err)}`);
+      return false;
+    }
+  }
+
+  async listOrderEvents(shopifyOrderId: string): Promise<OrderEventRow[]> {
+    const rs = await this.db
+      .prepare(`SELECT * FROM order_events WHERE shop = ?1 AND shopify_order_id = ?2 ORDER BY seq ASC`)
+      .bind(this.shop, shopifyOrderId)
+      .all<OrderEventRow>();
+    return rs.results ?? [];
+  }
+
+  /** Counts the matching-kind run at the tail of the trail (most recent
+   *  events first), stopping at the first event that does not match. */
+  async countTrailingOrderEvents(shopifyOrderId: string, kind: OrderEventKind): Promise<number> {
+    const rs = await this.db
+      .prepare(`SELECT kind FROM order_events WHERE shop = ?1 AND shopify_order_id = ?2 ORDER BY seq DESC LIMIT 20`)
+      .bind(this.shop, shopifyOrderId)
+      .all<{ kind: string }>();
+    let n = 0;
+    for (const row of rs.results ?? []) {
+      if (row.kind !== kind) break;
+      n++;
+    }
+    return n;
+  }
+
+  /** Order ids (this shop only) that still hold at least one owner alert
+   *  worth re-sending: a subject with a due or a failed send that has not
+   *  been delivered, AND has not been ruled unconfigured (nobody was ever
+   *  able to tell), since; fewer than `maxAttempts` FAILURES since that
+   *  point (a due row alone never counts against the cap - it is not a
+   *  failure), and its first such row at or after `sinceIso`. Oldest first,
+   *  at most `limit`. This only CHOOSES which orders the sweep looks at;
+   *  what is actually re-sent is still decided by the sweep's own walk of
+   *  each order's trail (`pendingAlerts`), which the anti-join below is kept
+   *  in step with: a subject the walk would treat as cleared (owner-alerted
+   *  OR owner-alert-unconfigured) is left out entirely by the database,
+   *  rather than merely sorted behind live ones, so a resolved order or an
+   *  unconfigured shop's dead candidates can never occupy a slot that a
+   *  still-failing one needs. A LATER due row for the same subject (alerting
+   *  was configured since) still makes it a candidate again, because the
+   *  anti-join only looks for a clearing row AFTER that specific due row's
+   *  own seq - the same chronological, non-sticky behaviour the walk has. */
+  async listOrderIdsWithPendingAlerts(sinceIso: string, maxAttempts: number, limit = 100): Promise<string[]> {
+    const rs = await this.db
+      .prepare(
+        `SELECT shopify_order_id FROM (
+           SELECT f.shopify_order_id AS shopify_order_id, MIN(f.at) AS first_at
+           FROM order_events f
+           WHERE f.shop = ?1 AND f.kind IN ('owner-alert-failed', 'owner-alert-due') AND f.detail IS NOT NULL
+             AND NOT EXISTS (
+               SELECT 1 FROM order_events d
+               WHERE d.shop = f.shop AND d.shopify_order_id = f.shopify_order_id
+                 AND d.kind IN ('owner-alerted', 'owner-alert-unconfigured') AND d.detail = f.detail AND d.seq > f.seq)
+           GROUP BY f.shopify_order_id, f.detail
+           HAVING SUM(CASE WHEN f.kind = 'owner-alert-failed' THEN 1 ELSE 0 END) < ?3 AND MIN(f.at) >= ?2
+         )
+         GROUP BY shopify_order_id
+         ORDER BY MIN(first_at) ASC, shopify_order_id ASC
+         LIMIT ?4`
+      )
+      .bind(this.shop, sinceIso, maxAttempts, limit)
+      .all<{ shopify_order_id: string }>();
+    return (rs.results ?? []).map((r) => r.shopify_order_id);
   }
 
   async getLinks(cjPids: string[]): Promise<Map<string, ProductLink>> {

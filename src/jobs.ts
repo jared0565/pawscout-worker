@@ -59,6 +59,7 @@ import { LlmClient, curateProduct, pickHeroImage, rewriteDescription, type Curat
 import { DEFAULT_SEMANTIC, type Env, type TenantConfig, type Gates } from './types';
 import { rotateRecurringEvents, alertRotationErrors } from './recurring-events';
 import { alertOwner } from './owner-alert';
+import { ensureWebhooks, ORDER_EVENT_TOPICS, type WebhookStatus } from './webhooks';
 import { debrandCatalog } from './catalog-debrand';
 import { runArticleHealth, healArticleBody, saveArticleBody } from './blog/article-health';
 import { getArticleForEnrich, updateArticleAssets } from './blog/article';
@@ -105,7 +106,37 @@ export const SELLING_FAST_WINDOW_DAYS = 7;
 export const JOB_STAMP_DAILY = 'job:daily-maintenance';
 export const JOB_STAMP_PIPELINE = 'job:order-pipeline';
 export const JOB_STAMP_MARKETS = 'job:market-exclusions';
+export const JOB_STAMP_ORDER_HOOKS = 'job:order-webhooks';
 export const JOB_STAMP_TTL_DAYS = 30;
+
+/** A stored order-webhooks check: the raw WebhookStatus plus how many checks
+ *  in a row have failed to read the FINAL state. Read by both the daily
+ *  stage and /api/ensure-webhooks, but they do NOT follow the same rule for
+ *  computing the next value: only this nightly stage increments on a
+ *  failure, via nextConsecutiveFailures below. A failed
+ *  manual check on the button (src/index.ts's manualCheckConsecutiveFailures)
+ *  leaves the stored value unchanged instead - a button press is not a
+ *  night. */
+export interface StoredWebhookStatus extends WebhookStatus {
+  consecutiveFailures: number;
+}
+
+/** The next `consecutiveFailures` to store FOR THE NIGHTLY STAGE ONLY: 0 when
+ *  the current check is verified, otherwise the previous stored value plus 1.
+ *  A missing or unparseable previous value counts as 0. Do not call this
+ *  from a manual/button check - see the comment on StoredWebhookStatus above
+ *  and src/index.ts's manualCheckConsecutiveFailures. */
+export function nextConsecutiveFailures(previousRaw: string | null, verified: boolean): number {
+  if (verified) return 0;
+  if (!previousRaw) return 1;
+  try {
+    const prev = JSON.parse(previousRaw) as { consecutiveFailures?: unknown };
+    const n = typeof prev.consecutiveFailures === 'number' ? prev.consecutiveFailures : 0;
+    return n + 1;
+  } catch {
+    return 1;
+  }
+}
 
 /** Sets a product back to ACTIVE. The UN-archive direction, so it is not an
  *  archive path and does not go through the guard. It previously shared a
@@ -1555,6 +1586,38 @@ export const DAILY_GLOBAL_STAGES: DailyGlobalStage[] = [
 ];
 
 export const DAILY_SHOP_STAGES: DailyStage[] = [
+  // FIRST in the chain: assure the order-event webhook subscriptions
+  // before anything else runs, the same idempotent check the console's "Check
+  // order events" button (/api/ensure-webhooks) triggers on demand. Does not
+  // need CJ - it only talks to Shopify. Alerts the owner when a cancel/refund
+  // event is not reaching us, since that is exactly the gap that lets a
+  // cancelled or refunded order go unnoticed after the supplier order exists.
+  {
+    name: 'order-webhooks', maxMs: 1 * MIN_MS, needsCj: false,
+    run: async (ctx) => {
+      const hooks = await ensureWebhooks(ctx.admin, ctx.env.SHOPIFY_APP_URL);
+      // "unknown" is not "missing". A failed check (unverified)
+      // must never be reported or alerted as a confident "not reaching" - it is
+      // tracked instead as a run of consecutive failures, and only THAT gets an
+      // alert, worded as "could not be checked" rather than "not reaching".
+      const previousRaw = await ctx.store.getSearchCache(JOB_STAMP_ORDER_HOOKS);
+      const consecutiveFailures = nextConsecutiveFailures(previousRaw, hooks.verified);
+      const stored: StoredWebhookStatus = { ...hooks, consecutiveFailures };
+      await ctx.store.putSearchCache(JOB_STAMP_ORDER_HOOKS, JSON.stringify(stored), JOB_STAMP_TTL_DAYS);
+
+      if (hooks.verified) {
+        const missingOrderTopics = hooks.missing.filter((t) => ORDER_EVENT_TOPICS.includes(t));
+        if (missingOrderTopics.length) {
+          await alertOwner(ctx.env, ctx.cfg, 'Order events are not fully subscribed',
+            `These Shopify order events are not reaching PawScout: ${missingOrderTopics.join(', ')}. Until they do, a cancelled or refunded order can go unnoticed after the supplier order exists. Open the console and press "Check order events".`);
+        }
+      } else if (consecutiveFailures >= 3 && consecutiveFailures % 3 === 0) {
+        const firstError = hooks.errors[0] || 'unknown error';
+        await alertOwner(ctx.env, ctx.cfg, 'Order event subscriptions could not be checked',
+          `PawScout has not been able to check its Shopify order event subscriptions for ${consecutiveFailures} days in a row (${firstError}). Until a check succeeds, it is not known whether cancelled or refunded orders reach PawScout. Open the console and press "Check order events".`);
+      }
+    }
+  },
   // MUST precede 'cull'. The cull is the only automated takedown left, and it
   // refuses to archive anything unless this stage has just proven the referrer
   // index is complete. Running it after the cull would mean every night's cull
@@ -1660,7 +1723,7 @@ export const DAILY_SHOP_STAGES: DailyStage[] = [
       // A rollover that fails verification leaves a discount in the wrong
       // window (the 2026-09-05 SUMMERSALE fault); the log line above has short
       // retention, so the owner is emailed, once per distinct failure set.
-      await alertRotationErrors(ctx.store, r.errors, (subject, text) => alertOwner(ctx.env, ctx.cfg, subject, text));
+      await alertRotationErrors(ctx.store, r.errors, (subject, text) => alertOwner(ctx.env, ctx.cfg, subject, text).then(() => undefined));
     }
   },
   // The catalog-walking sweeps checkpoint their offset against the deadline, so

@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { alertOwner } from '../src/owner-alert';
 import { DEFAULT_INBOX } from '../src/inbox/types';
 import { DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, type TenantConfig, type Env } from '../src/types';
@@ -15,9 +15,10 @@ function capture() {
 }
 
 describe('alertOwner', () => {
-  it('emails the configured alert address with the subject and text, from the support desk', async () => {
+  it('emails the configured alert address with the subject and text, from the support desk, and answers sent', async () => {
     const { sent, fetchImpl } = capture();
-    await alertOwner({ RESEND_API_KEY: 'rk' } as unknown as Env, CFG, 'Event rotation needs attention', 'summersale: ACTIVE too early', fetchImpl);
+    const result = await alertOwner({ RESEND_API_KEY: 'rk' } as unknown as Env, CFG, 'Event rotation needs attention', 'summersale: ACTIVE too early', fetchImpl);
+    expect(result).toBe('sent');
     expect(sent).toHaveLength(1);
     expect(sent[0].to).toEqual(['owner@example.com']);
     expect(sent[0].subject).toBe('Event rotation needs attention');
@@ -25,11 +26,28 @@ describe('alertOwner', () => {
     expect(sent[0].from).toBe('Active Paw <support@activepaw.co.uk>');
   });
 
-  it('sends nothing without a Resend key or an alert address', async () => {
+  it('sends nothing and answers unconfigured without a Resend key or an alert address', async () => {
     const { sent, fetchImpl } = capture();
-    await alertOwner({} as unknown as Env, CFG, 'x', 'y', fetchImpl);
+    const noKey = await alertOwner({} as unknown as Env, CFG, 'x', 'y', fetchImpl);
+    expect(noKey).toBe('unconfigured');
     const noAddress: TenantConfig = { ...CFG, inbox: { ...CFG.inbox, alertEmail: undefined }, fulfil: { ...CFG.fulfil, alertEmail: undefined } };
-    await alertOwner({ RESEND_API_KEY: 'rk' } as unknown as Env, noAddress, 'x', 'y', fetchImpl);
+    const noAddressResult = await alertOwner({ RESEND_API_KEY: 'rk' } as unknown as Env, noAddress, 'x', 'y', fetchImpl);
+    expect(noAddressResult).toBe('unconfigured');
     expect(sent).toHaveLength(0);
+  });
+
+  it('answers failed, and logs a warning, when the provider rejects the send', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const fetchImpl = (async () => new Response(JSON.stringify({ message: 'invalid to address' }), { status: 422 })) as unknown as typeof fetch;
+    const result = await alertOwner({ RESEND_API_KEY: 'rk' } as unknown as Env, CFG, 'x', 'y', fetchImpl);
+    expect(result).toBe('failed');
+    expect(warnSpy).toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
+  it('answers failed, and never throws, when the underlying fetch throws', async () => {
+    const fetchImpl = (async () => { throw new Error('network down'); }) as unknown as typeof fetch;
+    const result = await alertOwner({ RESEND_API_KEY: 'rk' } as unknown as Env, CFG, 'x', 'y', fetchImpl);
+    expect(result).toBe('failed');
   });
 });
