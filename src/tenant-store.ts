@@ -67,6 +67,12 @@ export interface ProductLink {
   // on gates that have no meaningful magnitude. Never parsed for control flow -
   // it is evidence for a human decision, not a machine-readable field.
   fail_detail: string | null;
+  // Consecutive UTC days on which the supplier gave no answer about THIS product
+  // while it answered about others (migration 0043). 0 on every product the
+  // supplier still answers about.
+  supplier_silent_nights: number;
+  supplier_silent_day: string | null; // the UTC date last counted, YYYY-MM-DD
+  supplier_silent_alerted: number;    // 1 = the owner was told about the pause
   created_at: string;
   updated_at: string;
 }
@@ -1587,6 +1593,76 @@ export class TenantStore {
       .prepare(`UPDATE product_links SET stock_paused = ?3, updated_at = ?4 WHERE shop = ?1 AND cj_pid = ?2`)
       .bind(this.shop, cjPid, paused ? 1 : 0, new Date().toISOString())
       .run();
+  }
+
+  /** Count one more night without a supplier answer about this product and
+   *  return the new count. `dayUtc` (YYYY-MM-DD) makes it idempotent per day:
+   *  the owner's Sync button and the 15 minute resync run the same code on the
+   *  same day and must not turn one night into three. `updated_at` is left
+   *  alone on purpose: the nightly sync takes the oldest rows first, so a
+   *  product being counted keeps its place at the front and is asked about
+   *  again the next night. Returns 0 when no link row exists. */
+  async noteSupplierSilent(cjPid: string, dayUtc: string): Promise<number> {
+    const row = await this.db
+      .prepare(
+        `UPDATE product_links
+         SET supplier_silent_nights = supplier_silent_nights + (CASE WHEN supplier_silent_day IS ?3 THEN 0 ELSE 1 END),
+             supplier_silent_day = ?3
+         WHERE shop = ?1 AND cj_pid = ?2
+         RETURNING supplier_silent_nights AS nights`
+      )
+      .bind(this.shop, cjPid, dayUtc)
+      .first<{ nights: number }>();
+    return row?.nights ?? 0;
+  }
+
+  /** The supplier answered about this product again: forget the count and the
+   *  notice flag, so a later silence starts from zero and is told afresh. */
+  async clearSupplierSilent(cjPid: string): Promise<void> {
+    await this.db
+      .prepare(
+        `UPDATE product_links SET supplier_silent_nights = 0, supplier_silent_day = NULL, supplier_silent_alerted = 0
+         WHERE shop = ?1 AND cj_pid = ?2`
+      )
+      .bind(this.shop, cjPid)
+      .run();
+  }
+
+  /** Mark a link paused because the supplier went silent. Unlike
+   *  setStockPaused this is not a good answer, so the silence count stays. */
+  async pauseForSupplierSilence(cjPid: string): Promise<void> {
+    await this.db
+      .prepare(`UPDATE product_links SET stock_paused = 1, updated_at = ?3 WHERE shop = ?1 AND cj_pid = ?2`)
+      .bind(this.shop, cjPid, new Date().toISOString())
+      .run();
+  }
+
+  /** Imported products that are paused after at least `minNights` of supplier
+   *  silence and that the owner has not yet been told about. Only a row whose
+   *  pause was actually written is listed, so the notice never claims a product
+   *  is sold out while a failed Shopify write left it on sale. */
+  async listSupplierSilentUntold(minNights: number): Promise<ProductLink[]> {
+    const rs = await this.db
+      .prepare(
+        `SELECT * FROM product_links
+         WHERE shop = ?1 AND state = 'imported' AND stock_paused = 1
+           AND supplier_silent_nights >= ?2 AND supplier_silent_alerted = 0
+         ORDER BY cj_pid ASC LIMIT 100`
+      )
+      .bind(this.shop, minNights)
+      .all<ProductLink>();
+    return rs.results ?? [];
+  }
+
+  async markSupplierSilentAlerted(cjPids: string[]): Promise<void> {
+    if (!cjPids.length) return;
+    await this.db.batch(
+      cjPids.map((pid) =>
+        this.db
+          .prepare(`UPDATE product_links SET supplier_silent_alerted = 1 WHERE shop = ?1 AND cj_pid = ?2`)
+          .bind(this.shop, pid)
+      )
+    );
   }
 
   /** Owner "Keep" override (2026-07-12): 1 = the profitability agent must not

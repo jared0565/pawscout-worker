@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
-import { cullStaleProducts, restoreCulledProducts, backfillArchivedRedirects, runProfitAgentSweep, refillCollections, syncStoreInventory, resyncLowStockInventory, seedSemanticLibrary, sellableQty, CULL_MIN_WINDOW_EVENTS, CULL_WINDOW_DAYS, LOW_STOCK_BAND, LOW_STOCK_RESERVE } from '../src/jobs';
+import { cullStaleProducts, restoreCulledProducts, backfillArchivedRedirects, runProfitAgentSweep, refillCollections, syncStoreInventory, resyncLowStockInventory, seedSemanticLibrary, sellableQty, supplierSilentAlert, tellOwnerAboutSupplierSilence, CULL_MIN_WINDOW_EVENTS, CULL_WINDOW_DAYS, LOW_STOCK_BAND, LOW_STOCK_RESERVE, SUPPLIER_SILENT_PAUSE_NIGHTS } from '../src/jobs';
 import { TenantStore } from '../src/tenant-store';
 import { DEFAULT_GATES, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, DEFAULT_INBOX, DEFAULT_SEMANTIC, DEFAULT_PROFIT, type TenantConfig } from '../src/types';
 import type { CjClient, CjDetail } from '../src/cj';
@@ -665,6 +665,188 @@ describe('syncStoreInventory', () => {
     // ...but the price realignment still went through
     const reprice = calls.find((c) => c.query.includes('productVariantsBulkUpdate'))!;
     expect((reprice.variables!.variants as { price: string }[])[0].price).toBe('19.99');
+  });
+
+  // A supplier that answers about every product except `silentPid`: for that
+  // one BOTH reads fail, which is what a product the supplier has dropped looks like.
+  function cjSilentAbout(silentPid: string | '*', stock = 40): CjClient {
+    const silent = (pid: string) => silentPid === '*' || pid === silentPid;
+    return {
+      detail: async (pid: string) => { if (silent(pid)) throw new Error('Product not found (CJ code 1600100, /product/query)'); return detailOf(pid, stock, 10); },
+      stockByPid: async (pid: string) => { if (silent(pid)) throw new Error('Product not found (CJ code 1600100, /product/stock/getInventoryByPid)'); return new Map([[`v-${pid}`, stock]]); },
+      freightEstimate: async () => null
+    } as unknown as CjClient;
+  }
+  const NIGHT_1 = Date.parse('2026-09-21T04:30:00.000Z');
+  const silentRow = (pid: string) => env.DB
+    .prepare(`SELECT stock_paused, supplier_silent_nights AS nights, supplier_silent_alerted AS alerted FROM product_links WHERE shop = ?1 AND cj_pid = ?2`)
+    .bind(SHOP, pid).first<{ stock_paused: number; nights: number; alerted: number }>();
+
+  it('two nights of supplier silence about one product are counted and change nothing in the store', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await insertLink('A', 'imported', 5);
+    await insertLink('gone', 'imported', 6);
+    await seedWarehouse(store, 'A', 'pet-toys');
+    await seedWarehouse(store, 'gone', 'pet-toys');
+
+    const calls: Call[] = [];
+    for (const night of [0, 1]) {
+      await syncStoreInventory(store, cjSilentAbout('gone'), shopAdmin(calls), CFG, { pause: async () => {}, now: () => NIGHT_1 + night * DAY });
+    }
+    // a second run on the SAME day (the owner's Sync button, the 15 minute resync) is not another night
+    await syncStoreInventory(store, cjSilentAbout('gone'), shopAdmin(calls), CFG, { pause: async () => {}, now: () => NIGHT_1 + DAY + 3_600_000 });
+
+    expect((await silentRow('gone'))?.nights).toBe(2);
+    expect((await silentRow('gone'))?.stock_paused).toBe(0);
+    expect((await silentRow('A'))?.nights).toBe(0);
+    const zeroed = calls.filter((c) => c.query.includes('inventorySetQuantities') && JSON.stringify(c.variables).includes('"quantity":0'));
+    expect(zeroed).toHaveLength(0);
+  });
+
+  it('the third night of silence sets the product to sold out, stamps the check, and pauses the link', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await insertLink('A', 'imported', 5);
+    await insertLink('gone', 'imported', 6);
+    await seedWarehouse(store, 'A', 'pet-toys');
+    await seedWarehouse(store, 'gone', 'pet-toys');
+
+    let calls: Call[] = [];
+    for (const night of [0, 1, 2]) {
+      calls = [];
+      await syncStoreInventory(store, cjSilentAbout('gone'), shopAdmin(calls), CFG, { pause: async () => {}, now: () => NIGHT_1 + night * DAY });
+    }
+
+    const forGone = (c: Call) => JSON.stringify(c.variables).includes('gid://shopify/Product/gone');
+    const inv = calls.filter((c) => c.query.includes('inventorySetQuantities'));
+    // two quantity writes on the third night: the healthy product's real stock, and the silent one's zero
+    expect(inv.map((c) => (c.variables!.input as { quantities: { quantity: number }[] }).quantities[0].quantity).sort((a, b) => a - b)).toEqual([0, 40]);
+    const meta = calls.find((c) => c.query.includes('metafieldsSet') && forGone(c))!;
+    const fields = meta.variables!.metafields as { key: string; value: string }[];
+    expect(fields.find((f) => f.key === 'status')?.value).toBe('out_of_stock');
+    expect(fields.find((f) => f.key === 'available_qty')?.value).toBe('0');
+    expect(fields.find((f) => f.key === 'last_checked_at')?.value).toBe(new Date(NIGHT_1 + 2 * DAY).toISOString());
+
+    expect(await silentRow('gone')).toEqual({ stock_paused: 1, nights: 3, alerted: 0 });
+    expect((await store.getWarehouseProduct('gone'))?.stock).toBe(0);
+    expect((await silentRow('A'))?.stock_paused).toBe(0);
+  });
+
+  it('a night when the supplier answers about NO product is an outage, not silence: nothing is counted', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await insertLink('A', 'imported', 5);
+    await insertLink('B', 'imported', 6);
+    await seedWarehouse(store, 'A', 'pet-toys');
+    await seedWarehouse(store, 'B', 'pet-toys');
+
+    const calls: Call[] = [];
+    for (const night of [0, 1, 2, 3]) {
+      await syncStoreInventory(store, cjSilentAbout('*'), shopAdmin(calls), CFG, { pause: async () => {}, now: () => NIGHT_1 + night * DAY });
+    }
+
+    expect(await silentRow('A')).toEqual({ stock_paused: 0, nights: 0, alerted: 0 });
+    expect(await silentRow('B')).toEqual({ stock_paused: 0, nights: 0, alerted: 0 });
+    expect(calls.some((c) => c.query.includes('inventorySetQuantities'))).toBe(false);
+  });
+
+  it('the first answer after a silence clears the count and puts the product back on sale with its real stock', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await insertLink('A', 'imported', 5);
+    await insertLink('gone', 'imported', 6);
+    await seedWarehouse(store, 'A', 'pet-toys');
+    await seedWarehouse(store, 'gone', 'pet-toys');
+    for (const night of [0, 1, 2]) {
+      await syncStoreInventory(store, cjSilentAbout('gone'), shopAdmin([]), CFG, { pause: async () => {}, now: () => NIGHT_1 + night * DAY });
+    }
+    await store.markSupplierSilentAlerted(['gone']);
+    expect(await silentRow('gone')).toEqual({ stock_paused: 1, nights: 3, alerted: 1 });
+
+    const calls: Call[] = [];
+    await syncStoreInventory(store, cjSilentAbout('nobody'), shopAdmin(calls), CFG, { pause: async () => {}, now: () => NIGHT_1 + 3 * DAY });
+
+    expect(await silentRow('gone')).toEqual({ stock_paused: 0, nights: 0, alerted: 0 });
+    const inv = calls.filter((c) => c.query.includes('inventorySetQuantities'));
+    expect(inv.every((c) => (c.variables!.input as { quantities: { quantity: number }[] }).quantities[0].quantity === 40)).toBe(true);
+    expect(inv).toHaveLength(2);
+  });
+
+  it('a product the supplier still lists is never counted as silent, even with a dead stock endpoint', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await insertLink('A', 'imported', 5);
+    await insertLink('B', 'imported', 6);
+    await seedWarehouse(store, 'B', 'pet-toys');
+    const cj = {
+      detail: async (pid: string) => (pid === 'A' ? { ...detailOf(pid, 0, 10), stock: 0, variants: [{ vid: `v-${pid}`, name: 'Default', sellPriceUsd: 10, sku: `sku-${pid}` }] } : detailOf(pid, 40, 10)),
+      stockByPid: async (pid: string) => { if (pid === 'A') throw new Error('Interface not found (CJ code 1600002)'); return new Map([[`v-${pid}`, 40]]); },
+      freightEstimate: async () => null
+    } as unknown as CjClient;
+    for (const night of [0, 1, 2, 3]) {
+      await syncStoreInventory(store, cj, shopAdmin([]), CFG, { pause: async () => {}, now: () => NIGHT_1 + night * DAY });
+    }
+    expect(await silentRow('A')).toEqual({ stock_paused: 0, nights: 0, alerted: 0 });
+  });
+
+  it('lists the products paused for silence that the owner has not been told about, once each', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await insertLink('A', 'imported', 5);
+    await insertLink('gone', 'imported', 6);
+    await seedWarehouse(store, 'A', 'pet-toys');
+    await seedWarehouse(store, 'gone', 'pet-toys');
+    for (const night of [0, 1]) {
+      await syncStoreInventory(store, cjSilentAbout('gone'), shopAdmin([]), CFG, { pause: async () => {}, now: () => NIGHT_1 + night * DAY });
+    }
+    expect(await store.listSupplierSilentUntold(SUPPLIER_SILENT_PAUSE_NIGHTS)).toEqual([]); // counted, not yet paused
+
+    await syncStoreInventory(store, cjSilentAbout('gone'), shopAdmin([]), CFG, { pause: async () => {}, now: () => NIGHT_1 + 2 * DAY });
+    expect((await store.listSupplierSilentUntold(SUPPLIER_SILENT_PAUSE_NIGHTS)).map((l) => l.cj_pid)).toEqual(['gone']);
+
+    // Another store sees none of it and can change none of it, while the row is
+    // still untold (so a leak would show here, not hide behind the told flag).
+    const other = new TenantStore(env.DB, 'other.myshopify.com');
+    expect(await other.listSupplierSilentUntold(SUPPLIER_SILENT_PAUSE_NIGHTS)).toEqual([]);
+    await other.markSupplierSilentAlerted(['gone']);
+    await other.clearSupplierSilent('gone');
+    expect(await other.noteSupplierSilent('gone', '2026-09-30')).toBe(0);
+    await other.pauseForSupplierSilence('A');
+    expect(await silentRow('gone')).toEqual({ stock_paused: 1, nights: 3, alerted: 0 });
+    expect((await silentRow('A'))?.stock_paused).toBe(0);
+
+    await store.markSupplierSilentAlerted(['gone']);
+    expect(await store.listSupplierSilentUntold(SUPPLIER_SILENT_PAUSE_NIGHTS)).toEqual([]);
+  });
+
+  it('tells the owner once, and a notice that could not be sent is tried again the next night', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await insertLink('A', 'imported', 5);
+    await insertLink('gone', 'imported', 6);
+    await seedWarehouse(store, 'A', 'pet-toys');
+    await seedWarehouse(store, 'gone', 'pet-toys');
+
+    const sent: string[] = [];
+    const ok = async (subject: string) => { sent.push(subject); return 'sent' as const; };
+    expect(await tellOwnerAboutSupplierSilence(store, ok)).toBe(0); // nothing paused: no notice at all
+    expect(sent).toEqual([]);
+
+    for (const night of [0, 1, 2]) {
+      await syncStoreInventory(store, cjSilentAbout('gone'), shopAdmin([]), CFG, { pause: async () => {}, now: () => NIGHT_1 + night * DAY });
+    }
+    for (const result of ['failed', 'unconfigured'] as const) {
+      expect(await tellOwnerAboutSupplierSilence(store, async () => result)).toBe(0);
+      expect((await silentRow('gone'))?.alerted).toBe(0); // still owed
+    }
+    expect(await tellOwnerAboutSupplierSilence(store, ok)).toBe(1);
+    expect((await silentRow('gone'))?.alerted).toBe(1);
+    expect(await tellOwnerAboutSupplierSilence(store, ok)).toBe(0); // told once, never again
+    expect(sent).toEqual(['1 product set to sold out: the supplier has stopped answering about it']);
+  });
+
+  it('the owner notice names each product and never claims the supplier dropped it', () => {
+    const a = supplierSilentAlert([{ cj_pid: 'P1', handle: 'cat-tree' }, { cj_pid: 'P2', handle: null }], SUPPLIER_SILENT_PAUSE_NIGHTS);
+    expect(a.subject).toBe('2 products set to sold out: the supplier has stopped answering about them');
+    expect(a.text).toContain('cat-tree (supplier product id P1)');
+    expect(a.text).toContain('supplier product id P2');
+    expect(a.text).toContain('3 nights in a row');
+    expect(a.text).not.toMatch(new RegExp('[' + String.fromCharCode(0x2013, 0x2014) + ']')); // no en or em dash
+    expect(supplierSilentAlert([{ cj_pid: 'P1', handle: 'cat-tree' }], 3).subject).toBe('1 product set to sold out: the supplier has stopped answering about it');
   });
 
   it('a per-product Shopify failure never aborts the run', async () => {

@@ -1,7 +1,7 @@
 import { Vault } from './vault';
 import { chooseOrigin, CjClient, CjTokenManager, cjFetchFromEnv, type CjSearchItem } from './cj';
 import { makeAdminGraphql, type AdminGraphql } from './shopify-admin';
-import { TenantStore, listActiveShops, purgeExpiredSearchCache, purgeUnusedWarehouse, trimOldLogs, readJobCheckpoint, writeJobCheckpoint } from './tenant-store';
+import { TenantStore, listActiveShops, purgeExpiredSearchCache, purgeUnusedWarehouse, trimOldLogs, readJobCheckpoint, writeJobCheckpoint, type ProductLink } from './tenant-store';
 import { liveCjPasses, normalizeKeyword, CACHE_TTL_DAYS, isLikelyPetProduct, titleSignature } from './proxy/search';
 import { bestLocalQty, localWarehousesFor, HOME_MARKET_WAREHOUSES } from './local-markets';
 import { archiveProductGuarded } from './catalog/archive-guard';
@@ -58,7 +58,7 @@ import type { CjDetail } from './cj';
 import { LlmClient, curateProduct, pickHeroImage, rewriteDescription, type Curation, type HeroPick } from './llm';
 import { DEFAULT_SEMANTIC, type Env, type TenantConfig, type Gates } from './types';
 import { rotateRecurringEvents, alertRotationErrors } from './recurring-events';
-import { alertOwner } from './owner-alert';
+import { alertOwner, type AlertResult } from './owner-alert';
 import { ensureWebhooks, ORDER_EVENT_TOPICS, type WebhookStatus } from './webhooks';
 import { debrandCatalog } from './catalog-debrand';
 import { runArticleHealth, healArticleBody, saveArticleBody } from './blog/article-health';
@@ -439,11 +439,12 @@ export async function syncStoreInventory(
   cj: CjClient,
   admin: AdminGraphql,
   cfg: TenantConfig,
-  opts: { maxProducts?: number; offset?: number; pause?: (ms: number) => Promise<void>; errors?: string[]; onlyCjPids?: string[] } = {}
+  opts: { maxProducts?: number; offset?: number; pause?: (ms: number) => Promise<void>; errors?: string[]; onlyCjPids?: string[]; now?: () => number } = {}
 ): Promise<number> {
   const maxProducts = opts.maxProducts ?? 60;
   const offset = opts.offset ?? 0;
   const pause = opts.pause ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const clock = opts.now ?? Date.now;
   // Price-authority handoff: when the active profitability agent is LIVE (enabled
   // AND not dry-run) IT owns shelf prices - it raises above the rule price to just
   // under a higher competitor. This nightly sync must then NOT drag those back down
@@ -463,6 +464,8 @@ export async function syncStoreInventory(
     links = links.filter((l) => want.has(l.cj_pid));
   }
   let synced = 0;
+  let answered = 0;                  // products the supplier answered about in this run
+  const silent: ProductLink[] = [];  // products for which BOTH supplier reads failed in this run
   for (const link of links.slice(offset, offset + maxProducts)) {
     if (!link.shopify_product_id) continue;
     try {
@@ -493,6 +496,17 @@ export async function syncStoreInventory(
         }
       }
       const paused = stockKnown && maxStock < cfg.floors.stockFloor;
+
+      // Either read coming back means the supplier still knows this product. Only
+      // a product with BOTH reads failing is a candidate for the silence count,
+      // and it is judged after the loop, once it is known whether the supplier
+      // answered about anything at all tonight.
+      if (detail || stockKnown) {
+        answered++;
+        if (link.supplier_silent_nights > 0) await store.clearSupplierSilent(link.cj_pid);
+      } else {
+        silent.push(link);
+      }
 
       // Freight captured at admission/import lives on the stored warehouse
       // detail; fresh details don't carry it (no extra CJ call here).
@@ -639,7 +653,7 @@ export async function syncStoreInventory(
         await setSupplierMetafields(admin, link.shopify_product_id, {
           status: paused ? 'out_of_stock' : maxStock < cfg.floors.stockFloor * 2 ? 'low_stock' : 'available',
           qty: paused ? maxStock : sellableQty(maxStock), // theme fallback shows/caps the SELLABLE number
-          checkedAt: new Date().toISOString(),
+          checkedAt: new Date(clock()).toISOString(),
           origin,
           deliveryDays,
           deliveryDaysActual,
@@ -655,7 +669,79 @@ export async function syncStoreInventory(
       opts.errors?.push(`${link.cj_pid}: ${(e as Error).message}`);
     }
   }
+
+  // One bad night must never zero the store (see above), but a product the
+  // supplier has dropped fails BOTH reads every night for ever, and used to stay
+  // on sale on its last known figures with nobody told. So silence is counted,
+  // one per UTC day, and on the third night the product is set to sold out.
+  // The count only moves when the supplier answered about at least one OTHER
+  // product in this run: when nothing answered, the supplier is down or our
+  // login is gone, and that says nothing about any single product.
+  if (silent.length && answered > 0) {
+    const dayUtc = new Date(clock()).toISOString().slice(0, 10);
+    for (const link of silent) {
+      try {
+        const nights = await store.noteSupplierSilent(link.cj_pid, dayUtc);
+        if (nights < SUPPLIER_SILENT_PAUSE_NIGHTS || link.stock_paused || !link.shopify_product_id) continue;
+        const variants = await productInventoryItems(admin, link.shopify_product_id);
+        await enableTracking(admin, link.shopify_product_id, variants.filter((v) => !v.tracked));
+        await setInventoryQuantities(admin, locationId, variants.map((v) => ({ inventoryItemId: v.inventoryItemId, quantity: 0 })));
+        // Sold out with a fresh stamp and nothing else: origin and the delivery
+        // bands are left as they were, because nothing new is known about them.
+        await setSupplierMetafields(admin, link.shopify_product_id, { status: 'out_of_stock', qty: 0, checkedAt: new Date(clock()).toISOString(), demand: 'none' });
+        await store.pauseForSupplierSilence(link.cj_pid);
+        await store.setWarehouseStock(link.cj_pid, 0, 'low_stock');
+        console.warn(`set to sold out after ${nights} nights without a supplier answer: ${link.cj_pid}`);
+      } catch (e) {
+        // The day is already counted, and the pause is retried on the next run
+        // because the link is still unpaused.
+        const msg = e instanceof Error ? e.message : String(e);
+        console.warn(`could not pause ${link.cj_pid} after supplier silence: ${msg}`);
+        opts.errors?.push(`${link.cj_pid}: could not pause after supplier silence (${msg})`);
+      }
+    }
+  }
   return synced;
+}
+
+/** Nights in a row without a supplier answer before a product is set to sold out. */
+export const SUPPLIER_SILENT_PAUSE_NIGHTS = 3;
+
+/** The one notice the owner gets about products paused for supplier silence.
+ *  It says what PawScout saw and did, never why the supplier is silent: that
+ *  is not known here, and the owner is told how to find out. */
+export function supplierSilentAlert(
+  links: Pick<ProductLink, 'cj_pid' | 'handle'>[],
+  nights: number
+): { subject: string; text: string } {
+  const n = links.length;
+  const subject = n === 1
+    ? '1 product set to sold out: the supplier has stopped answering about it'
+    : `${n} products set to sold out: the supplier has stopped answering about them`;
+  const lines = links.map((l) => `- ${l.handle ? `${l.handle} (supplier product id ${l.cj_pid})` : `supplier product id ${l.cj_pid}`}`);
+  const text = [
+    `PawScout asks the supplier about every imported product each night. For the ${n === 1 ? 'product' : 'products'} below the supplier gave no answer ${nights} nights in a row, while it did answer about other products on the same nights. PawScout has set ${n === 1 ? 'it' : 'them'} to sold out in your store, so nothing is sold that may no longer be available.`,
+    '',
+    ...lines,
+    '',
+    'What to do: look each one up at the supplier. If the supplier no longer lists it, archive it in Shopify. If it is still listed, nothing is needed from you: PawScout keeps asking every night and puts the product back on sale, with its real stock, the first time the supplier answers.'
+  ].join('\n');
+  return { subject, text };
+}
+
+/** Tell the owner, once per product, about products paused for supplier silence.
+ *  Driven by the rows, not by the run that paused them: a notice that could not
+ *  be sent leaves the rows untold, and the next night tries again. */
+export async function tellOwnerAboutSupplierSilence(
+  store: TenantStore,
+  send: (subject: string, text: string) => Promise<AlertResult>
+): Promise<number> {
+  const untold = await store.listSupplierSilentUntold(SUPPLIER_SILENT_PAUSE_NIGHTS);
+  if (!untold.length) return 0;
+  const a = supplierSilentAlert(untold, SUPPLIER_SILENT_PAUSE_NIGHTS);
+  if ((await send(a.subject, a.text)) !== 'sent') return 0;
+  await store.markSupplierSilentAlerted(untold.map((l) => l.cj_pid));
+  return untold.length;
 }
 
 /** Origin-signature backfill batch: paced CJ detail (+freight) calls per nightly run. */
@@ -1657,7 +1743,10 @@ export const DAILY_SHOP_STAGES: DailyStage[] = [
       if (r.drafted || r.discovered) console.log(`market seed ${lane.countryCode}: +${r.drafted} drafts (${r.discovered} discovered, ${r.rejected} rejected)`);
     }
   })),
-  { name: 'store-inventory', maxMs: 10 * MIN_MS, run: async (ctx) => { await syncStoreInventory(ctx.store, ctx.cj!, ctx.admin, ctx.cfg); } },
+  { name: 'store-inventory', maxMs: 10 * MIN_MS, run: async (ctx) => {
+    await syncStoreInventory(ctx.store, ctx.cj!, ctx.admin, ctx.cfg);
+    await tellOwnerAboutSupplierSilence(ctx.store, (subject, text) => alertOwner(ctx.env, ctx.cfg, subject, text));
+  } },
   // NOTE: the profitability agent is NOT a nightly stage. It runs CONTINUOUSLY on
   // the 15-min cron (runProfitAgentSweep) so the catalog is re-evaluated through the
   // day, and it is the sole writer of product_profit (the old observe-first
