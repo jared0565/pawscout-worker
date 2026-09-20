@@ -25,7 +25,7 @@ export async function alertOwner(env: Env, cfg: TenantConfig, subject: string, t
       from: 'Active Paw <support@activepaw.co.uk>', to, subject: sanitizeOutbound(subject), text: sanitizeOutbound(text)
     }, fetchImpl);
   } catch (e) {
-    console.warn(`[owner-alert] "${subject}" not delivered: ${(e as Error).message}`);
+    console.warn(`[owner-alert] "${subject}" not delivered: ${e instanceof Error ? e.message : String(e)}`);
     return 'failed';
   }
   if (!result.ok) {

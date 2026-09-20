@@ -699,15 +699,15 @@ export class TenantStore {
     for (let i = 0; i < orderIds.length; i += 50) {
       const chunk = orderIds.slice(i, i + 50);
       const ph = chunk.map((_, j) => `?${j + 2}`).join(',');
-      const r = await this.db
-        .prepare(`DELETE FROM orders WHERE shop = ?1 AND shopify_order_id IN (${ph})`)
-        .bind(this.shop, ...chunk)
-        .run();
-      removed += r.meta.changes ?? 0;
-      await this.db
-        .prepare(`DELETE FROM order_events WHERE shop = ?1 AND shopify_order_id IN (${ph})`)
-        .bind(this.shop, ...chunk)
-        .run();
+      // One batch, the way redactShop already erases: the privacy route that
+      // calls this swallows a failure and still answers 200, so a refusal
+      // between two separate statements would leave trail rows standing for
+      // orders that are gone, with nothing to come back and finish the job.
+      const res = await this.db.batch([
+        this.db.prepare(`DELETE FROM orders WHERE shop = ?1 AND shopify_order_id IN (${ph})`).bind(this.shop, ...chunk),
+        this.db.prepare(`DELETE FROM order_events WHERE shop = ?1 AND shopify_order_id IN (${ph})`).bind(this.shop, ...chunk)
+      ]);
+      removed += res[0]?.meta.changes ?? 0;
     }
     return removed;
   }
@@ -993,6 +993,26 @@ export class TenantStore {
       .bind(this.shop, nowIso)
       .all<OrderRow>();
     return rs.results ?? [];
+  }
+
+  /** Take one due queued row for this run, by pushing its own due time into
+   *  the future in the SAME statement that checks it is still due. Two runs
+   *  can select the same row moments apart (the 15 minute tick and the
+   *  console's own button, say); only the first one to reach here is told it
+   *  owns the row, and the second is refused and must leave it alone, so one
+   *  Shopify order can never become two supplier orders. No new status: a run
+   *  that dies after claiming leaves nothing to clean up, and the row simply
+   *  comes due again once `untilIso` has passed. Answers whether this caller
+   *  now owns the row. */
+  async claimDueOrder(shopifyOrderId: string, nowIso: string, untilIso: string): Promise<boolean> {
+    const r = await this.db
+      .prepare(
+        `UPDATE orders SET fulfil_after = ?3, updated_at = ?4
+         WHERE shop = ?1 AND shopify_order_id = ?2 AND status = 'queued' AND (fulfil_after IS NULL OR fulfil_after <= ?4)`
+      )
+      .bind(this.shop, shopifyOrderId, untilIso, nowIso)
+      .run();
+    return (r.meta.changes ?? 0) > 0;
   }
 
   /** Rows that hold a supplier order and are not settled: cj_order_id is not

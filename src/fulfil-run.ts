@@ -10,8 +10,8 @@ import type { Env, TenantConfig } from './types';
 import type { OrderLineItem, OrderAddress } from './fulfil';
 import { readOrderGate, decideGate, type RiskLevel } from './order-gate';
 import { alertOwner } from './owner-alert';
-import { deliverOrderAlert, retryOrderAlerts, type AlertSend } from './order-alert';
-import { applyCancel } from './order-cancel';
+import { deliverOrderAlert, recordAlertDue, retryOrderAlerts, type AlertSend } from './order-alert';
+import { applyCancel, type OwnerAlert } from './order-cancel';
 
 // W-FULFIL Stage B: turn queued orders into paid CJ orders, then write tracking
 // back to Shopify. The money leg (createOrder + payBalance) only runs when
@@ -103,11 +103,48 @@ async function alertIfSupplierOrderExists(
   alert?: AlertSend
 ): Promise<void> {
   if (!o.cj_order_id || !alert) return;
-  const name = o.order_name ?? o.shopify_order_id;
-  await deliverOrderAlert(store, o.shopify_order_id, {
+  await deliverOrderAlert(store, o.shopify_order_id, stoppedWithSupplierOrder(o.order_name ?? o.shopify_order_id, o.cj_order_id, reason), alert);
+}
+
+/** The wording of that same alert, built apart from the sending of it, so a
+ *  caller that has to record the intention to alert BEFORE it writes the row
+ *  can record this exact subject first. */
+function stoppedWithSupplierOrder(name: string, cjOrderId: string, reason: string): OwnerAlert {
+  return {
     subject: `Order ${name} was stopped and a supplier order exists for it`,
-    text: `Order ${name} was stopped by the check against Shopify (${reason}). Supplier order ${o.cj_order_id} already exists for it. Do NOT pay it. Check its state at the supplier: cancel it there if it is unpaid, and treat it as a return if it has been paid.`
-  }, alert);
+    text: `Order ${name} was stopped by the check against Shopify (${reason}). Supplier order ${cjOrderId} already exists for it. Do NOT pay it. Check its state at the supplier: cancel it there if it is unpaid, and treat it as a return if it has been paid.`
+  };
+}
+
+/** The pull check's own wording for a delivery address that changed after the
+ *  supplier order was created. It never repeats the address itself, and it
+ *  covers both sides, because this row's supplier order may have been paid by
+ *  hand since. Built apart from the sending for the same reason as above. */
+function addressChangedOnWatchedRow(name: string, cjOrderId: string): OwnerAlert {
+  return {
+    subject: `Order ${name}: the delivery address changed after the supplier order was created`,
+    text: `The delivery address of order ${name} was changed in Shopify after supplier order ${cjOrderId} was created, so the supplier order still carries the old address. If it is not paid yet, correct the address on the supplier order at the supplier before you pay it. If it is already paid, ask the supplier to change the address before it ships. If the supplier cannot change it, handle this order by hand.`
+  };
+}
+
+/** What the pull check tells the owner about a watched row Shopify now shows
+ *  as fulfilled, or can no longer find at all. Neither says the money came
+ *  back, which is why neither stops the row; but both say something about
+ *  money that is still about to go out, which is why both are worth saying.
+ *  An order deleted in Shopify (only possible once it has been cancelled or
+ *  archived) and one older than the 60 days the order read covers both read
+ *  as missing from here, so the text sends the owner to find out which. */
+function stillOpenHereAlert(reason: 'already-fulfilled' | 'order-missing', name: string, cjOrderId: string): OwnerAlert {
+  if (reason === 'already-fulfilled') {
+    return {
+      subject: `Order ${name} shows as fulfilled in Shopify and its supplier order is still open here`,
+      text: `Shopify shows order ${name} as fulfilled, but supplier order ${cjOrderId} is still listed here as not paid by PawScout. If you shipped it another way, do NOT pay ${cjOrderId}: cancel it at the supplier. If you paid ${cjOrderId} and it shipped, there is nothing to do.`
+    };
+  }
+  return {
+    subject: `Order ${name} can no longer be found in Shopify and a supplier order exists for it`,
+    text: `Order ${name} can no longer be found in Shopify, but supplier order ${cjOrderId} is still listed here as not paid by PawScout. An order that was cancelled and then deleted in Shopify reads this way, and so does one older than 60 days. Do NOT pay ${cjOrderId} until you have found out which it is. If you have already paid it, check its state at the supplier: if the order turns out to have been cancelled, ask the supplier to cancel it, and treat it as a return if it has shipped.`
+  };
 }
 
 /** A delivery address changed in Shopify after a supplier order already
@@ -140,7 +177,9 @@ function gateUnreadableDetail(error: string): string {
 }
 
 /** A gate read failure means "could not tell" - fail CLOSED (never proceed to
- *  spend). The row is left untouched so the next 15-minute tick retries it.
+ *  spend). The row keeps its status, so a later run retries it: normally the
+ *  next 15-minute tick, or the one after when this run took the row less than
+ *  ten minutes before that tick starts.
  *  On the 4th-or-later consecutive failure (>= 4, not === 4, so one swallowed
  *  addOrderEvent write can never permanently silence an order) tell the
  *  owner once. `cjOrderId` is the row's supplier order id when one exists -
@@ -243,7 +282,46 @@ export interface AwaitingPaymentNotice {
   total: number | null;
   currency: string | null;
   reason: string;
+  /** True when the row already carried this supplier order id when the run
+   *  picked it up, which is what a released held or errored row looks like.
+   *  Then nothing has just been created: the same supplier order is coming
+   *  back into the list, and it may have been paid by hand since. */
+  existing: boolean;
 }
+
+/** The body of the awaiting-payment email, in its two meanings. A first
+ *  creation is news of a supplier order that has just appeared and is
+ *  genuinely unpaid. A row that already carried one is not: it is the same
+ *  supplier order returning to the list after a release, and PawScout, which
+ *  cannot see a payment made by hand, knows only that IT has not paid it. */
+export function awaitingPaymentEmailBody(n: AwaitingPaymentNotice): { text: string; html: string } {
+  const amount = n.total != null ? `${n.currency ?? ''} ${n.total}`.trim() : '';
+  const money = amount ? ` (${amount})` : '';
+  if (n.existing) {
+    return {
+      text: `Order ${n.orderName}${money} is back in the list of CJ orders PawScout has not paid, after being released.\n\nCJ order id: ${n.cjOrderId}\n\nPawScout has not paid it. Check its state at the supplier before you pay it, so it is not paid twice. Tracking will sync back to Shopify automatically once it ships.`,
+      html: `<p>Order <strong>${n.orderName}</strong>${money} is <strong>back in the list</strong> of CJ orders PawScout has not paid, after being released.</p>`
+        + `<p>CJ order id: <strong>${n.cjOrderId}</strong></p>`
+        + `<p>PawScout has not paid it. Check its state at the supplier before you pay it, so it is not paid twice. Tracking will sync back to Shopify automatically once it ships.</p>`
+    };
+  }
+  return {
+    text: `Order ${n.orderName}${money} has been created in CJ and is awaiting your payment.\n\nCJ order id: ${n.cjOrderId}\n\nPay it in CJ at https://app.cjdropshipping.com to start fulfilment. PawScout cannot see a payment you make by hand, so the order stays in this list until its tracking number arrives. Tracking will sync back to Shopify automatically.`,
+    html: `<p>Order <strong>${n.orderName}</strong>${money} has been created in CJ and is <strong>awaiting your payment</strong>.</p>`
+      + `<p>CJ order id: <strong>${n.cjOrderId}</strong></p>`
+      + `<p>Pay it in CJ at <a href="https://app.cjdropshipping.com">app.cjdropshipping.com</a> to start fulfilment. PawScout cannot see a payment you make by hand, so the order stays in this list until its tracking number arrives. Tracking will sync back to Shopify automatically.</p>`
+  };
+}
+
+/** How long one run owns a due row once it has claimed it. Long enough to
+ *  cover a gate read with its retries, line resolution, the supplier create
+ *  and the record that follows; short enough that a run killed in the middle
+ *  leaves the row due again well before the next-but-one 15 minute tick. The
+ *  ten minutes outlast the run itself, and that is the visible cost: inside
+ *  them "Run fulfilment now" skips a row an earlier press took, a row that was
+ *  released after a run held it, and a row whose check against Shopify could
+ *  not be read. */
+const CLAIM_MINUTES = 10;
 
 /**
  * Submit queued orders to CJ and (optionally) pay them. GATED on
@@ -261,9 +339,11 @@ export interface AwaitingPaymentNotice {
  *    failure → 'error' (operator releases it to retry). One failure never aborts
  *    the batch.
  *
- * opts.notify fires once, at the transition into 'awaiting-payment' (best-effort;
- * a notify failure never fails the order). The order is not reprocessed once
- * awaiting-payment, so it's emailed exactly once.
+ * opts.notify fires on the transition into 'awaiting-payment' (best-effort; a
+ * notify failure never fails the order). A row sitting there is not looked at
+ * again, so one trip through the queue emails once; a row released back into
+ * the queue that reaches 'awaiting-payment' a second time is emailed a second
+ * time, and that email says the supplier order was already there.
  */
 export async function processDueOrders(
   store: TenantStore,
@@ -278,7 +358,12 @@ export async function processDueOrders(
 ): Promise<{ submitted: number; awaiting: number; held: number; errored: number; skipped: boolean }> {
   if (cfg.fulfil.mode !== 'pawscout') return { submitted: 0, awaiting: 0, held: 0, errored: 0, skipped: true }; // 'manual'/'cj' → PawScout doesn't pay
   const createOnly = cfg.fulfil.createOnly === true;
-  const nowIso = new Date(opts.now ? opts.now() : Date.now()).toISOString();
+  const clock = () => (opts.now ? opts.now() : Date.now());
+  // Read once, at the start: this is what "due" means for the whole run, and
+  // what every row's updated_at records. A row another run takes while this
+  // one is working still reads as not due against this value, which is the
+  // side to err on - it means this run leaves it alone.
+  const nowIso = new Date(clock()).toISOString();
   const due = await store.dueQueuedOrders(nowIso, opts.max ?? 10);
   let submitted = 0;
   let awaiting = 0;
@@ -296,7 +381,10 @@ export async function processDueOrders(
       if (opts.alert) {
         await deliverOrderAlert(store, o.shopify_order_id, {
           subject: `Order ${name} was cancelled while its supplier order was being created`,
-          text: `Order ${name} was cancelled in Shopify while supplier order ${cjOrderId} was being created. Do NOT pay it. Cancel it at the supplier.`
+          // Also reached on a released row whose supplier order already
+          // existed before this run touched it, and the owner may have paid
+          // that one by hand, so this claims nothing either way.
+          text: `Order ${name} was cancelled in Shopify while PawScout was working on supplier order ${cjOrderId}. PawScout has not paid it. Check its state at the supplier: cancel it there if it is unpaid, and treat it as a return if it has been paid.`
         }, opts.alert);
       }
       return;
@@ -305,7 +393,7 @@ export async function processDueOrders(
     awaiting++;
     if (opts.notify) {
       try {
-        await opts.notify({ shopifyOrderId: o.shopify_order_id, orderName: o.order_name ?? o.shopify_order_id, cjOrderId, total: o.total_price, currency: o.currency, reason });
+        await opts.notify({ shopifyOrderId: o.shopify_order_id, orderName: o.order_name ?? o.shopify_order_id, cjOrderId, total: o.total_price, currency: o.currency, reason, existing: !!o.cj_order_id });
       } catch (e) {
         console.warn(`awaiting-payment notify failed for ${o.order_name ?? o.shopify_order_id}: ${e instanceof Error ? e.message : String(e)}`);
       }
@@ -320,7 +408,32 @@ export async function processDueOrders(
     // - a throw there has resolved nothing yet. It becomes 'resolve' only
     // once the line-resolution loop begins (below).
     let step: 'gate' | 'resolve' | 'stock' | 'freight' | 'create' | 'pay' | 'record' = 'gate';
+    // The supplier order id this row is known to carry: the one it arrived
+    // with, or the one the create step below has just produced. Held out
+    // here, not inside the try, so the catch can say whether an order may
+    // already exist at the supplier for it.
+    let cjOrderId = o.cj_order_id ?? '';
     try {
+      // Take the row for this run before anything else is done to it. A
+      // refused claim means another run already owns it - leave it entirely
+      // alone: no work, no count, no trail line, because that other run is
+      // writing this row's whole story.
+      //
+      // The ten minutes start here, at the row, not at the top of the run: a
+      // long batch would otherwise hand its last rows whatever is left of the
+      // ten minutes once the run's own time is taken off.
+      let claimed: boolean;
+      try {
+        claimed = await store.claimDueOrder(o.shopify_order_id, nowIso, new Date(clock() + CLAIM_MINUTES * 60_000).toISOString());
+      } catch (ce) {
+        // The database refused the write that takes the row. Nothing has been
+        // done to this order yet, so say nothing about it anywhere and leave
+        // it queued for a later run. If the write was in fact applied and only
+        // its answer was lost, the row is due again once the ten minutes pass.
+        console.warn(`could not take order ${o.order_name ?? o.shopify_order_id} for this run: ${ce instanceof Error ? ce.message : String(ce)}`);
+        continue;
+      }
+      if (!claimed) continue;
       // Live-order gate (2026-09-19): a whitelist on Shopify's own state, read HERE,
       // just before money moves. Every check (cancelled/paid/fulfilled/address) always
       // applies; only the fraud-risk sub-check is skipped for a pay-retry (already has
@@ -333,7 +446,7 @@ export async function processDueOrders(
       const gateRead = await readOrderGate(admin, o.shopify_order_id);
       if (!gateRead.ok) {
         await handleGateUnreadable(store, o, gateRead.error, o.cj_order_id ?? null, opts.alert);
-        continue; // NOT an error status - stays queued, retried next tick
+        continue; // NOT an error status - stays queued, retried by a later run
       }
       const decision = decideGate(gateRead.snapshot, { address: storedAddress, totalPrice: o.total_price ?? 0, skipRisk });
       if (decision.action !== 'proceed') {
@@ -421,7 +534,6 @@ export async function processDueOrders(
       const origin = uniqueOrigins[0] ?? 'CN';
       if (!o.cj_order_id) await store.addOrderEvent(o.shopify_order_id, 'stock-ok'); // see gate-passed comment above
 
-      let cjOrderId = o.cj_order_id ?? '';
       if (!cjOrderId) {
         step = 'freight';
         const freight = await cj.freightEstimate(products[0].vid, origin).catch(() => null);
@@ -442,7 +554,7 @@ export async function processDueOrders(
 
       if (createOnly) {
         // Interim: created but unpaid - owner pays it manually in CJ.
-        await markAwaiting(o, cjOrderId, `awaiting-payment: pay CJ order ${cjOrderId} manually`);
+        await markAwaiting(o, cjOrderId, `awaiting-payment: CJ order ${cjOrderId} is not paid by PawScout`);
         continue;
       }
 
@@ -466,7 +578,10 @@ export async function processDueOrders(
           if (opts.alert) {
             await deliverOrderAlert(store, o.shopify_order_id, {
               subject: `Order ${name}: payment to the supplier was stopped`,
-              text: `Order ${name} changed in Shopify (${payDecision.reason}) after supplier order ${cjOrderId} was created and before it was paid. It has NOT been paid. Cancel it at the supplier.`
+              // Reachable on a row an operator released whose supplier order
+              // already existed and may have been paid by hand, so this says
+              // only what PawScout itself knows: it did not pay it.
+              text: `Order ${name} changed in Shopify (${payDecision.reason}) after supplier order ${cjOrderId} was created and before PawScout paid it. PawScout has not paid it. Check its state at the supplier: cancel it there if it is unpaid, and treat it as a return if it has been paid.`
             }, opts.alert);
           }
         } else {
@@ -492,7 +607,7 @@ export async function processDueOrders(
         const msg = payErr instanceof Error ? payErr.message : String(payErr);
         if (looksLikeInsufficientBalance(msg)) {
           // The CJ order exists; the owner can top up + pay it manually. Don't error.
-          await markAwaiting(o, cjOrderId, `awaiting-payment: fund CJ wallet, then pay CJ order ${cjOrderId}`);
+          await markAwaiting(o, cjOrderId, `awaiting-payment: CJ wallet short, CJ order ${cjOrderId} is not paid by PawScout`);
           continue;
         }
         throw payErr; // genuine pay failure → error branch
@@ -527,7 +642,10 @@ export async function processDueOrders(
 
       console.warn(`fulfil failed for ${o.order_name ?? o.shopify_order_id}: ${msg}`);
       const reason = stockout ? `stockout: ${msg}` : `fulfil: ${msg}`;
-      await store.updateOrderUnlessCancelled(o.shopify_order_id, { status: 'error', hold_reasons: JSON.stringify([reason.slice(0, 200)]) });
+      // A cancel can land in Shopify while the step that failed was in flight.
+      // The write is refused then and the row stays cancelled, which the alert
+      // below has to say rather than announcing a status the row never took.
+      const wroteError = await store.updateOrderUnlessCancelled(o.shopify_order_id, { status: 'error', hold_reasons: JSON.stringify([reason.slice(0, 200)]) });
 
       // order_events.detail must never carry a supplier's or Shopify's raw
       // error text - a rejection can echo the address or phone number sent
@@ -548,6 +666,41 @@ export async function processDueOrders(
       }
       await store.addOrderEvent(o.shopify_order_id, eventKind, eventDetail);
       errored++;
+
+      if (!stockout && opts.alert) {
+        // A customer has paid and this order now sits in error (or stayed
+        // cancelled, when a cancel landed meanwhile), and nothing picks it up
+        // again by itself. Built from the step and the supplier
+        // order id only: the thrown message can echo the address or phone
+        // sent with the order, so it stays in the console.warn above. Wrapped
+        // because a throw here would escape this catch and end the whole
+        // batch, skipping every order still due behind this one.
+        const name = o.order_name ?? o.shopify_order_id;
+        // The request can succeed while its answer is lost, and the write
+        // that saves the id can be refused after the supplier accepted the
+        // order: after either of those steps, and on any row that already
+        // carried one, an order may be sitting at the supplier under this
+        // order number.
+        const mayExistAtSupplier = step === 'create' || step === 'record' || !!cjOrderId;
+        // The number to hunt for at the supplier is the one the supplier was
+        // given, which is the Shopify order id. The name the shop shows is a
+        // different number and searching for it finds nothing, which reads as
+        // "no order exists here" and invites a second one.
+        const tail = mayExistAtSupplier
+          ? ` The supplier may already hold an order for it${cjOrderId ? `: supplier order ${cjOrderId}` : ''}. PawScout gives the supplier the order number ${o.shopify_order_id} for this order. Look for that number at the supplier before anything is retried, so it is not ordered twice.`
+          : ' Nothing was sent to the supplier.';
+        const opening = wroteError
+          ? `Order ${name} failed at ${step} and is now in error. Nothing will retry it by itself.`
+          : `Order ${name} failed at ${step}, and it was cancelled in Shopify in the meantime, so it stays cancelled.`;
+        try {
+          await deliverOrderAlert(store, o.shopify_order_id, {
+            subject: `Order ${name} could not be sent to the supplier`,
+            text: `${opening}${tail}`
+          }, opts.alert);
+        } catch (ae) {
+          console.warn(`error alert failed for ${name}: ${ae instanceof Error ? ae.message : String(ae)}`);
+        }
+      }
 
       if (stockout) {
         // Stop the bleeding: hide the variant from sale NOW instead of leaving the
@@ -643,7 +796,14 @@ export async function pollTracking(
           if (opts.alert) {
             await deliverOrderAlert(store, o.shopify_order_id, {
               subject: `Order ${name}: tracking could not be written to Shopify`,
-              text: `Supplier order ${o.cj_order_id} has shipped with tracking ${detail.trackNumber}, but writing it to Shopify failed on the last 4 attempts (${msg}). The customer has not been told. It is retried every 15 minutes.`
+              // A write that reached Shopify can still be recorded here as
+              // failed (the row update after it can be refused, or the run
+              // killed between the two), and from then on every retry fails
+              // with "no open fulfillment order". So this says what could not
+              // be confirmed and sends the owner to look, rather than telling
+              // them the customer was not told when Shopify may already have
+              // done exactly that.
+              text: `Supplier order ${o.cj_order_id} has shipped with tracking ${detail.trackNumber}, but writing it to Shopify could not be confirmed on the last 4 attempts (${msg}). Check the order in Shopify: if it already shows fulfilled with this tracking number the customer has been told and there is nothing to do; if it does not, tell the customer the tracking number yourself. It is retried every 15 minutes.`
             }, opts.alert);
           }
         }
@@ -694,9 +854,15 @@ function parseHoldReasons(json: string | null): string[] {
  * signal Shopify is sending us, not a reason to keep waiting: it is written
  * and alerted the same way the pipeline's own pre-create stop is, once per
  * reason (a row already held for that exact reason is left alone), keeping
- * any reason the row already carried alongside the new one rather than
- * erasing it - a row parked here already, by an error or by an earlier stop,
- * has its own reason as the only persisted record of why. An address that
+ * the reasons the row already carried alongside the new one - a row parked
+ * here already, by an error or by an earlier stop, has its own reason as the
+ * only persisted record of why - except the awaiting-payment instruction to
+ * pay a named supplier order, which the stop has just made the opposite of
+ * what the owner should do. The two findings that are alerted and nothing
+ * more are already-fulfilled and order-missing: neither moves the row, and
+ * each is said once per order, on a row the owner still has to pay, counted
+ * by the marker in the trail rather than by whether the email went out. An
+ * address that
  * changed after the supplier order was created is never held here - unlike
  * the pipeline's own two positions, holding here would pull the row out of
  * this very check and out of the tracking poll while the owner still pays it
@@ -750,14 +916,49 @@ export async function recheckUnsettledSupplierOrders(
       const decision = decideGate(gateRead.snapshot, { address: addressReadable ? storedAddress : null, totalPrice: o.total_price ?? 0, skipRisk: true });
 
       if (decision.action === 'hold') {
-        if (decision.reason !== 'already-fulfilled' && decision.reason !== 'order-missing') {
-          const existingReasons = parseHoldReasons(o.hold_reasons);
-          const alreadyHeldForThis = o.status === 'held' && existingReasons.includes(decision.reason);
-          if (!alreadyHeldForThis) {
-            await writeGateStop(store, o.shopify_order_id, 'held', decision.reason, decision.riskLevel, decision.reason, existingReasons);
-            await alertIfSupplierOrderExists(store, o, decision.reason, send);
-            stopped++;
+        if (decision.reason === 'already-fulfilled' || decision.reason === 'order-missing') {
+          // Neither stops the row and neither moves its status: a hold would
+          // take it out of this check and out of the tracking poll, and no
+          // release could pass the gate while Shopify reads this way. Only
+          // rows the owner still has to pay are worth saying it about, and
+          // only once per order and reason. "Once" is the due marker already
+          // standing in the trail, not the alert's delivery state: an alert
+          // abandoned during an email outage must not be raised afresh on
+          // every tick from here.
+          if (o.status === 'awaiting-payment' && o.cj_order_id) {
+            const alert = stillOpenHereAlert(decision.reason, o.order_name ?? o.shopify_order_id, o.cj_order_id);
+            const trail = await store.listOrderEvents(o.shopify_order_id);
+            const raisedBefore = trail.some((e) => e.kind === 'owner-alert-due' && e.detail === alert.subject);
+            if (!raisedBefore) await deliverOrderAlert(store, o.shopify_order_id, alert, send);
           }
+          continue;
+        }
+        const existingReasons = parseHoldReasons(o.hold_reasons);
+        const alreadyHeldForThis = o.status === 'held' && existingReasons.includes(decision.reason);
+        if (!alreadyHeldForThis) {
+          // What an awaiting-payment row carries is an instruction to pay a
+          // named supplier order, and this row has just been stopped: that
+          // instruction is now the opposite of what the owner should do,
+          // and the console and the landing page both print these reasons
+          // word for word. Nothing is lost by dropping it, because the
+          // supplier order id is on the row itself and on every console
+          // row. An error row's own failure reason is kept: it is the only
+          // stored record of why that order failed.
+          const keptReasons = existingReasons.filter((r) => !r.startsWith('awaiting-payment:'));
+          // The row's own state is what keeps this from being raised twice,
+          // so the intention to alert is recorded before that state is
+          // written: otherwise a run killed between the two leaves a row
+          // that looks handled and an owner who was never told. A marker
+          // that cannot be recorded leaves the row exactly as it was, for
+          // the next run to try again.
+          const alert = o.cj_order_id ? stoppedWithSupplierOrder(o.order_name ?? o.shopify_order_id, o.cj_order_id, decision.reason) : null;
+          if (alert && !(await recordAlertDue(store, o.shopify_order_id, alert))) {
+            console.warn(`stop not written for ${o.order_name ?? o.shopify_order_id}: the alert could not be recorded first`);
+            continue;
+          }
+          await writeGateStop(store, o.shopify_order_id, 'held', decision.reason, decision.riskLevel, decision.reason, keptReasons);
+          if (alert) await deliverOrderAlert(store, o.shopify_order_id, alert, send, { dueRecorded: true });
+          stopped++;
         }
         continue;
       }
@@ -771,13 +972,18 @@ export async function recheckUnsettledSupplierOrders(
 
       // decision.action === 'proceed' here - the only remaining variant.
       if (decision.addressChanged && addressReadable && o.cj_order_id) {
+        // The saved address IS the dedupe here (the next tick sees no
+        // change), so the intention to alert is recorded before it is
+        // saved. A marker that cannot be recorded leaves the address
+        // unsaved, and the next run finds the same change and tries again.
+        const alert = addressChangedOnWatchedRow(o.order_name ?? o.shopify_order_id, o.cj_order_id);
+        if (!(await recordAlertDue(store, o.shopify_order_id, alert))) {
+          console.warn(`address change not saved for ${o.order_name ?? o.shopify_order_id}: the alert could not be recorded first`);
+          continue;
+        }
         await store.updateOrder(o.shopify_order_id, { address_json: JSON.stringify(decision.address) });
         await store.addOrderEvent(o.shopify_order_id, 'address-refreshed');
-        const name = o.order_name ?? o.shopify_order_id;
-        await deliverOrderAlert(store, o.shopify_order_id, {
-          subject: `Order ${name}: the delivery address changed after the supplier order was created`,
-          text: `The delivery address of order ${name} was changed in Shopify after supplier order ${o.cj_order_id} was created, so the supplier order still carries the old address. If it is not paid yet, correct the address on the supplier order at the supplier before you pay it. If it is already paid, ask the supplier to change the address before it ships. If the supplier cannot change it, handle this order by hand.`
-        }, send);
+        await deliverOrderAlert(store, o.shopify_order_id, alert, send, { dueRecorded: true });
         addressChanged++;
       }
     } catch (e) {
@@ -791,14 +997,12 @@ export async function recheckUnsettledSupplierOrders(
 function makeAwaitingPaymentNotify(env: Env, alertEmail: string | undefined): ((n: AwaitingPaymentNotice) => Promise<void>) | undefined {
   if (!env.RESEND_API_KEY || !alertEmail) return undefined;
   return async (n: AwaitingPaymentNotice) => {
-    const amount = n.total != null ? `${n.currency ?? ''} ${n.total}`.trim() : '';
+    const body = awaitingPaymentEmailBody(n);
     const r = await sendEmail(env.RESEND_API_KEY!, {
       to: alertEmail,
       subject: `Active Paw - order ${n.orderName} awaiting payment in CJ`,
-      text: `Order ${n.orderName}${amount ? ` (${amount})` : ''} has been created in CJ and is awaiting your payment.\n\nCJ order id: ${n.cjOrderId}\n\nPay it in CJ at https://app.cjdropshipping.com to start fulfilment. Tracking will sync back to Shopify automatically once paid.`,
-      html: `<p>Order <strong>${n.orderName}</strong>${amount ? ` (${amount})` : ''} has been created in CJ and is <strong>awaiting your payment</strong>.</p>`
-        + `<p>CJ order id: <strong>${n.cjOrderId}</strong></p>`
-        + `<p>Pay it in CJ at <a href="https://app.cjdropshipping.com">app.cjdropshipping.com</a> to start fulfilment. Tracking will sync back to Shopify automatically once paid.</p>`
+      text: body.text,
+      html: body.html
     });
     if (!r.ok) throw new Error(r.error); // surfaced + logged by markAwaiting's catch
   };
@@ -847,16 +1051,16 @@ export async function runOrderPipelineForShop(env: Env, vault: Vault, shop: stri
   } catch (e) {
     console.warn(`owner alert retry sweep failed for ${shop}: ${e instanceof Error ? e.message : String(e)}`);
   }
-  if (!(await store.getSupplierCredential('cj'))) return null;
   const accessToken = await vault.open(tenant.dek_wrapped, tenant.access_token_enc);
   const admin = makeAdminGraphql(shop, accessToken);
   // Runs as soon as the admin client exists, and whatever fulfil.mode is set
   // to (unlike processDueOrders, which is pawscout-only): any row that
   // already has a supplier order and is not yet settled - awaiting-payment,
-  // held or error - always needs telling about, mode aside. Cannot sit next
-  // to the alert retry sweep above, which runs before the vault open this
-  // needs. Its own try/catch so a failure here can never stop the pipeline
-  // it rides on.
+  // held or error - always needs telling about, mode aside. It needs Shopify
+  // and nothing else, so it sits ABOVE the supplier-credential guard below: a
+  // credential that was removed or rotated out is exactly the moment an
+  // unsettled supplier order most needs watching. Its own try/catch so a
+  // failure here can never stop the pipeline it rides on.
   try {
     const r = await recheckUnsettledSupplierOrders(store, admin, alert);
     if (r.cancelled || r.addressChanged || r.stopped) {
@@ -865,6 +1069,9 @@ export async function runOrderPipelineForShop(env: Env, vault: Vault, shop: stri
   } catch (e) {
     console.warn(`unsettled supplier order recheck failed for ${shop}: ${e instanceof Error ? e.message : String(e)}`);
   }
+  // Everything below this line spends money at the supplier, so it needs the
+  // supplier credential; everything above it does not.
+  if (!(await store.getSupplierCredential('cj'))) return null;
   const f = cjFetchFromEnv(env);
   const cj = new CjClient(() => new CjTokenManager(store, vault, f).getToken(), f);
   const notify = makeAwaitingPaymentNotify(env, cfg.fulfil.alertEmail);

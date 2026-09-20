@@ -1,19 +1,27 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
-import { processDueOrders, pollTracking, recheckUnsettledSupplierOrders, isStockoutError, type StockoutNotice } from '../src/fulfil-run';
+import { processDueOrders, pollTracking, recheckUnsettledSupplierOrders, runOrderPipelineForShop, isStockoutError, awaitingPaymentEmailBody, type StockoutNotice } from '../src/fulfil-run';
 import { TenantStore } from '../src/tenant-store';
-import { DEFAULT_GATES, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_INBOX, type TenantConfig } from '../src/types';
+import { Vault } from '../src/vault';
+import { DEFAULT_GATES, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_INBOX, type Env, type TenantConfig } from '../src/types';
 import type { CjClient, CjDetail } from '../src/cj';
 import type { AdminGraphql } from '../src/shopify-admin';
 
 beforeEach(async () => { await applyD1Migrations(env.DB, env.TEST_MIGRATIONS); });
 
 const SHOP = 'a.myshopify.com';
+const SHOP2 = 'b.myshopify.com';
 function cfg(mode: 'manual' | 'pawscout' | 'cj', createOnly = false): TenantConfig {
   return { collectionMap: {}, gates: DEFAULT_GATES, pricing: DEFAULT_PRICING, floors: DEFAULT_FLOORS, llm: DEFAULT_LLM, addons: DEFAULT_ADDONS, fulfil: { mode, createOnly }, inbox: DEFAULT_INBOX, target: 12 };
 }
 const ADDRESS = { name: 'Jane', phone: '07000', address1: '1 St', address2: '', city: 'London', province: 'England', zip: 'E1 1AA', countryCode: 'GB' };
 const PAST = new Date(Date.now() - 1000).toISOString();
+/** How far apart the real schedule runs. A run takes a due row for itself for
+ *  ten minutes, so a test that means "the next run" has to move the clock the
+ *  way the schedule does instead of calling processDueOrders twice in the
+ *  same millisecond. */
+const TICK_MS = 900_000;
+const atTick = (n: number) => () => Date.now() + n * TICK_MS;
 
 async function seedWarehouse(store: TenantStore, cjPid: string, sku: string, vid: string) {
   const detail: CjDetail = { pid: cjPid, nameEn: 'X', images: [], descriptionHtml: '', variants: [{ vid, name: 'Red', sellPriceUsd: 10, sku }], listedNum: 1, categoryName: 'Pet Toys', origin: 'CN' };
@@ -426,7 +434,11 @@ describe('pollTracking', () => {
     }
     expect(alerts).toHaveLength(1);
     expect(alerts[0].subject).toBe('Order #6: tracking could not be written to Shopify');
-    expect(alerts[0].text).toBe('Supplier order CJORD-O6 has shipped with tracking TRK1, but writing it to Shopify failed on the last 4 attempts (write failed). The customer has not been told. It is retried every 15 minutes.');
+    // A write-back that in fact reached Shopify can still be recorded as
+    // failed, so the alert says what could not be confirmed and sends the
+    // owner to look, rather than asserting the customer was not told.
+    expect(alerts[0].text).toBe('Supplier order CJORD-O6 has shipped with tracking TRK1, but writing it to Shopify could not be confirmed on the last 4 attempts (write failed). Check the order in Shopify: if it already shows fulfilled with this tracking number the customer has been told and there is nothing to do; if it does not, tell the customer the tracking number yourself. It is retried every 15 minutes.');
+    expect(alerts[0].text).not.toContain('The customer has not been told');
     const events = await store.listOrderEvents('O6');
     expect(events.filter((e) => e.kind === 'tracking-write-failed')).toHaveLength(4);
     // The trail classifies, never copies: Shopify's own error text is
@@ -680,8 +692,8 @@ describe('Stage-B live-order gate (2026-09-19: readOrderGate/decideGate, fetched
     await seedWarehouse(store, 'CJ1', 'S1', 'v1');
     await seedOrder(store, 'O1', [{ sku: 'S1', quantity: 1, cjPid: 'CJ1' }]);
     const spy = { create: [] as unknown[], pay: [] as string[] };
-    await processDueOrders(store, fakeCj(spy), liveAdmin({ throws: 'Field RAWMARKER does not exist on type Order' }), cfg('pawscout'), {});
-    await processDueOrders(store, fakeCj(spy), liveAdmin({ throws: 'Shopify HTTP 503' }), cfg('pawscout'), {});
+    await processDueOrders(store, fakeCj(spy), liveAdmin({ throws: 'Field RAWMARKER does not exist on type Order' }), cfg('pawscout'), { now: atTick(0) });
+    await processDueOrders(store, fakeCj(spy), liveAdmin({ throws: 'Shopify HTTP 503' }), cfg('pawscout'), { now: atTick(1) });
     const details = (await store.listOrderEvents('O1')).filter((e) => e.kind === 'gate-unreadable').map((e) => e.detail);
     expect(details).toEqual(['read failed', 'Shopify HTTP 503']);
     expect(spy.create.length).toBe(0);
@@ -695,6 +707,7 @@ describe('Stage-B live-order gate (2026-09-19: readOrderGate/decideGate, fetched
     const alerts: { subject: string; text: string }[] = [];
     for (let i = 0; i < 4; i++) {
       await processDueOrders(store, fakeCj({ create: [], pay: [] }), admin, cfg('pawscout'), {
+        now: atTick(i),
         alert: async (subject, text) => { alerts.push({ subject, text }); return 'sent'; }
       });
     }
@@ -722,6 +735,7 @@ describe('Stage-B live-order gate (2026-09-19: readOrderGate/decideGate, fetched
     const alerts: { subject: string; text: string }[] = [];
     for (let i = 0; i < 4; i++) {
       await processDueOrders(store, fakeCj({ create: [], pay: [] }), admin, cfg('pawscout'), {
+        now: atTick(i),
         alert: async (subject, text) => { alerts.push({ subject, text }); return 'failed'; }
       });
     }
@@ -732,6 +746,7 @@ describe('Stage-B live-order gate (2026-09-19: readOrderGate/decideGate, fetched
     expect(events.find((e) => e.kind === 'owner-alert-failed')?.detail).toBe(alerts[0].subject);
 
     await processDueOrders(store, fakeCj({ create: [], pay: [] }), admin, cfg('pawscout'), {
+      now: atTick(4),
       alert: async (subject, text) => { alerts.push({ subject, text }); return 'failed'; }
     });
     expect(alerts).toHaveLength(1); // the failure marker already broke the trailing run
@@ -761,7 +776,9 @@ describe('Stage-B live-order gate (2026-09-19: readOrderGate/decideGate, fetched
     expect(spy.pay.length).toBe(0); // NOT paid
     expect(alerts).toHaveLength(1);
     expect(alerts[0].subject).toBe('Order #O1: payment to the supplier was stopped');
-    expect(alerts[0].text).toContain('CJORD-EXISTING');
+    // The row can be one an operator released with a supplier order the owner
+    // may already have paid by hand, so the text claims nothing about that.
+    expect(alerts[0].text).toBe('Order #O1 changed in Shopify (shopify-cancelled) after supplier order CJORD-EXISTING was created and before PawScout paid it. PawScout has not paid it. Check its state at the supplier: cancel it there if it is unpaid, and treat it as a return if it has been paid.');
     const o = await store.getOrder('O1');
     expect(o?.status).toBe('cancelled');
     expect(o?.cj_order_id).toBe('CJORD-EXISTING');
@@ -905,6 +922,7 @@ describe('Stage-B live-order gate (2026-09-19: readOrderGate/decideGate, fetched
     const newAddr = { name: ADDRESS.name, address1: ADDRESS.address1, address2: ADDRESS.address2, city: 'Leeds', province: ADDRESS.province, zip: ADDRESS.zip, countryCodeV2: 'GB', phone: ADDRESS.phone };
     const spy = { create: [] as unknown[], pay: [] as string[] };
     const r1 = await processDueOrders(store, fakeCj(spy), liveAdmin({ order: { shippingAddress: newAddr } }), cfg('pawscout'), {
+      now: atTick(0),
       alert: async () => 'sent'
     });
     expect(r1).toMatchObject({ held: 1 });
@@ -915,6 +933,7 @@ describe('Stage-B live-order gate (2026-09-19: readOrderGate/decideGate, fetched
     await store.updateOrder('O1', { status: 'queued' });
 
     const r2 = await processDueOrders(store, fakeCj(spy), liveAdmin({ order: { shippingAddress: newAddr } }), cfg('pawscout'), {
+      now: atTick(1),
       alert: async () => 'sent'
     });
     expect(r2).toMatchObject({ submitted: 1, held: 0 });
@@ -970,7 +989,9 @@ describe('a cancelled row stays cancelled', () => {
     expect(notifies).toHaveLength(0);
     expect(alerts).toHaveLength(1);
     expect(alerts[0].subject).toBe('Order #O1 was cancelled while its supplier order was being created');
-    expect(alerts[0].text).toBe('Order #O1 was cancelled in Shopify while supplier order CJORD-O1 was being created. Do NOT pay it. Cancel it at the supplier.');
+    // Also reached by a released row whose supplier order already existed and
+    // may have been paid by hand, so the text makes no claim either way.
+    expect(alerts[0].text).toBe('Order #O1 was cancelled in Shopify while PawScout was working on supplier order CJORD-O1. PawScout has not paid it. Check its state at the supplier: cancel it there if it is unpaid, and treat it as a return if it has been paid.');
     const o = await store.getOrder('O1');
     expect(o?.status).toBe('cancelled');
     const events = await store.listOrderEvents('O1');
@@ -1162,6 +1183,7 @@ describe('the gate-unreadable alert is true wherever it fires', () => {
     const alerts: { subject: string; text: string }[] = [];
     for (let i = 0; i < 4; i++) {
       await processDueOrders(store, fakeCj(spy), admin, cfg('pawscout'), {
+        now: atTick(i),
         alert: async (subject, text) => { alerts.push({ subject, text }); return 'sent'; }
       });
     }
@@ -1182,6 +1204,7 @@ describe('the gate-unreadable alert is true wherever it fires', () => {
     const alerts: { subject: string; text: string }[] = [];
     for (let i = 0; i < 4; i++) {
       await processDueOrders(store, fakeCj(spy), admin, cfg('pawscout'), {
+        now: atTick(i),
         alert: async (subject, text) => { alerts.push({ subject, text }); return 'sent'; }
       });
     }
@@ -1338,13 +1361,312 @@ describe('step starts at "gate", not "resolve"', () => {
   });
 });
 
+describe('what still runs for a shop whose supplier credential is gone', () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  // The pull check needs Shopify and nothing else, and its whole point is to
+  // watch supplier orders that are already out there. A credential that was
+  // removed or rotated out is exactly when one most needs watching, so the
+  // check has to sit ABOVE the guard that gives up on the shop.
+  it('the alert retry sweep and the pull check both run above the supplier-credential guard', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const vault = await Vault.fromMasterKey(env.PAWSCOUT_MASTER_KEY);
+    const dek = await vault.newTenantDek();
+    await store.upsertTenant({ accessTokenEnc: await vault.seal(dek, 'shpat_test'), dekWrapped: dek, scopes: 's' });
+    await store.seedConfig(cfg('pawscout'));
+
+    const seen: string[] = [];
+    vi.spyOn(TenantStore.prototype, 'listOrderIdsWithPendingAlerts').mockImplementation(async () => { seen.push('sweep'); return []; });
+    vi.spyOn(TenantStore.prototype, 'countUnsettledSupplierOrders').mockImplementation(async () => { seen.push('pull-check'); return 0; });
+    vi.spyOn(TenantStore.prototype, 'getSupplierCredential').mockImplementation(async () => { seen.push('guard'); return null; });
+
+    const r = await runOrderPipelineForShop(env as unknown as Env, vault, SHOP);
+
+    expect(r).toBeNull(); // the shop is still not ready, so nothing is submitted or paid
+    expect(seen).toEqual(['sweep', 'pull-check', 'guard']);
+  });
+});
+
+describe('the awaiting-payment email', () => {
+  const notice = (existing: boolean) => ({ shopifyOrderId: 'O1', orderName: '#O1', cjOrderId: 'CJORD-O1', total: 15, currency: 'GBP', reason: 'r', existing });
+
+  it('says a supplier order was just created, on a first creation', async () => {
+    const body = awaitingPaymentEmailBody(notice(false));
+    expect(body.text).toContain('has been created in CJ and is awaiting your payment');
+    expect(body.text).toContain('CJORD-O1');
+    expect(body.text).not.toContain('back in the list');
+  });
+
+  it('says a released order is back in the list, unpaid by PawScout, and to check it at the supplier first', async () => {
+    const body = awaitingPaymentEmailBody(notice(true));
+    expect(body.text).toContain('is back in the list of CJ orders PawScout has not paid, after being released');
+    expect(body.text).toContain('PawScout has not paid it');
+    expect(body.text).toContain('Check its state at the supplier before you pay it, so it is not paid twice');
+    expect(body.text).not.toContain('has been created in CJ and is awaiting your payment');
+    expect(body.html).toContain('back in the list');
+  });
+
+  it('a first creation and a released row are told apart by whether the row already carried a supplier order', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedWarehouse(store, 'CJ1', 'S1', 'v1');
+    await seedOrder(store, 'FRESH', [{ sku: 'S1', quantity: 1, cjPid: 'CJ1' }]);
+    await seedOrder(store, 'RELEASED', [{ sku: 'S1', quantity: 1, cjPid: 'CJ1' }]);
+    await store.updateOrder('RELEASED', { cj_order_id: 'CJORD-RELEASED' });
+    const seen: { orderName: string; existing: boolean }[] = [];
+    await processDueOrders(store, fakeCj({ create: [], pay: [] }), liveAdmin(), cfg('pawscout', true), {
+      notify: async (n) => { seen.push({ orderName: n.orderName, existing: n.existing }); }
+    });
+    // Both rows are seeded in the same millisecond, so the order the run reads
+    // them back in is not what is under test here: look each one up by name.
+    expect(seen).toHaveLength(2);
+    expect(seen.find((n) => n.orderName === '#FRESH')?.existing).toBe(false);
+    expect(seen.find((n) => n.orderName === '#RELEASED')?.existing).toBe(true);
+  });
+});
+
+describe('an order that lands in error tells the owner', () => {
+  it('a failure before the supplier order was created says nothing was sent', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedOrder(store, 'O1', [{ sku: 'MISSING', quantity: 1, cjPid: 'CJ-UNKNOWN' }]); // no warehouse row, no live detail
+    const alerts: { subject: string; text: string }[] = [];
+    const r = await processDueOrders(store, fakeCj({ create: [], pay: [] }), liveAdmin(), cfg('pawscout'), {
+      alert: async (subject, text) => { alerts.push({ subject, text }); return 'sent'; }
+    });
+    expect(r).toMatchObject({ errored: 1 });
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].subject).toBe('Order #O1 could not be sent to the supplier');
+    expect(alerts[0].text).toBe('Order #O1 failed at resolve and is now in error. Nothing will retry it by itself. Nothing was sent to the supplier.');
+  });
+
+  it('a failure at the create step warns that the supplier may already hold the order, and never repeats the thrown message', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedWarehouse(store, 'CJ1', 'S1', 'v1');
+    await seedOrder(store, 'O1', [{ sku: 'S1', quantity: 1, cjPid: 'CJ1' }]);
+    const cj = fakeCj({ create: [], pay: [] }, { createOrder: async () => { throw new Error('supplier said RAWMARKER for 1 St, London'); } });
+    const alerts: { subject: string; text: string }[] = [];
+    const r = await processDueOrders(store, cj, liveAdmin(), cfg('pawscout'), {
+      alert: async (subject, text) => { alerts.push({ subject, text }); return 'sent'; }
+    });
+    expect(r).toMatchObject({ errored: 1 });
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].text).toBe('Order #O1 failed at create and is now in error. Nothing will retry it by itself. The supplier may already hold an order for it. PawScout gives the supplier the order number O1 for this order. Look for that number at the supplier before anything is retried, so it is not ordered twice.');
+    expect(alerts[0].text).not.toContain('RAWMARKER');
+    expect(alerts[0].subject).not.toContain('RAWMARKER');
+  });
+
+  // The supplier is given the Shopify order id as the order number, never the
+  // name the shop shows. Sending the owner to search the supplier for "#1002"
+  // would find nothing and read as "no order exists", which is the second
+  // supplier order this sentence is written to prevent.
+  it('names the number PawScout actually gave the supplier, not the name the shop shows', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedWarehouse(store, 'CJ1', 'S1', 'v1');
+    await seedOrder(store, '5678901234', [{ sku: 'S1', quantity: 1, cjPid: 'CJ1' }], { orderName: '#1002' });
+    const givenToSupplier: string[] = [];
+    const cj = fakeCj({ create: [], pay: [] }, {
+      createOrder: async (input: { orderNumber: string }) => { givenToSupplier.push(input.orderNumber); throw new Error('supplier timed out'); }
+    });
+    const alerts: { subject: string; text: string }[] = [];
+    await processDueOrders(store, cj, liveAdmin(), cfg('pawscout'), {
+      alert: async (subject, text) => { alerts.push({ subject, text }); return 'sent'; }
+    });
+    expect(givenToSupplier).toEqual(['5678901234']);
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].text).toContain('PawScout gives the supplier the order number 5678901234 for this order');
+    expect(alerts[0].text).not.toContain('order number #1002');
+  });
+
+  // A cancel can land while the step that fails is in flight. The row stays
+  // cancelled, so the alert must not announce a status the row never took;
+  // the half about looking at the supplier matters more here, not less.
+  it('a row cancelled while the failing step was in flight is not called an error row', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedWarehouse(store, 'CJ1', 'S1', 'v1');
+    await seedOrder(store, 'O1', [{ sku: 'S1', quantity: 1, cjPid: 'CJ1' }]);
+    const cj = fakeCj({ create: [], pay: [] }, {
+      createOrder: async () => {
+        await store.updateOrder('O1', { status: 'cancelled', hold_reasons: JSON.stringify(['shopify-cancelled']) });
+        throw new Error('supplier system error 500');
+      }
+    });
+    const alerts: { subject: string; text: string }[] = [];
+    await processDueOrders(store, cj, liveAdmin(), cfg('pawscout'), {
+      alert: async (subject, text) => { alerts.push({ subject, text }); return 'sent'; }
+    });
+    expect((await store.getOrder('O1'))?.status).toBe('cancelled');
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].subject).toBe('Order #O1 could not be sent to the supplier');
+    expect(alerts[0].text).toBe('Order #O1 failed at create, and it was cancelled in Shopify in the meantime, so it stays cancelled. The supplier may already hold an order for it. PawScout gives the supplier the order number O1 for this order. Look for that number at the supplier before anything is retried, so it is not ordered twice.');
+    expect(alerts[0].text).not.toContain('is now in error');
+  });
+
+  it('a failure on a row that already carries a supplier order names that supplier order', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedWarehouse(store, 'CJ1', 'S1', 'v1');
+    await seedOrder(store, 'O1', [{ sku: 'S1', quantity: 1, cjPid: 'CJ1' }]);
+    await store.updateOrder('O1', { cj_order_id: 'CJORD-EXISTING' });
+    const cj = fakeCj({ create: [], pay: [] }, { payBalance: async () => { throw new Error('supplier refused the payment'); } });
+    const alerts: { subject: string; text: string }[] = [];
+    const r = await processDueOrders(store, cj, liveAdmin(), cfg('pawscout'), {
+      alert: async (subject, text) => { alerts.push({ subject, text }); return 'sent'; }
+    });
+    expect(r).toMatchObject({ errored: 1 });
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].text).toBe('Order #O1 failed at pay and is now in error. Nothing will retry it by itself. The supplier may already hold an order for it: supplier order CJORD-EXISTING. PawScout gives the supplier the order number O1 for this order. Look for that number at the supplier before anything is retried, so it is not ordered twice.');
+  });
+
+  it('a stockout sends its own email and NOT this alert', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedWarehouse(store, 'CJ1', 'S1', 'v1');
+    await seedOrder(store, 'O1', [{ sku: 'S1', quantity: 1, cjPid: 'CJ1' }]);
+    const cj = fakeCj({ create: [], pay: [] }, { createOrder: async () => { throw new Error('out of stock'); } });
+    const alerts: unknown[] = [];
+    const notices: StockoutNotice[] = [];
+    const r = await processDueOrders(store, cj, liveAdmin(), cfg('pawscout'), {
+      alert: async (subject, text) => { alerts.push({ subject, text }); return 'sent'; },
+      notifyStockout: async (n) => { notices.push(n); }
+    });
+    expect(r).toMatchObject({ errored: 1 });
+    expect(notices).toHaveLength(1);
+    expect(alerts).toHaveLength(0);
+  });
+});
+
+describe('one run owns a due row', () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it('two runs started together create exactly ONE supplier order and leave one supplier-order-created line', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedWarehouse(store, 'CJ1', 'S1', 'v1');
+    await seedOrder(store, 'O1', [{ sku: 'S1', quantity: 1, cjPid: 'CJ1' }]);
+    const spy = { create: [] as unknown[], pay: [] as string[] };
+    const cj = fakeCj(spy);
+
+    const [a, b] = await Promise.all([
+      processDueOrders(store, cj, liveAdmin(), cfg('pawscout', true)),
+      processDueOrders(store, cj, liveAdmin(), cfg('pawscout', true))
+    ]);
+
+    expect(spy.create).toHaveLength(1);
+    expect(a.awaiting + b.awaiting).toBe(1);
+    expect(a.errored + b.errored).toBe(0);
+    expect(a.held + b.held).toBe(0); // a refused claim counts as nothing
+    const events = await store.listOrderEvents('O1');
+    expect(events.filter((e) => e.kind === 'supplier-order-created')).toHaveLength(1);
+    expect((await store.getOrder('O1'))?.status).toBe('awaiting-payment');
+  });
+
+  it('a row whose gate was unreadable is due again after 10 minutes and not before', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedWarehouse(store, 'CJ1', 'S1', 'v1');
+    await seedOrder(store, 'O1', [{ sku: 'S1', quantity: 1, cjPid: 'CJ1' }]);
+    const admin = liveAdmin({ throws: 'gate api down' });
+    const base = Date.now();
+
+    await processDueOrders(store, fakeCj({ create: [], pay: [] }), admin, cfg('pawscout'), { now: () => base });
+    expect((await store.getOrder('O1'))?.status).toBe('queued');
+    expect(await store.listOrderEvents('O1')).toHaveLength(1); // one gate-unreadable
+
+    // Nine minutes later the claim still stands: the row is not selected at all.
+    await processDueOrders(store, fakeCj({ create: [], pay: [] }), admin, cfg('pawscout'), { now: () => base + 9 * 60_000 });
+    expect(await store.listOrderEvents('O1')).toHaveLength(1);
+
+    // Ten minutes on it is due again, and the check runs a second time.
+    await processDueOrders(store, fakeCj({ create: [], pay: [] }), admin, cfg('pawscout'), { now: () => base + 10 * 60_000 });
+    expect(await store.listOrderEvents('O1')).toHaveLength(2);
+  });
+
+  it('a claim is scoped to its own shop: the same order id in another shop is left due', async () => {
+    const a = new TenantStore(env.DB, SHOP);
+    const b = new TenantStore(env.DB, SHOP2);
+    await seedOrder(a, 'O1', []);
+    await seedOrder(b, 'O1', []);
+    const now = new Date(Date.now()).toISOString();
+    const until = new Date(Date.now() + 10 * 60_000).toISOString();
+
+    expect(await a.claimDueOrder('O1', now, until)).toBe(true);
+    expect(await a.claimDueOrder('O1', now, until)).toBe(false); // already owned in this shop
+
+    // The other shop's row of the same id was never touched.
+    expect((await b.getOrder('O1'))?.fulfil_after).toBe(PAST);
+    expect(await b.claimDueOrder('O1', now, until)).toBe(true);
+  });
+
+  it('a claim is refused on a row that is no longer queued', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedOrder(store, 'O1', [], { status: 'held', holdReasons: ['not-paid'] });
+    expect(await store.claimDueOrder('O1', new Date().toISOString(), new Date(Date.now() + 10 * 60_000).toISOString())).toBe(false);
+  });
+
+  // The ten minutes exist to stop a second run touching the same row, so they
+  // have to start when the row is taken. Measured from the start of the run
+  // instead, the last row of a slow batch keeps whatever is left of the ten
+  // minutes after the run's own elapsed time.
+  it('the ten minutes are counted from the moment the row is taken, not from the start of the run', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedWarehouse(store, 'CJ1', 'S1', 'v1');
+    await seedOrder(store, 'O1', [{ sku: 'S1', quantity: 1, cjPid: 'CJ1' }]);
+    const t0 = Date.now();
+    let reads = 0;
+    // The run starts at T0 and does not reach this row until five minutes in.
+    const now = () => (reads++ === 0 ? t0 : t0 + 5 * 60_000);
+
+    await processDueOrders(store, fakeCj({ create: [], pay: [] }), liveAdmin({ throws: 'gate api down' }), cfg('pawscout'), { now });
+
+    const o = await store.getOrder('O1');
+    expect(o?.status).toBe('queued');
+    expect(o?.fulfil_after).toBe(new Date(t0 + 15 * 60_000).toISOString());
+  });
+
+  // The database can refuse the claim write itself (locked, gone, out of
+  // storage). Nothing has been done to the row at that point, so the run owes
+  // it nothing: leaving it exactly as it was makes the next run pick it up.
+  it('an order whose claim write throws is left untouched and runs normally on the next tick', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedWarehouse(store, 'CJ1', 'S1', 'v1');
+    await seedOrder(store, 'O1', [{ sku: 'S1', quantity: 1, cjPid: 'CJ1' }]);
+    await seedOrder(store, 'O2', [{ sku: 'S1', quantity: 1, cjPid: 'CJ1' }]);
+    const claim = vi.spyOn(TenantStore.prototype, 'claimDueOrder')
+      .mockImplementationOnce(async () => { throw new Error('database is locked'); });
+    const first = { create: [] as any[], pay: [] as string[] };
+    const alerts: unknown[] = [];
+    const notifies: unknown[] = [];
+
+    const r1 = await processDueOrders(store, fakeCj(first), liveAdmin(), cfg('pawscout'), {
+      now: atTick(0),
+      alert: async (subject, text) => { alerts.push({ subject, text }); return 'sent'; },
+      notify: async (n) => { notifies.push(n); }
+    });
+
+    // The other order due behind it went through, so one throw does not end
+    // the run; the skipped row added nothing to any count.
+    expect(first.create).toHaveLength(1);
+    expect(r1).toMatchObject({ submitted: 1, awaiting: 0, held: 0, errored: 0 });
+    expect(alerts).toEqual([]);
+    expect(notifies).toEqual([]);
+    const skipped = first.create[0].orderNumber === 'O1' ? 'O2' : 'O1';
+    expect((await store.getOrder(skipped))?.status).toBe('queued');
+    expect(await store.listOrderEvents(skipped)).toEqual([]);
+
+    claim.mockRestore();
+    const second = { create: [] as any[], pay: [] as string[] };
+    const r2 = await processDueOrders(store, fakeCj(second), liveAdmin(), cfg('pawscout'), { now: atTick(1) });
+    expect(r2).toMatchObject({ submitted: 1, errored: 0 });
+    expect((await store.getOrder(skipped))?.status).toBe('submitted');
+  });
+});
+
 describe('recheckUnsettledSupplierOrders: unsettled supplier orders are re-read on a rotation', () => {
   afterEach(() => { vi.restoreAllMocks(); });
+
+  /** Seeded with the reason production really writes for this status, so a
+   *  test can see what the console would actually print next to the row. */
+  const awaitingReason = (cjOrderId: string) => `awaiting-payment: CJ order ${cjOrderId} is not paid by PawScout`;
 
   async function seedAwaiting(store: TenantStore, id: string, cjOrderId: string, addressJson: string | null = JSON.stringify(ADDRESS)): Promise<void> {
     await store.insertOrderIfNew({
       shopifyOrderId: id, orderName: '#' + id, totalPrice: 15, currency: 'GBP', financialStatus: 'paid', riskLevel: null,
-      status: 'awaiting-payment', holdReasons: [], addressJson, lineItemsJson: null, fulfilAfter: null
+      status: 'awaiting-payment', holdReasons: [awaitingReason(cjOrderId)], addressJson, lineItemsJson: null, fulfilAfter: null
     });
     await store.updateOrder(id, { cj_order_id: cjOrderId });
   }
@@ -1473,7 +1795,7 @@ describe('recheckUnsettledSupplierOrders: unsettled supplier orders are re-read 
     expect(r1).toMatchObject({ checked: 1, cancelled: 0, addressChanged: 1, stopped: 0, unreadable: 0 });
     const o = await store.getOrder('O1');
     expect(o?.status).toBe('awaiting-payment'); // the pull check never holds a row for an address change
-    expect(o?.hold_reasons).toBe(JSON.stringify([])); // unchanged
+    expect(o?.hold_reasons).toBe(JSON.stringify([awaitingReason('CJORD-O1')])); // unchanged
     expect(JSON.parse(o!.address_json!)).toMatchObject({ city: 'Cardiff' });
     expect(alerts).toHaveLength(1);
     expect(alerts[0].subject).toBe('Order #O1: the delivery address changed after the supplier order was created');
@@ -1505,26 +1827,72 @@ describe('recheckUnsettledSupplierOrders: unsettled supplier orders are re-read 
     expect(alerts).toHaveLength(0);
   });
 
-  it('already-fulfilled does nothing here', async () => {
+  it('an order Shopify shows as fulfilled is alerted once across two runs, and nothing is held', async () => {
     const store = new TenantStore(env.DB, SHOP);
     await seedAwaiting(store, 'F1', 'CJORD-F1');
     const admin = liveAdmin({ order: { displayFulfillmentStatus: 'FULFILLED' } });
-    const send = async () => 'sent' as const;
-    const r = await recheckUnsettledSupplierOrders(store, admin, send);
-    expect(r).toMatchObject({ checked: 1, cancelled: 0, addressChanged: 0, stopped: 0, unreadable: 0 });
-    expect((await store.getOrder('F1'))?.status).toBe('awaiting-payment');
-    expect(await store.listOrderEvents('F1')).toEqual([]);
+    const alerts: { subject: string; text: string }[] = [];
+    const send = async (subject: string, text: string) => { alerts.push({ subject, text }); return 'sent' as const; };
+
+    const r1 = await recheckUnsettledSupplierOrders(store, admin, send);
+    expect(r1).toMatchObject({ checked: 1, cancelled: 0, addressChanged: 0, stopped: 0, unreadable: 0 });
+    expect((await store.getOrder('F1'))?.status).toBe('awaiting-payment'); // nothing held, no status moved
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].subject).toBe('Order #F1 shows as fulfilled in Shopify and its supplier order is still open here');
+    expect(alerts[0].text).toBe('Shopify shows order #F1 as fulfilled, but supplier order CJORD-F1 is still listed here as not paid by PawScout. If you shipped it another way, do NOT pay CJORD-F1: cancel it at the supplier. If you paid CJORD-F1 and it shipped, there is nothing to do.');
+
+    const r2 = await recheckUnsettledSupplierOrders(store, admin, send);
+    expect(r2).toMatchObject({ checked: 1, stopped: 0 });
+    expect(alerts).toHaveLength(1); // the due marker already in the trail is the dedupe
   });
 
-  it('order-missing does nothing here', async () => {
+  it('an order that can no longer be found in Shopify is alerted once across two runs, and nothing is held', async () => {
     const store = new TenantStore(env.DB, SHOP);
     await seedAwaiting(store, 'M1', 'CJORD-M1');
     const admin = liveAdmin({ order: null });
-    const send = async () => 'sent' as const;
-    const r = await recheckUnsettledSupplierOrders(store, admin, send);
-    expect(r).toMatchObject({ checked: 1, cancelled: 0, addressChanged: 0, stopped: 0, unreadable: 0 });
+    const alerts: { subject: string; text: string }[] = [];
+    const send = async (subject: string, text: string) => { alerts.push({ subject, text }); return 'sent' as const; };
+
+    const r1 = await recheckUnsettledSupplierOrders(store, admin, send);
+    expect(r1).toMatchObject({ checked: 1, cancelled: 0, addressChanged: 0, stopped: 0, unreadable: 0 });
     expect((await store.getOrder('M1'))?.status).toBe('awaiting-payment');
-    expect(await store.listOrderEvents('M1')).toEqual([]);
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].subject).toBe('Order #M1 can no longer be found in Shopify and a supplier order exists for it');
+    expect(alerts[0].text).toBe('Order #M1 can no longer be found in Shopify, but supplier order CJORD-M1 is still listed here as not paid by PawScout. An order that was cancelled and then deleted in Shopify reads this way, and so does one older than 60 days. Do NOT pay CJORD-M1 until you have found out which it is. If you have already paid it, check its state at the supplier: if the order turns out to have been cancelled, ask the supplier to cancel it, and treat it as a return if it has shipped.');
+
+    const r2 = await recheckUnsettledSupplierOrders(store, admin, send);
+    expect(r2).toMatchObject({ checked: 1, stopped: 0 });
+    expect(alerts).toHaveLength(1);
+  });
+
+  it('a send that keeps failing is still raised only once here: the retry sweep owns it, not this check', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedAwaiting(store, 'F1', 'CJORD-F1');
+    const admin = liveAdmin({ order: { displayFulfillmentStatus: 'FULFILLED' } });
+    const sends: string[] = [];
+    const send = async (subject: string) => { sends.push(subject); return 'failed' as const; };
+
+    for (let i = 0; i < 3; i++) await recheckUnsettledSupplierOrders(store, admin, send);
+    expect(sends).toHaveLength(1);
+  });
+
+  it('a held or an error row in those same two states stays silent', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await store.insertOrderIfNew({ shopifyOrderId: 'HELD', orderName: '#HELD', totalPrice: 15, currency: 'GBP', financialStatus: 'paid', riskLevel: null, status: 'held', holdReasons: ['address-changed-after-supplier-order'], addressJson: JSON.stringify(ADDRESS), lineItemsJson: null, fulfilAfter: null });
+    await store.updateOrder('HELD', { cj_order_id: 'CJORD-HELD' });
+    await store.insertOrderIfNew({ shopifyOrderId: 'ERR', orderName: '#ERR', totalPrice: 15, currency: 'GBP', financialStatus: 'paid', riskLevel: null, status: 'error', holdReasons: ['fulfil: x'], addressJson: JSON.stringify(ADDRESS), lineItemsJson: null, fulfilAfter: null });
+    await store.updateOrder('ERR', { cj_order_id: 'CJORD-ERR' });
+    const admin = liveAdmin({ order: { displayFulfillmentStatus: 'FULFILLED' } });
+    const alerts: unknown[] = [];
+    const send = async () => { alerts.push(1); return 'sent' as const; };
+
+    const r = await recheckUnsettledSupplierOrders(store, admin, send);
+    expect(r).toMatchObject({ checked: 2, stopped: 0 });
+    expect(alerts).toHaveLength(0);
+    expect(await store.listOrderEvents('HELD')).toEqual([]);
+    expect(await store.listOrderEvents('ERR')).toEqual([]);
+    expect((await store.getOrder('HELD'))?.status).toBe('held');
+    expect((await store.getOrder('ERR'))?.status).toBe('error');
   });
 
   it('a gate hold such as refunded now stops and alerts, held once across two runs', async () => {
@@ -1538,7 +1906,12 @@ describe('recheckUnsettledSupplierOrders: unsettled supplier orders are re-read 
     expect(r1).toMatchObject({ checked: 1, cancelled: 0, addressChanged: 0, stopped: 1, unreadable: 0 });
     const o = await store.getOrder('O1');
     expect(o?.status).toBe('held');
+    // The reason that named a supplier order to pay is dropped: this row has
+    // just been stopped, so telling the owner to pay it would be wrong. The
+    // supplier order id is still on the row and on every console row.
     expect(JSON.parse(o!.hold_reasons!)).toEqual(['refunded']);
+    expect(o!.hold_reasons!).not.toContain('awaiting-payment:');
+    expect(o?.cj_order_id).toBe('CJORD-O1');
     expect(alerts).toHaveLength(1);
     expect(alerts[0].subject).toBe('Order #O1 was stopped and a supplier order exists for it');
     expect(alerts[0].text).toBe('Order #O1 was stopped by the check against Shopify (refunded). Supplier order CJORD-O1 already exists for it. Do NOT pay it. Check its state at the supplier: cancel it there if it is unpaid, and treat it as a return if it has been paid.');
@@ -1626,6 +1999,83 @@ describe('recheckUnsettledSupplierOrders: unsettled supplier orders are re-read 
     expect((await store.getOrder('A-throws'))?.status).toBe('awaiting-payment'); // untouched by the throw
     expect((await store.getOrder('B-ok'))?.status).toBe('cancelled'); // the next row still processed
     expect(warnSpy).toHaveBeenCalled();
+  });
+
+  it('the address change records the intention to alert before it saves the address: a refused save leaves the marker, and the next run delivers', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedAwaiting(store, 'O1', 'CJORD-O1');
+    const newAddr = { name: ADDRESS.name, address1: ADDRESS.address1, address2: ADDRESS.address2, city: 'Cardiff', province: ADDRESS.province, zip: ADDRESS.zip, countryCodeV2: 'GB', phone: ADDRESS.phone };
+    const admin = liveAdmin({ order: { shippingAddress: newAddr } });
+    const alerts: { subject: string; text: string }[] = [];
+    const send = async (subject: string, text: string) => { alerts.push({ subject, text }); return 'sent' as const; };
+    const subject = 'Order #O1: the delivery address changed after the supplier order was created';
+
+    const realUpdateOrder = TenantStore.prototype.updateOrder;
+    const spy = vi.spyOn(TenantStore.prototype, 'updateOrder').mockImplementation(function (this: TenantStore, id: string, fields: Record<string, unknown>) {
+      if (fields.address_json) return Promise.reject(new Error('d1 refused'));
+      return realUpdateOrder.call(this, id, fields);
+    });
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    const r1 = await recheckUnsettledSupplierOrders(store, admin, send);
+    expect(r1).toMatchObject({ checked: 1, addressChanged: 0 });
+    expect(alerts).toHaveLength(0);
+    expect((await store.getOrder('O1'))?.address_json).toBe(JSON.stringify(ADDRESS)); // not saved
+    const trail = await store.listOrderEvents('O1');
+    expect(trail.some((e) => e.kind === 'owner-alert-due' && e.detail === subject)).toBe(true);
+
+    spy.mockRestore();
+    const r2 = await recheckUnsettledSupplierOrders(store, admin, send);
+    expect(r2).toMatchObject({ checked: 1, addressChanged: 1 });
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].subject).toBe(subject);
+  });
+
+  it('a due marker that cannot be recorded leaves the address change entirely undone', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedAwaiting(store, 'O1', 'CJORD-O1');
+    const newAddr = { name: ADDRESS.name, address1: ADDRESS.address1, address2: ADDRESS.address2, city: 'Cardiff', province: ADDRESS.province, zip: ADDRESS.zip, countryCodeV2: 'GB', phone: ADDRESS.phone };
+    const admin = liveAdmin({ order: { shippingAddress: newAddr } });
+    const alerts: unknown[] = [];
+    const send = async () => { alerts.push(1); return 'sent' as const; };
+
+    const realAdd = TenantStore.prototype.addOrderEvent;
+    vi.spyOn(TenantStore.prototype, 'addOrderEvent').mockImplementation(function (this: TenantStore, id: string, kind: string, detail?: string | null) {
+      if (kind === 'owner-alert-due') return Promise.resolve(false);
+      return realAdd.call(this, id, kind as Parameters<typeof realAdd>[1], detail);
+    });
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    const r = await recheckUnsettledSupplierOrders(store, admin, send);
+    expect(r).toMatchObject({ checked: 1, addressChanged: 0 });
+    expect(alerts).toHaveLength(0);
+    expect((await store.getOrder('O1'))?.address_json).toBe(JSON.stringify(ADDRESS));
+    expect(await store.listOrderEvents('O1')).toEqual([]); // not even address-refreshed
+  });
+
+  it('a due marker that cannot be recorded leaves a stop entirely undone', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedAwaiting(store, 'O1', 'CJORD-O1');
+    const admin = liveAdmin({ order: { displayFinancialStatus: 'REFUNDED' } });
+    const alerts: unknown[] = [];
+    const send = async () => { alerts.push(1); return 'sent' as const; };
+
+    const realAdd = TenantStore.prototype.addOrderEvent;
+    vi.spyOn(TenantStore.prototype, 'addOrderEvent').mockImplementation(function (this: TenantStore, id: string, kind: string, detail?: string | null) {
+      if (kind === 'owner-alert-due') return Promise.resolve(false);
+      return realAdd.call(this, id, kind as Parameters<typeof realAdd>[1], detail);
+    });
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    const r = await recheckUnsettledSupplierOrders(store, admin, send);
+    expect(r).toMatchObject({ checked: 1, stopped: 0 });
+    expect(alerts).toHaveLength(0);
+    const o = await store.getOrder('O1');
+    expect(o?.status).toBe('awaiting-payment'); // never held
+    expect(JSON.parse(o!.hold_reasons!)).toEqual([awaitingReason('CJORD-O1')]);
+    expect(await store.listOrderEvents('O1')).toEqual([]); // no gate-held either
   });
 
   it('rotates through a backlog larger than one page: 25 rows with max 10, three consecutive ticks (15 minutes apart) each read a distinct page, covering every row exactly once', async () => {

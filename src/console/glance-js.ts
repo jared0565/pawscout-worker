@@ -38,7 +38,7 @@ function glKpi(label,num,sub,flag){
     +'<div class="sub">'+esc(sub||'')+'</div>'
     +'</div>';
 }
-var GL_ORDER_STATUS={received:'received',queued:'queued',submitted:'sent to CJ','awaiting-payment':'awaiting CJ payment',fulfilled:'fulfilled',cancelled:'cancelled',error:'error'};
+var GL_ORDER_STATUS={received:'received',queued:'queued',submitted:'sent to CJ','awaiting-payment':'not paid by PawScout',fulfilled:'fulfilled',cancelled:'cancelled',error:'error'};
 // Rail badge (Phase 4): the Inbox nav item carries the Open (unprocessed) queue
 // size from /api/glance - the SAME query the Inbox default list runs, so the
 // badge always equals what opening the Inbox shows (a thread counts whether or

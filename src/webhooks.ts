@@ -83,7 +83,7 @@ export async function ensureWebhooks(admin: AdminGraphql, appUrl: string): Promi
       present: [],
       created: [],
       missing: REQUIRED_TOPICS.map((t) => t.topic),
-      errors: [(e as Error).message],
+      errors: [e instanceof Error ? e.message : String(e)],
       checkedAt: new Date().toISOString()
     };
   }
@@ -111,7 +111,7 @@ export async function ensureWebhooks(admin: AdminGraphql, appUrl: string): Promi
       // was created either. Whether it ends up `present` is decided by the
       // read-back below, like everything else.
     } catch (e) {
-      errors.push((e as Error).message);
+      errors.push(e instanceof Error ? e.message : String(e));
     }
   }
 
@@ -131,7 +131,7 @@ export async function ensureWebhooks(admin: AdminGraphql, appUrl: string): Promi
       after = await listWebhookTopics(admin);
       verified = true;
     } catch (e) {
-      errors.push((e as Error).message);
+      errors.push(e instanceof Error ? e.message : String(e));
       verified = false;
     }
   }

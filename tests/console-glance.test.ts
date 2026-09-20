@@ -86,7 +86,15 @@ describe('getGlance', () => {
     expect(g.attention[0].title).toContain('#1001');
     expect(g.attention[0].detail).toContain('stockout');
     const titles = g.attention.map((a) => a.title).join(' | ');
-    expect(titles).toContain('awaiting payment');
+    // PawScout cannot see a payment the owner makes by hand, so a row can sit
+    // here for days after it was paid: the landing page says what PawScout
+    // knows (it has not paid it) and sends the owner to look, rather than
+    // telling them to pay something they may already have paid.
+    expect(titles).toContain('PawScout has not paid');
+    expect(titles).not.toContain('awaiting payment');
+    const unpaid = g.attention.find((a) => a.title.includes('PawScout has not paid'))!;
+    expect(unpaid.detail).toContain('check each one at the supplier before you pay it');
+    expect(unpaid.detail).not.toContain('waiting for you to pay');
     expect(titles).toContain('draft reply waiting for review');
     expect(titles).toContain('nearly sold out at source');
     // Low-stock detail shows the SELLABLE quantity (reserve applied), not raw CJ stock.

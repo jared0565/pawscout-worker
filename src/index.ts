@@ -13,7 +13,7 @@ import { handleCallback } from './auth/callback';
 import { ensureInstalled } from './auth/ensure-installed';
 import { handleUninstall } from './auth/uninstall';
 import { resolveShopFromToken } from './console/session';
-import { connectCj, saveGates, savePricing, saveLlm, saveAddons, saveCollectionMap, getStatus, getInsights, getGlance, getAudit, getAuditConversation, saveGbFreeUk, getPartners, createPartner, partnerVoucherAction, getPartnerOrders, removeQueuedPartner } from './console/routes';
+import { connectCj, saveGates, savePricing, saveLlm, saveAddons, saveCollectionMap, getStatus, getInsights, getGlance, getAudit, getAuditConversation, saveGbFreeUk, getPartners, createPartner, partnerVoucherAction, getPartnerOrders, removeQueuedPartner, parseHoldReasons } from './console/routes';
 import { listInboxThreads, getInboxThread, setInboxStatus, setInboxLabels, getInboxConfig, saveInboxConfig, approveDraft, regenerateDraft, applyDraftTemplate, queuePartnerFromThread, setPartnerConsentFromThread, unblockSender } from './inbox/routes';
 import { buildInvoiceForThread, discardInvoice, searchCatalog, adminForShop } from './inbox/invoice-routes';
 import { validateCampaignPayload, resolveCampaignAudience, sendCampaignBatch, sendCampaignTest, campaignForUi, ownerTestAddress, campaignSendBlock, type CampaignAudience } from './campaigns';
@@ -1336,7 +1336,10 @@ app.post('/api/fulfil-run', async (c) => {
     if (!r) return c.json({ ok: false, error: 'Not configured / CJ not connected' }, 200);
     return c.json({ ok: true, ...r });
   } catch (e) {
-    return c.json({ ok: false, error: (e as Error).message }, 200);
+    // A rejection with null or undefined would itself throw on a bare
+    // `.message` read, and escape this catch as a 500 to the console instead
+    // of the answer it was written to give.
+    return c.json({ ok: false, error: e instanceof Error ? e.message : String(e) }, 200);
   }
 });
 // Manual "Sync now": the nightly maintenance pieces, runnable on demand from
@@ -1567,7 +1570,7 @@ app.post('/api/orders', async (c) => {
   const cfg = await store.getConfig();
   const orders = (await store.listOrders(null, 50)).map((o) => ({
     id: o.shopify_order_id, name: o.order_name, total: o.total_price, currency: o.currency,
-    status: o.status, holds: o.hold_reasons ? JSON.parse(o.hold_reasons) : [], cj: o.cj_order_id, tracking: o.tracking_number
+    status: o.status, holds: parseHoldReasons(o.hold_reasons), cj: o.cj_order_id, tracking: o.tracking_number
   }));
   // Webhook-subscription health (the daily stage, or the console's own
   // "Check order events" button) - null when never checked, unparseable, or
@@ -1639,7 +1642,7 @@ app.post('/api/cj-order-diag', async (c) => {
     await store.putSearchCache('diag:cj-orders', JSON.stringify(data).slice(0, 4000), 1);
     return c.json({ ok: true, sample: data });
   } catch (e) {
-    return c.json({ ok: false, error: `CJ order API: ${(e as Error).message}` }, 200);
+    return c.json({ ok: false, error: `CJ order API: ${e instanceof Error ? e.message : String(e)}` }, 200);
   }
 });
 // Read-only freight quote: what CJ actually charges to ship ONE unit of a
@@ -2322,7 +2325,7 @@ async function gdprWebhook(c: Context<{ Bindings: Env }>, handle: (store: Tenant
   try {
     await handle(new TenantStore(c.env.DB, shop), JSON.parse(body) as Record<string, unknown>);
   } catch (e) {
-    console.warn(`gdpr webhook failed for ${shop}: ${(e as Error).message}`);
+    console.warn(`gdpr webhook failed for ${shop}: ${e instanceof Error ? e.message : String(e)}`);
   }
   return c.text('ok');
 }

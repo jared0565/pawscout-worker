@@ -14,6 +14,7 @@ export const ORDER_GATE_QUERY = `query pawscoutOrderGate($id: ID!) {
     closed
     displayFinancialStatus
     displayFulfillmentStatus
+    phone
     risk { recommendation }
     shippingAddress { name address1 address2 city province zip countryCodeV2 phone }
   }
@@ -63,7 +64,12 @@ export async function readOrderGate(admin: AdminGraphql, shopifyOrderId: string)
               province: str(addr.province),
               zip: str(addr.zip),
               countryCode: str(addr.countryCodeV2),
-              phone: str(addr.phone)
+              // Same fallback the order was first recorded with: a customer
+              // can give a phone as their contact detail and none on the
+              // address, and reading only the address one would look like the
+              // phone had just been removed, replace the stored address with
+              // one that has none, and send the supplier an empty field.
+              phone: str(addr.phone) || str(order.phone)
             }
           : null
       }

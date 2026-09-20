@@ -977,4 +977,26 @@ describe('session-authed HTTP isolation', () => {
     const body = await res.json() as { ok: true; hooks: { ok: boolean; missing: string[]; checkedAt: string; error: string | null } | null };
     expect(body.hooks).toEqual({ ok: true, missing: [], checkedAt: CHECKED_AT, error: null });
   });
+
+  // Every writer stores an array, so only a hand edit of the database puts
+  // anything else in this column - but the console joins whatever comes back,
+  // and one unreadable value used to take the whole orders card down with it.
+  it('POST /api/orders with one unreadable hold_reasons value still answers every order, that one with no reasons', async () => {
+    const storeA = await seedInstalledTenant(SESSION_SHOP_A);
+    await seedOrder(storeA, 'GOOD', 'held');
+    await seedOrder(storeA, 'BAD', 'held');
+    await storeA.updateOrder('GOOD', { hold_reasons: JSON.stringify(['not-paid']) });
+    await storeA.updateOrder('BAD', { hold_reasons: 'not json {{{' });
+
+    const res = await app.request('/api/orders', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${await sessionBearer(SESSION_SHOP_A)}`, 'Content-Type': 'application/json' },
+      body: '{}',
+    }, sessionEnv(), FAKE_CTX);
+    expect(res.status).toBe(200);
+    const body = await res.json() as { ok: true; orders: { id: string; holds: string[] }[] };
+    expect(body.orders).toHaveLength(2);
+    expect(body.orders.find((o) => o.id === 'GOOD')?.holds).toEqual(['not-paid']);
+    expect(body.orders.find((o) => o.id === 'BAD')?.holds).toEqual([]);
+  });
 });

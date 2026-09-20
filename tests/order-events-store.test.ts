@@ -88,6 +88,33 @@ describe('order events (order trail)', () => {
     expect((await store.listOrderEvents('O2')).length).toBe(1);
   });
 
+  // Both deletes go out together, the way redactShop already does it: the
+  // route that calls this swallows a failure and answers 200, so a refusal
+  // between two separate statements would leave trail rows behind for erased
+  // orders and nothing would ever come back for them.
+  it('redactOrders erases the orders and their trail in ONE batch', async () => {
+    const batches: number[] = [];
+    const db = new Proxy(env.DB, {
+      get(target, prop) {
+        if (prop === 'batch') {
+          return (stmts: D1PreparedStatement[]) => { batches.push(stmts.length); return target.batch(stmts); };
+        }
+        const v = Reflect.get(target, prop);
+        return typeof v === 'function' ? v.bind(target) : v;
+      }
+    }) as D1Database;
+    const store = new TenantStore(db, SHOP);
+    await store.insertOrderIfNew({ shopifyOrderId: 'O1', orderName: '#O1', totalPrice: 1, currency: 'GBP', financialStatus: 'paid', riskLevel: null, status: 'queued', holdReasons: [], addressJson: null, lineItemsJson: null, fulfilAfter: null });
+    await store.addOrderEvent('O1', 'received');
+
+    const removed = await store.redactOrders(['O1']);
+
+    expect(removed).toBe(1);
+    expect(batches).toEqual([2]); // one batch, holding both deletes
+    expect(await store.listOrderEvents('O1')).toEqual([]);
+    expect(await store.getOrder('O1')).toBeNull();
+  });
+
   it('redactShop removes every event for the shop and leaves another shop untouched', async () => {
     const storeA = new TenantStore(env.DB, SHOP);
     const storeB = new TenantStore(env.DB, SHOP2);

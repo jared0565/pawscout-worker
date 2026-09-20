@@ -68,6 +68,19 @@ describe('consolePage', () => {
     expect(scripts).toContain("var cjid=o.cj?(' · CJ '+esc(o.cj)):'';");
   });
 
+  // Every remaining place the console names this status has to agree with the
+  // banner above: PawScout has not paid it, and a payment made by hand is
+  // invisible here, so nothing may read as "this is unpaid, go and pay it".
+  it('the status label and the fulfilment-mode help never call an awaiting-payment row simply unpaid', async () => {
+    const html = await consolePage('test-api-key').text();
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+    expect(scripts).toContain("'awaiting-payment':'not paid by PawScout'");
+    expect(scripts).not.toContain('awaiting CJ payment');
+    expect(html).toContain('it stays in that list until its tracking number arrives because PawScout cannot see a payment you make by hand');
+    expect(html).not.toContain('Any order sitting unpaid shows');
+    expect(html).not.toContain('a supplier order that is waiting for you to pay it');
+  });
+
   // 2026-09-19 follow-up: the server now distinguishes "check failed" (nothing
   // known about order-events subscriptions) from "missing" (topics genuinely
   // absent) via a new hooks.error field. Source-text checks can't verify which

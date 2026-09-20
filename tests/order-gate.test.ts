@@ -215,4 +215,43 @@ describe('readOrderGate', () => {
     expect(result).toMatchObject({ ok: true });
     if (result.ok) expect(result.snapshot.address).toMatchObject({ countryCode: 'GB' });
   });
+
+  // A customer who gives a phone as their contact detail and none on the
+  // address has it stored on the order, not on the shipping address. Reading
+  // the address alone would read that as "the phone was removed", replace the
+  // stored address with one that has no phone, and send the supplier an empty
+  // one. The order's own phone is the same fallback the order was first
+  // recorded with.
+  it('falls back to the order phone when the shipping address carries none', async () => {
+    const admin = (async () => ({
+      order: {
+        cancelledAt: null, closed: false, displayFinancialStatus: 'PAID', displayFulfillmentStatus: 'UNFULFILLED',
+        phone: '07123456789',
+        risk: { recommendation: 'ACCEPT' },
+        shippingAddress: { name: 'Jane Doe', address1: '1 High St', address2: '', city: 'London', province: 'England', zip: 'E1 1AA', countryCodeV2: 'GB', phone: null }
+      }
+    })) as unknown as AdminGraphql;
+    const result = await readOrderGate(admin, '123');
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.snapshot.address?.phone).toBe('07123456789');
+  });
+
+  it('prefers the shipping address phone over the order phone', async () => {
+    const admin = (async () => ({
+      order: {
+        cancelledAt: null, closed: false, displayFinancialStatus: 'PAID', displayFulfillmentStatus: 'UNFULFILLED',
+        phone: '07123456789',
+        risk: { recommendation: 'ACCEPT' },
+        shippingAddress: { name: 'Jane Doe', address1: '1 High St', address2: '', city: 'London', province: 'England', zip: 'E1 1AA', countryCodeV2: 'GB', phone: '07000000000' }
+      }
+    })) as unknown as AdminGraphql;
+    const result = await readOrderGate(admin, '123');
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.snapshot.address?.phone).toBe('07000000000');
+  });
+
+  it('asks Shopify for the order phone, not only the address one', () => {
+    expect(ORDER_GATE_QUERY).toMatch(/\n\s{4}phone\n/); // on the order, at its own indent level
+    expect(ORDER_GATE_QUERY).toContain('shippingAddress { name address1 address2 city province zip countryCodeV2 phone }');
+  });
 });
