@@ -816,6 +816,55 @@ Changes inside the orders card:
 - [ ] Final whole-branch review on the most capable model, one fix wave, one scoped re-review, residuals adjudicated.
 - [ ] Merge to master only with the owner's go for production in hand or pending; the production deploy itself runs the rehearsal because migration 0041 is pending, so it must start off the cron marks (not at minutes 0, 15, 30, 45, not at 04:17 UTC).
 
+## As built: what the whole-branch review changed (2026-09-20)
+
+Task 9 above says "one fix wave, one scoped re-review". As built there were two
+rounds of changes and two read-only passes by the same reviewer, because the
+scoped re-review's verdict was "ready after named fixes" and one of those was a
+false instruction in an owner email. Nothing here changes a task's design; each
+item closes something the whole-branch review found in code the tasks above
+had already built.
+
+- **One run owns a due order.** `TenantStore.claimDueOrder(shopifyOrderId,
+  nowIso, untilIso)` is one UPDATE that checks the row is still `queued` and
+  due and pushes `fulfil_after` ten minutes ahead, scoped to its shop. It is the
+  first thing `processDueOrders` does for a row. A refused claim leaves the row
+  alone; a claim the database rejects is logged and skipped, and the row stays
+  queued. The ten minutes are counted from the claim, while the run's start
+  time stays the "is it due" test. Costs, recorded in the decision record: a
+  second button press, a release, or an unreadable check can leave the button
+  with nothing to do for up to ten minutes, and the `queued` trail line's
+  time goes stale.
+- **A paid order that lands in `error` emails the owner** ("Order `<name>`
+  could not be sent to the supplier"), built from the step and the supplier
+  order id only. When an order may already exist at the supplier it prints
+  `shopify_order_id`, the number the supplier was given, never the order name.
+- **The pull check of Task 6d** now alerts once, and holds nothing, for
+  `already-fulfilled` and `order-missing` on an `awaiting-payment` row ("once"
+  is the `owner-alert-due` marker of Task 6e); drops an `awaiting-payment:`
+  reason when it stops a row; records the alert as due BEFORE the row write for
+  a stop and for a changed address; and runs above the supplier-credential
+  guard in `runOrderPipelineForShop`.
+- **Texts.** Every remaining text that read `awaiting-payment` as "unpaid" says
+  instead that PawScout has not paid it. The stored reason is now
+  `awaiting-payment: CJ order <id> is not paid by PawScout`. The
+  awaiting-payment email has a second wording for a released row that already
+  carried a supplier order (`AwaitingPaymentNotice.existing`).
+- **Small.** The gate query of Task 2 also selects the order's own `phone`, as
+  a fallback for an address without one (validated against the Admin schema).
+  `redactOrders` of Task 1 erases in one batch. `/api/orders` reads stored
+  reasons through the defensive parser. Seven more catch blocks read a thrown
+  value safely.
+- **Ruled out of this phase and written into the decision record as
+  residuals:** two failure counters that can pin each other without bound, the
+  tracking write that reached Shopify but was recorded as failed, the tracking
+  poll's newest-first page, a refund landing while a supplier order is being
+  created, a re-raised alert subject that gets no retries, test-gateway orders
+  and order edits, the optional alert argument, and a run killed between a
+  cancel's status write and its alert marker. Left to the owner and not decided
+  in code: whether a release should pass a partly refunded order, and whether
+  the pull check should leave alone an order whose refund was already reported.
+
 ## Self-review against the spec
 
 | Spec section | Task |

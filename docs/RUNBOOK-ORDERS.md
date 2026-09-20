@@ -27,12 +27,12 @@ refunded, PawScout stops rather than guessing.
 |---|---|---|
 | `received` | Defined in PawScout's own records as a possible status, but no part of PawScout today ever leaves an order sitting in it: the moment an order is recorded, it is written straight into either `queued` or `held`. You should not expect to see this status in the console. | Nothing; there is nothing in this status today. |
 | `queued` | The order passed its checks and is waiting out its one hour grace window. It will be sent to the supplier automatically once that hour passes, unless fulfilment is off or something changes first. | Nothing, unless you want to stop it yourself: press Cancel next to the order in the console. |
-| `held` | Something needs the owner (or the team) to decide before this order goes any further. Nothing has been sent to the supplier. | Read the reason(s) shown next to the order (see "Hold reasons" below), then press Release to send it back into the queue, or Cancel it. A released order is due straight away, on the next 15 minute run, not an hour later. |
-| `awaiting-payment` | The supplier order has been created but not paid. Either PawScout is set to create orders only and leave the paying to you (see "Create-only", below), or an automatic payment attempt failed for a money reason. | Pay the supplier order shown next to the order (labelled "CJ" in the console) at the supplier's own site. **PawScout cannot see that you paid it:** the order stays `awaiting-payment` here, and the console banner keeps naming it, until the supplier ships and a tracking number arrives. It only ever reaches `submitted` when PawScout itself paid it. Before paying anything in this list, check that supplier order's own state at the supplier, so a slow shipment is never paid for twice. |
+| `held` | Something needs the owner (or the team) to decide before this order goes any further. **A held order may already have a supplier order**, and often does: every stop found by the 15 minute re-check below happens to an order that already has one, as does an address change caught after it was created. The console shows the supplier order's id next to any order that has one. PawScout has not paid it. | Read the reason(s) shown next to the order (see "Hold reasons" below), then press Release to send it back into the queue, or Cancel it. **Before you press Cancel, look for a supplier order id next to the order**: Cancel only changes PawScout's own record, so a supplier order left behind by it is one nobody is watching any more. Cancel it at the supplier yourself, or handle the order by hand. A released order does not wait out another hour: the next 15 minute run picks it up, or the one after that when a run took the order less than ten minutes before (see "Run fulfilment now appearing to do nothing" below). |
+| `awaiting-payment` | PawScout has created the supplier order and has not paid it. Either PawScout is set to create orders only and leave the paying to you (see "Create-only", below), or an automatic payment attempt failed for a money reason. | Pay the supplier order shown next to the order (labelled "CJ" in the console) at the supplier's own site. **PawScout cannot see that you paid it:** the order stays `awaiting-payment` here, and the console banner keeps naming it, until the supplier ships and a tracking number arrives. It only ever reaches `submitted` when PawScout itself paid it. Before paying anything in this list, check that supplier order's own state at the supplier, so a slow shipment is never paid for twice. |
 | `submitted` | The supplier order was created and PawScout itself has paid it. An order you paid by hand never shows this status (see `awaiting-payment` above). | Nothing normally. See the note below: once an order reaches this status, PawScout stops re-reading it against Shopify; a cancellation or refund that does reach it by webhook is still alerted. |
 | `fulfilled` | A tracking number has been written back into Shopify, and Shopify has sent the customer its own shipping notification. | Nothing. |
 | `cancelled` | This order will not be sent to the supplier. If a supplier order already existed when the cancellation happened, check whether you received one of the alerts below telling you what to do about it. | Depends on the alert, if any; see "Alerts" below. |
-| `error` | Something went wrong while trying to process this order, for example the supplier had no stock for one of the items, or a step failed unexpectedly. | Read the reason shown next to the order to understand what happened. The console does not currently offer a button to send this order back into the queue by itself; ask whoever maintains PawScout to move it back to `queued` if it should be retried. |
+| `error` | Something went wrong while trying to process this order, for example the supplier had no stock for one of the items, or a step failed unexpectedly. Nothing retries it by itself. You are emailed about it (see "Order `<name>` could not be sent to the supplier" below), except for a stockout, which has its own email. | Read the reason shown next to the order to understand what happened. **If the order's timeline says `failed at create` or `failed at record`, an order for it may already exist at the supplier** (the request can reach the supplier while its answer is lost on the way back). Look for **the order number PawScout gives the supplier** and deal with whatever you find there BEFORE anything is retried, or it will be ordered twice. That number is the long Shopify order id: the digits at the end of the order's page address in the Shopify admin. It is not the short order name the shop shows next to the order (`#1002`), which the supplier never sees. It is the number the email about this order prints, and the number meant everywhere below by "the order number at the supplier". The console does not currently offer a button to send this order back into the queue by itself; ask whoever maintains PawScout to move it back to `queued` if it should be retried. |
 
 Pressing Release or Cancel in the console only changes PawScout's own record
 of the order. Cancel does not cancel or refund the order in Shopify, and
@@ -62,8 +62,13 @@ until it is released back into the queue.
 Shown next to a `held` order (and, for `shopify-cancelled`, next to a
 `cancelled` one). An order can carry more than one. The same place in the
 console also shows a free-text reason next to an `awaiting-payment` order
-(which supplier order is waiting to be paid) and next to an `error` order
-(what failed; this text can include the supplier's own message).
+(which supplier order PawScout has not paid) and next to an `error` order
+(what failed; this text can include the supplier's own message). When the 15
+minute re-check below stops an `awaiting-payment` order, the reason naming
+its supplier order is dropped, because that order must not be paid now; the
+supplier order's id is still shown next to the order itself. An `error`
+order's own reason is always kept, because it is the only record of why that
+order failed, so a `held` order can show the supplier's own message too.
 
 | Reason | What it means | What to do |
 |---|---|---|
@@ -74,7 +79,7 @@ console also shows a free-text reason next to an `awaiting-payment` order
 | `over-threshold` | The order's total is over GBP 100. | Review it before releasing. This is a size check, not necessarily a problem. |
 | `not-paid` | Shopify does not show this order as paid. | Check the order's payment status in Shopify before releasing. |
 | `on-hold` | The merchant (you) paused this order in Shopify itself. | Check the order in the Shopify admin; release it here once you have decided in Shopify. |
-| `refunded` | Shopify shows this order refunded (fully, partly, or voided). A supplier order may already exist for it: the check that runs before spending, and the 15 minute re-check, both write this reason on orders that already have one. | Decide whether to Release it anyway or Cancel it, and check whether a supplier order exists for it: the console shows its id next to any order that has one, the alert you received names it, and so does the order's timeline. See "A refund without a cancellation" below. |
+| `refunded` | Shopify shows this order refunded (fully, partly, or voided). A supplier order may already exist for it: the check that runs before spending, and the 15 minute re-check, both write this reason on orders that already have one. | **PawScout cannot carry this order any further, and Release will not change that:** the check before spending reads Shopify's refund again on the next run and stops it again, with the same reason and the same email. Anything still to be done for this order has to be done by hand: see "A refund without a cancellation" below for exactly what. Check whether a supplier order exists for it: the console shows its id next to any order that has one, the alert you received names it, and so does the order's timeline. |
 | `already-fulfilled` | Shopify shows this order already fulfilled some other way, for example shipped by hand. | Check before releasing, so the supplier is not asked to ship a duplicate. |
 | `order-missing` | PawScout could not find this order in Shopify when it last checked. | Check the order directly in Shopify. |
 | `mixed-origin` | The products in this order would need to ship from more than one supplier warehouse. PawScout does not split orders across warehouses. | Decide by hand: order it from the supplier yourself, split it into separate Shopify orders, or contact the customer. |
@@ -88,9 +93,37 @@ partial refund can be a goodwill gesture on an order you still want to ship.
 
 - If no supplier order exists yet, a refund holds the order with reason
   `refunded` (see the table above), so you decide.
-- If a supplier order already exists, the order's status does not change.
-  Instead you get an alert naming the refund amount and the supplier order,
-  so you can decide whether the supplier order should still go ahead.
+- If a supplier order already exists, the refund itself does not change the
+  order's status. You get an alert naming the refund amount and the supplier
+  order, so you can decide whether the supplier order should still go ahead.
+
+**What actually happens next, and it is not what those two lines alone
+suggest.** Within 15 minutes the re-check below reads the same refund in
+Shopify, holds the order with reason `refunded`, and sends you a second
+email telling you not to pay the supplier order. Both emails are about one
+refund; the second one overrules the first. From then on:
+
+- **PawScout cannot send a refunded or partly refunded order to the supplier
+  at all**, and it cannot pay one. Pressing Release does not change this: the
+  check before spending reads the refund again on the next run and stops the
+  order again, sending the same email each time.
+- **A held order is not checked for a tracking number**, so if you have
+  already paid that supplier order by hand and it ships, its tracking number
+  will never be written into Shopify by PawScout and the customer will never
+  get Shopify's shipping email.
+
+So a goodwill refund on an order you still intend to ship is a case PawScout
+hands entirely back to you. Do it by hand:
+
+1. If no supplier order exists and you still want the goods sent, buy the
+   order at the supplier yourself.
+2. If a supplier order exists and you want it to go ahead, pay it at the
+   supplier yourself (check its own state there first).
+3. When it ships, enter the tracking number on the order in the Shopify
+   admin yourself. That is what tells the customer.
+
+If you do NOT want the order to go ahead, cancel the supplier order at the
+supplier, and press Cancel in the console so the order stops being watched.
 
 ## How PawScout catches a cancellation once a supplier order exists
 
@@ -118,13 +151,14 @@ For each order it checks:
   so would take it out of this very check, and out of the tracking check,
   while you still have to pay it). See the address-changed alert under
   "Alerts you might receive" below for what to do.
-- Two findings are deliberately passed over here: Shopify showing the order
-  already fulfilled some other way, and PawScout not being able to find the
-  order in Shopify at all. Neither stops the order and neither raises an
-  alert, because neither says that the money came back. An order fulfilled
-  by hand elsewhere, or one removed from Shopify, will therefore keep
-  sitting in `awaiting-payment` with nothing said about it. Check any order
-  you are about to pay in the Shopify admin first.
+- Two findings neither stop the order nor change its status, but you are
+  told about each one once: Shopify showing the order already fulfilled some
+  other way, and PawScout not being able to find the order in Shopify at all.
+  Neither says that money came back, which is why the order is not stopped;
+  both say something about money that is still about to go out, which is why
+  you hear about them. They are raised only for an order in
+  `awaiting-payment`, the ones you still have to pay, and only once per order
+  and finding. See the two alerts under "Alerts you might receive" below.
 
 This is a genuine second safety net, separate from Shopify's cancel and
 refund webhooks: it works even if a webhook delivery is lost. It does not
@@ -143,7 +177,9 @@ are; you decide what happens to them by hand. PawScout still watches orders
 that already have a supplier order (`awaiting-payment`, `held` or `error`):
 it will still stop one, or mark it cancelled, and tell you, if Shopify shows
 it cancelled or refunded, and it still retries any alert that has not
-reached you.
+reached you. That watch needs only the Shopify connection, so it also keeps
+running if the supplier connection is removed or its key is rotated out,
+which is exactly when an unsettled supplier order most needs watching.
 
 The separate "Create-only" switch only matters while fulfilment mode is set
 to PawScout auto. With it ON, PawScout creates the supplier order and stops,
@@ -312,9 +348,13 @@ still go ahead.
 **Stopped before or during the money moving:**
 
 **"Order `<name>` was cancelled while its supplier order was being created"**
-The order was cancelled in Shopify while PawScout was creating its supplier
-order, or while an automatic payment for it was failing for lack of balance
-at the supplier. Do not pay that supplier order; cancel it at the supplier.
+The order was cancelled in Shopify while PawScout was working on its supplier
+order: creating it, or failing to pay it automatically for lack of balance at
+the supplier. It can also reach an order you released back into the queue
+whose supplier order already existed, and which you may have paid by hand
+since, so the email makes no claim about payment either way. PawScout has not
+paid it. Check its state at the supplier: cancel it there if it is unpaid,
+and treat it as a return if it has been paid.
 
 **"Order `<name>` was cancelled while its supplier order was being paid"**
 The order was cancelled in Shopify at the exact moment PawScout was paying
@@ -326,8 +366,11 @@ shipped; if it has shipped, treat it as a return.
 Something about the order changed in Shopify (the exact reason is named in
 the email, for example a cancellation, a refund, or the order being paused)
 after its supplier order was created but before PawScout paid it, so
-PawScout did not pay it. Cancel the named supplier order yourself, at the
-supplier.
+PawScout did not pay it. It can also reach an order you released whose
+supplier order already existed, and which you may have paid by hand since,
+so the email makes no claim about payment either way. Check its state at the
+supplier: cancel it there if it is unpaid, and treat it as a return if it has
+been paid.
 
 **"Order `<name>` was stopped and a supplier order exists for it"**
 The automatic check found a reason to stop this order (the reason is named
@@ -348,10 +391,52 @@ you read the email:
   change it), then see that hold reason above for what releasing the order
   means.
 - If the order's status did NOT change (most often because it is still
-  `awaiting-payment`, waiting for you to pay it by hand), there is nothing
-  to release: correct the address on the supplier order at the supplier
-  before you pay it, or, if you have already paid it, ask the supplier to
-  update the address before it ships.
+  `awaiting-payment`, which means only that PawScout has not paid it), there
+  is nothing to release: correct the address on the supplier order at the
+  supplier before you pay it, or, if you have already paid it by hand, ask
+  the supplier to update the address before it ships.
+
+**"Order `<name>` could not be sent to the supplier"**
+A step failed and the order is now in `error`. The email names the step it
+failed at and, when one exists, the supplier order id; it never repeats the
+supplier's or Shopify's own error message. Nothing retries this order by
+itself. If it failed at the create or the record step, or if it already had a
+supplier order, the email says so and prints the order number at the supplier
+(the long Shopify order id, as described under the `error` status above):
+look for that number at the supplier before anything is retried, so it is not
+ordered twice. Otherwise it says plainly that nothing was sent to the
+supplier. One variant of this email opens differently: if the order was
+cancelled in Shopify while the failing step was still running, the order
+stays `cancelled` rather than becoming `error`, and the email says so instead
+of saying it is now in error. The rest of it, including the order number to
+look for, is the same. A failure caused by the supplier being out of stock
+does not send this email; it sends the out of stock one below instead.
+
+**An order still on your list to pay that Shopify says is finished with:**
+
+**"Order `<name>` shows as fulfilled in Shopify and its supplier order is
+still open here"**
+Shopify says this order has shipped, but PawScout still lists its supplier
+order among those it has not paid. If you shipped it some other way, do NOT
+pay that supplier order: cancel it at the supplier. If you paid it and it
+shipped, there is nothing to do. Sent once per order. Nothing is held and
+nothing changes status because of it. One harmless false alarm is possible:
+if PawScout's own tracking write-back reached Shopify but could not be
+recorded here (see the tracking alert above), this email arrives with both of
+its cases untrue.
+
+**"Order `<name>` can no longer be found in Shopify and a supplier order
+exists for it"**
+PawScout cannot find this order in Shopify at all, while still listing a
+supplier order for it as not paid. Shopify only lets an order be deleted once
+it has been cancelled or archived, so this can be a cancellation whose
+notification was lost followed by a deletion. It can also simply be an order
+older than 60 days, which is as far back as PawScout can read. Do NOT pay
+that supplier order until you have found out which it is. If you have already
+paid it by hand, which PawScout cannot see, check its state at the supplier:
+if the order turns out to have been cancelled, ask the supplier to cancel it,
+and treat it as a return if it has shipped. The email says the same. Sent once
+per order.
 
 **Checks that could not be completed:**
 
@@ -367,9 +452,14 @@ you can see that from the Shopify admin.
 
 **"Order `<name>`: tracking could not be written to Shopify"**
 The supplier has shipped this order and given a tracking number, but writing
-that number into Shopify has failed four times in a row. The customer has
-not been told. Tell the customer the tracking number yourself while the
-cause is found; PawScout keeps retrying every 15 minutes.
+that number into Shopify could not be confirmed on four attempts in a row.
+Open the order in the Shopify admin and look: if it already shows fulfilled
+with that tracking number, the customer has been told and there is nothing to
+do (a write can reach Shopify while the confirmation of it is lost here, and
+after that every retry fails for the same reason). If it does not, tell the
+customer the tracking number yourself while the cause is found. PawScout
+keeps retrying every 15 minutes, and while it is in this state it will send
+this email about once an hour.
 
 **"An order event from Shopify could not be processed"**
 One of Shopify's paid, cancelled, or refunded webhook deliveries for this
@@ -405,8 +495,14 @@ failed send is only logged, never tried again, so if you never receive one
 you expect, check the order directly in the console.
 
 **"Active Paw - order `<name>` awaiting payment in CJ"**
-The supplier order was created and is waiting for you to pay it. This is the
-same information the `awaiting-payment` status and the console's own banner
+One subject, two meanings, and the email itself says which. Usually the
+supplier order has just been created and is genuinely waiting for you to pay
+it. But an order you released back into the queue, whose supplier order
+already existed, gets this email again when it returns to the list, and that
+one may have been paid by hand already: its text says the order is back in
+the list after being released, that PawScout has not paid it, and to check
+its state at the supplier before you pay it. Either way this is the same
+information the `awaiting-payment` status and the console's own banner
 already show; the email is a convenience, not the record of truth.
 
 **"Active Paw - order `<name>` cannot be fulfilled (out of stock at source)"**
@@ -436,7 +532,7 @@ the procedure for that.
 
 ### Before the first order
 
-Check all four of these, in order, before placing any real order:
+Check all five of these, in order, before placing any real order:
 
 1. Part 1 is live in production: it went out through the guarded deploy with
    your go, and its database change has already been applied there.
@@ -452,7 +548,15 @@ Check all four of these, in order, before placing any real order:
    the "awaiting payment" email always goes to the orders card's address.
    Set both to the same address, or read both inboxes: run 1 waits on the
    "awaiting payment" email.
-4. A product has been chosen for the three runs below: one with a single
+4. **The supplier's own Shopify app is not importing orders.** If CJ's own
+   app is installed on this shop with its order import switched on, every
+   paid order is created at the supplier TWICE: once by that app and once by
+   PawScout, which knows nothing about the other one. Two unpaid supplier
+   orders would then sit there for one Shopify order, in the very list you
+   pay from. Open the supplier's app in the Shopify admin and confirm its
+   order import is off before switching PawScout to auto. The console says
+   the same thing next to the mode setting.
+5. A product has been chosen for the three runs below: one with a single
    variant, a low price, in stock at the supplier, and already linked to a
    supplier product.
 
@@ -461,14 +565,20 @@ Check all four of these, in order, before placing any real order:
 Each run is a real order, placed by you on the live shop with a real card.
 
 **Run 1, happy path.** Buy the item. When the "awaiting payment" email
-arrives, pay that supplier order by hand.
+arrives, before paying, open the supplier's own order list and record that
+**exactly one supplier order exists for this Shopify order**. Look through
+that day's orders at the supplier rather than searching for one number only:
+PawScout's orders carry the order number described under the `error` status
+above, but an order placed by the supplier's own app may not carry it. Then
+pay that supplier order by hand.
 What should happen: the order's timeline shows every expected step, ending
 with a written tracking number; the Shopify order shows fulfilled with a
 working tracking link; you, as the customer, receive Shopify's own shipping
 email.
-This run has failed if: any of those steps is missing from the timeline, the
-shipping email never arrives, the tracking write-back keeps failing, or the
-tracking link does not open.
+This run has failed if: any of those steps is missing from the timeline, more
+than one supplier order exists for this Shopify order, the shipping email
+never arrives, the tracking write-back keeps failing, or the tracking link
+does not open.
 
 **Run 2, cancel during the grace window.** Buy the item, then cancel and
 refund it in the Shopify admin within the hour.
@@ -477,13 +587,63 @@ passed, no supplier order exists for it.
 This run has failed if: a supplier order exists for it.
 
 **Run 3, cancel after the supplier order exists.** Buy the item, wait for
-the "awaiting payment" email, then cancel and refund it in the Shopify
-admin.
+the "awaiting payment" email, record that **exactly one supplier order exists
+for this Shopify order** at the supplier, looking through that day's orders
+there as in run 1, then cancel and refund it in the Shopify admin.
 What should happen: you receive the "do NOT pay the supplier" alert, and the
 order becomes `cancelled`. You then cancel the unpaid supplier order
 yourself, at the supplier.
-This run has failed if: no alert arrives, or the order is still shown as
-`awaiting-payment`.
+This run has failed if: no alert arrives, more than one supplier order exists
+for this Shopify order, or the order is still shown as `awaiting-payment`.
+
+### What you may see, and what it means
+
+None of these is a failure. They are recorded here so nobody reads one as
+one.
+
+- **A grant Shopify refuses, on the very first order.** Reading an order's
+  state needs Shopify's protected customer data permissions. If one of the
+  fields is refused, EVERY order fails the check closed, so run 1 shows a
+  `gate-unreadable` line every 15 minutes and, after an hour, the "cannot be
+  checked against Shopify" email. Nothing is sent to the supplier and nothing
+  is paid, so it is safe; but know the signature. That pattern on the very
+  first order means a missing permission, not an outage.
+- **The "Order events" line stuck on MISSING.** Precondition 2 is the first
+  time the subscriptions are created and read back for real on this shop. If
+  Shopify records the address slightly differently from the one PawScout asks
+  for, the line shows MISSING for good even though the events do arrive. That
+  blocks the runs rather than corrupting them: it is visible, and nothing
+  proceeds on a false "all subscribed".
+- **Run 3 producing two emails, in either order.** The cancellation reaches
+  PawScout two ways (Shopify's own notification and the 15 minute re-check),
+  and the refund you make alongside it raises its own "decide whether the
+  supplier order should still go ahead" email. So you may get both, in either
+  order; and if the refund notification happens to arrive after the
+  cancellation, the order is already `cancelled` and only the cancellation
+  email comes. Any of those shapes is the run passing, as long as one email
+  tells you not to pay.
+- **An extra `address-refreshed` line in run 1.** The first check compares the
+  address Shopify sent with the order against the one Shopify's API returns
+  for it. If Shopify writes any part of it differently in the two places (the
+  spacing of a phone number is the likeliest), the check saves the API's
+  version and writes this line. Unless the address really was changed, it is
+  cosmetic.
+- **Duplicate `tracking-found` lines, or one `tracking-write-failed` next to
+  a `tracking-written`.** These appear if the 15 minute run and a press of
+  "Run fulfilment now" happen to overlap. The customer is told once either
+  way.
+- **"Run fulfilment now" appearing to do nothing.** A run takes each order it
+  works on for ten minutes, counted from the moment it takes that order, so
+  two runs that overlap cannot both send the same order to the supplier. Those
+  ten minutes
+  outlast the run itself, so a press of the button can find nothing to do for
+  an order a recent run already took. Three cases look like this: press the
+  button twice inside ten minutes and the second press skips the order the
+  first one took; release an order that a run held, and the button does
+  nothing for it until the rest of those ten minutes are up; and an order
+  whose check against Shopify could not be read is not looked at again by the
+  button for ten minutes either. In each case the order is picked up by the
+  first 15 minute run that starts after those ten minutes are up.
 
 ### What it costs, and what to do if something looks wrong
 

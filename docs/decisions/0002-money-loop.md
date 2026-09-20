@@ -59,9 +59,9 @@ Build the following, together closing every gap named above:
   not guaranteed on any single attempt.
 
 - **D2, the gate fails closed; the risk policy keeps failing open.** When the
-  gate's read of Shopify fails, the order is left exactly where it was and
-  tried again on the next 15 minute run; after four failed reads in a row
-  (about an hour) the owner is alerted once. The existing fraud-risk policy
+  gate's read of Shopify fails, the order keeps its status and is tried again
+  by a later run, normally the next 15 minute one; after four failed reads in
+  a row (about an hour) the owner is alerted once. The existing fraud-risk policy
   (`riskHold` in `src/fulfil.ts`) is unchanged: an unreadable risk score still
   lets the order through. Reason: a wrong guess on "was this order cancelled"
   spends real money on a customer who no longer wants the order; a wrong
@@ -108,14 +108,42 @@ Build the following, together closing every gap named above:
 - **D5, a refund without a cancellation holds the order rather than
   cancelling it.** When no supplier order exists yet, a refund holds with
   reason `refunded`, for the owner to decide. When a supplier order already
-  exists, the order's status is left unchanged and the owner is alerted with
-  the refund amount and the supplier order id instead. Reason: a partial
-  refund can be a goodwill gesture on an order the shop still intends to
-  ship, so treating every refund as a cancellation would stop orders that
-  were never meant to stop. Cost if wrong: one extra operator decision on an
-  order that was, in fact, fully refunded and should have auto-cancelled;
-  weighed against the alternative of auto-cancelling (and, worse, alerting
-  as if cancelled) an order a goodwill refund should not have stopped.
+  exists, the refund webhook itself leaves the order's status unchanged and
+  alerts the owner with the refund amount and the supplier order id. Reason: a
+  partial refund can be a goodwill gesture on an order the shop still intends
+  to ship, so treating every refund as a cancellation would stop orders that
+  were never meant to stop.
+
+  **What this decision actually delivers, which is less than the paragraph
+  above reads as, measured against the code on 2026-09-20.** The gate
+  (`src/order-gate.ts`) holds `REFUNDED`, `PARTIALLY_REFUNDED` and `VOIDED`
+  for every caller, with no bypass for an operator release, and the 15 minute
+  re-check of D13 runs the same gate. So within one tick of the refund
+  webhook the row IS held with reason `refunded` and a second alert goes out
+  saying not to pay the supplier order; a release puts it back to `queued`
+  and the next run holds it again and alerts again. A held row is also not
+  polled for tracking. The consequence is that **a refunded or partly
+  refunded order cannot be carried any further by PawScout at all**: not sent
+  to the supplier, not paid, and its tracking number never written back to
+  Shopify. The goodwill-refund case this decision names as its own reason is
+  exactly the case the code hands entirely back to the owner, who must buy
+  the order at the supplier (or pay the existing supplier order) and enter
+  the tracking number in Shopify by hand. The runbook says so plainly under
+  "A refund without a cancellation". Nothing here is a money risk: the
+  failure is that an order stops, never that one is bought wrongly.
+
+  Cost if wrong: the owner does by hand what they expected to be able to
+  release, on every refunded order; weighed against the alternative of
+  auto-cancelling (and, worse, alerting as if cancelled) an order a goodwill
+  refund should not have stopped. Whether a release should be allowed to pass
+  a `PARTIALLY_REFUNDED` order (never `REFUNDED` or `VOIDED`), the way a
+  release already passes the fraud check on a row with fraud hold history, is
+  an open question for the owner and deliberately not decided here. A second
+  one sits beside it, equally not decided: whether the 15 minute re-check
+  should leave alone an order whose refund the owner has already been told
+  about by the refund notification, instead of holding it. As it stands the
+  refund is said twice, once by the notification and once by the re-check
+  that holds the row.
 
 - **D6, a mixed-origin order holds.** If an order's lines resolve to more
   than one supplier warehouse, nothing is sent to the supplier and the row
@@ -208,10 +236,17 @@ Build the following, together closing every gap named above:
   not paid, on hold, or without a usable address, it stops the row and tells
   the owner, the same way the pipeline's own pre-spend check does; when only
   the delivery address changed, it saves the new address and alerts, but
-  deliberately leaves the row's status untouched. Two findings are passed
-  over entirely: `already-fulfilled` and `order-missing` are neither held
-  nor alerted here, because neither says that the money came back (the cost
-  is in the residuals below). Reason: the pre-spend check
+  deliberately leaves the row's status untouched. Two findings are neither
+  held nor cancelled, but ARE alerted: `already-fulfilled` and
+  `order-missing`. Neither says that the money came back, which is why
+  neither stops the row (a hold would take it out of this check and out of
+  the tracking poll, and no release could pass the gate while Shopify reads
+  either way); but both say something about money that is still about to go
+  out by hand, which is why the owner hears about each one once. They are
+  raised only for an `awaiting-payment` row, and "once" is the
+  `owner-alert-due` marker already standing in that order's trail, not the
+  alert's delivery state, so an email outage cannot turn either into a
+  per-tick repeat. Reason: the pre-spend check
   only exists at the moment the worker itself is about to pay; when the owner
   pays by hand instead there is no such moment, so a cancellation or a stale
   address can only be caught by asking again later, and holding the row for
@@ -246,6 +281,19 @@ Build the following, together closing every gap named above:
   `hold_reasons` value (which is stored, is shown in the console, and is NOT
   covered by this rule today), and, where relevant, the text of an alert sent
   to the owner - never the stored trail.
+
+  One consequence of that uncovered `hold_reasons` exception widened during
+  this phase, and is recorded here rather than left to be rediscovered: when
+  the re-check of D13 stops a row that was already in `error`, it keeps that
+  row's own failure reason alongside the new one, because it is the only
+  stored record of why the order failed. A `held` row can therefore carry the
+  supplier's own message, and the console's landing page prints held reasons
+  word for word, so that message is shown there too. Same column, same
+  viewer (the owner), so this widens the documented `hold_reasons` exception
+  rather than opening a new one; `docs/STATES.md` says the same. What that
+  same stop does NOT keep is an `awaiting-payment` row's reason, which names
+  a supplier order to pay: a row that has just been stopped must not be paid,
+  and the supplier order id is on the row itself either way.
 
 - **D16, a failed order webhook asks Shopify to try again, a bounded number
   of times.** When the processing of a paid, cancelled or refunded event
@@ -313,9 +361,11 @@ this phase.
   tells PawScout "I paid this" was considered and left for a later decision:
   it changes what `submitted` means and takes the order out of the periodic
   check of D13.
-- The periodic check says nothing when Shopify reports the order already
-  fulfilled some other way, or cannot find it at all. The row keeps its
-  status, and the console keeps listing its supplier order as one to pay.
+- When Shopify reports a watched order already fulfilled some other way, or
+  cannot find it at all, the periodic check alerts once and changes nothing:
+  the row keeps its status and the console keeps listing its supplier order
+  as one PawScout has not paid. Acting on either automatically would be
+  guessing; the owner decides.
 - A retry marker for one alert can delay a DIFFERENT alert's own
   consecutive-failure count on the same order, for as long as that other
   alert keeps retrying, bounded at about three hours (12 attempts, 15 minutes
@@ -343,6 +393,81 @@ this phase.
   window re-reads the same page of watched orders rather than moving on to
   the next one; it does not make extra progress through a large backlog
   faster than pressing it once would.
+- A run takes each due order for itself for ten minutes before it does
+  anything to it, which is what stops one Shopify order becoming two supplier
+  orders when the schedule and the console's button overlap. The ten minutes
+  are counted from the moment that order is taken, not from the start of the
+  run, so the last order of a long run gets the same ten minutes as the
+  first; they outlast the run itself. Three visible costs: a second press of
+  "Run fulfilment now" inside those ten minutes skips an order the first
+  press is still working on; an order released after a run held it, and an
+  order whose check against Shopify could not be read, are both left alone by
+  the button for the rest of their ten minutes; and the `queued` trail line's
+  "fulfil after" time goes stale (it still names the original grace deadline,
+  while the order's real due time has moved). A run killed mid-order leaves
+  nothing to clean up: the order simply comes due again after the ten
+  minutes, before the next-but-one 15 minute run. The one exception is a kill
+  between the supplier accepting an order and its id being saved, which has
+  its own residual below. If the database refuses the write that takes the
+  order, that order is skipped and nothing at all is written about it, not
+  even a trail line, so a later run finds it still queued and works it then
+  (at once if the write never landed, after the ten minutes if it landed and
+  only its answer was lost).
+- Two failure counters on one order can hold each other at one for ever. An
+  `awaiting-payment` order whose tracking number exists while Shopify reads
+  AND writes both fail (a dead token, a long outage) writes one
+  `gate-unreadable` line and then one `tracking-write-failed` line on every
+  run; each counter stops at the first line of the other kind, so neither
+  ever reaches the four in a row that would alert. Money impact is nil (the
+  order has shipped, so it was paid), but the customer is never told their
+  tracking number and nothing says so. This is NOT the bounded retry-marker
+  residual above: that one clears after about three hours, this one has no
+  bound.
+- A tracking write that reached Shopify can still be recorded here as failed,
+  if the row update after it is refused or the run is killed between the two.
+  Every later attempt then fails with "no open fulfillment order", and about
+  once an hour the owner is emailed that the write could not be confirmed.
+  The customer HAS been told by Shopify. The email says how to tell which
+  case it is, and there is no console action that ends the loop.
+- The tracking poll reads the 30 most recent orders per status. The periodic
+  check of D13 was given oldest-first paging for exactly this reason and the
+  tracking poll was not; because an order paid by hand stays
+  `awaiting-payment` until it ships, that status is now long-lived, so above
+  30 in flight at once the oldest (the ones about to ship) would stop being
+  polled. Far from today's volume.
+- Only `cancelled` is sticky. A refund that lands while a supplier order is
+  being created writes `held ["refunded"]` with no alert (correct at that
+  moment: no supplier order existed yet), and the pipeline then writes
+  `awaiting-payment` over it and sends the "pay it" email. The periodic check
+  repairs this on the next run, holding the row and sending "Do NOT pay it",
+  so the exposure is one run, the same as for a lost refund notification.
+- An alert subject that was given up on, or that aged out of its 24 hour
+  window undelivered, keeps that first timestamp until a delivery clears it.
+  A later, genuinely new raising of the same subject on the same order
+  therefore gets one direct send attempt and no retries behind it. The
+  subjects this can affect are the recurring ones: an order that cannot be
+  checked, tracking that could not be written, an order stopped with a
+  supplier order, and a delivery address that changed.
+- The check before spending does not read whether a Shopify order is a test
+  order, and does not read its line items again. A test-gateway order placed
+  while the mode is on gets a real supplier order (create-only keeps the
+  owner in the loop, which is the only thing that stops it). An order EDITED
+  in Shopify to add an item raises a second paid notification, which is
+  ignored as a duplicate, so the supplier order lacks the added item.
+- `runOrderPipelineForShop`, the function that wires the whole pipeline
+  together, has no test of its own beyond the ordering one added for the
+  credential guard, and the alert channel it passes down is an optional
+  argument at every step. The wiring is correct as written, but dropping that
+  argument from one call would silence every pipeline alert with the whole
+  test suite still green. Making it a required argument was considered and
+  left out of this phase: it touches every test call site.
+- A run killed between `applyCancel` writing a row to `cancelled` and its
+  alert's due marker being recorded loses that alert, because the row has
+  left the watched set by then. It heals only if Shopify also redelivers the
+  cancellation, which is the very case the periodic check exists to cover.
+  The spec's "a kill at any point heals on redelivery or on the next tick"
+  overstates this one case; the other two it named were closed in this phase
+  by recording the intention to alert before the write.
 - The checks that stop an order or flag a changed address decide from the
   order's own current status and reasons, not from whether an alert about it
   was ever delivered. An alert that was already given up on is therefore not
@@ -357,7 +482,32 @@ this phase.
   it roughly once an hour, not once every 15 minutes.
 - If PawScout is interrupted at the exact moment between the supplier
   accepting an order and this system saving that order's id, a real supplier
-  order can exist that this system cannot name or find again.
+  order can exist that this system cannot name or find again. What happens
+  next depends on how it was interrupted, and the two cases differ sharply.
+  If the step THROWS, the row is left in `error` and the owner is emailed
+  that the supplier may already hold an order for it, with the order number
+  PawScout gave the supplier (the long Shopify order id, as the runbook
+  describes under the `error` status) to look for there before anything is
+  retried. If the run is KILLED outright, nothing is written anywhere: the
+  row is still `queued`, comes due again once its ten minutes are up, and
+  that run creates a SECOND supplier order for the same Shopify order, unless
+  the supplier happens to reject the repeated order number, which is not
+  verified either way. Nobody is emailed in that second case, because nothing
+  ran to notice it.
+- With create-only OFF, the `record` step is also the step that follows a
+  payment going through. The error email's "the supplier may already hold an
+  order for it" is true there, but it does not say that PawScout may already
+  have PAID that order. Not reachable in create-only mode, which is the only
+  mode this phase proves.
+- Three alerts say an order "was cancelled in Shopify" because a status write
+  was refused on a row that reads `cancelled`. The console's own Cancel button
+  makes a row read that way too, and it cancels nothing in Shopify, so for an
+  order cancelled from the console in the same seconds those two words are
+  wrong. What the owner is told to do is the same either way. One of the
+  three, the email for an order that failed and stayed cancelled, also keeps
+  the ending written for an `error` order ("before anything is retried"),
+  where for a cancelled order the point of looking at the supplier is to
+  cancel whatever is found there.
 - Two deliveries of the exact same Shopify cancellation arriving at the same
   moment can both raise an alert. The result is at most a duplicate email,
   never a duplicate action at the supplier.
