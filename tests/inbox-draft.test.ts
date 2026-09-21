@@ -162,6 +162,29 @@ describe('draftReply', () => {
   });
 });
 
+// Sofia thread (2026-09-20): the customer's own words reach the runtime gate, so
+// a trade decline she never asked for is rewritten before anyone reviews it, and
+// the same decline stands untouched for a customer who did ask for terms.
+describe('draftReply sends a volunteered trade decline back for a rewrite', () => {
+  const decline = { bodyText: 'We are focused on individual retail orders and are not offering wholesale or trade terms at the moment. You are welcome to place individual orders through https://activepaw.co.uk.', confidence: 98, quotesPriceOrOrder: false };
+  const helpful = { bodyText: 'Yes, you can order as many as you need through https://activepaw.co.uk. The delivery cost for the whole basket depends on the number of items and your destination, and it is shown at checkout before payment. Which product do you have in mind?', confidence: 90, quotesPriceOrOrder: false };
+
+  it('rewrites it when the customer only mentioned a quantity', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const ask = 'I have 5 customers who need this product for an event in two weeks. Is it available?';
+    const d = await draftReply(sequenceLlm([decline, helpful]), store, CFG, { ...base, subject: '', conversation: `Customer: ${ask}`, latestMessage: ask });
+    expect(d?.bodyText).not.toMatch(/wholesale|trade terms/i);
+    expect(d?.bodyText).toContain('number of items');
+  });
+
+  it('leaves it alone when the customer asked for wholesale terms', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const ask = 'Can I buy 500 units wholesale?';
+    const d = await draftReply(sequenceLlm([decline, helpful]), store, CFG, { ...base, subject: 'Bulk', conversation: `Customer: ${ask}`, latestMessage: ask });
+    expect(d?.bodyText).toMatch(/not offering wholesale/i);
+  });
+});
+
 describe('draftReply salutation', () => {
   it('opens with the customer first name from the contact record', async () => {
     const store = new TenantStore(env.DB, 'a.myshopify.com');

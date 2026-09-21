@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { hasFillerBookend, countWords, substanceWordCount, affirmsDelivery, statesDayRange, findDraftIssues, refineUntilClean, asksDoYouDeliver, claimsBusinessBiography } from '../src/inbox/draft-quality';
+import { hasFillerBookend, countWords, substanceWordCount, affirmsDelivery, statesDayRange, findDraftIssues, refineUntilClean, asksDoYouDeliver, claimsBusinessBiography, volunteersTradeDecline } from '../src/inbox/draft-quality';
 import { SHARED_SCAFFOLDING } from '../src/inbox/agents/scaffolding';
 
 // The live fabrication this gate exists to catch (Azan's thread, 2026-07-05):
@@ -39,6 +39,39 @@ describe('business-biography wiring (gate + prompt)', () => {
   it('the shared scaffolding forbids business-self facts and prescribes the privacy decline', () => {
     expect(SHARED_SCAFFOLDING).toContain('BUSINESS ITSELF');
     expect(SHARED_SCAFFOLDING).toContain('details about the business are something we keep private');
+  });
+});
+
+// Sofia thread (2026-09-20), verbatim. She never asked for trade terms; the
+// draft declined them anyway and turned a buyer away. Owner rule 2026-09-21: a
+// quantity is a purchase. The prompts now say so, and this gate is the runtime
+// half: a draft that volunteers a trade decline is sent back for a rewrite.
+const SOFIA_ASK =
+  "I have 5 customers who need this product for an event coming up in the next two weeks, and around 30% of my customers are also interested but haven't purchased yet. Since I don't have it in stock, I'm looking for a reliable store to order from. Is it available, and what's the best way to communicate for quick updates?";
+const SOFIA_DECLINE =
+  'Thank you for your enquiry. We are focused on individual retail orders and are not offering wholesale or trade terms at the moment. You are welcome to check the product listing and place individual orders through https://activepaw.co.uk.';
+const SOFIA_GOOD =
+  'Yes, you are welcome to order as many as you need through https://activepaw.co.uk, and the delivery cost for the whole basket depends on the number of items and your destination and is shown at checkout before payment. Which product do you have in mind, so we can check it for you?';
+
+describe('volunteersTradeDecline (a trade decline nobody asked for)', () => {
+  it('flags the live Sofia draft against her own words', () => {
+    expect(volunteersTradeDecline(SOFIA_DECLINE, SOFIA_ASK)).toBe(true);
+  });
+  it('passes the same decline when the customer DID ask for terms', () => {
+    expect(volunteersTradeDecline(SOFIA_DECLINE, 'Can I buy 500 units wholesale?')).toBe(false);
+    expect(volunteersTradeDecline(SOFIA_DECLINE, 'Do you give a discount if I take 40 of them?')).toBe(false);
+    expect(volunteersTradeDecline(SOFIA_DECLINE, 'We are a pet shop, do you have a trade account or a price list for resellers?')).toBe(false);
+  });
+  it('passes a reply that simply helps the buyer order', () => {
+    expect(volunteersTradeDecline(SOFIA_GOOD, SOFIA_ASK)).toBe(false);
+  });
+  it('is silent when the customer text is unknown (nothing to compare with)', () => {
+    expect(volunteersTradeDecline(SOFIA_DECLINE, '')).toBe(false);
+  });
+  it('findDraftIssues raises it only with the customer text in the context', () => {
+    expect(findDraftIssues(SOFIA_DECLINE, { customerText: SOFIA_ASK }).some((i) => i.includes('did not ask for wholesale'))).toBe(true);
+    expect(findDraftIssues(SOFIA_DECLINE).some((i) => i.includes('did not ask for wholesale'))).toBe(false);
+    expect(findDraftIssues(SOFIA_GOOD, { customerText: SOFIA_ASK })).toEqual([]);
   });
 });
 

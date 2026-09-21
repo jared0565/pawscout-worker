@@ -4,7 +4,7 @@ import { env, applyD1Migrations } from 'cloudflare:test';
 import { TenantStore } from '../../src/tenant-store';
 import { LlmClient } from '../../src/llm';
 import { draftReply } from '../../src/inbox/draft';
-import { SHARED_SCAFFOLDING } from '../../src/inbox/agents/scaffolding';
+import { SHARED_SCAFFOLDING, STORE_FACTS } from '../../src/inbox/agents/scaffolding';
 import { DEFAULT_INBOX } from '../../src/inbox/types';
 import type { CategoryAgent, Grounding } from '../../src/inbox/agents/types';
 import { DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, type TenantConfig } from '../../src/types';
@@ -236,6 +236,34 @@ describe('shared scaffolding pitch rule (prove-first)', () => {
   it('tells every agent that store access is never granted and the request code is never shared', () => {
     expect(SHARED_SCAFFOLDING).toContain('collaborator or staff access');
     expect(SHARED_SCAFFOLDING).toContain('collaborator request code');
+  });
+});
+
+// Sofia thread (2026-09-19/20). Asked "if five customers order at the same time,
+// can you fulfil them all?", the drafter answered that fulfilment arrangements
+// and capacity "are kept private": the BUSINESS ITSELF rule swallowed a buying
+// question, and that reply was sent. Owner rule 2026-09-21: a quantity is a
+// purchase. The store facts now say how a quantity is ordered and where its
+// delivery cost appears, and the privacy rule names the carve-out itself,
+// because the shared scaffolding beats every agent's own prompt.
+describe('quantity purchases (shared store facts and the privacy carve-out)', () => {
+  it('store facts say any quantity can be ordered on the website and delivery is priced at checkout by item count', () => {
+    expect(STORE_FACTS).toMatch(/any quantity/i);
+    expect(STORE_FACTS).toMatch(/several orders/i);
+    expect(STORE_FACTS).toMatch(/number of items/i);
+    // the sentence the older shipping test pins is still there, word for word
+    expect(STORE_FACTS).toContain('Shipping cost is calculated by destination');
+    expect(STORE_FACTS).toContain('shown exactly at checkout');
+  });
+  it('store facts forbid reading a quantity as a wholesale request', () => {
+    expect(STORE_FACTS).toMatch(/never treat a quantity[^.]*as a wholesale or trade request/i);
+  });
+  it('the BUSINESS ITSELF rule no longer covers "can you fulfil my order(s)"', () => {
+    expect(SHARED_SCAFFOLDING).toMatch(/whether we can supply or fulfil[^.]*is NOT a question about the business/i);
+    expect(SHARED_SCAFFOLDING).toMatch(/never answer (?:it|one) with the privacy reply/i);
+    // the privacy rule itself stands
+    expect(SHARED_SCAFFOLDING).toContain('BUSINESS ITSELF');
+    expect(SHARED_SCAFFOLDING).toContain('details about the business are something we keep private');
   });
 });
 
