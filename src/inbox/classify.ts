@@ -36,8 +36,12 @@ export async function classifyEmail(
       '"shipping-returns" = a genuine customer question about delivery, shipping cost or time, an order in transit, tracking, or returns/refunds (e.g. "do you ship to the US", "how long to Texas", "can I return this"). ' +
       '"order-status" = a customer asking about a specific order they have placed. ' +
       '"product-question" = a question about a product (sizing, materials, suitability, stock). ' +
-      '"lead" = a shopper with clear intent to BUY from us. ' +
-      '"wholesale-b2b" = a bulk/trade buyer wanting to PURCHASE stock from us. ' +
+      // 2026-09-21 (Sofia thread): "I have 5 customers who need this product, is
+      // it available?" was classified wholesale-b2b and drafted as a trade
+      // decline, though she asked for no terms. Wholesale is a REQUEST FOR TERMS;
+      // a quantity is a purchase.
+      '"lead" = a shopper with clear intent to BUY from us, including someone who wants several units or will place several orders (for friends, clients, their own customers, an event) at the prices on the website. ' +
+      '"wholesale-b2b" = ONLY when the sender ASKS FOR trade terms in their own words: wholesale or trade pricing, a bulk or volume discount, a reseller, stockist or distributor arrangement, a trade account, a price list, or minimum order quantities. A quantity, "my customers" or an event alone is NOT wholesale: with no request for special terms it is "lead" (or "product-question" when what they mainly ask is availability or product detail). ' +
       '"affiliate" = a GENUINE pet-relevant creator/influencer offering to PROMOTE our products to THEIR own pet-owning audience (content, reviews) for a commission - they already have a real audience and want to earn by promoting, not sell us a service. Someone who says they might recommend or mention us without asking to partner, promote us for a commission or work together is NOT affiliate: route by the question they actually ask (a product or delivery question is product-question or shipping-returns; otherwise other). ' +
       '"complaint" = dissatisfaction with us. ' +
       'CRITICAL - cold outreach SELLING US A SERVICE is NOT a customer-service category and NOT affiliate: pitches for marketing, ads, SEO, store/conversion optimisation, website or logo design, "growing your sales", "auditing your store", generating traffic or "X visitors / Y daily sales", or asking to move to WhatsApp - INCLUDING ones that call themselves a "partnership", "collaboration", or "commission" deal. If a real person wrote such a pitch, classify it "other" (we reply with a brief warm decline); if it is automated/bulk/bot junk, classify it "spam". ' +

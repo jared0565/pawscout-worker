@@ -111,12 +111,31 @@ export function claimsBusinessBiography(text: string): boolean {
   return false;
 }
 
+// A trade decline nobody asked for (2026-09-21, the Sofia draft): "I have 5
+// customers who need this product, is it available?" was answered with "we are
+// not offering wholesale or trade terms". Owner rule: a quantity is a purchase.
+// TRADE_ASK is deliberately GENEROUS (any mention of a discount or a better
+// price counts as asking), so this gate only fires when the customer's words
+// hold no request for terms at all; TRADE_TALK is what such a reply looks like.
+const TRADE_ASK =
+  /\b(?:wholesale|trade (?:price|prices|pricing|terms|account|accounts|discount)|discounts?|(?:better|special|cheaper|lower|reduced) (?:price|prices|pricing|rate|rates|deal)|resell(?:er|ers|ing)?|stockists?|distribut(?:or|ors|ion|e)|price ?list|moq|minimum order)\b/i;
+const TRADE_TALK =
+  /\b(?:wholesale|trade (?:terms|pricing|prices|accounts?)|resellers?|bulk discounts?|individual retail (?:orders|buyers))\b/i;
+
+/** True when the reply talks about wholesale or trade terms although the
+ * customer's own words never asked for any. Unknown customer text = false. */
+export function volunteersTradeDecline(replyText: string, customerText: string): boolean {
+  if (!customerText.trim()) return false;
+  return TRADE_TALK.test(replyText) && !TRADE_ASK.test(customerText);
+}
+
 /** Context for the runtime gate: the conciseness ceiling and what the customer
  * actually asked, so the gate can demand a direct answer where one is owed. */
 export interface DraftQualityContext {
   maxWords?: number;        // conciseness ceiling (default 110: warm wrapper + a grounded answer)
   askedDelivery?: boolean;  // customer asked "do you deliver/ship to X" -> require an up-front yes
   priorOutbound?: ReadonlyArray<string | null>; // our earlier replies on this thread (owner rule 2026-09-04: never the same message twice)
+  customerText?: string;    // the customer's open message(s), so a reply can be held against what they actually asked
 }
 
 /** Minimum words of real substance a reply must carry (a warm courtesy wrapper is fine,
@@ -148,6 +167,9 @@ export function findDraftIssues(bodyText: string, ctx: DraftQualityContext = {})
   }
   if (ctx.priorOutbound && ctx.priorOutbound.length > 0 && repeatsPriorOutbound(bodyText, ctx.priorOutbound)) {
     issues.push("This reply repeats a message we already sent on this thread. Never send the same message twice: write a SHORTER reply that acknowledges what they just said and adds only what is new, or points back to the earlier reply in one sentence.");
+  }
+  if (ctx.customerText && volunteersTradeDecline(bodyText, ctx.customerText)) {
+    issues.push("The customer did not ask for wholesale or trade terms, a bulk discount or a reseller arrangement; they want to buy. Remove every mention of wholesale, trade terms, resellers and what we are 'focused on', and do not decline anything. Answer what they asked, say they are welcome to order any quantity through the website, and that the delivery cost for the whole basket depends on the number of items and the destination and is shown at checkout before payment.");
   }
   if (claimsBusinessBiography(bodyText)) {
     issues.push("This reply states facts about the business itself (how long it has been trading, its size, or its customer base). No such fact exists in the grounded store facts, so it is invented. Remove the claim entirely: say warmly that details about the business are something we keep private, and offer help with products or orders instead.");

@@ -41,6 +41,25 @@ describe('classifyEmail', () => {
     expect(system).toMatch(/recommend[^.]*without asking[^.]*is NOT affiliate/i);
   });
 
+  // Sofia thread (2026-09-20): "I have 5 customers who need this product for an
+  // event, is it available?" was classified wholesale-b2b and drafted as a trade
+  // decline. She never asked for terms. Owner rule 2026-09-21: a quantity, "my
+  // customers" or an event is a purchase; wholesale is a REQUEST FOR TERMS.
+  it('tells the classifier that a quantity without a request for trade terms is a purchase, not wholesale', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    let system = '';
+    const fetchImpl = (async (_u: unknown, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? '{}'));
+      system = String((body.messages ?? []).find((m: { role: string }) => m.role === 'system')?.content ?? '');
+      return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ isHuman: true, category: 'lead', intentScore: 85, summary: 's', labels: ['lead'] }) } }], usage: { cost: 0.0001 } }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const llm = new LlmClient({ openrouter: 'test-key' }, fetchImpl);
+    await classifyEmail(llm, store, CFG, { subject: '', body: 'I have 5 customers who need this product for an event. Is it available?', fromEmail: 'sofia@x.com', auth: { spf: 'pass', dkim: 'pass', dmarc: 'pass' } });
+    expect(system).toMatch(/"wholesale-b2b" = ONLY when the sender ASKS FOR/);
+    expect(system).toMatch(/quantity[^.]*is NOT wholesale/i);
+    expect(system).toMatch(/"lead" = [^"]*several (?:units|items)/i);
+  });
+
   it('returns a validated classification and logs usage', async () => {
     const store = new TenantStore(env.DB, 'a.myshopify.com');
     const llm = fakeLlm({ isHuman: true, category: 'lead', intentScore: 85, summary: 'Wants to buy a bed', labels: ['lead', 'product-question'] });

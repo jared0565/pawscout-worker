@@ -341,7 +341,9 @@ export async function draftReply(
   // answer-first check; the salutation is applied once at the end.
   // priorOutbound (owner rule 2026-09-04): a draft that repeats an earlier reply on the
   // thread is an issue the reviser must fix with a shorter, non-repeating reply.
-  const qctx: DraftQualityContext = { maxWords: DRAFT_MAX_WORDS, askedDelivery: asksDoYouDeliver(latest), priorOutbound: input.priorOutbound };
+  // customerText (owner rule 2026-09-21): a trade decline the customer never asked for
+  // is an issue too, and only their own words can show that.
+  const qctx: DraftQualityContext = { maxWords: DRAFT_MAX_WORDS, askedDelivery: asksDoYouDeliver(latest), priorOutbound: input.priorOutbound, customerText: latest };
   const refined = await refineUntilClean(
     result.value,
     (prev, issues) => reviseDraft(llm, store, chain, agent, grounding, guidance, latest, baseUser, prev.bodyText, issues, shippingFact, eventFact, input.recall),
