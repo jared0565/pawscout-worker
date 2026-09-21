@@ -130,18 +130,22 @@ export function volunteersTradeDecline(replyText: string, customerText: string):
 }
 
 // A buyer of several is told where the delivery cost appears (2026-09-21, the
-// first real draft after the fix above): the purchase was welcomed but the one
-// fact the owner had named was dropped, because she had not asked about
-// delivery and the workflow rule says to answer only what was asked. "orders"
-// is plural on purpose: "can I order it in 2 weeks" is a verb, not a quantity.
+// first real draft after the fix above): the purchase was welcomed but the
+// delivery sentence was dropped, because she had not asked about delivery and
+// the workflow rule says to answer only what was asked. "orders" is plural on
+// purpose: "can I order it in 2 weeks" is a verb, not a quantity.
 const QUANTITY_MENTION =
   /\b(?:\d{1,4}|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|twenty|thirty|forty|fifty|hundred|several|multiple|a few|a couple of|dozens?)\b[^.?!\n]{0,40}\b(?:customers?|clients?|orders|units?|pieces?|items?|packs?|people|friends|of (?:them|these|those|it))\b/i;
 
 /** True when the customer's words hold a quantity and the reply never says that
- * delivery for the basket is priced at checkout. The caller decides the lane. */
+ * the delivery cost is shown at checkout: the sentence has to name checkout AND
+ * be about delivery ("pay at checkout" alone is not it). The caller decides the
+ * lane. What the sentence must NOT say is left to the prompts: the live
+ * checkout charges one flat rate per order per origin (measured 2026-09-21), so
+ * the cost never goes up with the quantity ordered. */
 export function owesBasketDelivery(replyText: string, customerText: string): boolean {
   if (!QUANTITY_MENTION.test(customerText)) return false;
-  return !(/\bcheckout\b/i.test(replyText) && /\b(?:number of items|how many items|basket|whole order)\b/i.test(replyText));
+  return !(/\bcheckout\b/i.test(replyText) && /\b(?:deliver(?:y|ies|ed)?|shipping|postage)\b/i.test(replyText));
 }
 
 /** Context for the runtime gate: the conciseness ceiling and what the customer
@@ -185,10 +189,10 @@ export function findDraftIssues(bodyText: string, ctx: DraftQualityContext = {})
     issues.push("This reply repeats a message we already sent on this thread. Never send the same message twice: write a SHORTER reply that acknowledges what they just said and adds only what is new, or points back to the earlier reply in one sentence.");
   }
   if (ctx.customerText && volunteersTradeDecline(bodyText, ctx.customerText)) {
-    issues.push("The customer did not ask for wholesale or trade terms, a bulk discount or a reseller arrangement; they want to buy. Remove every mention of wholesale, trade terms, resellers and what we are 'focused on', and do not decline anything. Answer what they asked, say they are welcome to order any quantity through the website, and that the delivery cost for the whole basket depends on the number of items and the destination and is shown at checkout before payment.");
+    issues.push("The customer did not ask for wholesale or trade terms, a bulk discount or a reseller arrangement; they want to buy. Remove every mention of wholesale, trade terms, resellers and what we are 'focused on', and do not decline anything. Answer what they asked, say they are welcome to order any quantity through the website, and that the delivery cost depends on their destination and what is in the basket and is shown at checkout before payment.");
   }
   if (ctx.buyingLane && ctx.customerText && owesBasketDelivery(bodyText, ctx.customerText)) {
-    issues.push("The customer wants several items or several orders. Keep the reply as it is and add ONE sentence saying that the delivery cost for the whole basket depends on the number of items and the destination, and that the exact total is shown at checkout before payment. Never quote a delivery figure.");
+    issues.push("The customer wants several items or several orders. Keep the reply as it is and add ONE sentence saying that the delivery cost depends on their destination and what is in the basket, and that the exact total for the whole order is shown at checkout before payment. Never quote a delivery figure, and never say the cost goes up with the quantity ordered.");
   }
   if (claimsBusinessBiography(bodyText)) {
     issues.push("This reply states facts about the business itself (how long it has been trading, its size, or its customer base). No such fact exists in the grounded store facts, so it is invented. Remove the claim entirely: say warmly that details about the business are something we keep private, and offer help with products or orders instead.");

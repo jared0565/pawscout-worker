@@ -21,12 +21,19 @@ describe('wholesaleAgent', () => {
     expect(p).toMatch(/never refuse, discourage or turn away a purchase/i);
   });
 
-  it('tells a quantity buyer how to order and where the delivery cost is shown', async () => {
+  // Measured at the live checkout on 2026-09-21 (a China-held item, UK and US
+  // addresses, 1 and 5 units): the delivery line is one flat rate per order per
+  // origin, the same for 1 as for 5. The first version of this prompt said the
+  // cost "depends on the number of items", which is what the supplier charges
+  // us, not what the customer pays. The customer-facing sentence is destination
+  // and basket contents, and the exact total at checkout.
+  it('tells a quantity buyer how to order and where the delivery cost is shown, without claiming it rises per item', async () => {
     const p = wholesaleAgent.promptFragment(await wholesaleAgent.ground({} as any));
     expect(p).toMatch(/any quantity/i);
-    expect(p).toMatch(/number of items/i);
+    expect(p).toMatch(/destination and what is in the basket/i);
     expect(p).toMatch(/shown at checkout before payment/i);
     expect(p).toMatch(/which product/i);
+    expect(p).not.toMatch(/number of items/i);
   });
 
   it('advances the sale like the lead agent does', () => {
