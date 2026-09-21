@@ -255,6 +255,13 @@ describe('quantity purchases (shared store facts and the privacy carve-out)', ()
     expect(STORE_FACTS).toContain('Shipping cost is calculated by destination');
     expect(STORE_FACTS).toContain('shown exactly at checkout');
   });
+  // First real draft after the fix (2026-09-21): the purchase was welcomed but the
+  // delivery sentence was dropped, because the workflow rule says to answer only
+  // what was asked. The facts now say it is part of the answer to "how do I buy".
+  it('store facts say a buyer of several is told about basket delivery even when they did not ask', () => {
+    expect(STORE_FACTS).toMatch(/several items or several orders, always tell them/i);
+    expect(STORE_FACTS).toMatch(/even if they did not ask about delivery/i);
+  });
   it('store facts forbid reading a quantity as a wholesale request', () => {
     expect(STORE_FACTS).toMatch(/never treat a quantity[^.]*as a wholesale or trade request/i);
   });

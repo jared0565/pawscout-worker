@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { hasFillerBookend, countWords, substanceWordCount, affirmsDelivery, statesDayRange, findDraftIssues, refineUntilClean, asksDoYouDeliver, claimsBusinessBiography, volunteersTradeDecline } from '../src/inbox/draft-quality';
+import { hasFillerBookend, countWords, substanceWordCount, affirmsDelivery, statesDayRange, findDraftIssues, refineUntilClean, asksDoYouDeliver, claimsBusinessBiography, volunteersTradeDecline, owesBasketDelivery } from '../src/inbox/draft-quality';
 import { SHARED_SCAFFOLDING } from '../src/inbox/agents/scaffolding';
 
 // The live fabrication this gate exists to catch (Azan's thread, 2026-07-05):
@@ -72,6 +72,40 @@ describe('volunteersTradeDecline (a trade decline nobody asked for)', () => {
     expect(findDraftIssues(SOFIA_DECLINE, { customerText: SOFIA_ASK }).some((i) => i.includes('did not ask for wholesale'))).toBe(true);
     expect(findDraftIssues(SOFIA_DECLINE).some((i) => i.includes('did not ask for wholesale'))).toBe(false);
     expect(findDraftIssues(SOFIA_GOOD, { customerText: SOFIA_ASK })).toEqual([]);
+  });
+});
+
+// Same thread, first draft from the REAL model after the fix went live
+// (2026-09-21 07:48Z), verbatim: it welcomed the purchase but left out the one
+// fact the owner had named, that delivery for a basket depends on the number of
+// items and is shown at checkout, because she had not asked about delivery and
+// the workflow rule says to answer only what was asked. A buyer of several is
+// owed that sentence; the gate asks for it on the buying lanes only, so "I
+// placed 2 orders last week, where are they?" never gets it.
+const SOFIA_NO_DELIVERY =
+  'Thank you for your enquiry! Which product do you mean? The product page shows its current availability, and you are welcome to order any quantity the website allows through https://activepaw.co.uk. We keep conversations on email rather than WhatsApp, so please contact contact@activepaw.co.uk or reply here for updates, and the team replies within one working day.';
+
+describe('owesBasketDelivery (a buyer of several is told where the delivery cost appears)', () => {
+  it('flags the live draft that welcomed five but never mentioned checkout', () => {
+    expect(owesBasketDelivery(SOFIA_NO_DELIVERY, SOFIA_ASK)).toBe(true);
+  });
+  it('passes a reply that says delivery depends on the number of items and is shown at checkout', () => {
+    expect(owesBasketDelivery(SOFIA_GOOD, SOFIA_ASK)).toBe(false);
+  });
+  it('reads a quantity in words, in digits, and "several"', () => {
+    expect(owesBasketDelivery(SOFIA_NO_DELIVERY, 'If five customers from the same location place orders at the same time, can you fulfil them?')).toBe(true);
+    expect(owesBasketDelivery(SOFIA_NO_DELIVERY, 'I would like to buy 12 of these for my club.')).toBe(true);
+    expect(owesBasketDelivery(SOFIA_NO_DELIVERY, 'Can I order several units for an event?')).toBe(true);
+  });
+  it('asks nothing of a reply to a customer who mentioned no quantity', () => {
+    expect(owesBasketDelivery(SOFIA_NO_DELIVERY, 'Is the large dog bed available?')).toBe(false);
+    expect(owesBasketDelivery(SOFIA_NO_DELIVERY, '')).toBe(false);
+  });
+  it('findDraftIssues raises it on a buying lane only', () => {
+    expect(findDraftIssues(SOFIA_NO_DELIVERY, { customerText: SOFIA_ASK, buyingLane: true }).some((i) => i.includes('number of items'))).toBe(true);
+    expect(findDraftIssues(SOFIA_NO_DELIVERY, { customerText: SOFIA_ASK, buyingLane: false }).some((i) => i.includes('number of items'))).toBe(false);
+    expect(findDraftIssues(SOFIA_NO_DELIVERY, { customerText: SOFIA_ASK }).some((i) => i.includes('number of items'))).toBe(false);
+    expect(findDraftIssues(SOFIA_GOOD, { customerText: SOFIA_ASK, buyingLane: true })).toEqual([]);
   });
 });
 

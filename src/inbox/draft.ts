@@ -11,6 +11,8 @@ import { eventFacts } from './event-facts';
 import type { AdminGraphql } from '../shopify-admin';
 
 const DRAFT_MAX_WORDS = 110; // conciseness ceiling: a warm courtesy wrapper + a grounded answer
+// Lanes that meet buyers (owner rule 2026-09-21): the basket delivery sentence is asked of these only.
+const BUYING_LANES: ReadonlySet<string> = new Set(['lead', 'wholesale-b2b', 'product-question']);
 
 function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
@@ -343,7 +345,9 @@ export async function draftReply(
   // thread is an issue the reviser must fix with a shorter, non-repeating reply.
   // customerText (owner rule 2026-09-21): a trade decline the customer never asked for
   // is an issue too, and only their own words can show that.
-  const qctx: DraftQualityContext = { maxWords: DRAFT_MAX_WORDS, askedDelivery: asksDoYouDeliver(latest), priorOutbound: input.priorOutbound, customerText: latest };
+  // buyingLane: a buyer of several is owed the basket delivery sentence, but only on the
+  // lanes that meet buyers ("I placed 2 orders last week, where are they?" is not one).
+  const qctx: DraftQualityContext = { maxWords: DRAFT_MAX_WORDS, askedDelivery: asksDoYouDeliver(latest), priorOutbound: input.priorOutbound, customerText: latest, buyingLane: BUYING_LANES.has(agent.category) };
   const refined = await refineUntilClean(
     result.value,
     (prev, issues) => reviseDraft(llm, store, chain, agent, grounding, guidance, latest, baseUser, prev.bodyText, issues, shippingFact, eventFact, input.recall),

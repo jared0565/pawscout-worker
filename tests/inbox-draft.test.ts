@@ -185,6 +185,34 @@ describe('draftReply sends a volunteered trade decline back for a rewrite', () =
   });
 });
 
+// Same thread, after the first fix went live: the real model welcomed the five
+// but left out where the delivery cost appears. On a buying lane the gate sends
+// that back; on a service lane a quantity in the text asks nothing of the reply.
+describe('draftReply asks a buying-lane reply to a buyer of several for the basket delivery sentence', () => {
+  const noDelivery = { bodyText: 'Which product do you mean? The product page shows its current availability, and you are welcome to order any quantity the website allows through https://activepaw.co.uk.', confidence: 99, quotesPriceOrOrder: false };
+  const withDelivery = { bodyText: 'Which product do you mean? You are welcome to order any quantity through https://activepaw.co.uk, and the delivery cost for the whole basket depends on the number of items and your destination and is shown at checkout before payment.', confidence: 95, quotesPriceOrOrder: false };
+  const ask = 'I have 5 customers who need this product for an event in two weeks. Is it available?';
+
+  it('rewrites it on the lead lane', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const d = await draftReply(sequenceLlm([noDelivery, withDelivery]), store, CFG, { agent: { ...stubAgent, category: 'lead' }, grounding: GROUNDING, subject: '', conversation: `Customer: ${ask}`, latestMessage: ask });
+    expect(d?.bodyText).toContain('number of items');
+  });
+
+  it('rewrites it on the wholesale lane, where the Sofia thread is filed', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const d = await draftReply(sequenceLlm([noDelivery, withDelivery]), store, CFG, { agent: { ...stubAgent, category: 'wholesale-b2b' }, grounding: GROUNDING, subject: '', conversation: `Customer: ${ask}`, latestMessage: ask });
+    expect(d?.bodyText).toContain('number of items');
+  });
+
+  it('leaves a service-lane reply alone even when the text holds a quantity', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const status = 'I placed 2 orders last week, where are they?';
+    const d = await draftReply(sequenceLlm([noDelivery, withDelivery]), store, CFG, { agent: { ...stubAgent, category: 'order-status' }, grounding: GROUNDING, subject: '', conversation: `Customer: ${status}`, latestMessage: status });
+    expect(d?.bodyText).not.toContain('number of items');
+  });
+});
+
 describe('draftReply salutation', () => {
   it('opens with the customer first name from the contact record', async () => {
     const store = new TenantStore(env.DB, 'a.myshopify.com');

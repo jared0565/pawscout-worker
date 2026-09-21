@@ -129,6 +129,21 @@ export function volunteersTradeDecline(replyText: string, customerText: string):
   return TRADE_TALK.test(replyText) && !TRADE_ASK.test(customerText);
 }
 
+// A buyer of several is told where the delivery cost appears (2026-09-21, the
+// first real draft after the fix above): the purchase was welcomed but the one
+// fact the owner had named was dropped, because she had not asked about
+// delivery and the workflow rule says to answer only what was asked. "orders"
+// is plural on purpose: "can I order it in 2 weeks" is a verb, not a quantity.
+const QUANTITY_MENTION =
+  /\b(?:\d{1,4}|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|twenty|thirty|forty|fifty|hundred|several|multiple|a few|a couple of|dozens?)\b[^.?!\n]{0,40}\b(?:customers?|clients?|orders|units?|pieces?|items?|packs?|people|friends|of (?:them|these|those|it))\b/i;
+
+/** True when the customer's words hold a quantity and the reply never says that
+ * delivery for the basket is priced at checkout. The caller decides the lane. */
+export function owesBasketDelivery(replyText: string, customerText: string): boolean {
+  if (!QUANTITY_MENTION.test(customerText)) return false;
+  return !(/\bcheckout\b/i.test(replyText) && /\b(?:number of items|how many items|basket|whole order)\b/i.test(replyText));
+}
+
 /** Context for the runtime gate: the conciseness ceiling and what the customer
  * actually asked, so the gate can demand a direct answer where one is owed. */
 export interface DraftQualityContext {
@@ -136,6 +151,7 @@ export interface DraftQualityContext {
   askedDelivery?: boolean;  // customer asked "do you deliver/ship to X" -> require an up-front yes
   priorOutbound?: ReadonlyArray<string | null>; // our earlier replies on this thread (owner rule 2026-09-04: never the same message twice)
   customerText?: string;    // the customer's open message(s), so a reply can be held against what they actually asked
+  buyingLane?: boolean;     // the thread sits on a lane that meets buyers (lead, wholesale, product question)
 }
 
 /** Minimum words of real substance a reply must carry (a warm courtesy wrapper is fine,
@@ -170,6 +186,9 @@ export function findDraftIssues(bodyText: string, ctx: DraftQualityContext = {})
   }
   if (ctx.customerText && volunteersTradeDecline(bodyText, ctx.customerText)) {
     issues.push("The customer did not ask for wholesale or trade terms, a bulk discount or a reseller arrangement; they want to buy. Remove every mention of wholesale, trade terms, resellers and what we are 'focused on', and do not decline anything. Answer what they asked, say they are welcome to order any quantity through the website, and that the delivery cost for the whole basket depends on the number of items and the destination and is shown at checkout before payment.");
+  }
+  if (ctx.buyingLane && ctx.customerText && owesBasketDelivery(bodyText, ctx.customerText)) {
+    issues.push("The customer wants several items or several orders. Keep the reply as it is and add ONE sentence saying that the delivery cost for the whole basket depends on the number of items and the destination, and that the exact total is shown at checkout before payment. Never quote a delivery figure.");
   }
   if (claimsBusinessBiography(bodyText)) {
     issues.push("This reply states facts about the business itself (how long it has been trading, its size, or its customer base). No such fact exists in the grounded store facts, so it is invented. Remove the claim entirely: say warmly that details about the business are something we keep private, and offer help with products or orders instead.");
