@@ -17,6 +17,10 @@ export const STORE_FACTS =
   // quantity is bought, so every agent improvised. Owner rule: a quantity is a
   // purchase, and its delivery cost is whatever checkout shows for the basket.
   'Ordering a quantity: a customer can order any quantity of an item, or place several orders, through the website at the prices shown there; whatever quantity the website lets them add to the basket can be ordered, and the product page shows whether an item is available. Never refuse, discourage or turn away a purchase because of its size, and never treat a quantity, several buyers or an event as a wholesale or trade request unless the customer asks for trade terms, a bulk discount or a reseller arrangement in their own words. ' +
+  // Same day, first real draft after the change: the purchase was welcomed but
+  // this sentence was dropped, because the workflow rule says to answer only
+  // what was asked. It is part of the answer to "how do I buy several".
+  'When a customer wants several items or several orders, always tell them that the delivery cost for the whole basket depends on the number of items and the destination and is shown at checkout before payment, even if they did not ask about delivery: it is part of the answer to how they can buy. ' +
   'Returns: 14 days to change your mind on unused items, and 30 days if an item arrives faulty, damaged, or incorrect. ' +
   'Do not invent specific product prices, shipping figures, delivery dates, discounts, or stock promises.';
 
