@@ -11,7 +11,11 @@ export const STORE_FACTS =
   'Orders are fulfilled through our supplier network. Never claim or imply Active Paw ships or dispatches from its own UK warehouse, and never name the dispatch country. ' +
   'Delivery time varies by item and destination; we email a tracking link when an order is dispatched. Do not state a specific delivery time or date unless it is provided to you as grounded facts. ' +
   'Never tell a customer we cannot ship to their country; if you do not have the exact rate, say we can ship there and offer to confirm the cost and timeframe. ' +
-  'Shipping cost is calculated by destination and the number of items in the order, and is always shown exactly at checkout before payment. Never state a specific shipping figure or a flat published rate; if the customer asks about cost, say it is calculated by their destination and the number of items, and shown at checkout before payment. ' +
+  // Measured at the live checkout 2026-09-21 (a China-held item, UK and US
+  // addresses, 1 and 5 units): ONE flat delivery rate per order per origin, the
+  // same for 1 as for 5. A per-item cost was the supplier's charge to us and
+  // stood here for a day; it is not what the customer pays.
+  'Shipping cost is calculated by destination and what is in the order, and is always shown exactly at checkout before payment. Never state a specific shipping figure or a flat published rate, and never say the delivery cost goes up with the quantity ordered; if the customer asks about cost, say it depends on their destination and what is in their basket, and is shown at checkout before payment. ' +
   // 2026-09-21 (Sofia thread): a buyer of five was first told our fulfilment
   // "is kept private" and then declined as wholesale. No fact said how a
   // quantity is bought, so every agent improvised. Owner rule: a quantity is a
@@ -20,7 +24,7 @@ export const STORE_FACTS =
   // Same day, first real draft after the change: the purchase was welcomed but
   // this sentence was dropped, because the workflow rule says to answer only
   // what was asked. It is part of the answer to "how do I buy several".
-  'When a customer wants several items or several orders, always tell them that the delivery cost for the whole basket depends on the number of items and the destination and is shown at checkout before payment, even if they did not ask about delivery: it is part of the answer to how they can buy. ' +
+  'When a customer wants several items or several orders, always tell them that the delivery cost depends on their destination and what is in the basket, and that the exact total for the whole order is shown at checkout before payment, even if they did not ask about delivery: it is part of the answer to how they can buy. ' +
   'Returns: 14 days to change your mind on unused items, and 30 days if an item arrives faulty, damaged, or incorrect. ' +
   'Do not invent specific product prices, shipping figures, delivery dates, discounts, or stock promises.';
 

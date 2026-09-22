@@ -247,10 +247,15 @@ describe('shared scaffolding pitch rule (prove-first)', () => {
 // delivery cost appears, and the privacy rule names the carve-out itself,
 // because the shared scaffolding beats every agent's own prompt.
 describe('quantity purchases (shared store facts and the privacy carve-out)', () => {
-  it('store facts say any quantity can be ordered on the website and delivery is priced at checkout by item count', () => {
+  // Measured at the live checkout on 2026-09-21: one flat delivery rate per order
+  // per origin, the same for 1 unit as for 5, FREE to the UK for a China-held
+  // item. "The number of items" was the supplier's cost to us, never the
+  // customer's line, and it is gone from every fact.
+  it('store facts say any quantity can be ordered on the website and delivery depends on destination and basket, priced at checkout', () => {
     expect(STORE_FACTS).toMatch(/any quantity/i);
     expect(STORE_FACTS).toMatch(/several orders/i);
-    expect(STORE_FACTS).toMatch(/number of items/i);
+    expect(STORE_FACTS).toMatch(/destination and what is in the (?:order|basket)/i);
+    expect(STORE_FACTS).not.toMatch(/number of items/i);
     // the sentence the older shipping test pins is still there, word for word
     expect(STORE_FACTS).toContain('Shipping cost is calculated by destination');
     expect(STORE_FACTS).toContain('shown exactly at checkout');

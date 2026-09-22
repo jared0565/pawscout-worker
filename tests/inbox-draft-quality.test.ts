@@ -50,8 +50,11 @@ const SOFIA_ASK =
   "I have 5 customers who need this product for an event coming up in the next two weeks, and around 30% of my customers are also interested but haven't purchased yet. Since I don't have it in stock, I'm looking for a reliable store to order from. Is it available, and what's the best way to communicate for quick updates?";
 const SOFIA_DECLINE =
   'Thank you for your enquiry. We are focused on individual retail orders and are not offering wholesale or trade terms at the moment. You are welcome to check the product listing and place individual orders through https://activepaw.co.uk.';
+// The corrected sentence (2026-09-21, measured at the live checkout: one flat
+// delivery rate per order, the same for 1 unit as for 5): destination and
+// basket contents, exact total at checkout. Never "the number of items".
 const SOFIA_GOOD =
-  'Yes, you are welcome to order as many as you need through https://activepaw.co.uk, and the delivery cost for the whole basket depends on the number of items and your destination and is shown at checkout before payment. Which product do you have in mind, so we can check it for you?';
+  'Yes, you are welcome to order as many as you need through https://activepaw.co.uk. The delivery cost depends on your destination and what is in the basket, and the exact total for the whole order is shown at checkout before payment. Which product do you have in mind, so we can check it for you?';
 
 describe('volunteersTradeDecline (a trade decline nobody asked for)', () => {
   it('flags the live Sofia draft against her own words', () => {
@@ -69,7 +72,9 @@ describe('volunteersTradeDecline (a trade decline nobody asked for)', () => {
     expect(volunteersTradeDecline(SOFIA_DECLINE, '')).toBe(false);
   });
   it('findDraftIssues raises it only with the customer text in the context', () => {
-    expect(findDraftIssues(SOFIA_DECLINE, { customerText: SOFIA_ASK }).some((i) => i.includes('did not ask for wholesale'))).toBe(true);
+    const issues = findDraftIssues(SOFIA_DECLINE, { customerText: SOFIA_ASK });
+    expect(issues.some((i) => i.includes('did not ask for wholesale'))).toBe(true);
+    expect(issues.join(' ')).not.toMatch(/number of items/i);
     expect(findDraftIssues(SOFIA_DECLINE).some((i) => i.includes('did not ask for wholesale'))).toBe(false);
     expect(findDraftIssues(SOFIA_GOOD, { customerText: SOFIA_ASK })).toEqual([]);
   });
@@ -89,8 +94,14 @@ describe('owesBasketDelivery (a buyer of several is told where the delivery cost
   it('flags the live draft that welcomed five but never mentioned checkout', () => {
     expect(owesBasketDelivery(SOFIA_NO_DELIVERY, SOFIA_ASK)).toBe(true);
   });
-  it('passes a reply that says delivery depends on the number of items and is shown at checkout', () => {
+  it('passes a reply that says the delivery cost is shown at checkout', () => {
     expect(owesBasketDelivery(SOFIA_GOOD, SOFIA_ASK)).toBe(false);
+  });
+  it('is not satisfied by "checkout" alone: the sentence has to be about delivery', () => {
+    const checkoutOnly = 'Which product do you mean? You can order any quantity through https://activepaw.co.uk and pay at checkout.';
+    expect(owesBasketDelivery(checkoutOnly, SOFIA_ASK)).toBe(true);
+    const deliveryOnly = 'Which product do you mean? Delivery depends on where you are and what you order.';
+    expect(owesBasketDelivery(deliveryOnly, SOFIA_ASK)).toBe(true);
   });
   it('reads a quantity in words, in digits, and "several"', () => {
     expect(owesBasketDelivery(SOFIA_NO_DELIVERY, 'If five customers from the same location place orders at the same time, can you fulfil them?')).toBe(true);
@@ -101,10 +112,12 @@ describe('owesBasketDelivery (a buyer of several is told where the delivery cost
     expect(owesBasketDelivery(SOFIA_NO_DELIVERY, 'Is the large dog bed available?')).toBe(false);
     expect(owesBasketDelivery(SOFIA_NO_DELIVERY, '')).toBe(false);
   });
-  it('findDraftIssues raises it on a buying lane only', () => {
-    expect(findDraftIssues(SOFIA_NO_DELIVERY, { customerText: SOFIA_ASK, buyingLane: true }).some((i) => i.includes('number of items'))).toBe(true);
-    expect(findDraftIssues(SOFIA_NO_DELIVERY, { customerText: SOFIA_ASK, buyingLane: false }).some((i) => i.includes('number of items'))).toBe(false);
-    expect(findDraftIssues(SOFIA_NO_DELIVERY, { customerText: SOFIA_ASK }).some((i) => i.includes('number of items'))).toBe(false);
+  it('findDraftIssues raises it on a buying lane only, and never tells the reviser that delivery rises per item', () => {
+    const issues = findDraftIssues(SOFIA_NO_DELIVERY, { customerText: SOFIA_ASK, buyingLane: true });
+    expect(issues.some((i) => i.includes('add ONE sentence'))).toBe(true);
+    expect(issues.join(' ')).not.toMatch(/number of items/i);
+    expect(findDraftIssues(SOFIA_NO_DELIVERY, { customerText: SOFIA_ASK, buyingLane: false }).some((i) => i.includes('add ONE sentence'))).toBe(false);
+    expect(findDraftIssues(SOFIA_NO_DELIVERY, { customerText: SOFIA_ASK }).some((i) => i.includes('add ONE sentence'))).toBe(false);
     expect(findDraftIssues(SOFIA_GOOD, { customerText: SOFIA_ASK, buyingLane: true })).toEqual([]);
   });
 });

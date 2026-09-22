@@ -167,14 +167,14 @@ describe('draftReply', () => {
 // the same decline stands untouched for a customer who did ask for terms.
 describe('draftReply sends a volunteered trade decline back for a rewrite', () => {
   const decline = { bodyText: 'We are focused on individual retail orders and are not offering wholesale or trade terms at the moment. You are welcome to place individual orders through https://activepaw.co.uk.', confidence: 98, quotesPriceOrOrder: false };
-  const helpful = { bodyText: 'Yes, you can order as many as you need through https://activepaw.co.uk. The delivery cost for the whole basket depends on the number of items and your destination, and it is shown at checkout before payment. Which product do you have in mind?', confidence: 90, quotesPriceOrOrder: false };
+  const helpful = { bodyText: 'Yes, you can order as many as you need through https://activepaw.co.uk. The delivery cost depends on your destination and what is in the basket, and the exact total is shown at checkout before payment. Which product do you have in mind?', confidence: 90, quotesPriceOrOrder: false };
 
   it('rewrites it when the customer only mentioned a quantity', async () => {
     const store = new TenantStore(env.DB, 'a.myshopify.com');
     const ask = 'I have 5 customers who need this product for an event in two weeks. Is it available?';
     const d = await draftReply(sequenceLlm([decline, helpful]), store, CFG, { ...base, subject: '', conversation: `Customer: ${ask}`, latestMessage: ask });
     expect(d?.bodyText).not.toMatch(/wholesale|trade terms/i);
-    expect(d?.bodyText).toContain('number of items');
+    expect(d?.bodyText).toContain('shown at checkout');
   });
 
   it('leaves it alone when the customer asked for wholesale terms', async () => {
@@ -190,26 +190,28 @@ describe('draftReply sends a volunteered trade decline back for a rewrite', () =
 // that back; on a service lane a quantity in the text asks nothing of the reply.
 describe('draftReply asks a buying-lane reply to a buyer of several for the basket delivery sentence', () => {
   const noDelivery = { bodyText: 'Which product do you mean? The product page shows its current availability, and you are welcome to order any quantity the website allows through https://activepaw.co.uk.', confidence: 99, quotesPriceOrOrder: false };
-  const withDelivery = { bodyText: 'Which product do you mean? You are welcome to order any quantity through https://activepaw.co.uk, and the delivery cost for the whole basket depends on the number of items and your destination and is shown at checkout before payment.', confidence: 95, quotesPriceOrOrder: false };
+  // The added sentence is the corrected one (measured 2026-09-21: one flat delivery
+  // rate per order, the same for 1 unit as for 5), never "the number of items".
+  const withDelivery = { bodyText: 'Which product do you mean? You are welcome to order any quantity through https://activepaw.co.uk. The delivery cost depends on your destination and what is in the basket, and the exact total is shown at checkout before payment.', confidence: 95, quotesPriceOrOrder: false };
   const ask = 'I have 5 customers who need this product for an event in two weeks. Is it available?';
 
   it('rewrites it on the lead lane', async () => {
     const store = new TenantStore(env.DB, 'a.myshopify.com');
     const d = await draftReply(sequenceLlm([noDelivery, withDelivery]), store, CFG, { agent: { ...stubAgent, category: 'lead' }, grounding: GROUNDING, subject: '', conversation: `Customer: ${ask}`, latestMessage: ask });
-    expect(d?.bodyText).toContain('number of items');
+    expect(d?.bodyText).toContain('shown at checkout');
   });
 
   it('rewrites it on the wholesale lane, where the Sofia thread is filed', async () => {
     const store = new TenantStore(env.DB, 'a.myshopify.com');
     const d = await draftReply(sequenceLlm([noDelivery, withDelivery]), store, CFG, { agent: { ...stubAgent, category: 'wholesale-b2b' }, grounding: GROUNDING, subject: '', conversation: `Customer: ${ask}`, latestMessage: ask });
-    expect(d?.bodyText).toContain('number of items');
+    expect(d?.bodyText).toContain('shown at checkout');
   });
 
   it('leaves a service-lane reply alone even when the text holds a quantity', async () => {
     const store = new TenantStore(env.DB, 'a.myshopify.com');
     const status = 'I placed 2 orders last week, where are they?';
     const d = await draftReply(sequenceLlm([noDelivery, withDelivery]), store, CFG, { agent: { ...stubAgent, category: 'order-status' }, grounding: GROUNDING, subject: '', conversation: `Customer: ${status}`, latestMessage: status });
-    expect(d?.bodyText).not.toContain('number of items');
+    expect(d?.bodyText).not.toContain('shown at checkout');
   });
 });
 
