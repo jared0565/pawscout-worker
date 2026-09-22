@@ -7,10 +7,23 @@ import { DEFAULT_GATES, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_AD
 import type { CjClient, CjDetail } from '../src/cj';
 import type { AdminGraphql } from '../src/shopify-admin';
 
-beforeEach(async () => { await applyD1Migrations(env.DB, env.TEST_MIGRATIONS); });
-
 const SHOP = 'a.myshopify.com';
 const SHOP2 = 'b.myshopify.com';
+
+/** A synced CJ route (the nightly matrix row the delivery profiles and the
+ *  baked-in freight are priced from). The order pipeline counter-checks the
+ *  live basket quote against `usd` per unit of this row. */
+async function seedRoute(store: TenantStore, from: string, to: string, usd: number | null) {
+  await store.upsertLogisticsRoute({ from, to, channel: 'CJPacket', transitMin: 8, transitMax: 12, agingRaw: '8-12', repVid: 'rep', freightCostUsd: usd });
+}
+beforeEach(async () => {
+  await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
+  // Every seeded order below ships CN->GB unless a test says otherwise, and
+  // the default fake quotes USD 2 for the basket: the same figure as the
+  // synced route, so the counter-check passes unless a test moves one side.
+  await seedRoute(new TenantStore(env.DB, SHOP), 'CN', 'GB', 2);
+  await seedRoute(new TenantStore(env.DB, SHOP2), 'CN', 'GB', 2);
+});
 function cfg(mode: 'manual' | 'pawscout' | 'cj', createOnly = false): TenantConfig {
   return { collectionMap: {}, gates: DEFAULT_GATES, pricing: DEFAULT_PRICING, floors: DEFAULT_FLOORS, llm: DEFAULT_LLM, addons: DEFAULT_ADDONS, fulfil: { mode, createOnly }, inbox: DEFAULT_INBOX, target: 12 };
 }
@@ -35,7 +48,7 @@ async function seedOrder(store: TenantStore, id: string, lineItems: unknown[], e
 }
 function fakeCj(spy: { create: unknown[]; pay: string[] }, over: Partial<Record<string, unknown>> = {}): CjClient {
   return {
-    freightEstimate: async () => ({ priceUsd: 2, days: '8-12', name: 'CJPacket' }),
+    freightForBasket: async () => ({ priceUsd: 2, days: '8-12', name: 'CJPacket' }),
     detail: async () => null, // live-lookup fallback; overridden per-test
     createOrder: async (input: { orderNumber: string }) => { spy.create.push(input); return { orderId: 'CJORD-' + input.orderNumber, orderNum: input.orderNumber }; },
     payBalance: async (id: string) => { spy.pay.push(id); },
@@ -942,14 +955,15 @@ describe('Stage-B live-order gate (2026-09-19: readOrderGate/decideGate, fetched
     expect(events.filter((e) => e.kind === 'gate-held')).toHaveLength(1); // no second hold
   });
 
-  it('a happy createOnly run leaves the trail: gate-passed, stock-ok, supplier-order-created, awaiting-payment', async () => {
+  it('a happy createOnly run leaves the trail: gate-passed, stock-ok, freight-quoted, supplier-order-created, awaiting-payment', async () => {
     const store = new TenantStore(env.DB, SHOP);
     await seedWarehouse(store, 'CJ1', 'S1', 'v1');
     await seedOrder(store, 'O1', [{ sku: 'S1', quantity: 1, cjPid: 'CJ1' }]);
     const r = await processDueOrders(store, fakeCj({ create: [], pay: [] }), liveAdmin(), cfg('pawscout', true));
     expect(r).toMatchObject({ awaiting: 1 });
     const events = await store.listOrderEvents('O1');
-    expect(events.map((e) => e.kind)).toEqual(['gate-passed', 'stock-ok', 'supplier-order-created', 'awaiting-payment']);
+    expect(events.map((e) => e.kind)).toEqual(['gate-passed', 'stock-ok', 'freight-quoted', 'supplier-order-created', 'awaiting-payment']);
+    expect(events[2].detail).toBe('CN->GB, 1 unit: live USD 2.00 via CJPacket (8-12 days); allowed for USD 2.00');
   });
 
   it('a happy paying run writes a paid event and ends submitted', async () => {
@@ -2106,5 +2120,162 @@ describe('recheckUnsettledSupplierOrders: unsettled supplier orders are re-read 
     expect(checkedCounts.sort((a, b) => a - b)).toEqual([5, 10, 10]);
     expect(seenIds).toHaveLength(25);
     expect(new Set(seenIds).size).toBe(25); // every row read exactly once - none starved, none repeated
+  });
+});
+
+// Owner rule 2026-09-22: freight is ALWAYS counter-checked against live CJ data
+// before an order is booked. Until then the pipeline quoted ONE unit of the
+// FIRST line to the DEFAULT destination (GB) whatever the order was, passed that
+// channel name to the supplier, and never compared the figure with anything.
+describe('live freight counter-check before the supplier order', () => {
+  const US_ADDRESS = { ...ADDRESS, city: 'Austin', province: 'TX', zip: '73301', countryCode: 'US' };
+  const US_LIVE = { shippingAddress: { ...(LIVE_ORDER.shippingAddress as Record<string, unknown>), city: 'Austin', province: 'TX', zip: '73301', countryCodeV2: 'US' } };
+  type BasketCall = { products: { vid: string; quantity: number }[]; from: string; to: string };
+  function quoting(spy: { create: unknown[]; pay: string[] }, calls: BasketCall[], answer: () => Promise<{ priceUsd: number; days: string; name: string } | null>) {
+    return fakeCj(spy, {
+      freightForBasket: async (products: { vid: string; quantity: number }[], from: string, to: string) => { calls.push({ products, from, to }); return answer(); },
+      freightEstimate: async () => { throw new Error('the single-unit default-destination quote must not be used by the pipeline'); }
+    });
+  }
+
+  it("quotes the WHOLE basket to the order's OWN destination, books that channel, and records the live figure on the trail", async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedWarehouse(store, 'CJ1', 'S1', 'v1');
+    await seedWarehouse(store, 'CJ2', 'S2', 'v2');
+    await seedRoute(store, 'CN', 'US', 5.5);
+    await seedOrder(store, 'O1', [{ sku: 'S1', quantity: 3, cjPid: 'CJ1' }, { sku: 'S2', quantity: 1, cjPid: 'CJ2' }], { addressJson: JSON.stringify(US_ADDRESS) });
+    const spy = { create: [] as any[], pay: [] as string[] };
+    const calls: BasketCall[] = [];
+    const cj = quoting(spy, calls, async () => ({ priceUsd: 9.8, days: '12-20', name: 'Economy' }));
+    const r = await processDueOrders(store, cj, liveAdmin({ order: US_LIVE }), cfg('pawscout'));
+    expect(r).toMatchObject({ submitted: 1, held: 0, errored: 0 });
+    expect(calls).toEqual([{ products: [{ vid: 'v1', quantity: 3 }, { vid: 'v2', quantity: 1 }], from: 'CN', to: 'US' }]);
+    expect(spy.create[0].logisticName).toBe('Economy');
+    expect(spy.create[0].address.countryCode).toBe('US');
+    const quoted = (await store.listOrderEvents('O1')).find((e) => e.kind === 'freight-quoted');
+    expect(quoted?.detail).toBe('CN->US, 4 units: live USD 9.80 via Economy (12-20 days); allowed for USD 22.00');
+  });
+
+  it('holds as freight-mismatch, books nothing and tells the owner when the live supplier freight exceeds what was allowed for', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedWarehouse(store, 'CJ1', 'S1', 'v1');
+    await seedRoute(store, 'CN', 'US', 5.5);
+    await seedOrder(store, 'O1', [{ sku: 'S1', quantity: 4, cjPid: 'CJ1' }], { addressJson: JSON.stringify(US_ADDRESS) });
+    const spy = { create: [] as unknown[], pay: [] as string[] };
+    const alerts: { subject: string; text: string }[] = [];
+    // allowed = 5.5 x 4 = 22.00; the hold line is 25% + USD 1 above it = 28.50
+    const cj = quoting(spy, [], async () => ({ priceUsd: 40, days: '12-20', name: 'Economy' }));
+    const r = await processDueOrders(store, cj, liveAdmin({ order: US_LIVE }), cfg('pawscout'), {
+      alert: async (subject, text) => { alerts.push({ subject, text }); return 'sent'; }
+    });
+    expect(r).toMatchObject({ submitted: 0, held: 1, errored: 0 });
+    expect(spy.create).toHaveLength(0);
+    expect(spy.pay).toHaveLength(0);
+    const o = await store.getOrder('O1');
+    expect(o?.status).toBe('held');
+    expect(JSON.parse(o!.hold_reasons!)).toEqual(['freight-mismatch']);
+    const events = await store.listOrderEvents('O1');
+    expect(events.find((e) => e.kind === 'gate-held')?.detail).toBe('freight-mismatch: CN->US, 4 units: live USD 40.00 via Economy (12-20 days); allowed for USD 22.00');
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].subject).toBe("Order #O1: the supplier's delivery cost is above what was allowed for");
+    expect(alerts[0].text).toBe('Order #O1 is held. The supplier quotes USD 40.00 (Economy, 12-20 days) to deliver its 4 units CN->US, against USD 22.00 allowed for from the synced rate. Nothing has been sent to the supplier. Release the order in the console to book it at the live cost, or cancel it.');
+  });
+
+  it('a live figure inside the tolerance passes: 25% plus USD 1 above the allowed figure', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedWarehouse(store, 'CJ1', 'S1', 'v1');
+    await seedRoute(store, 'CN', 'US', 5.5);
+    await seedOrder(store, 'O1', [{ sku: 'S1', quantity: 4, cjPid: 'CJ1' }], { addressJson: JSON.stringify(US_ADDRESS) });
+    const spy = { create: [] as unknown[], pay: [] as string[] };
+    const cj = quoting(spy, [], async () => ({ priceUsd: 28.5, days: '12-20', name: 'Economy' }));
+    const r = await processDueOrders(store, cj, liveAdmin({ order: US_LIVE }), cfg('pawscout'));
+    expect(r).toMatchObject({ submitted: 1, held: 0 });
+    expect(spy.create).toHaveLength(1);
+  });
+
+  it("a released freight-mismatch hold is not held again for the same reason: the operator's decision outranks the counter-check, and the live channel is still the one booked", async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedWarehouse(store, 'CJ1', 'S1', 'v1');
+    await seedRoute(store, 'CN', 'US', 5.5);
+    await seedOrder(store, 'O1', [{ sku: 'S1', quantity: 4, cjPid: 'CJ1' }], { addressJson: JSON.stringify(US_ADDRESS), holdReasons: ['freight-mismatch'] });
+    const spy = { create: [] as any[], pay: [] as string[] };
+    const alerts: unknown[] = [];
+    const cj = quoting(spy, [], async () => ({ priceUsd: 40, days: '12-20', name: 'Economy' }));
+    const r = await processDueOrders(store, cj, liveAdmin({ order: US_LIVE }), cfg('pawscout'), { alert: async (s, t) => { alerts.push({ s, t }); return 'sent'; } });
+    expect(r).toMatchObject({ submitted: 1, held: 0 });
+    expect(spy.create[0].logisticName).toBe('Economy');
+    expect(alerts).toHaveLength(0);
+    expect((await store.listOrderEvents('O1')).find((e) => e.kind === 'freight-quoted')?.detail).toContain('live USD 40.00');
+  });
+
+  it('no synced route to compare with: held as freight-mismatch with a detail that says so, rather than booked unchecked', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedWarehouse(store, 'CJ1', 'S1', 'v1');
+    // no CN->US route seeded
+    await seedOrder(store, 'O1', [{ sku: 'S1', quantity: 1, cjPid: 'CJ1' }], { addressJson: JSON.stringify(US_ADDRESS) });
+    const spy = { create: [] as unknown[], pay: [] as string[] };
+    const cj = quoting(spy, [], async () => ({ priceUsd: 7, days: '12-20', name: 'Economy' }));
+    const r = await processDueOrders(store, cj, liveAdmin({ order: US_LIVE }), cfg('pawscout'));
+    expect(r).toMatchObject({ submitted: 0, held: 1 });
+    expect(spy.create).toHaveLength(0);
+    const o = await store.getOrder('O1');
+    expect(JSON.parse(o!.hold_reasons!)).toEqual(['freight-mismatch']);
+    expect((await store.listOrderEvents('O1')).find((e) => e.kind === 'gate-held')?.detail).toBe('freight-mismatch: CN->US, 1 unit: live USD 7.00 via Economy (12-20 days); no synced CN->US rate to compare with');
+  });
+
+  it('the supplier offers NO channel for this basket to that country: held as no-freight-route, nothing booked', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedWarehouse(store, 'CJ1', 'S1', 'v1');
+    await seedRoute(store, 'CN', 'US', 5.5);
+    await seedOrder(store, 'O1', [{ sku: 'S1', quantity: 1, cjPid: 'CJ1' }], { addressJson: JSON.stringify(US_ADDRESS) });
+    const spy = { create: [] as unknown[], pay: [] as string[] };
+    const cj = quoting(spy, [], async () => null);
+    const r = await processDueOrders(store, cj, liveAdmin({ order: US_LIVE }), cfg('pawscout'));
+    expect(r).toMatchObject({ submitted: 0, held: 1 });
+    expect(spy.create).toHaveLength(0);
+    const o = await store.getOrder('O1');
+    expect(o?.status).toBe('held');
+    expect(JSON.parse(o!.hold_reasons!)).toEqual(['no-freight-route']);
+    expect((await store.listOrderEvents('O1')).find((e) => e.kind === 'gate-held')?.detail).toBe('no-freight-route: the supplier offers no delivery channel CN->US for this basket');
+  });
+
+  it('the live quote cannot be read: nothing is booked, the row stays queued for the next tick, and the owner is told on the fourth failure in a row', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedWarehouse(store, 'CJ1', 'S1', 'v1');
+    await seedOrder(store, 'O1', [{ sku: 'S1', quantity: 1, cjPid: 'CJ1' }]);
+    const spy = { create: [] as unknown[], pay: [] as string[] };
+    const alerts: { subject: string; text: string }[] = [];
+    const cj = quoting(spy, [], async () => { throw new Error('CJ HTTP 502 <html>raw supplier text</html>'); });
+    for (let i = 0; i < 4; i++) {
+      const r = await processDueOrders(store, cj, liveAdmin(), cfg('pawscout'), {
+        now: atTick(i),
+        alert: async (subject, text) => { alerts.push({ subject, text }); return 'sent'; }
+      });
+      expect(r).toMatchObject({ submitted: 0, held: 0, errored: 0 });
+    }
+    expect(spy.create).toHaveLength(0);
+    expect((await store.getOrder('O1'))?.status).toBe('queued');
+    const events = await store.listOrderEvents('O1');
+    const unread = events.filter((e) => e.kind === 'freight-unreadable');
+    expect(unread).toHaveLength(4);
+    expect(unread.every((e) => e.detail === 'quote failed')).toBe(true); // never the supplier's raw text
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].subject).toBe("Order #O1: the supplier's delivery cost could not be checked");
+    expect(alerts[0].text).toBe("Order #O1 is due, but the supplier's live delivery cost for it could not be read on the last 4 checks. Nothing has been sent to the supplier. It is retried every 15 minutes.");
+  });
+
+  it('a pay-retry (supplier order already exists) does not re-quote: the channel was booked when the order was created', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedWarehouse(store, 'CJ1', 'S1', 'v1');
+    await seedOrder(store, 'O1', [{ sku: 'S1', quantity: 1, cjPid: 'CJ1' }]);
+    await store.updateOrder('O1', { cj_order_id: 'CJORD-EXISTING' }); // a pay-retry: created earlier, payment still owed
+    const spy = { create: [] as unknown[], pay: [] as string[] };
+    const calls: BasketCall[] = [];
+    const cj = quoting(spy, calls, async () => ({ priceUsd: 999, days: '1', name: 'Gold' }));
+    const r = await processDueOrders(store, cj, liveAdmin(), cfg('pawscout'));
+    expect(r).toMatchObject({ submitted: 1 });
+    expect(calls).toHaveLength(0);
+    expect(spy.create).toHaveLength(0);
+    expect(spy.pay).toEqual(['CJORD-EXISTING']);
   });
 });

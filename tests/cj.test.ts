@@ -260,6 +260,45 @@ describe('origins + freight', () => {
     expect(est!.priceUsd).toBe(4.2);
     expect(est!.name).toBe('Economy');
   });
+
+  // Owner rule 2026-09-22: freight is always counter-checked against LIVE CJ
+  // data before an order is booked. The pipeline used to quote one unit of the
+  // first line to the default destination (GB) whatever the order was; the
+  // counter-check needs the whole basket, every quantity, to the real country.
+  it('freightForBasket POSTs every line with its quantity to the real destination and returns the cheapest option', async () => {
+    const bodies: string[] = [];
+    const fakeFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      bodies.push(String(init?.body ?? ''));
+      expect(String(input)).toContain('/logistic/freightCalculate');
+      expect(init?.method).toBe('POST');
+      return new Response(JSON.stringify({ result: true, data: [
+        { logisticName: 'CJPacket', logisticPrice: 11.5, logisticAging: '8-12' },
+        { logisticName: 'Economy', logisticPrice: '9.80', logisticAging: '12-20' },
+        { logisticName: 'Spurious', logisticPrice: 0, logisticAging: '' }
+      ] }), { status: 200 });
+    }) as typeof fetch;
+    const client = new CjClient(async () => 'tok', fakeFetch);
+    const f = await client.freightForBasket([{ vid: 'v1', quantity: 3 }, { vid: 'v2', quantity: 1 }], 'CN', 'US');
+    expect(f).toEqual({ priceUsd: 9.8, days: '12-20', name: 'Economy' }); // cheapest real option; the $0 row is not a cross-border carrier
+    const body = JSON.parse(bodies[0]) as { startCountryCode: string; endCountryCode: string; products: unknown[] };
+    expect(body.startCountryCode).toBe('CN');
+    expect(body.endCountryCode).toBe('US');
+    expect(body.products).toEqual([{ quantity: 3, vid: 'v1' }, { quantity: 1, vid: 'v2' }]);
+  });
+
+  it('freightForBasket keeps the $0 domestic option and answers null when no channel serves the basket', async () => {
+    let call = 0;
+    const fakeFetch = (async () => {
+      call++;
+      return new Response(JSON.stringify({ result: true, data: call === 1
+        ? [{ logisticName: 'Royal Mail GB to GB', logisticAging: '2-5', logisticPrice: 0 }]
+        : [] }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const cj = new CjClient(async () => 'tok', fakeFetch);
+    const domestic = await cj.freightForBasket([{ vid: 'V1', quantity: 2 }], 'GB', 'GB');
+    expect(domestic).toEqual({ priceUsd: 0, days: '2-5', name: 'Royal Mail GB to GB' });
+    expect(await cj.freightForBasket([{ vid: 'V1', quantity: 2 }], 'CN', 'BR')).toBeNull();
+  });
 });
 
 describe('CjClient.searchByWarehouse', () => {
