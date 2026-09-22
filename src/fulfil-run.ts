@@ -9,6 +9,7 @@ import { sendEmail } from './email';
 import type { Env, TenantConfig } from './types';
 import type { OrderLineItem, OrderAddress } from './fulfil';
 import { readOrderGate, decideGate, type RiskLevel } from './order-gate';
+import { resolveLogistics } from './logistics';
 import { alertOwner } from './owner-alert';
 import { deliverOrderAlert, recordAlertDue, retryOrderAlerts, type AlertSend } from './order-alert';
 import { applyCancel, type OwnerAlert } from './order-cancel';
@@ -65,6 +66,53 @@ function hasFraudHoldHistory(holdReasonsJson: string | null): boolean {
     const reasons = JSON.parse(holdReasonsJson) as unknown[];
     return reasons.includes('high-risk') || reasons.includes('medium-risk-value');
   } catch { return false; }
+}
+
+/** Same shape as hasFraudHoldHistory, for the live freight counter-check: an
+ *  operator who released a freight-mismatch hold decided to book the order at
+ *  the live cost, and the next run must not hold it again for the same
+ *  reason. The check still runs (the live channel is the one booked, and the
+ *  trail still records the figure); only the hold is skipped. */
+function hasFreightHoldHistory(holdReasonsJson: string | null): boolean {
+  if (!holdReasonsJson) return false;
+  try {
+    return (JSON.parse(holdReasonsJson) as unknown[]).includes('freight-mismatch');
+  } catch { return false; }
+}
+
+/** How far above the allowed-for figure the LIVE supplier freight may land
+ *  before the order is held: a quarter again plus one dollar, so a basket a
+ *  little heavier than one unit each, or a rate that moved a few cents since
+ *  the nightly sync, still books, while a rate that has doubled does not. */
+const FREIGHT_TOLERANCE_RATIO = 0.25;
+const FREIGHT_TOLERANCE_USD = 1;
+
+/** Consecutive ticks that ended in a freight-unreadable line. The gate-passed
+ *  and stock-ok lines a tick writes on its way to the quote say nothing about
+ *  the quote, so they do not break the run; anything else does, including the
+ *  owner-alert markers, so a run of failures gets one alert, not one per tick
+ *  from the fourth on (the countTrailingOrderEvents rule, with the two
+ *  on-the-way lines skipped). */
+async function countTrailingFreightFailures(store: TenantStore, shopifyOrderId: string): Promise<number> {
+  const events = await store.listOrderEvents(shopifyOrderId);
+  let n = 0;
+  for (let i = events.length - 1; i >= 0; i--) {
+    const kind = events[i].kind;
+    if (kind === 'freight-unreadable') n++;
+    else if (kind !== 'gate-passed' && kind !== 'stock-ok') break;
+  }
+  return n;
+}
+
+const usd = (n: number) => `USD ${n.toFixed(2)}`;
+const unitsText = (n: number) => `${n} unit${n === 1 ? '' : 's'}`;
+
+/** The trail line for a live basket quote and the figure it was checked
+ *  against: no name, address or supplier text, only route, count, the
+ *  supplier's channel name and the two numbers. */
+function freightQuotedDetail(origin: string, dest: string, units: number, live: { priceUsd: number; days: string; name: string }, allowedUsd: number | null): string {
+  const compared = allowedUsd == null ? `no synced ${origin}->${dest} rate to compare with` : `allowed for ${usd(allowedUsd)}`;
+  return `${origin}->${dest}, ${unitsText(units)}: live ${usd(live.priceUsd)} via ${live.name} (${live.days} days); ${compared}`;
 }
 
 /** Write a cancel/hold gate decision to the row + trail in one place, so the
@@ -535,15 +583,76 @@ export async function processDueOrders(
       if (!o.cj_order_id) await store.addOrderEvent(o.shopify_order_id, 'stock-ok'); // see gate-passed comment above
 
       if (!cjOrderId) {
+        // Owner rule 2026-09-22: freight is ALWAYS counter-checked against
+        // LIVE supplier data before an order is booked. The live quote is for
+        // the whole basket, every quantity, to the order's own country (this
+        // used to be one unit of the first line to the default destination,
+        // GB, whatever the order was), and it is compared with what the
+        // system allowed for: the synced nightly rate for this route, per
+        // unit, times the units ordered - the same rate the delivery
+        // profiles charge and the baked-in freight is priced from. Live
+        // above that by more than the tolerance holds the order before
+        // anything is sent to the supplier; a released hold books at the
+        // live cost. An unreadable quote is "could not tell": nothing is
+        // booked, the row stays queued for the next tick, the owner hears on
+        // the fourth failure in a row - the gate-unreadable pattern.
         step = 'freight';
-        const freight = await cj.freightEstimate(products[0].vid, origin).catch(() => null);
+        const dest = address.countryCode;
+        const units = products.reduce((n, p) => n + p.quantity, 0);
+        let live: { priceUsd: number; days: string; name: string } | null;
+        try {
+          live = await cj.freightForBasket(products, origin, dest);
+        } catch (fe) {
+          console.warn(`freight quote failed for ${o.order_name ?? o.shopify_order_id}: ${fe instanceof Error ? fe.message : String(fe)}`);
+          await store.addOrderEvent(o.shopify_order_id, 'freight-unreadable', 'quote failed');
+          if ((await countTrailingFreightFailures(store, o.shopify_order_id)) >= 4 && opts.alert) {
+            const name = o.order_name ?? o.shopify_order_id;
+            await deliverOrderAlert(store, o.shopify_order_id, {
+              subject: `Order ${name}: the supplier's delivery cost could not be checked`,
+              text: `Order ${name} is due, but the supplier's live delivery cost for it could not be read on the last 4 checks. Nothing has been sent to the supplier. It is retried every 15 minutes.`
+            }, opts.alert);
+          }
+          continue; // NOT an error status - stays queued, retried by a later run
+        }
+        if (!live) {
+          const detail = `no-freight-route: the supplier offers no delivery channel ${origin}->${dest} for this basket`;
+          await writeGateStop(store, o.shopify_order_id, 'held', 'no-freight-route', null, detail);
+          held++;
+          if (opts.alert) {
+            const name = o.order_name ?? o.shopify_order_id;
+            await deliverOrderAlert(store, o.shopify_order_id, {
+              subject: `Order ${name}: the supplier has no delivery channel for it`,
+              text: `Order ${name} is held. The supplier offers no delivery channel ${origin}->${dest} for its ${unitsText(units)}. Nothing has been sent to the supplier. Check the route at the supplier, then release or cancel the order in the console.`
+            }, opts.alert);
+          }
+          continue;
+        }
+        const route = await store.getLogisticsRoute(origin, dest, resolveLogistics(cfg.fulfil).stalenessHours, clock());
+        const allowedUsd = route?.freight_cost_usd != null ? route.freight_cost_usd * units : null;
+        const quotedDetail = freightQuotedDetail(origin, dest, units, live, allowedUsd);
+        await store.addOrderEvent(o.shopify_order_id, 'freight-quoted', quotedDetail);
+        const overAllowed = allowedUsd == null || live.priceUsd > allowedUsd * (1 + FREIGHT_TOLERANCE_RATIO) + FREIGHT_TOLERANCE_USD;
+        if (overAllowed && !hasFreightHoldHistory(o.hold_reasons)) {
+          await writeGateStop(store, o.shopify_order_id, 'held', 'freight-mismatch', null, `freight-mismatch: ${quotedDetail}`);
+          held++;
+          if (opts.alert) {
+            const name = o.order_name ?? o.shopify_order_id;
+            const quote = `The supplier quotes ${usd(live.priceUsd)} (${live.name}, ${live.days} days) to deliver its ${unitsText(units)} ${origin}->${dest}`;
+            const against = allowedUsd == null ? `and there is no synced ${origin}->${dest} rate to check it against` : `against ${usd(allowedUsd)} allowed for from the synced rate`;
+            await deliverOrderAlert(store, o.shopify_order_id, {
+              subject: allowedUsd == null ? `Order ${name}: the supplier's delivery cost could not be compared` : `Order ${name}: the supplier's delivery cost is above what was allowed for`,
+              text: `Order ${name} is held. ${quote}, ${against}. Nothing has been sent to the supplier. Release the order in the console to book it at the live cost, or cancel it.`
+            }, opts.alert);
+          }
+          continue;
+        }
         step = 'create';
         const created = await cj.createOrder({
           orderNumber: o.shopify_order_id,
           address,
           products,
           fromCountryCode: origin,
-          logisticName: freight?.name,
+          logisticName: live.name,
           remark: 'Active Paw'
         });
         cjOrderId = created.orderId;

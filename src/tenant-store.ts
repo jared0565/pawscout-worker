@@ -229,7 +229,7 @@ export interface OrderRow {
 export type OrderEventKind =
   | 'received' | 'held' | 'queued' | 'released'
   | 'gate-passed' | 'gate-held' | 'gate-unreadable' | 'address-refreshed'
-  | 'stock-ok' | 'stockout' | 'supplier-order-created' | 'awaiting-payment' | 'paid'
+  | 'stock-ok' | 'stockout' | 'freight-quoted' | 'freight-unreadable' | 'supplier-order-created' | 'awaiting-payment' | 'paid'
   | 'tracking-found' | 'tracking-written' | 'tracking-write-failed'
   | 'cancel-received' | 'refund-received' | 'owner-alert-due' | 'owner-alerted' | 'owner-alert-unconfigured' | 'owner-alert-failed' | 'operator-action' | 'error';
 

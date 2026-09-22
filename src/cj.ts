@@ -433,10 +433,16 @@ export class CjClient {
    * options also exist.
    */
   async freightQuoteAging(vid: string, fromCountry = 'CN', toCountry = 'GB', quantity = 1): Promise<{ priceUsd: number; days: string; name: string }[]> {
+    return this.freightOptions([{ quantity, vid }], fromCountry, toCountry);
+  }
+
+  /** One freightCalculate POST for a whole basket, every option cheapest-first,
+   *  price-0 rows kept (the callers decide what a $0 row means on their route). */
+  private async freightOptions(products: { vid: string; quantity: number }[], fromCountry: string, toCountry: string): Promise<{ priceUsd: number; days: string; name: string }[]> {
     const data = await this.post('/logistic/freightCalculate', {
       startCountryCode: fromCountry,
       endCountryCode: toCountry,
-      products: [{ quantity, vid }]
+      products: products.map((p) => ({ quantity: p.quantity, vid: p.vid }))
     });
     const rows = (Array.isArray(data) ? data : []) as Record<string, unknown>[];
     return rows
@@ -446,6 +452,21 @@ export class CjClient {
         name: String(r.logisticName ?? '')
       }))
       .sort((a, b) => a.priceUsd - b.priceUsd);
+  }
+
+  /**
+   * Cheapest LIVE freight for a whole basket (every line with its quantity),
+   * `fromCountry` -> `toCountry`: the figure the order pipeline counter-checks
+   * before it books and pays a supplier order (owner rule 2026-09-22: freight
+   * is always counter-checked against live CJ data). Same $0 rule as
+   * freightEstimate: a domestic $0 option is a real carrier, a cross-border
+   * $0 row is a service that does not carry the shipment. null = no channel
+   * serves this basket on this route.
+   */
+  async freightForBasket(products: { vid: string; quantity: number }[], fromCountry: string, toCountry: string): Promise<{ priceUsd: number; days: string; name: string } | null> {
+    const all = await this.freightOptions(products, fromCountry, toCountry);
+    const options = fromCountry === toCountry ? all : all.filter((o) => o.priceUsd > 0);
+    return options.length ? options[0] : null;
   }
 
   /**
