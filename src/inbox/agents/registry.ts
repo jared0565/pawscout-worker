@@ -9,6 +9,7 @@ import { wholesaleAgent } from './wholesale';
 import { complaintAgent } from './complaint';
 import { otherAgent } from './other';
 import { orderStatusAgent } from './order-status'; // Phase 2; Phase 1 ships a hedging stub
+import { supplierAgent } from './supplier';
 
 export const AGENTS: Record<InboxLabel, CategoryAgent> = {
   'shipping-returns': shippingAgent,
@@ -18,6 +19,7 @@ export const AGENTS: Record<InboxLabel, CategoryAgent> = {
   'lead': leadAgent,
   'wholesale-b2b': wholesaleAgent,
   'complaint': complaintAgent,
+  'supplier': supplierAgent,
   'other': otherAgent,
   'spam': otherAgent,      // never dispatched (spam gets no reply); present for totality
   'automated': otherAgent  // never dispatched (closed); present for totality

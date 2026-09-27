@@ -975,7 +975,7 @@ var INBOX_AGENTS=[
   ['shipping-returns','Shipping & Returns'],['order-status','Order Status'],
   ['product-question','Product Questions'],['lead','Sales Leads'],
   ['wholesale-b2b','Wholesale / Trade'],['affiliate','Affiliate / Partnership'],
-  ['complaint','Complaints'],['other','General']
+  ['complaint','Complaints'],['supplier','Suppliers'],['other','General']
 ];
 function renderAgents(cfg){
   var list=el('agents-list'); if(!list) return;

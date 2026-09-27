@@ -130,15 +130,17 @@ export function applySalutation(bodyText: string, customerName: string | null | 
 }
 
 /** Department signature lines for the deterministic footer (the owner's exact format).
- * Four desks so a reply is recognisable/auditable by the team that signed it: Sales
+ * Five desks so a reply is recognisable/auditable by the team that signed it: Sales
  * (leads, wholesale), Customer Support (shipping, order status, complaints, general),
- * Partnerships (affiliate lane), Technical Team (product/spec questions). The
- * partnership funnel signs "Active Paw Partnerships" directly on its own templates. */
+ * Partnerships (affiliate lane), Technical Team (product/spec questions), Sourcing
+ * (suppliers). The partnership funnel signs "Active Paw Partnerships" directly on
+ * its own templates. */
 export const DEPARTMENT_SIGNATURES: Record<import('./agents/types').Department, string> = {
   sales: 'Active Paw Sales Team',
   service: 'Active Paw Customer Support',
   partnership: 'Active Paw Partnerships',
   tech: 'Active Paw Technical Team',
+  sourcing: 'Active Paw Sourcing Team', // supplier lane (owner decision 2026-09-27)
 };
 
 // A trailing sign-off block the model may have added despite being told not to
