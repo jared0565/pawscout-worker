@@ -1,7 +1,7 @@
 # Inbox: thread reading, a supplier lane and a supplier register
 
-Status: design approved section by section by the owner on 2026-09-27; this
-written spec awaits the owner's review before the implementation plan.
+Status: design and written spec approved by the owner on 2026-09-27; next is
+the implementation plan.
 
 ## Why
 
@@ -49,6 +49,8 @@ sending. Nothing in this design changes that.
   "no reply needed" with a button to draft anyway.
 - A new message on a closed thread **reopens it only when a customer asks a
   real question**; pitches and spam stay closed.
+- Every goods or packaging supplier is asked whether they offer dropshipping,
+  and the register records the answer (`dropship`).
 - The saved `inbox.replyGuidance` is left as it is (owner-editable in the
   console).
 
@@ -87,7 +89,7 @@ returns a validated `ThreadReading`:
 | `offered` | one line: what they offer us, or empty |
 | `alreadyAnswered` | short list of what we have already told them |
 | `replyNeeded` | false only when the open messages carry no question or request and are an acknowledgement (thanks, ok) after our answer |
-| `supplier` | present only for `goods-supplier` and `logistics`: `company`, `contactName`, `website`, `storeLinks[]`, `kind` (`goods`, `packaging`, `logistics`), `productLines[]`, `shipsFrom`, `nicheFit` (`on-niche` dog and cat products, `adjacent`, `off-niche`) |
+| `supplier` | present only for `goods-supplier` and `logistics`: `company`, `contactName`, `website`, `storeLinks[]`, `kind` (`goods`, `packaging`, `logistics`), `productLines[]`, `shipsFrom`, `nicheFit` (`on-niche` dog and cat products, `adjacent`, `off-niche`), `dropship` (`yes`, `no`, `unknown`: `yes` or `no` only when the sender's own words say so) |
 
 Validation caps every string, keeps a link only when it parses as an http or
 https URL, and drops unknown enum values. The reading is stored on the thread
@@ -133,6 +135,10 @@ does not re-qualify. Ingest itself is unchanged (it has no LLM).
      they are welcome to email it;
   3. ask for their website or Alibaba (or other online) store link for our
      reference, unless the thread already has it;
+  3a. ask whether they offer dropshipping, that is sending single orders
+     directly to our customers, unless the thread already answers it (goods
+     and packaging suppliers only, not logistics). Asking commits us to
+     nothing; the answer is recorded in the register (section 3);
   4. say their details are kept on file for reference, and nothing more;
   5. a request for a call, meeting, WhatsApp or samples: we keep supplier
      contact on email and are not arranging samples or calls (no "at this
@@ -161,7 +167,8 @@ Migration `0044_supplier_register.sql` (new; no applied migration is edited):
 
 - `supplier_register`: `shop`, `email` (unique per shop), `company`,
   `contact_name`, `website`, `store_links` (JSON), `kind`, `product_lines`
-  (JSON), `ships_from`, `niche_fit`, `first_thread_id`, `first_seen_at`,
+  (JSON), `ships_from`, `niche_fit`, `dropship` (`yes`, `no`, `unknown`,
+  default `unknown`; owner decision 2026-09-27), `first_thread_id`, `first_seen_at`,
   `last_seen_at`, `message_count`, and owner fields `status` (`new`,
   `reviewed`, `dismissed`, default `new`) and `notes`. Index on
   `(shop, last_seen_at)`.
@@ -169,7 +176,9 @@ Migration `0044_supplier_register.sql` (new; no applied migration is edited):
 
 Filling: whenever a reading has `supplier`, the row is upserted by email. An
 update only fills or extends fields; it never blanks one that has a value, and
-never touches `status` or `notes`. Tenant-scoped through `TenantStore` like
+never touches `status` or `notes`. `dropship` moves from `unknown` to `yes` or
+`no` when a reading reports the sender's answer, and a later `unknown` never
+overwrites a known answer. The console view shows and filters by it. Tenant-scoped through `TenantStore` like
 every other table.
 
 Console: a **Suppliers** view in the Inbox tab (newest first, filters by kind
@@ -213,7 +222,11 @@ thread status, until the cursor is done.
   passes; the affiliate URL flagged.
 - `salutationName`: the new role words return null.
 - Reader validation: caps, URL filter, enum filter, `null` on garbage.
-- Register upsert: fill, extend, never blank, status and notes untouched,
+- Supplier prompt: the dropshipping question is asked once, not when the thread
+  already answers it, and never to a logistics sender; the no-promises check
+  does not flag the question itself.
+- Register upsert: fill, extend, never blank, `dropship` unknown never
+  overwrites yes or no, status and notes untouched,
   tenant isolation (a second shop never sees the row).
 - Sweep routing with a mocked LLM: each `senderRole`; `replyNeeded` false
   writes no draft; supplier re-route supersedes drafts; the funnel stands down
