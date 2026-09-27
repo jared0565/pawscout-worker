@@ -82,7 +82,7 @@ describe('partnership stance: prove-first', () => {
     expect(PARTNERSHIP_STANCE).not.toMatch(/is declined/i);
     expect(PARTNERSHIP_STANCE).toContain('starts with their own affiliate discount code');
     expect(PARTNERSHIP_STANCE).toContain('GOODS SUPPLIERS');
-    expect(PARTNERSHIP_STANCE).toContain('noted it for reference');
+    expect(PARTNERSHIP_STANCE).toContain('on file for reference');
     expect(PARTNERSHIP_STANCE).toContain('never granted');
   });
 });

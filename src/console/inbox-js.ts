@@ -207,7 +207,7 @@ function renderInboxThread(thread,messages,labels,draft,invoice,applicant,contac
     +'<option value="operations_decline">Internal operations decline</option>'
     +'<option value="collaboration_decline">Friendly decline (programme already introduced)</option>'
     +'<option value="access_decline">Access request decline (never granted, trial link)</option>'
-    +'<option value="supplier_ack">Supplier: thanks for the listing (no commitment)</option>'
+    +'<option value="supplier_ack">Supplier: thanks, link and dropshipping question (no commitment)</option>'
     +'<option value="keep_to_email">Keep to email (decline WhatsApp)</option>'
     +'</select>';
   // Pending draft: distinct dashed card at the END of the timeline

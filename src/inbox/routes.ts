@@ -224,7 +224,7 @@ export const DRAFT_TEMPLATES: { key: string; label: string }[] = [
   // 2026-09-17 (later): for the vendor who asks for admin, sub-admin,
   // collaborator or staff access. Never granted; the trial needs none of it.
   { key: 'access_decline', label: 'Access request decline (never granted, trial link)' },
-  { key: 'supplier_ack', label: 'Supplier: thanks for the listing (no commitment)' },
+  { key: 'supplier_ack', label: 'Supplier: thanks, link and dropshipping question (no commitment)' },
   { key: 'keep_to_email', label: 'Keep to email (decline WhatsApp)' },
 ];
 

@@ -458,16 +458,19 @@ Active Paw Partnerships`;
 // Goods suppliers (packaging, a "backup supplier" with a catalogue, an updated
 // product listing). Owner rule 2026-09-17: "don't decline them. Just thank
 // them for providing the updated product listing or the likes." The code trial
-// cannot measure a supplier, so they get neither it nor a refusal: a thank-you
-// that commits to nothing and asks for nothing. Signed by the store, not the
-// partnerships desk, because nothing about it is a partnership.
+// cannot measure a supplier, so they get neither it nor a refusal. Owner
+// decision 2026-09-27: the information they offer is welcome, and we ask for
+// their website or online store and whether they dropship, because the store
+// runs on dropshipping. Still no commitment. Signed by the Sourcing Team.
 const SUPPLIER_ACK_BODY =
 `Thank you for sending over your product information - we appreciate you thinking of Active Paw.
 
-We have noted it and will keep it for reference. There is nothing you need to do from here, and if we ever have a question about your range we will get in touch.
+You are welcome to email over your catalogue, price list or product listing. If you have a website or an Alibaba or other online store, please send us the link for our reference, and let us know whether you offer dropshipping, that is sending single orders directly to our customers.
+
+We keep supplier details on file for reference.
 
 Best Regards,
-Active Paw`;
+Active Paw Sourcing Team`;
 
 // For messages that probe our goals/strategy/performance rather than pitch a
 // service outright (e.g. "what's your main priority, traffic or revenue?") -
@@ -541,7 +544,7 @@ export const PARTNERSHIP_STANCE =
   // code trial is now the filter for every service offer; a goods supplier is
   // thanked for the listing and nothing more.
   + 'SERVICE OFFERS (prove-first rule): an offer to SELL US a growth, marketing, SEO, ads, CRO, content, video, email, store-optimisation, listing or virtual-assistant service, or to bring us sales by any method, is neither declined nor accepted. Answer it with the filter: we receive a lot of offers like this and cannot tell promised results from real ones in advance, so everyone who wants to work with us starts with their own affiliate discount code, and the tracked orders it brings in decide who we take further. Give the link and the figures above. Do not book calls, ask for proposals or audits, accept a free sample of their work, or agree any other arrangement, and never say it is "not something we are looking into". '
-  + 'GOODS SUPPLIERS: someone offering to SUPPLY US products, materials or packaging (a catalogue, a price list, an updated product listing) is neither declined nor sent to the programme. Thank them for sending it, say we have noted it for reference, and commit to nothing: no order, no meeting, no next step. '
+  + 'GOODS SUPPLIERS: someone offering to SUPPLY US products, materials or packaging, or warehousing, fulfilment or logistics services, is neither declined nor sent to the programme. Thank them for what they offered, say they are welcome to email their catalogue or product information, ask for their website or online store link and whether they offer dropshipping, say we keep supplier details on file for reference, and commit to nothing: no order, no meeting, no next step. '
   + 'Store, admin or collaborator access is never granted to anyone outside the team, whatever they offer. '
   + 'CONVERSATION FLOW: if we already sent them a general decline earlier in this thread and they have now asked a concrete partnership or commission question, ANSWER THE NEW QUESTION with the facts above. Do not simply repeat the earlier decline, which reads as ignoring them.';
 
@@ -748,6 +751,8 @@ const SIGNOFF_PARTNERSHIPS = `Best Regards,
 Active Paw Partnerships`;
 const SIGNOFF_STORE = `Best Regards,
 Active Paw`;
+const SIGNOFF_SOURCING = `Best Regards,
+Active Paw Sourcing Team`;
 
 const SECOND_TOUCH: Record<TouchTemplate, string> = {
   signup_invite:
@@ -799,9 +804,9 @@ No reply is needed, and we wish you every success.
 
 ${SIGNOFF_PARTNERSHIPS}`,
   supplier_ack:
-`Thanks for sending the update. We have it on file for reference, and there is nothing you need to do from here.
+`Thanks for the update. It is on file with your earlier details. If you have not sent it yet, your website or online store link, and whether you offer dropshipping, are welcome too.
 
-${SIGNOFF_STORE}`,
+${SIGNOFF_SOURCING}`,
   access_decline:
 `Thanks for following up. Our answer is unchanged: we do not give store, admin, collaborator or staff access to anyone outside the team, in any form. The code trial needs no access and stays open to you: ${AFFILIATE_APPLY_URL}
 
@@ -823,7 +828,7 @@ const POINTER_BACK: Record<TouchTemplate, string> = {
   keep_to_email: `As in our earlier reply, we keep our conversations on email, so please carry on here whenever you are ready.`,
   holding_ack: `Our earlier note still stands: your application is in review, and we will write as soon as it is decided.`,
   collaboration_decline: `Our earlier reply on this thread still stands: we do not skip the trial for anyone, and the code trial stays open to you: ${AFFILIATE_APPLY_URL}`,
-  supplier_ack: `As in our earlier reply, your product information is on file, and nothing more is needed.`,
+  supplier_ack: `As in our earlier reply, your details are on file for reference, and your website link and whether you offer dropshipping are welcome whenever convenient.`,
   access_decline: `Our earlier reply on this thread still stands: no store access of any kind, and the code trial stays open to you: ${AFFILIATE_APPLY_URL}`,
 };
 
@@ -831,7 +836,7 @@ export function buildSecondTouch(key: TouchTemplate, name: string | null): strin
   return applySalutation(SECOND_TOUCH[key], name);
 }
 export function buildPointerBack(key: TouchTemplate, name: string | null): string {
-  const signoff = (key === 'keep_to_email' || key === 'supplier_ack') ? SIGNOFF_STORE : SIGNOFF_PARTNERSHIPS;
+  const signoff = key === 'supplier_ack' ? SIGNOFF_SOURCING : key === 'keep_to_email' ? SIGNOFF_STORE : SIGNOFF_PARTNERSHIPS;
   return applySalutation(`${POINTER_BACK[key]}
 
 ${signoff}`, name);

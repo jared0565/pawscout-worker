@@ -253,7 +253,7 @@ describe('applyDraftTemplate', () => {
     expect(DRAFT_TEMPLATES[2].label).toMatch(/^Service pitch: prove first/);
     expect(DRAFT_TEMPLATES[4].label).toMatch(/^Friendly decline/);
     expect(DRAFT_TEMPLATES[5].label).toMatch(/^Access request decline/);
-    expect(DRAFT_TEMPLATES[6].label).toMatch(/^Supplier: thanks for the listing/);
+    expect(DRAFT_TEMPLATES[6].label).toMatch(/^Supplier: thanks, link and dropshipping question/);
   });
 
   it('the access decline renders with the link and stages a fresh thread passed_to_form', async () => {
