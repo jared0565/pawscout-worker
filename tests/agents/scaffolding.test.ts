@@ -49,6 +49,21 @@ async function captureDraftSystem(extra: Record<string, unknown> = {}) {
   return sink;
 }
 
+/** Like capturingLlm, but returns a DIFFERENT JSON content per call, in order, and
+ * records EVERY call's system prompt (not just the last) - for asserting what the
+ * revise call specifically was told, not just the first draft call. */
+function sequenceCapturingLlm(contents: unknown[], systems: string[]): LlmClient {
+  let i = 0;
+  const f = (async (_url: RequestInfo | URL, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body ?? '{}')) as { messages?: { role: string; content: string }[] };
+    systems.push(body.messages?.find((m) => m.role === 'system')?.content ?? '');
+    const content = contents[Math.min(i, contents.length - 1)];
+    i++;
+    return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(content) } }], usage: { cost: 0.0001 } }), { status: 200 });
+  }) as unknown as typeof fetch;
+  return new LlmClient({ openrouter: 'k' }, f);
+}
+
 /** Captures the OpenRouter request body so tests can inspect the system prompt. */
 function capturingLlm(content: unknown, sink: { system?: string; user?: string }): LlmClient {
   const f = (async (_url: RequestInfo | URL, init?: RequestInit) => {
@@ -340,6 +355,29 @@ describe('drafter grounded in the thread reading', () => {
     expect(sink.system).toContain('THREAD READING');
     expect(sink.system).toContain('Do you ship to Germany?');
   });
+
+  // Fix round 1 (2026-09-27 controller ruling): the reading must reach the REVISE
+  // pass too, not just the first draft call. A courtesy-only first draft (zero
+  // substance words once the filler phrases are stripped: draft-quality.ts'
+  // FILLER_PATTERNS eats "thank you for getting in touch" and "we appreciate
+  // you." whole) is guaranteed to fail findDraftIssues and trigger one revise
+  // call; the clean second draft has zero issues and stops the loop there, so
+  // exactly two model calls happen and the second is the revise call.
+  it('reaches the revise pass: the reading is still in the system prompt of the second (revise) call', async () => {
+    const { validateReading } = await import('../../src/inbox/thread-read');
+    const reading = validateReading({ senderRole: 'customer', openAsks: ['Do you ship to Germany?'], offered: '', alreadyAnswered: [], replyNeeded: true });
+    const courtesyOnly = { customerAsks: ['q'], bodyText: 'Thank you for getting in touch! We appreciate you.', confidence: 80, quotesPriceOrOrder: false, commercialIntent: false };
+    const clean = { customerAsks: ['q'], bodyText: 'We do ship to Germany, and the cost is shown at checkout before payment.', confidence: 90, quotesPriceOrOrder: false, commercialIntent: false };
+    const systems: string[] = [];
+    const llm = sequenceCapturingLlm([courtesyOnly, clean], systems);
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    await draftReply(llm, store, CFG, {
+      agent: stubAgent(false), grounding: GROUNDING, subject: 's',
+      conversation: 'Customer: Do you ship to Germany?', latestMessage: 'Do you ship to Germany?', reading,
+    } as any);
+    expect(systems.length).toBeGreaterThanOrEqual(2);
+    expect(systems[1]).toContain('THREAD READING');
+  });
 });
 
 describe('sender rules in one ordered block', () => {
@@ -361,5 +399,15 @@ describe('sender rules in one ordered block', () => {
   // packaging only, whether they dropship).
   it('names the supplier lane\'s two asks as information gathering, not a commitment', () => {
     expect(SHARED_SCAFFOLDING).toContain('information gathering, not a commitment');
+  });
+
+  // Fix round 1 (2026-09-27 controller ruling): rule (b) now covers warehousing,
+  // fulfilment and logistics services, and the frozen EXCEPTION sentence below
+  // says "An offer to SELL US a service is answered with the prove-first rule" -
+  // a logistics sender matched both with no stated precedence. Rule (b) now says
+  // outright that it wins over the EXCEPTION for a logistics/warehousing/
+  // fulfilment offer.
+  it('states that a logistics offer is a supplier before the EXCEPTION service-pitch rule', () => {
+    expect(SHARED_SCAFFOLDING).toContain('a warehousing, fulfilment or logistics offer is a supplier, never a prove-first pitch');
   });
 });
