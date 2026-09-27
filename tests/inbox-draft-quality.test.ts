@@ -353,6 +353,10 @@ describe('promisesSupplier (supplier lane, owner decision 2026-09-27)', () => {
     // comma into the second, unrelated clause's genuine promise ("we will
     // review your catalogue").
     'We cannot promise anything, but we will review your catalogue.',
+    // A conjunction without a comma still opens a new clause (final review).
+    'Not sure yet but we will place an order soon.',
+    'We cannot promise anything but we will review your catalogue.',
+    'We do not need a call and we will review your catalogue.',
   ])('the negation guard never clears an unguarded pattern or a different clause %s', (t) => { expect(promisesSupplier(t)).toBe(true); });
 
   it('the negation guard matches whole words only, never a substring inside another word', () => {

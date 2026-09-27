@@ -200,6 +200,8 @@ const NEGATION_WINDOW_CHARS = 30;
  * review your catalogue." - the second clause is a genuine promise and is not
  * negated by the first clause's "cannot"). */
 const CLAUSE_BOUNDARY_CHARS = [',', '.', ';', '!', '?', '\n'];
+/** Conjunctions that open a new clause even without a comma before them. */
+const CLAUSE_CONJUNCTION_RE = /\b(?:but|and|so|however|though|although)\b/gi;
 
 function precededByNegation(text: string, matchIndex: number): boolean {
   const windowStart = Math.max(0, matchIndex - NEGATION_WINDOW_CHARS);
@@ -210,6 +212,10 @@ function precededByNegation(text: string, matchIndex: number): boolean {
     if (idx > boundary) boundary = idx;
   }
   if (boundary !== -1) window = window.slice(boundary + 1);
+  // A conjunction also starts a new clause when no comma precedes it: "Not sure
+  // but we will place an order" must still flag (final review, 2026-09-27).
+  const conj = [...window.matchAll(CLAUSE_CONJUNCTION_RE)].pop();
+  if (conj && conj.index !== undefined) window = window.slice(conj.index + conj[0].length);
   return NEGATION_RE.test(window);
 }
 
