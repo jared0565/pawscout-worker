@@ -711,4 +711,25 @@ describe('supplier console routes (2026-09-27)', () => {
     const { draftAnyway } = await import('../src/inbox/routes');
     expect((await draftAnyway(env.DB, env as any, SHOP, '')).ok).toBe(false);
   });
+
+  // Fix round 2 (2026-09-27): draft-anyway must never erase an owner's
+  // 'converted' or 'spam' decision - only new/awaiting_customer/closed (never
+  // a decision) move to needs_reply.
+  it('draft-anyway keeps a converted thread converted', async () => {
+    const { draftAnyway } = await import('../src/inbox/routes');
+    const { s, tid } = await seedWithConfig();
+    await s.setThreadStatus(tid, 'converted');
+    const r = await draftAnyway(env.DB, REGEN_ENV(), SHOP, tid, llmFetch({ bodyText: 'anyway body', confidence: 80, quotesPriceOrOrder: false }));
+    expect(r.ok).toBe(true);
+    expect((await s.getThreadWithMessages(tid))?.thread.status).toBe('converted');
+  });
+
+  it('draft-anyway moves a closed thread to needs_reply', async () => {
+    const { draftAnyway } = await import('../src/inbox/routes');
+    const { s, tid } = await seedWithConfig();
+    await s.setThreadStatus(tid, 'closed');
+    const r = await draftAnyway(env.DB, REGEN_ENV(), SHOP, tid, llmFetch({ bodyText: 'anyway body', confidence: 80, quotesPriceOrOrder: false }));
+    expect(r.ok).toBe(true);
+    expect((await s.getThreadWithMessages(tid))?.thread.status).toBe('needs_reply');
+  });
 });

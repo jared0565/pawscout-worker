@@ -383,6 +383,11 @@ export async function draftAnyway(db: D1Database, env: Env, shop: string, thread
   if (await store.getPendingDraft(threadId)) return { ok: false as const, error: 'A draft is already pending' };
   const r = await composeDraftForThread(env, store, cfg, got.thread, fetchImpl, { force: true });
   if (!r || !('draftId' in r)) return { ok: false as const, error: 'Could not generate a draft - model unavailable, try again.' };
-  if (got.thread.status !== 'needs_reply') await store.setThreadStatus(threadId, 'needs_reply');
+  // An owner's 'converted' or 'spam' call on this thread is a decision, not a
+  // reading error: draft-anyway must not erase it. Only a status that was never
+  // a decision (new/awaiting_customer/closed) moves to needs_reply.
+  if (got.thread.status === 'new' || got.thread.status === 'awaiting_customer' || got.thread.status === 'closed') {
+    await store.setThreadStatus(threadId, 'needs_reply');
+  }
   return { ok: true as const, draft: await store.getPendingDraft(threadId) };
 }

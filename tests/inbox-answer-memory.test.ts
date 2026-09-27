@@ -178,6 +178,12 @@ describe('captureAnswerPair / captureAnswerFromSend', () => {
     expect(await captureAnswerPair(s, { id: 't', primary_category: 'spam' }, 'q tokens here', sent, false, '2026-07-12T00:00:00.000Z')).toBe(false);
     expect(await captureAnswerPair(s, { id: 't', primary_category: 'automated' }, 'q tokens here', sent, false, '2026-07-12T00:00:00.000Z')).toBe(false);
     expect(await captureAnswerPair(s, { id: 't', primary_category: 'affiliate' }, 'q tokens here', sent, false, '2026-07-12T00:00:00.000Z')).toBe(false);
+    // Supplier Q-A pairs must never be recalled into customer drafts (controller
+    // fix round 2, 2026-09-27). Uses a question with 2+ real tokens ('q tokens
+    // here' normalizes to a single token and would return false on the
+    // RECALL_MIN_OVERLAP gate alone, masking whether the category exclusion
+    // actually fired), so this only passes if 'supplier' is truly excluded.
+    expect(await captureAnswerPair(s, { id: 't', primary_category: 'supplier' }, 'Do you ship worldwide?', sent, false, '2026-07-12T00:00:00.000Z')).toBe(false);
     expect(await captureAnswerPair(s, thread, 'q tokens here', sent, true, '2026-07-12T00:00:00.000Z')).toBe(false);
     expect(await captureAnswerPair(s, thread, '', sent, false, '2026-07-12T00:00:00.000Z')).toBe(false);
     expect(await captureAnswerPair(s, thread, 'thanks', sent, false, '2026-07-12T00:00:00.000Z')).toBe(false); // <2 tokens
