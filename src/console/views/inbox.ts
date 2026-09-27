@@ -26,6 +26,7 @@ export const inboxView = `  <section class="ibx" data-panel="inbox">
             <button type="button" class="ibx-chip is-on" data-filter="open" onclick="ibxSetFilter('open')">Open</button>
             <button type="button" class="ibx-chip" data-filter="needs_reply" onclick="ibxSetFilter('needs_reply')">Needs reply</button>
             <button type="button" class="ibx-chip" data-filter="" onclick="ibxSetFilter('')">All</button>
+            <button type="button" class="ibx-chip" data-filter="suppliers" onclick="ibxOpenSuppliers()">Suppliers</button>
           </div>
           <select id="inbox-status-filter" aria-label="Filter by status" onchange="ibxFilterFromSelect()">
             <option value="open" selected>Open (unprocessed)</option>

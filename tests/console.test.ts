@@ -770,7 +770,10 @@ describe('consolePage', () => {
       expect(scripts).toContain('>' + t.label + '<');
     }
     // The picker also renders on threads with no pending draft (it creates one).
-    expect(scripts).toContain("No draft pending '+tplSel");
+    // 2026-09-27: that branch now also offers Draft anyway/Draft a reply, so the
+    // literal text changed; the picker itself still rides alongside it.
+    expect(scripts).toContain('No draft pending');
+    expect(scripts).toContain("Draft a reply</button> '+tplSel");
   });
 
   // --- Per-row reissue (2026-07-06): finished rows restart the same partner ---
@@ -1172,5 +1175,49 @@ describe('consolePage', () => {
     // Lazy-loaded on first open of #/answers, NOT on every console boot.
     expect(scripts).not.toContain('\nansLoad();');
     expect(scripts).toContain("window.addEventListener('hashchange',ansMaybe)");
+  });
+
+  it('inbox: a Suppliers view with the dropshipping column, a back-fill button, and Draft anyway on no-reply threads', async () => {
+    const html = await consolePage('test-api-key').text();
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+    expect(html).toContain('data-filter="suppliers"');
+    expect(scripts).toContain('id="ibx-sup-f-dropship"');
+    expect(scripts).toContain('id="ibx-sup-f-kind"');
+    expect(scripts).toContain('id="ibx-sup-f-fit"');
+    expect(scripts).toContain('function ibxOpenSuppliers(');
+    expect(scripts).toContain("api('/inbox/suppliers'");
+    expect(scripts).toContain('Dropshipping');
+    expect(scripts).toContain('Scan past inbox for suppliers');
+    expect(scripts).toContain('No reply needed');
+    expect(scripts).toContain("api('/inbox/draft-anyway'");
+    expect(scripts).toContain('rel="noopener noreferrer"');
+  });
+
+  // Review Focus 2 (constraints.md): a supplier email carrying javascript: or
+  // data: links, or HTML in its company name, must never produce a clickable
+  // unsafe link or raw markup in the console. Runs the ACTUAL browser esc()/
+  // ibxSupLink() source pulled out of the page (not a re-implementation), so a
+  // future edit to either function is caught here.
+  it('the suppliers table never renders an unsafe link or unescaped markup', async () => {
+    const html = await consolePage('test-api-key').text();
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+    const escSrc = scripts.match(/function esc\(s\)\{[^\n]*/)![0];
+    const linkSrc = scripts.match(/function ibxSupLink\(u,label\)\{[\s\S]*?\n\}/)![0];
+    const ibxSupLink = new Function(escSrc + '\n' + linkSrc + '\nreturn ibxSupLink;')() as (u: unknown, label: unknown) => string;
+    for (const unsafe of ['javascript:alert(1)', 'data:text/html,<script>alert(1)</script>', 'JAVASCRIPT:alert(1)', ' https://x.example/']) {
+      expect(ibxSupLink(unsafe, 'label')).toBe('');
+    }
+    const withQuote = ibxSupLink('https://a.cn/"onmouseover="alert(1)', 'w');
+    expect(withQuote).toContain('&quot;');
+    expect(withQuote).not.toContain('"onmouseover');
+    const withHtmlLabel = ibxSupLink('https://a.cn/', '<img src=x onerror=alert(1)>');
+    expect(withHtmlLabel).not.toContain('<img');
+    expect(withHtmlLabel).toContain('&lt;img');
+    // Source guard: the row-render code must esc() company/contact/product
+    // fields rather than splice them in raw, mirroring the invoice-field guard
+    // above (the same XSS class as W-INBOX-1).
+    expect(scripts).not.toMatch(/'\s*\+\s*s\.company\s*\+/);
+    expect(scripts).not.toMatch(/'\s*\+\s*s\.contact_name\s*\+/);
+    expect(scripts).not.toMatch(/'\s*\+\s*\(s\.productLines/);
   });
 });

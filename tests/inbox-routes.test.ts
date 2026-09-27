@@ -658,3 +658,30 @@ describe('applyDraftTemplate never repeats a sent message', () => {
     expect(JSON.parse((await s.getPendingDraft(tid))!.hold_reasons ?? '[]')).not.toContain('repeat_touch');
   });
 });
+
+describe('supplier console routes (2026-09-27)', () => {
+  it('lists suppliers with parsed lists, and updates only status and notes', async () => {
+    const { listSuppliersRoute, updateSupplierRoute } = await import('../src/inbox/routes');
+    const { s } = await seedWithConfig();
+    await s.upsertSupplier({ email: 'x@a.cn', threadId: 't1', facts: { company: 'A', contactName: null, website: 'https://a.cn/', storeLinks: ['https://a.en.alibaba.com/'], kind: 'goods', productLines: ['toys'], shipsFrom: 'CN', nicheFit: 'on-niche', dropship: 'unknown' }, seenAt: '2026-09-01T00:00:00Z', inboundCount: 1 });
+    const r = await listSuppliersRoute(env.DB, SHOP);
+    expect(r.suppliers[0].storeLinks).toEqual(['https://a.en.alibaba.com/']);
+    expect(r.suppliers[0].productLines).toEqual(['toys']);
+    expect((await updateSupplierRoute(env.DB, SHOP, { email: 'x@a.cn', status: 'reviewed', notes: 'ok' })).ok).toBe(true);
+    expect((await updateSupplierRoute(env.DB, SHOP, { email: 'x@a.cn', status: 'deleted' })).ok).toBe(false);
+    expect((await updateSupplierRoute(env.DB, SHOP, { status: 'reviewed' })).ok).toBe(false);
+  });
+
+  it('starts the back-fill and reports it', async () => {
+    const { startSupplierBackfillRoute, listSuppliersRoute } = await import('../src/inbox/routes');
+    await seedWithConfig();
+    const r = await startSupplierBackfillRoute(env.DB, SHOP);
+    expect(r.backfill.done).toBe(false);
+    expect((await listSuppliersRoute(env.DB, SHOP)).backfill?.scanned).toBe(0);
+  });
+
+  it('draft-anyway rejects a missing thread id', async () => {
+    const { draftAnyway } = await import('../src/inbox/routes');
+    expect((await draftAnyway(env.DB, env as any, SHOP, '')).ok).toBe(false);
+  });
+});

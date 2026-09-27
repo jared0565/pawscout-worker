@@ -4,6 +4,8 @@ import { DEFAULT_INBOX, type InboxConfig, type ThreadStatus } from './types';
 import type { Env } from '../types';
 import { sendReply } from './send';
 import { composeDraftForThread } from './sweep';
+import { startSupplierBackfill, readBackfillCursor } from './supplier-backfill';
+import { SUPPLIER_STATUSES, type SupplierStatus } from './supplier-register';
 import { buildServiceProveFirst, buildSupplierAck, buildAccessDecline, buildOperationsDecline, buildCollaborationDecline, buildKeepToEmail, buildSignupInvite, detectVolumePitch, detectOffPlatformRequest, buildSecondTouch, buildPointerBack, type TouchTemplate } from './partnership';
 import { chooseTouch, outboundBodies, type TouchKind } from './repeat';
 import { renderReplyHtml, openInboundText } from './draft';
@@ -331,4 +333,50 @@ export async function approveDraft(db: D1Database, shop: string, env: Env, draft
   const body = typeof editedBody === 'string' && editedBody.trim() ? editedBody : undefined;
   const r = await sendReply(env, store, cfg, got.thread, draft, body);
   return r.ok ? { ok: true as const } : { ok: false as const, error: r.error };
+}
+
+// --- Supplier register (owner decision 2026-09-27) ---
+
+function parseJsonList(s: string): string[] {
+  try { const v = JSON.parse(s); return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []; } catch { return []; }
+}
+
+export async function listSuppliersRoute(db: D1Database, shop: string) {
+  const store = new TenantStore(db, shop);
+  const rows = await store.listSuppliers(500);
+  return {
+    ok: true as const,
+    suppliers: rows.map((r) => ({ ...r, storeLinks: parseJsonList(r.store_links), productLines: parseJsonList(r.product_lines) })),
+    backfill: await readBackfillCursor(store),
+  };
+}
+
+export async function updateSupplierRoute(db: D1Database, shop: string, body: unknown) {
+  const b = (body ?? {}) as { email?: unknown; status?: unknown; notes?: unknown };
+  if (typeof b.email !== 'string' || !b.email.trim()) return { ok: false as const, error: 'email required' };
+  if (b.status !== undefined && !(typeof b.status === 'string' && (SUPPLIER_STATUSES as readonly string[]).includes(b.status))) return { ok: false as const, error: 'status must be new, reviewed or dismissed' };
+  if (b.notes !== undefined && b.notes !== null && typeof b.notes !== 'string') return { ok: false as const, error: 'notes must be text' };
+  const ok = await new TenantStore(db, shop).updateSupplierOwnerFields(b.email, {
+    status: b.status as SupplierStatus | undefined,
+    notes: b.notes === undefined ? undefined : (b.notes as string | null),
+  });
+  return ok ? { ok: true as const } : { ok: false as const, error: 'Supplier not found' };
+}
+
+export async function startSupplierBackfillRoute(db: D1Database, shop: string) {
+  return { ok: true as const, backfill: await startSupplierBackfill(new TenantStore(db, shop)) };
+}
+
+/** The owner asked for a reply on a thread the reader found needs none. Never sends. */
+export async function draftAnyway(db: D1Database, env: Env, shop: string, threadId: unknown, fetchImpl: typeof fetch = defaultFetch) {
+  if (typeof threadId !== 'string' || !threadId.trim()) return { ok: false as const, error: 'threadId required' };
+  const store = new TenantStore(db, shop);
+  const cfg = await store.getConfig();
+  const got = await store.getThreadWithMessages(threadId);
+  if (!cfg || !got) return { ok: false as const, error: 'Thread not found' };
+  if (await store.getPendingDraft(threadId)) return { ok: false as const, error: 'A draft is already pending' };
+  const r = await composeDraftForThread(env, store, cfg, got.thread, fetchImpl, { force: true });
+  if (!r || !('draftId' in r)) return { ok: false as const, error: 'Could not generate a draft - model unavailable, try again.' };
+  if (got.thread.status !== 'needs_reply') await store.setThreadStatus(threadId, 'needs_reply');
+  return { ok: true as const, draft: await store.getPendingDraft(threadId) };
 }
