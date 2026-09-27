@@ -332,4 +332,32 @@ describe('promisesSupplier (supplier lane, owner decision 2026-09-27)', () => {
     'Let us know whether you offer dropshipping.',
     'We keep supplier contact on email and are not arranging samples or calls.',
   ])('stays clean (new patterns fix 2026-09-27) %s', (t) => { expect(promisesSupplier(t)).toBe(false); });
+
+  // Fix round 2 (2026-09-27): promisesSupplier was flagging correct refusals.
+  // A negation guard clears a guarded pattern's match when one of a fixed set
+  // of negation words appears in its own clause, within 30 characters before
+  // the match start.
+  it.each([
+    'There is no need to send samples.',
+    'We are not able to set up a call.',
+    'Please do not send us samples.',
+    'We cannot jump on a call right now.',
+  ])('a correct refusal stays clean (negation guard) %s', (t) => { expect(promisesSupplier(t)).toBe(false); });
+
+  it.each([
+    // Unguarded "at this stage" pattern: still flags despite a nearby "not".
+    'We will not be placing orders at this stage.',
+    // Unguarded partnership pattern: still flags regardless of negation.
+    'Thank you for your partnership proposal.',
+    // The negation in the first clause ("cannot") must not bleed across the
+    // comma into the second, unrelated clause's genuine promise ("we will
+    // review your catalogue").
+    'We cannot promise anything, but we will review your catalogue.',
+  ])('the negation guard never clears an unguarded pattern or a different clause %s', (t) => { expect(promisesSupplier(t)).toBe(true); });
+
+  it('the negation guard matches whole words only, never a substring inside another word', () => {
+    // "noted" contains "not" as a substring; a naive substring check would
+    // wrongly clear the later, unrelated "we will review it" promise.
+    expect(promisesSupplier('We have noted your catalogue and we will review it.')).toBe(true);
+  });
 });

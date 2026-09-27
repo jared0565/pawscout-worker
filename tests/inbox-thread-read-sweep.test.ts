@@ -267,4 +267,28 @@ describe('closed threads (owner decision 2026-09-27)', () => {
     const { s } = await seed({ email: 'n@x.com', name: 'N', category: 'automated', inbound: ['receipt', 'receipt 2'], outboundAfterFirst: 'x', status: 'closed' });
     expect(await s.closedReopenCandidates()).toEqual([]);
   });
+
+  // Fix round 2 (2026-09-27): the newest closed thread must be checked first,
+  // never the oldest - an old thread whose reading keeps failing must not block
+  // newer customers behind it, up to the 10-per-cycle cap.
+  it('with two qualifying closed threads and limit 1, the newer one (by last_message_at) is returned', async () => {
+    const s = new TenantStore(env.DB, SHOP);
+    await s.upsertTenant({ accessTokenEnc: 'tok', dekWrapped: 'd', scopes: 's' });
+    await s.upsertContact({ email: 'old@x.com', name: 'Old', phone: null });
+    await s.upsertContact({ email: 'new@x.com', name: 'New', phone: null });
+
+    const oldTid = await s.createThread({ contactEmail: 'old@x.com', subject: 'Old', subjectNorm: 'old', receivedAt: '2026-08-01T10:00:00Z', initialStatus: 'new' });
+    await s.insertInboundMessageIfNew({ threadId: oldTid, messageId: '<old1@x>', inReplyTo: null, references: [], from: 'old@x.com', to: 'contact@activepaw.co.uk', subject: 'Old', bodyText: 'A real question', bodyHtml: null, headersJson: '{}', receivedAt: '2026-08-01T10:00:00Z' });
+    await s.setThreadClassification(oldTid, { status: 'closed', primaryCategory: 'other', intentScore: 10, summary: 's', classifiedAt: '2026-01-01T00:00:00Z' });
+    await s.touchThread(oldTid, '2026-08-01T10:00:00Z');
+
+    const newTid = await s.createThread({ contactEmail: 'new@x.com', subject: 'New', subjectNorm: 'new', receivedAt: '2026-09-01T10:00:00Z', initialStatus: 'new' });
+    await s.insertInboundMessageIfNew({ threadId: newTid, messageId: '<new1@x>', inReplyTo: null, references: [], from: 'new@x.com', to: 'contact@activepaw.co.uk', subject: 'New', bodyText: 'Another real question', bodyHtml: null, headersJson: '{}', receivedAt: '2026-09-01T10:00:00Z' });
+    await s.setThreadClassification(newTid, { status: 'closed', primaryCategory: 'other', intentScore: 10, summary: 's', classifiedAt: '2026-01-01T00:00:00Z' });
+    await s.touchThread(newTid, '2026-09-01T10:00:00Z');
+
+    const candidates = await s.closedReopenCandidates(1);
+    expect(candidates.length).toBe(1);
+    expect(candidates[0].id).toBe(newTid);
+  });
 });

@@ -163,24 +163,70 @@ export interface DraftQualityContext {
 // reply, meeting, call, samples, partnership, trial or "at this stage". Asking
 // for their link or whether they dropship is information gathering, not a
 // promise, so neither is matched here.
-const SUPPLIER_PROMISE_RES: RegExp[] = [
-  /\bwe(?:['’]ll|['’]d| will| would| shall| can)\s+(?:be\s+)?(?:plac\w*|order\w*|buy\w*|purchas\w*|stock\w*|list\w*|review\w*|contact\w*|reach\w*|get\s+back|follow\s+up|be\s+in\s+touch|in\s+touch|consider\w*|evaluat\w*|arrang\w*|schedul\w*|happy\s+to\s+arrange|happy\s+to\s+schedule)\b/i,
-  /\blook(?:ing)?\s+forward\s+to\s+(?:working|partnering|cooperat\w*|collaborat\w*|doing\s+business)/i,
-  /\bpartnership\b/i,
-  /\b(?:happy|glad|pleased)\s+to\s+(?:arrange|schedule|set\s+up|have|join|hop\s+on|jump\s+on|catch\s+up)\b/i,
-  /\bsend\s+(?:us\s+)?(?:a\s+|some\s+|your\s+)?samples?\b/i,
-  /\b(?:let(?:['’]s|\s+us)|we(?:['’]ll| will)|happy\s+to|glad\s+to)\b[^.]*\bwhatsapp\b/i,
-  /\bat\s+this\s+stage\b|\bfor\s+now\b/i,
-  /apps\/pawscout\/affiliate|\baffiliate\b|\bdiscount\s+code\b|\bcommission\b/i,
-  /\b(?:jump|hop)\s+on\s+a\s+(?:quick\s+)?(?:call|chat)\b/i,
-  /\bset\s+up\s+a\s+(?:quick\s+)?(?:call|meeting|chat|trial)\b/i,
-  /\blet(?:['’]s|\s+us)\s+(?:set\s+up|arrange|schedule|start|try|trial|place|book)\b/i,
-  /\b(?:try|test)\w*\s+(?:a\s+|some\s+|your\s+)?(?:samples?|products?)\b|\b(?:trial|test)\s+order\b/i,
+//
+// `guarded: false` marks the three patterns the controller ruled must flag
+// unconditionally regardless of a nearby negation: the partnership pattern, the
+// "at this stage"/"for now" pattern, and the affiliate/discount-code/commission
+// pattern. Every other pattern is `guarded: true` and gets the negation check
+// below (fix round 2, 2026-09-27): a correct refusal ("There is no need to send
+// samples.") must not be flagged as a promise.
+const SUPPLIER_PROMISE_RULES: { re: RegExp; guarded: boolean }[] = [
+  { re: /\bwe(?:['’]ll|['’]d| will| would| shall| can)\s+(?:be\s+)?(?:plac\w*|order\w*|buy\w*|purchas\w*|stock\w*|list\w*|review\w*|contact\w*|reach\w*|get\s+back|follow\s+up|be\s+in\s+touch|in\s+touch|consider\w*|evaluat\w*|arrang\w*|schedul\w*|happy\s+to\s+arrange|happy\s+to\s+schedule)\b/i, guarded: true },
+  { re: /\blook(?:ing)?\s+forward\s+to\s+(?:working|partnering|cooperat\w*|collaborat\w*|doing\s+business)/i, guarded: true },
+  { re: /\bpartnership\b/i, guarded: false },
+  { re: /\b(?:happy|glad|pleased)\s+to\s+(?:arrange|schedule|set\s+up|have|join|hop\s+on|jump\s+on|catch\s+up)\b/i, guarded: true },
+  { re: /\bsend\s+(?:us\s+)?(?:a\s+|some\s+|your\s+)?samples?\b/i, guarded: true },
+  { re: /\b(?:let(?:['’]s|\s+us)|we(?:['’]ll| will)|happy\s+to|glad\s+to)\b[^.]*\bwhatsapp\b/i, guarded: true },
+  { re: /\bat\s+this\s+stage\b|\bfor\s+now\b/i, guarded: false },
+  { re: /apps\/pawscout\/affiliate|\baffiliate\b|\bdiscount\s+code\b|\bcommission\b/i, guarded: false },
+  { re: /\b(?:jump|hop)\s+on\s+a\s+(?:quick\s+)?(?:call|chat)\b/i, guarded: true },
+  { re: /\bset\s+up\s+a\s+(?:quick\s+)?(?:call|meeting|chat|trial)\b/i, guarded: true },
+  { re: /\blet(?:['’]s|\s+us)\s+(?:set\s+up|arrange|schedule|start|try|trial|place|book)\b/i, guarded: true },
+  { re: /\b(?:try|test)\w*\s+(?:a\s+|some\s+|your\s+)?(?:samples?|products?)\b|\b(?:trial|test)\s+order\b/i, guarded: true },
 ];
 
-/** True when a supplier reply promises, suggests or commits to anything. */
+// Curly apostrophe (U+2019) built from its code point, never typed literally.
+const CURLY_APOSTROPHE = String.fromCharCode(8217);
+/** Word-bounded (never a substring hit inside "noted", "nothing" or "another")
+ * negation vocabulary that clears a guarded pattern's match. */
+const NEGATION_RE = new RegExp(
+  `\\b(?:not|no need|cannot|can't|can${CURLY_APOSTROPHE}t|do not|don't|don${CURLY_APOSTROPHE}t|unable|never)\\b`, 'i'
+);
+/** How far back (characters) a negation is allowed to reach from a match start. */
+const NEGATION_WINDOW_CHARS = 30;
+/** Punctuation that ends a clause: a negation from an earlier clause must never
+ * bleed across one of these into a later, unrelated clause that happens to fall
+ * within the character window (e.g. "We cannot promise anything, but we will
+ * review your catalogue." - the second clause is a genuine promise and is not
+ * negated by the first clause's "cannot"). */
+const CLAUSE_BOUNDARY_CHARS = [',', '.', ';', '!', '?', '\n'];
+
+function precededByNegation(text: string, matchIndex: number): boolean {
+  const windowStart = Math.max(0, matchIndex - NEGATION_WINDOW_CHARS);
+  let window = text.slice(windowStart, matchIndex);
+  let boundary = -1;
+  for (const ch of CLAUSE_BOUNDARY_CHARS) {
+    const idx = window.lastIndexOf(ch);
+    if (idx > boundary) boundary = idx;
+  }
+  if (boundary !== -1) window = window.slice(boundary + 1);
+  return NEGATION_RE.test(window);
+}
+
+/** True when a supplier reply promises, suggests or commits to anything. A
+ * guarded pattern's match is ignored (not a promise) when negated within its
+ * own clause; an unguarded pattern's match always flags. */
 export function promisesSupplier(text: string): boolean {
-  return SUPPLIER_PROMISE_RES.some((re) => re.test(text));
+  return SUPPLIER_PROMISE_RULES.some(({ re, guarded }) => {
+    if (!guarded) return re.test(text);
+    const g = new RegExp(re.source, re.flags.includes('g') ? re.flags : `${re.flags}g`);
+    let m: RegExpExecArray | null;
+    while ((m = g.exec(text)) !== null) {
+      if (!precededByNegation(text, m.index)) return true;
+      if (g.lastIndex === m.index) g.lastIndex += 1; // never loop on a zero-length match
+    }
+    return false;
+  });
 }
 
 /** Minimum words of real substance a reply must carry (a warm courtesy wrapper is fine,
