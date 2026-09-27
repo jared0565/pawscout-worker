@@ -50,9 +50,11 @@ export function renderReplyHtml(text: string): string {
 }
 
 // Display names come from untrusted From headers - never these (role inboxes, not people).
+// 2026-09-24 audit: "Hi Store" and "Hi Ecormerce" went out, so business words join the list.
 const ROLE_NAMES = new Set([
   'info', 'support', 'sales', 'admin', 'contact', 'team', 'hello', 'help',
   'enquiries', 'inquiries', 'orders', 'noreply', 'no-reply', 'mail', 'office', 'customer',
+  'store', 'shop', 'ecommerce', 'ecormerce', 'ecom', 'marketing', 'business', 'export',
 ]);
 
 // Honorifics - never greet with these ("Hi Mr"); skip past to the real name token.

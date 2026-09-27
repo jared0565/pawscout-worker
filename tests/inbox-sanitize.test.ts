@@ -31,6 +31,19 @@ describe('salutationName (skip honorifics, never greet a title)', () => {
   it('falls back to the first token when no email is given', () => {
     expect(salutationName('Adedigba Ridwan')).toBe('Adedigba');
   });
+
+  it('never greets a business or role word (Hi Store / Hi Ecormerce, 2026-09-24 audit)', () => {
+    // The two real contact names behind the audited greetings (inbox_contacts, read 2026-09-27).
+    expect(salutationName('Store - MBE Partners s.r.o.', 'liberec@mbeczech.cz')).toBeNull();
+    expect(salutationName('Aderemi ecormerce', 'ecormerceaderemi26@gmail.com')).toBeNull();
+    expect(salutationName('Shop Experts', null)).toBeNull();
+    expect(salutationName('Marketing Team', null)).toBeNull();
+    expect(salutationName('Export Manager', null)).toBeNull();
+    expect(salutationName('Business Solutions', null)).toBeNull();
+    expect(salutationName('Ecom Pro', null)).toBeNull();
+    expect(salutationName('Jane Store', null)).toBeNull(); // any role token means a role inbox (existing rule)
+    expect(salutationName('Sabrina Liu', 'sales@doukecatlitter.com')).toBe('Sabrina');
+  });
 });
 
 // Construct the dash glyphs at runtime so this test file contains NO literal em/en-dash
