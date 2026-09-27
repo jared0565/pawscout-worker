@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { hasFillerBookend, countWords, substanceWordCount, affirmsDelivery, statesDayRange, findDraftIssues, refineUntilClean, asksDoYouDeliver, claimsBusinessBiography, volunteersTradeDecline, owesBasketDelivery } from '../src/inbox/draft-quality';
+import { hasFillerBookend, countWords, substanceWordCount, affirmsDelivery, statesDayRange, findDraftIssues, refineUntilClean, asksDoYouDeliver, claimsBusinessBiography, volunteersTradeDecline, owesBasketDelivery, promisesSupplier } from '../src/inbox/draft-quality';
 import { SHARED_SCAFFOLDING } from '../src/inbox/agents/scaffolding';
 
 // The live fabrication this gate exists to catch (Azan's thread, 2026-07-05):
@@ -282,5 +282,35 @@ describe('findDraftIssues: repeating a reply we already sent', () => {
   it('does not flag a fresh reply, and skips the check when no prior outbound is given', () => {
     expect(findDraftIssues('Yes, we ship to Ireland; delivery takes five to seven working days from dispatch.', { priorOutbound: [SENT] })).toEqual([]);
     expect(findDraftIssues(SENT, {})).toEqual([]);
+  });
+});
+
+describe('promisesSupplier (supplier lane, owner decision 2026-09-27)', () => {
+  const clean = 'Thank you for sharing your tofu and pine cat litter lines. You are welcome to email over your catalogue. If you have a website or an Alibaba store, please send us the link for our reference, and let us know whether you offer dropshipping, that is sending single orders directly to our customers. We keep supplier details on file for reference.';
+  it('passes a clean acknowledgement, including the dropshipping question', () => {
+    expect(promisesSupplier(clean)).toBe(false);
+    expect(promisesSupplier('We keep supplier contact on email and are not arranging samples or calls.')).toBe(false);
+  });
+  it.each([
+    'We will be in touch if anything fits.',
+    "We'll review your catalogue next week.",
+    'We would consider placing an order.',
+    'We will contact you soon.',
+    'We look forward to working with you.',
+    'We are open to a partnership.',
+    'Please send us some samples.',
+    "We'd be happy to arrange a call.",
+    'Happy to schedule a quick meeting.',
+    "Let's continue on WhatsApp.",
+    'We are not ordering at this stage.',
+    'Nothing is needed for now.',
+    'Apply at https://activepaw.co.uk/apps/pawscout/affiliate/apply',
+    'Our affiliate programme pays 2% commission.',
+  ])('flags %s', (t) => { expect(promisesSupplier(t)).toBe(true); });
+
+  it('findDraftIssues raises it only on the supplier lane', () => {
+    const t = 'Thank you for your catalogue of felt pet beds. We will be in touch soon about an order.';
+    expect(findDraftIssues(t, { supplierLane: true }).join(' ')).toMatch(/promise/i);
+    expect(findDraftIssues(t, {}).join(' ')).not.toMatch(/promise/i);
   });
 });
