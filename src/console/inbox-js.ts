@@ -275,7 +275,7 @@ function renderInboxContext(thread,labels,draft,invoice,applicant,contact,partne
   if(thread.intent_score!=null) cust+='<p class="muted" style="margin:6px 0 0;font-size:12px">Intent score: '+esc(String(thread.intent_score))+'/100</p>';
   if(thread.summary) cust+='<p class="muted" style="margin:6px 0 0;font-size:12px">'+esc(thread.summary)+'</p>';
   cust+='</div>';
-  var labOpts=['lead','product-question','order-status','shipping-returns','wholesale-b2b','affiliate','complaint','spam','automated','other'];
+  var labOpts=['lead','product-question','order-status','shipping-returns','wholesale-b2b','affiliate','complaint','supplier','spam','automated','other'];
   var labSel='<select id="inbox-label-sel" multiple size="5" style="width:100%;font-size:13px">';
   for(var j=0;j<labOpts.length;j++){
     labSel+='<option value="'+esc(labOpts[j])+'"'+(labels.indexOf(labOpts[j])>=0?' selected':'')+'>'+esc(labOpts[j])+'</option>';
