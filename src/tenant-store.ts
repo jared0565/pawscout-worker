@@ -2273,6 +2273,19 @@ export class TenantStore {
     return rs.results ?? [];
   }
 
+  /** Threads the supplier back-fill reads: 'other' or 'supplier', created since
+   *  `since`, in a stable (created_at, id) order after the cursor. Closed
+   *  threads are skipped: stamping their read_at would hide a new message from
+   *  the closed-thread reopen check. */
+  async supplierBackfillThreads(since: string, afterCreatedAt: string | null, afterId: string | null, limit: number): Promise<ThreadRow[]> {
+    const rs = await this.db
+      .prepare(`SELECT * FROM inbox_threads WHERE shop = ?1 AND primary_category IN ('other', 'supplier') AND status != 'closed' AND created_at >= ?2
+                AND (?3 IS NULL OR created_at > ?3 OR (created_at = ?3 AND id > ?4))
+                ORDER BY created_at ASC, id ASC LIMIT ${Math.min(Math.max(limit, 1), 50)}`)
+      .bind(this.shop, since, afterCreatedAt, afterId ?? '').all<ThreadRow>();
+    return rs.results ?? [];
+  }
+
   /** Bump classified_at without touching the verdict - used when a follow-up gave
    *  nothing new to judge (all-quote) or confirmed the existing lane, so the thread
    *  stops qualifying as a reclassify candidate until the sender writes again. */

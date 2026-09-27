@@ -28,6 +28,7 @@ import { CjClient, CjTokenManager, cjFetchFromEnv } from '../cj';
 import { readThread, isSupplierRole, type ThreadReading } from './thread-read';
 import { promisesSupplier } from './draft-quality';
 import { Vault } from '../vault';
+import { runSupplierBackfillStep } from './supplier-backfill';
 
 const SWEEP_BATCH = 15;          // threads classified per shop per run
 
@@ -73,6 +74,8 @@ export async function runInboxClassifySweep(env: Env, fetchImpl: typeof fetch = 
         const handled = invoiceable && await proposeInvoiceOne(env, store, cfg, thread, fetchImpl);
         if (!handled) await draftOne(env, store, cfg, thread, fetchImpl);
       }
+      // One batch of the owner-started supplier back-fill, if one is running.
+      await runSupplierBackfillStep(env, store, cfg, fetchImpl);
     } catch (e) {
       console.warn(`inbox sweep failed for ${shop}: ${(e as Error).message}`);
     }
