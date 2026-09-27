@@ -2301,7 +2301,7 @@ npm run lint > "$TEMP/lint.log" 2>&1; echo "lint rc=$?"
 npm test > "$TEMP/test.log" 2>&1; echo "test rc=$?"; tail -15 "$TEMP/test.log"
 ```
 
-Expected: all three `rc=0`; the test summary shows every file passed. A dash scan of the diff: `git diff master --unified=0 | grep -P '[\x{2013}\x{2014}]'` prints nothing.
+Expected: all three `rc=0`; the test summary shows every file passed. A dash scan of the diff (`grep -P` is not available in this shell's locale, so use node): `git diff master --unified=0 > "$TEMP/d.diff"; node -e "const m=require('fs').readFileSync(process.env.TEMP+'/d.diff','utf8').match(/[–—]/g); console.log('dashes:', m ? m.length : 0)"` prints `dashes: 0`.
 
 - [ ] **Step 3: Commit and push**
 
