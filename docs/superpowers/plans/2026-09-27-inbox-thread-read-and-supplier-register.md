@@ -48,8 +48,9 @@
 
 ```ts
   it('never greets a business or role word (Hi Store / Hi Ecormerce, 2026-09-24 audit)', () => {
-    expect(salutationName('Store Growth', 'ecommerce.storesalesgrowth.pros@gmail.com')).toBeNull();
-    expect(salutationName('Ecormerce Aderemi', 'ecormerceaderemi26@gmail.com')).toBeNull();
+    // The two real contact names behind the audited greetings (inbox_contacts, read 2026-09-27).
+    expect(salutationName('Store - MBE Partners s.r.o.', 'liberec@mbeczech.cz')).toBeNull();
+    expect(salutationName('Aderemi ecormerce', 'ecormerceaderemi26@gmail.com')).toBeNull();
     expect(salutationName('Shop Experts', null)).toBeNull();
     expect(salutationName('Marketing Team', null)).toBeNull();
     expect(salutationName('Export Manager', null)).toBeNull();
@@ -1473,12 +1474,37 @@ describe('composeDraftForThread with the thread reader', () => {
   });
 
   it('a marketer gets the prove-first template, not the creator invite (Raphael, 2026-09-24)', async () => {
-    const { s, tid } = await seed({ email: 'r@voltscale.site', name: 'Raphael', category: 'other', inbound: ['Is this Activepaw?', 'Would you be open to a partnership on a 2% commission? I will help your site reach 10+ daily orders by improving organic visibility.'], outboundAfterFirst: 'Yes, you have reached Active Paw.' });
+    // Raphael's real follow-up (thread c34c08ab, 2026-09-24): the regex on-ramp
+    // pulls it into the funnel; the reading picks the prove-first branch.
+    const raphael = "That's great. Would you be open to a partnership based on a 2% commission model? My goal is to help your website build toward 10+ daily orders by identifying the main growth opportunities, improving organic visibility, and optimizing the customer journey so more of your traffic can turn into sales. There's no upfront service fee from my side. My compensation would be based on the agreed commission structure, so we can focus on building results together. If you're interested, I'd be happy to share the plan and explain exactly what I would work on first. Would you be open to discussing it?";
+    const { s, tid } = await seed({ email: 'r@voltscale.site', name: 'Raphael', category: 'other', inbound: ['Am I correct?', raphael], outboundAfterFirst: 'Yes, you have reached Active Paw.' });
     const { fetchImpl } = llm({ senderRole: 'marketer', openAsks: ['open to a 2% commission partnership?'], offered: 'growth services on commission', alreadyAnswered: ['Yes, this is Active Paw'], replyNeeded: true });
     await composeDraftForThread(ENV, s, (await s.getConfig())!, (await s.getThreadWithMessages(tid))!.thread, fetchImpl);
     const body = (await s.getPendingDraft(tid))?.body_text ?? '';
     expect(body).toMatch(/tracked/i);            // the prove-first wording
     expect(body).not.toMatch(/tell us where you would promote/i); // the creator invite
+  });
+
+  it('a marketer reading alone never pulls a plain thread into the funnel (no applicant row)', async () => {
+    const { s, tid } = await seed({ email: 'y@x.com', name: 'Yussuf', category: 'other', inbound: ['Your products caught my attention. Would you like me to share one thing I noticed?'] });
+    const { fetchImpl } = llm({ senderRole: 'marketer', openAsks: ['share what I noticed?'], offered: 'store advice', alreadyAnswered: [], replyNeeded: true });
+    await composeDraftForThread(ENV, s, (await s.getConfig())!, (await s.getThreadWithMessages(tid))!.thread, fetchImpl);
+    expect(await s.getApplicantByThread(tid)).toBeNull();
+  });
+
+  it('Regenerate never loses the current draft when a supplier re-route is followed by a failed draft', async () => {
+    const { s, tid } = await seed({ email: 'sales@x.cn', name: 'Leon', category: 'other', inbound: ['We are a pet products factory.'] });
+    const old = await s.insertDraft({ threadId: tid, bodyText: 'old draft', bodyHtml: '', confidence: 50, quotesPriceOrder: false, holdReasons: [], model: 'm', status: 'pending' });
+    const fetchImpl = (async (url: string, init: RequestInit) => {
+      if (!String(url).includes('openrouter')) return new Response('{}', { status: 200 });
+      const sys = JSON.parse(String(init.body)).messages?.[0]?.content ?? '';
+      if (sys.startsWith(THREAD_READER_MARKER)) return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(supplierReading) } }], usage: { cost: 0 } }), { status: 200 });
+      return new Response('upstream down', { status: 500 });
+    }) as unknown as typeof fetch;
+    const { regenerateDraft } = await import('../src/inbox/routes');
+    const r = await regenerateDraft(env.DB, ENV, SHOP, old, fetchImpl);
+    expect(r.ok).toBe(false);
+    expect((await s.getDraft(old))?.status).toBe('pending');
   });
 
   it('the funnel stands down for a supplier who says partnership or cooperation', async () => {
@@ -1505,19 +1531,15 @@ Add `import type { ThreadReading } from './thread-read';` and `import { isSuppli
   // writes "partnership" or "cooperation" is not a partnership conversation.
   // An existing applicant keeps the thread in the funnel, as before.
   if (!applicant && (thread.primary_category === 'supplier' || isSupplierRole(reading?.senderRole))) return null;
-  // The thread reading can name a service seller that the pitch regexes miss
-  // (Raphael, 2026-09-24: "partnership on a 2% commission ... 10+ daily orders").
+  // The thread reading can name a service seller that the pitch regexes call a
+  // volume pitch (Raphael, 2026-09-24: "partnership on a 2% commission ... 10+
+  // daily orders" got the creator invite). It only changes WHICH first touch a
+  // thread already in the funnel gets; it never pulls a thread into the funnel
+  // (an applicant row is permanent, so an LLM verdict must not create one).
   const readerMarketer = reading?.senderRole === 'marketer';
 ```
 
-In the lane gate, add `&& !readerMarketer`:
-
-```ts
-  if (!applicant && !servicePitch && !readerMarketer && !volumePitchNow && !accessRequestNow
-      && !isPartnershipLane({ inboundToAddrs, declaredIntent, primaryCategory: thread.primary_category, inboundTexts: openInboundTexts(got.messages) })) return null;
-```
-
-and in the first-touch branch that sends `service_prove_first`:
+The lane gate is NOT changed. In the first-touch branch that sends `service_prove_first`:
 
 ```ts
   if (!applicant && (servicePitch || readerMarketer)) {
@@ -1566,7 +1588,9 @@ export async function composeDraftForThread(
         status: 'needs_reply', primaryCategory: 'supplier', intentScore: thread.intent_score, summary: thread.summary, classifiedAt: new Date().toISOString()
       });
       await store.setThreadLabels(thread.id, ['supplier']);
-      await store.supersedePendingDrafts(thread.id);
+      // Regenerate and Draft anyway (force) retire the old draft themselves,
+      // only after the new one exists, so a failed draft never loses it.
+      if (!opts.force) await store.supersedePendingDrafts(thread.id);
       t = { ...thread, primary_category: 'supplier' };
     }
   }
@@ -1629,7 +1653,29 @@ async function draftOne(env: Env, store: TenantStore, cfg: TenantConfig, thread:
 - [ ] **Step 7: Run the tests and see them pass**
 
 Run: `npx vitest run tests/inbox-thread-read-sweep.test.ts tests/inbox-sweep.test.ts tests/inbox-routes.test.ts tests/partnership-draft-screen.test.ts tests/partnership-pitch-routing.test.ts tests/agents/dispatch-integration.test.ts && npm run typecheck`
-Expected: PASS. Existing tests that mock OpenRouter with one fixed answer now also receive the reader call; their fixed answer is not a valid reading, so `validateReading` returns null and they run the old path. If one of them counts OpenRouter calls, raise its expected count by one and say why in a comment (the reader call).
+Expected: PASS. Existing tests that mock OpenRouter now also receive the reader's calls. Know two facts before touching them: (1) when `validate` returns null, `jsonChain` RETRIES and then advances to the next tier (`src/llm.ts`, "LLM JSON failed validation"), so a mock whose fixed answer is not a valid reading receives SEVERAL reader calls, not one, before the reader gives up and the old path runs; (2) some files sequence their mock answers by call order (a counter or an array). Before this task's code change, open `tests/inbox-w2-integration.test.ts`, `tests/agents/dispatch-integration.test.ts`, `tests/partnership-draft-screen.test.ts`, `tests/partnership-pitch-routing.test.ts`, `tests/inbox-routes.test.ts` and `tests/inbox-sweep.test.ts` one at a time and note every mock that counts or sequences calls. For those, route by the system prompt instead of by order, with this helper added to `tests/helpers/reader-mock.ts` (new) and imported where needed:
+
+```ts
+import { THREAD_READER_MARKER } from '../../src/inbox/thread-read';
+
+/** Wrap an OpenRouter mock so thread-reader calls get `reading` (default: null,
+ *  which makes the reader give up and the old path run) and never reach, or
+ *  shift, the wrapped mock's own call sequence. */
+export function withReader(inner: typeof fetch, reading: unknown = null): typeof fetch {
+  return (async (url: string, init: RequestInit) => {
+    if (String(url).includes('openrouter')) {
+      const sys = JSON.parse(String(init.body)).messages?.[0]?.content ?? '';
+      if (sys.startsWith(THREAD_READER_MARKER)) {
+        const content = reading === null ? '{"senderRole":"invalid"}' : JSON.stringify(reading);
+        return new Response(JSON.stringify({ choices: [{ message: { content } }], usage: { cost: 0 } }), { status: 200 });
+      }
+    }
+    return inner(url as any, init);
+  }) as unknown as typeof fetch;
+}
+```
+
+Change only how those mocks are wrapped, never what they assert.
 
 - [ ] **Step 8: Commit**
 
@@ -1660,7 +1706,8 @@ git push
 ```ts
 describe('closed threads (owner decision 2026-09-27)', () => {
   it('reopens a closed thread when a customer asks a real question (Investor Mark, June)', async () => {
-    const { s, tid } = await seed({ email: 'm@x.com', name: 'Mark', category: 'lead', inbound: ['Am I speaking to the owner?', 'Do you ship internationally?'], outboundAfterFirst: 'Hello, I am part of the team.', status: 'closed' });
+    // shipping-returns, not lead: the sweep offers a lead to the invoice path first.
+    const { s, tid } = await seed({ email: 'm@x.com', name: 'Mark', category: 'shipping-returns', inbound: ['Am I speaking to the owner?', 'Do you ship internationally?'], outboundAfterFirst: 'Hello, I am part of the team.', status: 'closed' });
     const { fetchImpl } = llm({ senderRole: 'customer', openAsks: ['Do you ship internationally?'], offered: '', alreadyAnswered: [], replyNeeded: true },
       { customerAsks: ['ship internationally'], bodyText: 'Yes, we ship internationally to most countries, and the delivery cost is shown at checkout before payment.', confidence: 90, quotesPriceOrOrder: false, commercialIntent: false });
     await runInboxClassifySweep(ENV, fetchImpl);
@@ -1853,10 +1900,12 @@ Expected: FAIL, cannot resolve `../src/inbox/supplier-backfill`.
 
 ```ts
   /** Threads the supplier back-fill reads: 'other' or 'supplier', created since
-   *  `since`, in a stable (created_at, id) order after the cursor. */
+   *  `since`, in a stable (created_at, id) order after the cursor. Closed
+   *  threads are skipped: stamping their read_at would hide a new message from
+   *  the closed-thread reopen check. */
   async supplierBackfillThreads(since: string, afterCreatedAt: string | null, afterId: string | null, limit: number): Promise<ThreadRow[]> {
     const rs = await this.db
-      .prepare(`SELECT * FROM inbox_threads WHERE shop = ?1 AND primary_category IN ('other', 'supplier') AND created_at >= ?2
+      .prepare(`SELECT * FROM inbox_threads WHERE shop = ?1 AND primary_category IN ('other', 'supplier') AND status != 'closed' AND created_at >= ?2
                 AND (?3 IS NULL OR created_at > ?3 OR (created_at = ?3 AND id > ?4))
                 ORDER BY created_at ASC, id ASC LIMIT ${Math.min(Math.max(limit, 1), 50)}`)
       .bind(this.shop, since, afterCreatedAt, afterId ?? '').all<ThreadRow>();
@@ -2239,9 +2288,12 @@ In `renderInboxThread`, replace the no-draft `else` branch:
     // (2026-09-27), say so and offer Draft anyway.
     var noReply=false;
     try{ var rd=thread.reading_json?JSON.parse(thread.reading_json):null; noReply=!!(rd&&rd.replyNeeded===false); }catch(e){ noReply=false; }
+    // The button shows on EVERY thread without a draft (the route accepts any),
+    // so the owner can also preview a reply on an old thread, for example to
+    // see the new supplier wording on a supplier already answered by hand.
     draftHtml=noReply
       ?'<div class="ibx-note">No reply needed: their last message only acknowledges ours. <button id="ibx-draft-anyway-btn" type="button" class="ghost">Draft anyway</button> '+tplSel+'</div>'
-      :'<div class="ibx-note">No draft pending '+tplSel+'</div>';
+      :'<div class="ibx-note">No draft pending <button id="ibx-draft-anyway-btn" type="button" class="ghost">Draft a reply</button> '+tplSel+'</div>';
   }
 ```
 
@@ -2328,4 +2380,5 @@ Run: `npm run deploy -- --env staging` (off the cron marks). Expected: migration
   - D1: `npx wrangler d1 execute pawscout --remote --json --command "SELECT name FROM d1_migrations ORDER BY id DESC LIMIT 1"` reads `0044_supplier_register.sql` (retry once on a 7403).
   - Console (admin iframe, per the memory note on session-authed routes): open the Suppliers view; press "Scan past inbox for suppliers"; after two sweeps read the register probe from STATES.md.
   - Regenerate the pending drafts on the audited threads that still have one (Mail Boxes Etc. Liberec, Jerome) and read each new draft: Liberec gets the logistics wording signed Active Paw Sourcing Team with no affiliate link; Jerome's pitch gets the prove-first wording.
+  - The eight audited suppliers have no pending draft. With the owner's agreement, press "Draft a reply" on two of them (Douke and Andasea) to preview the supplier wording. Each becomes a pending draft for the owner to read, edit, send or discard; nothing is sent. Check: signed Active Paw Sourcing Team, asks for the website or Alibaba link and whether they dropship, no promise, no affiliate link.
 ```
