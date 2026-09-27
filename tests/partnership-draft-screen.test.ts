@@ -31,7 +31,7 @@ describe('partnership first-touch, decline_all toggle (2026-07-03 policy, config
     const thread = (await s.getThreadWithMessages(tid))!.thread;
     const r = await composeDraftForThread({ ...env } as any, s, DECLINE_CFG, thread, noFetch);
     expect(r).not.toBeNull();
-    expect(r!.send).toBe(false); // HITL - owner approves
+    expect((r as { send: boolean }).send).toBe(false); // HITL - owner approves
     const draft = await s.getPendingDraft(tid);
     expect(draft!.body_text).toMatch(/not a fit for our affiliate programme/i);
     expect(draft!.body_text).not.toMatch(/where would you promote/i); // no qualifying questions
@@ -65,7 +65,7 @@ describe('partnership first-touch, LIVE default (funnel_voucher, owner policy 20
     const thread = (await s.getThreadWithMessages(tid))!.thread;
     const r = await composeDraftForThread({ ...env } as any, s, CFG, thread, noFetch); // plain DEFAULT_INBOX = the live default
     expect(r).not.toBeNull();
-    expect(r!.send).toBe(false); // qualifying emails are ALWAYS HITL
+    expect((r as { send: boolean }).send).toBe(false); // qualifying emails are ALWAYS HITL
     const draft = await s.getPendingDraft(tid);
     expect(draft!.body_text).toMatch(/where would you promote/i);
     expect(draft!.body_text).toContain('your own discount code');
@@ -97,7 +97,7 @@ describe('partnership first-touch, signup_page mode (owner policy 2026-07-18: se
     const thread = (await s.getThreadWithMessages(tid))!.thread;
     const r = await composeDraftForThread({ ...env } as any, s, SIGNUP_CFG, thread, noFetch);
     expect(r).not.toBeNull();
-    expect(r!.send).toBe(false); // HITL like every funnel email
+    expect((r as { send: boolean }).send).toBe(false); // HITL like every funnel email
     const draft = await s.getPendingDraft(tid);
     expect(draft!.body_text).toContain(AFFILIATE_APPLY_URL);
     expect(draft!.body_text).not.toMatch(/where would you promote/i);   // no email screening
@@ -176,7 +176,7 @@ describe('decline template auto-send (owner opt-in 2026-07-03; decline_all toggl
     const { s, tid } = await seedFirstTouch('g.myshopify.com');
     const thread = (await s.getThreadWithMessages(tid))!.thread;
     const r = await composeDraftForThread({ ...env } as any, s, AUTO_CFG, thread, noFetch);
-    expect(r!.send).toBe(true);
+    expect((r as { send: boolean }).send).toBe(true);
     const draft = await s.getPendingDraft(tid);
     expect(JSON.parse(draft!.hold_reasons ?? '[]')).toEqual([]);
     expect((await s.getApplicantByThread(tid))!.stage).toBe('declined');
@@ -187,7 +187,7 @@ describe('decline template auto-send (owner opt-in 2026-07-03; decline_all toggl
     const thread = (await s.getThreadWithMessages(tid))!.thread;
     const cfg: TenantConfig = { ...CFG, inbox: { ...DEFAULT_INBOX, affiliateMode: 'decline_all', autosend: true } }; // no per-agent opt-in
     const r = await composeDraftForThread({ ...env } as any, s, cfg, thread, noFetch);
-    expect(r!.send).toBe(false);
+    expect((r as { send: boolean }).send).toBe(false);
     const draft = await s.getPendingDraft(tid);
     expect(JSON.parse(draft!.hold_reasons ?? '[]')).toContain('autosend_off');
   });
@@ -197,7 +197,7 @@ describe('decline template auto-send (owner opt-in 2026-07-03; decline_all toggl
     const thread = (await s.getThreadWithMessages(tid))!.thread;
     const cfg: TenantConfig = { ...CFG, inbox: { ...DEFAULT_INBOX, affiliateMode: 'decline_all', autosend: false, agents: { affiliate: { autosend: true } } } };
     const r = await composeDraftForThread({ ...env } as any, s, cfg, thread, noFetch);
-    expect(r!.send).toBe(false);
+    expect((r as { send: boolean }).send).toBe(false);
   });
 
   it('holds (rate_limited) after 3 outbound messages to the same sender in 24h', async () => {
@@ -208,7 +208,7 @@ describe('decline template auto-send (owner opt-in 2026-07-03; decline_all toggl
     }
     const thread = (await s.getThreadWithMessages(tid))!.thread;
     const r = await composeDraftForThread({ ...env } as any, s, AUTO_CFG, thread, noFetch);
-    expect(r!.send).toBe(false);
+    expect((r as { send: boolean }).send).toBe(false);
     const draft = await s.getPendingDraft(tid);
     expect(JSON.parse(draft!.hold_reasons ?? '[]')).toContain('rate_limited');
   });

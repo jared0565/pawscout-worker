@@ -12,6 +12,7 @@ import { resolveAgents } from './agents/config';
 import { AUTO_RATELIMIT_PER_SENDER_DAY } from './autosend';
 import { adminForShop } from './invoice-routes';
 import { issueVoucher, voucherDateLabel } from '../affiliate-discounts';
+import { isSupplierRole, type ThreadReading } from './thread-read';
 
 export const PARTNERSHIP_ADDRESS = 'sales@activepaw.co.uk';
 export const PARTNERSHIP_FROM = 'Active Paw Partnerships <sales@activepaw.co.uk>';
@@ -1000,7 +1001,8 @@ export async function maybePartnershipDraft(
   env: Env, store: TenantStore, cfg: TenantConfig, thread: ThreadRow,
   got: { thread: ThreadRow; messages: MessageRow[]; labels: string[] },
   _fetchImpl: typeof fetch,
-  modeOverride?: AffiliateMode
+  modeOverride?: AffiliateMode,
+  reading?: ThreadReading | null
 ): Promise<{ draftId: string; send: boolean } | null> {
   const mode: AffiliateMode = modeOverride ?? cfg.inbox.affiliateMode ?? 'funnel_voucher';
   const variant: FunnelVariant = mode === 'funnel_link' ? 'link' : 'voucher';
@@ -1013,6 +1015,16 @@ export async function maybePartnershipDraft(
   // untouched, and isPartnershipLane only ORs the partnerships on-ramp in.
   const declaredIntent = got.thread.declared_intent;
   const applicant = await store.getApplicantByThread(thread.id);
+  // Suppliers have their own lane (owner decision 2026-09-27): a factory that
+  // writes "partnership" or "cooperation" is not a partnership conversation.
+  // An existing applicant keeps the thread in the funnel, as before.
+  if (!applicant && (thread.primary_category === 'supplier' || isSupplierRole(reading?.senderRole))) return null;
+  // The thread reading can name a service seller that the pitch regexes call a
+  // volume pitch (Raphael, 2026-09-24: "partnership on a 2% commission ... 10+
+  // daily orders" got the creator invite). It only changes WHICH first touch a
+  // thread already in the funnel gets; it never pulls a thread into the funnel
+  // (an applicant row is permanent, so an LLM verdict must not create one).
+  const readerMarketer = reading?.senderRole === 'marketer';
 
   // Pitch on-ramp (2026-07-05): the owner-observed pitch patterns arrive at
   // contact@ classified 'other', usually AFTER a bait opener ("do you ship to
@@ -1142,7 +1154,7 @@ export async function maybePartnershipDraft(
   // thread. The detector is grounded in the MESSAGE TEXT only and stands down
   // on any creator signal - when in doubt, the funnel. First touch only.
   // Always HITL: the owner validates this template on live traffic first.
-  if (!applicant && servicePitch) {
+  if (!applicant && (servicePitch || readerMarketer)) {
     const { draftId } = await insertTouched('service_prove_first', buildServiceProveFirst(name));
     await store.upsertApplicant({ threadId: thread.id, contactEmail: thread.contact_email, stage: 'passed_to_form' });
     return { draftId, send: false };

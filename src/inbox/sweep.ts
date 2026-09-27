@@ -13,7 +13,7 @@ import { maybeAlertOwner } from './alert';
 import { proposeInvoice } from './propose-invoice';
 import { adminForShop } from './invoice-routes';
 import { resolveLineRequest } from '../shopify-catalog';
-import { invoiceSendDecision } from './invoice-floor';
+import { invoiceSendDecision, INVOICE_CATEGORIES } from './invoice-floor';
 import { createDraftOrder } from '../shopify-drafts';
 import { sendInvoice } from './send-invoice';
 import { hasScope } from './scopes';
@@ -25,6 +25,8 @@ import { resolveAgents } from './agents/config';
 import type { AgentContext, Department } from './agents/types';
 import type { ThreadRow, InvoiceLineItem } from './types';
 import { CjClient, CjTokenManager, cjFetchFromEnv } from '../cj';
+import { readThread, isSupplierRole, type ThreadReading } from './thread-read';
+import { promisesSupplier } from './draft-quality';
 import { Vault } from '../vault';
 
 const SWEEP_BATCH = 15;          // threads classified per shop per run
@@ -59,7 +61,12 @@ export async function runInboxClassifySweep(env: Env, fetchImpl: typeof fetch = 
         await reclassifyOne(env, store, cfg, shop, thread, fetchImpl);
       }
       for (const thread of await store.threadsNeedingDraft(SWEEP_BATCH)) {
-        const handled = await proposeInvoiceOne(env, store, cfg, thread, fetchImpl);
+        // Only a category the invoice floor can ever allow goes to the invoice
+        // model: a yes there skips the draft, so a supplier quoting prices could
+        // otherwise get no reply, and every other thread would pay for a call
+        // whose invoice could never be created.
+        const invoiceable = INVOICE_CATEGORIES.has(thread.primary_category ?? 'other');
+        const handled = invoiceable && await proposeInvoiceOne(env, store, cfg, thread, fetchImpl);
         if (!handled) await draftOne(env, store, cfg, thread, fetchImpl);
       }
     } catch (e) {
@@ -304,6 +311,9 @@ export async function proposeInvoiceOne(
   }
 }
 
+/** A fresh pending draft, or noReply when the thread reading found nothing to answer. */
+export type ComposeResult = { draftId: string; send: boolean } | { noReply: true };
+
 /**
  * Build and persist a fresh PENDING draft for a thread - conversation → category
  * agent (ground) → LLM draft → optional trusted appendix → compose → insert.
@@ -313,13 +323,53 @@ export async function proposeInvoiceOne(
  * Regenerate action (which never does), so both paths produce drafts identically.
  */
 export async function composeDraftForThread(
-  env: Env, store: TenantStore, cfg: TenantConfig, thread: ThreadRow, fetchImpl: typeof fetch = defaultFetch
-): Promise<{ draftId: string; send: boolean } | null> {
+  env: Env, store: TenantStore, cfg: TenantConfig, thread: ThreadRow, fetchImpl: typeof fetch = defaultFetch,
+  opts: { force?: boolean } = {}
+): Promise<ComposeResult | null> {
   const got = await store.getThreadWithMessages(thread.id);
   if (!got) return null;
+  const llm = new LlmClient({ openrouter: env.OPENROUTER_API_KEY, openai: env.OPENAI_API_KEY }, fetchImpl);
+
+  // Thread reader first (owner design 2026-09-27). Never blocking: a failed
+  // reading is null and everything below runs exactly as it did before. Only
+  // when the inbox is on: draftReply returns null when it is off, so a reading
+  // would be a paid call for nothing.
+  let t = thread;
+  const reading: ThreadReading | null = cfg.inbox.enabled
+    ? await readThread(llm, store, cfg, {
+      subject: thread.subject ?? '', transcript: buildDraftTranscript(got.messages), fromEmail: thread.contact_email
+    }).catch(() => null)
+    : null;
+  if (reading) {
+    // Bookkeeping writes never block drafting: a D1 hiccup here only loses the record.
+    await store.saveThreadReading(thread.id, JSON.stringify(reading))
+      .catch((e) => console.warn(`thread reading save failed for ${thread.id}: ${(e as Error).message}`));
+    if (reading.supplier) {
+      await store.upsertSupplier({
+        email: thread.contact_email, threadId: thread.id, facts: reading.supplier, seenAt: thread.last_message_at,
+        inboundCount: got.messages.filter((m) => m.direction === 'inbound').length
+      }).catch((e) => console.warn(`supplier register write failed for ${thread.id}: ${(e as Error).message}`));
+    }
+    // "No reply needed" only once we have replied: a first message always gets a draft.
+    const weReplied = got.messages.some((m) => m.direction === 'outbound');
+    if (!opts.force && weReplied && !reading.replyNeeded) {
+      await store.setThreadStatus(thread.id, 'awaiting_customer');
+      return { noReply: true };
+    }
+    if (isSupplierRole(reading.senderRole) && thread.primary_category !== 'supplier' && !(await store.getApplicantByThread(thread.id))) {
+      await store.setThreadClassification(thread.id, {
+        status: 'needs_reply', primaryCategory: 'supplier', intentScore: thread.intent_score, summary: thread.summary, classifiedAt: new Date().toISOString()
+      });
+      await store.setThreadLabels(thread.id, ['supplier']);
+      // Regenerate and Draft anyway (force) retire the old draft themselves,
+      // only after the new one exists, so a failed draft never loses it.
+      if (!opts.force) await store.supersedePendingDrafts(thread.id);
+      t = { ...thread, primary_category: 'supplier' };
+    }
+  }
 
   // Partnership/affiliate funnel intercept - supersedes the generic drafter for lane threads.
-  const partnership = await maybePartnershipDraft(env, store, cfg, thread, got, fetchImpl);
+  const partnership = await maybePartnershipDraft(env, store, cfg, t, got, fetchImpl, undefined, reading);
   if (partnership) return partnership;
 
   const inbound = got.messages.filter((m) => m.direction === 'inbound');
@@ -339,13 +389,12 @@ export async function composeDraftForThread(
   // messages were only quotes (drafter then falls back to a brief acknowledgement).
   const latestInbound = openInboundText(got.messages);
 
-  const llm = new LlmClient({ openrouter: env.OPENROUTER_API_KEY, openai: env.OPENAI_API_KEY }, fetchImpl);
-  const contact = await store.getContactByEmail(thread.contact_email);
+  const contact = await store.getContactByEmail(t.contact_email);
   // Build the Admin client defensively: a missing token returns null, and a decrypt
   // failure (bad/rotated key) must degrade to null too, never abort the shop's sweep
   // batch. Agents that need it hedge when admin is null (same as a missing token).
   const admin = await adminForShop(env, store, fetchImpl).catch((e) => {
-    console.warn(`inbox admin unavailable for ${thread.id}: ${(e as Error).message}`);
+    console.warn(`inbox admin unavailable for ${t.id}: ${(e as Error).message}`);
     return null;
   });
 
@@ -359,7 +408,7 @@ export async function composeDraftForThread(
       const f = cjFetchFromEnv(env);
       return new CjClient(() => new CjTokenManager(store, vault, f).getToken(), f);
     } catch (e) {
-      console.warn(`inbox cj unavailable for ${thread.id}: ${(e as Error).message}`);
+      console.warn(`inbox cj unavailable for ${t.id}: ${(e as Error).message}`);
       return null;
     }
   })();
@@ -377,16 +426,16 @@ export async function composeDraftForThread(
   // only if the sender does, where the affiliate agent's prompt sets out the
   // programme first regardless. The funnel above has already stood down for the
   // same reason (its category on-ramp is text-gated by isPartnershipLane).
-  const groundedCategory = thread.primary_category === 'affiliate' && !cleaned.some(detectPartnershipAsk)
+  const groundedCategory = t.primary_category === 'affiliate' && !cleaned.some(detectPartnershipAsk)
     ? 'other'
-    : thread.primary_category;
+    : t.primary_category;
   const agent = agentFor(groundedCategory);
   // Grounding gets the INBOUND-ONLY `conversation`: deriveDestinationCountry
   // (product/shipping agents) reads ctx.conversation, and our own outbound text
   // ("...to the UK", "activepaw.co.uk") would corrupt the destination it infers.
   const ctx: AgentContext = {
-    store, cfg, admin, cj, thread, conversation, latestMessage: latestInbound,
-    contactEmail: thread.contact_email, customerName: contact?.name ?? null
+    store, cfg, admin, cj, thread: t, conversation, latestMessage: latestInbound,
+    contactEmail: t.contact_email, customerName: contact?.name ?? null
   };
   const grounding = await agent.ground(ctx); // never throws; miss => { confident:false }
 
@@ -398,13 +447,13 @@ export async function composeDraftForThread(
   // answers to similar questions. Failure degrades to no recall, never blocks.
   let recall: { question: string; answer: string }[] = [];
   try {
-    recall = await recallAnswers(store, thread.primary_category ?? null, latestInbound);
-  } catch (e) { console.warn(`answer recall failed for ${thread.id}: ${(e as Error).message}`); }
+    recall = await recallAnswers(store, t.primary_category ?? null, latestInbound);
+  } catch (e) { console.warn(`answer recall failed for ${t.id}: ${(e as Error).message}`); }
 
   const draft = await draftReply(llm, store, cfg, {
-    agent, grounding, subject: thread.subject ?? '', conversation: transcript, latestMessage: latestInbound,
-    customerName: contact?.name ?? null, customerEmail: thread.contact_email, recall,
-    priorOutbound: outboundBodies(got.messages), admin
+    agent, grounding, subject: t.subject ?? '', conversation: transcript, latestMessage: latestInbound,
+    customerName: contact?.name ?? null, customerEmail: t.contact_email, recall,
+    priorOutbound: outboundBodies(got.messages), admin, reading
   });
   if (!draft) return null; // degrade: retry next sweep
 
@@ -420,7 +469,7 @@ export async function composeDraftForThread(
   const agents = resolveAgents(cfg.inbox);
   const agentAutosend = cfg.inbox.autosend && agents[agent.category].autosend;
   const sinceIso = new Date(Date.now() - 86400_000).toISOString();
-  const recentAutoCount = await store.recentAutoSendCount(thread.contact_email, sinceIso);
+  const recentAutoCount = await store.recentAutoSendCount(t.contact_email, sinceIso);
   // Owner rule 2026-09-04: a reply that repeats one we already sent on this thread
   // never auto-sends (the reviser was asked for a shorter one first; this is the
   // backstop when it came back the same).
@@ -430,19 +479,24 @@ export async function composeDraftForThread(
     quotesPriceOrOrder: composed.quotesPriceOrder, bodyText: draft.bodyText,
     category: agent.category, recentAutoCount, repeatsPrior
   });
+  // A supplier reply that still promises something after the revisions is held
+  // for the owner with a named reason (owner decision 2026-09-27).
+  const supplierHold = agent.category === 'supplier' && promisesSupplier(draft.bodyText);
+  const holdReasons = supplierHold ? [...decision.holdReasons, 'supplier_commitment'] : decision.holdReasons;
+  const send = decision.send && !supplierHold;
 
   const draftId = await store.insertDraft({
-    threadId: thread.id, bodyText: composed.bodyText, bodyHtml: renderReplyHtml(composed.bodyText),
+    threadId: t.id, bodyText: composed.bodyText, bodyHtml: renderReplyHtml(composed.bodyText),
     confidence: draft.confidence, quotesPriceOrder: composed.quotesPriceOrder,
-    commercialIntent: draft.commercialIntent, holdReasons: decision.holdReasons,
+    commercialIntent: draft.commercialIntent, holdReasons,
     model: (resolveChain(cfg, 'text')[0] as { models: string[] }).models[0], status: 'pending'
   });
-  return { draftId, send: decision.send }; // trusted appendix no longer force-holds
+  return { draftId, send }; // trusted appendix no longer force-holds
 }
 
 async function draftOne(env: Env, store: TenantStore, cfg: TenantConfig, thread: ThreadRow, fetchImpl: typeof fetch): Promise<void> {
   const r = await composeDraftForThread(env, store, cfg, thread, fetchImpl);
-  if (!r) return;
+  if (!r || !('draftId' in r)) return;
   if (r.send) {
     const draftRow = await store.getDraft(r.draftId);
     if (draftRow) await sendReply(env, store, cfg, thread, draftRow, undefined, fetchImpl);
