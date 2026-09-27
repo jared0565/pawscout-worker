@@ -1220,4 +1220,15 @@ describe('consolePage', () => {
     expect(scripts).not.toMatch(/'\s*\+\s*s\.contact_name\s*\+/);
     expect(scripts).not.toMatch(/'\s*\+\s*\(s\.productLines/);
   });
+
+  // Fix round 1 (2026-09-27): opening Suppliers must go through the same
+  // unsent-draft-edits guard as switching threads (ibxRowClick), not bypass it.
+  it('the Suppliers chip checks ibxDraftEdited through the same two-click-confirm guard as switching threads', async () => {
+    const html = await consolePage('test-api-key').text();
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+    expect(html).toContain('onclick="ibxSuppliersChipClick()"');
+    expect(scripts).toContain('function ibxSuppliersChipClick(');
+    expect(scripts).toContain("ibxSelectedId!==null&&ibxDraftEdited()&&ibxSwitchArmedId!=='suppliers'");
+    expect(scripts).toContain("ibxSwitchArmedId='suppliers'");
+  });
 });

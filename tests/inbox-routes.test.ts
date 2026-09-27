@@ -680,6 +680,33 @@ describe('supplier console routes (2026-09-27)', () => {
     expect((await listSuppliersRoute(env.DB, SHOP)).backfill?.scanned).toBe(0);
   });
 
+  // Fix round 1 (2026-09-27): a second click while a scan is already running
+  // must never restart it - that would reset scanned/found to 0 and re-spend
+  // LLM calls on threads the current pass already read.
+  it('does not restart a running back-fill: alreadyRunning is true and the cursor is untouched', async () => {
+    const { startSupplierBackfillRoute } = await import('../src/inbox/routes');
+    const { SUPPLIER_BACKFILL_KEY } = await import('../src/inbox/supplier-backfill');
+    const { s } = await seedWithConfig();
+    await startSupplierBackfillRoute(env.DB, SHOP);
+    // Simulate progress: overwrite the cursor as if a sweep step already ran.
+    await s.putSearchCache(SUPPLIER_BACKFILL_KEY, JSON.stringify({ since: '2026-01-01T00:00:00Z', afterCreatedAt: null, afterId: null, scanned: 20, found: 3, done: false }), 30);
+    const r = (await startSupplierBackfillRoute(env.DB, SHOP)) as { ok: true; backfill: { scanned: number; found: number; done: boolean }; alreadyRunning?: boolean };
+    expect(r.alreadyRunning).toBe(true);
+    expect(r.backfill.scanned).toBe(20);
+    expect(r.backfill.found).toBe(3);
+  });
+
+  it('a finished back-fill can be restarted deliberately: scanned resets to 0', async () => {
+    const { startSupplierBackfillRoute } = await import('../src/inbox/routes');
+    const { SUPPLIER_BACKFILL_KEY } = await import('../src/inbox/supplier-backfill');
+    const { s } = await seedWithConfig();
+    await s.putSearchCache(SUPPLIER_BACKFILL_KEY, JSON.stringify({ since: '2026-01-01T00:00:00Z', afterCreatedAt: null, afterId: null, scanned: 200, found: 12, done: true }), 30);
+    const r = (await startSupplierBackfillRoute(env.DB, SHOP)) as { ok: true; backfill: { scanned: number; done: boolean }; alreadyRunning?: boolean };
+    expect(r.alreadyRunning).toBeUndefined();
+    expect(r.backfill.scanned).toBe(0);
+    expect(r.backfill.done).toBe(false);
+  });
+
   it('draft-anyway rejects a missing thread id', async () => {
     const { draftAnyway } = await import('../src/inbox/routes');
     expect((await draftAnyway(env.DB, env as any, SHOP, '')).ok).toBe(false);

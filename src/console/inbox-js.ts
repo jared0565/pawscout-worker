@@ -91,12 +91,31 @@ function ibxSupLink(u,label){
   if(s.indexOf('http://')!==0&&s.indexOf('https://')!==0) return '';
   return '<a href="'+esc(s)+'" target="_blank" rel="noopener noreferrer">'+esc(label||s)+'</a>';
 }
+function ibxSuppliersChipClick(){
+  // Same unsent-edits guard as switching threads (ibxRowClick below): confirm()
+  // is unreliable inside the admin iframe, so click Suppliers again within 8s
+  // to discard. ibxSelectedId is a thread id (or null) and can never equal the
+  // literal 'suppliers', so the sentinel never collides with a real thread id.
+  if(ibxSelectedId!==null&&ibxDraftEdited()&&ibxSwitchArmedId!=='suppliers'){
+    ibxSwitchArmedId='suppliers';
+    if(ibxSwitchTimer) clearTimeout(ibxSwitchTimer);
+    ibxSwitchTimer=setTimeout(function(){ ibxSwitchArmedId=null; },8000);
+    setMsg('ibx-msg','You have unsent draft edits - click Suppliers again to discard them.','no');
+    return;
+  }
+  ibxSwitchArmedId=null;
+  ibxOpenSuppliers();
+}
 async function ibxOpenSuppliers(){
   var chips=document.querySelectorAll('#ibx-filter-chips .ibx-chip');
   for(var i=0;i<chips.length;i++) chips[i].classList.toggle('is-on',chips[i].getAttribute('data-filter')==='suppliers');
   var head=el('ibx-convo-head'), tl=el('ibx-timeline');
   if(!head||!tl) return;
   ibxSelectedId=null;
+  // Same placeholder the console starts with before any thread is selected
+  // (src/console/views/inbox.ts) - the Suppliers view is not about any one
+  // thread, so the rail should not keep showing the last one.
+  var ctx=el('ibx-context-body'); if(ctx) ctx.innerHTML='<p class="muted" style="font-size:13px;margin:0">Thread details appear here.</p>';
   head.style.display='';
   head.innerHTML='<div class="ibx-convo-head__row"><h3>Suppliers</h3><span class="ibx-spacer"></span>'
     +'<button type="button" class="ghost" id="ibx-backfill-btn" onclick="ibxStartBackfill()">Scan past inbox for suppliers</button></div>'
@@ -174,6 +193,10 @@ async function ibxStartBackfill(){
   var b=el('ibx-backfill-btn'); if(b) b.disabled=true;
   try{
     var r=await api('/inbox/suppliers/backfill',{});
+    if(r.ok&&r.alreadyRunning){
+      setMsg('ibx-backfill-msg','A scan is already running: '+(r.backfill?r.backfill.scanned:0)+' threads read so far.','muted');
+      return;
+    }
     setMsg('ibx-backfill-msg',r.ok?'Scan started: it runs in the background, about 20 threads every 15 minutes.':'Failed: '+(r.error||'unknown error'),r.ok?'ok':'no');
   }catch(e){ setMsg('ibx-backfill-msg','Failed: '+errText(e),'no'); if(b) b.disabled=false; }
 }

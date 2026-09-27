@@ -363,8 +363,14 @@ export async function updateSupplierRoute(db: D1Database, shop: string, body: un
   return ok ? { ok: true as const } : { ok: false as const, error: 'Supplier not found' };
 }
 
+/** A finished back-fill may be restarted deliberately, but a running one is never
+ *  restarted by a second click: that would reset scanned/found to 0 and re-spend
+ *  LLM calls on threads the current pass already read (fix round 1, 2026-09-27). */
 export async function startSupplierBackfillRoute(db: D1Database, shop: string) {
-  return { ok: true as const, backfill: await startSupplierBackfill(new TenantStore(db, shop)) };
+  const store = new TenantStore(db, shop);
+  const existing = await readBackfillCursor(store);
+  if (existing && !existing.done) return { ok: true as const, backfill: existing, alreadyRunning: true as const };
+  return { ok: true as const, backfill: await startSupplierBackfill(store) };
 }
 
 /** The owner asked for a reply on a thread the reader found needs none. Never sends. */
