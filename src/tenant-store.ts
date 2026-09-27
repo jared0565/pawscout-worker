@@ -3,6 +3,7 @@ import type { LogisticsRoute } from './logistics';
 import { deriveModels } from './llm-migrate';
 import { DEFAULT_INBOX, type InboxConfig } from './inbox/types';
 import type { ContactRow, ThreadRow, MessageRow, ThreadStatus, DraftRow, DraftStatus, InvoiceRow, InvoiceLineItem, InvoiceStatus, ApplicantRow, PartnershipStage, ScreenVerdict } from './inbox/types';
+import { mergeSupplier, SUPPLIER_STATUSES, type SupplierFacts, type SupplierRow, type SupplierStatus } from './inbox/supplier-register';
 
 /** ISO cutoff for the commission clearance hold: an order whose age basis
  *  (placed_at, or its insert timestamp created_at when placed_at is missing, so
@@ -2339,6 +2340,53 @@ export class TenantStore {
                 ORDER BY t.last_message_at ASC LIMIT ${Math.min(Math.max(limit, 1), 50)}`)
       .bind(this.shop).all<ThreadRow>();
     return rs.results ?? [];
+  }
+
+  // --- Supplier register (migration 0044, owner decision 2026-09-27) ---
+
+  async saveThreadReading(threadId: string, readingJson: string): Promise<void> {
+    await this.db
+      .prepare(`UPDATE inbox_threads SET reading_json = ?3, read_at = ?4 WHERE shop = ?1 AND id = ?2`)
+      .bind(this.shop, threadId, readingJson.slice(0, 8000), new Date().toISOString())
+      .run();
+  }
+
+  getSupplier(email: string): Promise<SupplierRow | null> {
+    return this.db.prepare(`SELECT * FROM supplier_register WHERE shop = ?1 AND email = ?2`).bind(this.shop, email.toLowerCase()).first<SupplierRow>();
+  }
+
+  /** Worker-side write: merges a reading into the row, never touching status or notes. */
+  async upsertSupplier(input: { email: string; threadId: string; facts: SupplierFacts; seenAt: string; inboundCount: number }): Promise<void> {
+    const email = input.email.toLowerCase();
+    const r = mergeSupplier(await this.getSupplier(email), input.facts, { email, threadId: input.threadId, seenAt: input.seenAt, inboundCount: input.inboundCount });
+    await this.db
+      .prepare(`INSERT INTO supplier_register (shop, email, company, contact_name, website, store_links, kind, product_lines, ships_from, niche_fit, dropship, first_thread_id, first_seen_at, last_seen_at, message_count, status, notes)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, 'new', NULL)
+                ON CONFLICT(shop, email) DO UPDATE SET company = ?3, contact_name = ?4, website = ?5, store_links = ?6, kind = ?7,
+                  product_lines = ?8, ships_from = ?9, niche_fit = ?10, dropship = ?11, first_thread_id = ?12,
+                  first_seen_at = ?13, last_seen_at = ?14, message_count = ?15`)
+      .bind(this.shop, email, r.company, r.contact_name, r.website, r.store_links, r.kind, r.product_lines, r.ships_from,
+        r.niche_fit, r.dropship, r.first_thread_id, r.first_seen_at, r.last_seen_at, r.message_count)
+      .run();
+  }
+
+  async listSuppliers(limit = 200): Promise<SupplierRow[]> {
+    const rs = await this.db
+      .prepare(`SELECT * FROM supplier_register WHERE shop = ?1 ORDER BY last_seen_at DESC LIMIT ${Math.min(Math.max(limit, 1), 500)}`)
+      .bind(this.shop).all<SupplierRow>();
+    return rs.results ?? [];
+  }
+
+  /** Owner-side write: status and notes only. False when the status is not a known one or no row matched. */
+  async updateSupplierOwnerFields(email: string, f: { status?: SupplierStatus; notes?: string | null }): Promise<boolean> {
+    if (f.status !== undefined && !SUPPLIER_STATUSES.includes(f.status)) return false;
+    const row = await this.getSupplier(email);
+    if (!row) return false;
+    const status = f.status ?? row.status;
+    const notes = f.notes === undefined ? row.notes : (f.notes === null ? null : f.notes.slice(0, 2000));
+    await this.db.prepare(`UPDATE supplier_register SET status = ?3, notes = ?4 WHERE shop = ?1 AND email = ?2`)
+      .bind(this.shop, email.toLowerCase(), status, notes).run();
+    return true;
   }
 
   // --- Console Glance (Phase 3): read-only aggregates. Every number the Glance
