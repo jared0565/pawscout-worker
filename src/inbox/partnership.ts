@@ -465,7 +465,7 @@ Active Paw Partnerships`;
 const SUPPLIER_ACK_BODY =
 `Thank you for sending over your product information - we appreciate you thinking of Active Paw.
 
-You are welcome to email over your catalogue, price list or product listing. If you have a website or an Alibaba or other online store, please send us the link for our reference, and let us know whether you offer dropshipping, that is sending single orders directly to our customers.
+You are welcome to email over your catalogue, price list or product listing. If you have a website or an Alibaba or other online store, please send us the link for our reference, and let us know whether you offer dropshipping, that is, sending single orders directly to our customers.
 
 We keep supplier details on file for reference.
 
@@ -544,7 +544,7 @@ export const PARTNERSHIP_STANCE =
   // code trial is now the filter for every service offer; a goods supplier is
   // thanked for the listing and nothing more.
   + 'SERVICE OFFERS (prove-first rule): an offer to SELL US a growth, marketing, SEO, ads, CRO, content, video, email, store-optimisation, listing or virtual-assistant service, or to bring us sales by any method, is neither declined nor accepted. Answer it with the filter: we receive a lot of offers like this and cannot tell promised results from real ones in advance, so everyone who wants to work with us starts with their own affiliate discount code, and the tracked orders it brings in decide who we take further. Give the link and the figures above. Do not book calls, ask for proposals or audits, accept a free sample of their work, or agree any other arrangement, and never say it is "not something we are looking into". '
-  + 'GOODS SUPPLIERS: someone offering to SUPPLY US products, materials or packaging, or warehousing, fulfilment or logistics services, is neither declined nor sent to the programme. Thank them for what they offered, say they are welcome to email their catalogue or product information, ask for their website or online store link and whether they offer dropshipping, say we keep supplier details on file for reference, and commit to nothing: no order, no meeting, no next step. '
+  + 'GOODS SUPPLIERS: someone offering to SUPPLY US products, materials or packaging, or warehousing, fulfilment or logistics services, is neither declined nor sent to the programme. Thank them for what they offered, say they are welcome to email their catalogue or product information, ask for their website or online store link and, for goods or packaging only, whether they offer dropshipping, say we keep supplier details on file for reference, and commit to nothing: no order, no meeting, no next step. '
   + 'Store, admin or collaborator access is never granted to anyone outside the team, whatever they offer. '
   + 'CONVERSATION FLOW: if we already sent them a general decline earlier in this thread and they have now asked a concrete partnership or commission question, ANSWER THE NEW QUESTION with the facts above. Do not simply repeat the earlier decline, which reads as ignoring them.';
 

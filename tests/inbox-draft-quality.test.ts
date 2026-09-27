@@ -286,7 +286,7 @@ describe('findDraftIssues: repeating a reply we already sent', () => {
 });
 
 describe('promisesSupplier (supplier lane, owner decision 2026-09-27)', () => {
-  const clean = 'Thank you for sharing your tofu and pine cat litter lines. You are welcome to email over your catalogue. If you have a website or an Alibaba store, please send us the link for our reference, and let us know whether you offer dropshipping, that is sending single orders directly to our customers. We keep supplier details on file for reference.';
+  const clean = 'Thank you for sharing your tofu and pine cat litter lines. You are welcome to email over your catalogue. If you have a website or an Alibaba store, please send us the link for our reference, and let us know whether you offer dropshipping, that is, sending single orders directly to our customers. We keep supplier details on file for reference.';
   it('passes a clean acknowledgement, including the dropshipping question', () => {
     expect(promisesSupplier(clean)).toBe(false);
     expect(promisesSupplier('We keep supplier contact on email and are not arranging samples or calls.')).toBe(false);
