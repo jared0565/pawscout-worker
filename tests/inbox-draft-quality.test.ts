@@ -313,4 +313,23 @@ describe('promisesSupplier (supplier lane, owner decision 2026-09-27)', () => {
     expect(findDraftIssues(t, { supplierLane: true }).join(' ')).toMatch(/promise/i);
     expect(findDraftIssues(t, {}).join(' ')).not.toMatch(/promise/i);
   });
+
+  it.each([
+    'We\'d love to try a sample.',
+    'Happy to jump on a call.',
+    'Let\'s set up a trial order.',
+    'Could we set up a quick call next week?',
+  ])('flags (new patterns fix 2026-09-27) %s', (t) => { expect(promisesSupplier(t)).toBe(true); });
+
+  it('flags promises with curly apostrophes', () => {
+    const curly = String.fromCharCode(8217);
+    expect(promisesSupplier('We' + curly + 'll review your catalogue next week.')).toBe(true);
+  });
+
+  it.each([
+    'Thank you for the offer of samples.',
+    'Please send your catalogue by email and we keep it on file for reference.',
+    'Let us know whether you offer dropshipping.',
+    'We keep supplier contact on email and are not arranging samples or calls.',
+  ])('stays clean (new patterns fix 2026-09-27) %s', (t) => { expect(promisesSupplier(t)).toBe(false); });
 });

@@ -164,14 +164,18 @@ export interface DraftQualityContext {
 // for their link or whether they dropship is information gathering, not a
 // promise, so neither is matched here.
 const SUPPLIER_PROMISE_RES: RegExp[] = [
-  /\bwe(?:'ll|'d| will| would| shall| can)\s+(?:be\s+)?(?:plac\w*|order\w*|buy\w*|purchas\w*|stock\w*|list\w*|review\w*|contact\w*|reach\w*|get\s+back|follow\s+up|be\s+in\s+touch|in\s+touch|consider\w*|evaluat\w*|arrang\w*|schedul\w*|happy\s+to\s+arrange|happy\s+to\s+schedule)\b/i,
+  /\bwe(?:['’]ll|['’]d| will| would| shall| can)\s+(?:be\s+)?(?:plac\w*|order\w*|buy\w*|purchas\w*|stock\w*|list\w*|review\w*|contact\w*|reach\w*|get\s+back|follow\s+up|be\s+in\s+touch|in\s+touch|consider\w*|evaluat\w*|arrang\w*|schedul\w*|happy\s+to\s+arrange|happy\s+to\s+schedule)\b/i,
   /\blook(?:ing)?\s+forward\s+to\s+(?:working|partnering|cooperat\w*|collaborat\w*|doing\s+business)/i,
   /\bpartnership\b/i,
-  /\b(?:happy|glad|pleased)\s+to\s+(?:arrange|schedule|set\s+up|have|join|hop\s+on)\b/i,
+  /\b(?:happy|glad|pleased)\s+to\s+(?:arrange|schedule|set\s+up|have|join|hop\s+on|jump\s+on|catch\s+up)\b/i,
   /\bsend\s+(?:us\s+)?(?:a\s+|some\s+|your\s+)?samples?\b/i,
-  /\b(?:let(?:'s|\s+us)|we(?:'ll| will)|happy\s+to|glad\s+to)\b[^.]*\bwhatsapp\b/i,
+  /\b(?:let(?:['’]s|\s+us)|we(?:['’]ll| will)|happy\s+to|glad\s+to)\b[^.]*\bwhatsapp\b/i,
   /\bat\s+this\s+stage\b|\bfor\s+now\b/i,
   /apps\/pawscout\/affiliate|\baffiliate\b|\bdiscount\s+code\b|\bcommission\b/i,
+  /\b(?:jump|hop)\s+on\s+a\s+(?:quick\s+)?(?:call|chat)\b/i,
+  /\bset\s+up\s+a\s+(?:quick\s+)?(?:call|meeting|chat|trial)\b/i,
+  /\blet(?:['’]s|\s+us)\s+(?:set\s+up|arrange|schedule|start|try|trial|place|book)\b/i,
+  /\b(?:try|test)\w*\s+(?:a\s+|some\s+|your\s+)?(?:samples?|products?)\b|\b(?:trial|test)\s+order\b/i,
 ];
 
 /** True when a supplier reply promises, suggests or commits to anything. */
