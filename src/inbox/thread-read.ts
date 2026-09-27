@@ -44,12 +44,18 @@ function strList(v: unknown, maxItems: number, maxLen: number): string[] {
   return v.map((x) => str(x, maxLen)).filter((x): x is string => !!x).slice(0, maxItems);
 }
 
-/** A link from untrusted text: kept only when it parses as http(s) and is short. */
+/** A link from untrusted text: kept only when it parses as http(s) and is short.
+ * Checked both before AND after normalising, because URL.toString() can
+ * percent-encode non-ASCII characters into something much longer than the raw
+ * input (e.g. 'https://x.com/' + a repeated accented letter comes out over
+ * 1600 chars from a 300-char input). */
 export function safeLink(raw: unknown): string | null {
   if (typeof raw !== 'string' || raw.length > 300) return null;
   try {
     const u = new URL(raw.trim());
-    return u.protocol === 'http:' || u.protocol === 'https:' ? u.toString() : null;
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
+    const s = u.toString();
+    return s.length > 300 ? null : s;
   } catch { return null; }
 }
 
@@ -120,7 +126,14 @@ export async function readThread(
     validate: validateReading,
   });
   if (!result.ok) { console.warn(`inbox thread read failed for ${input.fromEmail}: ${result.error}`); return null; }
-  await store.logLlmUsage('inbox-thread-read', result.usage.model, result.usage.promptTokens, result.usage.completionTokens, result.usage.costUsd);
+  try {
+    await store.logLlmUsage('inbox-thread-read', result.usage.model, result.usage.promptTokens, result.usage.completionTokens, result.usage.costUsd);
+  } catch (e) {
+    // Usage logging is bookkeeping, not the reading itself: never let a D1
+    // failure here break the contract that readThread only returns null on a
+    // reading failure, not on a logging failure.
+    console.warn(`inbox thread read usage log failed for ${input.fromEmail}: ${(e as Error).message}`);
+  }
   return result.value;
 }
 
@@ -133,7 +146,8 @@ export function readingPromptBlock(r: ThreadReading): string {
     'Answer everything still unanswered, do not repeat what we have already told them, and fit the reply to who the sender is.';
   if (r.supplier) {
     const hasLink = !!r.supplier.website || r.supplier.storeLinks.length > 0;
-    s += ` Supplier kind: ${r.supplier.kind}; website or store link already given: ${hasLink ? 'yes' : 'no'}; dropshipping answer already given: ${r.supplier.dropship === 'unknown' ? 'no' : r.supplier.dropship}.`;
+    const dropshipGiven = r.supplier.dropship === 'unknown' ? 'no' : `yes (they said ${r.supplier.dropship})`;
+    s += ` Supplier kind: ${r.supplier.kind}; website or store link already given: ${hasLink ? 'yes' : 'no'}; dropshipping answer already given: ${dropshipGiven}.`;
   }
   return s;
 }

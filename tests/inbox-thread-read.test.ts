@@ -1,5 +1,5 @@
 /// <reference types="@cloudflare/vitest-pool-workers" />
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
 import { TenantStore } from '../src/tenant-store';
 import { LlmClient } from '../src/llm';
@@ -20,6 +20,10 @@ describe('safeLink', () => {
     expect(safeLink('www.example.com')).toBeNull();
     expect(safeLink('https://x.com/' + 'a'.repeat(400))).toBeNull();
     expect(safeLink(42)).toBeNull();
+  });
+
+  it('rejects a raw input under the cap whose normalised form (percent-encoded) is over it', () => {
+    expect(safeLink('https://x.com/' + 'é'.repeat(280))).toBeNull();
   });
 });
 
@@ -92,6 +96,16 @@ describe('readingPromptBlock', () => {
     expect(block).toContain('website or store link already given: yes');
     expect(block).toContain('dropshipping answer already given: yes');
   });
+
+  it('renders a "no" dropshipping answer as given, distinct from unknown', () => {
+    const block = readingPromptBlock(validateReading({ ...base, senderRole: 'goods-supplier', supplier: { website: 'https://x.cn', storeLinks: [], kind: 'goods', productLines: [], nicheFit: 'on-niche', dropship: 'no' } })!);
+    expect(block).toContain('dropshipping answer already given: yes (they said no)');
+  });
+
+  it('renders an unknown dropshipping answer as not given', () => {
+    const block = readingPromptBlock(validateReading({ ...base, senderRole: 'goods-supplier', supplier: { website: 'https://x.cn', storeLinks: [], kind: 'goods', productLines: [], nicheFit: 'on-niche', dropship: 'unknown' } })!);
+    expect(block).toContain('dropshipping answer already given: no');
+  });
 });
 
 describe('readThread', () => {
@@ -117,5 +131,14 @@ describe('readThread', () => {
   it('returns null with no model available', async () => {
     const r = await readThread(new LlmClient({}), new TenantStore(env.DB, 'a.myshopify.com'), cfg, { subject: 'x', transcript: 'Customer: hi', fromEmail: 'a@b.c' });
     expect(r).toBeNull();
+  });
+
+  it('still returns the reading when logging usage fails (a D1 failure must not throw out of readThread)', async () => {
+    const fetchImpl = (async () => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(base) } }], usage: { cost: 0.0001 } }), { status: 200 })) as unknown as typeof fetch;
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    vi.spyOn(store, 'logLlmUsage').mockRejectedValue(new Error('d1'));
+    const r = await readThread(new LlmClient({ openrouter: 'k' }, fetchImpl), store, cfg,
+      { subject: 'Shipping', transcript: 'Customer: Do you ship to Germany?', fromEmail: 'jane@x.com' });
+    expect(r?.openAsks).toEqual(['Do you ship to Germany?']);
   });
 });
