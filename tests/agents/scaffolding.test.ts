@@ -28,6 +28,27 @@ const stubAgent = (commercial: boolean): CategoryAgent => ({
 
 const GROUNDING: Grounding = { confident: true, facts: '', quotesFigure: false };
 
+/** Captures the drafter's system prompt via draftReply itself, for tests that need
+ * to pass extra draftReply input (such as `reading`) beyond what capturingLlm's
+ * caller-assembled CFG/base input covers. */
+async function captureDraftSystem(extra: Record<string, unknown> = {}) {
+  const sink = { system: '' };
+  const fetchImpl = (async (_u: string, init: RequestInit) => {
+    sink.system = JSON.parse(String(init.body)).messages[0].content;
+    return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ customerAsks: ['q'], bodyText: 'Yes, we ship to Germany, and the cost is shown at checkout before payment.', confidence: 90, quotesPriceOrOrder: false, commercialIntent: false }) } }], usage: { cost: 0 } }), { status: 200 });
+  }) as unknown as typeof fetch;
+  const { draftReply } = await import('../../src/inbox/draft');
+  const { LlmClient } = await import('../../src/llm');
+  const { TenantStore } = await import('../../src/tenant-store');
+  const { otherAgent } = await import('../../src/inbox/agents/other');
+  const { DEFAULT_INBOX } = await import('../../src/inbox/types');
+  const { DEFAULT_LLM } = await import('../../src/types');
+  await draftReply(new LlmClient({ openrouter: 'k' }, fetchImpl), new TenantStore(env.DB, 'a.myshopify.com'),
+    { llm: DEFAULT_LLM, inbox: { ...DEFAULT_INBOX } } as any,
+    { agent: otherAgent, grounding: { confident: true, facts: '', quotesFigure: false }, subject: 's', conversation: 'Customer: Do you ship to Germany?', latestMessage: 'Do you ship to Germany?', ...extra } as any);
+  return sink;
+}
+
 /** Captures the OpenRouter request body so tests can inspect the system prompt. */
 function capturingLlm(content: unknown, sink: { system?: string; user?: string }): LlmClient {
   const f = (async (_url: RequestInfo | URL, init?: RequestInit) => {
@@ -305,5 +326,40 @@ describe('storewide event facts in the system prompt', () => {
     await draftReply(llm, store, CFG, { agent: stubAgent(false), grounding: GROUNDING, subject: 'Sale?', conversation: 'Is there a sale on?' });
     expect(sink.system).toMatch(/not known to you/i);
     expect(sink.system).toMatch(/do not invent a code/i);
+  });
+});
+
+// Task 7 (2026-09-27): the drafter now reads the thread reading (Task 3) and
+// grounds its reply in it, and the sender rules move from three separate dated
+// sentences into ONE ordered block keyed by WHO IS WRITING.
+describe('drafter grounded in the thread reading', () => {
+  it('grounds the drafter in the thread reading when one is given', async () => {
+    const { validateReading } = await import('../../src/inbox/thread-read');
+    const reading = validateReading({ senderRole: 'customer', openAsks: ['Do you ship to Germany?'], offered: '', alreadyAnswered: ['Yes, this is Active Paw'], replyNeeded: true });
+    const sink = await captureDraftSystem({ reading });
+    expect(sink.system).toContain('THREAD READING');
+    expect(sink.system).toContain('Do you ship to Germany?');
+  });
+});
+
+describe('sender rules in one ordered block', () => {
+  it('keys the sender rules in one ordered block, with the vague-opener rule steering to products or orders', () => {
+    expect(SHARED_SCAFFOLDING).toContain('WHO IS WRITING');
+    expect(SHARED_SCAFFOLDING).toMatch(/is this Active Paw/);
+    expect(SHARED_SCAFFOLDING).toMatch(/question about our products or an order/);
+    expect(SHARED_SCAFFOLDING).toMatch(/never invite them to share ideas/i);
+    expect(SHARED_SCAFFOLDING).toMatch(/warehousing, fulfilment or logistics/);
+    // en dash (8211) / em dash (8212), built via char code: typing the escape
+    // literally into a file-writing tool can come out as the real glyph.
+    expect(SHARED_SCAFFOLDING).not.toContain(String.fromCharCode(8211));
+    expect(SHARED_SCAFFOLDING).not.toContain(String.fromCharCode(8212));
+  });
+
+  // Controller ruling (2026-09-27): the shared rule wins over the supplier
+  // agent's own prompt, so it must not read as forbidding the supplier lane's
+  // two informational asks (the website/store link, and, for goods or
+  // packaging only, whether they dropship).
+  it('names the supplier lane\'s two asks as information gathering, not a commitment', () => {
+    expect(SHARED_SCAFFOLDING).toContain('information gathering, not a commitment');
   });
 });
