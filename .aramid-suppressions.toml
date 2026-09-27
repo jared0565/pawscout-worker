@@ -73,3 +73,22 @@ tool = "semgrep"
 rule = "owasp-top-ten.a03-injection.javascript-dangerous-function-constructor"
 path = "tests/console.test.ts"
 reason = "Test executes the console's own renderHookLine function (cut from consolePage() output, same process) against a fake DOM node to prove the check-failed branch beats the MISSING branch; no external input, test-only, not in the Worker bundle."
+
+# 2026-09-27: fifth `new Function(...)` in tests/console.test.ts, same shape as
+# the four above. Verified at source: the compiled string is the console page's
+# OWN esc() and ibxSupLink() functions, cut out of consolePage() output in the
+# same test run by a fixed-line and brace-matching regex, plus a fixed `return`.
+# It exists to prove Review Focus item 2 (constraints.md): a supplier email
+# carrying a javascript:/data: link, or HTML in a label, must never produce a
+# clickable unsafe link or unescaped markup in the Suppliers table. Only
+# executing the emitted functions with hostile inputs (a javascript: URL, an
+# HTML label) can show that ibxSupLink() rejects the scheme and esc() escapes
+# the label, rather than re-implementing the check against a copy that could
+# silently drift from the real browser code. No external or user-supplied
+# input; test-only; vitest never ships to the Worker bundle.
+[[suppress]]
+id = "c22a7640a8ac7a304e4e82310f9c3bc79deae7d2de91eddd69d9cd5f160658e9"
+tool = "semgrep"
+rule = "owasp-top-ten.a03-injection.javascript-dangerous-function-constructor"
+path = "tests/console.test.ts"
+reason = "Test executes the console's own esc() and ibxSupLink() functions (cut from consolePage() output, same process) against javascript:/data: URLs and an HTML label to prove the Suppliers table never renders an unsafe link or unescaped markup; no external input, test-only, not in the Worker bundle."
