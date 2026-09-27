@@ -2345,9 +2345,13 @@ export class TenantStore {
   // --- Supplier register (migration 0044, owner decision 2026-09-27) ---
 
   async saveThreadReading(threadId: string, readingJson: string): Promise<void> {
+    // A sliced string can cut a JSON document mid-token and store something that
+    // fails to parse back (Task 2 review fix): store the reading whole, or not at
+    // all, but always stamp read_at so a skipped-for-size reading still shows as read.
+    const reading = readingJson.length <= 16000 ? readingJson : null;
     await this.db
       .prepare(`UPDATE inbox_threads SET reading_json = ?3, read_at = ?4 WHERE shop = ?1 AND id = ?2`)
-      .bind(this.shop, threadId, readingJson.slice(0, 8000), new Date().toISOString())
+      .bind(this.shop, threadId, reading, new Date().toISOString())
       .run();
   }
 
@@ -2355,7 +2359,18 @@ export class TenantStore {
     return this.db.prepare(`SELECT * FROM supplier_register WHERE shop = ?1 AND email = ?2`).bind(this.shop, email.toLowerCase()).first<SupplierRow>();
   }
 
-  /** Worker-side write: merges a reading into the row, never touching status or notes. */
+  /** Worker-side write: merges a reading into the row, never touching status or notes.
+   *  company/contact/website/links/kind/product_lines/ships_from/niche_fit come from a
+   *  read-then-merge (mergeSupplier), which is fine for those: the worst case under a
+   *  race is one lost update to a descriptive field. dropship, first_seen_at,
+   *  last_seen_at, first_thread_id and message_count do NOT use that pre-read merge:
+   *  two concurrent upserts for the same email would let the second writer's stale read
+   *  clobber the first writer's dropship answer or seen-date window (Task 2 review
+   *  finding). Those five are instead resolved inside ON CONFLICT, atomically, from the
+   *  row SQLite actually holds at commit (`supplier_register.*`) versus this write's own
+   *  incoming values (`excluded.*`), so "unknown never overwrites a known yes/no" and
+   *  "seen dates only ever widen" hold under concurrency, not just in the single-threaded
+   *  merge above. */
   async upsertSupplier(input: { email: string; threadId: string; facts: SupplierFacts; seenAt: string; inboundCount: number }): Promise<void> {
     const email = input.email.toLowerCase();
     const r = mergeSupplier(await this.getSupplier(email), input.facts, { email, threadId: input.threadId, seenAt: input.seenAt, inboundCount: input.inboundCount });
@@ -2363,10 +2378,14 @@ export class TenantStore {
       .prepare(`INSERT INTO supplier_register (shop, email, company, contact_name, website, store_links, kind, product_lines, ships_from, niche_fit, dropship, first_thread_id, first_seen_at, last_seen_at, message_count, status, notes)
                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, 'new', NULL)
                 ON CONFLICT(shop, email) DO UPDATE SET company = ?3, contact_name = ?4, website = ?5, store_links = ?6, kind = ?7,
-                  product_lines = ?8, ships_from = ?9, niche_fit = ?10, dropship = ?11, first_thread_id = ?12,
-                  first_seen_at = ?13, last_seen_at = ?14, message_count = ?15`)
+                  product_lines = ?8, ships_from = ?9, niche_fit = ?10,
+                  dropship = CASE WHEN excluded.dropship <> 'unknown' THEN excluded.dropship ELSE supplier_register.dropship END,
+                  first_seen_at = MIN(supplier_register.first_seen_at, excluded.first_seen_at),
+                  last_seen_at = MAX(supplier_register.last_seen_at, excluded.last_seen_at),
+                  first_thread_id = CASE WHEN excluded.first_seen_at < supplier_register.first_seen_at THEN excluded.first_thread_id ELSE supplier_register.first_thread_id END,
+                  message_count = MAX(supplier_register.message_count, excluded.message_count)`)
       .bind(this.shop, email, r.company, r.contact_name, r.website, r.store_links, r.kind, r.product_lines, r.ships_from,
-        r.niche_fit, r.dropship, r.first_thread_id, r.first_seen_at, r.last_seen_at, r.message_count)
+        r.niche_fit, input.facts.dropship, input.threadId, input.seenAt, input.seenAt, input.inboundCount)
       .run();
   }
 

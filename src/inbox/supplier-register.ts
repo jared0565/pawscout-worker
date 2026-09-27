@@ -73,7 +73,7 @@ export function mergeSupplier(
     ships_from: incoming.shipsFrom ?? e?.ships_from ?? null,
     niche_fit: incoming.nicheFit,
     dropship: incoming.dropship !== 'unknown' ? incoming.dropship : (e?.dropship ?? 'unknown'),
-    first_thread_id: e?.first_thread_id ?? meta.threadId,
+    first_thread_id: e && e.first_seen_at <= meta.seenAt ? e.first_thread_id : meta.threadId,
     first_seen_at: e && e.first_seen_at < meta.seenAt ? e.first_seen_at : meta.seenAt,
     last_seen_at: e && e.last_seen_at > meta.seenAt ? e.last_seen_at : meta.seenAt,
     message_count: Math.max(e?.message_count ?? 0, meta.inboundCount),

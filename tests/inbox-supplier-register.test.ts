@@ -50,6 +50,15 @@ describe('mergeSupplier', () => {
     expect(r.last_seen_at).toBe('2026-09-30T00:00:00Z');
     expect(r.first_seen_at).toBe('2026-09-01T00:00:00Z');
   });
+
+  it('first_thread_id follows first_seen_at, not which call happened first (a back-fill can precede it)', () => {
+    const row = { shop: SHOP, ...mergeSupplier(null, facts(), { ...meta, threadId: 't1', seenAt: '2026-09-24T16:11:15Z' }) };
+    const backfilled = mergeSupplier(row, facts(), { ...meta, threadId: 't0', seenAt: '2026-09-01T00:00:00Z' });
+    expect(backfilled.first_thread_id).toBe('t0');
+    expect(backfilled.first_seen_at).toBe('2026-09-01T00:00:00Z');
+    const later = mergeSupplier({ shop: SHOP, ...backfilled }, facts(), { ...meta, threadId: 't2', seenAt: '2026-09-30T00:00:00Z' });
+    expect(later.first_thread_id).toBe('t0');
+  });
 });
 
 describe('TenantStore supplier register', () => {
@@ -83,5 +92,31 @@ describe('TenantStore supplier register', () => {
     const got = await s.getThreadWithMessages(tid);
     expect(got?.thread.reading_json).toBe('{"senderRole":"customer"}');
     expect(got?.thread.read_at).toBeTruthy();
+  });
+
+  it('saveThreadReading stores a reading whole or not at all, never sliced, and always stamps read_at', async () => {
+    const s = new TenantStore(env.DB, SHOP);
+    await s.upsertContact({ email: 'jane2@x.com', name: 'Jane', phone: null });
+    const tid = await s.createThread({ contactEmail: 'jane2@x.com', subject: 'Hi', subjectNorm: 'hi', receivedAt: '2026-09-01T00:00:00Z', initialStatus: 'new' });
+    const huge = 'x'.repeat(20000);
+    await s.saveThreadReading(tid, huge);
+    const oversized = await s.getThreadWithMessages(tid);
+    expect(oversized?.thread.reading_json).toBeNull();
+    expect(oversized?.thread.read_at).toBeTruthy();
+
+    const normal = '{"senderRole":"supplier","openQuestions":["price?"]}';
+    await s.saveThreadReading(tid, normal);
+    const got = await s.getThreadWithMessages(tid);
+    expect(got?.thread.reading_json).toBe(normal);
+  });
+
+  it('the SQL merge, not just mergeSupplier, keeps a known dropship answer and the seen-date window under a second write', async () => {
+    const s = new TenantStore(env.DB, SHOP);
+    await s.upsertSupplier({ email: 'x@a.cn', threadId: 't1', facts: facts({ dropship: 'yes' }), seenAt: '2026-09-10T00:00:00Z', inboundCount: 1 });
+    await s.upsertSupplier({ email: 'x@a.cn', threadId: 't0', facts: facts({ dropship: 'unknown' }), seenAt: '2026-09-01T00:00:00Z', inboundCount: 1 });
+    const row = await s.getSupplier('x@a.cn');
+    expect(row?.dropship).toBe('yes');
+    expect(row?.last_seen_at).toBe('2026-09-10T00:00:00Z');
+    expect(row?.first_seen_at).toBe('2026-09-01T00:00:00Z');
   });
 });
