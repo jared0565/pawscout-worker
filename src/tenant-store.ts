@@ -2276,10 +2276,14 @@ export class TenantStore {
   /** Threads the supplier back-fill reads: 'other' or 'supplier', created since
    *  `since`, in a stable (created_at, id) order after the cursor. Closed
    *  threads are skipped: stamping their read_at would hide a new message from
-   *  the closed-thread reopen check. */
+   *  the closed-thread reopen check. Spam and converted threads are dismissed
+   *  by the owner without necessarily changing primary_category, so they are
+   *  excluded too: reading one would be a paid call spent on a thread the
+   *  owner has already dismissed, and it could still register a supplier row
+   *  from a thread that was actually spam. */
   async supplierBackfillThreads(since: string, afterCreatedAt: string | null, afterId: string | null, limit: number): Promise<ThreadRow[]> {
     const rs = await this.db
-      .prepare(`SELECT * FROM inbox_threads WHERE shop = ?1 AND primary_category IN ('other', 'supplier') AND status != 'closed' AND created_at >= ?2
+      .prepare(`SELECT * FROM inbox_threads WHERE shop = ?1 AND primary_category IN ('other', 'supplier') AND status NOT IN ('closed', 'spam', 'converted') AND created_at >= ?2
                 AND (?3 IS NULL OR created_at > ?3 OR (created_at = ?3 AND id > ?4))
                 ORDER BY created_at ASC, id ASC LIMIT ${Math.min(Math.max(limit, 1), 50)}`)
       .bind(this.shop, since, afterCreatedAt, afterId ?? '').all<ThreadRow>();

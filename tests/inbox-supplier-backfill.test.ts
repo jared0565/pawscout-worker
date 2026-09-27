@@ -74,4 +74,25 @@ describe('supplier back-fill', () => {
     expect((await s.listSuppliers()).length).toBe(1);
     expect((await s.getThreadWithMessages(ids[0]))?.thread.read_at).toBeNull();
   });
+
+  // Review fix, round 1: the owner can set a thread's status to 'spam' or it
+  // can become 'converted' from the console without touching primary_category,
+  // so a dismissed thread filed 'other' must not stay a back-fill candidate -
+  // it would cost a paid read and could still register a supplier row for a
+  // thread the owner already dismissed.
+  it('skips spam and converted threads', async () => {
+    const { s, ids } = await seedMany(3);
+    await s.setThreadClassification(ids[0], { status: 'spam', primaryCategory: 'other', intentScore: 0, summary: 's', classifiedAt: new Date().toISOString() });
+    await s.setThreadClassification(ids[1], { status: 'converted', primaryCategory: 'other', intentScore: 0, summary: 's', classifiedAt: new Date().toISOString() });
+    let calls = 0;
+    const counting = (async (u: string, init: RequestInit) => { calls++; return fetchImpl(u, init); }) as unknown as typeof fetch;
+    await startSupplierBackfill(s);
+    const c = await runSupplierBackfillStep(ENV, s, (await s.getConfig())!, counting);
+    expect(c?.scanned).toBe(1); // only ids[2] (still 'awaiting_customer') is a candidate
+    expect(c?.done).toBe(true);
+    expect(calls).toBe(1); // no reader call was made for the spam or converted threads
+    expect((await s.listSuppliers()).length).toBe(1);
+    expect((await s.getThreadWithMessages(ids[0]))?.thread.read_at).toBeNull();
+    expect((await s.getThreadWithMessages(ids[1]))?.thread.read_at).toBeNull();
+  });
 });
