@@ -60,6 +60,10 @@ export async function runInboxClassifySweep(env: Env, fetchImpl: typeof fetch = 
       for (const thread of await store.reclassifyCandidates(SWEEP_BATCH)) {
         await reclassifyOne(env, store, cfg, shop, thread, fetchImpl);
       }
+      // Closed threads: reopen only for a customer's real question (2026-09-27).
+      for (const thread of await store.closedReopenCandidates(10)) {
+        await reopenCheckOne(env, store, cfg, thread, fetchImpl);
+      }
       for (const thread of await store.threadsNeedingDraft(SWEEP_BATCH)) {
         // Only a category the invoice floor can ever allow goes to the invoice
         // model: a yes there skips the draft, so a supplier quoting prices could
@@ -138,6 +142,20 @@ async function reclassifyOne(env: Env, store: TenantStore, cfg: TenantConfig, sh
   await store.setThreadLabels(thread.id, d.labels);
   await store.supersedePendingDrafts(thread.id); // the old lane's draft answers the wrong question
   if (d.alert) await maybeAlertOwner(env, cfg, shop, thread, c.summary, d.primaryCategory, fetchImpl);
+}
+
+/** Read a closed thread that has a new message; reopen it only when a customer
+ *  asks something still unanswered. A failed reading leaves it for the next run. */
+async function reopenCheckOne(env: Env, store: TenantStore, cfg: TenantConfig, thread: ThreadRow, fetchImpl: typeof fetch): Promise<void> {
+  const got = await store.getThreadWithMessages(thread.id);
+  if (!got) return;
+  const llm = new LlmClient({ openrouter: env.OPENROUTER_API_KEY, openai: env.OPENAI_API_KEY }, fetchImpl);
+  const reading = await readThread(llm, store, cfg, {
+    subject: thread.subject ?? '', transcript: buildDraftTranscript(got.messages), fromEmail: thread.contact_email
+  }).catch(() => null);
+  if (!reading) return;
+  await store.saveThreadReading(thread.id, JSON.stringify(reading));
+  if (reading.senderRole === 'customer' && reading.openAsks.length > 0) await store.reopenThread(thread.id);
 }
 
 /**
@@ -499,7 +517,12 @@ async function draftOne(env: Env, store: TenantStore, cfg: TenantConfig, thread:
   if (!r || !('draftId' in r)) return;
   if (r.send) {
     const draftRow = await store.getDraft(r.draftId);
-    if (draftRow) await sendReply(env, store, cfg, thread, draftRow, undefined, fetchImpl);
+    // Re-fetch: composeDraftForThread may have re-routed the thread's category
+    // (e.g. the supplier re-route) between our stale `thread` param and now, so
+    // sendReply must label and reply-address off the CURRENT row, never the one
+    // captured before drafting (controller ruling, task 9).
+    const fresh = await store.getThreadWithMessages(thread.id);
+    if (draftRow && fresh) await sendReply(env, store, cfg, fresh.thread, draftRow, undefined, fetchImpl);
   }
 }
 

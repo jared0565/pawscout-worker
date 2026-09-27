@@ -114,6 +114,14 @@ describe('composeDraftForThread with the thread reader', () => {
     const { fetchImpl } = llm(supplierReading);
     await composeDraftForThread(ENV, s, (await s.getConfig())!, (await s.getThreadWithMessages(tid))!.thread, fetchImpl);
     expect((await s.getThreadWithMessages(tid))?.thread.primary_category).toBe('other');
+    // Controller ruling (task 9): primary_category alone does not prove the funnel
+    // drafted this - assert the pending draft actually came from the partnership
+    // funnel (model 'partnership-screen', the holding-ack sign-off), not the
+    // generic 'other' category agent (which would sign off "Active Paw Customer
+    // Support" and stamp its own resolved-chain model).
+    const draft = await s.getPendingDraft(tid);
+    expect(draft?.model).toBe('partnership-screen');
+    expect(draft?.body_text).toContain('Active Paw Partnerships');
   });
 
   it('a marketer gets the prove-first template, not the creator invite (Raphael, 2026-09-24)', async () => {
@@ -199,5 +207,64 @@ describe('controller rulings (task 8)', () => {
     const r = await composeDraftForThread(ENV, s, (await s.getConfig())!, (await s.getThreadWithMessages(tid))!.thread, fetchImpl);
     expect(r && 'draftId' in r).toBe(true);
     expect((await s.getPendingDraft(tid))?.body_text).toContain('Active Paw Sourcing Team');
+  });
+
+  it('RULING (task 9): sendReply sees the RE-ROUTED category, not the stale one captured before drafting', async () => {
+    // Thread starts 'other'; the reader calls the sender a supplier, and
+    // composeDraftForThread re-routes it to 'supplier' mid-draft. The sweep's
+    // drafting loop captured the thread row BEFORE that re-route, so draftOne
+    // must re-fetch before calling sendReply, or the send labels the thread
+    // under the stale category (observable via the thread's label set).
+    const { s, tid } = await seed({ email: 'sales@resend.cn', name: 'Leon', category: 'other', inbound: ['We are a pet products factory.'] });
+    const cfg = (await s.getConfig())!;
+    await s.saveInbox({ ...cfg.inbox, autosend: true, agents: { supplier: { autosend: true } } });
+    const fetchImpl = (async (url: string, init: RequestInit) => {
+      const u = String(url);
+      if (u.includes('openrouter')) {
+        const sys = JSON.parse(String(init.body)).messages?.[0]?.content ?? '';
+        const isReader = sys.startsWith(THREAD_READER_MARKER);
+        const content = isReader
+          ? supplierReading
+          : { customerAsks: [], bodyText: 'Thank you for sharing your pet product range. Please send us your website or Alibaba store link for our reference, and let us know whether you offer dropshipping.', confidence: 90, quotesPriceOrOrder: false, commercialIntent: false };
+        return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(content) } }], usage: { cost: 0 } }), { status: 200 });
+      }
+      if (u.includes('resend.com')) return new Response(JSON.stringify({ id: 'em_ruling9' }), { status: 200 });
+      return new Response('{}', { status: 200 });
+    }) as unknown as typeof fetch;
+    await runInboxClassifySweep({ ...ENV, RESEND_API_KEY: 'rk' } as any, fetchImpl);
+    const got = await s.getThreadWithMessages(tid);
+    expect(got?.thread.primary_category).toBe('supplier');
+    // The bug: sendReply labelling off the stale pre-draft thread would add
+    // 'other' alongside 'supplier' (addThreadLabel is additive, never a
+    // replace). The fix keeps the label set exactly what the re-route set it to.
+    expect(got?.labels).toEqual(['supplier']);
+  });
+});
+
+describe('closed threads (owner decision 2026-09-27)', () => {
+  it('reopens a closed thread when a customer asks a real question (Investor Mark, June)', async () => {
+    // shipping-returns, not lead: the sweep offers a lead to the invoice path first.
+    const { s, tid } = await seed({ email: 'm@x.com', name: 'Mark', category: 'shipping-returns', inbound: ['Am I speaking to the owner?', 'Do you ship internationally?'], outboundAfterFirst: 'Hello, I am part of the team.', status: 'closed' });
+    const { fetchImpl } = llm({ senderRole: 'customer', openAsks: ['Do you ship internationally?'], offered: '', alreadyAnswered: [], replyNeeded: true },
+      { customerAsks: ['ship internationally'], bodyText: 'Yes, we ship internationally to most countries, and the delivery cost is shown at checkout before payment.', confidence: 90, quotesPriceOrOrder: false, commercialIntent: false });
+    await runInboxClassifySweep(ENV, fetchImpl);
+    const got = await s.getThreadWithMessages(tid);
+    expect(got?.thread.status).toBe('needs_reply');
+    expect(await s.getPendingDraft(tid)).not.toBeNull();
+  });
+
+  it('keeps a closed thread closed for a pitch, and does not re-read it until a new message arrives', async () => {
+    const { s, tid } = await seed({ email: 'p@x.com', name: 'Pat', category: 'other', inbound: ['Hi', 'I can grow your sales 10x, can I send a plan?'], outboundAfterFirst: 'Hello.', status: 'closed' });
+    const { fetchImpl, calls } = llm({ senderRole: 'marketer', openAsks: ['can I send a plan?'], offered: 'growth', alreadyAnswered: [], replyNeeded: true });
+    await runInboxClassifySweep(ENV, fetchImpl);
+    expect((await s.getThreadWithMessages(tid))?.thread.status).toBe('closed');
+    const before = calls.length;
+    await runInboxClassifySweep(ENV, fetchImpl);
+    expect(calls.length).toBe(before); // read_at now covers the last inbound
+  });
+
+  it('never touches automated or spam threads', async () => {
+    const { s } = await seed({ email: 'n@x.com', name: 'N', category: 'automated', inbound: ['receipt', 'receipt 2'], outboundAfterFirst: 'x', status: 'closed' });
+    expect(await s.closedReopenCandidates()).toEqual([]);
   });
 });

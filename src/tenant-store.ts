@@ -2257,6 +2257,22 @@ export class TenantStore {
     return rs.results ?? [];
   }
 
+  /** Closed threads with an inbound newer than their last reading (or, never
+   *  read, their classification). Owner decision 2026-09-27: a closed thread
+   *  reopens only when the reader sees a customer with a real question; the
+   *  reading stamp stops it re-qualifying until the sender writes again.
+   *  Automated and spam threads are never candidates. */
+  async closedReopenCandidates(limit = 10): Promise<ThreadRow[]> {
+    const rs = await this.db
+      .prepare(`SELECT t.* FROM inbox_threads t WHERE t.shop = ?1 AND t.status = 'closed'
+                AND COALESCE(t.primary_category, '') NOT IN ('automated', 'spam')
+                AND EXISTS (SELECT 1 FROM inbox_messages m WHERE m.shop = t.shop AND m.thread_id = t.id
+                            AND m.direction = 'inbound' AND m.created_at > COALESCE(t.read_at, t.classified_at, t.created_at))
+                ORDER BY t.last_message_at ASC LIMIT ${Math.min(Math.max(limit, 1), 50)}`)
+      .bind(this.shop).all<ThreadRow>();
+    return rs.results ?? [];
+  }
+
   /** Bump classified_at without touching the verdict - used when a follow-up gave
    *  nothing new to judge (all-quote) or confirmed the existing lane, so the thread
    *  stops qualifying as a reclassify candidate until the sender writes again. */
