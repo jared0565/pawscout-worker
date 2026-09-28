@@ -66,6 +66,32 @@ describe('composeDraftForThread with the thread reader', () => {
     expect(row?.dropship).toBe('unknown');
   });
 
+  // Owner ruling 2026-09-28: the reader moves a thread into the supplier lane
+  // only from other, wholesale-b2b or affiliate. A lane that already names a
+  // customer need (a complaint, an order, a lead) keeps its lane and its agent,
+  // even when the reader thinks the sender is a supplier; the register still
+  // records what they offered.
+  it.each(['lead', 'product-question', 'order-status', 'shipping-returns', 'complaint'])(
+    'keeps a %s thread in its lane when the reader says goods supplier, and still registers the supplier', async (lane) => {
+      const { s, tid } = await seed({ email: 'sales@doukecatlitter.com', name: 'Sabrina Liu', category: lane, inbound: ['We are an OEM tofu cat litter factory. Would a catalogue be of interest?'] });
+      const { fetchImpl } = llm(supplierReading);
+      await composeDraftForThread(ENV, s, (await s.getConfig())!, (await s.getThreadWithMessages(tid))!.thread, fetchImpl);
+      const got = await s.getThreadWithMessages(tid);
+      expect(got?.thread.primary_category).toBe(lane);
+      expect(got?.labels).not.toContain('supplier');
+      expect((await s.getSupplier('sales@doukecatlitter.com'))?.company).toBe('Hebei Douke Pet Products');
+    });
+
+  it.each(['wholesale-b2b', 'affiliate'])(
+    're-routes a supplier filed as %s to the supplier lane', async (lane) => {
+      const { s, tid } = await seed({ email: 'sales@doukecatlitter.com', name: 'Sabrina Liu', category: lane, inbound: ['We are an OEM tofu cat litter factory. Would a catalogue be of interest?'] });
+      const { fetchImpl } = llm(supplierReading);
+      await composeDraftForThread(ENV, s, (await s.getConfig())!, (await s.getThreadWithMessages(tid))!.thread, fetchImpl);
+      const got = await s.getThreadWithMessages(tid);
+      expect(got?.thread.primary_category).toBe('supplier');
+      expect(got?.labels).toEqual(['supplier']);
+    });
+
   it('holds a supplier draft that still promises something after the revisions', async () => {
     const { s, tid } = await seed({ email: 'sales@x.cn', name: 'Leon', category: 'supplier', inbound: ['We are a pet products factory.'] });
     const { fetchImpl } = llm(supplierReading, { customerAsks: [], bodyText: 'Thank you for your pet product range. We will be in touch about an order and look forward to working together.', confidence: 95, quotesPriceOrOrder: false, commercialIntent: false });
