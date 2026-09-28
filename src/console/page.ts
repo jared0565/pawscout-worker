@@ -153,6 +153,9 @@ export function consolePage(apiKey: string): Response {
   .agents-row.is-disabled{opacity:.5}
 ${shellCss}
 ${inboxCss}
+  .ibx-sup-table{width:100%;border-collapse:collapse;font-size:12px}
+  .ibx-sup-table th,.ibx-sup-table td{border-bottom:1px solid var(--border);padding:6px;text-align:left;vertical-align:top}
+  .ibx-sup-table input{width:100%;min-width:120px}
 ${answersCss}
 ${glanceCss}
 ${auditCss}
@@ -975,7 +978,7 @@ var INBOX_AGENTS=[
   ['shipping-returns','Shipping & Returns'],['order-status','Order Status'],
   ['product-question','Product Questions'],['lead','Sales Leads'],
   ['wholesale-b2b','Wholesale / Trade'],['affiliate','Affiliate / Partnership'],
-  ['complaint','Complaints'],['other','General']
+  ['complaint','Complaints'],['supplier','Suppliers'],['other','General']
 ];
 function renderAgents(cfg){
   var list=el('agents-list'); if(!list) return;

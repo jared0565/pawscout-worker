@@ -14,7 +14,7 @@ import { stripQuotedReply } from './quote';
 import { isPartnershipLane, inboundTextsOf } from './partnership';
 
 /** Categories whose sends are never remembered (no reusable substance). */
-const EXCLUDED_CATEGORIES = new Set(['spam', 'automated', 'affiliate']);
+const EXCLUDED_CATEGORIES = new Set(['spam', 'automated', 'affiliate', 'supplier']);
 
 // Courtesy/grammar words carry no matching signal; product and commerce words
 // (ship, order, refund, sizes, numbers) are the signal and are kept.

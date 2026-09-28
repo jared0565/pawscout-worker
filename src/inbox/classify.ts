@@ -44,6 +44,10 @@ export async function classifyEmail(
       '"wholesale-b2b" = ONLY when the sender ASKS FOR trade terms in their own words: wholesale or trade pricing, a bulk or volume discount, a reseller, stockist or distributor arrangement, a trade account, a price list, or minimum order quantities. A quantity, "my customers" or an event alone is NOT wholesale: with no request for special terms it is "lead" (or "product-question" when what they mainly ask is availability or product detail). ' +
       '"affiliate" = a GENUINE pet-relevant creator/influencer offering to PROMOTE our products to THEIR own pet-owning audience (content, reviews) for a commission - they already have a real audience and want to earn by promoting, not sell us a service. Someone who says they might recommend or mention us without asking to partner, promote us for a commission or work together is NOT affiliate: route by the question they actually ask (a product or delivery question is product-question or shipping-returns; otherwise other). ' +
       '"complaint" = dissatisfaction with us. ' +
+      // 2026-09-27 (owner decision): suppliers had no lane and were filed
+      // "other", where the general drafter declined their information or
+      // offered them the affiliate programme.
+      '"supplier" = a business offering to SUPPLY US products, packaging or materials (a manufacturer, factory, OEM or private-label maker or wholesaler, often sending a catalogue or product listing) or supply-chain services (warehousing, fulfilment, logistics, delivery to our customers). A supplier is never "other", "wholesale-b2b" (that is someone who wants to BUY from us on trade terms) or "affiliate", even when it says partnership, cooperation or collaboration. Marketing, SEO, ads, traffic or store-growth services are NOT supplier: they follow the rule below. ' +
       'CRITICAL - cold outreach SELLING US A SERVICE is NOT a customer-service category and NOT affiliate: pitches for marketing, ads, SEO, store/conversion optimisation, website or logo design, "growing your sales", "auditing your store", generating traffic or "X visitors / Y daily sales", or asking to move to WhatsApp - INCLUDING ones that call themselves a "partnership", "collaboration", or "commission" deal. If a real person wrote such a pitch, classify it "other" (we reply with a brief warm decline); if it is automated/bulk/bot junk, classify it "spam". ' +
       'NEVER route a service pitch to shipping-returns, order-status, product-question, lead, or affiliate just because it mentions sales, shipping, or commission. ' +
       '"automated" = auto-generated receipts/notifications. "spam" = junk/bot.',
@@ -98,6 +102,7 @@ export function decideDisposition(
     labels: c.labels.length ? c.labels : [c.category],
     // Affiliate/partnership enquiries are a commercial opportunity, not a purchase,
     // so they score low on buying-intent - surface them regardless of the threshold.
-    alert: c.intentScore >= intentThreshold || c.category === 'affiliate'
+    // A supplier is never a buyer, so it never alerts.
+    alert: (c.intentScore >= intentThreshold || c.category === 'affiliate') && c.category !== 'supplier'
   };
 }

@@ -3,6 +3,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
 import { TenantStore } from '../../src/tenant-store';
 import { composeAgentDraft, composeDraftForThread } from '../../src/inbox/sweep';
+import { withReader } from '../helpers/reader-mock';
 import { DEFAULT_INBOX } from '../../src/inbox/types';
 import { ACTIVE_PAW_COLLECTION_MAP, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL } from '../../src/types';
 
@@ -123,7 +124,7 @@ describe('composeDraftForThread (agent dispatch E2E)', () => {
     );
 
     expect(result).not.toBeNull();
-    const draft = await store.getDraft(result!.draftId);
+    const draft = await store.getDraft((result as { draftId: string }).draftId);
     expect(draft?.body_text).toContain('estimated 7-23 days');
     expect(draft?.status).toBe('pending');
   });
@@ -182,7 +183,7 @@ describe('composeDraftForThread (agent dispatch E2E)', () => {
     );
 
     expect(result).not.toBeNull();
-    const draft = await store.getDraft(result!.draftId);
+    const draft = await store.getDraft((result as { draftId: string }).draftId);
     expect(draft?.body_text).toContain('gift wrapping');
     expect(draft?.body_text).not.toContain('Delivery to');
     expect(draft?.body_text).not.toContain('estimated');
@@ -225,7 +226,7 @@ describe('composeDraftForThread (agent dispatch E2E)', () => {
     const thread1 = (await store.getThreadWithMessages(tid))!.thread;
     const r1 = await composeDraftForThread({ ...env, OPENROUTER_API_KEY: 'k' } as any, store, cfg!, thread1, fakeFetch);
     expect(r1).not.toBeNull();
-    const d1 = (await store.getDraft(r1!.draftId))!;
+    const d1 = (await store.getDraft((r1 as { draftId: string }).draftId))!;
     expect(d1.body_text).toContain('P.S. 🔍');
     expect(d1.body_text).toContain('search bar');
     expect(d1.body_text.indexOf('Active Paw Sales Team')).toBeLessThan(d1.body_text.indexOf('P.S.'));
@@ -242,7 +243,7 @@ describe('composeDraftForThread (agent dispatch E2E)', () => {
     const thread2 = (await store.getThreadWithMessages(tid))!.thread;
     const r2 = await composeDraftForThread({ ...env, OPENROUTER_API_KEY: 'k' } as any, store, cfg!, thread2, fakeFetch);
     expect(r2).not.toBeNull();
-    const d2 = (await store.getDraft(r2!.draftId))!;
+    const d2 = (await store.getDraft((r2 as { draftId: string }).draftId))!;
     expect(d2.body_text).not.toContain('P.S.');
     expect(d2.body_text).toContain('Active Paw Sales Team'); // footer still there
   });
@@ -278,7 +279,9 @@ describe('composeDraftForThread grounds an affiliate-classified thread in the me
     await store.setThreadClassification(tid, { status: 'needs_reply', primaryCategory: 'affiliate', intentScore: 20, summary: 'Wants to recommend the store; asks if products arrive as described', classifiedAt: '2026-09-06T04:15:00Z' });
 
     const systems: string[] = [];
-    const fakeFetch = (async (_url: string, init?: RequestInit) => {
+    // The thread reader's own call is answered by withReader, so `systems`
+    // holds the drafter's prompts only, as before the reader existed.
+    const fakeFetch = withReader((async (_url: string, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body ?? '{}'));
       const sys = (body.messages ?? []).find((m: { role: string }) => m.role === 'system');
       if (sys) systems.push(String(sys.content));
@@ -286,13 +289,13 @@ describe('composeDraftForThread grounds an affiliate-classified thread in the me
         choices: [{ message: { content: JSON.stringify({ customerAsks: ['reach you directly'], bodyText: 'Yes, you can reach us directly at contact@activepaw.co.uk and we reply within one working day.', confidence: 90, quotesPriceOrOrder: false, commercialIntent: false }) } }],
         usage: { cost: 0.0001 }
       }), { status: 200 });
-    }) as unknown as typeof fetch;
+    }) as unknown as typeof fetch);
 
     const cfg = await store.getConfig();
     const got = await store.getThreadWithMessages(tid);
     const result = await composeDraftForThread({ ...env, OPENROUTER_API_KEY: 'k' } as any, store, cfg!, got!.thread, fakeFetch);
     expect(result).not.toBeNull();
-    const draft = await store.getDraft(result!.draftId);
+    const draft = await store.getDraft((result as { draftId: string }).draftId);
     expect(draft?.model).not.toBe('partnership-screen');
     expect(draft?.body_text).not.toContain('apply');
     expect(draft?.body_text).toContain('Active Paw Customer Support');

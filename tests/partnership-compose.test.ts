@@ -5,7 +5,7 @@ import {
   buildCollaborationDecline, detectAlternativeCollaboration, detectAccessRequest, countProgrammeIntroductions,
   TOUCH_TEMPLATES, QUALIFYING_MARKER, AFFILIATE_APPLY_URL, PARTNERSHIP_STANCE, STANDARD_COMMISSION_PCT, TIER_REVIEW_ORDERS, TIER_MAX_PCT
 } from '../src/inbox/partnership';
-import { countWords } from '../src/inbox/draft-quality';
+import { countWords, promisesSupplier } from '../src/inbox/draft-quality';
 
 describe('partnership composers', () => {
   it('qualifying email greets by name and asks the six screening questions', () => {
@@ -148,11 +148,17 @@ describe('an affiliate mention always carries the apply link', () => {
     expect(body.startsWith('Hi Celia,')).toBe(true);
     expect(body).toMatch(/thank you for sending/i);
     expect(body).toMatch(/product (?:information|listing|catalogue)/i);
+    expect(body).toMatch(/welcome to email/i);                 // accepts the information (owner 2026-09-27)
+    expect(body).toMatch(/website/i);
+    expect(body).toMatch(/alibaba/i);
+    expect(body).toMatch(/dropshipping/i);
     expect(body).toMatch(/for reference/i);
+    expect(body).not.toMatch(/nothing you need to do|nothing more is needed/i);
     expect(body).not.toMatch(/declin|not a fit|not something we|in-house|affiliate|commission/i);
     expect(body).not.toMatch(/we will (?:place|be placing) an order|order from you|next steps/i);
     expect(body).not.toMatch(/[\u2013\u2014]/);
-    expect(body).toContain('Best Regards,\nActive Paw');
+    expect(body.endsWith('Best Regards,\nActive Paw Sourcing Team')).toBe(true);
+    expect(promisesSupplier(body)).toBe(false);
   });
 });
 
@@ -181,6 +187,10 @@ describe('second-touch and pointer variants', () => {
       expect(pointer, key).toMatch(/earlier/i);
       expect(second, key).toMatch(/\nActive Paw/); // signed
     }
+    expect(buildSecondTouch('supplier_ack', 'Jo')).toContain('Active Paw Sourcing Team');
+    expect(buildPointerBack('supplier_ack', 'Jo')).toContain('Active Paw Sourcing Team');
+    expect(buildSecondTouch('supplier_ack', 'Jo')).not.toMatch(/nothing you need to do/i);
+    expect(buildPointerBack('supplier_ack', 'Jo')).not.toMatch(/nothing more is needed/i);
   });
   it('link-bearing templates keep the apply link in both shorter forms', () => {
     for (const key of ['signup_invite', 'service_prove_first', 'form_invite', 'collaboration_decline', 'access_decline'] as const) {
@@ -229,7 +239,7 @@ describe('friendly collaboration decline (programme introduced twice, they insis
     expect(body).toContain('Best Regards,\nActive Paw Partnerships');
     // The old partnership decline's falsehood must not come back through here.
     expect(body).not.toMatch(/not a fit for our affiliate programme/i);
-    expect(body).not.toMatch(/[–—]/);
+    expect(body).not.toMatch(new RegExp('[' + String.fromCharCode(8211, 8212) + ']'));
   });
 
   // Grounded in the MESSAGE TEXT only (standing rule). The positives are the

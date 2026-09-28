@@ -164,6 +164,46 @@ describe('sendReply', () => {
     expect(outbound.from_addr).toBe('sales@activepaw.co.uk');
   });
 
+  // Controller fix round 2 (2026-09-27): a supplier who writes to sales@ is not
+  // automatically in the partnership funnel - only a real partnership ask
+  // (category != supplier) or an existing applicant row puts a thread on that
+  // lane. Otherwise a supplier reply carries "Active Paw Partnerships" in the
+  // From while its body signs off "Active Paw Sourcing Team", a mismatch.
+  it('a supplier thread with no applicant row is not sent as Active Paw Partnerships, even when the inbound went to sales@', async () => {
+    const s = new TenantStore(env.DB, 'supplier1.myshopify.com');
+    await s.upsertContact({ email: 'vendor@supplier.cn', name: null, phone: null });
+    const tid = await s.createThread({ contactEmail: 'vendor@supplier.cn', subject: 'Our catalogue', subjectNorm: 'our catalogue', receivedAt: '2026-09-20T10:00:00Z', initialStatus: 'needs_reply' });
+    await s.setThreadClassification(tid, { status: 'needs_reply', primaryCategory: 'supplier', intentScore: 20, summary: null, classifiedAt: '2026-09-20T10:00:01Z' });
+    await s.insertInboundMessageIfNew({ threadId: tid, messageId: '<sup-1@x>', inReplyTo: null, references: [], from: 'vendor@supplier.cn', to: 'sales@activepaw.co.uk', subject: 'Our catalogue', bodyText: 'Please see our catalogue attached.', bodyHtml: null, headersJson: '{}', receivedAt: '2026-09-20T10:00:00Z' });
+    const did = await s.insertDraft({ threadId: tid, bodyText: 'Thank you for sending your catalogue.\n\nActive Paw Sourcing Team', bodyHtml: '<p>x</p>', confidence: null, quotesPriceOrder: false, holdReasons: [], model: 'm', status: 'pending' });
+
+    let sentFrom: any = null;
+    const fetchImpl: typeof fetch = (async (_u: unknown, init: RequestInit) => { const b = JSON.parse(init.body as string); sentFrom = b.from; return new Response(JSON.stringify({ id: 'em_1' }), { status: 200 }); }) as unknown as typeof fetch;
+    const thread = (await s.getThreadWithMessages(tid))!.thread;
+    const draft = (await s.getDraft(did))!;
+    const r = await sendReply({ ...env, RESEND_API_KEY: 'rk' } as any, s, CFG, thread, draft, undefined, fetchImpl);
+    expect(r.ok).toBe(true);
+    expect(sentFrom).not.toMatch(/^Active Paw Partnerships/);
+  });
+
+  it('a supplier thread WITH an applicant row still sends as Active Paw Partnerships', async () => {
+    const s = new TenantStore(env.DB, 'supplier2.myshopify.com');
+    await s.upsertContact({ email: 'vendor2@supplier.cn', name: null, phone: null });
+    const tid = await s.createThread({ contactEmail: 'vendor2@supplier.cn', subject: 'Our catalogue', subjectNorm: 'our catalogue', receivedAt: '2026-09-20T10:00:00Z', initialStatus: 'needs_reply' });
+    await s.setThreadClassification(tid, { status: 'needs_reply', primaryCategory: 'supplier', intentScore: 20, summary: null, classifiedAt: '2026-09-20T10:00:01Z' });
+    await s.insertInboundMessageIfNew({ threadId: tid, messageId: '<sup-2@x>', inReplyTo: null, references: [], from: 'vendor2@supplier.cn', to: 'sales@activepaw.co.uk', subject: 'Our catalogue', bodyText: 'Please see our catalogue attached.', bodyHtml: null, headersJson: '{}', receivedAt: '2026-09-20T10:00:00Z' });
+    await s.upsertApplicant({ threadId: tid, contactEmail: 'vendor2@supplier.cn', stage: 'passed_to_form' });
+    const did = await s.insertDraft({ threadId: tid, bodyText: 'Thank you.\n\nActive Paw Partnerships', bodyHtml: '<p>x</p>', confidence: null, quotesPriceOrder: false, holdReasons: [], model: 'm', status: 'pending' });
+
+    let sentFrom: any = null;
+    const fetchImpl: typeof fetch = (async (_u: unknown, init: RequestInit) => { const b = JSON.parse(init.body as string); sentFrom = b.from; return new Response(JSON.stringify({ id: 'em_1' }), { status: 200 }); }) as unknown as typeof fetch;
+    const thread = (await s.getThreadWithMessages(tid))!.thread;
+    const draft = (await s.getDraft(did))!;
+    const r = await sendReply({ ...env, RESEND_API_KEY: 'rk' } as any, s, CFG, thread, draft, undefined, fetchImpl);
+    expect(r.ok).toBe(true);
+    expect(sentFrom).toBe('Active Paw Partnerships <sales@activepaw.co.uk>');
+  });
+
   it('does NOT clobber an explicit converted/closed status on send (preserves the merchant choice)', async () => {
     const s = new TenantStore(env.DB, 'd.myshopify.com');
     await s.upsertContact({ email: 'jane@x.com', name: null, phone: null });

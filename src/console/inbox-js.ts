@@ -81,6 +81,134 @@ function ibxSyncFilterChips(){
 }
 function ibxSetFilter(v){ var s=el('inbox-status-filter'); if(s) s.value=v; ibxSyncFilterChips(); loadInboxThreads(); }
 function ibxFilterFromSelect(){ ibxSyncFilterChips(); loadInboxThreads(); }
+// --- Suppliers view (owner decision 2026-09-27): the supplier register in the
+// center pane. Links come from the server already limited to http(s); they are
+// still escaped and opened with rel=noopener. Only status and notes are editable.
+var ibxSuppliers=[];
+var IBX_SUP_STATUS=['new','reviewed','dismissed'];
+function ibxSupLink(u,label){
+  var s=String(u||'');
+  if(s.indexOf('http://')!==0&&s.indexOf('https://')!==0) return '';
+  return '<a href="'+esc(s)+'" target="_blank" rel="noopener noreferrer">'+esc(label||s)+'</a>';
+}
+function ibxSuppliersChipClick(){
+  // Same unsent-edits guard as switching threads (ibxRowClick below): confirm()
+  // is unreliable inside the admin iframe, so click Suppliers again within 8s
+  // to discard. ibxSelectedId is a thread id (or null) and can never equal the
+  // literal 'suppliers', so the sentinel never collides with a real thread id.
+  if(ibxSelectedId!==null&&ibxDraftEdited()&&ibxSwitchArmedId!=='suppliers'){
+    ibxSwitchArmedId='suppliers';
+    if(ibxSwitchTimer) clearTimeout(ibxSwitchTimer);
+    ibxSwitchTimer=setTimeout(function(){ ibxSwitchArmedId=null; },8000);
+    setMsg('ibx-msg','You have unsent draft edits - click Suppliers again to discard them.','no');
+    return;
+  }
+  ibxSwitchArmedId=null;
+  ibxOpenSuppliers();
+}
+async function ibxOpenSuppliers(){
+  var chips=document.querySelectorAll('#ibx-filter-chips .ibx-chip');
+  for(var i=0;i<chips.length;i++) chips[i].classList.toggle('is-on',chips[i].getAttribute('data-filter')==='suppliers');
+  var head=el('ibx-convo-head'), tl=el('ibx-timeline');
+  if(!head||!tl) return;
+  ibxSelectedId=null;
+  // Same placeholder the console starts with before any thread is selected
+  // (src/console/views/inbox.ts) - the Suppliers view is not about any one
+  // thread, so the rail should not keep showing the last one.
+  var ctx=el('ibx-context-body'); if(ctx) ctx.innerHTML='<p class="muted" style="font-size:13px;margin:0">Thread details appear here.</p>';
+  head.style.display='';
+  head.innerHTML='<div class="ibx-convo-head__row"><h3>Suppliers</h3><span class="ibx-spacer"></span>'
+    +'<button type="button" class="ghost" id="ibx-backfill-btn" onclick="ibxStartBackfill()">Scan past inbox for suppliers</button></div>'
+    +'<p class="muted" id="ibx-backfill-msg" style="margin:4px 0 0;font-size:12px"></p>';
+  tl.innerHTML='<div class="ibx-note">Loading…</div>';
+  try{
+    var r=await api('/inbox/suppliers',{});
+    if(!r.ok){ tl.innerHTML='<div class="ibx-note">Failed: '+esc(r.error||'unknown error')+'</div>'; return; }
+    ibxSuppliers=r.suppliers||[];
+    var b=r.backfill;
+    if(b) setMsg('ibx-backfill-msg',(b.done?'Past inbox scanned: ':'Scanning past inbox: ')+b.scanned+' threads read, '+b.found+' suppliers found','muted');
+    if(!ibxSuppliers.length){ tl.innerHTML='<div class="ibx-empty"><p>No suppliers yet</p><p class="muted">Suppliers are added here when they write in.</p></div>'; return; }
+    ibxRenderSuppliers();
+  }catch(e){ tl.innerHTML='<div class="ibx-note">Failed: '+esc(errText(e))+'</div>'; }
+}
+function ibxSupFilterOpts(opts,cur){
+  var h='<option value="">all</option>';
+  for(var i=0;i<opts.length;i++) h+='<option value="'+esc(opts[i])+'"'+(cur===opts[i]?' selected':'')+'>'+esc(opts[i])+'</option>';
+  return h;
+}
+function ibxSupVal(id){ var n=el(id); return n?n.value:''; }
+function ibxRenderSuppliers(){
+  var tl=el('ibx-timeline'); if(!tl) return;
+  var fk=ibxSupVal('ibx-sup-f-kind'), ff=ibxSupVal('ibx-sup-f-fit'), fd=ibxSupVal('ibx-sup-f-dropship');
+  var bar='<div style="margin:0 0 8px">'
+    +'<label class="muted" style="font-size:12px;margin-right:8px">Kind <select id="ibx-sup-f-kind">'+ibxSupFilterOpts(['goods','packaging','logistics'],fk)+'</select></label>'
+    +'<label class="muted" style="font-size:12px;margin-right:8px">Fit <select id="ibx-sup-f-fit">'+ibxSupFilterOpts(['on-niche','adjacent','off-niche'],ff)+'</select></label>'
+    +'<label class="muted" style="font-size:12px;margin-right:8px">Dropshipping <select id="ibx-sup-f-dropship">'+ibxSupFilterOpts(['yes','no','unknown'],fd)+'</select></label>'
+    +'</div>';
+  {
+    var h=bar+'<table class="ibx-sup-table"><thead><tr><th>Last seen</th><th>Company</th><th>Contact</th><th>Kind</th><th>Products</th><th>Links</th><th>Ships from</th><th>Fit</th><th>Dropshipping</th><th>Status</th><th>Notes</th><th></th></tr></thead><tbody>';
+    for(var k=0;k<ibxSuppliers.length;k++){
+      var s=ibxSuppliers[k];
+      if((fk&&s.kind!==fk)||(ff&&s.niche_fit!==ff)||(fd&&(s.dropship||'unknown')!==fd)) continue;
+      var links=[];
+      if(s.website) links.push(ibxSupLink(s.website,'website'));
+      for(var j=0;j<(s.storeLinks||[]).length;j++) links.push(ibxSupLink(s.storeLinks[j],'store'));
+      var sel='<select id="ibx-sup-status-'+k+'">';
+      for(var m=0;m<IBX_SUP_STATUS.length;m++) sel+='<option value="'+IBX_SUP_STATUS[m]+'"'+(s.status===IBX_SUP_STATUS[m]?' selected':'')+'>'+IBX_SUP_STATUS[m]+'</option>';
+      sel+='</select>';
+      h+='<tr>'
+        +'<td>'+esc((s.last_seen_at||'').slice(0,10))+'</td>'
+        +'<td>'+esc(s.company||'')+'</td>'
+        +'<td>'+esc(s.contact_name||'')+'<br><span class="muted">'+esc(s.email||'')+'</span></td>'
+        +'<td>'+esc(s.kind||'')+'</td>'
+        +'<td>'+esc((s.productLines||[]).join(', '))+'</td>'
+        +'<td>'+links.join(' ')+'</td>'
+        +'<td>'+esc(s.ships_from||'')+'</td>'
+        +'<td>'+esc(s.niche_fit||'')+'</td>'
+        +'<td>'+esc(s.dropship||'unknown')+'</td>'
+        +'<td>'+sel+'</td>'
+        +'<td><input id="ibx-sup-notes-'+k+'" maxlength="2000" value="'+esc(s.notes||'')+'"></td>'
+        +'<td><button type="button" class="ghost" onclick="ibxSaveSupplier('+k+')">Save</button>'
+        +(s.first_thread_id?' <button type="button" class="ghost ibx-sup-thread" data-tid="'+esc(s.first_thread_id)+'">Thread</button>':'')
+        +'</td></tr>';
+    }
+    tl.innerHTML=h+'</tbody></table><p class="msg" id="ibx-sup-msg"></p>';
+  }
+  // Handlers bound after render (the same pattern as the Approve button), so
+  // no id is ever spliced into an inline handler's quotes.
+  var ids=['ibx-sup-f-kind','ibx-sup-f-fit','ibx-sup-f-dropship'];
+  for(var q=0;q<ids.length;q++){ var f=el(ids[q]); if(f) f.onchange=ibxRenderSuppliers; }
+  var tb=tl.querySelectorAll('.ibx-sup-thread');
+  for(var x=0;x<tb.length;x++){ (function(btn){ btn.onclick=function(){ openInboxThread(btn.getAttribute('data-tid')); }; })(tb[x]); }
+}
+async function ibxSaveSupplier(k){
+  var s=ibxSuppliers[k]; if(!s) return;
+  var st=el('ibx-sup-status-'+k), nt=el('ibx-sup-notes-'+k);
+  try{
+    var r=await api('/inbox/suppliers/update',{email:s.email,status:st?st.value:undefined,notes:nt?nt.value:undefined});
+    setMsg('ibx-sup-msg',r.ok?'Saved ✓':'Failed: '+(r.error||'unknown error'),r.ok?'ok':'no');
+  }catch(e){ setMsg('ibx-sup-msg','Failed: '+errText(e),'no'); }
+}
+async function ibxStartBackfill(){
+  var b=el('ibx-backfill-btn'); if(b) b.disabled=true;
+  try{
+    var r=await api('/inbox/suppliers/backfill',{});
+    if(r.ok&&r.alreadyRunning){
+      setMsg('ibx-backfill-msg','A scan is already running: '+(r.backfill?r.backfill.scanned:0)+' threads read so far.','muted');
+      return;
+    }
+    setMsg('ibx-backfill-msg',r.ok?'Scan started: it runs in the background, about 20 threads every 15 minutes.':'Failed: '+(r.error||'unknown error'),r.ok?'ok':'no');
+  }catch(e){ setMsg('ibx-backfill-msg','Failed: '+errText(e),'no'); if(b) b.disabled=false; }
+}
+async function ibxDraftAnyway(tid){
+  var b=el('ibx-draft-anyway-btn'); if(b) b.disabled=true;
+  setMsg('ibx-msg','Drafting…','muted');
+  try{
+    var r=await api('/inbox/draft-anyway',{threadId:tid});
+    if(r.ok){ openInboxThread(tid); setMsg('ibx-msg','Drafted ✓','ok'); }
+    else { setMsg('ibx-msg','Failed: '+(r.error||'unknown error'),'no'); if(b) b.disabled=false; }
+  }catch(e){ setMsg('ibx-msg','Failed: '+errText(e),'no'); if(b) b.disabled=false; }
+}
 // --- Thread list (left pane) ---
 async function loadInboxThreads(){
   var status=(el('inbox-status-filter')&&el('inbox-status-filter').value)||'';
@@ -207,7 +335,7 @@ function renderInboxThread(thread,messages,labels,draft,invoice,applicant,contac
     +'<option value="operations_decline">Internal operations decline</option>'
     +'<option value="collaboration_decline">Friendly decline (programme already introduced)</option>'
     +'<option value="access_decline">Access request decline (never granted, trial link)</option>'
-    +'<option value="supplier_ack">Supplier: thanks for the listing (no commitment)</option>'
+    +'<option value="supplier_ack">Supplier: thanks, link and dropshipping question (no commitment)</option>'
     +'<option value="keep_to_email">Keep to email (decline WhatsApp)</option>'
     +'</select>';
   // Pending draft: distinct dashed card at the END of the timeline
@@ -230,9 +358,16 @@ function renderInboxThread(thread,messages,labels,draft,invoice,applicant,contac
       +'</div>';
   } else {
     // No pending draft: the picker still works - it CREATES a pending draft
-    // from the template, so a processed thread can be reopened with the right
-    // canned reply instead of pasting copy in from outside.
-    draftHtml='<div class="ibx-note">No draft pending '+tplSel+'</div>';
+    // from the template. When the thread reader found nothing to answer
+    // (2026-09-27), say so and offer Draft anyway.
+    var noReply=false;
+    try{ var rd=thread.reading_json?JSON.parse(thread.reading_json):null; noReply=!!(rd&&rd.replyNeeded===false); }catch(e){ noReply=false; }
+    // The button shows on EVERY thread without a draft (the route accepts any),
+    // so the owner can also preview a reply on an old thread, for example to
+    // see the new supplier wording on a supplier already answered by hand.
+    draftHtml=noReply
+      ?'<div class="ibx-note">No reply needed: their last message only acknowledges ours. <button id="ibx-draft-anyway-btn" type="button" class="ghost">Draft anyway</button> '+tplSel+'</div>'
+      :'<div class="ibx-note">No draft pending <button id="ibx-draft-anyway-btn" type="button" class="ghost">Draft a reply</button> '+tplSel+'</div>';
   }
   tl.innerHTML=msgHtml+draftHtml;
   tl.scrollTop=tl.scrollHeight;
@@ -243,6 +378,8 @@ function renderInboxThread(thread,messages,labels,draft,invoice,applicant,contac
     var regenBtn=el('inbox-regen-btn');
     if(regenBtn) regenBtn.onclick=function(){ regenerateDraftAction(draftId,tid); };
   }
+  var daBtn=el('ibx-draft-anyway-btn');
+  if(daBtn) daBtn.onclick=function(){ ibxDraftAnyway(tid); };
   var tplEl=el('inbox-tpl-sel');
   if(tplEl) tplEl.onchange=function(){ if(tplEl.value) applyTemplateAction(tplEl.value,tid); };
   renderInboxContext(thread,labels,draft,invoice,applicant,contact,partnerPool,partnerConsent,events);
@@ -275,7 +412,7 @@ function renderInboxContext(thread,labels,draft,invoice,applicant,contact,partne
   if(thread.intent_score!=null) cust+='<p class="muted" style="margin:6px 0 0;font-size:12px">Intent score: '+esc(String(thread.intent_score))+'/100</p>';
   if(thread.summary) cust+='<p class="muted" style="margin:6px 0 0;font-size:12px">'+esc(thread.summary)+'</p>';
   cust+='</div>';
-  var labOpts=['lead','product-question','order-status','shipping-returns','wholesale-b2b','affiliate','complaint','spam','automated','other'];
+  var labOpts=['lead','product-question','order-status','shipping-returns','wholesale-b2b','affiliate','complaint','supplier','spam','automated','other'];
   var labSel='<select id="inbox-label-sel" multiple size="5" style="width:100%;font-size:13px">';
   for(var j=0;j<labOpts.length;j++){
     labSel+='<option value="'+esc(labOpts[j])+'"'+(labels.indexOf(labOpts[j])>=0?' selected':'')+'>'+esc(labOpts[j])+'</option>';

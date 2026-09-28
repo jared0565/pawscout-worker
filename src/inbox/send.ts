@@ -39,8 +39,14 @@ export async function sendReply(
   // The lane is what the sender asked SINCE our last reply, or an applicant row:
   // a thread already in the funnel keeps its identity on a bare "thanks".
   const inboundToAddrs = (got?.messages ?? []).filter((m) => m.direction === 'inbound').map((m) => m.to_addr ?? '');
-  const partnershipLane = isPartnershipLane({ inboundToAddrs, declaredIntent: got?.thread.declared_intent ?? null, primaryCategory: thread.primary_category, inboundTexts: openInboundTexts(got?.messages ?? []) })
-    || !!(await store.getApplicantByThread(thread.id));
+  // A supplier who happens to write to sales@ is not thereby in the partnership
+  // funnel: the lane on-ramp only counts for a non-supplier thread, unless an
+  // applicant row already exists (the thread genuinely is in the funnel and
+  // must stay there, e.g. a supplier the reader later relabels).
+  const applicant = await store.getApplicantByThread(thread.id);
+  const partnershipLane = (thread.primary_category !== 'supplier'
+    && isPartnershipLane({ inboundToAddrs, declaredIntent: got?.thread.declared_intent ?? null, primaryCategory: thread.primary_category, inboundTexts: openInboundTexts(got?.messages ?? []) }))
+    || !!applicant;
   const from = resolveFromAddress({ partnershipLane, toAddr: lastInbound?.to_addr ?? null });
 
   const r = await sendEmail(env.RESEND_API_KEY, {

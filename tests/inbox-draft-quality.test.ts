@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { hasFillerBookend, countWords, substanceWordCount, affirmsDelivery, statesDayRange, findDraftIssues, refineUntilClean, asksDoYouDeliver, claimsBusinessBiography, volunteersTradeDecline, owesBasketDelivery } from '../src/inbox/draft-quality';
+import { hasFillerBookend, countWords, substanceWordCount, affirmsDelivery, statesDayRange, findDraftIssues, refineUntilClean, asksDoYouDeliver, claimsBusinessBiography, volunteersTradeDecline, owesBasketDelivery, promisesSupplier } from '../src/inbox/draft-quality';
 import { SHARED_SCAFFOLDING } from '../src/inbox/agents/scaffolding';
 
 // The live fabrication this gate exists to catch (Azan's thread, 2026-07-05):
@@ -282,5 +282,86 @@ describe('findDraftIssues: repeating a reply we already sent', () => {
   it('does not flag a fresh reply, and skips the check when no prior outbound is given', () => {
     expect(findDraftIssues('Yes, we ship to Ireland; delivery takes five to seven working days from dispatch.', { priorOutbound: [SENT] })).toEqual([]);
     expect(findDraftIssues(SENT, {})).toEqual([]);
+  });
+});
+
+describe('promisesSupplier (supplier lane, owner decision 2026-09-27)', () => {
+  const clean = 'Thank you for sharing your tofu and pine cat litter lines. You are welcome to email over your catalogue. If you have a website or an Alibaba store, please send us the link for our reference, and let us know whether you offer dropshipping, that is, sending single orders directly to our customers. We keep supplier details on file for reference.';
+  it('passes a clean acknowledgement, including the dropshipping question', () => {
+    expect(promisesSupplier(clean)).toBe(false);
+    expect(promisesSupplier('We keep supplier contact on email and are not arranging samples or calls.')).toBe(false);
+  });
+  it.each([
+    'We will be in touch if anything fits.',
+    "We'll review your catalogue next week.",
+    'We would consider placing an order.',
+    'We will contact you soon.',
+    'We look forward to working with you.',
+    'We are open to a partnership.',
+    'Please send us some samples.',
+    "We'd be happy to arrange a call.",
+    'Happy to schedule a quick meeting.',
+    "Let's continue on WhatsApp.",
+    'We are not ordering at this stage.',
+    'Nothing is needed for now.',
+    'Apply at https://activepaw.co.uk/apps/pawscout/affiliate/apply',
+    'Our affiliate programme pays 2% commission.',
+  ])('flags %s', (t) => { expect(promisesSupplier(t)).toBe(true); });
+
+  it('findDraftIssues raises it only on the supplier lane', () => {
+    const t = 'Thank you for your catalogue of felt pet beds. We will be in touch soon about an order.';
+    expect(findDraftIssues(t, { supplierLane: true }).join(' ')).toMatch(/promise/i);
+    expect(findDraftIssues(t, {}).join(' ')).not.toMatch(/promise/i);
+  });
+
+  it.each([
+    'We\'d love to try a sample.',
+    'Happy to jump on a call.',
+    'Let\'s set up a trial order.',
+    'Could we set up a quick call next week?',
+  ])('flags (new patterns fix 2026-09-27) %s', (t) => { expect(promisesSupplier(t)).toBe(true); });
+
+  it('flags promises with curly apostrophes', () => {
+    const curly = String.fromCharCode(8217);
+    expect(promisesSupplier('We' + curly + 'll review your catalogue next week.')).toBe(true);
+  });
+
+  it.each([
+    'Thank you for the offer of samples.',
+    'Please send your catalogue by email and we keep it on file for reference.',
+    'Let us know whether you offer dropshipping.',
+    'We keep supplier contact on email and are not arranging samples or calls.',
+  ])('stays clean (new patterns fix 2026-09-27) %s', (t) => { expect(promisesSupplier(t)).toBe(false); });
+
+  // Fix round 2 (2026-09-27): promisesSupplier was flagging correct refusals.
+  // A negation guard clears a guarded pattern's match when one of a fixed set
+  // of negation words appears in its own clause, within 30 characters before
+  // the match start.
+  it.each([
+    'There is no need to send samples.',
+    'We are not able to set up a call.',
+    'Please do not send us samples.',
+    'We cannot jump on a call right now.',
+  ])('a correct refusal stays clean (negation guard) %s', (t) => { expect(promisesSupplier(t)).toBe(false); });
+
+  it.each([
+    // Unguarded "at this stage" pattern: still flags despite a nearby "not".
+    'We will not be placing orders at this stage.',
+    // Unguarded partnership pattern: still flags regardless of negation.
+    'Thank you for your partnership proposal.',
+    // The negation in the first clause ("cannot") must not bleed across the
+    // comma into the second, unrelated clause's genuine promise ("we will
+    // review your catalogue").
+    'We cannot promise anything, but we will review your catalogue.',
+    // A conjunction without a comma still opens a new clause (final review).
+    'Not sure yet but we will place an order soon.',
+    'We cannot promise anything but we will review your catalogue.',
+    'We do not need a call and we will review your catalogue.',
+  ])('the negation guard never clears an unguarded pattern or a different clause %s', (t) => { expect(promisesSupplier(t)).toBe(true); });
+
+  it('the negation guard matches whole words only, never a substring inside another word', () => {
+    // "noted" contains "not" as a substring; a naive substring check would
+    // wrongly clear the later, unrelated "we will review it" promise.
+    expect(promisesSupplier('We have noted your catalogue and we will review it.')).toBe(true);
   });
 });

@@ -82,8 +82,16 @@ describe('partnership stance: prove-first', () => {
     expect(PARTNERSHIP_STANCE).not.toMatch(/is declined/i);
     expect(PARTNERSHIP_STANCE).toContain('starts with their own affiliate discount code');
     expect(PARTNERSHIP_STANCE).toContain('GOODS SUPPLIERS');
-    expect(PARTNERSHIP_STANCE).toContain('noted it for reference');
+    expect(PARTNERSHIP_STANCE).toContain('on file for reference');
     expect(PARTNERSHIP_STANCE).toContain('never granted');
+  });
+
+  // Fix round 1 (2026-09-27): warehousing, fulfilment and logistics suppliers
+  // do not dropship goods themselves, so the dropshipping question is scoped
+  // to goods and packaging suppliers only, matching src/inbox/agents/supplier.ts
+  // and the reviser text in draft-quality.ts.
+  it('scopes the dropshipping question to goods or packaging suppliers only', () => {
+    expect(PARTNERSHIP_STANCE).toContain('for goods or packaging only');
   });
 });
 

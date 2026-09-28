@@ -42,5 +42,7 @@ describe('otherAgent', () => {
     expect(p).toContain('SERVICE OFFERS');
     expect(p).toContain('GOODS SUPPLIERS');
     expect(p).toContain('starts with their own affiliate discount code');
+    expect(p).toMatch(/welcome to email/i);
+    expect(p).toMatch(/website or online store link/i);
   });
 });

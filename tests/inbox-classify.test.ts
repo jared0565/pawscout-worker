@@ -82,6 +82,26 @@ describe('classifyEmail', () => {
     const c = await classifyEmail(new LlmClient({}), store, CFG, { subject: 's', body: 'b', fromEmail: 'a@b.com', auth: { spf: 'none', dkim: 'none', dmarc: 'none' } });
     expect(c).toBeNull();
   });
+
+  it('the category guide defines the supplier lane and keeps marketing pitches out of it', async () => {
+    let system = '';
+    const fetchImpl = (async (_u: string, init: RequestInit) => {
+      system = JSON.parse(String(init.body)).messages[0].content;
+      return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ isHuman: true, category: 'supplier', intentScore: 10, summary: 'Cat litter maker', labels: ['supplier'] }) } }], usage: { cost: 0 } }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const { classifyEmail } = await import('../src/inbox/classify');
+    const { LlmClient } = await import('../src/llm');
+    const { TenantStore } = await import('../src/tenant-store');
+    const { DEFAULT_INBOX } = await import('../src/inbox/types');
+    const { DEFAULT_LLM } = await import('../src/types');
+    const c = await classifyEmail(new LlmClient({ openrouter: 'k' }, fetchImpl), new TenantStore(env.DB, 'a.myshopify.com'),
+      { llm: DEFAULT_LLM, inbox: { ...DEFAULT_INBOX } } as any,
+      { subject: 'Premium cat litter manufacturer', body: 'We are an OEM cat litter factory', fromEmail: 'sales@x.cn', auth: { spf: 'pass', dkim: 'pass', dmarc: 'pass' } });
+    expect(c?.category).toBe('supplier');
+    expect(system).toContain('"supplier" = a business offering to SUPPLY US');
+    expect(system).toMatch(/warehousing, fulfilment/);
+    expect(system).toMatch(/NOT supplier/);
+  });
 });
 
 describe('decideDisposition', () => {

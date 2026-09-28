@@ -3,6 +3,7 @@ import type { LogisticsRoute } from './logistics';
 import { deriveModels } from './llm-migrate';
 import { DEFAULT_INBOX, type InboxConfig } from './inbox/types';
 import type { ContactRow, ThreadRow, MessageRow, ThreadStatus, DraftRow, DraftStatus, InvoiceRow, InvoiceLineItem, InvoiceStatus, ApplicantRow, PartnershipStage, ScreenVerdict } from './inbox/types';
+import { mergeSupplier, SUPPLIER_STATUSES, type SupplierFacts, type SupplierRow, type SupplierStatus } from './inbox/supplier-register';
 
 /** ISO cutoff for the commission clearance hold: an order whose age basis
  *  (placed_at, or its insert timestamp created_at when placed_at is missing, so
@@ -2256,6 +2257,42 @@ export class TenantStore {
     return rs.results ?? [];
   }
 
+  /** Closed threads with an inbound newer than their last reading (or, never
+   *  read, their classification). Owner decision 2026-09-27: a closed thread
+   *  reopens only when the reader sees a customer with a real question; the
+   *  reading stamp stops it re-qualifying until the sender writes again.
+   *  Automated and spam threads are never candidates. Newest last_message_at
+   *  first (fix round 2, 2026-09-27): an old thread whose reading keeps
+   *  failing must never block newer customers behind it, up to the 10-per-
+   *  cycle cap. */
+  async closedReopenCandidates(limit = 10): Promise<ThreadRow[]> {
+    const rs = await this.db
+      .prepare(`SELECT t.* FROM inbox_threads t WHERE t.shop = ?1 AND t.status = 'closed'
+                AND COALESCE(t.primary_category, '') NOT IN ('automated', 'spam')
+                AND EXISTS (SELECT 1 FROM inbox_messages m WHERE m.shop = t.shop AND m.thread_id = t.id
+                            AND m.direction = 'inbound' AND m.created_at > COALESCE(t.read_at, t.classified_at, t.created_at))
+                ORDER BY t.last_message_at DESC LIMIT ${Math.min(Math.max(limit, 1), 50)}`)
+      .bind(this.shop).all<ThreadRow>();
+    return rs.results ?? [];
+  }
+
+  /** Threads the supplier back-fill reads: 'other' or 'supplier', created since
+   *  `since`, in a stable (created_at, id) order after the cursor. Closed
+   *  threads are skipped: stamping their read_at would hide a new message from
+   *  the closed-thread reopen check. Spam and converted threads are dismissed
+   *  by the owner without necessarily changing primary_category, so they are
+   *  excluded too: reading one would be a paid call spent on a thread the
+   *  owner has already dismissed, and it could still register a supplier row
+   *  from a thread that was actually spam. */
+  async supplierBackfillThreads(since: string, afterCreatedAt: string | null, afterId: string | null, limit: number): Promise<ThreadRow[]> {
+    const rs = await this.db
+      .prepare(`SELECT * FROM inbox_threads WHERE shop = ?1 AND primary_category IN ('other', 'supplier') AND status NOT IN ('closed', 'spam', 'converted') AND created_at >= ?2
+                AND (?3 IS NULL OR created_at > ?3 OR (created_at = ?3 AND id > ?4))
+                ORDER BY created_at ASC, id ASC LIMIT ${Math.min(Math.max(limit, 1), 50)}`)
+      .bind(this.shop, since, afterCreatedAt, afterId ?? '').all<ThreadRow>();
+    return rs.results ?? [];
+  }
+
   /** Bump classified_at without touching the verdict - used when a follow-up gave
    *  nothing new to judge (all-quote) or confirmed the existing lane, so the thread
    *  stops qualifying as a reclassify candidate until the sender writes again. */
@@ -2339,6 +2376,72 @@ export class TenantStore {
                 ORDER BY t.last_message_at ASC LIMIT ${Math.min(Math.max(limit, 1), 50)}`)
       .bind(this.shop).all<ThreadRow>();
     return rs.results ?? [];
+  }
+
+  // --- Supplier register (migration 0044, owner decision 2026-09-27) ---
+
+  async saveThreadReading(threadId: string, readingJson: string): Promise<void> {
+    // A sliced string can cut a JSON document mid-token and store something that
+    // fails to parse back (Task 2 review fix): store the reading whole, or not at
+    // all, but always stamp read_at so a skipped-for-size reading still shows as read.
+    const reading = readingJson.length <= 16000 ? readingJson : null;
+    await this.db
+      .prepare(`UPDATE inbox_threads SET reading_json = ?3, read_at = ?4 WHERE shop = ?1 AND id = ?2`)
+      .bind(this.shop, threadId, reading, new Date().toISOString())
+      .run();
+  }
+
+  getSupplier(email: string): Promise<SupplierRow | null> {
+    return this.db.prepare(`SELECT * FROM supplier_register WHERE shop = ?1 AND email = ?2`).bind(this.shop, email.toLowerCase()).first<SupplierRow>();
+  }
+
+  /** Worker-side write: merges a reading into the row, never touching status or notes.
+   *  company/contact/website/links/kind/product_lines/ships_from/niche_fit come from a
+   *  read-then-merge (mergeSupplier), which is fine for those: the worst case under a
+   *  race is one lost update to a descriptive field. dropship, first_seen_at,
+   *  last_seen_at, first_thread_id and message_count do NOT use that pre-read merge:
+   *  two concurrent upserts for the same email would let the second writer's stale read
+   *  clobber the first writer's dropship answer or seen-date window (Task 2 review
+   *  finding). Those five are instead resolved inside ON CONFLICT, atomically, from the
+   *  row SQLite actually holds at commit (`supplier_register.*`) versus this write's own
+   *  incoming values (`excluded.*`), so "unknown never overwrites a known yes/no" and
+   *  "seen dates only ever widen" hold under concurrency, not just in the single-threaded
+   *  merge above. */
+  async upsertSupplier(input: { email: string; threadId: string; facts: SupplierFacts; seenAt: string; inboundCount: number }): Promise<void> {
+    const email = input.email.toLowerCase();
+    const r = mergeSupplier(await this.getSupplier(email), input.facts, { email, threadId: input.threadId, seenAt: input.seenAt, inboundCount: input.inboundCount });
+    await this.db
+      .prepare(`INSERT INTO supplier_register (shop, email, company, contact_name, website, store_links, kind, product_lines, ships_from, niche_fit, dropship, first_thread_id, first_seen_at, last_seen_at, message_count, status, notes)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, 'new', NULL)
+                ON CONFLICT(shop, email) DO UPDATE SET company = ?3, contact_name = ?4, website = ?5, store_links = ?6, kind = ?7,
+                  product_lines = ?8, ships_from = ?9, niche_fit = ?10,
+                  dropship = CASE WHEN excluded.dropship <> 'unknown' THEN excluded.dropship ELSE supplier_register.dropship END,
+                  first_seen_at = MIN(supplier_register.first_seen_at, excluded.first_seen_at),
+                  last_seen_at = MAX(supplier_register.last_seen_at, excluded.last_seen_at),
+                  first_thread_id = CASE WHEN excluded.first_seen_at < supplier_register.first_seen_at THEN excluded.first_thread_id ELSE supplier_register.first_thread_id END,
+                  message_count = MAX(supplier_register.message_count, excluded.message_count)`)
+      .bind(this.shop, email, r.company, r.contact_name, r.website, r.store_links, r.kind, r.product_lines, r.ships_from,
+        r.niche_fit, input.facts.dropship, input.threadId, input.seenAt, input.seenAt, input.inboundCount)
+      .run();
+  }
+
+  async listSuppliers(limit = 200): Promise<SupplierRow[]> {
+    const rs = await this.db
+      .prepare(`SELECT * FROM supplier_register WHERE shop = ?1 ORDER BY last_seen_at DESC LIMIT ${Math.min(Math.max(limit, 1), 500)}`)
+      .bind(this.shop).all<SupplierRow>();
+    return rs.results ?? [];
+  }
+
+  /** Owner-side write: status and notes only. False when the status is not a known one or no row matched. */
+  async updateSupplierOwnerFields(email: string, f: { status?: SupplierStatus; notes?: string | null }): Promise<boolean> {
+    if (f.status !== undefined && !SUPPLIER_STATUSES.includes(f.status)) return false;
+    const row = await this.getSupplier(email);
+    if (!row) return false;
+    const status = f.status ?? row.status;
+    const notes = f.notes === undefined ? row.notes : (f.notes === null ? null : f.notes.slice(0, 2000));
+    await this.db.prepare(`UPDATE supplier_register SET status = ?3, notes = ?4 WHERE shop = ?1 AND email = ?2`)
+      .bind(this.shop, email.toLowerCase(), status, notes).run();
+    return true;
   }
 
   // --- Console Glance (Phase 3): read-only aggregates. Every number the Glance

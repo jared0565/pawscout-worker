@@ -4,7 +4,9 @@ import { DEFAULT_INBOX, type InboxConfig, type ThreadStatus } from './types';
 import type { Env } from '../types';
 import { sendReply } from './send';
 import { composeDraftForThread } from './sweep';
-import { maybePartnershipDraft, buildServiceProveFirst, buildSupplierAck, buildAccessDecline, buildOperationsDecline, buildCollaborationDecline, buildKeepToEmail, buildSignupInvite, detectVolumePitch, detectOffPlatformRequest, buildSecondTouch, buildPointerBack, type TouchTemplate } from './partnership';
+import { startSupplierBackfill, readBackfillCursor } from './supplier-backfill';
+import { SUPPLIER_STATUSES, type SupplierStatus } from './supplier-register';
+import { buildServiceProveFirst, buildSupplierAck, buildAccessDecline, buildOperationsDecline, buildCollaborationDecline, buildKeepToEmail, buildSignupInvite, detectVolumePitch, detectOffPlatformRequest, buildSecondTouch, buildPointerBack, type TouchTemplate } from './partnership';
 import { chooseTouch, outboundBodies, type TouchKind } from './repeat';
 import { renderReplyHtml, openInboundText } from './draft';
 import { stripQuotedReply } from './quote';
@@ -164,19 +166,14 @@ export async function regenerateDraft(db: D1Database, env: Env, shop: string, dr
   if (!cfg || !old || old.status !== 'pending') return { ok: false as const, error: 'No pending draft' };
   const got = await store.getThreadWithMessages(old.thread_id);
   if (!got) return { ok: false as const, error: 'Thread not found' };
-  // Route EXACTLY like the sweep: the partnership funnel screens first (its
-  // pitch on-ramp reads the latest inbound text, wherever the thread is
-  // filed), then the generic category drafter. Before this, Regenerate re-ran
-  // only the category agent, so a commission-for-volume pitch on an 'other'
-  // thread could never reach the qualifying email - every click reproduced
-  // the same decline template (Ishola case, 2026-07-06). The funnel's send
-  // flag is ignored on purpose: Regenerate never sends.
-  const funnel = await maybePartnershipDraft(env, store, cfg, got.thread, got, fetchImpl);
-  if (!funnel) {
-    // Generate the replacement FIRST so an LLM failure never loses the current draft.
-    const r = await composeDraftForThread(env, store, cfg, got.thread, fetchImpl);
-    if (!r) return { ok: false as const, error: 'Could not generate a new draft - model unavailable, try again.' };
-  }
+  // Route EXACTLY like the sweep: composeDraftForThread reads the thread, lets
+  // the partnership funnel screen first, then runs the category drafter (the
+  // Ishola case, 2026-07-06, is why the funnel must run here at all). force:
+  // the owner clicked Regenerate, so "no reply needed" never applies. The
+  // funnel's send flag is ignored on purpose: Regenerate never sends.
+  // Generate the replacement FIRST so an LLM failure never loses the current draft.
+  const r = await composeDraftForThread(env, store, cfg, got.thread, fetchImpl, { force: true });
+  if (!r || !('draftId' in r)) return { ok: false as const, error: 'Could not generate a new draft - model unavailable, try again.' };
   // Replacement is in (pending). Retire the old draft and keep the thread OPEN
   // for review - never close it (that was the discard trap). Regenerate never sends.
   await store.setDraftStatus(draftId, 'discarded');
@@ -224,7 +221,7 @@ export const DRAFT_TEMPLATES: { key: string; label: string }[] = [
   // 2026-09-17 (later): for the vendor who asks for admin, sub-admin,
   // collaborator or staff access. Never granted; the trial needs none of it.
   { key: 'access_decline', label: 'Access request decline (never granted, trial link)' },
-  { key: 'supplier_ack', label: 'Supplier: thanks for the listing (no commitment)' },
+  { key: 'supplier_ack', label: 'Supplier: thanks, link and dropshipping question (no commitment)' },
   { key: 'keep_to_email', label: 'Keep to email (decline WhatsApp)' },
 ];
 
@@ -336,4 +333,61 @@ export async function approveDraft(db: D1Database, shop: string, env: Env, draft
   const body = typeof editedBody === 'string' && editedBody.trim() ? editedBody : undefined;
   const r = await sendReply(env, store, cfg, got.thread, draft, body);
   return r.ok ? { ok: true as const } : { ok: false as const, error: r.error };
+}
+
+// --- Supplier register (owner decision 2026-09-27) ---
+
+function parseJsonList(s: string): string[] {
+  try { const v = JSON.parse(s); return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []; } catch { return []; }
+}
+
+export async function listSuppliersRoute(db: D1Database, shop: string) {
+  const store = new TenantStore(db, shop);
+  const rows = await store.listSuppliers(500);
+  return {
+    ok: true as const,
+    suppliers: rows.map((r) => ({ ...r, storeLinks: parseJsonList(r.store_links), productLines: parseJsonList(r.product_lines) })),
+    backfill: await readBackfillCursor(store),
+  };
+}
+
+export async function updateSupplierRoute(db: D1Database, shop: string, body: unknown) {
+  const b = (body ?? {}) as { email?: unknown; status?: unknown; notes?: unknown };
+  if (typeof b.email !== 'string' || !b.email.trim()) return { ok: false as const, error: 'email required' };
+  if (b.status !== undefined && !(typeof b.status === 'string' && (SUPPLIER_STATUSES as readonly string[]).includes(b.status))) return { ok: false as const, error: 'status must be new, reviewed or dismissed' };
+  if (b.notes !== undefined && b.notes !== null && typeof b.notes !== 'string') return { ok: false as const, error: 'notes must be text' };
+  const ok = await new TenantStore(db, shop).updateSupplierOwnerFields(b.email, {
+    status: b.status as SupplierStatus | undefined,
+    notes: b.notes === undefined ? undefined : (b.notes as string | null),
+  });
+  return ok ? { ok: true as const } : { ok: false as const, error: 'Supplier not found' };
+}
+
+/** A finished back-fill may be restarted deliberately, but a running one is never
+ *  restarted by a second click: that would reset scanned/found to 0 and re-spend
+ *  LLM calls on threads the current pass already read (fix round 1, 2026-09-27). */
+export async function startSupplierBackfillRoute(db: D1Database, shop: string) {
+  const store = new TenantStore(db, shop);
+  const existing = await readBackfillCursor(store);
+  if (existing && !existing.done) return { ok: true as const, backfill: existing, alreadyRunning: true as const };
+  return { ok: true as const, backfill: await startSupplierBackfill(store) };
+}
+
+/** The owner asked for a reply on a thread the reader found needs none. Never sends. */
+export async function draftAnyway(db: D1Database, env: Env, shop: string, threadId: unknown, fetchImpl: typeof fetch = defaultFetch) {
+  if (typeof threadId !== 'string' || !threadId.trim()) return { ok: false as const, error: 'threadId required' };
+  const store = new TenantStore(db, shop);
+  const cfg = await store.getConfig();
+  const got = await store.getThreadWithMessages(threadId);
+  if (!cfg || !got) return { ok: false as const, error: 'Thread not found' };
+  if (await store.getPendingDraft(threadId)) return { ok: false as const, error: 'A draft is already pending' };
+  const r = await composeDraftForThread(env, store, cfg, got.thread, fetchImpl, { force: true });
+  if (!r || !('draftId' in r)) return { ok: false as const, error: 'Could not generate a draft - model unavailable, try again.' };
+  // An owner's 'converted' or 'spam' call on this thread is a decision, not a
+  // reading error: draft-anyway must not erase it. Only a status that was never
+  // a decision (new/awaiting_customer/closed) moves to needs_reply.
+  if (got.thread.status === 'new' || got.thread.status === 'awaiting_customer' || got.thread.status === 'closed') {
+    await store.setThreadStatus(threadId, 'needs_reply');
+  }
+  return { ok: true as const, draft: await store.getPendingDraft(threadId) };
 }

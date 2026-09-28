@@ -14,7 +14,7 @@ import { ensureInstalled } from './auth/ensure-installed';
 import { handleUninstall } from './auth/uninstall';
 import { resolveShopFromToken } from './console/session';
 import { connectCj, saveGates, savePricing, saveLlm, saveAddons, saveCollectionMap, getStatus, getInsights, getGlance, getAudit, getAuditConversation, saveGbFreeUk, getPartners, createPartner, partnerVoucherAction, getPartnerOrders, removeQueuedPartner, parseHoldReasons } from './console/routes';
-import { listInboxThreads, getInboxThread, setInboxStatus, setInboxLabels, getInboxConfig, saveInboxConfig, approveDraft, regenerateDraft, applyDraftTemplate, queuePartnerFromThread, setPartnerConsentFromThread, unblockSender } from './inbox/routes';
+import { listInboxThreads, getInboxThread, setInboxStatus, setInboxLabels, getInboxConfig, saveInboxConfig, approveDraft, regenerateDraft, applyDraftTemplate, queuePartnerFromThread, setPartnerConsentFromThread, unblockSender, listSuppliersRoute, updateSupplierRoute, startSupplierBackfillRoute, draftAnyway } from './inbox/routes';
 import { buildInvoiceForThread, discardInvoice, searchCatalog, adminForShop } from './inbox/invoice-routes';
 import { validateCampaignPayload, resolveCampaignAudience, sendCampaignBatch, sendCampaignTest, campaignForUi, ownerTestAddress, campaignSendBlock, type CampaignAudience } from './campaigns';
 import { collectSystemStates } from './system-states';
@@ -1758,6 +1758,30 @@ app.post('/api/inbox/regenerate', async (c) => {
   try { body = await c.req.json(); } catch { return c.json({ ok: false, error: 'Invalid JSON body' }, 400); }
   if (!body.id) return c.json({ ok: false, error: 'id required' }, 400);
   return c.json(await regenerateDraft(c.env.DB, c.env, s, body.id));
+});
+// Supplier register (owner decision 2026-09-27): the Suppliers view reads it,
+// the owner sets status and notes, and the back-fill button only sets a cursor
+// that the 15-minute sweep drains. Draft anyway: the reader found no reply was
+// needed and the owner wants one; never sends.
+app.post('/api/inbox/suppliers', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  return c.json(await listSuppliersRoute(c.env.DB, s));
+});
+app.post('/api/inbox/suppliers/update', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: unknown = {};
+  try { body = await c.req.json(); } catch { return c.json({ ok: false, error: 'Invalid JSON body' }, 400); }
+  return c.json(await updateSupplierRoute(c.env.DB, s, body));
+});
+app.post('/api/inbox/suppliers/backfill', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  return c.json(await startSupplierBackfillRoute(c.env.DB, s));
+});
+app.post('/api/inbox/draft-anyway', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: { threadId?: unknown } = {};
+  try { body = await c.req.json(); } catch { return c.json({ ok: false, error: 'Invalid JSON body' }, 400); }
+  return c.json(await draftAnyway(c.env.DB, c.env, s, body.threadId));
 });
 // System states register (2026-07-06): ONE live table of every switch and
 // enforcement setting, resolved at request time from the same stores the

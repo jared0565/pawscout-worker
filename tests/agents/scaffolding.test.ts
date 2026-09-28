@@ -28,6 +28,42 @@ const stubAgent = (commercial: boolean): CategoryAgent => ({
 
 const GROUNDING: Grounding = { confident: true, facts: '', quotesFigure: false };
 
+/** Captures the drafter's system prompt via draftReply itself, for tests that need
+ * to pass extra draftReply input (such as `reading`) beyond what capturingLlm's
+ * caller-assembled CFG/base input covers. */
+async function captureDraftSystem(extra: Record<string, unknown> = {}) {
+  const sink = { system: '' };
+  const fetchImpl = (async (_u: string, init: RequestInit) => {
+    sink.system = JSON.parse(String(init.body)).messages[0].content;
+    return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ customerAsks: ['q'], bodyText: 'Yes, we ship to Germany, and the cost is shown at checkout before payment.', confidence: 90, quotesPriceOrOrder: false, commercialIntent: false }) } }], usage: { cost: 0 } }), { status: 200 });
+  }) as unknown as typeof fetch;
+  const { draftReply } = await import('../../src/inbox/draft');
+  const { LlmClient } = await import('../../src/llm');
+  const { TenantStore } = await import('../../src/tenant-store');
+  const { otherAgent } = await import('../../src/inbox/agents/other');
+  const { DEFAULT_INBOX } = await import('../../src/inbox/types');
+  const { DEFAULT_LLM } = await import('../../src/types');
+  await draftReply(new LlmClient({ openrouter: 'k' }, fetchImpl), new TenantStore(env.DB, 'a.myshopify.com'),
+    { llm: DEFAULT_LLM, inbox: { ...DEFAULT_INBOX } } as any,
+    { agent: otherAgent, grounding: { confident: true, facts: '', quotesFigure: false }, subject: 's', conversation: 'Customer: Do you ship to Germany?', latestMessage: 'Do you ship to Germany?', ...extra } as any);
+  return sink;
+}
+
+/** Like capturingLlm, but returns a DIFFERENT JSON content per call, in order, and
+ * records EVERY call's system prompt (not just the last) - for asserting what the
+ * revise call specifically was told, not just the first draft call. */
+function sequenceCapturingLlm(contents: unknown[], systems: string[]): LlmClient {
+  let i = 0;
+  const f = (async (_url: RequestInfo | URL, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body ?? '{}')) as { messages?: { role: string; content: string }[] };
+    systems.push(body.messages?.find((m) => m.role === 'system')?.content ?? '');
+    const content = contents[Math.min(i, contents.length - 1)];
+    i++;
+    return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(content) } }], usage: { cost: 0.0001 } }), { status: 200 });
+  }) as unknown as typeof fetch;
+  return new LlmClient({ openrouter: 'k' }, f);
+}
+
 /** Captures the OpenRouter request body so tests can inspect the system prompt. */
 function capturingLlm(content: unknown, sink: { system?: string; user?: string }): LlmClient {
   const f = (async (_url: RequestInfo | URL, init?: RequestInit) => {
@@ -305,5 +341,73 @@ describe('storewide event facts in the system prompt', () => {
     await draftReply(llm, store, CFG, { agent: stubAgent(false), grounding: GROUNDING, subject: 'Sale?', conversation: 'Is there a sale on?' });
     expect(sink.system).toMatch(/not known to you/i);
     expect(sink.system).toMatch(/do not invent a code/i);
+  });
+});
+
+// Task 7 (2026-09-27): the drafter now reads the thread reading (Task 3) and
+// grounds its reply in it, and the sender rules move from three separate dated
+// sentences into ONE ordered block keyed by WHO IS WRITING.
+describe('drafter grounded in the thread reading', () => {
+  it('grounds the drafter in the thread reading when one is given', async () => {
+    const { validateReading } = await import('../../src/inbox/thread-read');
+    const reading = validateReading({ senderRole: 'customer', openAsks: ['Do you ship to Germany?'], offered: '', alreadyAnswered: ['Yes, this is Active Paw'], replyNeeded: true });
+    const sink = await captureDraftSystem({ reading });
+    expect(sink.system).toContain('THREAD READING');
+    expect(sink.system).toContain('Do you ship to Germany?');
+  });
+
+  // Fix round 1 (2026-09-27 controller ruling): the reading must reach the REVISE
+  // pass too, not just the first draft call. A courtesy-only first draft (zero
+  // substance words once the filler phrases are stripped: draft-quality.ts'
+  // FILLER_PATTERNS eats "thank you for getting in touch" and "we appreciate
+  // you." whole) is guaranteed to fail findDraftIssues and trigger one revise
+  // call; the clean second draft has zero issues and stops the loop there, so
+  // exactly two model calls happen and the second is the revise call.
+  it('reaches the revise pass: the reading is still in the system prompt of the second (revise) call', async () => {
+    const { validateReading } = await import('../../src/inbox/thread-read');
+    const reading = validateReading({ senderRole: 'customer', openAsks: ['Do you ship to Germany?'], offered: '', alreadyAnswered: [], replyNeeded: true });
+    const courtesyOnly = { customerAsks: ['q'], bodyText: 'Thank you for getting in touch! We appreciate you.', confidence: 80, quotesPriceOrOrder: false, commercialIntent: false };
+    const clean = { customerAsks: ['q'], bodyText: 'We do ship to Germany, and the cost is shown at checkout before payment.', confidence: 90, quotesPriceOrOrder: false, commercialIntent: false };
+    const systems: string[] = [];
+    const llm = sequenceCapturingLlm([courtesyOnly, clean], systems);
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    await draftReply(llm, store, CFG, {
+      agent: stubAgent(false), grounding: GROUNDING, subject: 's',
+      conversation: 'Customer: Do you ship to Germany?', latestMessage: 'Do you ship to Germany?', reading,
+    } as any);
+    expect(systems.length).toBeGreaterThanOrEqual(2);
+    expect(systems[1]).toContain('THREAD READING');
+  });
+});
+
+describe('sender rules in one ordered block', () => {
+  it('keys the sender rules in one ordered block, with the vague-opener rule steering to products or orders', () => {
+    expect(SHARED_SCAFFOLDING).toContain('WHO IS WRITING');
+    expect(SHARED_SCAFFOLDING).toMatch(/is this Active Paw/);
+    expect(SHARED_SCAFFOLDING).toMatch(/question about our products or an order/);
+    expect(SHARED_SCAFFOLDING).toMatch(/never invite them to share ideas/i);
+    expect(SHARED_SCAFFOLDING).toMatch(/warehousing, fulfilment or logistics/);
+    // en dash (8211) / em dash (8212), built via char code: typing the escape
+    // literally into a file-writing tool can come out as the real glyph.
+    expect(SHARED_SCAFFOLDING).not.toContain(String.fromCharCode(8211));
+    expect(SHARED_SCAFFOLDING).not.toContain(String.fromCharCode(8212));
+  });
+
+  // Controller ruling (2026-09-27): the shared rule wins over the supplier
+  // agent's own prompt, so it must not read as forbidding the supplier lane's
+  // two informational asks (the website/store link, and, for goods or
+  // packaging only, whether they dropship).
+  it('names the supplier lane\'s two asks as information gathering, not a commitment', () => {
+    expect(SHARED_SCAFFOLDING).toContain('information gathering, not a commitment');
+  });
+
+  // Fix round 1 (2026-09-27 controller ruling): rule (b) now covers warehousing,
+  // fulfilment and logistics services, and the frozen EXCEPTION sentence below
+  // says "An offer to SELL US a service is answered with the prove-first rule" -
+  // a logistics sender matched both with no stated precedence. Rule (b) now says
+  // outright that it wins over the EXCEPTION for a logistics/warehousing/
+  // fulfilment offer.
+  it('states that a logistics offer is a supplier before the EXCEPTION service-pitch rule', () => {
+    expect(SHARED_SCAFFOLDING).toContain('a warehousing, fulfilment or logistics offer is a supplier, never a prove-first pitch');
   });
 });

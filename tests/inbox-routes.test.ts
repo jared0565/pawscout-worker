@@ -253,7 +253,7 @@ describe('applyDraftTemplate', () => {
     expect(DRAFT_TEMPLATES[2].label).toMatch(/^Service pitch: prove first/);
     expect(DRAFT_TEMPLATES[4].label).toMatch(/^Friendly decline/);
     expect(DRAFT_TEMPLATES[5].label).toMatch(/^Access request decline/);
-    expect(DRAFT_TEMPLATES[6].label).toMatch(/^Supplier: thanks for the listing/);
+    expect(DRAFT_TEMPLATES[6].label).toMatch(/^Supplier: thanks, link and dropshipping question/);
   });
 
   it('the access decline renders with the link and stages a fresh thread passed_to_form', async () => {
@@ -656,5 +656,80 @@ describe('applyDraftTemplate never repeats a sent message', () => {
     const r = await applyDraftTemplate(env.DB, SHOP, tid, 'signup_invite');
     expect((r as { touch?: string }).touch).toBe('first');
     expect(JSON.parse((await s.getPendingDraft(tid))!.hold_reasons ?? '[]')).not.toContain('repeat_touch');
+  });
+});
+
+describe('supplier console routes (2026-09-27)', () => {
+  it('lists suppliers with parsed lists, and updates only status and notes', async () => {
+    const { listSuppliersRoute, updateSupplierRoute } = await import('../src/inbox/routes');
+    const { s } = await seedWithConfig();
+    await s.upsertSupplier({ email: 'x@a.cn', threadId: 't1', facts: { company: 'A', contactName: null, website: 'https://a.cn/', storeLinks: ['https://a.en.alibaba.com/'], kind: 'goods', productLines: ['toys'], shipsFrom: 'CN', nicheFit: 'on-niche', dropship: 'unknown' }, seenAt: '2026-09-01T00:00:00Z', inboundCount: 1 });
+    const r = await listSuppliersRoute(env.DB, SHOP);
+    expect(r.suppliers[0].storeLinks).toEqual(['https://a.en.alibaba.com/']);
+    expect(r.suppliers[0].productLines).toEqual(['toys']);
+    expect((await updateSupplierRoute(env.DB, SHOP, { email: 'x@a.cn', status: 'reviewed', notes: 'ok' })).ok).toBe(true);
+    expect((await updateSupplierRoute(env.DB, SHOP, { email: 'x@a.cn', status: 'deleted' })).ok).toBe(false);
+    expect((await updateSupplierRoute(env.DB, SHOP, { status: 'reviewed' })).ok).toBe(false);
+  });
+
+  it('starts the back-fill and reports it', async () => {
+    const { startSupplierBackfillRoute, listSuppliersRoute } = await import('../src/inbox/routes');
+    await seedWithConfig();
+    const r = await startSupplierBackfillRoute(env.DB, SHOP);
+    expect(r.backfill.done).toBe(false);
+    expect((await listSuppliersRoute(env.DB, SHOP)).backfill?.scanned).toBe(0);
+  });
+
+  // Fix round 1 (2026-09-27): a second click while a scan is already running
+  // must never restart it - that would reset scanned/found to 0 and re-spend
+  // LLM calls on threads the current pass already read.
+  it('does not restart a running back-fill: alreadyRunning is true and the cursor is untouched', async () => {
+    const { startSupplierBackfillRoute } = await import('../src/inbox/routes');
+    const { SUPPLIER_BACKFILL_KEY } = await import('../src/inbox/supplier-backfill');
+    const { s } = await seedWithConfig();
+    await startSupplierBackfillRoute(env.DB, SHOP);
+    // Simulate progress: overwrite the cursor as if a sweep step already ran.
+    await s.putSearchCache(SUPPLIER_BACKFILL_KEY, JSON.stringify({ since: '2026-01-01T00:00:00Z', afterCreatedAt: null, afterId: null, scanned: 20, found: 3, done: false }), 30);
+    const r = (await startSupplierBackfillRoute(env.DB, SHOP)) as { ok: true; backfill: { scanned: number; found: number; done: boolean }; alreadyRunning?: boolean };
+    expect(r.alreadyRunning).toBe(true);
+    expect(r.backfill.scanned).toBe(20);
+    expect(r.backfill.found).toBe(3);
+  });
+
+  it('a finished back-fill can be restarted deliberately: scanned resets to 0', async () => {
+    const { startSupplierBackfillRoute } = await import('../src/inbox/routes');
+    const { SUPPLIER_BACKFILL_KEY } = await import('../src/inbox/supplier-backfill');
+    const { s } = await seedWithConfig();
+    await s.putSearchCache(SUPPLIER_BACKFILL_KEY, JSON.stringify({ since: '2026-01-01T00:00:00Z', afterCreatedAt: null, afterId: null, scanned: 200, found: 12, done: true }), 30);
+    const r = (await startSupplierBackfillRoute(env.DB, SHOP)) as { ok: true; backfill: { scanned: number; done: boolean }; alreadyRunning?: boolean };
+    expect(r.alreadyRunning).toBeUndefined();
+    expect(r.backfill.scanned).toBe(0);
+    expect(r.backfill.done).toBe(false);
+  });
+
+  it('draft-anyway rejects a missing thread id', async () => {
+    const { draftAnyway } = await import('../src/inbox/routes');
+    expect((await draftAnyway(env.DB, env as any, SHOP, '')).ok).toBe(false);
+  });
+
+  // Fix round 2 (2026-09-27): draft-anyway must never erase an owner's
+  // 'converted' or 'spam' decision - only new/awaiting_customer/closed (never
+  // a decision) move to needs_reply.
+  it('draft-anyway keeps a converted thread converted', async () => {
+    const { draftAnyway } = await import('../src/inbox/routes');
+    const { s, tid } = await seedWithConfig();
+    await s.setThreadStatus(tid, 'converted');
+    const r = await draftAnyway(env.DB, REGEN_ENV(), SHOP, tid, llmFetch({ bodyText: 'anyway body', confidence: 80, quotesPriceOrOrder: false }));
+    expect(r.ok).toBe(true);
+    expect((await s.getThreadWithMessages(tid))?.thread.status).toBe('converted');
+  });
+
+  it('draft-anyway moves a closed thread to needs_reply', async () => {
+    const { draftAnyway } = await import('../src/inbox/routes');
+    const { s, tid } = await seedWithConfig();
+    await s.setThreadStatus(tid, 'closed');
+    const r = await draftAnyway(env.DB, REGEN_ENV(), SHOP, tid, llmFetch({ bodyText: 'anyway body', confidence: 80, quotesPriceOrOrder: false }));
+    expect(r.ok).toBe(true);
+    expect((await s.getThreadWithMessages(tid))?.thread.status).toBe('needs_reply');
   });
 });

@@ -29,7 +29,7 @@ export interface Grounding {
  * Technical Team") so the owner reviews exactly what will be sent - the LLM never
  * writes its own sign-off. Each category picks its department in its agent definition,
  * so a reply is recognisable/auditable by the desk that signed it. */
-export type Department = 'sales' | 'service' | 'partnership' | 'tech';
+export type Department = 'sales' | 'service' | 'partnership' | 'tech' | 'sourcing';
 
 /** One dedicated agent per category. A small handler object, not an autonomous loop. */
 export interface CategoryAgent {

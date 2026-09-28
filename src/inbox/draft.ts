@@ -9,6 +9,7 @@ import { refineUntilClean, asksDoYouDeliver, type DraftQualityContext } from './
 import { stripQuotedReply } from './quote';
 import { eventFacts } from './event-facts';
 import type { AdminGraphql } from '../shopify-admin';
+import { readingPromptBlock, type ThreadReading } from './thread-read';
 
 const DRAFT_MAX_WORDS = 110; // conciseness ceiling: a warm courtesy wrapper + a grounded answer
 // Lanes that meet buyers (owner rule 2026-09-21): the basket delivery sentence is asked of these only.
@@ -50,9 +51,11 @@ export function renderReplyHtml(text: string): string {
 }
 
 // Display names come from untrusted From headers - never these (role inboxes, not people).
+// 2026-09-24 audit: "Hi Store" and "Hi Ecormerce" went out, so business words join the list.
 const ROLE_NAMES = new Set([
   'info', 'support', 'sales', 'admin', 'contact', 'team', 'hello', 'help',
   'enquiries', 'inquiries', 'orders', 'noreply', 'no-reply', 'mail', 'office', 'customer',
+  'store', 'shop', 'ecommerce', 'ecormerce', 'ecom', 'marketing', 'business', 'export',
 ]);
 
 // Honorifics - never greet with these ("Hi Mr"); skip past to the real name token.
@@ -128,15 +131,17 @@ export function applySalutation(bodyText: string, customerName: string | null | 
 }
 
 /** Department signature lines for the deterministic footer (the owner's exact format).
- * Four desks so a reply is recognisable/auditable by the team that signed it: Sales
+ * Five desks so a reply is recognisable/auditable by the team that signed it: Sales
  * (leads, wholesale), Customer Support (shipping, order status, complaints, general),
- * Partnerships (affiliate lane), Technical Team (product/spec questions). The
- * partnership funnel signs "Active Paw Partnerships" directly on its own templates. */
+ * Partnerships (affiliate lane), Technical Team (product/spec questions), Sourcing
+ * (suppliers). The partnership funnel signs "Active Paw Partnerships" directly on
+ * its own templates. */
 export const DEPARTMENT_SIGNATURES: Record<import('./agents/types').Department, string> = {
   sales: 'Active Paw Sales Team',
   service: 'Active Paw Customer Support',
   partnership: 'Active Paw Partnerships',
   tech: 'Active Paw Technical Team',
+  sourcing: 'Active Paw Sourcing Team', // supplier lane (owner decision 2026-09-27)
 };
 
 // A trailing sign-off block the model may have added despite being told not to
@@ -262,7 +267,7 @@ function validateDraft(v: unknown): DraftResult | null {
  * rewrites its previous reply to clear the quality reviewer's specific objections. */
 function buildDraftSystem(
   agent: CategoryAgent, grounding: Grounding,
-  opts: { hasLatest: boolean; guidance?: string; shippingFact?: string; eventFact?: string; revisionIssues?: string[]; recall?: { question: string; answer: string }[] }
+  opts: { hasLatest: boolean; guidance?: string; shippingFact?: string; eventFact?: string; revisionIssues?: string[]; recall?: { question: string; answer: string }[]; reading?: ThreadReading | null }
 ): string {
   return (
     SHARED_SCAFFOLDING + ' ' + STORE_FACTS + ' ' +
@@ -270,6 +275,7 @@ function buildDraftSystem(
     (opts.eventFact ? opts.eventFact + ' ' : '') +
     agent.promptFragment(grounding) + ' ' +
     (grounding.facts ? `Grounded facts you MAY rely on for this reply: ${grounding.facts} ` : '') +
+    (opts.reading ? readingPromptBlock(opts.reading) + ' ' : '') +
     (opts.recall?.length
       ? 'Previously approved answers to similar past questions - use them to stay consistent in facts, policy and voice. If anything in them conflicts with the store facts or grounded facts above, the facts above WIN (past answers can be out of date). NEVER copy personal details from them: names, destinations, addresses, quantities, prices or order numbers belong to OTHER customers. ' +
         opts.recall.map((r) => `[Q: ${r.question} A: ${r.answer}]`).join(' ') + ' '
@@ -293,9 +299,10 @@ async function reviseDraft(
   llm: LlmClient, store: TenantStore, chain: ReturnType<typeof resolveChain>,
   agent: CategoryAgent, grounding: Grounding, guidance: string | undefined,
   latest: string, baseUser: string, previousBody: string, issues: string[], shippingFact: string, eventFact: string,
-  recall: { question: string; answer: string }[] | undefined
+  recall: { question: string; answer: string }[] | undefined,
+  reading: ThreadReading | null | undefined
 ): Promise<DraftResult | null> {
-  const system = buildDraftSystem(agent, grounding, { hasLatest: !!latest, guidance, shippingFact, eventFact, revisionIssues: issues, recall });
+  const system = buildDraftSystem(agent, grounding, { hasLatest: !!latest, guidance, shippingFact, eventFact, revisionIssues: issues, recall, reading });
   const user = JSON.stringify({ ...JSON.parse(baseUser), previousReply: previousBody.slice(0, 2000) });
   const result = await llm.jsonChain<DraftResult>({ chain, maxTokens: 700, system, user, validate: validateDraft });
   if (!result.ok) { console.warn(`inbox revise failed: ${result.error}`); return null; }
@@ -311,7 +318,7 @@ async function reviseDraft(
  * until it passes - the worker self-corrects in production, no dev tuning needed. */
 export async function draftReply(
   llm: LlmClient, store: TenantStore, cfg: TenantConfig,
-  input: { agent: CategoryAgent; grounding: Grounding; subject: string; conversation: string; latestMessage?: string; customerName?: string | null; customerEmail?: string | null; recall?: { question: string; answer: string }[]; priorOutbound?: ReadonlyArray<string | null>; admin?: AdminGraphql | null }
+  input: { agent: CategoryAgent; grounding: Grounding; subject: string; conversation: string; latestMessage?: string; customerName?: string | null; customerEmail?: string | null; recall?: { question: string; answer: string }[]; priorOutbound?: ReadonlyArray<string | null>; admin?: AdminGraphql | null; reading?: ThreadReading | null }
 ): Promise<DraftResult | null> {
   if (!llm.available || !cfg.inbox.enabled) return null;
   const chain = resolveChain(cfg, 'text');
@@ -331,7 +338,7 @@ export async function draftReply(
   // "is there a sale on?" is answered from the live discount, never guessed.
   const eventFact = await eventFacts(store, input.admin ?? null);
 
-  const system = buildDraftSystem(agent, grounding, { hasLatest: !!latest, guidance, shippingFact, eventFact, recall: input.recall });
+  const system = buildDraftSystem(agent, grounding, { hasLatest: !!latest, guidance, shippingFact, eventFact, recall: input.recall, reading: input.reading });
   const baseUser = JSON.stringify({ subject: input.subject.slice(0, 200), category: agent.category, latestMessage: latest.slice(0, 2000), conversation: input.conversation.slice(0, 4000) });
 
   const result = await llm.jsonChain<DraftResult>({ chain, maxTokens: 700, system, user: baseUser, validate: validateDraft });
@@ -347,10 +354,10 @@ export async function draftReply(
   // is an issue too, and only their own words can show that.
   // buyingLane: a buyer of several is owed the basket delivery sentence, but only on the
   // lanes that meet buyers ("I placed 2 orders last week, where are they?" is not one).
-  const qctx: DraftQualityContext = { maxWords: DRAFT_MAX_WORDS, askedDelivery: asksDoYouDeliver(latest), priorOutbound: input.priorOutbound, customerText: latest, buyingLane: BUYING_LANES.has(agent.category) };
+  const qctx: DraftQualityContext = { maxWords: DRAFT_MAX_WORDS, askedDelivery: asksDoYouDeliver(latest), priorOutbound: input.priorOutbound, customerText: latest, buyingLane: BUYING_LANES.has(agent.category), supplierLane: agent.category === 'supplier' };
   const refined = await refineUntilClean(
     result.value,
-    (prev, issues) => reviseDraft(llm, store, chain, agent, grounding, guidance, latest, baseUser, prev.bodyText, issues, shippingFact, eventFact, input.recall),
+    (prev, issues) => reviseDraft(llm, store, chain, agent, grounding, guidance, latest, baseUser, prev.bodyText, issues, shippingFact, eventFact, input.recall, input.reading),
     qctx, 2
   );
 
