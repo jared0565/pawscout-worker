@@ -54,6 +54,26 @@ pre_push = 900
 [tests]
 timeout_s = 600
 
+# MEASURED, 2026-09-28. The js_mutation drain consumer runs `npm test` once as
+# a baseline before it mutates anything, and aramid gives that run
+# mutant_timeout_s x 4 = 480s unless this key says otherwise. The suite no
+# longer fits: the drain's own baselines on 2026-09-20 to 09-27 took 375.7,
+# 404.5, 424.9, 425.5 and 468.4s, and three more ran out the 480s clock
+# (09-27 10:09Z, 14:09Z and 09-28 02:08Z). Three timeouts make the consumer
+# give up, and a give-up turns `consumers_healthy` red in `aramid fleet`.
+#
+# 900s matches `[timeouts].pre_push` above: about twice the slowest measured
+# baseline. One drain then spends at most 900s on the baseline plus the two
+# 120s mutants the 600s wall budget admits, well inside the drain's 5400s hard
+# deadline. Revisit when a drain baseline passes 700s.
+#
+# This only lets the baseline finish. It does not make the mutants useful: each
+# one runs the whole suite under mutant_timeout_s (120s), so on 09-20, 09-21
+# and 09-22 every tested mutant timed out (killed 0, timeouts 2). That is
+# reported to aramid-agent, not worked around here.
+[js_mutation]
+baseline_timeout_s = 900
+
 # ---------------------------------------------------------------------------
 # ONBOARDING IS COMPLETE (verified 2026-07-31, correcting a stale note here
 # that said otherwise as of 2026-07-27).

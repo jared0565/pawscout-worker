@@ -44,6 +44,11 @@ describe('supplier back-fill', () => {
     expect(await s.listSuppliers()).toEqual([]);
   });
 
+  // Its own timeout, measured: seeding 25 threads makes this the slowest test
+  // in the file (1.2s alone on a quiet machine, 2026-09-28), and inside a
+  // loaded full-suite run (aramid's mutation baseline, 2026-09-27 22:00Z) it
+  // passed vitest's 5s default and failed the whole suite. 30s still catches a
+  // real hang.
   it('drains in batches of 20, registers suppliers, drafts nothing, changes no status', async () => {
     const { s, ids } = await seedMany(25);
     await startSupplierBackfill(s);
@@ -59,7 +64,7 @@ describe('supplier back-fill', () => {
       expect((await s.getThreadWithMessages(id))?.thread.status).toBe('awaiting_customer');
     }
     expect((await readBackfillCursor(s))?.found).toBe(25);
-  });
+  }, 30_000);
 
   // Plan review fix: a closed thread is never a back-fill candidate. Stamping
   // its read_at would hide a new inbound message from the closed-thread reopen
