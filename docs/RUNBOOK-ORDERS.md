@@ -578,11 +578,15 @@ pay that supplier order by hand.
 What should happen: the order's timeline shows every expected step, ending
 with a written tracking number; the Shopify order shows fulfilled with a
 working tracking link; you, as the customer, receive Shopify's own shipping
-email.
-This run has failed if: any of those steps is missing from the timeline, more
-than one supplier order exists for this Shopify order, the shipping email
-never arrives, the tracking write-back keeps failing, or the tracking link
-does not open.
+email. Between `stock-ok` and `supplier-order-created` the timeline shows
+`freight-quoted`: the supplier's live delivery cost for this basket to your
+address's country, and the figure it was checked against. Run 1 is the first
+live proof of that check.
+This run has failed if: any of those steps is missing from the timeline, no
+`freight-quoted` line comes before `supplier-order-created`, more than one
+supplier order exists for this Shopify order, the shipping email never
+arrives, the tracking write-back keeps failing, or the tracking link does not
+open.
 
 **Run 2, cancel during the grace window.** Buy the item, then cancel and
 refund it in the Shopify admin within the hour.
@@ -605,6 +609,18 @@ for this Shopify order, or the order is still shown as `awaiting-payment`.
 None of these is a failure. They are recorded here so nobody reads one as
 one.
 
+- **A `freight-mismatch` hold, or `freight-unreadable` lines, in run 1.**
+  Before booking, PawScout asks the supplier what it charges today to deliver
+  this exact basket to the order's country (see `freight-quoted` above). If
+  that live cost is above what was allowed for by more than a quarter plus
+  one dollar, or there is no synced rate for that route to compare it with,
+  the order is held as `freight-mismatch` and you get an email
+  with both figures; nothing is sent to the supplier. That is the check doing
+  its job: read the two figures (see "Hold reasons" above), then press
+  Release to book at the live cost, or cancel and refund. `freight-unreadable`
+  means the supplier's cost could not be read that time: the order stays
+  queued, is tried again every 15 minutes, and after four failures in a row
+  you get the "delivery cost could not be checked" email.
 - **A grant Shopify refuses, on the very first order.** Reading an order's
   state needs Shopify's protected customer data permissions. If one of the
   fields is refused, EVERY order fails the check closed, so run 1 shows a
