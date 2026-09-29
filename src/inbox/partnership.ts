@@ -206,6 +206,27 @@ export function detectVolumePitch(text: string): boolean {
   return [commissionTopic, percent, volume, methodPitch, payOnResults].filter(Boolean).length >= 2;
 }
 
+// A commission percentage the sender asks for, ABOVE our starting rate. Only
+// then does the signup invite answer "the rate you suggested" (owner ruling
+// 2026-09-29: it went out to two senders asking for our own 2% and to one who
+// named no rate at all). The number must sit against a commission word or an
+// asking verb, so "grow your sales by 30%" or "share a 20% discount code" is
+// never read as a rate. Accents are stripped first: live pitches write "agrëe".
+const RATE_PCT_RE = /\b(\d{1,2}(?:\.\d+)?)\s*(?:%|per\s*cent\b)/g;
+const RATE_AFTER_RE = /^\s*(?:commission|cut\b|rate\b|share\b|rev(?:enue)?\s*share|of\s+(?:(?:the|each|every|all|any|my|your)\s+)?(?:\w+\s+){0,2}(?:sales?|orders?|revenue|profits?|turnover)\b|per\s+(?:sale|order)\b)/;
+const RATE_BEFORE_RE = /\b(?:commission|compensation|cut|rate|rev(?:enue)?\s*share|profit\s*share|payout|agree(?:\s+on)?|offer(?:\s+(?:me|us))?|give\s+(?:me|us)|pay\s+(?:me|us)|accept|open\s+to|settle\s+(?:on|for)|how\s+about)\s+(?:(?:is|of|at|be|would|will|just|only|about|around|a|an)\s+){0,3}$/;
+export function detectRateAboveStandard(text: string): boolean {
+  const t = text.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
+  for (const m of t.matchAll(RATE_PCT_RE)) {
+    if (!(Number(m[1]) > STANDARD_COMMISSION_PCT)) continue;
+    const at = m.index ?? 0;
+    const before = t.slice(Math.max(0, at - 40), at);
+    const after = t.slice(at + m[0].length, at + m[0].length + 60);
+    if (RATE_AFTER_RE.test(after) || RATE_BEFORE_RE.test(before)) return true;
+  }
+  return false;
+}
+
 /** Pure service pitch (site-speed/SEO/listing/design/marketing vendors):
  * offer-phrasing plus a service keyword, and it STANDS DOWN on any creator
  * signal - a creator who also mentions SEO still gets the funnel. When in doubt,
@@ -579,7 +600,8 @@ Active Paw Partnerships`;
 // Ends a NEGOTIATION. The rate itself now always ships in the invite body
 // above, so this paragraph no longer has to carry it: its only job is to close
 // the haggling opened by a sender who proposed their own figure ("can we agree
-// on 3%?"), which otherwise simply gets asked again.
+// on 3%?"), which otherwise simply gets asked again. Only for a figure ABOVE
+// ours (detectRateAboveStandard, owner ruling 2026-09-29).
 const SIGNUP_RATE_PARAGRAPH =
 `On the rate you suggested: we do not negotiate commission against promised orders or sales, so the terms above are the terms for everyone. A higher rate is earned on results you have actually delivered, never agreed in advance.`;
 
@@ -700,10 +722,10 @@ export function buildPartnershipDecline(name: string | null): string { return ap
 /** Both optional paragraphs are anchored BEFORE the sign-off (same technique as
  * buildQualifyingEmail's ladder) so the invite never ends mid-thought. */
 export function buildSignupInvite(
-  name: string | null, opts: { volumePitch?: boolean; offPlatform?: boolean } = {}
+  name: string | null, opts: { rateAbove?: boolean; offPlatform?: boolean } = {}
 ): string {
   const extras = [
-    opts.volumePitch ? SIGNUP_RATE_PARAGRAPH : null,
+    opts.rateAbove ? SIGNUP_RATE_PARAGRAPH : null,
     opts.offPlatform ? SIGNUP_KEEP_TO_EMAIL_PARAGRAPH : null,
   ].filter((p): p is string => p !== null);
   const body = extras.length === 0
@@ -1178,6 +1200,8 @@ export async function maybePartnershipDraft(
   // thread is checked here (not just the latest message) so the ladder still
   // rides the qualifying email when the pitch preceded a nudge.
   const volumePitch = volumePitchNow || detectVolumePitch(inboundText);
+  // The invite answers a counter-offer only when one above our rate was made.
+  const rateAbove = detectRateAboveStandard(inboundText);
 
   // First touch: point them at the flow. signup_page mode (2026-07-18) sends
   // the application-page invite and stages them 'passed_to_form' directly (the
@@ -1186,7 +1210,7 @@ export async function maybePartnershipDraft(
   if (!applicant) {
     const signup = mode === 'signup_page';
     const { draftId } = signup
-      ? await insertTouched('signup_invite', buildSignupInvite(name, { volumePitch, offPlatform: offPlatformNow }))
+      ? await insertTouched('signup_invite', buildSignupInvite(name, { rateAbove, offPlatform: offPlatformNow }))
       : await insertTouched('qualifying', buildQualifyingEmail(name, variant, { volumePitch }));
     await store.upsertApplicant({ threadId: thread.id, contactEmail: thread.contact_email, stage: signup ? 'passed_to_form' : 'screen_sent' });
     return { draftId, send: false };
@@ -1212,7 +1236,7 @@ export async function maybePartnershipDraft(
       // invite instead and move the stage, or the next reply would land back
       // here and re-send it forever (no QUALIFYING_MARKER ever appears).
       if (mode === 'signup_page') {
-        const { draftId } = await insertTouched('signup_invite', buildSignupInvite(name, { volumePitch, offPlatform: offPlatformNow }));
+        const { draftId } = await insertTouched('signup_invite', buildSignupInvite(name, { rateAbove, offPlatform: offPlatformNow }));
         await store.setApplicantStage(thread.id, 'passed_to_form', null);
         return { draftId, send: false };
       }
@@ -1344,7 +1368,7 @@ export async function maybePartnershipDraft(
           'An invited applicant still wants a different arrangement after two introductions - a friendly decline is ready for your review.', 'affiliate', _fetchImpl);
         return { draftId, send: false };
       }
-      const { draftId } = await insertTouched('signup_invite', buildSignupInvite(name, { volumePitch, offPlatform: offPlatformNow }), { startAtSecond: true });
+      const { draftId } = await insertTouched('signup_invite', buildSignupInvite(name, { rateAbove, offPlatform: offPlatformNow }), { startAtSecond: true });
       await maybeAlertOwner(env, cfg, thread.shop, thread,
         'An invited applicant wants a different arrangement - the shorter programme reminder is ready for your review.', 'affiliate', _fetchImpl);
       return { draftId, send: false };
@@ -1365,7 +1389,7 @@ export async function maybePartnershipDraft(
     const pointedAtForm = got.messages.some((m) => m.direction === 'outbound' && (m.body_text ?? '').includes(AFFILIATE_APPLY_URL));
     const askedByEmail = got.messages.some((m) => m.direction === 'outbound' && (m.body_text ?? '').includes(QUALIFYING_MARKER));
     if (applicant.stage === 'passed_to_form' && pool === 'none' && pointedAtForm && !askedByEmail) {
-      const { draftId } = await insertTouched('signup_invite', buildSignupInvite(name, { volumePitch, offPlatform: offPlatformNow }), { startAtSecond: true });
+      const { draftId } = await insertTouched('signup_invite', buildSignupInvite(name, { rateAbove, offPlatform: offPlatformNow }), { startAtSecond: true });
       await maybeAlertOwner(env, cfg, thread.shop, thread,
         'An invited applicant replied before using the application form - the shorter form reminder is ready for your review.', 'affiliate', _fetchImpl);
       return { draftId, send: false };

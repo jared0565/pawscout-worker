@@ -6,7 +6,7 @@ import { sendReply } from './send';
 import { composeDraftForThread } from './sweep';
 import { startSupplierBackfill, readBackfillCursor } from './supplier-backfill';
 import { SUPPLIER_STATUSES, type SupplierStatus } from './supplier-register';
-import { buildServiceProveFirst, buildSupplierAck, buildAccessDecline, buildOperationsDecline, buildCollaborationDecline, buildKeepToEmail, buildSignupInvite, detectVolumePitch, detectOffPlatformRequest, buildSecondTouch, buildPointerBack, type TouchTemplate } from './partnership';
+import { buildServiceProveFirst, buildSupplierAck, buildAccessDecline, buildOperationsDecline, buildCollaborationDecline, buildKeepToEmail, buildSignupInvite, detectRateAboveStandard, detectOffPlatformRequest, buildSecondTouch, buildPointerBack, type TouchTemplate } from './partnership';
 import { chooseTouch, outboundBodies, type TouchKind } from './repeat';
 import { renderReplyHtml, openInboundText } from './draft';
 import { stripQuotedReply } from './quote';
@@ -258,8 +258,8 @@ export async function applyDraftTemplate(db: D1Database, shop: string, threadId:
     }
   }
 
-  // The volume-pitch paragraph reads the WHOLE thread, quote-stripped: the
-  // pitch is the context the invite answers, whenever it was made. The
+  // The rate paragraph reads the WHOLE thread, quote-stripped: a counter-offer
+  // above our rate is the context the invite answers, whenever it was made. The
   // off-platform paragraph reads only what the sender wrote SINCE our last
   // sent reply (openInboundText): that still covers ca4e307d, where the
   // WhatsApp request sat in the second-to-last inbound and the last one was a
@@ -267,7 +267,7 @@ export async function applyDraftTemplate(db: D1Database, shop: string, threadId:
   // ask a sent reply already dealt with (aramid review 63df9d97).
   const inboundText = got.messages.filter((m) => m.direction === 'inbound')
     .map((m) => stripQuotedReply(m.body_text ?? '')).join('\n\n');
-  const volumePitch = detectVolumePitch(inboundText);
+  const rateAbove = detectRateAboveStandard(inboundText);
   const offPlatform = detectOffPlatformRequest(openInboundText(got.messages));
 
   // The follow-up is the introduction's own shorter second touch promoted to a
@@ -275,7 +275,7 @@ export async function applyDraftTemplate(db: D1Database, shop: string, threadId:
   const followup = key === 'signup_followup';
   const touchKey: TouchTemplate = followup ? 'signup_invite' : (key as TouchTemplate);
   let body: string;
-  if (key === 'signup_invite') body = buildSignupInvite(name, { volumePitch, offPlatform });
+  if (key === 'signup_invite') body = buildSignupInvite(name, { rateAbove, offPlatform });
   else if (followup) body = buildSecondTouch('signup_invite', name);
   else if (key === 'service_prove_first') body = buildServiceProveFirst(name);
   else if (key === 'operations_decline') body = buildOperationsDecline(name);
