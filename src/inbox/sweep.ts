@@ -31,6 +31,8 @@ import { Vault } from '../vault';
 import { runSupplierBackfillStep } from './supplier-backfill';
 
 const SWEEP_BATCH = 15;          // threads classified per shop per run
+// The lanes the thread reader may move a supplier out of (owner ruling 2026-09-28).
+const SUPPLIER_REROUTE_FROM: ReadonlySet<string> = new Set(['other', 'wholesale-b2b', 'affiliate']);
 
 /** Defensive JSON parse for stored headers_json. Ingest slices to 8000 chars, so a
  * very-long header set can produce truncated invalid JSON. Degrade to {} (→ auth all
@@ -377,7 +379,11 @@ export async function composeDraftForThread(
       await store.setThreadStatus(thread.id, 'awaiting_customer');
       return { noReply: true };
     }
-    if (isSupplierRole(reading.senderRole) && thread.primary_category !== 'supplier' && !(await store.getApplicantByThread(thread.id))) {
+    // Owner ruling 2026-09-28: only these lanes are re-routed. A lane that
+    // already names a customer need (a lead, an order, a complaint) keeps its
+    // lane and its agent even when the reader says supplier; the register
+    // write above still records what they offered.
+    if (isSupplierRole(reading.senderRole) && SUPPLIER_REROUTE_FROM.has(thread.primary_category ?? '') && !(await store.getApplicantByThread(thread.id))) {
       await store.setThreadClassification(thread.id, {
         status: 'needs_reply', primaryCategory: 'supplier', intentScore: thread.intent_score, summary: thread.summary, classifiedAt: new Date().toISOString()
       });

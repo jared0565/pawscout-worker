@@ -106,6 +106,10 @@ before the partnership intercept:
 - `senderRole` is `goods-supplier` or `logistics` and the thread is not in
   the `supplier` lane → the thread is moved to it (classification set, pending
   drafts superseded), as `reclassifyOne` does on a lane change.
+  **Owner ruling 2026-09-28:** only from `other`, `wholesale-b2b` or
+  `affiliate`. A `lead`, `product-question`, `order-status`,
+  `shipping-returns` or `complaint` thread keeps its lane and its agent; the
+  supplier register is still written.
 - The partnership intercept (`maybePartnershipDraft`) stands down for the
   supplier lane unless an applicant row already exists. For a `marketer`, its
   first touch is `service_prove_first`, never the creator `signup_invite`;
