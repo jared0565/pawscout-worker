@@ -365,7 +365,9 @@ export async function draftReply(
     (prev, issues) => reviseDraft(llm, store, chain, agent, grounding, guidance, latest, baseUser, prev.bodyText, issues, shippingFact, eventFact, input.recall, input.reading),
     qctx, 2
   );
-  const body = supplierOwes ? appendSupplierAsks(refined.bodyText, supplierOwes) : refined.bodyText;
+  // A sign-off the model added anyway comes off first, or the questions would sit
+  // under it where the footer's own strip can no longer see it.
+  const body = supplierOwes ? appendSupplierAsks(stripTrailingSignoff(refined.bodyText), supplierOwes) : refined.bodyText;
 
   return { ...refined, bodyText: applySalutation(body, input.customerName, input.customerEmail) };
 }
