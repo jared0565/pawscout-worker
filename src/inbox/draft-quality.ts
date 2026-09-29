@@ -13,6 +13,7 @@
 // sign-off), an over-long reply, or a missing direct answer when one is owed.
 
 import { repeatsPriorOutbound } from './repeat';
+import type { SupplierFacts } from './supplier-register';
 
 /** Customer-service courtesy phrases. ALLOWED (the owner's voice is a warm, polite
  * wrapper), so they no longer fail the bar on their own. They carry no substance, so
@@ -157,6 +158,48 @@ export interface DraftQualityContext {
   customerText?: string;    // the customer's open message(s), so a reply can be held against what they actually asked
   buyingLane?: boolean;     // the thread sits on a lane that meets buyers (lead, wholesale, product question)
   supplierLane?: boolean;   // supplier lane: the reply must promise nothing (owner decision 2026-09-27)
+  supplierOwes?: SupplierOwed; // supplier lane: the questions this reply must ask (owner decision 2026-09-28)
+}
+
+/** The questions a supplier reply still owes: the link to their website or
+ *  online store, and whether they dropship. */
+export interface SupplierOwed { link: boolean; dropship: boolean }
+
+// Asking for THEIR link, never a mention of ours ("our website"). The owner's
+// own wording on 2026-09-18 ("leave your website address or preferably alibaba
+// store") must count, so "your" may be followed by the store name directly.
+const SUPPLIER_LINK_ASK = /\b(?:your|their)\s+(?:own\s+)?(?:website|web\s*site|web\s+address|alibaba|online\s+(?:store|shop)|store\s+link|shop\s+link)\b/i;
+const DROPSHIP_ASK = /\bdrop\s*-?\s*ship/i;
+
+export function asksSupplierLink(text: string): boolean { return SUPPLIER_LINK_ASK.test(text); }
+export function asksDropship(text: string): boolean { return DROPSHIP_ASK.test(text); }
+
+/**
+ * What a supplier reply must still ask (spec: each question is asked once).
+ * The link is owed until they give a website or store link; the dropshipping
+ * question is owed to a goods or packaging supplier until they answer it. An
+ * earlier reply of ours that already asked counts as asked, so a follow-up
+ * never repeats it. No reading means nothing is enforced (the prompt still asks).
+ */
+export function supplierAsksOwed(
+  facts: Pick<SupplierFacts, 'website' | 'storeLinks' | 'kind' | 'dropship'> | null | undefined,
+  priorOutbound: ReadonlyArray<string | null> | undefined
+): SupplierOwed {
+  if (!facts) return { link: false, dropship: false };
+  const prior = (priorOutbound ?? []).filter((b): b is string => !!b);
+  return {
+    link: !facts.website && facts.storeLinks.length === 0 && !prior.some(asksSupplierLink),
+    dropship: (facts.kind === 'goods' || facts.kind === 'packaging') && facts.dropship === 'unknown' && !prior.some(asksDropship)
+  };
+}
+
+/** Deterministic backstop: the fixed question for each owed ask the draft still
+ *  lacks after the revisions, as a closing paragraph. Asking commits us to nothing. */
+export function appendSupplierAsks(bodyText: string, owed: SupplierOwed): string {
+  const add: string[] = [];
+  if (owed.link && !asksSupplierLink(bodyText)) add.push('Could you send us the link to your website or your Alibaba or other online store, for our reference?');
+  if (owed.dropship && !asksDropship(bodyText)) add.push('Do you offer dropshipping, meaning sending single orders directly to our customers?');
+  return add.length ? `${bodyText.trimEnd()}\n\n${add.join(' ')}` : bodyText;
 }
 
 // Supplier replies promise nothing (owner decision 2026-09-27): no order, review,
@@ -273,6 +316,14 @@ export function findDraftIssues(bodyText: string, ctx: DraftQualityContext = {})
   }
   if (claimsBusinessBiography(bodyText)) {
     issues.push("This reply states facts about the business itself (how long it has been trading, its size, or its customer base). No such fact exists in the grounded store facts, so it is invented. Remove the claim entirely: say warmly that details about the business are something we keep private, and offer help with products or orders instead.");
+  }
+  if (ctx.supplierLane && ctx.supplierOwes) {
+    const asks: string[] = [];
+    if (ctx.supplierOwes.link && !asksSupplierLink(bodyText)) asks.push('ask for the link to their website or their Alibaba or other online store, for our reference');
+    if (ctx.supplierOwes.dropship && !asksDropship(bodyText)) asks.push('ask whether they offer dropshipping, meaning sending single orders directly to our customers');
+    if (asks.length) {
+      issues.push(`This supplier has not told us this yet and we have not asked. Keep the reply as it is and add a short question to ${asks.join(', and ')}. Ask nothing else and promise nothing.`);
+    }
   }
   if (ctx.supplierLane && promisesSupplier(bodyText)) {
     issues.push("This is a reply to a supplier and it promises or suggests something: an order, a review, a reply, a meeting, a call, samples, a partnership, the affiliate programme, or 'at this stage'. Remove every promise. Keep only: thanks for what they offered, that they are welcome to email their catalogue or product information, the request for their website or online store link, the question whether they offer dropshipping (goods and packaging only), and that we keep supplier details on file for reference.");

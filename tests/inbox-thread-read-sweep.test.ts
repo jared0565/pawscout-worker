@@ -100,6 +100,44 @@ describe('composeDraftForThread with the thread reader', () => {
     expect(JSON.parse(draft!.hold_reasons!)).toContain('supplier_commitment');
   });
 
+  // Owner decision 2026-09-28 (the Douke preview asked for neither): a supplier
+  // who gave no link and no dropshipping answer is asked both, even when the
+  // model and both revisions keep leaving the questions out.
+  it('a supplier draft that still misses the owed questions after the revisions gets them added', async () => {
+    const { s, tid } = await seed({ email: 'sales@doukecatlitter.com', name: 'Sabrina Liu', category: 'supplier', inbound: ['We are an OEM tofu cat litter factory.'] });
+    const miss = 'Thank you for the information. We will keep your supplier details on file for reference. If you have any other questions, please do not hesitate to get in touch.';
+    const { fetchImpl, calls } = llm(supplierReading, { customerAsks: [], bodyText: miss, confidence: 95, quotesPriceOrOrder: false, commercialIntent: false });
+    await composeDraftForThread(ENV, s, (await s.getConfig())!, (await s.getThreadWithMessages(tid))!.thread, fetchImpl);
+    const draft = await s.getPendingDraft(tid);
+    expect(draft?.body_text).toMatch(/your website or your Alibaba/i);
+    expect(draft?.body_text).toMatch(/dropshipping/i);
+    expect(calls.filter((c) => c === 'draft').length).toBe(3); // the model was asked to revise first
+  });
+
+  // The model sometimes signs off although it is told not to. The questions go
+  // above the one footer, never under a sign-off of the model's own.
+  it('adds the owed questions above the footer when the model signed off anyway', async () => {
+    const { s, tid } = await seed({ email: 'sales@doukecatlitter.com', name: 'Sabrina Liu', category: 'supplier', inbound: ['We are an OEM tofu cat litter factory.'] });
+    const signedMiss = 'Thank you for the information. We will keep your supplier details on file for reference.\n\nBest regards,\nActive Paw';
+    const { fetchImpl } = llm(supplierReading, { customerAsks: [], bodyText: signedMiss, confidence: 95, quotesPriceOrOrder: false, commercialIntent: false });
+    await composeDraftForThread(ENV, s, (await s.getConfig())!, (await s.getThreadWithMessages(tid))!.thread, fetchImpl);
+    const body = (await s.getPendingDraft(tid))!.body_text;
+    expect(body.match(/regards/gi)?.length).toBe(1);
+    expect(body.indexOf('your website or your Alibaba')).toBeGreaterThan(0);
+    expect(body.indexOf('your website or your Alibaba')).toBeLessThan(body.indexOf('Best Regards,\nActive Paw Sourcing Team'));
+  });
+
+  it('never asks again for a link our earlier reply already asked for (Andasea, 2026-09-18)', async () => {
+    const { s, tid } = await seed({ email: 'daisy.service@andasea.com', name: 'Daisy', category: 'supplier', inbound: ['We make felt pet products.', 'Here is our new felt cat cave range.'],
+      outboundAfterFirst: 'Thank you. It is better if you can leave your website address or preferably alibaba store if you have for our later reference.' });
+    const asksDropshipOnly = 'Thank you for sharing your felt cat cave range. You are welcome to email over your catalogue. Do you offer dropshipping, meaning sending single orders directly to our customers? We keep supplier details on file for reference.';
+    const { fetchImpl } = llm(supplierReading, { customerAsks: [], bodyText: asksDropshipOnly, confidence: 95, quotesPriceOrOrder: false, commercialIntent: false });
+    await composeDraftForThread(ENV, s, (await s.getConfig())!, (await s.getThreadWithMessages(tid))!.thread, fetchImpl);
+    const draft = await s.getPendingDraft(tid);
+    expect(draft?.body_text).toContain('Do you offer dropshipping');
+    expect(draft?.body_text).not.toMatch(/your website or your Alibaba/i);
+  });
+
   it('writes no draft for a bare thank-you after our reply, and parks the thread', async () => {
     const { s, tid } = await seed({ email: 'a@x.com', name: 'Ayatullah', category: 'other', inbound: ['Would you be open to ideas?', 'Thank you for your response.'], outboundAfterFirst: 'Yes, this is Active Paw.' });
     const { fetchImpl, calls } = llm({ senderRole: 'marketer', openAsks: [], offered: '', alreadyAnswered: ['Yes, this is Active Paw'], replyNeeded: false });
