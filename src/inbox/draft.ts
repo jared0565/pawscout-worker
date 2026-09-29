@@ -5,7 +5,7 @@ import { resolveChain } from '../llm-resolve';
 import type { DraftResult, MessageRow } from './types';
 import { SHARED_SCAFFOLDING, STORE_FACTS, COMMERCIAL_GUARDRAILS, OUTPUT_CONTRACT } from './agents/scaffolding';
 import type { CategoryAgent, Grounding } from './agents/types';
-import { refineUntilClean, asksDoYouDeliver, type DraftQualityContext } from './draft-quality';
+import { refineUntilClean, asksDoYouDeliver, supplierAsksOwed, appendSupplierAsks, type DraftQualityContext } from './draft-quality';
 import { stripQuotedReply } from './quote';
 import { eventFacts } from './event-facts';
 import type { AdminGraphql } from '../shopify-admin';
@@ -354,12 +354,18 @@ export async function draftReply(
   // is an issue too, and only their own words can show that.
   // buyingLane: a buyer of several is owed the basket delivery sentence, but only on the
   // lanes that meet buyers ("I placed 2 orders last week, where are they?" is not one).
-  const qctx: DraftQualityContext = { maxWords: DRAFT_MAX_WORDS, askedDelivery: asksDoYouDeliver(latest), priorOutbound: input.priorOutbound, customerText: latest, buyingLane: BUYING_LANES.has(agent.category), supplierLane: agent.category === 'supplier' };
+  // supplierOwes (owner decision 2026-09-28): a supplier who has not given a link or
+  // a dropshipping answer is asked, once; the fixed questions are the backstop when
+  // the revisions still leave them out.
+  const supplierLane = agent.category === 'supplier';
+  const supplierOwes = supplierLane ? supplierAsksOwed(input.reading?.supplier, input.priorOutbound) : undefined;
+  const qctx: DraftQualityContext = { maxWords: DRAFT_MAX_WORDS, askedDelivery: asksDoYouDeliver(latest), priorOutbound: input.priorOutbound, customerText: latest, buyingLane: BUYING_LANES.has(agent.category), supplierLane, supplierOwes };
   const refined = await refineUntilClean(
     result.value,
     (prev, issues) => reviseDraft(llm, store, chain, agent, grounding, guidance, latest, baseUser, prev.bodyText, issues, shippingFact, eventFact, input.recall, input.reading),
     qctx, 2
   );
+  const body = supplierOwes ? appendSupplierAsks(refined.bodyText, supplierOwes) : refined.bodyText;
 
-  return { ...refined, bodyText: applySalutation(refined.bodyText, input.customerName, input.customerEmail) };
+  return { ...refined, bodyText: applySalutation(body, input.customerName, input.customerEmail) };
 }

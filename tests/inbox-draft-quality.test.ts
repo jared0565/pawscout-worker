@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { hasFillerBookend, countWords, substanceWordCount, affirmsDelivery, statesDayRange, findDraftIssues, refineUntilClean, asksDoYouDeliver, claimsBusinessBiography, volunteersTradeDecline, owesBasketDelivery, promisesSupplier } from '../src/inbox/draft-quality';
+import { hasFillerBookend, countWords, substanceWordCount, affirmsDelivery, statesDayRange, findDraftIssues, refineUntilClean, asksDoYouDeliver, claimsBusinessBiography, volunteersTradeDecline, owesBasketDelivery, promisesSupplier, supplierAsksOwed, asksSupplierLink, appendSupplierAsks } from '../src/inbox/draft-quality';
 import { SHARED_SCAFFOLDING } from '../src/inbox/agents/scaffolding';
 
 // The live fabrication this gate exists to catch (Azan's thread, 2026-07-05):
@@ -363,5 +363,66 @@ describe('promisesSupplier (supplier lane, owner decision 2026-09-27)', () => {
     // "noted" contains "not" as a substring; a naive substring check would
     // wrongly clear the later, unrelated "we will review it" promise.
     expect(promisesSupplier('We have noted your catalogue and we will review it.')).toBe(true);
+  });
+});
+
+// The live miss these checks exist to catch (Douke preview, 2026-09-28 22:36Z):
+// the reading said no website, no store link and no dropshipping answer, and
+// the draft asked for neither. Verbatim body, without greeting and sign-off.
+const DOUKE_MISS = 'Thank you for the information. We will keep your supplier details on file for reference. If you have any other questions, please do not hesitate to get in touch.';
+const GOODS = { website: null, storeLinks: [] as string[], kind: 'goods' as const, dropship: 'unknown' as const };
+const ASKS_BOTH = 'Thank you for sharing your tofu cat litter range. You are welcome to email over your catalogue. Please send us your website or Alibaba store link for our reference, and let us know whether you offer dropshipping, that is sending single orders directly to our customers. We keep supplier details on file for reference.';
+
+describe('supplier asks (owner decision 2026-09-28: the draft must ask what the supplier has not told us)', () => {
+  it('owes both asks when they gave no link, have not answered on dropshipping, and we never asked', () => {
+    expect(supplierAsksOwed(GOODS, [])).toEqual({ link: true, dropship: true });
+  });
+
+  it('owes nothing without a supplier reading', () => {
+    expect(supplierAsksOwed(null, [])).toEqual({ link: false, dropship: false });
+  });
+
+  it('does not owe the link once they gave a website or a store link', () => {
+    expect(supplierAsksOwed({ ...GOODS, website: 'https://x.cn' }, []).link).toBe(false);
+    expect(supplierAsksOwed({ ...GOODS, storeLinks: ['https://x.en.alibaba.com'] }, []).link).toBe(false);
+  });
+
+  it('asks each question once: an earlier reply of ours that asked it counts (Andasea, 2026-09-18)', () => {
+    const ownersEdit = 'It is better if you can leave your website address or preferably alibaba store if you have for our later reference.';
+    expect(supplierAsksOwed(GOODS, [ownersEdit])).toEqual({ link: false, dropship: true });
+    expect(supplierAsksOwed(GOODS, [null, 'Do you offer dropshipping?']).dropship).toBe(false);
+  });
+
+  it('never owes the dropshipping question to a logistics sender, or once they answered it', () => {
+    expect(supplierAsksOwed({ ...GOODS, kind: 'logistics' }, [])).toEqual({ link: true, dropship: false });
+    expect(supplierAsksOwed({ ...GOODS, dropship: 'yes' }, []).dropship).toBe(false);
+    expect(supplierAsksOwed({ ...GOODS, kind: 'packaging' }, []).dropship).toBe(true);
+  });
+
+  it('flags the Douke draft for both missing asks, and only on the supplier lane', () => {
+    const issues = findDraftIssues(DOUKE_MISS, { supplierLane: true, supplierOwes: { link: true, dropship: true } }).join(' ');
+    expect(issues).toMatch(/website/i);
+    expect(issues).toMatch(/dropshipping/i);
+    expect(findDraftIssues(DOUKE_MISS, { supplierOwes: { link: true, dropship: true } })).toEqual([]);
+  });
+
+  it('passes a draft that asks both, and a draft that owes nothing', () => {
+    expect(findDraftIssues(ASKS_BOTH, { supplierLane: true, supplierOwes: { link: true, dropship: true } })).toEqual([]);
+    expect(findDraftIssues(DOUKE_MISS, { supplierLane: true, supplierOwes: { link: false, dropship: false } })).toEqual([]);
+  });
+
+  it('does not read a mention of OUR website as asking for theirs', () => {
+    expect(asksSupplierLink('You can see our full range on our website.')).toBe(false);
+    expect(asksSupplierLink('Please send us the link to your website or online store.')).toBe(true);
+  });
+
+  it('appends the fixed questions a draft still misses, and nothing it already asks', () => {
+    const both = appendSupplierAsks(DOUKE_MISS, { link: true, dropship: true });
+    expect(both.startsWith(DOUKE_MISS)).toBe(true);
+    expect(asksSupplierLink(both)).toBe(true);
+    expect(both).toMatch(/dropshipping/i);
+    expect(appendSupplierAsks(ASKS_BOTH, { link: true, dropship: true })).toBe(ASKS_BOTH);
+    expect(appendSupplierAsks(DOUKE_MISS, { link: false, dropship: false })).toBe(DOUKE_MISS);
+    expect(promisesSupplier(both)).toBe(false);
   });
 });
