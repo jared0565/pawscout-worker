@@ -16,7 +16,7 @@ import { TenantStore } from '../src/tenant-store';
 import {
   detectVolumePitch, detectServicePitch, detectOffPlatformRequest, buildQualifyingEmail, buildSignupInvite,
   maybePartnershipDraft, QUALIFYING_MARKER, AFFILIATE_APPLY_URL, PARTNERSHIP_STANCE, buildAcceptedPartnerAck, buildServiceProveFirst, buildAccessDecline,
-  STANDARD_COMMISSION_PCT, TIER_REVIEW_ORDERS, TIER_MAX_PCT
+  STANDARD_COMMISSION_PCT, TIER_REVIEW_ORDERS, TIER_MAX_PCT, detectRateAboveStandard
 } from '../src/inbox/partnership';
 import { otherAgent } from '../src/inbox/agents/other';
 import { affiliateAgent } from '../src/inbox/agents/affiliate';
@@ -532,11 +532,55 @@ describe('Yusuf-shape pitch (risk-free framing, no volume promise, cold at conta
     expect(plain).not.toMatch(/rate you suggested/i);
     expect(plain).not.toMatch(/WhatsApp/i);
 
-    const both = buildSignupInvite('Yusuf', { volumePitch: true, offPlatform: true });
+    const both = buildSignupInvite('Yusuf', { rateAbove: true, offPlatform: true });
     expect(both.indexOf('rate you suggested')).toBeLessThan(both.indexOf('We look forward'));
     expect(both.indexOf('WhatsApp')).toBeLessThan(both.indexOf('We look forward'));
     expect(both.trimEnd().endsWith('Active Paw Partnerships')).toBe(true);
     expect(both).toContain(AFFILIATE_APPLY_URL);
+  });
+});
+
+// --- Owner ruling 2026-09-29: "On the rate you suggested" goes out only when
+// the sender names a percentage above our starting rate. The three live pitches
+// below all got it on 2026-09-29, and the owner cut it by hand from the third:
+// two asked for our own 2%, and Funsho named no rate at all. Verbatim except
+// that an em dash is written as a hyphen and curly apostrophes as straight ones. ---
+const KEHINDE_PITCH = "GreetingActivepaw could you give me 2% commission if I manage to bring in 30 to 35 orders in 2 days? what's the best Whatsapp number to discuss this?";
+const AFOLEX_PITCH = 'If i bring 30k - 40k/USD in new revenue to your store in october,would you be Open to 2% commission? If yes! Kindly drop your Whatsapp';
+const FUNSHO_PITCH = "I'm Funsho. I came across Activepaw and wanted to reach out with a commission-only partnership idea. There's no cost to get started - you only pay when results come in. Open to hearing how it could help your store grow? Activepaw, are you open to a collaboration where my payment is directly linked to the sales I help you generate? If yes, drop your WhatsApp number for better communication.";
+
+describe('the rate paragraph answers only a rate above ours (owner 2026-09-29)', () => {
+  it.each([['Kehinde', KEHINDE_PITCH], ['Afolex', AFOLEX_PITCH], ['Funsho', FUNSHO_PITCH]])(
+    '%s gets the invite and the email-only answer, but no "rate you suggested"', async (who, pitch) => {
+      const { s, tid } = await seedColdPitch(`${who.toLowerCase()}.myshopify.com`, pitch);
+      const got = (await s.getThreadWithMessages(tid))!;
+      await maybePartnershipDraft({ ...env } as any, s, CFG, got.thread, got, noFetch, 'signup_page');
+      const body = (await s.getPendingDraft(tid))!.body_text;
+      expect(body).toContain(AFFILIATE_APPLY_URL);
+      expect(body).toMatch(/not able to use WhatsApp or Telegram/i);
+      expect(body).not.toMatch(/rate you suggested/i);
+    });
+
+  it('a named rate at or below ours, or no rate at all, is not a counter-offer', () => {
+    expect(STANDARD_COMMISSION_PCT).toBe(2); // the fixtures below are written against 2%
+    expect(detectRateAboveStandard(KEHINDE_PITCH)).toBe(false);
+    expect(detectRateAboveStandard(AFOLEX_PITCH)).toBe(false);
+    expect(detectRateAboveStandard(FUNSHO_PITCH)).toBe(false);
+  });
+
+  it('a percentage that is not a commission is not a rate', () => {
+    expect(detectRateAboveStandard('I will grow your sales by 30%, and I work commission-only.')).toBe(false);
+    expect(detectRateAboveStandard('I can share a 20% discount code with my followers.')).toBe(false);
+    expect(detectRateAboveStandard('I can increase your conversion rate by 25% with commission-only work.')).toBe(false);
+  });
+
+  it('a commission above ours is a counter-offer, however it is written', () => {
+    expect(detectRateAboveStandard(YUSUF_PITCH)).toBe(true); // "agrëe on 3%", accent and all
+    expect(detectRateAboveStandard('Can we agree 5%?')).toBe(true);
+    expect(detectRateAboveStandard('In return, I would receive a 3% commission on every sale.')).toBe(true);
+    expect(detectRateAboveStandard('my compensation is just 3% of the additional revenue generated')).toBe(true);
+    expect(detectRateAboveStandard('I want 10% of every sale I bring.')).toBe(true);
+    expect(detectRateAboveStandard('My rate is 8 percent per sale.')).toBe(true);
   });
 });
 
