@@ -24,9 +24,20 @@ const migrations = await readD1Migrations('./migrations');
 const TEST_KEK_PLAINTEXT = 'test-master-key-32-bytes-long!!!';
 
 export default defineConfig({
-  // Restores per-test D1 isolation, which v4 dropped to per-FILE. See the file
-  // for why this lives here instead of in 40 individual beforeEach blocks.
-  test: { setupFiles: ['./tests/setup-reset-db.ts'] },
+  // setupFiles restores per-test D1 isolation, which v4 dropped to per-FILE.
+  // See the file for why this lives here instead of in 40 individual
+  // beforeEach blocks.
+  //
+  // testTimeout, MEASURED 2026-09-29: aramid's mutation drain runs this suite
+  // under load. Both drain runs summed about 2772s of test time, against 890s
+  // to 1063s in quiet full runs, so each test ran about three times slower.
+  // Two different tests have failed the drain on vitest's 5s default while
+  // passing everywhere else: the supplier back-fill test (09-27) and "every
+  // registry template renders a pending draft" (09-29, 1487ms when quiet). In a
+  // quiet full run on 14504fc the slowest test took 4149ms and 38 took over a
+  // second, so the default sat at the edge. 20s is about 4.8x the slowest
+  // quiet test, and a hung test still fails in 20s.
+  test: { setupFiles: ['./tests/setup-reset-db.ts'], testTimeout: 20_000 },
   plugins: [
     cloudflareTest({
       wrangler: { configPath: './wrangler.toml' },
