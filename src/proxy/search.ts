@@ -297,6 +297,13 @@ export function titleAnswersQuery(keyword: string, title: string, mode: Gates['r
   return mode === 'strict' ? want.every((t) => have.has(t)) : want.some((t) => have.has(t));
 }
 
+/** How many of the query's product words (families folded) the title carries;
+ *  ranks supplier results so the closest match comes first. */
+export function queryTermHits(keyword: string, title: string): number {
+  const have = new Set(keywordTokens(title).map(foldTerm));
+  return productTerms(keyword).filter((t) => have.has(t)).length;
+}
+
 /**
  * Gate for the STOREFRONT live feed. Unlike liveCjPasses (kept for the nightly
  * jobs, which read listV2 and trust its ranking), the storefront reads the
