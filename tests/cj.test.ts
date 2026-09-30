@@ -20,7 +20,7 @@ describe('validateCjKey', () => {
   });
 });
 
-import { CjClient } from '../src/cj';
+import { CjClient, looksLikeCjSku } from '../src/cj';
 
 function clientWith(responder: (url: string) => unknown): { client: CjClient; urls: string[] } {
   const urls: string[] = [];
@@ -364,5 +364,43 @@ describe('CjClient.search - listV2 first (real shape: id, nameEn, content[].prod
     const items = await cj.search('dog toy');
     expect(items.map((i) => i.pid)).toEqual(['L1']);
     expect(urls.some((u) => u.includes('/product/list?'))).toBe(true);
+  });
+});
+
+describe('CjClient.detailBySku', () => {
+  const PRODUCT = { pid: 'P77', productNameEn: 'Smart GPS Pet Tracker', productImage: 'https://i/t.jpg', variants: [{ vid: 'V1', variantNameEn: 'Black', variantSellPrice: 12.5, variantSku: 'CJPC262132401AZ-B' }] };
+
+  it('queries /product/query by productSku with inventory and maps the product', async () => {
+    const { client, urls } = clientWith(() => PRODUCT);
+    const d = await client.detailBySku('CJPC262132401AZ');
+    expect(d?.pid).toBe('P77');
+    expect(urls[0]).toContain('/product/query?');
+    expect(urls[0]).toContain('productSku=CJPC262132401AZ');
+    expect(urls[0]).toContain('features=enable_inventory');
+  });
+
+  it('falls back to variantSku when the productSku lookup finds nothing', async () => {
+    const { client, urls } = clientWith((url) => (url.includes('variantSku=') ? PRODUCT : null));
+    const d = await client.detailBySku('CJPC262132401AZ-B');
+    expect(d?.pid).toBe('P77');
+    expect(urls.some((u) => u.includes('variantSku=CJPC262132401AZ-B'))).toBe(true);
+  });
+
+  it('returns null when neither lookup finds the product', async () => {
+    const { client } = clientWith(() => null);
+    expect(await client.detailBySku('CJXX000000000')).toBeNull();
+  });
+});
+
+describe('looksLikeCjSku', () => {
+  it('normalizes case and surrounding space', () => {
+    expect(looksLikeCjSku('  cjpc262132401az ')).toBe('CJPC262132401AZ');
+  });
+  it('accepts a variant suffix', () => {
+    expect(looksLikeCjSku('CJPC262132401AZ-Black')).toBe('CJPC262132401AZ-BLACK');
+  });
+  it('rejects ordinary words and short codes', () => {
+    expect(looksLikeCjSku('gps dog collar')).toBeNull();
+    expect(looksLikeCjSku('CJ123')).toBeNull();
   });
 });
