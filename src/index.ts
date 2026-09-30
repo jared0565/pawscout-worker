@@ -30,7 +30,9 @@ import { hashBuyerEmail } from './affiliate-attribution';
 import { buildVoucherInviteWithCode } from './inbox/partnership';
 import { renderReplyHtml } from './inbox/draft';
 import { consolePage } from './console/page';
-import { validateCjKey, CjClient, CjTokenManager, cjFetchFromEnv, chooseOrigin } from './cj';
+import { validateCjKey, CjClient, CjTokenManager, cjFetchFromEnv, chooseOrigin, type CjDetail } from './cj';
+import { startInquiryImport, inquiryImportStatus } from './sourcing/inquiry-import';
+import { inquiryDestination } from './sourcing/destination';
 import { registerWebhooks, ensureWebhooks, ORDER_EVENT_TOPICS, type RegisterWebhook } from './webhooks';
 import { cancelledOrderId, refundInfo, applyCancel, applyRefund, type OwnerAlert } from './order-cancel';
 import { alertOwner } from './owner-alert';
@@ -1857,6 +1859,47 @@ app.post('/api/inbox/catalog', async (c) => {
   if (!q) return c.json({ ok: false, error: 'q required' }, 400);
   const store = new TenantStore(c.env.DB, s);
   return c.json(await searchCatalog(c.env, store, q));
+});
+// Inquiry sourcing (owner rule 2026-09-30): the owner imports a supplier item a
+// customer asked for. Local stock uses the lane alone; China-only stock may be
+// imported for a transitional lane with a real route. Every import gate still runs.
+app.post('/api/inbox/source-import', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: { pid?: unknown; threadId?: unknown } = {};
+  try { body = await c.req.json(); } catch { return c.json({ ok: false, error: 'Invalid JSON body' }, 400); }
+  const pid = typeof body.pid === 'string' ? body.pid.trim() : '';
+  const threadId = typeof body.threadId === 'string' ? body.threadId.trim() : '';
+  if (!PID_RE.test(pid) || !threadId) return c.json({ ok: false, error: 'pid and threadId required' }, 400);
+  const store = new TenantStore(c.env.DB, s);
+  const tenant = await store.getTenant();
+  const cfg = await store.getConfig();
+  if (!tenant?.access_token_enc || !cfg) return c.json({ ok: false, error: 'Not configured' }, 400);
+  const dest = (await inquiryDestination(store, threadId)) ?? 'GB';
+  const vault = await Vault.fromMasterKey(c.env.PAWSCOUT_MASTER_KEY);
+  const admin = makeAdminGraphql(s, await vault.open(tenant.dek_wrapped, tenant.access_token_enc));
+  const f = cjFetchFromEnv(c.env);
+  const cj = new CjClient(() => new CjTokenManager(store, vault, f).getToken(), f);
+  const llm = new LlmClient({ openrouter: c.env.OPENROUTER_API_KEY, openai: c.env.OPENAI_API_KEY });
+  const on = llm.available && cfg.llm.enabled;
+  const curate = on ? (d: CjDetail, ctx: string) => curateProduct(llm, store, cfg, d, ctx) : undefined;
+  const pickHero = on ? (title: string, urls: string[]) => pickHeroImage(llm, store, cfg, title, urls) : undefined;
+  const market = ebayFromEnv(c.env);
+  const competitorCheck = on
+    ? (d: { pid: string; nameEn: string }, ourRetailGbp: number) => competitorSignal(llm, store, cfg, { pid: d.pid, title: d.nameEn, ourRetailGbp, market })
+    : undefined;
+  return c.json(await startInquiryImport({
+    store, cj, cfg,
+    waitUntil: (p) => c.executionCtx.waitUntil(p),
+    runImport: (detail, localWarehouses) => confirmAndImport(store, cj, admin, cfg, detail, undefined, curate, pickHero, { competitorCheck, localWarehouses }),
+  }, pid, dest));
+});
+app.post('/api/inbox/source-status', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: { pid?: unknown } = {};
+  try { body = await c.req.json(); } catch { return c.json({ ok: false, error: 'Invalid JSON body' }, 400); }
+  const pid = typeof body.pid === 'string' ? body.pid.trim() : '';
+  if (!PID_RE.test(pid)) return c.json({ ok: false, error: 'pid required' }, 400);
+  return c.json(await inquiryImportStatus(new TenantStore(c.env.DB, s), pid));
 });
 
 // --- /proxy/* : storefront-facing via Shopify App Proxy (HMAC-signed) ---
