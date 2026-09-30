@@ -26,7 +26,7 @@ export function isStaleImporting(link: { state: string; updated_at: string } | n
 }
 
 export type InquiryImportResult =
-  | { ok: true; state: 'importing' | 'imported'; handle: string | null }
+  | { ok: true; state: 'importing' | 'imported' | 'draft'; handle: string | null }
   | { ok: false; error: 'unknown_product' | 'not_deliverable' | 'no_stock' | 'stock_unknown' };
 
 /**
@@ -39,6 +39,9 @@ export async function startInquiryImport(deps: InquiryImportDeps, pid: string, d
   const { store, cj, cfg } = deps;
   const link = await store.getLink(pid);
   if (link?.state === 'imported') return { ok: true, state: 'imported', handle: link.handle };
+  // Already created as a Shopify draft for the owner's profit review: importing
+  // again would re-run every gate against a product that exists.
+  if (link?.state === 'draft') return { ok: true, state: 'draft', handle: link.handle };
   if (link?.state === 'importing' && !isStaleImporting(link)) return { ok: true, state: 'importing', handle: null };
 
   const detail = await getDetailPreferWarehouse(store, cj, pid);

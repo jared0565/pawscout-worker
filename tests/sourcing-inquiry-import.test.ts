@@ -98,6 +98,13 @@ describe('startInquiryImport', () => {
     expect(t.imports).toEqual([]);
   });
 
+  it('does not re-run the import for an item already created as a profit-review draft', async () => {
+    const t = await setup([det('T1', { CN: 5429 })]);
+    await t.store.putLink({ cjPid: 'T1', state: 'draft', handle: 'smart-gps-pet-tracker' });
+    expect(await startInquiryImport(t.deps, 'T1', 'GB')).toEqual({ ok: true, state: 'draft', handle: 'smart-gps-pet-tracker' });
+    expect(t.imports).toEqual([]);
+  });
+
   it('marks the link failed when the import throws, so the next click can retry', async () => {
     const t = await setup([det('T1', { CN: 5429 })]);
     t.setRunImport(async () => { throw new Error('Shopify timeout'); });

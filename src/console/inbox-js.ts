@@ -728,6 +728,7 @@ async function importForInquiry(pid,threadId){
     for(var n=0;n<40;n++){
       if(r.state==='imported'){ setMsg('ibx-msg','Imported: https://activepaw.co.uk/products/'+(r.handle||''),'ok'); return; }
       if(r.state==='failed'){ setMsg('ibx-msg','Import refused: '+(r.failReason||'unknown')+(r.failDetail?' ('+r.failDetail+')':''),'no'); return; }
+      if(r.state==='draft'){ setMsg('ibx-msg','Created as a Shopify draft for your profit review; it goes live when you publish it.','muted'); return; }
       if(r.state==='stalled'){ setMsg('ibx-msg','The import stalled before it finished. Search again and click Import to retry.','no'); return; }
       await new Promise(function(res){ setTimeout(res,4000); });
       r=await api('/inbox/source-status',{pid:pid});
