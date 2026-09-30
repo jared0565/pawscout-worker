@@ -3,6 +3,7 @@ import { resolveLineRequest, extractProductHandle } from '../../shopify-catalog'
 import { deriveDestinationCountry, countryLabel } from '../freight';
 import { localWarehousesFor, sellableToBuyer } from '../../local-markets';
 import type { CjDetail } from '../../cj';
+import { sourcingGrounding, NO_MATCH_FACTS } from './sourcing';
 
 /**
  * Local-for-local availability check for a product question. When the sender's
@@ -48,9 +49,14 @@ export const productAgent: CategoryAgent = {
       // link does the free-text title search run (Rose thread, 2026-09-05: a
       // message that BEGAN with the URL was title-searched and hedged).
       const linked = extractProductHandle(ctx.latestMessage) ?? extractProductHandle(ctx.conversation);
-      const query = linked ? `/products/${linked}` : ctx.latestMessage.slice(0, 80);
+      // The thread reader's product phrase ("gps tracker dog collar") searches far
+      // better than the first 80 characters of a chatty message; the raw text is
+      // the fallback when the phrase finds nothing.
+      const typed = ctx.latestMessage.slice(0, 80);
+      const query = linked ? `/products/${linked}` : (ctx.productQuery || typed);
       if (!query.trim()) return hedge('No specific product named; ask which item they mean or point them to the website.');
-      const r = await resolveLineRequest(ctx.admin, query);
+      let r = await resolveLineRequest(ctx.admin, query);
+      if (r.status === 'none' && !linked && ctx.productQuery && typed.trim()) r = await resolveLineRequest(ctx.admin, typed);
       if (r.status === 'resolved' && r.variant) {
         const v = r.variant;
         // Local-for-local: a sender whose destination cannot buy this item gets an
@@ -110,7 +116,18 @@ export const productAgent: CategoryAgent = {
         }
         return hedge('Several products match; ask which specific item they mean before answering.');
       }
-      return hedge('No matching product found; point them to the website search and offer to help once they name the item.');
+      if (linked) return hedge(NO_MATCH_FACTS);
+      const sourced = await sourcingGrounding(ctx, ctx.productQuery || typed);
+      // Already imported (its Shopify title or search index may not match the
+      // phrase yet): answer from the real listing through the link path above,
+      // which carries the real price and needs no sourcing hold. The link path
+      // cannot recurse back here: a linked miss returns NO_MATCH_FACTS.
+      const handle = (sourced.data as { sourcingHandle?: string | null } | undefined)?.sourcingHandle;
+      if (handle) {
+        const listed = await productAgent.ground({ ...ctx, latestMessage: `https://activepaw.co.uk/products/${handle}`, productQuery: null });
+        if (listed.confident) return listed;
+      }
+      return sourced;
     } catch (e) {
       console.warn(`productAgent.ground failed: ${(e as Error).message}`);
       return hedge('Could not look up the catalog; answer generally and point to the website.');

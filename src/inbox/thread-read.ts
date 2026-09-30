@@ -21,6 +21,8 @@ export interface ThreadReading {
   alreadyAnswered: string[];
   replyNeeded: boolean;
   supplier: SupplierFacts | null;
+  /** The product a customer asks about as a short shop search phrase; null otherwise. */
+  productQuery: string | null;
 }
 
 export const THREAD_READER_MARKER = 'THREAD READER.';
@@ -91,6 +93,7 @@ export function validateReading(v: unknown): ThreadReading | null {
     alreadyAnswered: strList(o.alreadyAnswered, 8, 200),
     replyNeeded: typeof o.replyNeeded === 'boolean' ? o.replyNeeded : true,
     supplier,
+    productQuery: senderRole === 'customer' ? str(o.productQuery, 80) : null,
   };
 }
 
@@ -105,6 +108,7 @@ const READER_SYSTEM =
   '"offered": one short line saying what they offer us, "" when nothing; ' +
   '"alreadyAnswered": array of short lines, what our replies have already told them, [] when nothing; ' +
   '"replyNeeded": false ONLY when the sender\'s messages after our last reply contain no question or request and are just an acknowledgement (thanks, ok, noted), otherwise true; ' +
+  '"productQuery": only when senderRole is customer and they ask about a product, that product as a short shop search phrase of 2 to 5 words (for example "gps tracker dog collar"), else null; ' +
   '"supplier": only for goods-supplier or logistics, else null: {"company", "contactName", "website" (a full http or https address they gave, else null), "storeLinks" (their Alibaba or other online store addresses they gave), ' +
   '"kind": "goods" | "packaging" | "logistics", "productLines": short names of what they make or offer, "shipsFrom": country they ship from if stated, else null, ' +
   '"nicheFit": "on-niche" (dog or cat products), "adjacent" (useful to a pet store but not a pet product, for example pet food pouches), "off-niche" (anything else), ' +

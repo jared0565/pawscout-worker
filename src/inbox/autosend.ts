@@ -23,3 +23,10 @@ export function autoSendDecision(opts: {
   if (opts.repeatsPrior) reasons.push('repeats_prior_reply');
   return { send: reasons.length === 0, holdReasons: reasons };
 }
+
+/** Named holds decided outside the money/confidence floor (a supplier promise,
+ *  a sourcing offer). Any one of them stops the send. */
+export function withExtraHolds(decision: { send: boolean; holdReasons: string[] }, extra: string[]): { send: boolean; holdReasons: string[] } {
+  if (!extra.length) return decision;
+  return { send: false, holdReasons: [...decision.holdReasons, ...extra] };
+}

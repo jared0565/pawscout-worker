@@ -6,7 +6,7 @@ import { defaultFetch } from '../safe-fetch';
 import { parseAuthResults } from './gates';
 import { classifyEmail, decideDisposition } from './classify';
 import { draftReply, renderReplyHtml, applyFooter, stripTrailingSignoff, sanitizeOutbound, buildDraftTranscript, openInboundText } from './draft';
-import { autoSendDecision, mentionsMoney } from './autosend';
+import { autoSendDecision, mentionsMoney, withExtraHolds } from './autosend';
 import { sendReply } from './send';
 import { maybePartnershipDraft, detectPartnershipAsk } from './partnership';
 import { maybeAlertOwner } from './alert';
@@ -462,7 +462,8 @@ export async function composeDraftForThread(
   // ("...to the UK", "activepaw.co.uk") would corrupt the destination it infers.
   const ctx: AgentContext = {
     store, cfg, admin, cj, thread: t, conversation, latestMessage: latestInbound,
-    contactEmail: t.contact_email, customerName: contact?.name ?? null
+    contactEmail: t.contact_email, customerName: contact?.name ?? null,
+    productQuery: reading?.productQuery ?? null,
   };
   const grounding = await agent.ground(ctx); // never throws; miss => { confident:false }
 
@@ -509,8 +510,14 @@ export async function composeDraftForThread(
   // A supplier reply that still promises something after the revisions is held
   // for the owner with a named reason (owner decision 2026-09-27).
   const supplierHold = agent.category === 'supplier' && promisesSupplier(draft.bodyText);
-  const holdReasons = supplierHold ? [...decision.holdReasons, 'supplier_commitment'] : decision.holdReasons;
-  const send = decision.send && !supplierHold;
+  // Named holds: a supplier promise, or a sourced item the owner must import
+  // before the offer goes out (owner decision 2026-09-30).
+  const held = withExtraHolds(decision, [
+    ...(supplierHold ? ['supplier_commitment'] : []),
+    ...(grounding.holdReason ? [grounding.holdReason] : []),
+  ]);
+  const holdReasons = held.holdReasons;
+  const send = held.send;
 
   const draftId = await store.insertDraft({
     threadId: t.id, bodyText: composed.bodyText, bodyHtml: renderReplyHtml(composed.bodyText),

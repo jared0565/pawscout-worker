@@ -1,4 +1,8 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
+import { env, applyD1Migrations } from 'cloudflare:test';
+import { TenantStore } from '../../src/tenant-store';
+import { DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_FULFIL } from '../../src/types';
+import type { CjClient, CjDetail } from '../../src/cj';
 import { productAgent } from '../../src/inbox/agents/product';
 
 const mkCtx = (admin: any, latest = 'is the blue harness good for puppies?') => ({
@@ -206,5 +210,70 @@ describe('productAgent.ground with a pasted product link', () => {
     const g = await productAgent.ground(ctx);
     expect(g.confident).toBe(true);
     expect(g.facts).toContain('Portable Dog Water Bowl');
+  });
+});
+
+describe('productAgent on a catalog miss (inquiry sourcing)', () => {
+  beforeEach(async () => { await applyD1Migrations(env.DB, env.TEST_MIGRATIONS); });
+  const emptyAdmin = async () => ({ products: { edges: [] } });
+  const TRACKER: CjDetail = { pid: 'T1', nameEn: 'Smart GPS Wireless Pet Tracker', images: ['https://i/t.jpg'], descriptionHtml: '<p>Clips to the collar. Needs a SIM card.</p>', variants: [{ vid: 'v', name: 'Black', sellPriceUsd: 12, sku: 's' }], listedNum: 10, categoryName: 'Pet', origins: { CN: 5429 } };
+  const cj = {
+    search: async () => [{ pid: 'T1', nameEn: TRACKER.nameEn, image: '', sellPriceUsd: 12, listedNum: 10, categoryName: 'Pet' }],
+    detail: async () => TRACKER, detailBySku: async () => null, originsByPid: async () => TRACKER.origins,
+    freightEstimate: async () => ({ priceUsd: 4, days: '5-9', name: 'CJPacket' }),
+  } as unknown as CjClient;
+  const cfg = { pricing: DEFAULT_PRICING, floors: DEFAULT_FLOORS, fulfil: DEFAULT_FULFIL } as any;
+
+  async function ctx(message: string, withCj = true) {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    await store.upsertLogisticsRoute({ from: 'CN', to: 'GB', channel: 'CJPacket', transitMin: 5, transitMax: 9, agingRaw: '5-9', repVid: 'v', freightCostUsd: 4 });
+    return { store, cfg, admin: emptyAdmin, cj: withCj ? cj : null, thread: { subject: 'Collar' }, conversation: message, latestMessage: message, contactEmail: 'aloha@example.com', customerName: 'Aloha', productQuery: 'gps tracker dog collar' } as any;
+  }
+
+  it('offers the supplier item with price, overseas note and delivery band, held for the owner', async () => {
+    const g = await productAgent.ground(await ctx('Do you sell a trackable dog collar? I live in England.'));
+    expect(g.confident).toBe(true);
+    expect(g.holdReason).toBe('sourcing_offer');
+    expect(g.facts).toContain('Smart GPS Wireless Pet Tracker');
+    expect(g.facts).toMatch(/GBP \d+\.\d{2}/);
+    expect(g.facts).toContain('ships from overseas');
+    expect(g.facts).toMatch(/\d+-\d+ days/);
+    expect(g.facts).not.toMatch(/\bChina\b|\bCJ\b/);
+  });
+
+  it('states no delivery time and asks for the country when it is unknown', async () => {
+    const g = await productAgent.ground(await ctx('Do you sell a trackable dog collar?'));
+    expect(g.holdReason).toBe('sourcing_offer');
+    expect(g.facts).toContain('do not state a delivery time');
+    expect(g.facts).not.toMatch(/\d+-\d+ days/);
+  });
+
+  it('never sends the customer to the website search when nothing matches', async () => {
+    const g = await productAgent.ground(await ctx('Do you sell a trackable dog collar?', false));
+    expect(g.confident).toBe(false);
+    expect(g.facts.toLowerCase()).not.toContain('website');
+    expect(g.facts).toContain('team will look into');
+  });
+
+  it('says we do not deliver to a country with no lane', async () => {
+    const g = await productAgent.ground(await ctx('Do you sell a trackable dog collar? I live in Japan.'));
+    expect(g.facts).toContain('do not currently deliver');
+    expect(g.holdReason).toBeUndefined();
+  });
+
+  it('answers from the real listing, unheld, once the owner has imported the item', async () => {
+    const c = await ctx('Do you sell a trackable dog collar? I live in England.');
+    await c.store.putLink({ cjPid: 'T1', state: 'imported', handle: 'smart-gps-pet-tracker' });
+    c.admin = async (query: string, vars?: Record<string, unknown>) => {
+      if (query.includes('productByHandle') && vars?.handle === 'smart-gps-pet-tracker') {
+        return { productByHandle: { id: 'gid://shopify/Product/9', title: 'GPS Pet Tracker for Dog Collars', handle: 'smart-gps-pet-tracker', variants: { edges: [{ node: { id: 'gid://shopify/ProductVariant/90', title: 'Default Title', sku: 'T1', price: '27.49', availableForSale: true, inventoryQuantity: 50 } }] } } };
+      }
+      return query.includes('productByHandle') ? { productByHandle: null } : { products: { edges: [] } };
+    };
+    const g = await productAgent.ground(c);
+    expect(g.confident).toBe(true);
+    expect(g.holdReason).toBeUndefined();
+    expect(g.facts).toContain('GPS Pet Tracker for Dog Collars');
+    expect(g.facts).toContain('27.49');
   });
 });
