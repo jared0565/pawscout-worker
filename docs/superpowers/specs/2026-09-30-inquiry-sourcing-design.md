@@ -1,7 +1,8 @@
 # Inquiry sourcing: sell what a customer asks for, even when it is not stocked locally
 
-Status: APPROVED by the owner 2026-09-30 ("Approve, owner imports"; storefront "Show overseas
-too", added as part D). Nothing here is built yet.
+Status: BUILT and live (2026-09-30, merge daf71b4, production 12:10Z). APPROVED by the owner
+2026-09-30 ("Approve, owner imports"; storefront "Show overseas too", added as part D). Part D
+stays dormant until the theme sends overseas=1 (channel round 288).
 
 ## Why
 
