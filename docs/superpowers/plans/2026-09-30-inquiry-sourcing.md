@@ -424,14 +424,17 @@ const TRACKER = det('T1', 'Smart GPS Wireless Pet Tracker', { CN: 5429 });
 const LOCAL_COLLAR = det('C1', 'Dog Collar GPS Tracker Holder', { GB: 40, CN: 900 });
 const THIN = det('T2', 'Pet GPS Tracker Mini', { CN: 3 });
 const NECKLACE = det('N1', 'Love Pendant Necklace', { CN: 999 });
+const BRANDED = { ...det('B1', 'PawHut Pet GPS Tracker', { CN: 800 }), descriptionHtml: '<p>PawHut quality tracker.</p>' };
 
-function fakeCj(details: CjDetail[], calls: string[] = []): CjClient {
+/** `live` overrides the stock by warehouse CJ reports NOW (the detail's own
+ *  origins may be up to 30 days old in the cache). */
+function fakeCj(details: CjDetail[], calls: string[] = [], live: Record<string, Record<string, number>> = {}): CjClient {
   const byPid = new Map(details.map((d) => [d.pid, d]));
   return {
     search: async (kw: string) => { calls.push(`search:${kw}`); return details.map(item); },
     detail: async (pid: string) => { calls.push(`detail:${pid}`); return byPid.get(pid) ?? null; },
     detailBySku: async (sku: string) => { calls.push(`sku:${sku}`); return sku === 'CJPC262132401AZ' ? TRACKER : null; },
-    originsByPid: async (pid: string) => byPid.get(pid)?.origins ?? {},
+    originsByPid: async (pid: string) => { calls.push(`origins:${pid}`); return live[pid] ?? byPid.get(pid)?.origins ?? {}; },
     freightEstimate: async () => ({ priceUsd: 4, days: '5-9', name: 'CJPacket' }),
   } as unknown as CjClient;
 }
@@ -495,6 +498,28 @@ describe('supplierOffers', () => {
     const offers = await supplierOffers(store, fakeCj([TRACKER]), CFG, 'gps tracker', 'GB', { limit: 3, pause: noPause });
     expect(offers[0]?.handle).toBe('smart-gps-pet-tracker');
   });
+
+  it('judges stock on CJ live origins, not the cached detail', async () => {
+    const store = await seededStore();
+    const calls: string[] = [];
+    const offers = await supplierOffers(store, fakeCj([TRACKER], calls, { T1: { CN: 0 } }), CFG, 'gps tracker', 'GB', { limit: 3, pause: noPause });
+    expect(offers).toEqual([]);
+    expect(calls).toContain('origins:T1');
+  });
+
+  it('skips an item whose live stock cannot be read', async () => {
+    const store = await seededStore();
+    const cj = fakeCj([TRACKER]);
+    (cj as unknown as { originsByPid: () => Promise<never> }).originsByPid = async () => { throw new Error('CJ 500'); };
+    expect(await supplierOffers(store, cj, CFG, 'gps tracker', 'GB', { limit: 3, pause: noPause })).toEqual([]);
+  });
+
+  it('strips maker brands from the title and the supplier notes', async () => {
+    const store = await seededStore();
+    const offers = await supplierOffers(store, fakeCj([BRANDED]), CFG, 'gps tracker', 'GB', { limit: 3, pause: noPause });
+    expect(offers[0]?.title).not.toContain('PawHut');
+    expect(offers[0]?.descriptionText).not.toContain('PawHut');
+  });
 });
 ```
 
@@ -526,6 +551,7 @@ import { retailPriceGbp } from '../pricing';
 import { bestLocalQty, inquiryWarehouses } from '../local-markets';
 import { getDetailPreferWarehouse, stripHtml } from '../proxy/import';
 import { isPetProductStrict, titleAnswersQuery, queryTermHits } from '../proxy/search';
+import { debrandTitle, debrandText, capTitle } from '../debrand';
 import { laneRouteFor } from './lane-route';
 
 const CJ_GAP_MS = 1100; // CJ allows about one request a second
@@ -588,8 +614,12 @@ export async function supplierOffers(
     await pause(CJ_GAP_MS);
     const detail: CjDetail | null = skuDetail?.pid === pid ? skuDetail : await getDetailPreferWarehouse(store, cj, pid);
     if (!detail) continue;
-    const origins = detail.origins ?? await cj.originsByPid(pid).catch(() => undefined);
-    if (bestLocalQty(origins, warehouses) < cfg.floors.stockFloor) continue;
+    // Owner rule: the ACTUAL information from CJ. The detail may come from the
+    // warehouse row or the 30-day cache, so stock by warehouse is always read
+    // live; an unreadable answer skips the item rather than trusting the cache.
+    await pause(CJ_GAP_MS);
+    const origins = await cj.originsByPid(pid).catch(() => null);
+    if (!origins || bestLocalQty(origins, warehouses) < cfg.floors.stockFloor) continue;
     const route = await laneRouteFor(store, cfg, origins, dest);
     if (!route) continue;
 
@@ -610,13 +640,14 @@ export async function supplierOffers(
     const link = await store.getLink(pid);
     offers.push({
       pid,
-      title: detail.nameEn,
+      // The import's own title treatment; maker brands never reach a customer.
+      title: capTitle(debrandTitle(detail.nameEn)),
       image: detail.images[0] ?? '',
       priceGbp: Math.min(...prices),
       origin: route.origin,
       overseas: route.overseas,
       days: route.days,
-      descriptionText: stripHtml(detail.descriptionHtml ?? '').slice(0, 600),
+      descriptionText: debrandText(stripHtml(detail.descriptionHtml ?? '')).slice(0, 600),
       handle: link?.state === 'imported' ? link.handle : null,
     });
   }
@@ -652,7 +683,7 @@ git push
 - Consumes: `laneRouteFor`, `inquiryWarehouses` (Task 1).
 - Produces:
   - `inquiryDestination(store: TenantStore, threadId: string): Promise<string | null>`
-  - `type InquiryImportResult = { ok: true; state: 'importing' | 'imported'; handle: string | null } | { ok: false; error: 'unknown_product' | 'not_deliverable' | 'no_stock' }`
+  - `type InquiryImportResult = { ok: true; state: 'importing' | 'imported'; handle: string | null } | { ok: false; error: 'unknown_product' | 'not_deliverable' | 'no_stock' | 'stock_unknown' }`
   - `startInquiryImport(deps: InquiryImportDeps, pid: string, dest: string): Promise<InquiryImportResult>`
   - `inquiryImportStatus(store: TenantStore, pid: string): Promise<{ ok: true; state: string; handle: string | null; failReason: string | null; failDetail: string | null }>`
   - Routes: `POST /api/inbox/source-import { pid, threadId }`, `POST /api/inbox/source-status { pid }`
@@ -674,12 +705,20 @@ beforeEach(async () => { await applyD1Migrations(env.DB, env.TEST_MIGRATIONS); }
 const CFG = { pricing: DEFAULT_PRICING, floors: DEFAULT_FLOORS, fulfil: DEFAULT_FULFIL } as unknown as TenantConfig;
 const det = (pid: string, origins: Record<string, number>): CjDetail => ({ pid, nameEn: 'Smart GPS Pet Tracker', images: [], descriptionHtml: '', variants: [{ vid: 'v', name: 'x', sellPriceUsd: 12, sku: 's' }], listedNum: 1, categoryName: 'Pet', origins });
 
-async function setup(details: CjDetail[]) {
+async function setup(details: CjDetail[], live: Record<string, Record<string, number> | 'error'> = {}) {
   const store = new TenantStore(env.DB, 'a.myshopify.com');
   await store.upsertLogisticsRoute({ from: 'CN', to: 'GB', channel: 'CJPacket', transitMin: 5, transitMax: 9, agingRaw: '5-9', repVid: 'v', freightCostUsd: 4 });
   await store.upsertLogisticsRoute({ from: 'GB', to: 'GB', channel: 'UK Local', transitMin: 1, transitMax: 3, agingRaw: '1-3', repVid: 'v', freightCostUsd: 3 });
   const byPid = new Map(details.map((d) => [d.pid, d]));
-  const cj = { detail: async (pid: string) => byPid.get(pid) ?? null, originsByPid: async () => ({}) } as unknown as CjClient;
+  // originsByPid = what CJ reports NOW; defaults to the detail's own origins.
+  const cj = {
+    detail: async (pid: string) => byPid.get(pid) ?? null,
+    originsByPid: async (pid: string) => {
+      const l = live[pid];
+      if (l === 'error') throw new Error('CJ 500');
+      return l ?? byPid.get(pid)?.origins ?? {};
+    },
+  } as unknown as CjClient;
   const imports: { pid: string; localWarehouses: string[] }[] = [];
   const pending: Promise<unknown>[] = [];
   let runImport = async (d: CjDetail, localWarehouses: string[]) => { imports.push({ pid: d.pid, localWarehouses }); };
@@ -717,6 +756,22 @@ describe('startInquiryImport', () => {
   it('refuses stock below the floor', async () => {
     const t = await setup([det('T2', { CN: 3 })]);
     expect(await startInquiryImport(t.deps, 'T2', 'GB')).toEqual({ ok: false, error: 'no_stock' });
+  });
+
+  it('judges stock on CJ live origins and hands those to the import, not the cached ones', async () => {
+    const stale = await setup([det('T1', { CN: 5429 })], { T1: { CN: 0 } });
+    expect(await startInquiryImport(stale.deps, 'T1', 'GB')).toEqual({ ok: false, error: 'not_deliverable' });
+    const fresh = await setup([det('T1', { CN: 20 })], { T1: { CN: 700 } });
+    const seen: Record<string, number>[] = [];
+    fresh.setRunImport(async (d) => { seen.push(d.origins ?? {}); });
+    await startInquiryImport(fresh.deps, 'T1', 'GB');
+    await Promise.all(fresh.pending);
+    expect(seen).toEqual([{ CN: 700 }]);
+  });
+
+  it('refuses when CJ cannot report live stock', async () => {
+    const t = await setup([det('T1', { CN: 5429 })], { T1: 'error' });
+    expect(await startInquiryImport(t.deps, 'T1', 'GB')).toEqual({ ok: false, error: 'stock_unknown' });
   });
 
   it('refuses an unknown product', async () => {
@@ -805,7 +860,7 @@ export interface InquiryImportDeps {
 
 export type InquiryImportResult =
   | { ok: true; state: 'importing' | 'imported'; handle: string | null }
-  | { ok: false; error: 'unknown_product' | 'not_deliverable' | 'no_stock' };
+  | { ok: false; error: 'unknown_product' | 'not_deliverable' | 'no_stock' | 'stock_unknown' };
 
 /**
  * Owner-triggered import of a supplier item for a customer's inquiry (owner
@@ -821,7 +876,10 @@ export async function startInquiryImport(deps: InquiryImportDeps, pid: string, d
 
   const detail = await getDetailPreferWarehouse(store, cj, pid);
   if (!detail) return { ok: false, error: 'unknown_product' };
-  const origins = detail.origins ?? await cj.originsByPid(pid).catch(() => undefined);
+  // Live stock by warehouse, always: the detail may be a 30-day-old cache, and
+  // confirmAndImport skips its own origins lookup when origins are supplied.
+  let origins: Record<string, number>;
+  try { origins = await cj.originsByPid(pid); } catch { return { ok: false, error: 'stock_unknown' }; }
   const route = await laneRouteFor(store, cfg, origins, dest);
   if (!route) return { ok: false, error: 'not_deliverable' };
   const warehouses = route.overseas ? inquiryWarehouses(dest) : localWarehousesFor(dest);
@@ -1228,6 +1286,22 @@ describe('productAgent on a catalog miss (inquiry sourcing)', () => {
     expect(g.facts).toContain('do not currently deliver');
     expect(g.holdReason).toBeUndefined();
   });
+
+  it('answers from the real listing, unheld, once the owner has imported the item', async () => {
+    const c = await ctx('Do you sell a trackable dog collar? I live in England.');
+    await c.store.putLink({ cjPid: 'T1', state: 'imported', handle: 'smart-gps-pet-tracker' });
+    c.admin = async (query: string, vars?: Record<string, unknown>) => {
+      if (query.includes('productByHandle') && vars?.handle === 'smart-gps-pet-tracker') {
+        return { productByHandle: { id: 'gid://shopify/Product/9', title: 'GPS Pet Tracker for Dog Collars', handle: 'smart-gps-pet-tracker', variants: { edges: [{ node: { id: 'gid://shopify/ProductVariant/90', title: 'Default Title', sku: 'T1', price: '27.49', availableForSale: true, inventoryQuantity: 50 } }] } } };
+      }
+      return query.includes('productByHandle') ? { productByHandle: null } : { products: { edges: [] } };
+    };
+    const g = await productAgent.ground(c);
+    expect(g.confident).toBe(true);
+    expect(g.holdReason).toBeUndefined();
+    expect(g.facts).toContain('GPS Pet Tracker for Dog Collars');
+    expect(g.facts).toContain('27.49');
+  });
 });
 ```
 
@@ -1299,8 +1373,8 @@ export function offerFacts(o: SupplierOffer, dest: string | null): string {
   const delivery = dest && o.days
     ? `Estimated delivery to ${countryLabel(dest)}: ${o.days} days from order. You MAY state this.`
     : 'Their country is not known: do not state a delivery time; ask which country it would be delivered to.';
-  return `Not in our catalog yet, but the team can source "${o.title}" for them at GBP ${o.priceGbp.toFixed(2)} (our price). You MAY state that price. ${where} ${delivery} `
-    + `Describe the item only from these supplier notes, and never quote a brand name from them: ${o.descriptionText || 'none'}. `
+  return `Not in our catalog yet, but the team can source this item for them at GBP ${o.priceGbp.toFixed(2)} (our price): ${o.title}. You MAY state that price. ${where} ${delivery} `
+    + `Describe the item in your own plain words (for example "a GPS tracker that clips to your dog's collar"), only from what these supplier notes support; never copy the listing title, a model code or a brand name: ${o.descriptionText || 'none'}. `
     + 'Never name the country it ships from, the supplier, or any product code, and never suggest it is sent from the UK. Ask whether they would like one; the team will send the link.';
 }
 
@@ -1324,7 +1398,10 @@ export async function sourcingGrounding(ctx: AgentContext, query: string): Promi
   }
   const o = offers[0];
   if (!o) return none;
-  return { confident: true, quotesFigure: true, holdReason: 'sourcing_offer', facts: offerFacts(o, dest), data: { sourcingPid: o.pid } };
+  // An item the owner has already imported: the caller re-grounds on its real
+  // product page (Shopify price after the import's profit gate, availability,
+  // link) instead of this pre-import offer.
+  return { confident: true, quotesFigure: true, holdReason: 'sourcing_offer', facts: offerFacts(o, dest), data: { sourcingPid: o.pid, sourcingHandle: o.handle } };
 }
 ```
 
@@ -1361,7 +1438,17 @@ with:
 
 ```ts
       if (linked) return hedge(NO_MATCH_FACTS);
-      return await sourcingGrounding(ctx, ctx.productQuery || typed);
+      const sourced = await sourcingGrounding(ctx, ctx.productQuery || typed);
+      // Already imported (its Shopify title or search index may not match the
+      // phrase yet): answer from the real listing through the link path above,
+      // which carries the real price and needs no sourcing hold. The link path
+      // cannot recurse back here: a linked miss returns NO_MATCH_FACTS.
+      const handle = (sourced.data as { sourcingHandle?: string | null } | undefined)?.sourcingHandle;
+      if (handle) {
+        const listed = await productAgent.ground({ ...ctx, latestMessage: `https://activepaw.co.uk/products/${handle}`, productQuery: null });
+        if (listed.confident) return listed;
+      }
+      return sourced;
 ```
 
 - [ ] **Step 9: Composer wiring**
@@ -1425,7 +1512,7 @@ git push
 
 - [ ] **Step 1: Write the failing tests**
 
-Append to `tests/search.test.ts` (it already has `fakeCj`, `item`, `CFG`, `TenantStore`, `searchBackfill`):
+Append to `tests/search.test.ts` (it already has `fakeCj`, `item`, `CFG`, `TenantStore`, `searchBackfill`; add `import { retailPriceGbp } from '../src/pricing';` to its imports):
 
 ```ts
 describe('storefront overseas cards (owner choice 2026-09-30)', () => {
@@ -1445,6 +1532,8 @@ describe('storefront overseas cards (owner choice 2026-09-30)', () => {
     expect(cards.map((c) => c.pid)).toEqual(['T1']);
     expect(cards[0].delivery.overseas).toBe(true);
     expect(cards[0].delivery.days).toMatch(/^\d+-\d+$/);
+    // Priced with the CN -> GB freight, as the product page will be.
+    expect(cards[0].price).toBe(retailPriceGbp(12, CFG.pricing, 4));
   });
 
   it('never returns overseas cards without the flag', async () => {
@@ -1532,6 +1621,10 @@ export function storefrontImportWarehouses(countryRaw: string | undefined, overs
   if (opts.overseas && cards.length < limit && (opts.liveFallback ?? true) && inquiryWarehouses(buyer).includes('CN')) {
     const l = resolveLogistics(cfg.fulfil);
     const days = formatBand(doorToDoorBand(await store.getLogisticsRoute('CN', buyer, l.stalenessHours), l));
+    // Freight is most of a China item's landed cost. The store price is set on
+    // the CN -> GB quote at import, so the card uses that row's freight to match
+    // the preview and the product page (null row -> product cost only, as before).
+    const freightUsd = (await store.getLogisticsRoute('CN', 'GB', l.stalenessHours))?.freight_cost_usd ?? undefined;
     if (days) {
       let items: CjSearchItem[];
       const cached = await store.getSearchCache(`kw3:CN:${kw}`);
@@ -1547,10 +1640,10 @@ export function storefrontImportWarehouses(countryRaw: string | undefined, overs
         if (cards.length >= limit) break;
         const link = links.get(item.pid);
         const imported = link?.state === 'imported' && link.handle;
-        if (!imported && !ghostCardClearsFloor({ sellPriceUsd: item.sellPriceUsd }, cfg)) continue;
+        if (!imported && !ghostCardClearsFloor({ sellPriceUsd: item.sellPriceUsd }, cfg, freightUsd)) continue;
         cards.push({
           pid: item.pid, title: item.nameEn, image: item.image,
-          price: retailPriceGbp(item.sellPriceUsd, cfg.pricing),
+          price: retailPriceGbp(item.sellPriceUsd, cfg.pricing, freightUsd),
           state: imported ? 'imported' : 'ghost',
           url: imported ? `/products/${link!.handle}` : null,
           delivery: { overseas: true, days },
