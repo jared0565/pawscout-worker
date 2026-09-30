@@ -34,6 +34,7 @@ import { validateCjKey, CjClient, CjTokenManager, cjFetchFromEnv, chooseOrigin, 
 import { startInquiryImport, inquiryImportStatus } from './sourcing/inquiry-import';
 import { inquiryDestination } from './sourcing/destination';
 import { supplierSearchForThread } from './sourcing/console-search';
+import { laneRouteFor, storefrontImportWarehouses } from './sourcing/lane-route';
 import { registerWebhooks, ensureWebhooks, ORDER_EVENT_TOPICS, type RegisterWebhook } from './webhooks';
 import { cancelledOrderId, refundInfo, applyCancel, applyRefund, type OwnerAlert } from './order-cancel';
 import { alertOwner } from './owner-alert';
@@ -1968,7 +1969,10 @@ app.get('/proxy/search', async (c) => {
     // LLM + execution ctx let searchBackfill lazy-fill a semantic-library miss
     // in the background (never the hot path); the same client classifies the keyword.
     const llm = new LlmClient({ openrouter: c.env.OPENROUTER_API_KEY, openai: c.env.OPENAI_API_KEY });
-    const products = await searchBackfill(p.store, cjFor(c.env, p), p.cfg, q, have, limit, { exclude, llm, ctx: c.executionCtx, buyerCountry });
+    // overseas=1: the theme renders the "ships from overseas" note, so China-hub
+    // ghost cards may be added (inquiry sourcing, part D). Absent, nothing changes.
+    const overseas = c.req.query('overseas') === '1';
+    const products = await searchBackfill(p.store, cjFor(c.env, p), p.cfg, q, have, limit, { exclude, llm, ctx: c.executionCtx, buyerCountry, overseas });
     // W3: classify new keywords in the background (cached 30d) - the NEXT
     // search for this term benefits from category + synonyms. Never hot-path.
     if (llm.available && p.cfg.llm.enabled) {
@@ -1988,6 +1992,9 @@ app.get('/proxy/product', async (c) => {
   const p = await proxyCtx(c); if (p instanceof Response) return p;
   const pid = (c.req.query('pid') ?? '').trim();
   if (!PID_RE.test(pid)) return c.json({ ok: false, error: 'Bad pid' });
+  // An overseas card's click (overseas=1 + the buyer's country) may import on the
+  // lane plus CN; every other click keeps the home lane (inquiry sourcing, part D).
+  const importWarehouses = storefrontImportWarehouses(c.req.query('country'), c.req.query('overseas'));
   try {
     const cj = cjFor(c.env, p);
     let detail = await getDetailPreferWarehouse(p.store, cj, pid);
@@ -2018,12 +2025,18 @@ app.get('/proxy/product', async (c) => {
       const competitorCheck = importLlm.available && p.cfg.llm.enabled
         ? (d: { pid: string; nameEn: string }, ourRetailGbp: number) => competitorSignal(importLlm, p.store, p.cfg, { pid: d.pid, title: d.nameEn, ourRetailGbp, market: importMarket })
         : undefined;
-      c.executionCtx.waitUntil(confirmAndImport(p.store, cj, admin, p.cfg, detail, undefined, curate, pickHero, { competitorCheck }));
+      c.executionCtx.waitUntil(confirmAndImport(p.store, cj, admin, p.cfg, detail, undefined, curate, pickHero, { competitorCheck, localWarehouses: importWarehouses }));
       link = await p.store.getLink(pid);
     }
     await p.store.recordEvent(pid, 'view');
     const handle = link?.state === 'imported' ? link.handle : null;
-    return c.json({ ok: true, product: buildPreview(detail, p.cfg, link?.state ?? 'importing', handle) });
+    const preview = buildPreview(detail, p.cfg, link?.state ?? 'importing', handle);
+    if (importWarehouses) {
+      const cc = (c.req.query('country') ?? '').trim().toUpperCase();
+      const route = await laneRouteFor(p.store, p.cfg, detail.origins, cc);
+      preview.delivery = route ? { overseas: route.overseas, days: route.days } : null;
+    }
+    return c.json({ ok: true, product: preview });
   } catch (e) {
     console.warn(`product preview failed for ${pid}: ${(e as Error).message}`);
     return c.json({ ok: false, error: 'Product unavailable' });

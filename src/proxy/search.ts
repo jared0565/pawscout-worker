@@ -4,7 +4,8 @@ import type { Gates, TenantConfig } from '../types';
 import { retailPriceGbp } from '../pricing';
 import { getKeywordMeta, type LlmClient } from '../llm';
 import { getExpansions } from '../semantic/library';
-import { bestLocalQty, localWarehousesFor } from '../local-markets';
+import { bestLocalQty, localWarehousesFor, inquiryWarehouses } from '../local-markets';
+import { resolveLogistics, doorToDoorBand, formatBand } from '../logistics';
 import { productNetAfterAds } from '../profitability';
 
 export const CACHE_TTL_DAYS = 30; // PS retention promise: cached supplier data lives 30 days
@@ -16,6 +17,8 @@ export interface GhostCard {
   price: number; // GBP retail under the tenant's pricing rule
   state: 'ghost' | 'imported';
   url: string | null; // real PDP when already imported
+  /** Where it ships from, for the card's note: overseas cards carry the door-to-door band. */
+  delivery: { overseas: boolean; days: string | null };
 }
 
 export function normalizeKeyword(q: string): string {
@@ -395,7 +398,7 @@ export async function searchBackfill(
   query: string,
   storeHits: number,
   limit: number,
-  opts: { liveFallback?: boolean; exclude?: string[]; llm?: LlmClient; fetchImpl?: typeof fetch; ctx?: { waitUntil(p: Promise<unknown>): void }; buyerCountry?: string } = {}
+  opts: { liveFallback?: boolean; exclude?: string[]; llm?: LlmClient; fetchImpl?: typeof fetch; ctx?: { waitUntil(p: Promise<unknown>): void }; buyerCountry?: string; overseas?: boolean } = {}
 ): Promise<GhostCard[]> {
   const kw = normalizeKeyword(query);
   if (!kw) return [];
@@ -467,7 +470,8 @@ export async function searchBackfill(
       image: firstImage(r),
       price: retailPriceGbp(r.price_usd, cfg.pricing, freightUsd),
       state: imported ? 'imported' : 'ghost',
-      url: imported ? `/products/${link!.handle}` : null
+      url: imported ? `/products/${link!.handle}` : null,
+      delivery: { overseas: false, days: null }
     });
     seen.add(r.cj_pid);
   }
@@ -519,9 +523,50 @@ export async function searchBackfill(
         image: item.image,
         price: retailPriceGbp(item.sellPriceUsd, cfg.pricing),
         state: imported ? 'imported' : 'ghost', // archived/failed re-offer as ghost: demand revives
-        url: imported ? `/products/${link!.handle}` : null
+        url: imported ? `/products/${link!.handle}` : null,
+        delivery: { overseas: false, days: null }
       });
       seen.add(item.pid);
+    }
+  }
+
+  // --- 3) overseas supplement (owner choice 2026-09-30) ---
+  // Only when the theme asked (overseas=1, sent once it renders the "ships from
+  // overseas" note), only for a lane that may use the China hub, and only with a
+  // fresh China route to this buyer: the band is the product page's own formula.
+  const buyer = (opts.buyerCountry ?? 'GB').toUpperCase();
+  if (opts.overseas && cards.length < limit && (opts.liveFallback ?? true) && inquiryWarehouses(buyer).includes('CN')) {
+    const l = resolveLogistics(cfg.fulfil);
+    const days = formatBand(doorToDoorBand(await store.getLogisticsRoute('CN', buyer, l.stalenessHours), l));
+    // Freight is most of a China item's landed cost. The store price is set on
+    // the CN -> GB quote at import, so the card uses that row's freight to match
+    // the preview and the product page (null row -> product cost only, as before).
+    const freightUsd = (await store.getLogisticsRoute('CN', 'GB', l.stalenessHours))?.freight_cost_usd ?? undefined;
+    if (days) {
+      let items: CjSearchItem[];
+      const cached = await store.getSearchCache(`kw3:CN:${kw}`);
+      if (cached) {
+        items = JSON.parse(cached);
+      } else {
+        items = await cj.searchByWarehouse(kw, 'CN');
+        await store.putSearchCache(`kw3:CN:${kw}`, JSON.stringify(items), CACHE_TTL_DAYS);
+      }
+      const gated = items.filter((i) => !seen.has(i.pid) && storefrontLivePasses(i, cfg.gates, kw) && categoryAdmitsLiveCj(i.topCategory) && isPetProductStrict(i.nameEn));
+      const links = await store.getLinks(gated.map((i) => i.pid));
+      for (const item of gated) {
+        if (cards.length >= limit) break;
+        const link = links.get(item.pid);
+        const imported = link?.state === 'imported' && link.handle;
+        if (!imported && !ghostCardClearsFloor({ sellPriceUsd: item.sellPriceUsd }, cfg, freightUsd)) continue;
+        cards.push({
+          pid: item.pid, title: item.nameEn, image: item.image,
+          price: retailPriceGbp(item.sellPriceUsd, cfg.pricing, freightUsd),
+          state: imported ? 'imported' : 'ghost',
+          url: imported ? `/products/${link!.handle}` : null,
+          delivery: { overseas: true, days },
+        });
+        seen.add(item.pid);
+      }
     }
   }
 

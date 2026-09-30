@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
 import { TenantStore } from '../src/tenant-store';
-import { laneRouteFor } from '../src/sourcing/lane-route';
+import { laneRouteFor, storefrontImportWarehouses } from '../src/sourcing/lane-route';
 import { allowedOriginsFor, inquiryWarehouses } from '../src/local-markets';
 import { resolveLogistics, doorToDoorBand, formatBand } from '../src/logistics';
 import { DEFAULT_FULFIL, type TenantConfig } from '../src/types';
@@ -62,5 +62,16 @@ describe('laneRouteFor', () => {
   it('is null for a country with no lane', async () => {
     const store = await seededStore();
     expect(await laneRouteFor(store, CFG, { CN: 5429 }, 'NG')).toBeNull();
+  });
+});
+
+describe('storefrontImportWarehouses', () => {
+  it('widens to lane plus CN only for an overseas click with a valid country', () => {
+    expect(storefrontImportWarehouses('gb', '1')).toEqual(['GB', 'CN']);
+  });
+  it('keeps the default lane otherwise', () => {
+    expect(storefrontImportWarehouses('GB', undefined)).toBeUndefined();
+    expect(storefrontImportWarehouses('not a country', '1')).toBeUndefined();
+    expect(storefrontImportWarehouses('NG', '1')).toBeUndefined();
   });
 });

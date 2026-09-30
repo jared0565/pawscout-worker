@@ -1,6 +1,6 @@
 import type { TenantStore } from '../tenant-store';
 import type { TenantConfig } from '../types';
-import { allowedOriginsFor, localWarehousesFor } from '../local-markets';
+import { allowedOriginsFor, inquiryWarehouses, localWarehousesFor } from '../local-markets';
 import { resolveNearestRoute } from '../shipping/nearest-route';
 import { resolveLogistics, doorToDoorBand, formatBand, type LogisticsRoute } from '../logistics';
 
@@ -43,4 +43,15 @@ export async function laneRouteFor(
     overseas: !localWarehousesFor(dest).includes(origin),
     days: formatBand(doorToDoorBand(resolved.nearest.route, l)) || null,
   };
+}
+
+/** Warehouses a storefront ghost click may import from: the default (undefined,
+ *  meaning the home lane) unless the theme sent overseas=1 with a valid
+ *  country whose lane can use the China hub. */
+export function storefrontImportWarehouses(countryRaw: string | undefined, overseasFlag: string | undefined): string[] | undefined {
+  if (overseasFlag !== '1') return undefined;
+  const cc = (countryRaw ?? '').trim().toUpperCase();
+  if (!/^[A-Z]{2}$/.test(cc)) return undefined;
+  const w = inquiryWarehouses(cc);
+  return w.includes('CN') ? w : undefined;
 }
