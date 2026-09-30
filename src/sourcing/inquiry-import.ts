@@ -36,6 +36,10 @@ export async function startInquiryImport(deps: InquiryImportDeps, pid: string, d
   // confirmAndImport skips its own origins lookup when origins are supplied.
   let origins: Record<string, number>;
   try { origins = await cj.originsByPid(pid); } catch { return { ok: false, error: 'stock_unknown' }; }
+  // The truthful refusal first: no lane at all, then too little stock anywhere
+  // this buyer may be served from, then no route from the warehouse that has it.
+  if (!inquiryWarehouses(dest).length) return { ok: false, error: 'not_deliverable' };
+  if (bestLocalQty(origins, inquiryWarehouses(dest)) < cfg.floors.stockFloor) return { ok: false, error: 'no_stock' };
   const route = await laneRouteFor(store, cfg, origins, dest);
   if (!route) return { ok: false, error: 'not_deliverable' };
   const warehouses = route.overseas ? inquiryWarehouses(dest) : localWarehousesFor(dest);

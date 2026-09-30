@@ -4,10 +4,10 @@ import { TenantStore } from '../src/tenant-store';
 import { laneRouteFor, storefrontImportWarehouses } from '../src/sourcing/lane-route';
 import { allowedOriginsFor, inquiryWarehouses } from '../src/local-markets';
 import { resolveLogistics, doorToDoorBand, formatBand } from '../src/logistics';
-import { DEFAULT_FULFIL, type TenantConfig } from '../src/types';
+import { DEFAULT_FULFIL, DEFAULT_FLOORS, type TenantConfig } from '../src/types';
 
 beforeEach(async () => { await applyD1Migrations(env.DB, env.TEST_MIGRATIONS); });
-const CFG = { fulfil: DEFAULT_FULFIL } as unknown as TenantConfig;
+const CFG = { fulfil: DEFAULT_FULFIL, floors: DEFAULT_FLOORS } as unknown as TenantConfig;
 
 async function seededStore() {
   const store = new TenantStore(env.DB, 'a.myshopify.com');
@@ -54,6 +54,16 @@ describe('laneRouteFor', () => {
     const r = await laneRouteFor(store, CFG, { GB: 40, CN: 900 }, 'GB');
     expect(r?.origin).toBe('GB');
     expect(r?.overseas).toBe(false);
+  });
+  it('routes overseas when local stock is below the stock floor and only China can fill it', async () => {
+    const store = await seededStore();
+    const r = await laneRouteFor(store, CFG, { GB: 2, CN: 900 }, 'GB');
+    expect(r?.origin).toBe('CN');
+    expect(r?.overseas).toBe(true);
+  });
+  it('is null when no warehouse meets the stock floor', async () => {
+    const store = await seededStore();
+    expect(await laneRouteFor(store, CFG, { GB: 2, CN: 3 }, 'GB')).toBeNull();
   });
   it('is null when no route exists to the destination', async () => {
     const store = await seededStore();

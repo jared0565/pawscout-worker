@@ -16,7 +16,8 @@ export interface LaneRoute {
 
 /**
  * The nearest allowed warehouse for this buyer and its customer-facing band.
- * Allowed = allowedOriginsFor (lane, plus CN while transitional). Routes come
+ * Allowed = allowedOriginsFor (lane, plus CN while transitional) over the
+ * warehouses holding at least the stock floor. Routes come
  * from the D1 matrix only, the same rows the delivery profiles and the
  * product page read, so a quote here matches checkout. Null when nothing
  * allowed is stocked or no fresh route reaches `dest`.
@@ -27,7 +28,12 @@ export async function laneRouteFor(
   origins: Record<string, number> | undefined | null,
   dest: string
 ): Promise<LaneRoute | null> {
-  const allowed = allowedOriginsFor(origins, dest);
+  // Only a warehouse that can fill the order may be quoted: stock below the
+  // floor never answers as "local" while the real stock is overseas (the import
+  // gate applies the same floor, so the quote and the import agree).
+  const floor = cfg.floors.stockFloor;
+  const deep = origins ? Object.fromEntries(Object.entries(origins).filter(([, q]) => (q ?? 0) >= floor)) : origins;
+  const allowed = allowedOriginsFor(deep, dest);
   if (!allowed.length) return null;
   const l = resolveLogistics(cfg.fulfil);
   const candidates: LogisticsRoute[] = [];

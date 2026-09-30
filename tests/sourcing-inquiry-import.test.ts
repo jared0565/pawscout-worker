@@ -51,6 +51,13 @@ describe('startInquiryImport', () => {
     expect(t.imports[0].localWarehouses).toEqual(['GB']);
   });
 
+  it('imports thin local stock plus deep China stock on the lane plus CN, not refused', async () => {
+    const t2 = await setup([det('M1', { GB: 2, CN: 900 })]);
+    expect(await startInquiryImport(t2.deps, 'M1', 'GB')).toEqual({ ok: true, state: 'importing', handle: null });
+    await Promise.all(t2.pending);
+    expect(t2.imports[0].localWarehouses).toEqual(['GB', 'CN']);
+  });
+
   it('refuses when no route reaches the buyer, without touching the link', async () => {
     const t = await setup([det('T1', { CN: 5429 })]);
     expect(await startInquiryImport(t.deps, 'T1', 'AU')).toEqual({ ok: false, error: 'not_deliverable' });
@@ -65,7 +72,7 @@ describe('startInquiryImport', () => {
 
   it('judges stock on CJ live origins and hands those to the import, not the cached ones', async () => {
     const stale = await setup([det('T1', { CN: 5429 })], { T1: { CN: 0 } });
-    expect(await startInquiryImport(stale.deps, 'T1', 'GB')).toEqual({ ok: false, error: 'not_deliverable' });
+    expect(await startInquiryImport(stale.deps, 'T1', 'GB')).toEqual({ ok: false, error: 'no_stock' });
     const fresh = await setup([det('T1', { CN: 20 })], { T1: { CN: 700 } });
     const seen: Record<string, number>[] = [];
     fresh.setRunImport(async (d) => { seen.push(d.origins ?? {}); });
