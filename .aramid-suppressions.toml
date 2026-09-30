@@ -103,7 +103,9 @@ reason = "Test executes the console's own esc() and ibxSupLink() functions (cut 
 # country) and that an item already in the catalog is linked, not offered for
 # import. The seventh runs importForInquiry() against a fake api() to prove the
 # console passes the threadId to the status poll and reopens the thread once
-# the held reply was redrafted. No external or user-supplied input; test-only;
+# the held reply was redrafted, and never redrafts or reloads over unsaved draft
+# edits (the seventh now lives in one helper shared by three tests; its id was
+# re-read from `aramid check --gate pre-push --staged` after that change). No external or user-supplied input; test-only;
 # vitest never ships to the Worker bundle. Both surfaced only at pre-push:
 # `aramid check --staged` does not run semgrep.
 [[suppress]]
@@ -114,8 +116,8 @@ path = "tests/console.test.ts"
 reason = "Test executes the console's own renderSupplierOffers() (cut from consolePage() output, same process) with a fake esc to prove supplier offers are labelled and catalog items linked; no external input, test-only, not in the Worker bundle."
 
 [[suppress]]
-id = "535b584619649f0ff7e770c455b0ad1caaa4662fde6e8ebe8278566d3e36f648"
+id = "6bf8c11c6dc5aca29479bc4ecea3ae181d204b6a31d20d1e05f4d49e3e22ee1c"
 tool = "semgrep"
 rule = "owasp-top-ten.a03-injection.javascript-dangerous-function-constructor"
 path = "tests/console.test.ts"
-reason = "Test executes the console's own importForInquiry() (cut from consolePage() output, same process) against a fake api() to prove the status poll carries the threadId and the thread reopens after a redraft; no external input, test-only, not in the Worker bundle."
+reason = "Test helper executes the console's own importForInquiry() (cut from consolePage() output, same process) against a fake api() and fake thread state to prove the status poll carries the threadId, the thread reopens after a redraft, and unsaved draft edits are never redrafted or reloaded; no external input, test-only, not in the Worker bundle."

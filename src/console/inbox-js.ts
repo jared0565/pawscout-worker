@@ -721,23 +721,31 @@ async function runSupplierSearch(threadId,q){
   }catch(e){ box.textContent='Supplier search failed: '+errText(e); }
 }
 async function importForInquiry(pid,threadId){
+  // The status poll redrafts the held offer once the import lands, but never
+  // over unsaved edits the owner is making to that thread's draft (an empty
+  // threadId asks for no redraft).
+  function redraftFor(){ return (ibxSelectedId===threadId&&ibxDraftEdited())?'':threadId; }
   setMsg('ibx-msg','Importing for this customer. This runs every import check and can take a minute…','muted');
   try{
     var r=await api('/inbox/source-import',{pid:pid,threadId:threadId});
     if(!r.ok){ setMsg('ibx-msg','Not imported: '+(r.error||'unknown'),'no'); return; }
     // Already in the catalog: one status read still redrafts a held offer.
-    if(r.state==='imported') r=await api('/inbox/source-status',{pid:pid,threadId:threadId});
+    if(r.state==='imported') r=await api('/inbox/source-status',{pid:pid,threadId:redraftFor()});
     for(var n=0;n<40;n++){
       if(r.state==='imported'){
-        if(r.draftRefreshed) openInboxThread(threadId);
-        setMsg('ibx-msg','Imported: https://activepaw.co.uk/products/'+(r.handle||'')+(r.draftRefreshed?'. The held reply was redrafted with the product link; review it before sending.':''),'ok');
+        var here=ibxSelectedId===threadId, edited=here&&ibxDraftEdited();
+        // Reload only the thread still open, and only with nothing unsaved in it.
+        if(r.draftRefreshed&&here&&!edited) openInboxThread(threadId);
+        var note=r.draftRefreshed?'. The held reply was redrafted with the product link; review it before sending.'
+          :(edited?'. Your unsaved draft edits were kept; press Regenerate for a reply with the product link.':'');
+        setMsg('ibx-msg','Imported: https://activepaw.co.uk/products/'+(r.handle||'')+note,'ok');
         return;
       }
       if(r.state==='failed'){ setMsg('ibx-msg','Import refused: '+(r.failReason||'unknown')+(r.failDetail?' ('+r.failDetail+')':''),'no'); return; }
       if(r.state==='draft'){ setMsg('ibx-msg','Created as a Shopify draft for your profit review; it goes live when you publish it.','muted'); return; }
       if(r.state==='stalled'){ setMsg('ibx-msg','The import stalled before it finished. Search again and click Import to retry.','no'); return; }
       await new Promise(function(res){ setTimeout(res,4000); });
-      r=await api('/inbox/source-status',{pid:pid,threadId:threadId});
+      r=await api('/inbox/source-status',{pid:pid,threadId:redraftFor()});
     }
     setMsg('ibx-msg','Still importing. Search again in a minute to see the result.','muted');
   }catch(e){ setMsg('ibx-msg','Import failed: '+errText(e),'no'); }

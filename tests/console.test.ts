@@ -1265,7 +1265,9 @@ describe('inbox supplier results', () => {
     expect(out).not.toContain('data-src-import=');
   });
 
-  it('asks for the held reply to be redrafted once the import lands, and reopens the thread', async () => {
+  /** The console's own importForInquiry, run against a fake api(): `selected` is
+   *  the thread the owner has open, `edited` whether its draft has unsaved edits. */
+  async function runImport(selected: string, edited: boolean, statusReply: Record<string, unknown>) {
     const html = await consolePage('test-api-key').text();
     const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
     const start = scripts.indexOf('async function importForInquiry(');
@@ -1278,15 +1280,33 @@ describe('inbox supplier results', () => {
     const calls: [string, unknown][] = []; const opened: string[] = []; const msgs: string[] = [];
     const replies: Record<string, unknown[]> = {
       '/inbox/source-import': [{ ok: true, state: 'importing', handle: null }],
-      '/inbox/source-status': [{ ok: true, state: 'imported', handle: 'smart-gps-pet-tracker', draftRefreshed: true }],
+      '/inbox/source-status': [statusReply],
     };
     const api = async (path: string, body: unknown) => { calls.push([path, body]); return replies[path].shift(); };
-    const run = new Function('api', 'setMsg', 'openInboxThread', 'errText', 'setTimeout', scripts.slice(start, end) + '\nreturn importForInquiry;')(
-      api, (_id: string, m: string) => { msgs.push(m); }, (id: string) => { opened.push(id); }, String, (f: () => void) => f());
+    const deps = { api, setMsg: (_id: string, m: string) => { msgs.push(m); }, openInboxThread: (id: string) => { opened.push(id); }, errText: String, setTimeout: (f: () => void) => f(), ibxSelectedId: selected, ibxDraftEdited: () => edited };
+    const run = new Function(...Object.keys(deps), scripts.slice(start, end) + '\nreturn importForInquiry;')(...Object.values(deps));
     await run('T1', 'th1');
-    expect(calls[1]).toEqual(['/inbox/source-status', { pid: 'T1', threadId: 'th1' }]);
-    expect(opened).toEqual(['th1']);
-    expect(msgs.at(-1)).toContain('redrafted');
+    return { calls, opened, msgs };
+  }
+
+  it('asks for the held reply to be redrafted once the import lands, and reopens the thread', async () => {
+    const r = await runImport('th1', false, { ok: true, state: 'imported', handle: 'smart-gps-pet-tracker', draftRefreshed: true });
+    expect(r.calls[1]).toEqual(['/inbox/source-status', { pid: 'T1', threadId: 'th1' }]);
+    expect(r.opened).toEqual(['th1']);
+    expect(r.msgs.at(-1)).toContain('redrafted');
+  });
+
+  it('never redrafts or reloads over unsaved edits to the open draft', async () => {
+    const r = await runImport('th1', true, { ok: true, state: 'imported', handle: 'smart-gps-pet-tracker', draftRefreshed: false });
+    expect(r.calls[1]).toEqual(['/inbox/source-status', { pid: 'T1', threadId: '' }]);
+    expect(r.opened).toEqual([]);
+    expect(r.msgs.at(-1)).toContain('Regenerate');
+  });
+
+  it('does not pull the owner back to the thread after they moved on', async () => {
+    const r = await runImport('th2', true, { ok: true, state: 'imported', handle: 'smart-gps-pet-tracker', draftRefreshed: true });
+    expect(r.calls[1]).toEqual(['/inbox/source-status', { pid: 'T1', threadId: 'th1' }]);
+    expect(r.opened).toEqual([]);
   });
 
   it('says so when the country was assumed', async () => {
