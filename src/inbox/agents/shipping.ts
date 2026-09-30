@@ -4,7 +4,7 @@ import { isShippingIntent, deriveDestinationCountry, countryLabel, buildShipping
 import { resolveLogistics, doorToDoorBand, formatBand, type DayRange, type LogisticsRoute } from '../../logistics';
 import { resolveLineRequest, extractProductHandle } from '../../shopify-catalog';
 import { resolveNearestRoute } from '../../shipping/nearest-route';
-import { localWarehousesFor, laneVisibilityModeFor, normalizeOriginCode } from '../../local-markets';
+import { localWarehousesFor, laneVisibilityModeFor, allowedOriginsFor } from '../../local-markets';
 import type { CjDetail } from '../../cj';
 
 const SHIP_DEFAULT_ORIGIN = 'CN'; // Used for the ask-for-item fallback band only (transitional lanes); per-item routing uses resolveNearestRoute
@@ -57,7 +57,6 @@ export async function resolveItemShipping(ctx: AgentContext, dest: string): Prom
     if (!origins || Object.keys(origins).length === 0) return null;
 
     const verifiedGbWarehouse = (origins.GB ?? origins.UK ?? 0) > 0; // CJ aliases GB as UK
-    const originCodes = Object.keys(origins).filter((c) => (origins[c] ?? 0) > 0);
     const variants = detail.variants ?? [];
     const repVid = (variants.find((v) => (v.stock ?? 0) > 0) ?? variants[0])?.vid ?? null;
     const l = resolveLogistics(ctx.cfg.fulfil);
@@ -69,11 +68,7 @@ export async function resolveItemShipping(ctx: AgentContext, dest: string): Prom
     // even when the route matrix has a row for it: the storefront will not
     // sell that item to this buyer, so the draft must not promise delivery.
     // Normalized (UK -> GB) so alias-keyed origins hit the matrix rows.
-    const lane = localWarehousesFor(dest);
-    const mode = laneVisibilityModeFor(dest);
-    const allowedOrigins = [...new Set(originCodes.map(normalizeOriginCode))].filter(
-      (cc) => lane.includes(cc) || (mode === 'transitional' && cc === 'CN')
-    );
+    const allowedOrigins = allowedOriginsFor(origins, dest);
     if (!allowedOrigins.length) return { kind: 'unfulfillable', dest, cjPid, verifiedGbWarehouse };
 
     // Candidate routes: the matrix row for each ALLOWED warehouse to dest.
