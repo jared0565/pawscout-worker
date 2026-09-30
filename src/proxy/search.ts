@@ -6,6 +6,7 @@ import { getKeywordMeta, type LlmClient } from '../llm';
 import { getExpansions } from '../semantic/library';
 import { bestLocalQty, localWarehousesFor, inquiryWarehouses } from '../local-markets';
 import { resolveLogistics, doorToDoorBand, formatBand } from '../logistics';
+import { overseasCardFreightUsd } from '../sourcing/lane-route';
 import { productNetAfterAds } from '../profitability';
 
 export const CACHE_TTL_DAYS = 30; // PS retention promise: cached supplier data lives 30 days
@@ -273,6 +274,34 @@ const foldTerm = (w: string): string => FAMILY_OF.get(w) ?? w;
 export function familyWords(keyword: string): string[] {
   const hit = new Set(keywordTokens(keyword).map(foldTerm));
   return TERM_FAMILIES.filter((f) => hit.has(f[0])).flat();
+}
+
+// How the supplier titles each family's product, for a second CJ search when
+// the query's own words find none of it ("trackable dog collar" finds collars).
+const FAMILY_SEARCH: Readonly<Record<string, string>> = { track: 'pet gps tracker' };
+
+/** The families a query names, each as its first word (e.g. ['track']). */
+function queryFamilies(keyword: string): string[] {
+  const hit = new Set(keywordTokens(keyword).map(foldTerm));
+  return TERM_FAMILIES.map((f) => f[0]).filter((head) => hit.has(head));
+}
+
+/**
+ * Does the title carry every feature family the query names? A family word is
+ * the distinctive ask ("trackable"), so a title without it never answers the
+ * query, however well it matches the rest ("dog collar"). True when the query
+ * names no family.
+ */
+export function titleHasFamilies(keyword: string, title: string): boolean {
+  const fams = queryFamilies(keyword);
+  if (!fams.length) return true;
+  const have = new Set(keywordTokens(title).map(foldTerm));
+  return fams.every((f) => have.has(f));
+}
+
+/** The supplier search phrase for each family the query names. */
+export function familySearchPhrases(keyword: string): string[] {
+  return queryFamilies(keyword).map((f) => FAMILY_SEARCH[f]).filter((p): p is string => !!p);
 }
 
 /** The product words of a query or title: stemmed, stopwords and animal words dropped, synonyms folded. */
@@ -544,10 +573,9 @@ export async function searchBackfill(
     try {
       const l = resolveLogistics(cfg.fulfil);
       const days = formatBand(doorToDoorBand(await store.getLogisticsRoute('CN', buyer, l.stalenessHours), l));
-      // Freight is most of a China item's landed cost. The store price is set on
-      // the CN -> GB quote at import, so the card uses that row's freight to match
-      // the preview and the product page (null row -> product cost only, as before).
-      const freightUsd = (await store.getLogisticsRoute('CN', 'GB', l.stalenessHours))?.freight_cost_usd ?? undefined;
+      // Freight is most of a China item's landed cost: the card uses the same
+      // CN -> GB freight as its preview (overseasCardFreightUsd).
+      const freightUsd = await overseasCardFreightUsd(store, cfg);
       if (days) {
         let items: CjSearchItem[];
         const cached = await store.getSearchCache(`kw3:CN:${kw}`);

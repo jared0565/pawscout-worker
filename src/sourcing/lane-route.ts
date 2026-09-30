@@ -52,14 +52,37 @@ export async function laneRouteFor(
   };
 }
 
+/**
+ * The freight an overseas card is priced with: the CN -> GB route row, because
+ * the store price is set on the CN -> GB quote at import. Undefined without a
+ * fresh row (the card then shows the product cost only, as before).
+ */
+export async function overseasCardFreightUsd(store: TenantStore, cfg: TenantConfig): Promise<number | undefined> {
+  const l = resolveLogistics(cfg.fulfil);
+  return (await store.getLogisticsRoute('CN', 'GB', l.stalenessHours))?.freight_cost_usd ?? undefined;
+}
+
 /** What a storefront ghost click imports with, and the note its preview shows. */
 export interface OverseasClickPlan {
   /** Warehouses for confirmAndImport; undefined keeps the home lane. */
   localWarehouses: string[] | undefined;
-  /** The detail to import: live origins whenever they were read. */
+  /** The detail to import: live origins whenever they were read, never a preview freight. */
   detail: CjDetail;
   /** The preview's delivery note; undefined when the request did not ask for one. */
   delivery: { overseas: boolean; days: string | null } | null | undefined;
+  /** Overseas only: the card's freight, so the preview shows the card's price. */
+  previewFreightUsd?: number;
+}
+
+/**
+ * The detail the PREVIEW is priced from. The overseas card carries the China
+ * freight, so its preview must too; the import keeps `plan.detail`, whose
+ * missing freight makes confirmAndImport quote CJ live.
+ */
+export function previewDetail(plan: OverseasClickPlan): CjDetail {
+  return plan.previewFreightUsd !== undefined && plan.detail.freightUsd === undefined
+    ? { ...plan.detail, freightUsd: plan.previewFreightUsd }
+    : plan.detail;
 }
 
 /**
@@ -91,5 +114,6 @@ export async function overseasClickPlan(
     localWarehouses: route.overseas ? inquiryWarehouses(cc) : localWarehousesFor(cc),
     detail: live,
     delivery: { overseas: route.overseas, days: route.days },
+    ...(route.overseas ? { previewFreightUsd: await overseasCardFreightUsd(store, cfg) } : {}),
   };
 }
