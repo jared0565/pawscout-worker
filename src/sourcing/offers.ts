@@ -58,7 +58,9 @@ export async function supplierOffers(
     pids = items
       .filter((i) => isPetProductStrict(i.nameEn) && titleAnswersQuery(query, i.nameEn, 'title'))
       .map((i) => ({ i, hits: queryTermHits(query, i.nameEn) }))
-      .sort((a, b) => b.hits - a.hits || b.i.listedNum - a.i.listedNum)
+      // A stable sort: equal hits keep CJ's relevance order. Popularity is no
+      // tie-break (a best-selling plain collar would beat the tracker asked for).
+      .sort((a, b) => b.hits - a.hits)
       .map((r) => r.i.pid);
   }
 

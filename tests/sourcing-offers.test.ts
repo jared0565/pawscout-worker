@@ -115,4 +115,13 @@ describe('supplierOffers', () => {
     expect(offers[0]?.title).not.toContain('PawHut');
     expect(offers[0]?.descriptionText).not.toContain('PawHut');
   });
+
+  it('keeps CJ relevance order when two items answer the query equally well', async () => {
+    // Aloha: the tracker and a far more popular plain collar each carry one of
+    // the query words; CJ ranks the tracker first, and popularity must not flip it.
+    const store = await seededStore();
+    const plain = { ...det('P1', 'Adjustable Nylon Dog Collar', { CN: 700 }), listedNum: 5000 };
+    const offers = await supplierOffers(store, fakeCj([TRACKER, plain]), CFG, 'trackable dog collar', 'GB', { limit: 1, pause: noPause });
+    expect(offers.map((o) => o.pid)).toEqual(['T1']);
+  });
 });
