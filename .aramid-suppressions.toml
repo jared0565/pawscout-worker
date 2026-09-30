@@ -92,3 +92,30 @@ tool = "semgrep"
 rule = "owasp-top-ten.a03-injection.javascript-dangerous-function-constructor"
 path = "tests/console.test.ts"
 reason = "Test executes the console's own esc() and ibxSupLink() functions (cut from consolePage() output, same process) against javascript:/data: URLs and an HTML label to prove the Suppliers table never renders an unsafe link or unescaped markup; no external input, test-only, not in the Worker bundle."
+
+# 2026-09-30: sixth and seventh `new Function(...)` in tests/console.test.ts,
+# same shape as the five above (inquiry sourcing, branch feat/inquiry-sourcing).
+# Verified at source: each compiles ONE function of the console page's own
+# inline script, cut out of consolePage() output in the same test run by brace
+# matching, plus a fixed `return`; every argument passed in is a test fake.
+# The sixth runs renderSupplierOffers() to prove the supplier offers the owner
+# sees under the inbox search are labelled (overseas, delivery band, assumed
+# country) and that an item already in the catalog is linked, not offered for
+# import. The seventh runs importForInquiry() against a fake api() to prove the
+# console passes the threadId to the status poll and reopens the thread once
+# the held reply was redrafted. No external or user-supplied input; test-only;
+# vitest never ships to the Worker bundle. Both surfaced only at pre-push:
+# `aramid check --staged` does not run semgrep.
+[[suppress]]
+id = "c03de5b043960351f94f926f4ffc4439c69497a8f5a1ed7beba4302456a5686b"
+tool = "semgrep"
+rule = "owasp-top-ten.a03-injection.javascript-dangerous-function-constructor"
+path = "tests/console.test.ts"
+reason = "Test executes the console's own renderSupplierOffers() (cut from consolePage() output, same process) with a fake esc to prove supplier offers are labelled and catalog items linked; no external input, test-only, not in the Worker bundle."
+
+[[suppress]]
+id = "535b584619649f0ff7e770c455b0ad1caaa4662fde6e8ebe8278566d3e36f648"
+tool = "semgrep"
+rule = "owasp-top-ten.a03-injection.javascript-dangerous-function-constructor"
+path = "tests/console.test.ts"
+reason = "Test executes the console's own importForInquiry() (cut from consolePage() output, same process) against a fake api() to prove the status poll carries the threadId and the thread reopens after a redraft; no external input, test-only, not in the Worker bundle."
