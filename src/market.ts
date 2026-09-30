@@ -127,15 +127,25 @@ export function credibleMarketGbp(delivered: number[]): number {
   return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
 }
 
+// A listing sold to pair with a phone ("for iOS / Android", "for Apple",
+// AirTag, Find My, Bluetooth) is a finder tag, even when its title says "GPS":
+// matched on words alone, GBP 9-15 tags priced a cellular GPS collar at 11.84
+// (Aloha, 2026-09-30). It is only comparable when our product pairs too.
+const PHONE_PAIRED = /\b(?:ios|android|iphone|airtag|bluetooth)\b|\bfind\s?my\b|\bfor\s+apple\b/i;
+export function pairsWithPhone(title: string): boolean { return PHONE_PAIRED.test(title || ''); }
+
 /**
  * Deterministically match candidates against our title. Plausibility band first
  * (a delivered price wildly off ours is a multipack/part/wrong item), then
  * similarity tiers: >=3 strong matches = high confidence, 2 = medium, else an
- * ambiguous shortlist for the tiny LLM classifier, or none.
+ * ambiguous shortlist for the tiny LLM classifier, or none. A phone-paired
+ * listing never matches a product that does not pair with a phone.
  */
 export function matchCandidates(ourTitle: string, ourRetailGbp: number, candidates: MarketCandidate[]): MarketMatch {
+  const oursPairs = pairsWithPhone(ourTitle);
   const plausible = candidates.filter((c) =>
     c.deliveredGbp > 0
+    && (oursPairs || !pairsWithPhone(c.title))
     && (!Number.isFinite(ourRetailGbp) || ourRetailGbp <= 0 || (c.deliveredGbp >= 0.2 * ourRetailGbp && c.deliveredGbp <= 3.5 * ourRetailGbp))
   );
   if (!plausible.length) return { kind: 'none' };
