@@ -1265,6 +1265,30 @@ describe('inbox supplier results', () => {
     expect(out).not.toContain('data-src-import=');
   });
 
+  it('asks for the held reply to be redrafted once the import lands, and reopens the thread', async () => {
+    const html = await consolePage('test-api-key').text();
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+    const start = scripts.indexOf('async function importForInquiry(');
+    expect(start).toBeGreaterThanOrEqual(0);
+    let depth = 0; let end = scripts.indexOf('{', start);
+    for (let i = end; i < scripts.length; i++) {
+      if (scripts[i] === '{') depth++;
+      else if (scripts[i] === '}') { depth--; if (depth === 0) { end = i + 1; break; } }
+    }
+    const calls: [string, unknown][] = []; const opened: string[] = []; const msgs: string[] = [];
+    const replies: Record<string, unknown[]> = {
+      '/inbox/source-import': [{ ok: true, state: 'importing', handle: null }],
+      '/inbox/source-status': [{ ok: true, state: 'imported', handle: 'smart-gps-pet-tracker', draftRefreshed: true }],
+    };
+    const api = async (path: string, body: unknown) => { calls.push([path, body]); return replies[path].shift(); };
+    const run = new Function('api', 'setMsg', 'openInboxThread', 'errText', 'setTimeout', scripts.slice(start, end) + '\nreturn importForInquiry;')(
+      api, (_id: string, m: string) => { msgs.push(m); }, (id: string) => { opened.push(id); }, String, (f: () => void) => f());
+    await run('T1', 'th1');
+    expect(calls[1]).toEqual(['/inbox/source-status', { pid: 'T1', threadId: 'th1' }]);
+    expect(opened).toEqual(['th1']);
+    expect(msgs.at(-1)).toContain('redrafted');
+  });
+
   it('says so when the country was assumed', async () => {
     const render = await renderFn();
     expect(render([], 'GB', false)).toContain('No supplier match');

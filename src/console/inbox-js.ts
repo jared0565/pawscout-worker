@@ -725,13 +725,19 @@ async function importForInquiry(pid,threadId){
   try{
     var r=await api('/inbox/source-import',{pid:pid,threadId:threadId});
     if(!r.ok){ setMsg('ibx-msg','Not imported: '+(r.error||'unknown'),'no'); return; }
+    // Already in the catalog: one status read still redrafts a held offer.
+    if(r.state==='imported') r=await api('/inbox/source-status',{pid:pid,threadId:threadId});
     for(var n=0;n<40;n++){
-      if(r.state==='imported'){ setMsg('ibx-msg','Imported: https://activepaw.co.uk/products/'+(r.handle||''),'ok'); return; }
+      if(r.state==='imported'){
+        if(r.draftRefreshed) openInboxThread(threadId);
+        setMsg('ibx-msg','Imported: https://activepaw.co.uk/products/'+(r.handle||'')+(r.draftRefreshed?'. The held reply was redrafted with the product link; review it before sending.':''),'ok');
+        return;
+      }
       if(r.state==='failed'){ setMsg('ibx-msg','Import refused: '+(r.failReason||'unknown')+(r.failDetail?' ('+r.failDetail+')':''),'no'); return; }
       if(r.state==='draft'){ setMsg('ibx-msg','Created as a Shopify draft for your profit review; it goes live when you publish it.','muted'); return; }
       if(r.state==='stalled'){ setMsg('ibx-msg','The import stalled before it finished. Search again and click Import to retry.','no'); return; }
       await new Promise(function(res){ setTimeout(res,4000); });
-      r=await api('/inbox/source-status',{pid:pid});
+      r=await api('/inbox/source-status',{pid:pid,threadId:threadId});
     }
     setMsg('ibx-msg','Still importing. Search again in a minute to see the result.','muted');
   }catch(e){ setMsg('ibx-msg','Import failed: '+errText(e),'no'); }

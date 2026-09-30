@@ -31,7 +31,7 @@ import { buildVoucherInviteWithCode } from './inbox/partnership';
 import { renderReplyHtml } from './inbox/draft';
 import { consolePage } from './console/page';
 import { validateCjKey, CjClient, CjTokenManager, cjFetchFromEnv, chooseOrigin, type CjDetail } from './cj';
-import { startInquiryImport, inquiryImportStatus, isStaleImporting } from './sourcing/inquiry-import';
+import { startInquiryImport, inquiryImportStatus, isStaleImporting, refreshSourcingDraft } from './sourcing/inquiry-import';
 import { inquiryDestination } from './sourcing/destination';
 import { supplierSearchForThread } from './sourcing/console-search';
 import { overseasClickPlan } from './sourcing/lane-route';
@@ -1897,11 +1897,20 @@ app.post('/api/inbox/source-import', async (c) => {
 });
 app.post('/api/inbox/source-status', async (c) => {
   const s = await shopOf(c); if (typeof s !== 'string') return s;
-  let body: { pid?: unknown } = {};
+  let body: { pid?: unknown; threadId?: unknown } = {};
   try { body = await c.req.json(); } catch { return c.json({ ok: false, error: 'Invalid JSON body' }, 400); }
   const pid = typeof body.pid === 'string' ? body.pid.trim() : '';
+  const threadId = typeof body.threadId === 'string' ? body.threadId.trim() : '';
   if (!PID_RE.test(pid)) return c.json({ ok: false, error: 'pid required' }, 400);
-  return c.json(await inquiryImportStatus(new TenantStore(c.env.DB, s), pid));
+  const store = new TenantStore(c.env.DB, s);
+  const status = await inquiryImportStatus(store, pid);
+  // The held offer was drafted before the item existed: once it lands, redraft
+  // it so the reply links the product page. A failed redraft keeps the old
+  // draft and never fails the status the console is waiting on.
+  const draftRefreshed = status.state === 'imported' && threadId
+    ? await refreshSourcingDraft(store, threadId, pid, async (id) => (await regenerateDraft(c.env.DB, c.env, s, id)).ok).catch(() => false)
+    : false;
+  return c.json({ ...status, draftRefreshed });
 });
 // Supplier results under the inbox catalog search (inquiry sourcing, part B).
 // Separate from /api/inbox/catalog so our own catalog answers at once; this

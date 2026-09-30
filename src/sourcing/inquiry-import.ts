@@ -70,6 +70,31 @@ export async function startInquiryImport(deps: InquiryImportDeps, pid: string, d
   return { ok: true, state: 'importing', handle: null };
 }
 
+/**
+ * The thread's held offer was drafted before the item existed, so it carries
+ * no product link. Once the import lands, a pending draft held for
+ * 'sourcing_offer' and written before the import finished is regenerated: the
+ * product agent then finds the imported item and links its page. A draft
+ * written after the import, or held for anything else, is left alone.
+ */
+export async function refreshSourcingDraft(
+  store: TenantStore,
+  threadId: string,
+  pid: string,
+  /** True when a replacement draft was written (regenerateDraft keeps the old one on failure). */
+  regenerate: (draftId: string) => Promise<boolean>
+): Promise<boolean> {
+  const link = await store.getLink(pid);
+  if (link?.state !== 'imported') return false;
+  const draft = await store.getPendingDraft(threadId);
+  if (!draft) return false;
+  let holds: unknown = [];
+  try { holds = JSON.parse(draft.hold_reasons ?? '[]'); } catch { /* unreadable holds: not ours */ }
+  if (!Array.isArray(holds) || !holds.includes('sourcing_offer')) return false;
+  if (!(Date.parse(draft.created_at) < Date.parse(link.updated_at))) return false;
+  return regenerate(draft.id);
+}
+
 /** The console's poll: where the import stands, and why it failed if it did. */
 export async function inquiryImportStatus(store: TenantStore, pid: string): Promise<{ ok: true; state: string; handle: string | null; failReason: string | null; failDetail: string | null }> {
   const link = await store.getLink(pid);

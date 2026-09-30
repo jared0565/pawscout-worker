@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
 import { TenantStore } from '../src/tenant-store';
-import { startInquiryImport, inquiryImportStatus } from '../src/sourcing/inquiry-import';
+import { startInquiryImport, inquiryImportStatus, refreshSourcingDraft } from '../src/sourcing/inquiry-import';
 import { inquiryDestination } from '../src/sourcing/destination';
 import { DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_FULFIL, type TenantConfig } from '../src/types';
 import type { CjClient, CjDetail } from '../src/cj';
@@ -142,6 +142,53 @@ describe('a stalled import', () => {
     const t = await setup([det('T1', { CN: 5429 })]);
     await importingSince(t.store, 'T1', 30);
     expect((await inquiryImportStatus(t.store, 'T1')).state).toBe('stalled');
+  });
+});
+
+describe('refreshSourcingDraft', () => {
+  /** A pending draft on thread th1, written at `at`, with these holds. */
+  async function draftAt(store: TenantStore, holdReasons: string[], at: string) {
+    const id = await store.insertDraft({ threadId: 'th1', bodyText: 'We can source it.', bodyHtml: '<p>We can source it.</p>', confidence: 0.9, quotesPriceOrder: true, holdReasons, model: 'm', status: 'pending' });
+    await env.DB.prepare('UPDATE inbox_drafts SET created_at = ?1 WHERE id = ?2').bind(at, id).run();
+    return id;
+  }
+  const HOUR_AGO = () => new Date(Date.now() - 3_600_000).toISOString();
+  const IN_AN_HOUR = () => new Date(Date.now() + 3_600_000).toISOString();
+
+  it('redrafts the held offer once the item it offered is imported', async () => {
+    const t = await setup([]);
+    const id = await draftAt(t.store, ['sourcing_offer'], HOUR_AGO());
+    await t.store.putLink({ cjPid: 'T1', state: 'imported', handle: 'smart-gps-pet-tracker' });
+    const seen: string[] = [];
+    expect(await refreshSourcingDraft(t.store, 'th1', 'T1', async (d) => { seen.push(d); return true; })).toBe(true);
+    expect(seen).toEqual([id]);
+  });
+
+  it('leaves a draft alone that was not held for a sourced item', async () => {
+    const t = await setup([]);
+    await draftAt(t.store, ['quotes_price'], HOUR_AGO());
+    await t.store.putLink({ cjPid: 'T1', state: 'imported', handle: 'h' });
+    const seen: string[] = [];
+    expect(await refreshSourcingDraft(t.store, 'th1', 'T1', async (d) => { seen.push(d); return true; })).toBe(false);
+    expect(seen).toEqual([]);
+  });
+
+  it('leaves a draft alone that was written after the import landed', async () => {
+    const t = await setup([]);
+    await t.store.putLink({ cjPid: 'T1', state: 'imported', handle: 'h' });
+    await draftAt(t.store, ['sourcing_offer'], IN_AN_HOUR());
+    const seen: string[] = [];
+    expect(await refreshSourcingDraft(t.store, 'th1', 'T1', async (d) => { seen.push(d); return true; })).toBe(false);
+    expect(seen).toEqual([]);
+  });
+
+  it('does nothing until the import has landed', async () => {
+    const t = await setup([]);
+    await draftAt(t.store, ['sourcing_offer'], HOUR_AGO());
+    await t.store.putLink({ cjPid: 'T1', state: 'importing' });
+    const seen: string[] = [];
+    expect(await refreshSourcingDraft(t.store, 'th1', 'T1', async (d) => { seen.push(d); return true; })).toBe(false);
+    expect(seen).toEqual([]);
   });
 });
 
