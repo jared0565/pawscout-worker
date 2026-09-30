@@ -6,6 +6,7 @@ import { getKeywordMeta, type LlmClient } from '../llm';
 import { getExpansions } from '../semantic/library';
 import { bestLocalQty, localWarehousesFor, inquiryWarehouses } from '../local-markets';
 import { resolveLogistics, doorToDoorBand, formatBand } from '../logistics';
+import { overseasCardFreightUsd } from '../sourcing/lane-route';
 import { productNetAfterAds } from '../profitability';
 
 export const CACHE_TTL_DAYS = 30; // PS retention promise: cached supplier data lives 30 days
@@ -544,10 +545,9 @@ export async function searchBackfill(
     try {
       const l = resolveLogistics(cfg.fulfil);
       const days = formatBand(doorToDoorBand(await store.getLogisticsRoute('CN', buyer, l.stalenessHours), l));
-      // Freight is most of a China item's landed cost. The store price is set on
-      // the CN -> GB quote at import, so the card uses that row's freight to match
-      // the preview and the product page (null row -> product cost only, as before).
-      const freightUsd = (await store.getLogisticsRoute('CN', 'GB', l.stalenessHours))?.freight_cost_usd ?? undefined;
+      // Freight is most of a China item's landed cost: the card uses the same
+      // CN -> GB freight as its preview (overseasCardFreightUsd).
+      const freightUsd = await overseasCardFreightUsd(store, cfg);
       if (days) {
         let items: CjSearchItem[];
         const cached = await store.getSearchCache(`kw3:CN:${kw}`);

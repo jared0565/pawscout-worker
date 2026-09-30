@@ -34,7 +34,7 @@ import { validateCjKey, CjClient, CjTokenManager, cjFetchFromEnv, chooseOrigin, 
 import { startInquiryImport, inquiryImportStatus, isStaleImporting, refreshSourcingDraft } from './sourcing/inquiry-import';
 import { inquiryDestination } from './sourcing/destination';
 import { supplierSearchForThread } from './sourcing/console-search';
-import { overseasClickPlan } from './sourcing/lane-route';
+import { overseasClickPlan, previewDetail } from './sourcing/lane-route';
 import { registerWebhooks, ensureWebhooks, ORDER_EVENT_TOPICS, type RegisterWebhook } from './webhooks';
 import { cancelledOrderId, refundInfo, applyCancel, applyRefund, type OwnerAlert } from './order-cancel';
 import { alertOwner } from './owner-alert';
@@ -2043,7 +2043,8 @@ app.get('/proxy/product', async (c) => {
     }
     await p.store.recordEvent(pid, 'view');
     const handle = link?.state === 'imported' ? link.handle : null;
-    const preview = buildPreview(detail, p.cfg, link?.state ?? 'importing', handle);
+    // Priced like the card it came from (an overseas card carries the China freight).
+    const preview = buildPreview(previewDetail(plan), p.cfg, link?.state ?? 'importing', handle);
     if (plan.delivery !== undefined) preview.delivery = plan.delivery;
     return c.json({ ok: true, product: preview });
   } catch (e) {

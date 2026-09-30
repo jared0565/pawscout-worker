@@ -3,7 +3,9 @@ import { env, applyD1Migrations } from 'cloudflare:test';
 import { searchBackfill, normalizeKeyword, relevanceMatch, keywordTokens, liveCjPasses, querySpecies, isLikelyPetProduct, isPetProductStrict, titleSignature, signaledCategory, categoryAdmitsLiveCj } from '../src/proxy/search';
 import { TenantStore } from '../src/tenant-store';
 import { DEFAULT_GATES, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, DEFAULT_INBOX, type TenantConfig } from '../src/types';
-import type { CjClient, CjSearchItem } from '../src/cj';
+import type { CjClient, CjDetail, CjSearchItem } from '../src/cj';
+import { overseasClickPlan, previewDetail } from '../src/sourcing/lane-route';
+import { buildPreview } from '../src/proxy/import';
 import { retailPriceGbp } from '../src/pricing';
 
 beforeEach(async () => { await applyD1Migrations(env.DB, env.TEST_MIGRATIONS); });
@@ -410,6 +412,15 @@ describe('storefront overseas cards (owner choice 2026-09-30)', () => {
     const store = await storeWithRoute();
     const cards = await searchBackfill(store, laneCj({ GB: [TRACKER] }), CFG, 'gps tracker dog collar', 0, 12, { buyerCountry: 'GB', overseas: true });
     expect(cards[0].delivery).toEqual({ overseas: false, days: null });
+  });
+
+  it('the overseas preview shows the same price as the overseas card', async () => {
+    const store = await storeWithRoute();
+    const [card] = await searchBackfill(store, laneCj({ CN: [TRACKER] }), CFG, 'gps tracker dog collar', 0, 12, { buyerCountry: 'GB', overseas: true });
+    const detail = { pid: 'T1', nameEn: TRACKER.nameEn, images: [], descriptionHtml: '', variants: [{ vid: 'v', name: 'x', sellPriceUsd: 12, sku: 's' }], listedNum: 1, categoryName: 'Pet', origins: { CN: 900 } } as unknown as CjDetail;
+    const cj = { originsByPid: async () => ({ CN: 900 }) } as unknown as CjClient;
+    const plan = await overseasClickPlan(store, cj, CFG, detail, 'GB', '1');
+    expect(buildPreview(previewDetail(plan), CFG, 'importing', null).priceFrom).toBe(card.price);
   });
 
   it('keeps the local cards when the overseas lookup fails', async () => {

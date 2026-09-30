@@ -122,6 +122,21 @@ describe('overseasClickPlan (storefront overseas click)', () => {
     expect(plan.detail).toBe(DETAIL);
   });
 
+  it('prices the overseas preview with the card freight, and leaves the import to quote freight live', async () => {
+    const store = await seededStore();
+    const plan = await overseasClickPlan(store, cjWith({ CN: 900 }), CFG, DETAIL, 'GB', '1');
+    expect(plan.previewFreightUsd).toBe(4);
+    // The import detail carries no freight, so confirmAndImport still asks CJ.
+    expect(plan.detail.freightUsd).toBeUndefined();
+  });
+
+  it('adds no preview freight to a click served from local stock', async () => {
+    const store = await seededStore();
+    const plan = await overseasClickPlan(store, cjWith({ GB: 40 }), CFG, DETAIL, 'GB', '1');
+    expect(plan.delivery?.overseas).toBe(false);
+    expect(plan.previewFreightUsd).toBeUndefined();
+  });
+
   it('ignores a malformed country or one with no lane', async () => {
     const store = await seededStore();
     expect((await overseasClickPlan(store, cjWith({ CN: 900 }), CFG, DETAIL, 'not a country', '1')).localWarehouses).toBeUndefined();
