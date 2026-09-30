@@ -156,6 +156,50 @@ describe('supplierOffers', () => {
     });
   });
 
+  describe('a query that names a feature (Aloha: "trackable dog collar")', () => {
+    const PLAIN = det('P1', 'Adjustable Nylon Dog Collar', { CN: 700 });
+    /** CJ search answering per keyword, so the main and the family search differ. */
+    function byKeyword(results: Record<string, CjDetail[]>, calls: string[] = []): CjClient {
+      const all = new Map(Object.values(results).flat().map((d) => [d.pid, d]));
+      return {
+        search: async (kw: string) => { calls.push(`search:${kw}`); return (results[kw] ?? []).map(item); },
+        detail: async (pid: string) => all.get(pid) ?? null,
+        detailBySku: async () => null,
+        originsByPid: async (pid: string) => all.get(pid)?.origins ?? {},
+        freightEstimate: async () => ({ priceUsd: 4, days: '5-9', name: 'CJPacket' }),
+      } as unknown as CjClient;
+    }
+
+    it('never offers a title without the feature, even when nothing else is found', async () => {
+      const store = await seededStore();
+      const offers = await supplierOffers(store, byKeyword({ 'trackable dog collar': [PLAIN], 'pet gps tracker': [PLAIN] }), CFG, 'trackable dog collar', 'GB', { limit: 3, pause: noPause });
+      expect(offers).toEqual([]);
+    });
+
+    it('finds the tracker through the feature family when the main search has none', async () => {
+      const store = await seededStore();
+      const calls: string[] = [];
+      const offers = await supplierOffers(store, byKeyword({ 'trackable dog collar': [PLAIN], 'pet gps tracker': [TRACKER] }, calls), CFG, 'trackable dog collar', 'GB', { limit: 3, pause: noPause });
+      expect(offers.map((o) => o.pid)).toEqual(['T1']);
+      expect(calls).toEqual(['search:trackable dog collar', 'search:pet gps tracker']);
+    });
+
+    it('does not search the family again when the main search already has the feature', async () => {
+      const store = await seededStore();
+      const calls: string[] = [];
+      await supplierOffers(store, byKeyword({ 'trackable dog collar': [PLAIN, TRACKER] }, calls), CFG, 'trackable dog collar', 'GB', { limit: 3, pause: noPause });
+      expect(calls).toEqual(['search:trackable dog collar']);
+    });
+
+    it('leaves a query that names no feature family as it was', async () => {
+      const store = await seededStore();
+      const calls: string[] = [];
+      const offers = await supplierOffers(store, byKeyword({ 'led dog collar': [PLAIN] }, calls), CFG, 'led dog collar', 'GB', { limit: 3, pause: noPause });
+      expect(offers.map((o) => o.pid)).toEqual(['P1']);
+      expect(calls).toEqual(['search:led dog collar']);
+    });
+  });
+
   it('keeps CJ relevance order when two items answer the query equally well', async () => {
     // Aloha: the tracker and a far more popular plain collar each carry one of
     // the query words; CJ ranks the tracker first, and popularity must not flip it.

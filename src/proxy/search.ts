@@ -276,6 +276,34 @@ export function familyWords(keyword: string): string[] {
   return TERM_FAMILIES.filter((f) => hit.has(f[0])).flat();
 }
 
+// How the supplier titles each family's product, for a second CJ search when
+// the query's own words find none of it ("trackable dog collar" finds collars).
+const FAMILY_SEARCH: Readonly<Record<string, string>> = { track: 'pet gps tracker' };
+
+/** The families a query names, each as its first word (e.g. ['track']). */
+function queryFamilies(keyword: string): string[] {
+  const hit = new Set(keywordTokens(keyword).map(foldTerm));
+  return TERM_FAMILIES.map((f) => f[0]).filter((head) => hit.has(head));
+}
+
+/**
+ * Does the title carry every feature family the query names? A family word is
+ * the distinctive ask ("trackable"), so a title without it never answers the
+ * query, however well it matches the rest ("dog collar"). True when the query
+ * names no family.
+ */
+export function titleHasFamilies(keyword: string, title: string): boolean {
+  const fams = queryFamilies(keyword);
+  if (!fams.length) return true;
+  const have = new Set(keywordTokens(title).map(foldTerm));
+  return fams.every((f) => have.has(f));
+}
+
+/** The supplier search phrase for each family the query names. */
+export function familySearchPhrases(keyword: string): string[] {
+  return queryFamilies(keyword).map((f) => FAMILY_SEARCH[f]).filter((p): p is string => !!p);
+}
+
 /** The product words of a query or title: stemmed, stopwords and animal words dropped, synonyms folded. */
 export function productTerms(text: string): string[] {
   return [...new Set(keywordTokens(text).filter((t) => !ANIMAL_WORDS.has(t)).map(foldTerm))];
