@@ -1232,3 +1232,44 @@ describe('consolePage', () => {
     expect(scripts).toContain("ibxSwitchArmedId='suppliers'");
   });
 });
+
+describe('inbox supplier results', () => {
+  async function renderFn() {
+    const html = await consolePage('test-api-key').text();
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+    const start = scripts.indexOf('function renderSupplierOffers(');
+    expect(start).toBeGreaterThanOrEqual(0);
+    let depth = 0; let end = scripts.indexOf('{', start);
+    for (let i = end; i < scripts.length; i++) {
+      if (scripts[i] === '{') depth++;
+      else if (scripts[i] === '}') { depth--; if (depth === 0) { end = i + 1; break; } }
+    }
+    const esc = (s: unknown) => String(s).replace(/</g, '&lt;');
+    return new Function('esc', scripts.slice(start, end) + '\nreturn renderSupplierOffers;')(esc);
+  }
+
+  it('labels an overseas offer with its delivery band and an Import button', async () => {
+    const render = await renderFn();
+    const out = render([{ pid: 'T1', title: 'Smart GPS Pet Tracker', image: '', priceGbp: 26.99, origin: 'CN', overseas: true, days: '9-20', descriptionText: '', handle: null }], 'GB', true);
+    expect(out).toContain('Smart GPS Pet Tracker');
+    expect(out).toContain('£26.99');
+    expect(out).toContain('ships from overseas');
+    expect(out).toContain('9-20 days to GB');
+    expect(out).toContain('data-src-import="T1"');
+  });
+
+  it('links an offer already in the catalog instead of offering an import', async () => {
+    const render = await renderFn();
+    const out = render([{ pid: 'T1', title: 'Tracker', image: '', priceGbp: 26.99, origin: 'CN', overseas: true, days: '9-20', descriptionText: '', handle: 'smart-gps-pet-tracker' }], 'GB', true);
+    expect(out).toContain('/products/smart-gps-pet-tracker');
+    expect(out).not.toContain('data-src-import=');
+  });
+
+  it('says so when the country was assumed', async () => {
+    const render = await renderFn();
+    expect(render([], 'GB', false)).toContain('No supplier match');
+    const out = render([{ pid: 'T1', title: 'Tracker', image: '', priceGbp: 1, origin: 'GB', overseas: false, days: '2-5', descriptionText: '', handle: null }], 'GB', false);
+    expect(out).toContain('country not stated, UK assumed');
+    expect(out).toContain('local stock');
+  });
+});

@@ -33,6 +33,7 @@ import { consolePage } from './console/page';
 import { validateCjKey, CjClient, CjTokenManager, cjFetchFromEnv, chooseOrigin, type CjDetail } from './cj';
 import { startInquiryImport, inquiryImportStatus } from './sourcing/inquiry-import';
 import { inquiryDestination } from './sourcing/destination';
+import { supplierSearchForThread } from './sourcing/console-search';
 import { registerWebhooks, ensureWebhooks, ORDER_EVENT_TOPICS, type RegisterWebhook } from './webhooks';
 import { cancelledOrderId, refundInfo, applyCancel, applyRefund, type OwnerAlert } from './order-cancel';
 import { alertOwner } from './owner-alert';
@@ -1900,6 +1901,24 @@ app.post('/api/inbox/source-status', async (c) => {
   const pid = typeof body.pid === 'string' ? body.pid.trim() : '';
   if (!PID_RE.test(pid)) return c.json({ ok: false, error: 'pid required' }, 400);
   return c.json(await inquiryImportStatus(new TenantStore(c.env.DB, s), pid));
+});
+// Supplier results under the inbox catalog search (inquiry sourcing, part B).
+// Separate from /api/inbox/catalog so our own catalog answers at once; this
+// one makes paced CJ calls and can take several seconds.
+app.post('/api/inbox/supplier-search', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: { q?: unknown; threadId?: unknown } = {};
+  try { body = await c.req.json(); } catch { return c.json({ ok: false, error: 'Invalid JSON body' }, 400); }
+  const q = typeof body.q === 'string' ? body.q.trim().slice(0, 120) : '';
+  if (!q) return c.json({ ok: false, error: 'q required' }, 400);
+  const threadId = typeof body.threadId === 'string' && body.threadId ? body.threadId : null;
+  const store = new TenantStore(c.env.DB, s);
+  const cfg = await store.getConfig();
+  if (!cfg) return c.json({ ok: false, error: 'Not configured' }, 400);
+  const vault = await Vault.fromMasterKey(c.env.PAWSCOUT_MASTER_KEY);
+  const f = cjFetchFromEnv(c.env);
+  const cj = new CjClient(() => new CjTokenManager(store, vault, f).getToken(), f);
+  return c.json(await supplierSearchForThread({ store, cj, cfg }, q, threadId));
 });
 
 // --- /proxy/* : storefront-facing via Shopify App Proxy (HMAC-signed) ---
