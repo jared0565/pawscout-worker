@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { autoSendDecision } from '../../src/inbox/autosend';
+import { autoSendDecision, withExtraHolds } from '../../src/inbox/autosend';
 
 const base = { confidence: 95, threshold: 80, quotesPriceOrOrder: false, bodyText: 'All good.', category: 'complaint', recentAutoCount: 0 };
 
@@ -16,5 +16,14 @@ describe('autoSendDecision per-agent', () => {
     const d = autoSendDecision({ ...base, autosend: true, bodyText: 'That will be 20 GBP.' });
     expect(d.send).toBe(false);
     expect(d.holdReasons).toContain('mentions_money');
+  });
+});
+
+describe('withExtraHolds', () => {
+  it('adds the reasons and stops the send', () => {
+    expect(withExtraHolds({ send: true, holdReasons: [] }, ['sourcing_offer'])).toEqual({ send: false, holdReasons: ['sourcing_offer'] });
+  });
+  it('leaves the decision alone when there is nothing extra', () => {
+    expect(withExtraHolds({ send: true, holdReasons: [] }, [])).toEqual({ send: true, holdReasons: [] });
   });
 });

@@ -30,6 +30,8 @@ export interface PreviewProduct {
   variants: PreviewVariant[];
   state: string;
   url: string | null;
+  /** Set only for an overseas=1 preview: the note the theme shows. */
+  delivery?: { overseas: boolean; days: string | null } | null;
 }
 
 /** CJ descriptions are untrusted HTML; the preview renders text only. */

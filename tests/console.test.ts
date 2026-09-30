@@ -1232,3 +1232,88 @@ describe('consolePage', () => {
     expect(scripts).toContain("ibxSwitchArmedId='suppliers'");
   });
 });
+
+describe('inbox supplier results', () => {
+  async function renderFn() {
+    const html = await consolePage('test-api-key').text();
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+    const start = scripts.indexOf('function renderSupplierOffers(');
+    expect(start).toBeGreaterThanOrEqual(0);
+    let depth = 0; let end = scripts.indexOf('{', start);
+    for (let i = end; i < scripts.length; i++) {
+      if (scripts[i] === '{') depth++;
+      else if (scripts[i] === '}') { depth--; if (depth === 0) { end = i + 1; break; } }
+    }
+    const esc = (s: unknown) => String(s).replace(/</g, '&lt;');
+    return new Function('esc', scripts.slice(start, end) + '\nreturn renderSupplierOffers;')(esc);
+  }
+
+  it('labels an overseas offer with its delivery band and an Import button', async () => {
+    const render = await renderFn();
+    const out = render([{ pid: 'T1', title: 'Smart GPS Pet Tracker', image: '', priceGbp: 26.99, origin: 'CN', overseas: true, days: '9-20', descriptionText: '', handle: null }], 'GB', true);
+    expect(out).toContain('Smart GPS Pet Tracker');
+    expect(out).toContain('£26.99');
+    expect(out).toContain('ships from overseas');
+    expect(out).toContain('9-20 days to GB');
+    expect(out).toContain('data-src-import="T1"');
+  });
+
+  it('links an offer already in the catalog instead of offering an import', async () => {
+    const render = await renderFn();
+    const out = render([{ pid: 'T1', title: 'Tracker', image: '', priceGbp: 26.99, origin: 'CN', overseas: true, days: '9-20', descriptionText: '', handle: 'smart-gps-pet-tracker' }], 'GB', true);
+    expect(out).toContain('/products/smart-gps-pet-tracker');
+    expect(out).not.toContain('data-src-import=');
+  });
+
+  /** The console's own importForInquiry, run against a fake api(): `selected` is
+   *  the thread the owner has open, `edited` whether its draft has unsaved edits. */
+  async function runImport(selected: string, edited: boolean, statusReply: Record<string, unknown>) {
+    const html = await consolePage('test-api-key').text();
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+    const start = scripts.indexOf('async function importForInquiry(');
+    expect(start).toBeGreaterThanOrEqual(0);
+    let depth = 0; let end = scripts.indexOf('{', start);
+    for (let i = end; i < scripts.length; i++) {
+      if (scripts[i] === '{') depth++;
+      else if (scripts[i] === '}') { depth--; if (depth === 0) { end = i + 1; break; } }
+    }
+    const calls: [string, unknown][] = []; const opened: string[] = []; const msgs: string[] = [];
+    const replies: Record<string, unknown[]> = {
+      '/inbox/source-import': [{ ok: true, state: 'importing', handle: null }],
+      '/inbox/source-status': [statusReply],
+    };
+    const api = async (path: string, body: unknown) => { calls.push([path, body]); return replies[path].shift(); };
+    const deps = { api, setMsg: (_id: string, m: string) => { msgs.push(m); }, openInboxThread: (id: string) => { opened.push(id); }, errText: String, setTimeout: (f: () => void) => f(), ibxSelectedId: selected, ibxDraftEdited: () => edited };
+    const run = new Function(...Object.keys(deps), scripts.slice(start, end) + '\nreturn importForInquiry;')(...Object.values(deps));
+    await run('T1', 'th1');
+    return { calls, opened, msgs };
+  }
+
+  it('asks for the held reply to be redrafted once the import lands, and reopens the thread', async () => {
+    const r = await runImport('th1', false, { ok: true, state: 'imported', handle: 'smart-gps-pet-tracker', draftRefreshed: true });
+    expect(r.calls[1]).toEqual(['/inbox/source-status', { pid: 'T1', threadId: 'th1' }]);
+    expect(r.opened).toEqual(['th1']);
+    expect(r.msgs.at(-1)).toContain('redrafted');
+  });
+
+  it('never redrafts or reloads over unsaved edits to the open draft', async () => {
+    const r = await runImport('th1', true, { ok: true, state: 'imported', handle: 'smart-gps-pet-tracker', draftRefreshed: false });
+    expect(r.calls[1]).toEqual(['/inbox/source-status', { pid: 'T1', threadId: '' }]);
+    expect(r.opened).toEqual([]);
+    expect(r.msgs.at(-1)).toContain('Regenerate');
+  });
+
+  it('does not pull the owner back to the thread after they moved on', async () => {
+    const r = await runImport('th2', true, { ok: true, state: 'imported', handle: 'smart-gps-pet-tracker', draftRefreshed: true });
+    expect(r.calls[1]).toEqual(['/inbox/source-status', { pid: 'T1', threadId: 'th1' }]);
+    expect(r.opened).toEqual([]);
+  });
+
+  it('says so when the country was assumed', async () => {
+    const render = await renderFn();
+    expect(render([], 'GB', false)).toContain('No supplier match');
+    const out = render([{ pid: 'T1', title: 'Tracker', image: '', priceGbp: 1, origin: 'GB', overseas: false, days: '2-5', descriptionText: '', handle: null }], 'GB', false);
+    expect(out).toContain('country not stated, UK assumed');
+    expect(out).toContain('local stock');
+  });
+});

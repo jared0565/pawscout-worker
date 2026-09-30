@@ -4,6 +4,7 @@ import { searchBackfill, normalizeKeyword, relevanceMatch, keywordTokens, liveCj
 import { TenantStore } from '../src/tenant-store';
 import { DEFAULT_GATES, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, DEFAULT_INBOX, type TenantConfig } from '../src/types';
 import type { CjClient, CjSearchItem } from '../src/cj';
+import { retailPriceGbp } from '../src/pricing';
 
 beforeEach(async () => { await applyD1Migrations(env.DB, env.TEST_MIGRATIONS); });
 
@@ -368,5 +369,72 @@ describe('storefront live feed: a species query must still match the product wor
     const store = new TenantStore(env.DB, 'a.myshopify.com');
     const cards = await searchBackfill(store, fakeCj(JUNK), STRICT, 'dog', 0, 12);
     expect(cards.map((c) => c.pid).sort()).toEqual(['bed', 'poo', 'seat']);
+  });
+});
+
+describe('storefront overseas cards (owner choice 2026-09-30)', () => {
+  const TRACKER = item({ pid: 'T1', nameEn: 'Smart GPS Pet Tracker Dog Collar', sellPriceUsd: 12 });
+  function laneCj(byCountry: Record<string, CjSearchItem[]>, calls: string[] = []): CjClient {
+    return { search: async () => [], searchByWarehouse: async (kw: string, cc: string) => { calls.push(`${kw}@${cc}`); return byCountry[cc] ?? []; } } as unknown as CjClient;
+  }
+  async function storeWithRoute() {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    await store.upsertLogisticsRoute({ from: 'CN', to: 'GB', channel: 'CJPacket', transitMin: 5, transitMax: 9, agingRaw: '5-9', repVid: 'v', freightCostUsd: 4 });
+    return store;
+  }
+
+  it('adds overseas cards with a delivery band only when asked', async () => {
+    const store = await storeWithRoute();
+    const cards = await searchBackfill(store, laneCj({ CN: [TRACKER] }), CFG, 'gps tracker dog collar', 0, 12, { buyerCountry: 'GB', overseas: true });
+    expect(cards.map((c) => c.pid)).toEqual(['T1']);
+    expect(cards[0].delivery.overseas).toBe(true);
+    expect(cards[0].delivery.days).toMatch(/^\d+-\d+$/);
+    // Priced with the CN -> GB freight, as the product page will be.
+    expect(cards[0].price).toBe(retailPriceGbp(12, CFG.pricing, 4));
+  });
+
+  it('never returns overseas cards without the flag', async () => {
+    const store = await storeWithRoute();
+    const calls: string[] = [];
+    const cards = await searchBackfill(store, laneCj({ CN: [TRACKER] }, calls), CFG, 'gps tracker dog collar', 0, 12, { buyerCountry: 'GB' });
+    expect(cards).toEqual([]);
+    expect(calls.some((c) => c.endsWith('@CN'))).toBe(false);
+  });
+
+  it('shows no overseas card where no China route reaches the buyer', async () => {
+    const store = await storeWithRoute();
+    expect(await searchBackfill(store, laneCj({ CN: [TRACKER] }), CFG, 'gps tracker dog collar', 0, 12, { buyerCountry: 'AU', overseas: true })).toEqual([]);
+  });
+
+  it('marks local cards as local', async () => {
+    const store = await storeWithRoute();
+    const cards = await searchBackfill(store, laneCj({ GB: [TRACKER] }), CFG, 'gps tracker dog collar', 0, 12, { buyerCountry: 'GB', overseas: true });
+    expect(cards[0].delivery).toEqual({ overseas: false, days: null });
+  });
+
+  it('keeps the local cards when the overseas lookup fails', async () => {
+    const store = await storeWithRoute();
+    const cj = {
+      search: async () => [],
+      searchByWarehouse: async (_kw: string, cc: string) => { if (cc === 'CN') throw new Error('CJ 429'); return [TRACKER]; },
+    } as unknown as CjClient;
+    const cards = await searchBackfill(store, cj, CFG, 'gps tracker dog collar', 0, 12, { buyerCountry: 'GB', overseas: true, pause: async () => {} });
+    expect(cards.map((c) => c.pid)).toEqual(['T1']);
+    expect(cards[0].delivery.overseas).toBe(false);
+  });
+
+  it('pauses between two live CJ searches in one request', async () => {
+    const store = await storeWithRoute();
+    const calls: string[] = [];
+    await searchBackfill(store, laneCj({ CN: [TRACKER] }, calls), CFG, 'gps tracker dog collar', 0, 12, { buyerCountry: 'GB', overseas: true, pause: async (ms: number) => { calls.push(`pause:${ms}`); } });
+    expect(calls).toEqual(['gps tracker dog collar@GB', 'pause:1100', 'gps tracker dog collar@CN']);
+  });
+
+  it('does not pause when the local search was served from the cache', async () => {
+    const store = await storeWithRoute();
+    await store.putSearchCache('kw3:GB:gps tracker dog collar', '[]', 30);
+    const calls: string[] = [];
+    await searchBackfill(store, laneCj({ CN: [TRACKER] }, calls), CFG, 'gps tracker dog collar', 0, 12, { buyerCountry: 'GB', overseas: true, pause: async (ms: number) => { calls.push(`pause:${ms}`); } });
+    expect(calls).toEqual(['gps tracker dog collar@CN']);
   });
 });

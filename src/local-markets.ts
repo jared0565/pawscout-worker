@@ -91,6 +91,31 @@ export function sellableToBuyer(
     && (opts.cnDeliverable ?? true);
 }
 
+/** Origins that may serve this buyer under local-for-local: stocked (qty > 0)
+ *  warehouses in the buyer's lane, plus the CN scaffolding hub while that lane
+ *  is transitional. Normalized (UK -> GB) and de-duplicated. The same rule
+ *  computeMarketExclusions applies to whole catalogs. */
+export function allowedOriginsFor(
+  origins: Record<string, number> | undefined | null,
+  buyerCountry: string,
+  launched: string[] = LOCAL_ONLY_MARKETS
+): string[] {
+  const lane = localWarehousesFor(buyerCountry);
+  if (!lane.length || !origins) return [];
+  const mode = laneVisibilityModeFor(buyerCountry, launched);
+  const stocked = Object.keys(origins).filter((o) => (origins[o] ?? 0) > 0).map(normalizeOriginCode);
+  return [...new Set(stocked)].filter((cc) => lane.includes(cc) || (mode === 'transitional' && cc === 'CN'));
+}
+
+/** Warehouses an inquiry-driven import may draw on for this buyer (owner rule
+ *  2026-09-30): the lane, plus CN while the lane is transitional. Nightly jobs
+ *  never use this; they keep HOME_MARKET_WAREHOUSES. */
+export function inquiryWarehouses(buyerCountry: string, launched: string[] = LOCAL_ONLY_MARKETS): string[] {
+  const lane = localWarehousesFor(buyerCountry);
+  if (!lane.length) return [];
+  return laneVisibilityModeFor(buyerCountry, launched) === 'transitional' ? [...lane, 'CN'] : lane;
+}
+
 /** Union of local warehouses across a market's member countries (e.g. the
  *  US+CA market -> {US}; the EU market -> the EU warehouse set). */
 export function marketLocalWarehouses(countries: string[]): Set<string> {

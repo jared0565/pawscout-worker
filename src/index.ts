@@ -30,7 +30,11 @@ import { hashBuyerEmail } from './affiliate-attribution';
 import { buildVoucherInviteWithCode } from './inbox/partnership';
 import { renderReplyHtml } from './inbox/draft';
 import { consolePage } from './console/page';
-import { validateCjKey, CjClient, CjTokenManager, cjFetchFromEnv, chooseOrigin } from './cj';
+import { validateCjKey, CjClient, CjTokenManager, cjFetchFromEnv, chooseOrigin, type CjDetail } from './cj';
+import { startInquiryImport, inquiryImportStatus, isStaleImporting, refreshSourcingDraft } from './sourcing/inquiry-import';
+import { inquiryDestination } from './sourcing/destination';
+import { supplierSearchForThread } from './sourcing/console-search';
+import { overseasClickPlan } from './sourcing/lane-route';
 import { registerWebhooks, ensureWebhooks, ORDER_EVENT_TOPICS, type RegisterWebhook } from './webhooks';
 import { cancelledOrderId, refundInfo, applyCancel, applyRefund, type OwnerAlert } from './order-cancel';
 import { alertOwner } from './owner-alert';
@@ -1858,6 +1862,74 @@ app.post('/api/inbox/catalog', async (c) => {
   const store = new TenantStore(c.env.DB, s);
   return c.json(await searchCatalog(c.env, store, q));
 });
+// Inquiry sourcing (owner rule 2026-09-30): the owner imports a supplier item a
+// customer asked for. Local stock uses the lane alone; China-only stock may be
+// imported for a transitional lane with a real route. Every import gate still runs.
+app.post('/api/inbox/source-import', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: { pid?: unknown; threadId?: unknown } = {};
+  try { body = await c.req.json(); } catch { return c.json({ ok: false, error: 'Invalid JSON body' }, 400); }
+  const pid = typeof body.pid === 'string' ? body.pid.trim() : '';
+  const threadId = typeof body.threadId === 'string' ? body.threadId.trim() : '';
+  if (!PID_RE.test(pid) || !threadId) return c.json({ ok: false, error: 'pid and threadId required' }, 400);
+  const store = new TenantStore(c.env.DB, s);
+  const tenant = await store.getTenant();
+  const cfg = await store.getConfig();
+  if (!tenant?.access_token_enc || !cfg) return c.json({ ok: false, error: 'Not configured' }, 400);
+  const dest = (await inquiryDestination(store, threadId)) ?? 'GB';
+  const vault = await Vault.fromMasterKey(c.env.PAWSCOUT_MASTER_KEY);
+  const admin = makeAdminGraphql(s, await vault.open(tenant.dek_wrapped, tenant.access_token_enc));
+  const f = cjFetchFromEnv(c.env);
+  const cj = new CjClient(() => new CjTokenManager(store, vault, f).getToken(), f);
+  const llm = new LlmClient({ openrouter: c.env.OPENROUTER_API_KEY, openai: c.env.OPENAI_API_KEY });
+  const on = llm.available && cfg.llm.enabled;
+  const curate = on ? (d: CjDetail, ctx: string) => curateProduct(llm, store, cfg, d, ctx) : undefined;
+  const pickHero = on ? (title: string, urls: string[]) => pickHeroImage(llm, store, cfg, title, urls) : undefined;
+  const market = ebayFromEnv(c.env);
+  const competitorCheck = on
+    ? (d: { pid: string; nameEn: string }, ourRetailGbp: number) => competitorSignal(llm, store, cfg, { pid: d.pid, title: d.nameEn, ourRetailGbp, market })
+    : undefined;
+  return c.json(await startInquiryImport({
+    store, cj, cfg,
+    waitUntil: (p) => c.executionCtx.waitUntil(p),
+    runImport: (detail, localWarehouses) => confirmAndImport(store, cj, admin, cfg, detail, undefined, curate, pickHero, { competitorCheck, localWarehouses }),
+  }, pid, dest));
+});
+app.post('/api/inbox/source-status', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: { pid?: unknown; threadId?: unknown } = {};
+  try { body = await c.req.json(); } catch { return c.json({ ok: false, error: 'Invalid JSON body' }, 400); }
+  const pid = typeof body.pid === 'string' ? body.pid.trim() : '';
+  const threadId = typeof body.threadId === 'string' ? body.threadId.trim() : '';
+  if (!PID_RE.test(pid)) return c.json({ ok: false, error: 'pid required' }, 400);
+  const store = new TenantStore(c.env.DB, s);
+  const status = await inquiryImportStatus(store, pid);
+  // The held offer was drafted before the item existed: once it lands, redraft
+  // it so the reply links the product page. A failed redraft keeps the old
+  // draft and never fails the status the console is waiting on.
+  const draftRefreshed = status.state === 'imported' && threadId
+    ? await refreshSourcingDraft(store, threadId, pid, async (id) => (await regenerateDraft(c.env.DB, c.env, s, id)).ok).catch(() => false)
+    : false;
+  return c.json({ ...status, draftRefreshed });
+});
+// Supplier results under the inbox catalog search (inquiry sourcing, part B).
+// Separate from /api/inbox/catalog so our own catalog answers at once; this
+// one makes paced CJ calls and can take several seconds.
+app.post('/api/inbox/supplier-search', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: { q?: unknown; threadId?: unknown } = {};
+  try { body = await c.req.json(); } catch { return c.json({ ok: false, error: 'Invalid JSON body' }, 400); }
+  const q = typeof body.q === 'string' ? body.q.trim().slice(0, 120) : '';
+  if (!q) return c.json({ ok: false, error: 'q required' }, 400);
+  const threadId = typeof body.threadId === 'string' && body.threadId ? body.threadId : null;
+  const store = new TenantStore(c.env.DB, s);
+  const cfg = await store.getConfig();
+  if (!cfg) return c.json({ ok: false, error: 'Not configured' }, 400);
+  const vault = await Vault.fromMasterKey(c.env.PAWSCOUT_MASTER_KEY);
+  const f = cjFetchFromEnv(c.env);
+  const cj = new CjClient(() => new CjTokenManager(store, vault, f).getToken(), f);
+  return c.json(await supplierSearchForThread({ store, cj, cfg }, q, threadId));
+});
 
 // --- /proxy/* : storefront-facing via Shopify App Proxy (HMAC-signed) ---
 //
@@ -1906,7 +1978,10 @@ app.get('/proxy/search', async (c) => {
     // LLM + execution ctx let searchBackfill lazy-fill a semantic-library miss
     // in the background (never the hot path); the same client classifies the keyword.
     const llm = new LlmClient({ openrouter: c.env.OPENROUTER_API_KEY, openai: c.env.OPENAI_API_KEY });
-    const products = await searchBackfill(p.store, cjFor(c.env, p), p.cfg, q, have, limit, { exclude, llm, ctx: c.executionCtx, buyerCountry });
+    // overseas=1: the theme renders the "ships from overseas" note, so China-hub
+    // ghost cards may be added (inquiry sourcing, part D). Absent, nothing changes.
+    const overseas = c.req.query('overseas') === '1';
+    const products = await searchBackfill(p.store, cjFor(c.env, p), p.cfg, q, have, limit, { exclude, llm, ctx: c.executionCtx, buyerCountry, overseas });
     // W3: classify new keywords in the background (cached 30d) - the NEXT
     // search for this term benefits from category + synonyms. Never hot-path.
     if (llm.available && p.cfg.llm.enabled) {
@@ -1939,8 +2014,15 @@ app.get('/proxy/product', async (c) => {
       : undefined;
     detail = (await curateDetailImages(p.store, detail, previewHero)).detail;
 
+    // An overseas card's click (overseas=1 + the buyer's country) may import on
+    // the lane plus CN, but only after live stock and a fresh route say so; the
+    // query string alone widens nothing (inquiry sourcing, part D).
+    const plan = await overseasClickPlan(p.store, cj, p.cfg, detail, c.req.query('country'), c.req.query('overseas'));
+    detail = plan.detail;
+
     let link = await p.store.getLink(pid);
-    if (!link || link.state === 'ghost' || link.state === 'failed' || link.state === 'archived') {
+    // A stale 'importing' row was cut off mid-import (see isStaleImporting): retry it.
+    if (!link || link.state === 'ghost' || link.state === 'failed' || link.state === 'archived' || isStaleImporting(link)) {
       await p.store.putLink({ cjPid: pid, state: 'importing' });
       const accessToken = await p.vault.open(p.tenant.dek_wrapped, p.tenant.access_token_enc);
       const admin = makeAdminGraphql(p.store.shop, accessToken);
@@ -1956,12 +2038,14 @@ app.get('/proxy/product', async (c) => {
       const competitorCheck = importLlm.available && p.cfg.llm.enabled
         ? (d: { pid: string; nameEn: string }, ourRetailGbp: number) => competitorSignal(importLlm, p.store, p.cfg, { pid: d.pid, title: d.nameEn, ourRetailGbp, market: importMarket })
         : undefined;
-      c.executionCtx.waitUntil(confirmAndImport(p.store, cj, admin, p.cfg, detail, undefined, curate, pickHero, { competitorCheck }));
+      c.executionCtx.waitUntil(confirmAndImport(p.store, cj, admin, p.cfg, detail, undefined, curate, pickHero, { competitorCheck, localWarehouses: plan.localWarehouses }));
       link = await p.store.getLink(pid);
     }
     await p.store.recordEvent(pid, 'view');
     const handle = link?.state === 'imported' ? link.handle : null;
-    return c.json({ ok: true, product: buildPreview(detail, p.cfg, link?.state ?? 'importing', handle) });
+    const preview = buildPreview(detail, p.cfg, link?.state ?? 'importing', handle);
+    if (plan.delivery !== undefined) preview.delivery = plan.delivery;
+    return c.json({ ok: true, product: preview });
   } catch (e) {
     console.warn(`product preview failed for ${pid}: ${(e as Error).message}`);
     return c.json({ ok: false, error: 'Product unavailable' });

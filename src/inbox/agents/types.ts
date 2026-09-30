@@ -14,6 +14,7 @@ export interface AgentContext {
   latestMessage: string;        // the turn we are answering ('' when only a quote)
   contactEmail: string;
   customerName: string | null;
+  productQuery?: string | null; // the thread reader's product phrase; null/absent -> agents use the message text
 }
 
 /** Deterministic grounding result. Never thrown; a miss is { confident:false }. */
@@ -22,6 +23,7 @@ export interface Grounding {
   facts: string;           // human-readable facts injected into the system prompt
   quotesFigure: boolean;   // does the appendix introduce a trusted number/date?
   data?: unknown;          // structured payload for the appendix (audit/repro)
+  holdReason?: string;     // a named reason this draft must wait for the owner (e.g. 'sourcing_offer')
 }
 
 /** Which team signs the reply. Drives the deterministic footer appended to every

@@ -212,6 +212,14 @@ export function chooseOrigin(detail: CjDetail, stockFloor: number): string {
   return best;
 }
 
+/** A CJ SKU as the owner pastes it (e.g. "CJPC262132401AZ", or a variant SKU
+ *  with a suffix). Returns it upper-cased and trimmed, or null for anything
+ *  else, so ordinary search words never trigger a SKU lookup. */
+export function looksLikeCjSku(q: string): string | null {
+  const s = q.trim().toUpperCase();
+  return /^CJ[A-Z0-9][A-Z0-9-]{7,40}$/.test(s) ? s : null;
+}
+
 /** Map raw CJ product rows (list or listV2 shape) to CjSearchItem; field names vary by endpoint. */
 function mapCjSearchItems(list: unknown): CjSearchItem[] {
   if (!Array.isArray(list)) return [];
@@ -342,9 +350,30 @@ export class CjClient {
   }
 
   async detail(pid: string): Promise<CjDetail | null> {
+    return this.detailQuery({ pid });
+  }
+
+  /**
+   * Look a product up by the SKU the owner copied from CJ's site: the product
+   * SKU first, then a variant SKU. A CJ "not found" error is a miss, not a
+   * failure, so each lookup's error is swallowed and the next one runs.
+   */
+  async detailBySku(sku: string): Promise<CjDetail | null> {
+    for (const key of ['productSku', 'variantSku'] as const) {
+      try {
+        const d = await this.detailQuery({ [key]: sku });
+        if (d) return d;
+      } catch (e) {
+        console.warn(`CJ ${key} lookup failed for ${sku}: ${(e as Error).message}`);
+      }
+    }
+    return null;
+  }
+
+  private async detailQuery(params: Record<string, string>): Promise<CjDetail | null> {
     // enable_inventory embeds per-variant inventories in the SAME response -
     // saving the separate stock call that CJ renamed out from under us once.
-    const p = (await this.get('/product/query', { pid, features: 'enable_inventory' })) as Record<string, unknown> | null;
+    const p = (await this.get('/product/query', { ...params, features: 'enable_inventory' })) as Record<string, unknown> | null;
     if (!p?.pid) return null;
     let images: string[] = [];
     const set = p.productImageSet;

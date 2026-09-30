@@ -505,6 +505,7 @@ function renderInboxContext(thread,labels,draft,invoice,applicant,contact,partne
       +'<div style="margin-bottom:6px"><label for="inbox-catalog-q" style="font-size:12px">Search catalog</label><input id="inbox-catalog-q" type="text" placeholder="e.g. harness" autocomplete="off" spellcheck="false"></div>'
       +'<button id="inbox-catalog-search-btn" class="ghost" type="button" style="width:100%;margin-bottom:6px">Search</button>'
       +'<div id="inbox-catalog-results" style="margin-bottom:8px;font-size:13px;color:var(--subdued)"></div>'
+      +'<div id="inbox-supplier-results" style="margin-bottom:8px;font-size:13px"></div>'
       +'<div id="inbox-invoice-items" style="font-size:13px;margin-bottom:8px"></div>'
       +'<div style="margin-bottom:6px"><label for="inbox-invoice-cover" style="font-size:12px">Cover note (optional)</label><textarea id="inbox-invoice-cover" style="width:100%;min-height:60px;padding:9px 11px;border:1px solid var(--field-border);border-radius:8px;background:var(--field);color:var(--ink);font-size:13px;font-family:inherit;resize:vertical" placeholder="e.g. Here is the invoice for the items we discussed."></textarea></div>'
       +'<button id="inbox-invoice-build-btn" type="button" style="width:100%">Approve &amp; send invoice</button>'
@@ -673,6 +674,7 @@ async function runCatalogSearch(threadId){
     }
     if(!r.ok){ if(resEl) resEl.textContent='Search failed: '+(r.error||'unknown'); return; }
     var variants=r.variants||[];
+    runSupplierSearch(threadId,q);
     if(!variants.length){ if(resEl) resEl.textContent='No products found.'; return; }
     if(resEl){
       resEl.innerHTML='';
@@ -689,6 +691,64 @@ async function runCatalogSearch(threadId){
       });
     }
   }catch(e){ if(resEl) resEl.textContent='Search failed: '+errText(e); }
+}
+// Inquiry sourcing (part B): supplier items for this thread's customer, under
+// our own catalog results. Overseas items say so; the owner imports with one click.
+function renderSupplierOffers(offers,dest,destKnown){
+  if(!offers||!offers.length) return '<div class="muted" style="margin-top:6px">No supplier match.</div>';
+  var head='<div class="muted" style="margin:8px 0 4px">From our supplier, delivery to '+esc(dest)+(destKnown?'':' (country not stated, UK assumed)')+':</div>';
+  return head+offers.map(function(o){
+    var where=o.overseas?'ships from overseas':'local stock';
+    var days=o.days?(' · about '+esc(o.days)+' days to '+esc(dest)):'';
+    var action=o.handle
+      ?'<a href="https://activepaw.co.uk/products/'+esc(o.handle)+'" target="_blank" rel="noopener">View</a>'
+      :'<button class="ghost" type="button" style="padding:2px 8px" data-src-import="'+esc(o.pid)+'">Import</button>';
+    return '<div class="row" style="margin-bottom:4px;font-size:13px"><span class="grow">'+esc(o.title)+' · £'+esc(Number(o.priceGbp).toFixed(2))+' · '+where+days+'</span>'+action+'</div>';
+  }).join('');
+}
+async function runSupplierSearch(threadId,q){
+  var box=el('inbox-supplier-results');
+  if(!box) return;
+  box.textContent='Checking the supplier…';
+  try{
+    var r=await api('/inbox/supplier-search',{q:q,threadId:threadId});
+    if(!r.ok){ box.textContent='Supplier search failed: '+(r.error||'unknown'); return; }
+    box.innerHTML=renderSupplierOffers(r.offers,r.dest,r.destKnown);
+    var btns=box.querySelectorAll('button[data-src-import]');
+    for(var i=0;i<btns.length;i++){
+      (function(btn){ btn.onclick=function(){ btn.disabled=true; importForInquiry(btn.getAttribute('data-src-import'),threadId); }; })(btns[i]);
+    }
+  }catch(e){ box.textContent='Supplier search failed: '+errText(e); }
+}
+async function importForInquiry(pid,threadId){
+  // The status poll redrafts the held offer once the import lands, but never
+  // over unsaved edits the owner is making to that thread's draft (an empty
+  // threadId asks for no redraft).
+  function redraftFor(){ return (ibxSelectedId===threadId&&ibxDraftEdited())?'':threadId; }
+  setMsg('ibx-msg','Importing for this customer. This runs every import check and can take a minute…','muted');
+  try{
+    var r=await api('/inbox/source-import',{pid:pid,threadId:threadId});
+    if(!r.ok){ setMsg('ibx-msg','Not imported: '+(r.error||'unknown'),'no'); return; }
+    // Already in the catalog: one status read still redrafts a held offer.
+    if(r.state==='imported') r=await api('/inbox/source-status',{pid:pid,threadId:redraftFor()});
+    for(var n=0;n<40;n++){
+      if(r.state==='imported'){
+        var here=ibxSelectedId===threadId, edited=here&&ibxDraftEdited();
+        // Reload only the thread still open, and only with nothing unsaved in it.
+        if(r.draftRefreshed&&here&&!edited) openInboxThread(threadId);
+        var note=r.draftRefreshed?'. The held reply was redrafted with the product link; review it before sending.'
+          :(edited?'. Your unsaved draft edits were kept; press Regenerate for a reply with the product link.':'');
+        setMsg('ibx-msg','Imported: https://activepaw.co.uk/products/'+(r.handle||'')+note,'ok');
+        return;
+      }
+      if(r.state==='failed'){ setMsg('ibx-msg','Import refused: '+(r.failReason||'unknown')+(r.failDetail?' ('+r.failDetail+')':''),'no'); return; }
+      if(r.state==='draft'){ setMsg('ibx-msg','Created as a Shopify draft for your profit review; it goes live when you publish it.','muted'); return; }
+      if(r.state==='stalled'){ setMsg('ibx-msg','The import stalled before it finished. Search again and click Import to retry.','no'); return; }
+      await new Promise(function(res){ setTimeout(res,4000); });
+      r=await api('/inbox/source-status',{pid:pid,threadId:redraftFor()});
+    }
+    setMsg('ibx-msg','Still importing. Search again in a minute to see the result.','muted');
+  }catch(e){ setMsg('ibx-msg','Import failed: '+errText(e),'no'); }
 }
 async function buildInvoiceAction(threadId){
   var msgEl=el('inbox-invoice-msg');

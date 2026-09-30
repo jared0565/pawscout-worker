@@ -142,3 +142,14 @@ describe('readThread', () => {
     expect(r?.openAsks).toEqual(['Do you ship to Germany?']);
   });
 });
+
+describe('productQuery', () => {
+  it('keeps a customer product phrase, trimmed and capped', () => {
+    const r = validateReading({ senderRole: 'customer', openAsks: [], offered: '', alreadyAnswered: [], replyNeeded: true, productQuery: '  gps tracker dog collar ' });
+    expect(r?.productQuery).toBe('gps tracker dog collar');
+  });
+  it('is null for a non-customer and when absent', () => {
+    expect(validateReading({ senderRole: 'marketer', openAsks: [], productQuery: 'seo' })?.productQuery).toBeNull();
+    expect(validateReading({ senderRole: 'customer', openAsks: [] })?.productQuery).toBeNull();
+  });
+});
