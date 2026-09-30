@@ -34,7 +34,7 @@ import { validateCjKey, CjClient, CjTokenManager, cjFetchFromEnv, chooseOrigin, 
 import { startInquiryImport, inquiryImportStatus } from './sourcing/inquiry-import';
 import { inquiryDestination } from './sourcing/destination';
 import { supplierSearchForThread } from './sourcing/console-search';
-import { laneRouteFor, storefrontImportWarehouses } from './sourcing/lane-route';
+import { overseasClickPlan } from './sourcing/lane-route';
 import { registerWebhooks, ensureWebhooks, ORDER_EVENT_TOPICS, type RegisterWebhook } from './webhooks';
 import { cancelledOrderId, refundInfo, applyCancel, applyRefund, type OwnerAlert } from './order-cancel';
 import { alertOwner } from './owner-alert';
@@ -1992,9 +1992,6 @@ app.get('/proxy/product', async (c) => {
   const p = await proxyCtx(c); if (p instanceof Response) return p;
   const pid = (c.req.query('pid') ?? '').trim();
   if (!PID_RE.test(pid)) return c.json({ ok: false, error: 'Bad pid' });
-  // An overseas card's click (overseas=1 + the buyer's country) may import on the
-  // lane plus CN; every other click keeps the home lane (inquiry sourcing, part D).
-  const importWarehouses = storefrontImportWarehouses(c.req.query('country'), c.req.query('overseas'));
   try {
     const cj = cjFor(c.env, p);
     let detail = await getDetailPreferWarehouse(p.store, cj, pid);
@@ -2007,6 +2004,12 @@ app.get('/proxy/product', async (c) => {
       ? (title: string, urls: string[]) => pickHeroImage(previewLlm, p.store, p.cfg, title, urls)
       : undefined;
     detail = (await curateDetailImages(p.store, detail, previewHero)).detail;
+
+    // An overseas card's click (overseas=1 + the buyer's country) may import on
+    // the lane plus CN, but only after live stock and a fresh route say so; the
+    // query string alone widens nothing (inquiry sourcing, part D).
+    const plan = await overseasClickPlan(p.store, cj, p.cfg, detail, c.req.query('country'), c.req.query('overseas'));
+    detail = plan.detail;
 
     let link = await p.store.getLink(pid);
     if (!link || link.state === 'ghost' || link.state === 'failed' || link.state === 'archived') {
@@ -2025,17 +2028,13 @@ app.get('/proxy/product', async (c) => {
       const competitorCheck = importLlm.available && p.cfg.llm.enabled
         ? (d: { pid: string; nameEn: string }, ourRetailGbp: number) => competitorSignal(importLlm, p.store, p.cfg, { pid: d.pid, title: d.nameEn, ourRetailGbp, market: importMarket })
         : undefined;
-      c.executionCtx.waitUntil(confirmAndImport(p.store, cj, admin, p.cfg, detail, undefined, curate, pickHero, { competitorCheck, localWarehouses: importWarehouses }));
+      c.executionCtx.waitUntil(confirmAndImport(p.store, cj, admin, p.cfg, detail, undefined, curate, pickHero, { competitorCheck, localWarehouses: plan.localWarehouses }));
       link = await p.store.getLink(pid);
     }
     await p.store.recordEvent(pid, 'view');
     const handle = link?.state === 'imported' ? link.handle : null;
     const preview = buildPreview(detail, p.cfg, link?.state ?? 'importing', handle);
-    if (importWarehouses) {
-      const cc = (c.req.query('country') ?? '').trim().toUpperCase();
-      const route = await laneRouteFor(p.store, p.cfg, detail.origins, cc);
-      preview.delivery = route ? { overseas: route.overseas, days: route.days } : null;
-    }
+    if (plan.delivery !== undefined) preview.delivery = plan.delivery;
     return c.json({ ok: true, product: preview });
   } catch (e) {
     console.warn(`product preview failed for ${pid}: ${(e as Error).message}`);

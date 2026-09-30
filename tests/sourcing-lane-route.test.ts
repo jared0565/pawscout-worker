@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
 import { TenantStore } from '../src/tenant-store';
-import { laneRouteFor, storefrontImportWarehouses } from '../src/sourcing/lane-route';
+import { laneRouteFor, overseasClickPlan } from '../src/sourcing/lane-route';
+import type { CjClient, CjDetail } from '../src/cj';
 import { allowedOriginsFor, inquiryWarehouses } from '../src/local-markets';
 import { resolveLogistics, doorToDoorBand, formatBand } from '../src/logistics';
 import { DEFAULT_FULFIL, DEFAULT_FLOORS, type TenantConfig } from '../src/types';
@@ -75,13 +76,55 @@ describe('laneRouteFor', () => {
   });
 });
 
-describe('storefrontImportWarehouses', () => {
-  it('widens to lane plus CN only for an overseas click with a valid country', () => {
-    expect(storefrontImportWarehouses('gb', '1')).toEqual(['GB', 'CN']);
+describe('overseasClickPlan (storefront overseas click)', () => {
+  const DETAIL = { pid: 'T1', nameEn: 'Pet GPS Tracker', images: [], descriptionHtml: '', variants: [], listedNum: 1, categoryName: 'Pet', origins: { CN: 5000 } } as unknown as CjDetail;
+  function cjWith(live: Record<string, number> | 'error', calls: string[] = []): CjClient {
+    return { originsByPid: async (pid: string) => { calls.push(pid); if (live === 'error') throw new Error('CJ 500'); return live; } } as unknown as CjClient;
+  }
+
+  it('leaves an ordinary click alone, with no CJ call', async () => {
+    const store = await seededStore();
+    const calls: string[] = [];
+    const plan = await overseasClickPlan(store, cjWith({ CN: 900 }, calls), CFG, DETAIL, 'GB', undefined);
+    expect(plan).toEqual({ localWarehouses: undefined, detail: DETAIL, delivery: undefined });
+    expect(calls).toEqual([]);
   });
-  it('keeps the default lane otherwise', () => {
-    expect(storefrontImportWarehouses('GB', undefined)).toBeUndefined();
-    expect(storefrontImportWarehouses('not a country', '1')).toBeUndefined();
-    expect(storefrontImportWarehouses('NG', '1')).toBeUndefined();
+
+  it('widens to lane plus CN only after live stock and a fresh China route, and imports on the live origins', async () => {
+    const store = await seededStore();
+    const plan = await overseasClickPlan(store, cjWith({ CN: 900 }), CFG, DETAIL, 'gb', '1');
+    expect(plan.localWarehouses).toEqual(['GB', 'CN']);
+    expect(plan.detail.origins).toEqual({ CN: 900 });
+    expect(plan.delivery?.overseas).toBe(true);
+    expect(plan.delivery?.days).toMatch(/^\d+-\d+$/);
+  });
+
+  it('keeps the home lane when China no longer has the stock, whatever the cache says', async () => {
+    const store = await seededStore();
+    const plan = await overseasClickPlan(store, cjWith({ CN: 0 }), CFG, DETAIL, 'GB', '1');
+    expect(plan.localWarehouses).toBeUndefined();
+    expect(plan.delivery).toBeNull();
+    expect(plan.detail.origins).toEqual({ CN: 0 });
+  });
+
+  it('keeps the home lane when no China route reaches the buyer', async () => {
+    const store = await seededStore();
+    const plan = await overseasClickPlan(store, cjWith({ CN: 900 }), CFG, DETAIL, 'AU', '1');
+    expect(plan.localWarehouses).toBeUndefined();
+    expect(plan.delivery).toBeNull();
+  });
+
+  it('keeps the home lane when live stock cannot be read', async () => {
+    const store = await seededStore();
+    const plan = await overseasClickPlan(store, cjWith('error'), CFG, DETAIL, 'GB', '1');
+    expect(plan.localWarehouses).toBeUndefined();
+    expect(plan.delivery).toBeNull();
+    expect(plan.detail).toBe(DETAIL);
+  });
+
+  it('ignores a malformed country or one with no lane', async () => {
+    const store = await seededStore();
+    expect((await overseasClickPlan(store, cjWith({ CN: 900 }), CFG, DETAIL, 'not a country', '1')).localWarehouses).toBeUndefined();
+    expect((await overseasClickPlan(store, cjWith({ CN: 900 }), CFG, DETAIL, 'NG', '1')).localWarehouses).toBeUndefined();
   });
 });

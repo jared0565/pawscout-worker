@@ -1,5 +1,6 @@
 import type { TenantStore } from '../tenant-store';
 import type { TenantConfig } from '../types';
+import type { CjClient, CjDetail } from '../cj';
 import { allowedOriginsFor, inquiryWarehouses, localWarehousesFor } from '../local-markets';
 import { resolveNearestRoute } from '../shipping/nearest-route';
 import { resolveLogistics, doorToDoorBand, formatBand, type LogisticsRoute } from '../logistics';
@@ -51,13 +52,44 @@ export async function laneRouteFor(
   };
 }
 
-/** Warehouses a storefront ghost click may import from: the default (undefined,
- *  meaning the home lane) unless the theme sent overseas=1 with a valid
- *  country whose lane can use the China hub. */
-export function storefrontImportWarehouses(countryRaw: string | undefined, overseasFlag: string | undefined): string[] | undefined {
-  if (overseasFlag !== '1') return undefined;
+/** What a storefront ghost click imports with, and the note its preview shows. */
+export interface OverseasClickPlan {
+  /** Warehouses for confirmAndImport; undefined keeps the home lane. */
+  localWarehouses: string[] | undefined;
+  /** The detail to import: live origins whenever they were read. */
+  detail: CjDetail;
+  /** The preview's delivery note; undefined when the request did not ask for one. */
+  delivery: { overseas: boolean; days: string | null } | null | undefined;
+}
+
+/**
+ * A storefront click carrying overseas=1 (inquiry sourcing, part D). The query
+ * string is visitor-controlled, so the flag widens nothing by itself: stock by
+ * warehouse is read live from CJ and the route is resolved BEFORE any import.
+ * Only a fresh route from a warehouse holding the floor decides the lane (the
+ * lane alone for local stock, lane plus CN for China stock); anything else
+ * keeps the home lane, exactly as a click without the flag.
+ */
+export async function overseasClickPlan(
+  store: TenantStore,
+  cj: CjClient,
+  cfg: TenantConfig,
+  detail: CjDetail,
+  countryRaw: string | undefined,
+  overseasFlag: string | undefined
+): Promise<OverseasClickPlan> {
+  const plain: OverseasClickPlan = { localWarehouses: undefined, detail, delivery: undefined };
+  if (overseasFlag !== '1') return plain;
   const cc = (countryRaw ?? '').trim().toUpperCase();
-  if (!/^[A-Z]{2}$/.test(cc)) return undefined;
-  const w = inquiryWarehouses(cc);
-  return w.includes('CN') ? w : undefined;
+  if (!/^[A-Z]{2}$/.test(cc) || !inquiryWarehouses(cc).length) return plain;
+  const origins = await cj.originsByPid(detail.pid).catch(() => null);
+  if (!origins) return { ...plain, delivery: null };
+  const live = { ...detail, origins };
+  const route = await laneRouteFor(store, cfg, origins, cc);
+  if (!route) return { localWarehouses: undefined, detail: live, delivery: null };
+  return {
+    localWarehouses: route.overseas ? inquiryWarehouses(cc) : localWarehousesFor(cc),
+    detail: live,
+    delivery: { overseas: route.overseas, days: route.days },
+  };
 }
