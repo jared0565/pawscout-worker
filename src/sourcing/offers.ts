@@ -2,6 +2,7 @@ import type { TenantStore } from '../tenant-store';
 import type { TenantConfig } from '../types';
 import { chooseOrigin, looksLikeCjSku, type CjClient, type CjDetail } from '../cj';
 import { retailPriceGbp } from '../pricing';
+import { productNetAfterAds } from '../profitability';
 import { bestLocalQty, inquiryWarehouses } from '../local-markets';
 import { getDetailPreferWarehouse, stripHtml } from '../proxy/import';
 import { isPetProductStrict, titleAnswersQuery, queryTermHits } from '../proxy/search';
@@ -99,6 +100,12 @@ export async function supplierOffers(
     const prices = priced.variants.filter((v) => Number.isFinite(v.sellPriceUsd) && v.sellPriceUsd > 0)
       .map((v) => retailPriceGbp(v.sellPriceUsd, cfg.pricing, freightUsd));
     if (!prices.length) continue;
+    // The import's own profit floor, on the same variants and freight: an item
+    // it would refuse is never offered (the Aloha tracker netted GBP 1.54 at its
+    // rule price). The import's market check is not run here (it needs the LLM
+    // and eBay), so the import can still refuse on that.
+    const profit = cfg.profit;
+    if (profit?.enabled && profit.hardBlock && productNetAfterAds(priced.variants, cfg.pricing, freightUsd, profit)?.belowFloor) continue;
 
     offers.push({
       pid,

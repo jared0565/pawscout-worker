@@ -3,7 +3,7 @@ import { env, applyD1Migrations } from 'cloudflare:test';
 import { TenantStore } from '../src/tenant-store';
 import { supplierOffers } from '../src/sourcing/offers';
 import { retailPriceGbp } from '../src/pricing';
-import { DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_FULFIL, type TenantConfig } from '../src/types';
+import { DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_FULFIL, DEFAULT_PROFIT, type TenantConfig } from '../src/types';
 import type { CjClient, CjDetail, CjSearchItem } from '../src/cj';
 
 beforeEach(async () => { await applyD1Migrations(env.DB, env.TEST_MIGRATIONS); });
@@ -128,6 +128,32 @@ describe('supplierOffers', () => {
     await store.putLink({ cjPid: 'C1', state: 'failed', failReason: 'import-error' });
     const offers = await supplierOffers(store, fakeCj([TRACKER, LOCAL_COLLAR]), CFG, 'gps tracker', 'GB', { limit: 3, pause: noPause });
     expect(offers.map((o) => o.pid).sort()).toEqual(['C1', 'T1']);
+  });
+
+  describe('the import profit floor', () => {
+    // Production's shape: profit gating on, hard block, 10% ad share. At USD 5 the
+    // item nets GBP 2.10 with no freight but GBP 1.38 once the quoted USD 4 freight
+    // is counted, so only the freight decides the verdict.
+    const PROFIT_CFG = { ...CFG, profit: { ...DEFAULT_PROFIT, enabled: true, hardBlock: true, adShareOfRevenue: 0.1 } } as unknown as TenantConfig;
+    const THIN_MARGIN = det('M1', 'Pet GPS Tracker Tag', { CN: 900 }, 5);
+
+    it('skips an item the import would refuse, judged with the quoted freight', async () => {
+      const store = await seededStore();
+      expect(await supplierOffers(store, fakeCj([THIN_MARGIN]), PROFIT_CFG, 'gps tracker', 'GB', { limit: 3, pause: noPause })).toEqual([]);
+    });
+
+    it('offers an item that clears the floor', async () => {
+      const store = await seededStore();
+      const offers = await supplierOffers(store, fakeCj([TRACKER]), PROFIT_CFG, 'gps tracker', 'GB', { limit: 3, pause: noPause });
+      expect(offers.map((o) => o.pid)).toEqual(['T1']);
+    });
+
+    it('still offers it when the floor only flags for review (no hard block)', async () => {
+      const store = await seededStore();
+      const review = { ...PROFIT_CFG, profit: { ...PROFIT_CFG.profit, hardBlock: false } } as unknown as TenantConfig;
+      const offers = await supplierOffers(store, fakeCj([THIN_MARGIN]), review, 'gps tracker', 'GB', { limit: 3, pause: noPause });
+      expect(offers.map((o) => o.pid)).toEqual(['M1']);
+    });
   });
 
   it('keeps CJ relevance order when two items answer the query equally well', async () => {
