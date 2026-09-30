@@ -10,6 +10,9 @@ export interface Env {
   // CJ egress relay (relay/ on Fly.io) - optional: absent = direct CJ calls
   // (fine locally, 429s in production: CJ caps 3 API users per source IP).
   CJ_RELAY_URL?: string;
+  // Storefront overseas cards + overseas ghost-click imports (inquiry sourcing
+  // part D): "on" only once the theme shows the overseas note; see overseasFlag.
+  OVERSEAS_STOREFRONT?: string;
   CJ_RELAY_TOKEN?: string;
   // OpenRouter (W3 LLM curation) - optional: absent = mechanical gates only.
   OPENROUTER_API_KEY?: string;

@@ -62,6 +62,18 @@ export async function overseasCardFreightUsd(store: TenantStore, cfg: TenantConf
   return (await store.getLogisticsRoute('CN', 'GB', l.stalenessHours))?.freight_cost_usd ?? undefined;
 }
 
+/**
+ * The storefront's overseas=1, honoured only while the owner's switch is on.
+ * Any visitor can set the query flag, so it proves nothing about the theme:
+ * the switch (Worker var OVERSEAS_STOREFRONT = "on") is turned on once the
+ * theme shows "Ships from overseas, about N days" (owner rule 2026-09-30:
+ * make the customer aware). Off, unset or anything else: the flag is dropped,
+ * so no overseas card is served and no ghost click widens the import lane.
+ */
+export function overseasFlag(env: { OVERSEAS_STOREFRONT?: string }, flag: string | undefined): string | undefined {
+  return env.OVERSEAS_STOREFRONT === 'on' ? flag : undefined;
+}
+
 /** What a storefront ghost click imports with, and the note its preview shows. */
 export interface OverseasClickPlan {
   /** Warehouses for confirmAndImport; undefined keeps the home lane. */
