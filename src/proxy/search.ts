@@ -9,6 +9,7 @@ import { resolveLogistics, doorToDoorBand, formatBand } from '../logistics';
 import { productNetAfterAds } from '../profitability';
 
 export const CACHE_TTL_DAYS = 30; // PS retention promise: cached supplier data lives 30 days
+const CJ_GAP_MS = 1100; // CJ allows about one request a second
 
 export interface GhostCard {
   pid: string;
@@ -398,7 +399,7 @@ export async function searchBackfill(
   query: string,
   storeHits: number,
   limit: number,
-  opts: { liveFallback?: boolean; exclude?: string[]; llm?: LlmClient; fetchImpl?: typeof fetch; ctx?: { waitUntil(p: Promise<unknown>): void }; buyerCountry?: string; overseas?: boolean } = {}
+  opts: { liveFallback?: boolean; exclude?: string[]; llm?: LlmClient; fetchImpl?: typeof fetch; ctx?: { waitUntil(p: Promise<unknown>): void }; buyerCountry?: string; overseas?: boolean; pause?: (ms: number) => Promise<void> } = {}
 ): Promise<GhostCard[]> {
   const kw = normalizeKeyword(query);
   if (!kw) return [];
@@ -477,6 +478,7 @@ export async function searchBackfill(
   }
 
   // --- 2) live CJ fallback (cached per keyword for 30 days) ---
+  let calledCj = false; // a live CJ search ran in this request (section 3 paces after it)
   if (cards.length < limit && (opts.liveFallback ?? true)) {
     let items: CjSearchItem[];
     // kw3: cache namespace, keyed by the buyer's local warehouse - bumped from
@@ -489,6 +491,7 @@ export async function searchBackfill(
       items = JSON.parse(cached);
     } else {
       items = await cj.searchByWarehouse(kw, home);
+      calledCj = true;
       await store.putSearchCache(`kw3:${home}:${kw}`, JSON.stringify(items), CACHE_TTL_DAYS);
     }
     // Live-CJ PET FLOOR: CJ keyword search returns human/baby/car products too (a bare
@@ -534,39 +537,46 @@ export async function searchBackfill(
   // Only when the theme asked (overseas=1, sent once it renders the "ships from
   // overseas" note), only for a lane that may use the China hub, and only with a
   // fresh China route to this buyer: the band is the product page's own formula.
+  // A supplement: any failure here (a CJ rate limit, a bad cache row) keeps the
+  // cards already found rather than failing the whole search.
   const buyer = (opts.buyerCountry ?? 'GB').toUpperCase();
   if (opts.overseas && cards.length < limit && (opts.liveFallback ?? true) && inquiryWarehouses(buyer).includes('CN')) {
-    const l = resolveLogistics(cfg.fulfil);
-    const days = formatBand(doorToDoorBand(await store.getLogisticsRoute('CN', buyer, l.stalenessHours), l));
-    // Freight is most of a China item's landed cost. The store price is set on
-    // the CN -> GB quote at import, so the card uses that row's freight to match
-    // the preview and the product page (null row -> product cost only, as before).
-    const freightUsd = (await store.getLogisticsRoute('CN', 'GB', l.stalenessHours))?.freight_cost_usd ?? undefined;
-    if (days) {
-      let items: CjSearchItem[];
-      const cached = await store.getSearchCache(`kw3:CN:${kw}`);
-      if (cached) {
-        items = JSON.parse(cached);
-      } else {
-        items = await cj.searchByWarehouse(kw, 'CN');
-        await store.putSearchCache(`kw3:CN:${kw}`, JSON.stringify(items), CACHE_TTL_DAYS);
+    try {
+      const l = resolveLogistics(cfg.fulfil);
+      const days = formatBand(doorToDoorBand(await store.getLogisticsRoute('CN', buyer, l.stalenessHours), l));
+      // Freight is most of a China item's landed cost. The store price is set on
+      // the CN -> GB quote at import, so the card uses that row's freight to match
+      // the preview and the product page (null row -> product cost only, as before).
+      const freightUsd = (await store.getLogisticsRoute('CN', 'GB', l.stalenessHours))?.freight_cost_usd ?? undefined;
+      if (days) {
+        let items: CjSearchItem[];
+        const cached = await store.getSearchCache(`kw3:CN:${kw}`);
+        if (cached) {
+          items = JSON.parse(cached);
+        } else {
+          if (calledCj) await (opts.pause ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms))))(CJ_GAP_MS);
+          items = await cj.searchByWarehouse(kw, 'CN');
+          await store.putSearchCache(`kw3:CN:${kw}`, JSON.stringify(items), CACHE_TTL_DAYS);
+        }
+        const gated = items.filter((i) => !seen.has(i.pid) && storefrontLivePasses(i, cfg.gates, kw) && categoryAdmitsLiveCj(i.topCategory) && isPetProductStrict(i.nameEn));
+        const links = await store.getLinks(gated.map((i) => i.pid));
+        for (const item of gated) {
+          if (cards.length >= limit) break;
+          const link = links.get(item.pid);
+          const imported = link?.state === 'imported' && link.handle;
+          if (!imported && !ghostCardClearsFloor({ sellPriceUsd: item.sellPriceUsd }, cfg, freightUsd)) continue;
+          cards.push({
+            pid: item.pid, title: item.nameEn, image: item.image,
+            price: retailPriceGbp(item.sellPriceUsd, cfg.pricing, freightUsd),
+            state: imported ? 'imported' : 'ghost',
+            url: imported ? `/products/${link!.handle}` : null,
+            delivery: { overseas: true, days },
+          });
+          seen.add(item.pid);
+        }
       }
-      const gated = items.filter((i) => !seen.has(i.pid) && storefrontLivePasses(i, cfg.gates, kw) && categoryAdmitsLiveCj(i.topCategory) && isPetProductStrict(i.nameEn));
-      const links = await store.getLinks(gated.map((i) => i.pid));
-      for (const item of gated) {
-        if (cards.length >= limit) break;
-        const link = links.get(item.pid);
-        const imported = link?.state === 'imported' && link.handle;
-        if (!imported && !ghostCardClearsFloor({ sellPriceUsd: item.sellPriceUsd }, cfg, freightUsd)) continue;
-        cards.push({
-          pid: item.pid, title: item.nameEn, image: item.image,
-          price: retailPriceGbp(item.sellPriceUsd, cfg.pricing, freightUsd),
-          state: imported ? 'imported' : 'ghost',
-          url: imported ? `/products/${link!.handle}` : null,
-          delivery: { overseas: true, days },
-        });
-        seen.add(item.pid);
-      }
+    } catch (e) {
+      console.warn(`search.overseas.failed kw=${JSON.stringify(kw)} err=${String((e as Error)?.message ?? e).slice(0, 200)}`);
     }
   }
 

@@ -411,4 +411,30 @@ describe('storefront overseas cards (owner choice 2026-09-30)', () => {
     const cards = await searchBackfill(store, laneCj({ GB: [TRACKER] }), CFG, 'gps tracker dog collar', 0, 12, { buyerCountry: 'GB', overseas: true });
     expect(cards[0].delivery).toEqual({ overseas: false, days: null });
   });
+
+  it('keeps the local cards when the overseas lookup fails', async () => {
+    const store = await storeWithRoute();
+    const cj = {
+      search: async () => [],
+      searchByWarehouse: async (_kw: string, cc: string) => { if (cc === 'CN') throw new Error('CJ 429'); return [TRACKER]; },
+    } as unknown as CjClient;
+    const cards = await searchBackfill(store, cj, CFG, 'gps tracker dog collar', 0, 12, { buyerCountry: 'GB', overseas: true, pause: async () => {} });
+    expect(cards.map((c) => c.pid)).toEqual(['T1']);
+    expect(cards[0].delivery.overseas).toBe(false);
+  });
+
+  it('pauses between two live CJ searches in one request', async () => {
+    const store = await storeWithRoute();
+    const calls: string[] = [];
+    await searchBackfill(store, laneCj({ CN: [TRACKER] }, calls), CFG, 'gps tracker dog collar', 0, 12, { buyerCountry: 'GB', overseas: true, pause: async (ms: number) => { calls.push(`pause:${ms}`); } });
+    expect(calls).toEqual(['gps tracker dog collar@GB', 'pause:1100', 'gps tracker dog collar@CN']);
+  });
+
+  it('does not pause when the local search was served from the cache', async () => {
+    const store = await storeWithRoute();
+    await store.putSearchCache('kw3:GB:gps tracker dog collar', '[]', 30);
+    const calls: string[] = [];
+    await searchBackfill(store, laneCj({ CN: [TRACKER] }, calls), CFG, 'gps tracker dog collar', 0, 12, { buyerCountry: 'GB', overseas: true, pause: async (ms: number) => { calls.push(`pause:${ms}`); } });
+    expect(calls).toEqual(['gps tracker dog collar@CN']);
+  });
 });
