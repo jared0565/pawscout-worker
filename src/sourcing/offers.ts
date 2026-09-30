@@ -10,6 +10,11 @@ import { laneRouteFor } from './lane-route';
 
 const CJ_GAP_MS = 1100; // CJ allows about one request a second
 
+/** Import refusals on the item's merits (confirmAndImport's content and profit
+ *  gates). Offering such an item promises a customer something the Import
+ *  button refuses again; stock and error failures stay retryable. */
+const GATE_VERDICTS = new Set(['curation-score', 'not-pet-relevant', 'no-congruent-image', 'below-profit-floor']);
+
 /** One supplier item we could sell this buyer, with the figures the import would use. */
 export interface SupplierOffer {
   pid: string;
@@ -67,6 +72,8 @@ export async function supplierOffers(
   const offers: SupplierOffer[] = [];
   for (const pid of pids.slice(0, opts.limit * 3)) {
     if (offers.length >= opts.limit) break;
+    const link = await store.getLink(pid);
+    if (link?.state === 'failed' && GATE_VERDICTS.has(link.fail_reason ?? '')) continue;
     await pause(CJ_GAP_MS);
     const detail: CjDetail | null = skuDetail?.pid === pid ? skuDetail : await getDetailPreferWarehouse(store, cj, pid);
     if (!detail) continue;
@@ -93,7 +100,6 @@ export async function supplierOffers(
       .map((v) => retailPriceGbp(v.sellPriceUsd, cfg.pricing, freightUsd));
     if (!prices.length) continue;
 
-    const link = await store.getLink(pid);
     offers.push({
       pid,
       // The import's own title treatment; maker brands never reach a customer.

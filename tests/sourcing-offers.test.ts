@@ -116,6 +116,20 @@ describe('supplierOffers', () => {
     expect(offers[0]?.descriptionText).not.toContain('PawHut');
   });
 
+  it('skips an item the import gates already refused on its merits', async () => {
+    const store = await seededStore();
+    await store.putLink({ cjPid: 'T1', state: 'failed', failReason: 'not-pet-relevant' });
+    expect(await supplierOffers(store, fakeCj([TRACKER]), CFG, 'gps tracker', 'GB', { limit: 3, pause: noPause })).toEqual([]);
+  });
+
+  it('still offers an item whose earlier import failed on stock or an error', async () => {
+    const store = await seededStore();
+    await store.putLink({ cjPid: 'T1', state: 'failed', failReason: 'no-local-stock' });
+    await store.putLink({ cjPid: 'C1', state: 'failed', failReason: 'import-error' });
+    const offers = await supplierOffers(store, fakeCj([TRACKER, LOCAL_COLLAR]), CFG, 'gps tracker', 'GB', { limit: 3, pause: noPause });
+    expect(offers.map((o) => o.pid).sort()).toEqual(['C1', 'T1']);
+  });
+
   it('keeps CJ relevance order when two items answer the query equally well', async () => {
     // Aloha: the tracker and a far more popular plain collar each carry one of
     // the query words; CJ ranks the tracker first, and popularity must not flip it.
