@@ -253,6 +253,63 @@ export function liveCjPasses(item: CjSearchItem, gates: Gates, keyword: string):
   return relevanceMatch(keyword, item.nameEn, gates.relevance);
 }
 
+// Words that name the animal, not the product. The species check handles them,
+// so they never count as product words a search has to match.
+const ANIMAL_WORDS = new Set([...DOG_WORDS, ...CAT_WORDS, 'pet', 'pets']);
+// One product, several spellings: a shopper asks for a "trackable" collar and
+// the supplier titles it "GPS Tracker" (Aloha, 2026-09-29). Each family reads
+// as its first word. Words are already stemmed by keywordTokens.
+const TERM_FAMILIES: readonly (readonly string[])[] = [
+  ['track', 'trackable', 'tracking', 'tracked', 'tracker', 'gps', 'locator', 'airtag'],
+];
+const FAMILY_OF = new Map<string, string>(TERM_FAMILIES.flatMap((f) => f.map((w) => [w, f[0]] as [string, string])));
+const foldTerm = (w: string): string => FAMILY_OF.get(w) ?? w;
+
+/** Every spelling of each family a query names, for the warehouse text search. */
+export function familyWords(keyword: string): string[] {
+  const hit = new Set(keywordTokens(keyword).map(foldTerm));
+  return TERM_FAMILIES.filter((f) => hit.has(f[0])).flat();
+}
+
+/** The product words of a query or title: stemmed, stopwords and animal words dropped, synonyms folded. */
+export function productTerms(text: string): string[] {
+  return [...new Set(keywordTokens(text).filter((t) => !ANIMAL_WORDS.has(t)).map(foldTerm))];
+}
+
+/**
+ * Does this title answer the storefront query? The species first: a title for
+ * the other animal never does, and a species query needs a title for that
+ * animal or for pets in general ("Pet Tracker" answers "dog gps tracker"). Then
+ * the PRODUCT words under the owner's relevance setting: strict needs every
+ * one, title needs one, loose trusts the source. A bare species query ("dog")
+ * has no product words and keeps the species-only behaviour.
+ */
+export function titleAnswersQuery(keyword: string, title: string, mode: Gates['relevance']): boolean {
+  const qs = detectSpecies(keyword);
+  const ts = detectSpecies(title);
+  if (qs && qs !== 'both') {
+    if (ts ? ts !== qs && ts !== 'both' : !/\bpets?\b/i.test(title)) return false;
+  } else if (speciesConflict(keyword, title)) return false;
+  if (mode === 'loose') return true;
+  const want = productTerms(keyword);
+  if (!want.length) return qs !== null || relevanceMatch(keyword, title, mode);
+  const have = new Set(keywordTokens(title).map(foldTerm));
+  return mode === 'strict' ? want.every((t) => have.has(t)) : want.some((t) => have.has(t));
+}
+
+/**
+ * Gate for the STOREFRONT live feed. Unlike liveCjPasses (kept for the nightly
+ * jobs, which read listV2 and trust its ranking), the storefront reads the
+ * warehouse-filtered /product/list, which matches loosely: trusting it let
+ * "trackable dog collar" fill the grid with any dog product (Aloha,
+ * 2026-09-29). So the product words are checked here too.
+ */
+export function storefrontLivePasses(item: CjSearchItem, gates: Gates, keyword: string): boolean {
+  if (item.listedNum < gates.popularityFloor) return false;
+  if (item.sellPriceUsd < gates.priceMin || item.sellPriceUsd > gates.priceMax) return false;
+  return titleAnswersQuery(keyword, item.nameEn, gates.relevance);
+}
+
 /**
  * Read-time profitability gate for ghost cards (2026-07-31).
  *
@@ -301,7 +358,7 @@ function warehousePasses(row: WarehouseRow, cfg: TenantConfig, keyword: string):
     row.price_usd >= cfg.gates.priceMin &&
     row.price_usd <= cfg.gates.priceMax &&
     row.stock >= cfg.floors.stockFloor &&
-    relevanceMatch(keyword, row.title, cfg.gates.relevance)
+    titleAnswersQuery(keyword, row.title, cfg.gates.relevance)
   );
 }
 
@@ -369,7 +426,9 @@ export async function searchBackfill(
   // Origin evidence is required, not optional: a pool row without a proven
   // local warehouse for THIS buyer never becomes a suggestion (CN-era rows
   // carry no local origins and drop out here).
-  const rows = await store.searchWarehouse(tokens, limit * 3);
+  // Every spelling of a folded family ("trackable" also finds "GPS" rows); the
+  // query's own words go first because searchWarehouse keeps the first six.
+  const rows = await store.searchWarehouse([...new Set([...tokens, ...familyWords(kw)])], limit * 3);
   const ranked = rows
     .filter((r) => warehousePasses(r, cfg, expanded))
     .filter((r) => {
@@ -423,16 +482,16 @@ export async function searchBackfill(
     }
     // Live-CJ PET FLOOR: CJ keyword search returns human/baby/car products too (a bare
     // "shampoo" surfaces human shampoo). Require an explicit pet signal on the raw CJ
-    // title. Species queries ("dog shampoo") are already gated by liveCjPasses; the floor
-    // earns its keep on bare terms like "shampoo"/"brush"/"nail clipper".
-    const gated = items.filter((i) => !seen.has(i.pid) && liveCjPasses(i, cfg.gates, kw) && categoryAdmitsLiveCj(i.topCategory) && isPetProductStrict(i.nameEn));
+    // title. Species queries ("dog shampoo") are already gated by storefrontLivePasses; the
+    // floor earns its keep on bare terms like "shampoo"/"brush"/"nail clipper".
+    const gated = items.filter((i) => !seen.has(i.pid) && storefrontLivePasses(i, cfg.gates, kw) && categoryAdmitsLiveCj(i.topCategory) && isPetProductStrict(i.nameEn));
     // Observe the category gate's recall cost: items the title floor WOULD have
     // admitted (pet token present) but the top-category hard-drop removed. On a
     // precision-first feed these should be rare and genuinely non-pet - a pet-token
     // title surfacing here means a marker is too aggressive, so tune
     // HARD_DROP_TOP_CATEGORIES. Logged only when nonzero (silent on the common case).
     const categoryDropped = items.filter((i) =>
-      !seen.has(i.pid) && liveCjPasses(i, cfg.gates, kw) && isPetProductStrict(i.nameEn) && !categoryAdmitsLiveCj(i.topCategory)
+      !seen.has(i.pid) && storefrontLivePasses(i, cfg.gates, kw) && isPetProductStrict(i.nameEn) && !categoryAdmitsLiveCj(i.topCategory)
     );
     if (categoryDropped.length) {
       console.log(`search.categoryGate.dropped kw=${JSON.stringify(kw)} n=${categoryDropped.length} tops=${JSON.stringify([...new Set(categoryDropped.map((i) => i.topCategory))])}`);

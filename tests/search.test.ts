@@ -313,3 +313,60 @@ describe('searchBackfill', () => {
     expect(calls.every((c) => !c.endsWith('@GLOBAL'))).toBe(true);
   });
 });
+
+// Aloha, 2026-09-29: "trackable dog collar" filled the storefront grid with poo
+// bags, car seats and dog beds. Under the owner's STRICT relevance setting a
+// species query only checked the species, never the product words, because the
+// live gate was written to trust listV2 ranking while the storefront calls the
+// warehouse-filtered /product/list, which matches loosely.
+describe('storefront live feed: a species query must still match the product words', () => {
+  const STRICT: TenantConfig = { ...CFG, gates: { ...DEFAULT_GATES, relevance: 'strict' } };
+  const JUNK = [
+    item({ pid: 'poo', nameEn: '1100x Dog Poo Bags Biodegradable Pet Cat Dog Poop Waste Bags With Dispenser UK' }),
+    item({ pid: 'seat', nameEn: 'Dog Car Seat With Belt And Strong Padded Sides - Waterproof Pet Booster' }),
+    item({ pid: 'bed', nameEn: 'Dog Bed Cat Beds Soft Washable Fleece Puppy Cushion Warm Pet Basket Large Dog' }),
+  ];
+
+  it('drops dog products that are not what was asked for, keeps the tracker collar', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const items = [...JUNK, item({ pid: 'gpscollar', nameEn: 'Smart GPS Dog Collar Tracker Waterproof' })];
+    const cards = await searchBackfill(store, fakeCj(items), STRICT, 'trackable dog collar', 0, 12);
+    expect(cards.map((c) => c.pid)).toEqual(['gpscollar']);
+  });
+
+  it('shows nothing rather than junk when nothing matches', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const cards = await searchBackfill(store, fakeCj(JUNK), STRICT, 'trackable dog collar', 0, 12);
+    expect(cards).toEqual([]);
+  });
+
+  it('reads gps, tracker and locator as the same thing a shopper calls "trackable"', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const items = [item({ pid: 'loc', nameEn: 'Dog Locator Collar Anti Lost' }), item({ pid: 'gps', nameEn: 'GPS Dog Collar Real Time' })];
+    const cards = await searchBackfill(store, fakeCj(items), STRICT, 'trackable dog collar', 0, 12);
+    expect(cards.map((c) => c.pid).sort()).toEqual(['gps', 'loc']);
+  });
+
+  it('a "pet" product answers a dog query; a cat-only one still does not', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const items = [
+      item({ pid: 'pet', nameEn: 'P03 Smart GPS Wireless Pet Tracker' }),
+      item({ pid: 'cat', nameEn: 'Cat GPS Tracker Collar' }),
+    ];
+    const cards = await searchBackfill(store, fakeCj(items), STRICT, 'dog gps tracker', 0, 12);
+    expect(cards.map((c) => c.pid)).toEqual(['pet']);
+  });
+
+  it('title mode needs one product word, not every one', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const items = [...JUNK, item({ pid: 'light', nameEn: 'Light Up Dog Collar Adjustable Flashing' })];
+    const cards = await searchBackfill(store, fakeCj(items), CFG, 'trackable dog collar', 0, 12);
+    expect(cards.map((c) => c.pid)).toEqual(['light']);
+  });
+
+  it('a bare species query ("dog") still shows dog products', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const cards = await searchBackfill(store, fakeCj(JUNK), STRICT, 'dog', 0, 12);
+    expect(cards.map((c) => c.pid).sort()).toEqual(['bed', 'poo', 'seat']);
+  });
+});
