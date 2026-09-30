@@ -31,7 +31,7 @@ import { buildVoucherInviteWithCode } from './inbox/partnership';
 import { renderReplyHtml } from './inbox/draft';
 import { consolePage } from './console/page';
 import { validateCjKey, CjClient, CjTokenManager, cjFetchFromEnv, chooseOrigin, type CjDetail } from './cj';
-import { startInquiryImport, inquiryImportStatus } from './sourcing/inquiry-import';
+import { startInquiryImport, inquiryImportStatus, isStaleImporting } from './sourcing/inquiry-import';
 import { inquiryDestination } from './sourcing/destination';
 import { supplierSearchForThread } from './sourcing/console-search';
 import { overseasClickPlan } from './sourcing/lane-route';
@@ -2012,7 +2012,8 @@ app.get('/proxy/product', async (c) => {
     detail = plan.detail;
 
     let link = await p.store.getLink(pid);
-    if (!link || link.state === 'ghost' || link.state === 'failed' || link.state === 'archived') {
+    // A stale 'importing' row was cut off mid-import (see isStaleImporting): retry it.
+    if (!link || link.state === 'ghost' || link.state === 'failed' || link.state === 'archived' || isStaleImporting(link)) {
       await p.store.putLink({ cjPid: pid, state: 'importing' });
       const accessToken = await p.vault.open(p.tenant.dek_wrapped, p.tenant.access_token_enc);
       const admin = makeAdminGraphql(p.store.shop, accessToken);

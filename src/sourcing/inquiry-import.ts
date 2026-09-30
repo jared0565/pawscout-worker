@@ -14,6 +14,17 @@ export interface InquiryImportDeps {
   waitUntil: (p: Promise<unknown>) => void;
 }
 
+/** An 'importing' row older than this was cut off (the runtime ends waitUntil
+ *  work after the response) or died without reaching .catch, so it may be
+ *  retried; a live import writes 'imported' or 'failed' well inside it. */
+export const STALE_IMPORTING_MS = 10 * 60_000;
+
+export function isStaleImporting(link: { state: string; updated_at: string } | null | undefined, now: number = Date.now()): boolean {
+  if (link?.state !== 'importing') return false;
+  const at = Date.parse(link.updated_at);
+  return !Number.isFinite(at) || now - at > STALE_IMPORTING_MS;
+}
+
 export type InquiryImportResult =
   | { ok: true; state: 'importing' | 'imported'; handle: string | null }
   | { ok: false; error: 'unknown_product' | 'not_deliverable' | 'no_stock' | 'stock_unknown' };
@@ -28,7 +39,7 @@ export async function startInquiryImport(deps: InquiryImportDeps, pid: string, d
   const { store, cj, cfg } = deps;
   const link = await store.getLink(pid);
   if (link?.state === 'imported') return { ok: true, state: 'imported', handle: link.handle };
-  if (link?.state === 'importing') return { ok: true, state: 'importing', handle: null };
+  if (link?.state === 'importing' && !isStaleImporting(link)) return { ok: true, state: 'importing', handle: null };
 
   const detail = await getDetailPreferWarehouse(store, cj, pid);
   if (!detail) return { ok: false, error: 'unknown_product' };
@@ -61,7 +72,7 @@ export async function inquiryImportStatus(store: TenantStore, pid: string): Prom
   const link = await store.getLink(pid);
   return {
     ok: true,
-    state: link?.state ?? 'unknown',
+    state: isStaleImporting(link) ? 'stalled' : (link?.state ?? 'unknown'),
     handle: link?.state === 'imported' ? link.handle : null,
     failReason: link?.fail_reason ?? null,
     failDetail: link?.fail_detail ?? null,

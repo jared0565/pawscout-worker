@@ -109,6 +109,35 @@ describe('startInquiryImport', () => {
   });
 });
 
+describe('a stalled import', () => {
+  async function importingSince(store: TenantStore, pid: string, minutesAgo: number) {
+    await store.putLink({ cjPid: pid, state: 'importing' });
+    const at = new Date(Date.now() - minutesAgo * 60_000).toISOString();
+    await env.DB.prepare('UPDATE product_links SET updated_at = ?1 WHERE cj_pid = ?2').bind(at, pid).run();
+  }
+
+  it('leaves a recent import alone', async () => {
+    const t = await setup([det('T1', { CN: 5429 })]);
+    await importingSince(t.store, 'T1', 2);
+    expect(await startInquiryImport(t.deps, 'T1', 'GB')).toEqual({ ok: true, state: 'importing', handle: null });
+    expect(t.imports).toEqual([]);
+  });
+
+  it('retries an import cut off long ago instead of blocking the pid for good', async () => {
+    const t = await setup([det('T1', { CN: 5429 })]);
+    await importingSince(t.store, 'T1', 30);
+    expect(await startInquiryImport(t.deps, 'T1', 'GB')).toEqual({ ok: true, state: 'importing', handle: null });
+    await Promise.all(t.pending);
+    expect(t.imports.map((i) => i.pid)).toEqual(['T1']);
+  });
+
+  it('reports a long-stuck import as stalled', async () => {
+    const t = await setup([det('T1', { CN: 5429 })]);
+    await importingSince(t.store, 'T1', 30);
+    expect((await inquiryImportStatus(t.store, 'T1')).state).toBe('stalled');
+  });
+});
+
 describe('inquiryDestination', () => {
   it('reads the country from the inbound messages, ignoring our quoted footer', async () => {
     const store = new TenantStore(env.DB, 'a.myshopify.com');
