@@ -39,9 +39,10 @@ ENVIRONMENT = "production"
 SHOPIFY_API_KEY = "6bc07cd8a343a4aa2ab4b14a09859310"   # PawScout public app client id
 SHOPIFY_APP_URL = "https://pawscout.activepaw.co.uk"
 # Storefront overseas cards and overseas ghost-click imports (inquiry sourcing
-# part D). "off" until the theme shows "Ships from overseas, about N days";
-# the storefront query flag overseas=1 is ignored unless this reads "on".
-OVERSEAS_STOREFRONT = "off"
+# part D). "on" since 2026-10-01, when theme release 3dc94aa (round 294) began
+# showing the ships-from-overseas note on overseas cards and previews; the
+# storefront query flag overseas=1 is ignored unless this reads "on".
+OVERSEAS_STOREFRONT = "on"
 # read_locations + inventory scopes: the stock/price sync reads the primary
 # location and writes tracked quantities: without them the nightly sync
 # silently no-ops ("no primary location"). read_orders + the fulfilment scope
@@ -99,5 +100,5 @@ migrations_dir = "migrations"
 ENVIRONMENT = "staging"
 SHOPIFY_API_KEY = "staging-not-connected"
 SHOPIFY_APP_URL = "https://pawscout-worker-staging.bmorris0565.workers.dev"
-OVERSEAS_STOREFRONT = "off"
+OVERSEAS_STOREFRONT = "on"
 SHOPIFY_SCOPES = "read_products"
