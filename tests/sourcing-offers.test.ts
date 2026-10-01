@@ -208,4 +208,14 @@ describe('supplierOffers', () => {
     const offers = await supplierOffers(store, fakeCj([TRACKER, plain]), CFG, 'trackable dog collar', 'GB', { limit: 1, pause: noPause });
     expect(offers.map((o) => o.pid)).toEqual(['T1']);
   });
+
+  it('offers an item already imported before one CJ ranks higher', async () => {
+    // Aloha, 2026-10-01: the owner imported the GPS collar, but CJ ranked an
+    // unimported tracker first, so the one-offer draft quoted the wrong item.
+    const store = await seededStore();
+    const collar = det('G1', 'Pet GPS Tracker Collar', { CN: 7000 });
+    await store.putLink({ cjPid: 'G1', state: 'imported', handle: 'gps-tracker-collar-for-dogs-and-cats' });
+    const offers = await supplierOffers(store, fakeCj([TRACKER, collar]), CFG, 'gps tracker', 'GB', { limit: 1, pause: noPause });
+    expect(offers.map((o) => [o.pid, o.handle])).toEqual([['G1', 'gps-tracker-collar-for-dogs-and-cats']]);
+  });
 });

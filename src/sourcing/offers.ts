@@ -80,10 +80,18 @@ export async function supplierOffers(
       .map((r) => r.i.pid);
   }
 
+  // An item the owner already imported answers before one we would still have
+  // to source (Aloha, 2026-10-01: the imported GPS collar ranked behind an
+  // unimported tracker, so the one-offer draft quoted the wrong item). The rest
+  // keep their order.
+  const links = await store.getLinks(pids);
+  const imported = (pid: string) => links.get(pid)?.state === 'imported';
+  pids = [...pids.filter(imported), ...pids.filter((pid) => !imported(pid))];
+
   const offers: SupplierOffer[] = [];
   for (const pid of pids.slice(0, opts.limit * 3)) {
     if (offers.length >= opts.limit) break;
-    const link = await store.getLink(pid);
+    const link = links.get(pid);
     if (link?.state === 'failed' && GATE_VERDICTS.has(link.fail_reason ?? '')) continue;
     await pause(CJ_GAP_MS);
     const detail: CjDetail | null = skuDetail?.pid === pid ? skuDetail : await getDetailPreferWarehouse(store, cj, pid);
