@@ -147,3 +147,33 @@ describe('EbaySource (Browse API client)', () => {
     expect(ebayFromEnv({ EBAY_CLIENT_ID: 'a', EBAY_CLIENT_SECRET: 'b' } as any)).not.toBeNull();
   });
 });
+
+describe('matchCandidates: phone-app finder tags are not GPS trackers (Aloha, 2026-09-30)', () => {
+  // Our CJ item: a cellular GPS collar (EU and US versions). eBay UK's matches
+  // for its title were GBP 9-15 app-paired "GPS" tags, which priced it at 11.84.
+  const OURS = 'GPS Locator Pet Collar Dog Cat Animal Anti-lost Anti-theft Tracker';
+  const TAGS = [
+    C('Mini Pet GPS Locator Tracker Anti-Lost Tracking Dog Cat Collar For Apple&Android', 13.99),
+    C('Mini Pet GPS Tracker Waterproof Dog Cat Collar Anti Lost Locator Android iOS', 13.93),
+    C('Cat Tracker Finder GPS Collar Waterproof Electronic Pet Locator fit iOS Android', 12.99),
+    C('Mini Pet GPS Locator Tracker Anti-Lost Tracking Cat Collar for iPhone / Android', 13.88),
+  ];
+
+  it('never prices our tracker from listings sold to pair with a phone', () => {
+    expect(matchCandidates(OURS, 40.99, TAGS)).toEqual({ kind: 'none' });
+  });
+
+  it('still matches listings that do not pair with a phone', () => {
+    const real = [
+      C('GPS Locator Pet Collar Dog Cat Anti-lost Anti-theft Tracker', 38.99),
+      C('Pet GPS Locator Collar Dog Cat Anti Lost Anti Theft Tracker Real Time', 42.5),
+      C('Dog Cat GPS Locator Collar Anti-theft Anti-lost Pet Tracker', 39.99),
+    ];
+    expect(matchCandidates(OURS, 40.99, [...TAGS, ...real])).toMatchObject({ kind: 'match', matched: 3 });
+  });
+
+  it('keeps phone-paired listings when our own product pairs with a phone', () => {
+    const ours = 'Mini Pet GPS Locator Tracker Anti-Lost Dog Cat Collar for iOS Android';
+    expect(matchCandidates(ours, 13.99, TAGS)).toMatchObject({ kind: 'match' });
+  });
+});

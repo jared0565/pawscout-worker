@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
 import { TenantStore } from '../src/tenant-store';
-import { laneRouteFor, overseasClickPlan } from '../src/sourcing/lane-route';
+import { laneRouteFor, overseasClickPlan, overseasFlag } from '../src/sourcing/lane-route';
 import type { CjClient, CjDetail } from '../src/cj';
 import { allowedOriginsFor, inquiryWarehouses } from '../src/local-markets';
 import { resolveLogistics, doorToDoorBand, formatBand } from '../src/logistics';
@@ -141,5 +141,17 @@ describe('overseasClickPlan (storefront overseas click)', () => {
     const store = await seededStore();
     expect((await overseasClickPlan(store, cjWith({ CN: 900 }), CFG, DETAIL, 'not a country', '1')).localWarehouses).toBeUndefined();
     expect((await overseasClickPlan(store, cjWith({ CN: 900 }), CFG, DETAIL, 'NG', '1')).localWarehouses).toBeUndefined();
+  });
+});
+
+describe('overseasFlag (owner switch: off until the theme shows the overseas note)', () => {
+  it('passes the storefront flag through only when the switch is on', () => {
+    expect(overseasFlag({ OVERSEAS_STOREFRONT: 'on' }, '1')).toBe('1');
+  });
+
+  it('drops a visitor-set flag while the switch is off, unset or anything but "on"', () => {
+    for (const v of ['off', undefined, '', 'true', '1', 'ON ']) {
+      expect(overseasFlag({ OVERSEAS_STOREFRONT: v }, '1')).toBeUndefined();
+    }
   });
 });

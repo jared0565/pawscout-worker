@@ -34,7 +34,7 @@ import { validateCjKey, CjClient, CjTokenManager, cjFetchFromEnv, chooseOrigin, 
 import { startInquiryImport, inquiryImportStatus, isStaleImporting, refreshSourcingDraft } from './sourcing/inquiry-import';
 import { inquiryDestination } from './sourcing/destination';
 import { supplierSearchForThread } from './sourcing/console-search';
-import { overseasClickPlan, previewDetail } from './sourcing/lane-route';
+import { overseasClickPlan, previewDetail, overseasFlag } from './sourcing/lane-route';
 import { registerWebhooks, ensureWebhooks, ORDER_EVENT_TOPICS, type RegisterWebhook } from './webhooks';
 import { cancelledOrderId, refundInfo, applyCancel, applyRefund, type OwnerAlert } from './order-cancel';
 import { alertOwner } from './owner-alert';
@@ -1980,7 +1980,7 @@ app.get('/proxy/search', async (c) => {
     const llm = new LlmClient({ openrouter: c.env.OPENROUTER_API_KEY, openai: c.env.OPENAI_API_KEY });
     // overseas=1: the theme renders the "ships from overseas" note, so China-hub
     // ghost cards may be added (inquiry sourcing, part D). Absent, nothing changes.
-    const overseas = c.req.query('overseas') === '1';
+    const overseas = overseasFlag(c.env, c.req.query('overseas')) === '1';
     const products = await searchBackfill(p.store, cjFor(c.env, p), p.cfg, q, have, limit, { exclude, llm, ctx: c.executionCtx, buyerCountry, overseas });
     // W3: classify new keywords in the background (cached 30d) - the NEXT
     // search for this term benefits from category + synonyms. Never hot-path.
@@ -2017,7 +2017,7 @@ app.get('/proxy/product', async (c) => {
     // An overseas card's click (overseas=1 + the buyer's country) may import on
     // the lane plus CN, but only after live stock and a fresh route say so; the
     // query string alone widens nothing (inquiry sourcing, part D).
-    const plan = await overseasClickPlan(p.store, cj, p.cfg, detail, c.req.query('country'), c.req.query('overseas'));
+    const plan = await overseasClickPlan(p.store, cj, p.cfg, detail, c.req.query('country'), overseasFlag(c.env, c.req.query('overseas')));
     detail = plan.detail;
 
     let link = await p.store.getLink(pid);
