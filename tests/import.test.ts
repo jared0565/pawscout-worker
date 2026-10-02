@@ -924,3 +924,33 @@ describe('importProduct publish flag', () => {
     expect((await store.getLink('P2'))?.state).toBe('imported');
   });
 });
+
+describe('confirmAndImport prohibited-item gate (owner 2026-10-02)', () => {
+  const cjStub = () => ({
+    stockByPid: async () => new Map([['v1', 50]]),
+    originsByPid: async () => ({ GB: 50 }),
+    freightEstimate: async () => null
+  } as unknown as CjClient);
+
+  it('refuses a shock training collar before curation or any Shopify call', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const calls: Call[] = [];
+    let curated = 0;
+    const detail: CjDetail = { ...DETAIL, pid: 'SHOCK1', nameEn: 'Smart Dog Bark Control Collar', descriptionHtml: '<p>Modes: sound, vibration, shock</p>' };
+    const out = await confirmAndImport(store, cjStub(), fakeAdmin(calls), CFG, detail, 'pet-toys', async () => { curated++; return null; });
+    expect(out).toBeNull();
+    expect(curated).toBe(0);
+    expect(calls).toEqual([]);
+    const link = await store.getLink('SHOCK1');
+    expect(link).toMatchObject({ state: 'failed', fail_reason: 'prohibited-item' });
+    expect(link?.fail_detail).toContain('shock');
+  });
+
+  it('still imports a shock-absorbing lead', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const calls: Call[] = [];
+    const detail: CjDetail = { ...DETAIL, pid: 'LEAD1', nameEn: 'Shock Absorbing Bungee Dog Leash' };
+    await confirmAndImport(store, cjStub(), fakeAdmin(calls), CFG, detail, 'pet-toys');
+    expect(calls.some((c) => c.query.includes('productSet'))).toBe(true);
+  });
+});
