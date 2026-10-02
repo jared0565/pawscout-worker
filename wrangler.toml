@@ -39,11 +39,11 @@ ENVIRONMENT = "production"
 SHOPIFY_API_KEY = "6bc07cd8a343a4aa2ab4b14a09859310"   # PawScout public app client id
 SHOPIFY_APP_URL = "https://pawscout.activepaw.co.uk"
 # Storefront overseas cards and overseas ghost-click imports (inquiry sourcing
-# part D). Turned "off" again 2026-10-02 (owner): an overseas card showed an
-# electric shock collar and an AirTag holder titled as a GPS tracker; back on
-# once the prohibited-item and tracker-honesty gates are live. The storefront
-# query flag overseas=1 is ignored unless this reads "on".
-OVERSEAS_STOREFRONT = "off"
+# part D). Off 2026-10-02 07:02Z to its next deploy (owner): an overseas card
+# showed an electric shock collar and an AirTag holder titled as a GPS tracker.
+# Back on once the prohibited-item and tracker-honesty gates (34000a7) were
+# live. The storefront query flag overseas=1 is ignored unless this reads "on".
+OVERSEAS_STOREFRONT = "on"
 # read_locations + inventory scopes: the stock/price sync reads the primary
 # location and writes tracked quantities: without them the nightly sync
 # silently no-ops ("no primary location"). read_orders + the fulfilment scope
@@ -101,5 +101,5 @@ migrations_dir = "migrations"
 ENVIRONMENT = "staging"
 SHOPIFY_API_KEY = "staging-not-connected"
 SHOPIFY_APP_URL = "https://pawscout-worker-staging.bmorris0565.workers.dev"
-OVERSEAS_STOREFRONT = "off"
+OVERSEAS_STOREFRONT = "on"
 SHOPIFY_SCOPES = "read_products"
