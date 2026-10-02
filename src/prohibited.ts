@@ -19,6 +19,9 @@ const PATTERNS: readonly RegExp[] = [
   /\b(?:wireless|electronic|electric)\s+(?:dog\s+|pet\s+)?fence\b/i,
   // Remote and electronic trainers are the e-collar category.
   /\b(?:remote|electronic|electric|wireless|gps)\s+(?:dog\s+|pet\s+)?(?:training\s+collar|trainer|training\s+device)/i,
+  // ...and the same trainer with the remote named last (one was listed June to
+  // August 2026 with "static stimulation" in its description).
+  /\b(?:training\s+collar|trainer)\s+with\s+(?:a\s+)?remote\b/i,
   /\b(?:electric|electronic)\s+(?:dog\s+|pet\s+)?collar\b/i,
 ];
 

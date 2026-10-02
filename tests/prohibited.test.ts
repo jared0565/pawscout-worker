@@ -10,6 +10,9 @@ describe('prohibitedItemReason (aversive training devices, owner 2026-10-02)', (
     'Pet Wireless Electronic Fence Gps Dog Trainer',
     'Pet Dog Fence Supplies GPS Positioning Wireless Electronic Fence',
     'Remote Dog Training Collar 800m Rechargeable',
+    // Listed June to August 2026 ("static stimulation" in its description); the remote comes last.
+    'Rechargeable Dog Training Collar with Remote',
+    'Dog Trainer With Remote Control',
     'Anti Bark Shock Collar for Dogs',
     'Electronic Dog Collar With Static Correction',
   ])('blocks "%s"', (title) => {
