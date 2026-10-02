@@ -3,7 +3,42 @@ import { resolveLineRequest, extractProductHandle } from '../../shopify-catalog'
 import { deriveDestinationCountry, countryLabel } from '../freight';
 import { localWarehousesFor, sellableToBuyer } from '../../local-markets';
 import type { CjDetail } from '../../cj';
-import { sourcingGrounding, NO_MATCH_FACTS } from './sourcing';
+import { sourcingGrounding, NO_MATCH_FACTS, OVERSEAS_FACTS, COUNTRY_UNKNOWN_FACTS, NEVER_NAME_ORIGIN } from './sourcing';
+
+const ORIGIN_QUERY = `query pawscoutOrigin($id: ID!) {
+  product(id: $id) {
+    origin: metafield(namespace: "supplier", key: "origin") { value }
+    days: metafield(namespace: "supplier", key: "delivery_days") { value }
+  }
+}`;
+
+/**
+ * Owner rule 2026-09-30: an item sold from an overseas warehouse is offered
+ * with a plain "ships from overseas" note. A sourced offer carried it; the same
+ * item answered from the catalog once imported did not. Reads the
+ * `supplier.origin` metafield the worker writes on import and every night.
+ * Returns '' for a local item, an unknown origin, or any read failure: the
+ * catalog answer stays silent on where an item ships from unless it is overseas.
+ */
+async function overseasNote(ctx: AgentContext, productId: string | null | undefined): Promise<string> {
+  try {
+    if (!productId || !ctx.admin) return '';
+    const data = await ctx.admin(ORIGIN_QUERY, { id: productId }) as { product?: { origin?: { value?: string } | null; days?: { value?: string } | null } | null };
+    let origin = (data?.product?.origin?.value ?? '').trim().toUpperCase();
+    if (origin === 'UK') origin = 'GB';
+    if (!origin) return '';
+    const known = deriveDestinationCountry(ctx.conversation, ctx.thread.subject ?? '', ctx.contactEmail);
+    // No country: judged against the home market, as the sourced offer is.
+    if (localWarehousesFor(known ?? 'GB').includes(origin)) return '';
+    // `delivery_days` is the band from this origin to the UK (the nightly sync),
+    // so it is stated to a UK buyer only.
+    const days = (data?.product?.days?.value ?? '').trim();
+    const delivery = !known ? COUNTRY_UNKNOWN_FACTS
+      : known === 'GB' && days ? `Estimated delivery to ${countryLabel(known)}: ${days} days from order. You MAY state this.`
+        : 'Do not state a delivery time.';
+    return ` ${OVERSEAS_FACTS} ${delivery} ${NEVER_NAME_ORIGIN}`;
+  } catch { return ''; }
+}
 
 /**
  * Local-for-local availability check for a product question. When the sender's
@@ -90,7 +125,7 @@ export const productAgent: CategoryAgent = {
 
         return {
           confident: true, quotesFigure: true,
-          facts: baseFacts + extra,
+          facts: baseFacts + extra + await overseasNote(ctx, v.productId),
           data: { variantId: v.variantId }
         };
       }
@@ -112,6 +147,7 @@ export const productAgent: CategoryAgent = {
             confident: true,
             quotesFigure: true,
             facts: `Product "${first.title}", price ${priceRange}${variantList ? `, available variants: ${variantList}` : ''}. Answer the product question and invite the customer to pick a variant.`
+              + await overseasNote(ctx, first.productId)
           };
         }
         return hedge('Several products match; ask which specific item they mean before answering.');
