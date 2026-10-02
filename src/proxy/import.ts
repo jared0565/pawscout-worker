@@ -6,6 +6,7 @@ import type { TenantConfig } from '../types';
 import { retailPriceGbp, landedCostGbp } from '../pricing';
 import { AFFILIATE_ELIGIBLE_TAG, productAffiliateEligible } from '../affiliate';
 import { isLikelyPetProduct, signaledCategory } from './search';
+import { prohibitedInDetail } from '../prohibited';
 import { getPrimaryLocationId, setSupplierMetafields, MAX_TRACKED_QTY } from './inventory';
 import { bestLocalQty, HOME_MARKET_WAREHOUSES } from '../local-markets';
 import { debrandTitle, capTitle } from '../debrand';
@@ -176,6 +177,18 @@ export async function confirmAndImport(
     competitorCheck?: (detail: CjDetail, ourRetailGbp: number) => Promise<CompetitorSignal | null>;
   } = {}
 ): Promise<CjDetail | null> {
+  // Prohibited items first (owner 2026-10-02): an aversive training device is
+  // refused on everything the supplier says, before any curation spend or
+  // Shopify call, whichever path asked for the import.
+  const prohibited = prohibitedInDetail(detail);
+  if (prohibited) {
+    console.warn(`import refused (prohibited item) for ${detail.pid}: "${prohibited}"`);
+    await store.putLink({
+      cjPid: detail.pid, state: 'failed', failReason: 'prohibited-item', category: category ?? null,
+      failDetail: `matched "${prohibited}" in the supplier listing`.slice(0, 500),
+    });
+    return null;
+  }
   // Ghost-click curation gate (added 2026-06-12 after a "pet food" search
   // imported a kitchen vacuum sealer): clicked ghosts must pass the SAME
   // LLM relevance gate as warehouse admissions. Already-curated details

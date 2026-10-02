@@ -5,7 +5,8 @@ import { retailPriceGbp } from '../pricing';
 import { productNetAfterAds } from '../profitability';
 import { bestLocalQty, inquiryWarehouses } from '../local-markets';
 import { getDetailPreferWarehouse, stripHtml } from '../proxy/import';
-import { isPetProductStrict, titleAnswersQuery, queryTermHits, titleHasFamilies, familySearchPhrases } from '../proxy/search';
+import { isPetProductStrict, titleAnswersQuery, queryTermHits, titleHasFamilies, familySearchPhrases, trackerClaimMisleads } from '../proxy/search';
+import { prohibitedItemReason, prohibitedInDetail } from '../prohibited';
 import { debrandTitle, debrandText, capTitle } from '../debrand';
 import { laneRouteFor } from './lane-route';
 
@@ -14,7 +15,7 @@ const CJ_GAP_MS = 1100; // CJ allows about one request a second
 /** Import refusals on the item's merits (confirmAndImport's content and profit
  *  gates). Offering such an item promises a customer something the Import
  *  button refuses again; stock and error failures stay retryable. */
-const GATE_VERDICTS = new Set(['curation-score', 'not-pet-relevant', 'no-congruent-image', 'below-profit-floor']);
+const GATE_VERDICTS = new Set(['curation-score', 'not-pet-relevant', 'no-congruent-image', 'below-profit-floor', 'prohibited-item']);
 
 /** One supplier item we could sell this buyer, with the figures the import would use. */
 export interface SupplierOffer {
@@ -72,7 +73,8 @@ export async function supplierOffers(
       items = [...new Map(items.map((i) => [i.pid, i])).values()];
     }
     pids = items
-      .filter((i) => isPetProductStrict(i.nameEn) && titleAnswersQuery(query, i.nameEn, 'title') && titleHasFamilies(query, i.nameEn))
+      .filter((i) => isPetProductStrict(i.nameEn) && titleAnswersQuery(query, i.nameEn, 'title') && titleHasFamilies(query, i.nameEn)
+        && !prohibitedItemReason(i.nameEn) && !trackerClaimMisleads(query, i.nameEn, i.sellPriceUsd))
       .map((i) => ({ i, hits: queryTermHits(query, i.nameEn) }))
       // A stable sort: equal hits keep CJ's relevance order. Popularity is no
       // tie-break (a best-selling plain collar would beat the tracker asked for).
@@ -96,6 +98,9 @@ export async function supplierOffers(
     await pause(CJ_GAP_MS);
     const detail: CjDetail | null = skuDetail?.pid === pid ? skuDetail : await getDetailPreferWarehouse(store, cj, pid);
     if (!detail) continue;
+    // The full listing, not only the title: a shock mode is often named only in
+    // the description or a variant (owner 2026-10-02).
+    if (prohibitedInDetail(detail)) continue;
     // Owner rule: the ACTUAL information from CJ. The detail may come from the
     // warehouse row or the 30-day cache, so stock by warehouse is always read
     // live; an unreadable answer skips the item rather than trusting the cache.

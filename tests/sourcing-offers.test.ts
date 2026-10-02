@@ -219,3 +219,27 @@ describe('supplierOffers', () => {
     expect(offers.map((o) => [o.pid, o.handle])).toEqual([['G1', 'gps-tracker-collar-for-dogs-and-cats']]);
   });
 });
+
+describe('supplierOffers: prohibited items and tracker honesty (owner 2026-10-02)', () => {
+  it('never offers an item whose supplier text names a shock mode', async () => {
+    const store = await seededStore();
+    const shock = { ...det('S1', 'Smart Dog Bark Control Collar', { CN: 900 }), descriptionHtml: '<p>Modes: sound, vibration, shock</p>' };
+    const plain = { ...det('S2', 'Dog Bark Control Collar Vibration', { CN: 900 }), descriptionHtml: '<p>Modes: sound, vibration</p>' };
+    const offers = await supplierOffers(store, fakeCj([shock, plain]), CFG, 'dog bark collar', 'GB', { limit: 3, pause: noPause });
+    expect(offers.map((o) => o.pid)).toEqual(['S2']);
+  });
+
+  it('offers no AirTag holder and nothing under USD 5 for a tracker query', async () => {
+    const store = await seededStore();
+    const holder = det('H1', 'AirTag Holder GPS Tracker Pet Collar', { CN: 900 }, 3);
+    const cheap = det('C9', 'GPS Tracker For Pet Cats And Dogs', { CN: 900 }, 1);
+    const offers = await supplierOffers(store, fakeCj([holder, cheap, TRACKER]), CFG, 'gps tracker', 'GB', { limit: 3, pause: noPause });
+    expect(offers.map((o) => o.pid)).toEqual(['T1']);
+  });
+
+  it('skips an item the import already refused as prohibited', async () => {
+    const store = await seededStore();
+    await store.putLink({ cjPid: 'T1', state: 'failed', failReason: 'prohibited-item' });
+    expect(await supplierOffers(store, fakeCj([TRACKER]), CFG, 'gps tracker', 'GB', { limit: 3, pause: noPause })).toEqual([]);
+  });
+});

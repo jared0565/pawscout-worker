@@ -449,3 +449,53 @@ describe('storefront overseas cards (owner choice 2026-09-30)', () => {
     expect(calls).toEqual(['gps tracker dog collar@CN']);
   });
 });
+
+describe('prohibited items and tracker honesty on storefront cards (owner 2026-10-02)', () => {
+  // Production's own gates admit a USD 1 item, so the tracker check, not the
+  // price band, has to be what drops it.
+  const LOOSE: TenantConfig = { ...CFG, gates: { ...CFG.gates, priceMin: 0.5 } };
+  const TRACKER = item({ pid: 'T1', nameEn: 'Smart GPS Pet Tracker Dog Collar', sellPriceUsd: 12 });
+  const FENCE = item({ pid: 'F1', nameEn: 'Smart GPS Wireless Fence Dog Training Collar', sellPriceUsd: 35 });
+  const HOLDER = item({ pid: 'H1', nameEn: 'Waterproof AirTag GPS Tracker Holder Pet Collar', sellPriceUsd: 3 });
+  const CHEAP = item({ pid: 'C1', nameEn: 'GPS Tracker For Pet Cats And Dogs', sellPriceUsd: 1 });
+  function laneCj(byCountry: Record<string, CjSearchItem[]>): CjClient {
+    return { search: async () => [], searchByWarehouse: async (_kw: string, cc: string) => byCountry[cc] ?? [] } as unknown as CjClient;
+  }
+  async function storeWithRoute() {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    await store.upsertLogisticsRoute({ from: 'CN', to: 'GB', channel: 'CJPacket', transitMin: 5, transitMax: 9, agingRaw: '5-9', repVid: 'v', freightCostUsd: 4 });
+    return store;
+  }
+
+  it('drops a remote training collar from the live cards and keeps a plain one', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const items = [item({ pid: 'R1', nameEn: 'Remote Dog Training Collar' }), item({ pid: 'M1', nameEn: 'Martingale Dog Training Collar' })];
+    const cards = await searchBackfill(store, fakeCj(items), CFG, 'dog training collar', 0, 12);
+    expect(cards.map((c) => c.pid)).toEqual(['M1']);
+  });
+
+  it('drops the shock fence collar, the AirTag holder and the USD 1 tracker from overseas cards', async () => {
+    const store = await storeWithRoute();
+    const cards = await searchBackfill(store, laneCj({ CN: [FENCE, HOLDER, CHEAP, TRACKER] }), LOOSE, 'gps tracker', 0, 12, { buyerCountry: 'GB', overseas: true });
+    expect(cards.map((c) => c.pid)).toEqual(['T1']);
+  });
+
+  it('still shows an AirTag holder to a shopper who asked for one', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const holder = item({ pid: 'H2', nameEn: 'Waterproof AirTag Holder Dog Collar', sellPriceUsd: 3 });
+    const cards = await searchBackfill(store, fakeCj([holder]), LOOSE, 'airtag holder dog collar', 0, 12);
+    expect(cards.map((c) => c.pid)).toEqual(['H2']);
+  });
+
+  it('drops a warehouse row whose supplier text names a shock mode', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const row = (pid: string, title: string, descriptionHtml: string) => store.putWarehouseProduct({
+      cjPid: pid, category: 'Pet Supplies', title, priceUsd: 20, listedNum: 100, stock: 50,
+      detailJson: JSON.stringify({ pid, nameEn: title, images: [`https://i/${pid}.jpg`], descriptionHtml, variants: [{ vid: `${pid}v`, name: 'Black', sellPriceUsd: 20, sku: 's' }], listedNum: 100, categoryName: 'Pet', origins: { GB: 50 } }),
+    });
+    await row('W1', 'Dog Bark Control Collar', '<p>Modes: sound, vibration, shock</p>');
+    await row('W2', 'Dog Bark Control Collar Vibration', '<p>Modes: sound, vibration</p>');
+    const cards = await searchBackfill(store, fakeCj([]), CFG, 'dog bark collar', 0, 12, { buyerCountry: 'GB', liveFallback: false });
+    expect(cards.map((c) => c.pid)).toEqual(['W2']);
+  });
+});

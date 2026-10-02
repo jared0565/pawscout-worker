@@ -8,6 +8,7 @@ import { bestLocalQty, localWarehousesFor, inquiryWarehouses } from '../local-ma
 import { resolveLogistics, doorToDoorBand, formatBand } from '../logistics';
 import { overseasCardFreightUsd } from '../sourcing/lane-route';
 import { productNetAfterAds } from '../profitability';
+import { prohibitedItemReason, prohibitedInDetail } from '../prohibited';
 
 export const CACHE_TTL_DAYS = 30; // PS retention promise: cached supplier data lives 30 days
 const CJ_GAP_MS = 1100; // CJ allows about one request a second
@@ -304,6 +305,24 @@ export function familySearchPhrases(keyword: string): string[] {
   return queryFamilies(keyword).map((f) => FAMILY_SEARCH[f]).filter((p): p is string => !!p);
 }
 
+/** Below this supplier price a listing titled "GPS tracker" is not one (an AirTag holder sold at USD 1). */
+export const TRACKER_MIN_USD = 5;
+const AIRTAG = /\bair\s?tags?\b/i;
+
+/**
+ * A tracker search must answer with trackers (owner 2026-10-02): an overseas
+ * card titled "GPS Tracker For Pet Cats And Dogs" at USD 1 was an AirTag
+ * holder. When the query names the tracker family and does not itself ask for
+ * an AirTag, an AirTag item or anything under TRACKER_MIN_USD is not an answer.
+ * "airtag" folds into the tracker family, so the AirTag ask is read from the
+ * query's own words.
+ */
+export function trackerClaimMisleads(keyword: string, title: string, priceUsd: number | undefined): boolean {
+  if (!queryFamilies(keyword).includes('track') || AIRTAG.test(keyword)) return false;
+  if (AIRTAG.test(title)) return true;
+  return typeof priceUsd === 'number' && Number.isFinite(priceUsd) && priceUsd < TRACKER_MIN_USD;
+}
+
 /** The product words of a query or title: stemmed, stopwords and animal words dropped, synonyms folded. */
 export function productTerms(text: string): string[] {
   return [...new Set(keywordTokens(text).filter((t) => !ANIMAL_WORDS.has(t)).map(foldTerm))];
@@ -347,6 +366,9 @@ export function queryTermHits(keyword: string, title: string): number {
 export function storefrontLivePasses(item: CjSearchItem, gates: Gates, keyword: string): boolean {
   if (item.listedNum < gates.popularityFloor) return false;
   if (item.sellPriceUsd < gates.priceMin || item.sellPriceUsd > gates.priceMax) return false;
+  // Never a card: aversive training devices, or a tracker search answered by a
+  // non-tracker (owner 2026-10-02). Live items carry only a title here.
+  if (prohibitedItemReason(item.nameEn) || trackerClaimMisleads(keyword, item.nameEn, item.sellPriceUsd)) return false;
   return titleAnswersQuery(keyword, item.nameEn, gates.relevance);
 }
 
@@ -398,8 +420,20 @@ function warehousePasses(row: WarehouseRow, cfg: TenantConfig, keyword: string):
     row.price_usd >= cfg.gates.priceMin &&
     row.price_usd <= cfg.gates.priceMax &&
     row.stock >= cfg.floors.stockFloor &&
-    titleAnswersQuery(keyword, row.title, cfg.gates.relevance)
+    titleAnswersQuery(keyword, row.title, cfg.gates.relevance) &&
+    !warehouseRowProhibited(row) &&
+    !trackerClaimMisleads(keyword, row.title, row.price_usd)
   );
+}
+
+/** A warehouse row holds the full supplier detail, so its description and variants are read too. */
+function warehouseRowProhibited(row: WarehouseRow): boolean {
+  try {
+    const d = JSON.parse(row.detail) as { nameEn?: string; descriptionHtml?: string; variants?: { name: string }[] };
+    return prohibitedInDetail({ nameEn: `${row.title} ${d.nameEn ?? ''}`, descriptionHtml: d.descriptionHtml, variants: d.variants }) !== null;
+  } catch {
+    return prohibitedItemReason(row.title) !== null;
+  }
 }
 
 function firstImage(row: WarehouseRow): string {
