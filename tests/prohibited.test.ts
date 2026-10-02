@@ -15,6 +15,11 @@ describe('prohibitedItemReason (aversive training devices, owner 2026-10-02)', (
     'Dog Trainer With Remote Control',
     'Anti Bark Shock Collar for Dogs',
     'Electronic Dog Collar With Static Correction',
+    // Live local cards on 2026-10-02, after the gates shipped: two words sit
+    // between "Electric" and the collar, and the GPS sits inside the fence.
+    '800M Electric Pet Dog Training E-Collar Anti-Bark Obedience Remote Control LCD',
+    '2 In 1 Dog GPS Fence Tracker Wireless GPS Dog Fence GPS Dog Collar With 32-2887FT Radius IPX6 Waterproof',
+    'Rechargeable Training E-Collar for Large Dogs',
   ])('blocks "%s"', (title) => {
     expect(prohibitedItemReason(title)).not.toBeNull();
   });
@@ -36,6 +41,11 @@ describe('prohibitedItemReason (aversive training devices, owner 2026-10-02)', (
     'Martingale Training Collar for Dogs',
     'Dog Training Clicker',
     'LED Electronic Light Up Dog Collar',
+    // A colour, not a current.
+    'Electric Blue Nylon Dog Collar',
+    'Electric Dog Nail Grinder PET Claw Trimmer, Low Vibration Comfort',
+    'Dog GPS Tracker Real Time, Anti-Lost Pet Tracker With Geofence, Flash Light And Sound Alarm',
+    '6000mAh Magnetic GPS Tracker For Vehicles Real Time Car Tracking Device With Geo Fence & Tamper Alarm',
   ])('keeps "%s"', (title) => {
     expect(prohibitedItemReason(title)).toBeNull();
   });
