@@ -15,14 +15,20 @@ const PATTERNS: readonly RegExp[] = [
   /\b(?:electric(?:al)?|static)\s+(?:shock|stimulation|correction|electricity|pulse)/i,
   // "shock" as a word, except the shock-absorbing and anti-shock lead family.
   /(?<!\banti[\s-]?)\bshock\b(?![\s-]*(?:absorb\w*|proof|resist\w*))/i,
-  // Containment fences: a wireless or electronic fence corrects the dog.
-  /\b(?:wireless|electronic|electric)\s+(?:dog\s+|pet\s+)?fence\b/i,
+  // Containment fences: a wireless, electronic or GPS fence corrects the dog
+  // ("Wireless GPS Dog Fence GPS Dog Collar", a US card on 2026-10-02).
+  /\b(?:wireless|electronic|electric|gps)\s+(?:gps\s+)?(?:dog\s+|pet\s+)?fence\b/i,
   // Remote and electronic trainers are the e-collar category.
   /\b(?:remote|electronic|electric|wireless|gps)\s+(?:dog\s+|pet\s+)?(?:training\s+collar|trainer|training\s+device)/i,
   // ...and the same trainer with the remote named last (one was listed June to
   // August 2026 with "static stimulation" in its description).
   /\b(?:training\s+collar|trainer)\s+with\s+(?:a\s+)?remote\b/i,
-  /\b(?:electric|electronic)\s+(?:dog\s+|pet\s+)?collar\b/i,
+  // An electric collar, with up to two animal words and "training" between
+  // ("800M Electric Pet Dog Training E-Collar", a GB card on 2026-10-02). A
+  // colour ("Electric Blue Dog Collar") puts another word in the way.
+  /\b(?:electric|electronic)\s+(?:(?:dog|pet|cat)\s+){0,2}(?:training\s+)?(?:e-?)?collar\b/i,
+  // A "training e-collar" is the remote trainer; the recovery cone is never "training".
+  /\btraining\s+e-?collar\b/i,
 ];
 
 /** The words that make an item prohibited, or null when it is allowed. */
