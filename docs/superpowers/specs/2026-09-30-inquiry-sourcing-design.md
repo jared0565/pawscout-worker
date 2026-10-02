@@ -2,7 +2,8 @@
 
 Status: BUILT and live (2026-09-30, merge daf71b4, production 12:10Z). APPROVED by the owner
 2026-09-30 ("Approve, owner imports"; storefront "Show overseas too", added as part D). Part D
-stays dormant until the theme sends overseas=1 (channel round 288).
+is live since 2026-10-02 10:49Z (`OVERSEAS_STOREFRONT` "on", merge a0e7653), behind the
+prohibited-item and tracker-honesty gates (34000a7, widened in d6b6ba4).
 
 ## Why
 
