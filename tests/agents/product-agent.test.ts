@@ -1,9 +1,11 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
 import { TenantStore } from '../../src/tenant-store';
-import { DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_FULFIL } from '../../src/types';
+import { DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_FULFIL, DEFAULT_LLM } from '../../src/types';
 import type { CjClient, CjDetail } from '../../src/cj';
+import { LlmClient } from '../../src/llm';
 import { productAgent } from '../../src/inbox/agents/product';
+import { NO_MATCH_FACTS } from '../../src/inbox/agents/sourcing';
 
 const mkCtx = (admin: any, latest = 'is the blue harness good for puppies?') => ({
   store: {} as any, cfg: {} as any, admin, thread: { subject: '' }, conversation: latest,
@@ -357,5 +359,105 @@ describe('productAgent catalog answer for an item that ships from overseas', () 
     expect(g.confident).toBe(true);
     expect(g.facts).toContain('EU');
     expect(g.facts).toContain('ships from overseas');
+  });
+});
+
+// Kehinde thread (2026-10-02): "any anti escape pet accessory in your store?"
+// title-searched the whole phrase, matched nothing, and offered to source a car
+// bag while a GPS tracker collar and a dog playpen were live. Imran thread
+// (2026-10-04): "activepaw.co.uk for accessories?" was told "we do not stock a
+// matching accessory" beside a live Pet Accessories collection. A question about
+// a KIND of product is matched against the whole live catalogue.
+describe('productAgent on a question about a kind of product (catalogue matcher)', () => {
+  const variant = (id: string, price: string) => ({ edges: [{ node: { id, title: 'Default Title', sku: 'S', price, availableForSale: true, inventoryQuantity: 9 } }] });
+  const PRODUCTS: Record<string, unknown> = {
+    'gps-tracker-collar': { id: 'gid://shopify/Product/5', title: 'GPS Tracker Collar for Dogs and Cats', handle: 'gps-tracker-collar', variants: variant('gid://shopify/ProductVariant/50', '40.99') },
+    'metal-dog-playpen': { id: 'gid://shopify/Product/6', title: '6-Panel Metal Dog Playpen', handle: 'metal-dog-playpen', variants: variant('gid://shopify/ProductVariant/60', '62.99') },
+    'pet-glasses': { id: 'gid://shopify/Product/7', title: 'Pet Glasses Windproof Eye Protection Accessories', handle: 'pet-glasses', variants: variant('gid://shopify/ProductVariant/70', '10.99') },
+  };
+  const ORIGIN: Record<string, string> = { 'gid://shopify/Product/5': 'CN', 'gid://shopify/Product/6': 'GB', 'gid://shopify/Product/7': 'CN' };
+  const LIST = {
+    products: { nodes: [
+      { handle: 'gps-tracker-collar', title: 'GPS Tracker Collar for Dogs and Cats', productType: '', description: 'A pet collar supplied with a GPS tracker for helping locate dogs and cats.', collections: { nodes: [{ handle: 'pet-accessories' }] } },
+      { handle: 'metal-dog-playpen', title: '6-Panel Metal Dog Playpen', productType: '', description: 'Create a safe, secure space for your dog.', collections: { nodes: [{ handle: 'pet-accessories' }] } },
+      { handle: 'pet-glasses', title: 'Pet Glasses Windproof Eye Protection Accessories', productType: 'Pet Accessories', description: 'Windproof eye protection.', collections: { nodes: [{ handle: 'pet-accessories' }] } },
+    ] },
+    collections: { nodes: [{ handle: 'pet-accessories', title: 'Pet Accessories' }] },
+  };
+  const admin = async (query: string, vars?: Record<string, unknown>) => {
+    if (query.includes('pawscoutCatalogList')) return LIST;
+    if (query.includes('pawscoutOrigin')) return { product: { origin: { value: ORIGIN[String(vars?.id)] }, days: { value: '5-14' } } };
+    if (query.includes('productByHandle')) return { productByHandle: PRODUCTS[String(vars?.handle)] ?? null };
+    // The title search: any phrase with "accessories" in it finds the one product
+    // with that word in its title, which is not what a range question asks for.
+    return { products: { edges: [{ node: PRODUCTS['pet-glasses'] }] } };
+  };
+  const llmAnswering = (content: string) => new LlmClient({ openrouter: 'k' }, (async () =>
+    new Response(JSON.stringify({ choices: [{ message: { content } }], usage: { cost: 0 } }), { status: 200 })) as unknown as typeof fetch);
+  const ctx = (message: string, matcher: string | null, productQuery: string | null = null) => ({
+    store: { logLlmUsage: async () => {} }, cfg: { llm: DEFAULT_LLM }, admin, cj: null,
+    llm: matcher === null ? null : llmAnswering(matcher),
+    thread: { subject: '' }, conversation: message, latestMessage: message,
+    contactEmail: 'kbadmus896@gmail.com', customerName: null, productQuery,
+  }) as any;
+  const ANTI_ESCAPE = 'Hi Activepaw, any anti escape pet accessory in your store please?';
+
+  it('answers with the catalogue items that meet the need, each with its price, link and own description', async () => {
+    const g = await productAgent.ground(ctx(ANTI_ESCAPE, '{"handles":["gps-tracker-collar","metal-dog-playpen"],"collection":null}', 'anti escape pet accessory'));
+    expect(g.confident).toBe(true);
+    expect(g.quotesFigure).toBe(true);
+    expect(g.holdReason).toBeUndefined();
+    for (const s of ['GPS Tracker Collar for Dogs and Cats', '40.99', '6-Panel Metal Dog Playpen', '62.99',
+      'https://activepaw.co.uk/products/gps-tracker-collar', 'https://activepaw.co.uk/products/metal-dog-playpen',
+      'helping locate dogs and cats', 'safe, secure space']) expect(g.facts).toContain(s);
+    expect(g.facts).not.toContain('We do not stock');
+    expect(g.facts).not.toContain('Not in our catalog');
+  });
+
+  it('keeps the overseas note on the item held overseas, and only on that one', async () => {
+    const g = await productAgent.ground(ctx(ANTI_ESCAPE, '{"handles":["gps-tracker-collar","metal-dog-playpen"],"collection":null}', 'anti escape pet accessory'));
+    expect(g.facts).toContain('6-Panel Metal Dog Playpen');
+    expect(g.facts.match(/ships from overseas/g)?.length).toBe(1);
+    expect(g.facts).toContain('do not state a delivery time');
+    expect(g.facts).not.toMatch(/\bCN\b|China/);
+  });
+
+  it('answers one matched item exactly as the link path does, plus its own description', async () => {
+    const g = await productAgent.ground(ctx('is there something to help find my cat if she gets out?', '{"handles":["gps-tracker-collar"],"collection":null}'));
+    expect(g.confident).toBe(true);
+    expect(g.facts).toContain('Resolved product "GPS Tracker Collar for Dogs and Cats');
+    expect(g.facts).toContain('40.99');
+    expect(g.facts).toContain('helping locate dogs and cats');
+    expect(g.facts).toContain('ships from overseas');
+  });
+
+  it('answers a whole-range question with the real collection and what it holds, quoting no price', async () => {
+    const g = await productAgent.ground(ctx('activepaw.co.uk for accessories?', '{"handles":[],"collection":"pet-accessories"}'));
+    expect(g.confident).toBe(true);
+    expect(g.quotesFigure).toBe(false);
+    expect(g.facts).toContain('https://activepaw.co.uk/collections/pet-accessories');
+    expect(g.facts).toContain('Pet Accessories');
+    expect(g.facts).toContain('GPS Tracker Collar for Dogs and Cats');
+    expect(g.facts).not.toContain('We do not stock');
+    expect(g.facts).not.toMatch(/GBP|\d+\.\d{2}/);
+  });
+
+  it('lets the matcher, not a title substring, decide a range question', async () => {
+    const g = await productAgent.ground(ctx('do you sell pet accessories?', '{"handles":[],"collection":"pet-accessories"}', 'pet accessories'));
+    expect(g.facts).not.toContain('Resolved product "Pet Glasses');
+    expect(g.facts).toContain('https://activepaw.co.uk/collections/pet-accessories');
+  });
+
+  it('goes to the supplier lookup, not a title substring, when nothing in the catalogue fits', async () => {
+    const g = await productAgent.ground(ctx('do you sell horse saddle accessories?', '{"handles":[],"collection":null}', 'horse saddle accessories'));
+    expect(g.confident).toBe(false);
+    expect(g.facts).toBe(NO_MATCH_FACTS);
+  });
+
+  it('keeps the title search when the matcher cannot answer (no model, garbage, or an invented handle)', async () => {
+    for (const matcher of [null, 'not json', '{"handles":["gps-collar-xl"],"collection":null}']) {
+      const g = await productAgent.ground(ctx('do you sell pet accessories?', matcher, 'pet accessories'));
+      expect(g.facts).toContain('Resolved product "Pet Glasses Windproof Eye Protection Accessories');
+    }
   });
 });

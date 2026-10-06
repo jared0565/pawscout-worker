@@ -463,7 +463,7 @@ export async function composeDraftForThread(
   const ctx: AgentContext = {
     store, cfg, admin, cj, thread: t, conversation, latestMessage: latestInbound,
     contactEmail: t.contact_email, customerName: contact?.name ?? null,
-    productQuery: reading?.productQuery ?? null,
+    productQuery: reading?.productQuery ?? null, llm,
   };
   const grounding = await agent.ground(ctx); // never throws; miss => { confident:false }
 
