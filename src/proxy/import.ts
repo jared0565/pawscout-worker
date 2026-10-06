@@ -938,9 +938,9 @@ export async function reconcileCatalogImages(
   return { scanned, titleFixed, reordered, reimaged, worklisted, nextCursor };
 }
 
-const PRODUCT_DESC = `query pawscoutDesc($id: ID!) { product(id: $id) { title descriptionHtml } }`;
+export const PRODUCT_DESC = `query pawscoutDesc($id: ID!) { product(id: $id) { title descriptionHtml } }`;
 
-const UPDATE_DESC = `mutation pawscoutDescSet($input: ProductInput!) {
+export const UPDATE_DESC = `mutation pawscoutDescSet($input: ProductInput!) {
   productUpdate(input: $input) { product { id } userErrors { field message } }
 }`;
 

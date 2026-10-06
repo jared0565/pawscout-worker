@@ -51,6 +51,7 @@ import { verifyUnsubToken } from './retention';
 import { searchBackfill, normalizeKeyword } from './proxy/search';
 import { LlmClient, classifyKeyword, curateProduct, pickHeroImage, rewriteDescription } from './llm';
 import { buildPreview, getDetailPreferWarehouse, curateDetailImages, confirmAndImport, reconcileAddonVisibility, reconcileHeroImages, reconcileCatalogImages, reconcileDescriptions, reconcileCategories } from './proxy/import';
+import { setProductNote } from './proxy/product-note';
 import { makeAdminGraphql } from './shopify-admin';
 import { getProfitConsole, saveProfitFlags, archiveProfitProduct, clearProfitDecisions, setProfitKeepAction, rejectProfitMatch, recalibrateProfitDrops } from './profit-console';
 import { runProfitAgent, competitorSignal, judgeImportedLink } from './profitability';
@@ -1543,6 +1544,27 @@ app.post('/api/descriptions', async (c) => {
   } catch (e) {
     console.warn(`description sweep failed: ${(e as Error).message}`);
     return c.json({ ok: false, error: `Sweep failed: ${(e as Error).message}` }, 500);
+  }
+});
+// Owner product note: append one owner-approved factual line to ONE product's
+// description, for a fact the supplier states only in its images. Body
+// { handle, text }; the rules live in src/proxy/product-note.ts.
+app.post('/api/products/note', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: { handle?: unknown; text?: unknown } = {};
+  try { body = await c.req.json(); } catch { /* setProductNote refuses the missing fields */ }
+  const store = new TenantStore(c.env.DB, s);
+  const tenant = await store.getTenant();
+  if (!tenant?.access_token_enc) return c.json({ ok: false, error: 'Not configured' }, 400);
+  const vault = await Vault.fromMasterKey(c.env.PAWSCOUT_MASTER_KEY);
+  const accessToken = await vault.open(tenant.dek_wrapped, tenant.access_token_enc);
+  const admin = makeAdminGraphql(s, accessToken);
+  try {
+    const r = await setProductNote(store, admin, body.handle, body.text);
+    return r.ok ? c.json(r) : c.json(r, r.status as 400 | 404 | 502);
+  } catch (e) {
+    console.warn(`product note failed: ${(e as Error).message}`);
+    return c.json({ ok: false, error: `Product note failed: ${(e as Error).message}` }, 500);
   }
 });
 // Category re-audit (LLM-free): re-file products whose title unambiguously
