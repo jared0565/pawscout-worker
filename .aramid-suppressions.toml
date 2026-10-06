@@ -121,3 +121,19 @@ tool = "semgrep"
 rule = "owasp-top-ten.a03-injection.javascript-dangerous-function-constructor"
 path = "tests/console.test.ts"
 reason = "Test helper executes the console's own importForInquiry() (cut from consolePage() output, same process) against a fake api() and fake thread state to prove the status poll carries the threadId, the thread reopens after a redraft, and unsaved draft edits are never redrafted or reloaded; no external input, test-only, not in the Worker bundle."
+
+# 2026-10-06: the eighth `new Function(...)` of this rule, and the first outside
+# tests/console.test.ts: tests/affiliate-apply.test.ts:535, surfaced by the full
+# scan `aramid check --gate all --all` (aramid 0.20.3) the same day. Verified at
+# source: the test renders the affiliate apply form with renderApplyForm() in
+# the same run, cuts the page's own inline <script> bodies out of that HTML,
+# and wraps each in `return (async function(){ ... })` only to prove it parses
+# (the outer function is never called), the same syntax guard console.test.ts
+# applies to src/console/page.ts. No external or user-supplied input;
+# test-only; vitest never ships to the Worker bundle.
+[[suppress]]
+id = "ca50661e79135fa88379f26165e021e0f5605e8d13bf26d16bdb01360e835386"
+tool = "semgrep"
+rule = "owasp-top-ten.a03-injection.javascript-dangerous-function-constructor"
+path = "tests/affiliate-apply.test.ts"
+reason = "Test compiles (never calls) the affiliate apply page's own inline script, cut from renderApplyForm() output in the same process, to prove it is valid JavaScript; no external input, test-only, not in the Worker bundle."
