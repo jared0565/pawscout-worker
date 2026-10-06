@@ -276,4 +276,86 @@ describe('productAgent on a catalog miss (inquiry sourcing)', () => {
     expect(g.facts).toContain('GPS Pet Tracker for Dog Collars');
     expect(g.facts).toContain('27.49');
   });
+  it('keeps the overseas note when the imported item is answered from its listing', async () => {
+    const c = await ctx('Do you sell a trackable dog collar? I live in England.');
+    await c.store.putLink({ cjPid: 'T1', state: 'imported', handle: 'smart-gps-pet-tracker' });
+    c.admin = async (query: string, vars?: Record<string, unknown>) => {
+      if (query.includes('pawscoutOrigin')) return { product: { origin: { value: 'CN' }, days: { value: '5-14' } } };
+      if (query.includes('productByHandle') && vars?.handle === 'smart-gps-pet-tracker') {
+        return { productByHandle: { id: 'gid://shopify/Product/9', title: 'GPS Pet Tracker for Dog Collars', handle: 'smart-gps-pet-tracker', variants: { edges: [{ node: { id: 'gid://shopify/ProductVariant/90', title: 'Default Title', sku: 'T1', price: '27.49', availableForSale: true, inventoryQuantity: 50 } }] } } };
+      }
+      return query.includes('productByHandle') ? { productByHandle: null } : { products: { edges: [] } };
+    };
+    const g = await productAgent.ground(c);
+    expect(g.holdReason).toBeUndefined();
+    expect(g.facts).toContain('27.49');
+    expect(g.facts).toContain('ships from overseas');
+  });
+});
+
+// Owner rule 2026-09-30: an item sold from an overseas warehouse carries a plain
+// "ships from overseas" note. A sourced offer had it; the same item answered
+// from the catalog once imported did not (the GBP 40.99 GPS collar, origin CN).
+describe('productAgent catalog answer for an item that ships from overseas', () => {
+  const PRODUCT = { id: 'gid://shopify/Product/5', title: 'GPS Tracker Collar', variants: { edges: [{ node: { id: 'gid://shopify/ProductVariant/50', title: 'Default Title', sku: 'G1', price: '40.99', availableForSale: true, inventoryQuantity: 9 } }] } };
+  const TWO_VARIANTS = { ...PRODUCT, variants: { edges: [
+    { node: { id: 'gid://shopify/ProductVariant/51', title: 'EU', price: '40.99', availableForSale: true, inventoryQuantity: 9 } },
+    { node: { id: 'gid://shopify/ProductVariant/52', title: 'US', price: '42.99', availableForSale: true, inventoryQuantity: 9 } },
+  ] } };
+  /** The catalog search answers with `product`; the supplier metafield read answers with `origin`. */
+  const adminFor = (origin: string | null, product: unknown = PRODUCT) => async (query: string) => {
+    if (query.includes('pawscoutOrigin')) {
+      return { product: origin === null ? null : { origin: { value: origin }, days: { value: '5-14' } } };
+    }
+    return { products: { edges: [{ node: product }] } };
+  };
+  const ask = (admin: unknown, msg: string) => productAgent.ground(mkCtx(admin, msg));
+
+  it('says it ships from overseas and states the UK band to a UK buyer', async () => {
+    const g = await ask(adminFor('CN'), 'does the gps tracker collar work for cats? I live in England.');
+    expect(g.confident).toBe(true);
+    expect(g.facts).toContain('40.99');
+    expect(g.facts).toContain('ships from overseas');
+    expect(g.facts).toContain('5-14 days');
+    expect(g.facts).not.toMatch(/\bCN\b|China/);
+  });
+
+  it('asks for the country, with no delivery time, when it is not known', async () => {
+    const g = await ask(adminFor('CN'), 'does the gps tracker collar work for cats?');
+    expect(g.facts).toContain('ships from overseas');
+    expect(g.facts).toContain('do not state a delivery time');
+    expect(g.facts).not.toContain('5-14');
+  });
+
+  it('states no UK band to a buyer in another country we serve', async () => {
+    const g = await ask(adminFor('CN'), 'does the gps tracker collar work for cats? I live in the United States.');
+    expect(g.facts).toContain('ships from overseas');
+    expect(g.facts).not.toContain('5-14');
+  });
+
+  it('leaves a local item exactly as it was', async () => {
+    const msg = 'does the gps tracker collar work for cats? I live in England.';
+    const local = await ask(adminFor('GB'), msg);
+    const unknown = await ask(adminFor(null), msg);
+    expect(local.facts).toBe(unknown.facts);
+    expect(local.facts).not.toContain('overseas');
+  });
+
+  it('keeps the normal answer when the origin cannot be read', async () => {
+    const msg = 'does the gps tracker collar work for cats? I live in England.';
+    const throwing = async (query: string) => {
+      if (query.includes('pawscoutOrigin')) throw new Error('throttled');
+      return { products: { edges: [{ node: PRODUCT }] } };
+    };
+    const g = await ask(throwing, msg);
+    expect(g.confident).toBe(true);
+    expect(g.facts).toBe((await ask(adminFor(null), msg)).facts);
+  });
+
+  it('adds the note when several variants of the one product match', async () => {
+    const g = await ask(adminFor('CN', TWO_VARIANTS), 'does the gps tracker collar work for cats? I live in England.');
+    expect(g.confident).toBe(true);
+    expect(g.facts).toContain('EU');
+    expect(g.facts).toContain('ships from overseas');
+  });
 });
