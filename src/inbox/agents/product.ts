@@ -4,7 +4,7 @@ import { deriveDestinationCountry, countryLabel } from '../freight';
 import { localWarehousesFor, sellableToBuyer } from '../../local-markets';
 import type { CjDetail } from '../../cj';
 import { sourcingGrounding, NO_MATCH_FACTS, OVERSEAS_FACTS, COUNTRY_UNKNOWN_FACTS, NEVER_NAME_ORIGIN } from './sourcing';
-import { loadCatalog, matchCatalog, type Catalog, type CatalogItem } from '../catalog-match';
+import { loadCatalog, matchCatalog, pickedDescriptions, type Catalog } from '../catalog-match';
 
 const STORE_URL = 'https://activepaw.co.uk';
 const NEXT_STEP = ' Suggest one concrete next step (view the product page or reply with the variant they want).';
@@ -203,9 +203,9 @@ async function sourceOrHedge(ctx: AgentContext, query: string): Promise<Groundin
 
 /** What a product's own page says it is: the only description a reply may use.
  * A tracker helps FIND a pet that got out; it does not stop one escaping. */
-function ownWords(item: CatalogItem | undefined): string {
-  return item?.description
-    ? ` What it is, from its own product page (describe it only this way, and never say it does something this does not say): ${item.description}`
+function ownWords(description: string | undefined): string {
+  return description
+    ? ` What it is, from its own product page (describe it only this way, and never say it does something this does not say): ${description}`
     : '';
 }
 
@@ -233,7 +233,10 @@ async function catalogGrounding(ctx: AgentContext, typed: string): Promise<Groun
     { message: ctx.latestMessage, subject: ctx.thread.subject ?? '', productQuery: ctx.productQuery ?? null }, catalog);
   if (!match) return null;
 
-  const byHandle = new Map(catalog.products.map((p) => [p.handle, p]));
+  // The whole page of each picked item (the list's cut can drop a requirement
+  // such as the collar's SIM line), falling back to the list's own words.
+  const full = await pickedDescriptions(ctx.admin, match.handles);
+  const words = (handle: string) => ownWords(full.get(handle) ?? catalog.products.find((p) => p.handle === handle)?.description);
   const listed: { handle: string; g: Grounding }[] = [];
   for (const handle of match.handles) listed.push({ handle, g: await groundListed(ctx, handle) });
   // Purchasable for this sender, with a real price. An item the local-for-local
@@ -243,11 +246,11 @@ async function catalogGrounding(ctx: AgentContext, typed: string): Promise<Groun
 
   if (sellable.length === 1 && !range) {
     const { handle, g } = sellable[0];
-    return { ...g, facts: g.facts + ownWords(byHandle.get(handle)) };
+    return { ...g, facts: g.facts + words(handle) };
   }
   if (sellable.length > 0) {
     const items = sellable.map(({ handle, g }, i) =>
-      `Item ${i + 1}: ${g.facts.replace(NEXT_STEP, '')} Link: ${STORE_URL}/products/${handle}.${ownWords(byHandle.get(handle))}`);
+      `Item ${i + 1}: ${g.facts.replace(NEXT_STEP, '')} Link: ${STORE_URL}/products/${handle}.${words(handle)}`);
     return {
       confident: true, quotesFigure: true,
       facts: 'The sender asked about a kind of product, not one named item. These items from our live catalogue fit what they asked. '

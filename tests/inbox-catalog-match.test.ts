@@ -4,7 +4,7 @@ import { env, applyD1Migrations } from 'cloudflare:test';
 import { TenantStore } from '../src/tenant-store';
 import { LlmClient } from '../src/llm';
 import { DEFAULT_LLM } from '../src/types';
-import { loadCatalog, validateMatch, matchCatalog, CATALOG_MATCH_MARKER, type Catalog } from '../src/inbox/catalog-match';
+import { loadCatalog, validateMatch, matchCatalog, pickedDescriptions, REPLY_DESCRIPTION_MAX, CATALOG_MATCH_MARKER, type Catalog } from '../src/inbox/catalog-match';
 
 beforeEach(async () => { await applyD1Migrations(env.DB, env.TEST_MIGRATIONS); });
 
@@ -102,5 +102,44 @@ describe('matchCatalog', () => {
     const store = new TenantStore(env.DB, 'a.myshopify.com');
     expect(await matchCatalog(new LlmClient({}), store, cfg, ask, catalog)).toBeNull();
     expect(await matchCatalog(new LlmClient({ openrouter: 'k' }, answering('not json')), store, cfg, ask, catalog)).toBeNull();
+  });
+});
+
+// The catalogue list cuts descriptions at 240 characters, which is plenty for
+// matching but not for the reply: the GPS collar's "needs a 4G network, SIM not
+// included" sentences start near character 330, and the owner's approved note
+// is always the LAST paragraph. A picked item is described from its whole page.
+describe('pickedDescriptions', () => {
+  const COLLAR = 'A pet collar supplied with a GPS tracker for helping locate dogs and cats. The tracker has a stated positioning accuracy of up to 10 metres and uses a lithium battery. Choose the European or American version when ordering. Includes one collar and one tracker. Please check compatibility, coverage and any required app or service before use. Connects over a 4G mobile network and shows its location in a phone app. The box holds the collar and tracker only; a SIM card with a data plan is not included.';
+
+  it('reads the whole description of each picked handle', async () => {
+    let asked: Record<string, unknown> | undefined;
+    const admin = (async (_q: string, vars?: Record<string, unknown>) => {
+      asked = vars;
+      return { products: { nodes: [{ handle: 'gps-tracker-collar', description: COLLAR, descriptionHtml: `<p>${COLLAR}</p>` }] } };
+    }) as any;
+    const d = await pickedDescriptions(admin, ['gps-tracker-collar', 'metal-dog-playpen']);
+    expect(String(asked?.q)).toContain('gps-tracker-collar');
+    expect(String(asked?.q)).toContain('metal-dog-playpen');
+    expect(d.get('gps-tracker-collar')).toBe(COLLAR);
+    expect(d.has('metal-dog-playpen')).toBe(false);
+  });
+
+  it('caps a long description but always keeps the owner note at its end', async () => {
+    const long = 'Key features. '.repeat(200);
+    const note = 'The box holds the collar and tracker only; a SIM card with a data plan is not included.';
+    const admin = (async () => ({ products: { nodes: [{ handle: 'x', description: long + note,
+      descriptionHtml: `<p>${long}</p>\n<p class="pawscout-note">${note.replace('&', '&amp;')}</p>` }] } })) as any;
+    const text = (await pickedDescriptions(admin, ['x'])).get('x') ?? '';
+    expect(text.length).toBeLessThanOrEqual(REPLY_DESCRIPTION_MAX + note.length + 5);
+    expect(text.startsWith('Key features.')).toBe(true);
+    expect(text.endsWith(note)).toBe(true);
+  });
+
+  it('returns nothing when the read fails or no handle is given (the catalogue cut is the fallback)', async () => {
+    expect((await pickedDescriptions((async () => { throw new Error('throttled'); }) as any, ['x'])).size).toBe(0);
+    let called = false;
+    expect((await pickedDescriptions((async () => { called = true; return {}; }) as any, [])).size).toBe(0);
+    expect(called).toBe(false);
   });
 });

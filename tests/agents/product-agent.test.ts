@@ -384,8 +384,15 @@ describe('productAgent on a question about a kind of product (catalogue matcher)
     ] },
     collections: { nodes: [{ handle: 'pet-accessories', title: 'Pet Accessories' }] },
   };
+  // The whole page of a picked item; the list above carries only the 240-character cut.
+  const FULL: Record<string, string> = {
+    'gps-tracker-collar': 'A pet collar supplied with a GPS tracker for helping locate dogs and cats. Connects over a 4G mobile network and shows its location in a phone app. The box holds the collar and tracker only; a SIM card with a data plan is not included.',
+  };
   const admin = async (query: string, vars?: Record<string, unknown>) => {
     if (query.includes('pawscoutCatalogList')) return LIST;
+    if (query.includes('pawscoutPicked')) {
+      return { products: { nodes: Object.entries(FULL).filter(([h]) => String(vars?.q).includes(h)).map(([handle, description]) => ({ handle, description, descriptionHtml: `<p>${description}</p>` })) } };
+    }
     if (query.includes('pawscoutOrigin')) return { product: { origin: { value: ORIGIN[String(vars?.id)] }, days: { value: '5-14' } } };
     if (query.includes('productByHandle')) return { productByHandle: PRODUCTS[String(vars?.handle)] ?? null };
     // The title search: any phrase with "accessories" in it finds the one product
@@ -412,6 +419,14 @@ describe('productAgent on a question about a kind of product (catalogue matcher)
       'helping locate dogs and cats', 'safe, secure space']) expect(g.facts).toContain(s);
     expect(g.facts).not.toContain('We do not stock');
     expect(g.facts).not.toContain('Not in our catalog');
+  });
+
+  it('describes a picked item from its whole page, so the collar keeps its network and SIM requirement', async () => {
+    const g = await productAgent.ground(ctx(ANTI_ESCAPE, '{"handles":["gps-tracker-collar","metal-dog-playpen"],"collection":null}', 'anti escape pet accessory'));
+    expect(g.facts).toContain('4G mobile network');
+    expect(g.facts).toContain('a SIM card with a data plan is not included');
+    // The playpen has no fuller page in this fixture: its catalogue words stay.
+    expect(g.facts).toContain('safe, secure space');
   });
 
   it('keeps the overseas note on the item held overseas, and only on that one', async () => {
