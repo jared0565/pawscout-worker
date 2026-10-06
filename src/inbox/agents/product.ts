@@ -4,6 +4,10 @@ import { deriveDestinationCountry, countryLabel } from '../freight';
 import { localWarehousesFor, sellableToBuyer } from '../../local-markets';
 import type { CjDetail } from '../../cj';
 import { sourcingGrounding, NO_MATCH_FACTS, OVERSEAS_FACTS, COUNTRY_UNKNOWN_FACTS, NEVER_NAME_ORIGIN } from './sourcing';
+import { loadCatalog, matchCatalog, type Catalog, type CatalogItem } from '../catalog-match';
+
+const STORE_URL = 'https://activepaw.co.uk';
+const NEXT_STEP = ' Suggest one concrete next step (view the product page or reply with the variant they want).';
 
 const ORIGIN_QUERY = `query pawscoutOrigin($id: ID!) {
   product(id: $id) {
@@ -88,6 +92,14 @@ export const productAgent: CategoryAgent = {
       // better than the first 80 characters of a chatty message; the raw text is
       // the fallback when the phrase finds nothing.
       const typed = ctx.latestMessage.slice(0, 80);
+      // Without a link, the catalogue matcher reads the question against the whole
+      // live catalogue first; a title substring cannot answer "any anti escape
+      // accessory?" or "do you sell accessories?". Null means it could not
+      // answer, and the title search below runs exactly as before.
+      if (!linked) {
+        const matched = await catalogGrounding(ctx, typed);
+        if (matched) return matched;
+      }
       const query = linked ? `/products/${linked}` : (ctx.productQuery || typed);
       if (!query.trim()) return hedge('No specific product named; ask which item they mean or point them to the website.');
       let r = await resolveLineRequest(ctx.admin, query);
@@ -99,7 +111,7 @@ export const productAgent: CategoryAgent = {
         const override = await destAvailabilityOverride(ctx, v.title, v.productId);
         if (override) return { confident: true, quotesFigure: false, facts: override };
         const stock = v.availableQty > 0 ? 'in stock' : 'availability shown at checkout';
-        const baseFacts = `Resolved product "${v.title}${v.variantTitle ? ' - ' + v.variantTitle : ''}", price GBP ${v.priceGbp.toFixed(2)}, ${stock}. You MAY state these. Suggest one concrete next step (view the product page or reply with the variant they want).`;
+        const baseFacts = `Resolved product "${v.title}${v.variantTitle ? ' - ' + v.variantTitle : ''}", price GBP ${v.priceGbp.toFixed(2)}, ${stock}. You MAY state these.${NEXT_STEP}`;
 
         // Supplement with grounded warehouse stock/specs from D1 (non-fatal if missing)
         let extra = '';
@@ -153,17 +165,7 @@ export const productAgent: CategoryAgent = {
         return hedge('Several products match; ask which specific item they mean before answering.');
       }
       if (linked) return hedge(NO_MATCH_FACTS);
-      const sourced = await sourcingGrounding(ctx, ctx.productQuery || typed);
-      // Already imported (its Shopify title or search index may not match the
-      // phrase yet): answer from the real listing through the link path above,
-      // which carries the real price and needs no sourcing hold. The link path
-      // cannot recurse back here: a linked miss returns NO_MATCH_FACTS.
-      const handle = (sourced.data as { sourcingHandle?: string | null } | undefined)?.sourcingHandle;
-      if (handle) {
-        const listed = await productAgent.ground({ ...ctx, latestMessage: `https://activepaw.co.uk/products/${handle}`, productQuery: null });
-        if (listed.confident) return listed;
-      }
-      return sourced;
+      return await sourceOrHedge(ctx, ctx.productQuery || typed);
     } catch (e) {
       console.warn(`productAgent.ground failed: ${(e as Error).message}`);
       return hedge('Could not look up the catalog; answer generally and point to the website.');
@@ -176,3 +178,95 @@ export const productAgent: CategoryAgent = {
 };
 
 function hedge(facts: string): Grounding { return { confident: false, quotesFigure: false, facts }; }
+
+/** The grounding of one catalogue product, through the link path (real price,
+ * stock, local-for-local check and overseas note). The link path never reaches
+ * the matcher again: a linked question skips it. */
+function groundListed(ctx: AgentContext, handle: string): Promise<Grounding> {
+  return productAgent.ground({ ...ctx, latestMessage: `${STORE_URL}/products/${handle}`, productQuery: null });
+}
+
+/** A catalogue miss: look the item up at the supplier (owner rule 2026-09-30). */
+async function sourceOrHedge(ctx: AgentContext, query: string): Promise<Grounding> {
+  const sourced = await sourcingGrounding(ctx, query);
+  // Already imported (its Shopify title or search index may not match the
+  // phrase yet): answer from the real listing through the link path, which
+  // carries the real price and needs no sourcing hold. The link path cannot
+  // recurse back here: a linked miss returns NO_MATCH_FACTS.
+  const handle = (sourced.data as { sourcingHandle?: string | null } | undefined)?.sourcingHandle;
+  if (handle) {
+    const listed = await groundListed(ctx, handle);
+    if (listed.confident) return listed;
+  }
+  return sourced;
+}
+
+/** What a product's own page says it is: the only description a reply may use.
+ * A tracker helps FIND a pet that got out; it does not stop one escaping. */
+function ownWords(item: CatalogItem | undefined): string {
+  return item?.description
+    ? ` What it is, from its own product page (describe it only this way, and never say it does something this does not say): ${item.description}`
+    : '';
+}
+
+function collectionFacts(catalog: Catalog, handle: string): string {
+  const c = catalog.collections.find((x) => x.handle === handle);
+  const titles = catalog.products.filter((p) => p.collections.includes(handle)).slice(0, 6).map((p) => p.title);
+  return `Yes: our ${c?.title ?? handle} range is at ${STORE_URL}/collections/${handle}.`
+    + (titles.length ? ` Items in it include: ${titles.join('; ')}.` : '');
+}
+
+/**
+ * A product question matched against the whole live catalogue (see
+ * catalog-match.ts). Null when the matcher cannot answer: no model, no admin,
+ * an unreadable catalogue or a bad answer; the caller then searches titles.
+ * One product answers exactly as a pasted link would. Several answer as a short
+ * list of real items, each with its own price, link and overseas note. A broad
+ * "do you sell X" answers with the real collection and quotes no price. Nothing
+ * that fits goes to the supplier lookup, never to a title substring.
+ */
+async function catalogGrounding(ctx: AgentContext, typed: string): Promise<Grounding | null> {
+  if (!ctx.llm || !ctx.admin) return null;
+  const catalog = await loadCatalog(ctx.admin);
+  if (!catalog) return null;
+  const match = await matchCatalog(ctx.llm, ctx.store, ctx.cfg,
+    { message: ctx.latestMessage, subject: ctx.thread.subject ?? '', productQuery: ctx.productQuery ?? null }, catalog);
+  if (!match) return null;
+
+  const byHandle = new Map(catalog.products.map((p) => [p.handle, p]));
+  const listed: { handle: string; g: Grounding }[] = [];
+  for (const handle of match.handles) listed.push({ handle, g: await groundListed(ctx, handle) });
+  // Purchasable for this sender, with a real price. An item the local-for-local
+  // check withholds (confident, no price) answers alone only when nothing else does.
+  const sellable = listed.filter((x) => x.g.confident && x.g.quotesFigure);
+  const range = match.collection ? collectionFacts(catalog, match.collection) : '';
+
+  if (sellable.length === 1 && !range) {
+    const { handle, g } = sellable[0];
+    return { ...g, facts: g.facts + ownWords(byHandle.get(handle)) };
+  }
+  if (sellable.length > 0) {
+    const items = sellable.map(({ handle, g }, i) =>
+      `Item ${i + 1}: ${g.facts.replace(NEXT_STEP, '')} Link: ${STORE_URL}/products/${handle}.${ownWords(byHandle.get(handle))}`);
+    return {
+      confident: true, quotesFigure: true,
+      facts: 'The sender asked about a kind of product, not one named item. These items from our live catalogue fit what they asked. '
+        + 'Present them briefly, most relevant first: one line each saying in plain words what it does for their need, with its price and link. '
+        + 'Name no other product, and never claim an item does more than its own description says. '
+        + 'End with one question that helps them choose (for example whether it is for a dog or a cat). '
+        + items.join(' ')
+        + (range ? ` ${range} You MAY give that link too.` : ''),
+    };
+  }
+  if (range) {
+    return {
+      confident: true, quotesFigure: false,
+      facts: `The sender asked whether we sell a type of product. ${range} `
+        + 'You MAY give that link and describe in plain words the kinds of items it includes. Do not state a price, stock or delivery time for any single item. '
+        + 'Ask what they are looking for, so the team can point them to the right item.',
+    };
+  }
+  const withheld = listed.find((x) => x.g.confident);
+  if (withheld) return withheld.g;
+  return sourceOrHedge(ctx, ctx.productQuery || typed);
+}

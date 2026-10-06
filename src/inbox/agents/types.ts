@@ -15,6 +15,7 @@ export interface AgentContext {
   contactEmail: string;
   customerName: string | null;
   productQuery?: string | null; // the thread reader's product phrase; null/absent -> agents use the message text
+  llm?: import('../../llm').LlmClient | null; // the catalogue matcher's model; null/absent -> the product agent searches titles only
 }
 
 /** Deterministic grounding result. Never thrown; a miss is { confident:false }. */
