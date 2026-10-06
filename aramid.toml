@@ -67,12 +67,26 @@ timeout_s = 600
 # 120s mutants the 600s wall budget admits, well inside the drain's 5400s hard
 # deadline. Revisit when a drain baseline passes 700s.
 #
-# This only lets the baseline finish. It does not make the mutants useful: each
-# one runs the whole suite under mutant_timeout_s (120s), so on 09-20, 09-21
-# and 09-22 every tested mutant timed out (killed 0, timeouts 2). That is
-# reported to aramid-agent, not worked around here.
+# Each mutant runs the whole suite. Up to aramid 0.19.x it ran under a flat
+# mutant_timeout_s (120s), so every tested mutant timed out (09-20 to 10-02:
+# killed 0, timeouts 2; 10-02 10:11Z "no mutant reached a verdict", which
+# turned `consumers_healthy` red). aramid 0.20.3 fixed that on its side: a
+# mutant now gets max(mutant_timeout_s, 1.5 x the baseline's duration)
+# (consumers/js_mutation.py, _MUTANT_BASELINE_FACTOR and `per_mutant`).
+#
+# wall_budget_s, 2026-10-06. The wall budget covers the WHOLE item: its clock
+# starts before the worktree is cut, the baseline runs inside it, and a mutant
+# starts only while the elapsed time is still under it. Under the 600s default a
+# baseline slower than ~600s (measured: up to 468s, three more past 480s) leaves
+# no mutant at all, and "no mutants tested" grades the fleet row red again.
+# 1000s sits just above baseline_timeout_s plus worktree setup, so any baseline
+# that passes is followed by at least one mutant. A typical item (430s baseline,
+# mutants finishing in about the suite's own time) runs two mutants in ~22 min;
+# the worst case (budget plus one 1.5 x 900s mutant) ~39 min, inside the drain's
+# 5400s hard deadline.
 [js_mutation]
 baseline_timeout_s = 900
+wall_budget_s = 1000
 
 # ---------------------------------------------------------------------------
 # ONBOARDING IS COMPLETE (verified 2026-07-31, correcting a stale note here
