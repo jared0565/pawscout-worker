@@ -122,6 +122,27 @@ runner at `[timeouts].pre_push` regardless -- so raise both if you need a
 longer run. `enabled = false` removes the gate entirely. Subsetting narrows
 what the push gate covers, so keep the full suite running in CI.
 
+**Fuzz driver timing out on, or executing, a function it should not
+touch?** The drain-time fuzz consumer calls every changed top-level
+function with generated arguments. A launcher, a `main`, or anything that
+hands its arguments to `subprocess` will run whatever it is given -- and a
+function that runs your whole suite times the driver out. Skip such names
+in `aramid.toml`:
+
+```toml
+[fuzz]
+skip_name_patterns = [
+  "*deploy*", "*delete*", "*remove*", "*drop*", "*push*", "*send*",
+  "*upload*", "*kill*", "*wipe*", "*publish*", "*destroy*", "*truncate*",
+  "main", "_run",                            # example additions -- name yours
+]
+```
+
+Patterns are `fnmatch` globs on the bare function name, case-insensitive.
+The first twelve are aramid's packaged defaults; a `[fuzz]` list in
+`aramid.toml` REPLACES that list rather than extending it, so keep the
+ones you still want.
+
 **Suite not recognized?** Detection is literal: a real `test_*.py`,
 `*_test.py`, or `conftest.py` file, or a `package.json` `scripts.test`
 entry -- nothing more. A custom pytest `python_files` pattern,
@@ -143,20 +164,27 @@ suite. If either suite's own tool binary can't be found at all, the push
 blocks with an explicit `tests-tool-missing` finding instead of an
 unexplained failure.
 
-A **two-week WARN-only bake** is in effect for semgrep on this repo (see
-`aramid.toml`'s `bake_started` / `semgrep_block_armed`). While unarmed,
-semgrep BLOCK-tier findings report as WARN so the operator can demote noisy
-rules first. End the bake explicitly with `aramid arm` -- there is no
-auto-promotion.
+semgrep starts in a WARN-only **bake** when a repo is onboarded
+(`aramid.toml`'s `semgrep_block_armed = false`, with `bake_started`
+recording the day). While unarmed, semgrep BLOCK-tier findings report as
+WARN so the operator can demote noisy rules first. No clock ends the bake:
+only `aramid arm` does, and there is no auto-promotion. Whether it is still
+running here is in `aramid status`, which prints `bake in progress, day N`
+and the per-rule hit counts while it lasts and nothing once semgrep is
+armed.
 
 ## Always-on triage (Phase 2a)
 
 Every commit is scored at zero cost by a post-commit hook (security-surface
 paths, risky content, novelty, graphite blast radius). Commits scoring >= 40
-join a review queue drained on a schedule (`aramid drain`, Task Scheduler
-task `aramid-drain`). The regression attack pack (`.aramid-rules/regression.yml`,
-committed) replays rules compiled from resolved findings -- reintroducing a
-rotated secret or banned dependency blocks at pre-push. `aramid status` shows
+join a review queue drained on a schedule (`aramid drain`; `aramid schedule
+install` registers it -- a Task Scheduler task on Windows, a marked crontab
+line elsewhere). The regression attack pack replays rules compiled from
+resolved findings -- reintroducing a rotated secret or banned dependency
+blocks at pre-push (`pack_block_armed`, on by default). It lives in
+`.aramid-rules/regression.yml`, which `aramid pack compile` / `aramid pack
+add` write once there is a resolved finding to compile; commit it. Until
+then the file does not exist and there is nothing to replay. `aramid status` shows
 queue depth and drain history; `aramid pack list|add|compile` manages rules.
 
 ## Honesty note
@@ -180,6 +208,23 @@ MCP-capable agents reach the same loop as tools, via the `.mcp.json` entry `aram
 - `aramid arm` -- end the semgrep WARN-only bake.
 - `aramid arm --llm` -- end the LLM bake: confirmed-critical LLM findings block at pre-push.
 - `aramid uninstall` -- remove aramid's hooks/ARAMID.md/gitignore entries (ledger kept).
+
+## aramid is a tool, not an agent
+
+Use aramid only through its commands (above), its MCP tools and this file.
+An installation ships the tool, never its agent, so do not talk to aramid's
+agent: no questions, no requests, no replies, and no expectation of
+announcements from it.
+
+The shared agent channel carries exactly two kinds of message for aramid,
+addressed to `aramid-agent`:
+
+- a **bug report**: what you ran, what happened, and what you expected;
+- a **suggestion for improvement**.
+
+Nothing else goes there. Fixes and changes reach you in a release. After
+upgrading, re-run `aramid init` to refresh this file and the aramid block in
+`CLAUDE.md` / `AGENTS.md`.
 
 ## About the full-history secrets scan
 
