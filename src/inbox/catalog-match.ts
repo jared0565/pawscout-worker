@@ -63,6 +63,43 @@ export async function loadCatalog(admin: AdminGraphql): Promise<Catalog | null> 
   }
 }
 
+// The list's 240-character cut is enough to MATCH on, not to describe from: the
+// GPS collar's "4G network, SIM not included" note starts near character 330.
+export const REPLY_DESCRIPTION_MAX = 900;
+const PICKED = `query pawscoutPicked($q: String!) {
+  products(first: 3, query: $q) { nodes { handle description descriptionHtml } }
+}`;
+const OWNER_NOTE = /<p class="pawscout-note">([\s\S]*?)<\/p>/;
+
+/** The owner-approved note line (src/proxy/product-note.ts writes it as the
+ * description's last paragraph), as plain text; '' when there is none. */
+function ownerNote(html: string): string {
+  const m = OWNER_NOTE.exec(html);
+  return m ? m[1].replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/\s+/g, ' ').trim() : '';
+}
+
+/** Each picked product's description for the reply: the whole page, capped, and
+ * always ending with the owner's note when the cap would have cut it off. An
+ * empty map on any failure; the caller then uses the catalogue's cut. */
+export async function pickedDescriptions(admin: AdminGraphql, handles: string[]): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  if (!handles.length) return out;
+  try {
+    const data = await admin(PICKED, { q: handles.map((h) => `handle:${h}`).join(' OR ') });
+    for (const p of (data.products as Nodes<Record<string, unknown>>)?.nodes ?? []) {
+      const handle = String(p.handle ?? '');
+      const text = String(p.description ?? '').replace(/\s+/g, ' ').trim();
+      if (!handle || !text || !handles.includes(handle)) continue;
+      if (text.length <= REPLY_DESCRIPTION_MAX) { out.set(handle, text); continue; }
+      const note = ownerNote(String(p.descriptionHtml ?? ''));
+      out.set(handle, text.slice(0, REPLY_DESCRIPTION_MAX).trimEnd() + (note ? ` ... ${note}` : ''));
+    }
+  } catch (e) {
+    console.warn(`picked description read failed: ${(e as Error).message}`);
+  }
+  return out;
+}
+
 /** Keeps only handles that are in the catalogue (deduplicated, at most three)
  * and a collection that is in it. An answer whose every handle is invented is a
  * garbled pick, not an honest "nothing fits", so it fails validation. */
