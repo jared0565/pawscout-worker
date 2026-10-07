@@ -146,8 +146,10 @@ reason = "Test compiles (never calls) the affiliate apply page's own inline scri
 # its inline <script>, and runs those functions on fixed sample series to check
 # the SVG they draw, the same pattern as the other console.test.ts entries. No
 # external or user-supplied input; test-only; vitest never ships to the Worker.
+# Re-keyed the same day from b34e5594 when the line gained trfActivityAction
+# (the id binds to the line text); the old id matches nothing any more.
 [[suppress]]
-id = "b34e55947de8205167cafc4be76d1537bf0ea1f68e76454a2570f72cda8ef1fd"
+id = "00d9bd3f7a7cb5bda872b24e7043de0be9f8adc566c66598b954ab4916869d3a"
 tool = "semgrep"
 rule = "owasp-top-ten.a03-injection.javascript-dangerous-function-constructor"
 path = "tests/console.test.ts"
