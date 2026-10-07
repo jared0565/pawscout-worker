@@ -97,6 +97,15 @@ function trfRankHtml(items,empty){
   }
   return h;
 }
+// What a visit to the Traffic view should do. A load that finished while
+// another view was showing drew at width 0 (the 700 fallback, stretched to the
+// card), so a return visit redraws from the kept response at the real width.
+function trfActivityAction(state,route,width,now){
+  if(route!=='traffic'||state.inflight) return 'none';
+  if(!state.last||now-state.loadedAt>300000) return 'load';
+  if(width>0&&width!==state.drawnWidth) return 'redraw';
+  return 'none';
+}
 // --- end traffic charts ---
 var TRF_SOURCES={direct:'Direct (typed, bookmarked or an app)',search:'Search engines',social:'Social',email:'Email',unknown:'Unknown'};
 function trfPct(v){ return (v===null||v===undefined)?'n/a':(String(v)+'%'); }
@@ -131,10 +140,19 @@ function trfActivityHtml(r,width){
   h+='<p class="muted" style="margin:14px 0 0;font-size:13px">Bounce rate, people only: <strong>'+esc(trfPct(t.peopleBounceRate))+'</strong>. As Shopify shows it, all visits included: '+esc(trfPct(t.rawBounceRate))+'.</p>';
   return h;
 }
-var trfAct={days:30,loadedAt:0,seq:0};
+var trfAct={days:30,loadedAt:0,seq:0,last:null,drawnWidth:0,inflight:false};
+// Draws the kept response at the card's current width (0 while the view is hidden).
+function trfDrawActivity(){
+  var box=el('trf-activity'); if(!box||!trfAct.last) return;
+  var w=box.clientWidth;
+  box.innerHTML=trfActivityHtml(trfAct.last,w);
+  trfAct.drawnWidth=w;
+}
 async function trfActivityLoad(days){
   var box=el('trf-activity'); if(!box) return;
   trfAct.days=days;
+  trfAct.last=null;
+  trfAct.inflight=true;
   var seq=++trfAct.seq;
   var btns=document.querySelectorAll('[data-trf-days]');
   for(var i=0;i<btns.length;i++){
@@ -154,18 +172,27 @@ async function trfActivityLoad(days){
       }
       return;
     }
+    trfAct.last=r;
     trfAct.loadedAt=Date.now();
-    box.innerHTML=trfActivityHtml(r,box.clientWidth);
+    trfDrawActivity();
   }catch(e){ if(seq===trfAct.seq) box.innerHTML='<p class="msg no">Could not read the session table: '+esc(errText(e))+'</p>'; }
+  finally{ if(seq===trfAct.seq) trfAct.inflight=false; }
 }
 // Three ShopifyQL reads per load, so only when the Traffic view is open (the
 // console boots every view), and again after five minutes on a return visit.
 // ROUTES is assigned by the router at the end of this script, hence the tick.
 function trfMaybeLoadActivity(){
   if(typeof ROUTES==='undefined') return;
-  if(currentRoute()==='traffic'&&Date.now()-trfAct.loadedAt>300000) trfActivityLoad(trfAct.days);
+  var box=el('trf-activity');
+  var a=trfActivityAction(trfAct,currentRoute(),box?box.clientWidth:0,Date.now());
+  if(a==='load') trfActivityLoad(trfAct.days);
+  else if(a==='redraw') trfDrawActivity();
 }
-window.addEventListener('hashchange',trfMaybeLoadActivity);
+// One tick later: this listener is registered before the router's, so on the
+// hashchange itself the Traffic view is still hidden (width 0).
+window.addEventListener('hashchange',function(){ setTimeout(trfMaybeLoadActivity,0); });
+var trfResizeT=0;
+window.addEventListener('resize',function(){ clearTimeout(trfResizeT); trfResizeT=setTimeout(trfMaybeLoadActivity,250); });
 setTimeout(trfMaybeLoadActivity,0);
 (function(){
   var card=el('trf-activity-card');

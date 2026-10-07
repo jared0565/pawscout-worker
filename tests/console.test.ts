@@ -451,8 +451,10 @@ describe('consolePage', () => {
     const html = await consolePage('test-api-key').text();
     const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
     expect(scripts).toContain('function trfMaybeLoadActivity(');
-    expect(scripts).toContain("currentRoute()==='traffic'");
-    expect(scripts).toContain("window.addEventListener('hashchange',trfMaybeLoadActivity)");
+    expect(scripts).toContain('trfActivityAction(trfAct,currentRoute(),');
+    // One tick later: this listener is registered before the router's, so the
+    // view is not visible yet (width 0) when the hashchange itself fires.
+    expect(scripts).toContain("window.addEventListener('hashchange',function(){ setTimeout(trfMaybeLoadActivity,0); })");
     const boot = scripts.slice(scripts.lastIndexOf('loadCampaigns();'));
     expect(boot).not.toContain('trfActivityLoad(');
   });
@@ -466,7 +468,8 @@ describe('consolePage', () => {
       const end = scripts.indexOf('// --- end traffic charts ---');
       expect(start).toBeGreaterThan(-1);
       expect(end).toBeGreaterThan(start);
-      return new Function(escSrc + '\n' + scripts.slice(start, end) + '\nreturn { trfNiceMax: trfNiceMax, trfBarsSvg: trfBarsSvg, trfRankHtml: trfRankHtml };')() as {
+      return new Function(escSrc + '\n' + scripts.slice(start, end) + '\nreturn { trfNiceMax: trfNiceMax, trfBarsSvg: trfBarsSvg, trfRankHtml: trfRankHtml, trfActivityAction: trfActivityAction };')() as {
+        trfActivityAction: (state: Record<string, unknown>, route: string, width: number, now: number) => string;
         trfNiceMax: (v: number) => number;
         trfBarsSvg: (series: Record<string, unknown>[], layers: { key: string; color: string; label: string }[], opts: { height: number; partialLast?: boolean; marks?: string }) => string;
         trfRankHtml: (items: { label: string; people: number }[], empty: string) => string;
@@ -478,6 +481,21 @@ describe('consolePage', () => {
       { day: '2026-10-07', people: 0, engaged: 0, singlePage: 0, cartAdds: 0, reachedCheckout: 0 },
     ];
     const layers = [{ key: 'engaged', color: '#8fe0a6', label: 'Engaged' }, { key: 'singlePage', color: '#4f7a5c', label: 'Single-page' }];
+
+    // A load that finishes while another view is showing draws at width 0 (a
+    // fallback 700, stretched to the card); coming back redraws from the kept
+    // response at the real width instead of keeping the stretched chart.
+    it('decides on each Traffic visit whether to load, redraw at the new width, or do nothing', async () => {
+      const { trfActivityAction } = await helpers();
+      const fresh = { last: { ok: true }, loadedAt: 1_000_000, drawnWidth: 1290, inflight: false };
+      expect(trfActivityAction(fresh, 'inbox', 1290, 1_000_500)).toBe('none');
+      expect(trfActivityAction({ ...fresh, last: null }, 'traffic', 1290, 1_000_500)).toBe('load');
+      expect(trfActivityAction(fresh, 'traffic', 1290, 1_000_000 + 300_001)).toBe('load');
+      expect(trfActivityAction({ ...fresh, drawnWidth: 0 }, 'traffic', 1290, 1_000_500)).toBe('redraw');
+      expect(trfActivityAction(fresh, 'traffic', 1290, 1_000_500)).toBe('none');
+      expect(trfActivityAction(fresh, 'traffic', 0, 1_000_500)).toBe('none');
+      expect(trfActivityAction({ ...fresh, last: null, inflight: true }, 'traffic', 1290, 1_000_500)).toBe('none');
+    });
 
     it('picks a readable axis top: small counts stay whole, a bot spike gets a round ceiling', async () => {
       const { trfNiceMax } = await helpers();
