@@ -137,3 +137,18 @@ tool = "semgrep"
 rule = "owasp-top-ten.a03-injection.javascript-dangerous-function-constructor"
 path = "tests/affiliate-apply.test.ts"
 reason = "Test compiles (never calls) the affiliate apply page's own inline script, cut from renderApplyForm() output in the same process, to prove it is valid JavaScript; no external input, test-only, not in the Worker bundle."
+
+# 2026-10-07: the ninth `new Function(...)` of this rule: tests/console.test.ts
+# (the Traffic activity chart helpers), refused by the pre-push ratchet on the
+# Traffic charts push. Verified at source: the test renders consolePage() in the
+# same run, cuts the page's own esc() and the trfNiceMax..trfRankHtml block
+# (between "function trfNiceMax(" and "// --- end traffic charts ---") out of
+# its inline <script>, and runs those functions on fixed sample series to check
+# the SVG they draw, the same pattern as the other console.test.ts entries. No
+# external or user-supplied input; test-only; vitest never ships to the Worker.
+[[suppress]]
+id = "b34e55947de8205167cafc4be76d1537bf0ea1f68e76454a2570f72cda8ef1fd"
+tool = "semgrep"
+rule = "owasp-top-ten.a03-injection.javascript-dangerous-function-constructor"
+path = "tests/console.test.ts"
+reason = "Test runs the console page's own Traffic chart helpers, cut from consolePage() output in the same process, on fixed sample data to check the SVG; no external input, test-only, not in the Worker bundle."
