@@ -709,7 +709,7 @@ async function loadOrders(){
       var act=orderRowActions(o);
       var tn=o.tracking?(' · '+esc(o.tracking)):'';
       var cjid=o.cj?(' · CJ '+esc(o.cj)):'';
-      return '<tr><td><button class="ghost" data-ev="'+esc(o.id)+'">'+esc(o.name||o.id)+'</button></td><td>'+esc((o.currency||'')+' '+(o.total!=null?o.total:''))+'</td><td><strong>'+esc(o.ownerPaidAt?'paid by you, waiting for tracking':o.status)+'</strong>'+esc(holds)+cjid+tn+'</td><td>'+act+'</td></tr>';
+      return '<tr><td><button class="ghost" data-ev="'+esc(o.id)+'">'+esc(o.name||o.id)+'</button></td><td>'+esc((o.currency||'')+' '+(o.total!=null?o.total:''))+'</td><td><strong>'+esc(orderStatusLabel(o))+'</strong>'+esc(holds)+cjid+tn+'</td><td>'+act+'</td></tr>';
     }).join('');
     list.innerHTML='<table style="width:100%;border-collapse:collapse;font-size:13px"><thead><tr><th style="text-align:left">Order</th><th style="text-align:left">Total</th><th style="text-align:left">Status</th><th></th></tr></thead><tbody>'+rows+'</tbody></table>';
     var bts=list.querySelectorAll('button[data-act]');
@@ -723,6 +723,11 @@ async function loadOrders(){
 // banner still asks them to pay (aramid 87a8dc74).
 function ordersAwaitingOwnerPayment(orders){
   return (orders||[]).filter(function(o){return o.status==='awaiting-payment'&&!o.ownerPaidAt;});
+}
+// The mark outlives the wait (shipping, a cancellation or a hold leave it on
+// the row), so it only labels a row that is still waiting.
+function orderStatusLabel(o){
+  return (o.status==='awaiting-payment'&&o.ownerPaidAt)?'paid by you, waiting for tracking':o.status;
 }
 function orderRowActions(o){
   if(o.status==='held') return '<button class="ghost" data-act="release" data-id="'+esc(o.id)+'">Release</button> <button class="ghost" data-act="cancel" data-id="'+esc(o.id)+'">Cancel</button>';

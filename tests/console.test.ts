@@ -96,6 +96,14 @@ describe('consolePage', () => {
     expect(rowActions({ id: 'Q1', status: 'queued' })).toBe('<button class="ghost" data-act="cancel" data-id="Q1">Cancel</button>');
     expect(rowActions({ id: 'S1', status: 'submitted', cj: 'CJ5' })).toBe('');
     expect(awaitingOwner([unmarked, marked, { id: 'H1', status: 'held' }]).map((o) => o.id)).toEqual(['O1']);
+    // The label describes the mark only while the row is still waiting: a
+    // marked order that then ships, is cancelled or is held reads as that.
+    const statusLabel = new Function(extract('orderStatusLabel') + '\nreturn orderStatusLabel;')() as (o: Record<string, unknown>) => string;
+    expect(statusLabel(marked)).toBe('paid by you, waiting for tracking');
+    expect(statusLabel(unmarked)).toBe('awaiting-payment');
+    for (const st of ['fulfilled', 'cancelled', 'held']) {
+      expect(statusLabel({ id: 'M', status: st, cj: 'CJ9', ownerPaidAt: '2026-10-07T16:00:00.000Z' })).toBe(st);
+    }
     // Marking is a money statement, so it takes a second click, the same way
     // switching PawScout mode on does (window.confirm is blocked in the iframe).
     expect(scripts).toContain('Click I paid this again within 8s to confirm.');
