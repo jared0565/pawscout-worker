@@ -377,6 +377,21 @@ describe('POST /webhooks/orders-paid (HTTP level)', () => {
     expect(events[1].detail).toMatch(/^fulfil after /);
   });
 
+  // aramid b4b33fbf, rest of it (2026-10-07): a block was only ever lifted by
+  // an invoice link or an order-shaped email, so a blocked contact who simply
+  // bought from the storefront stayed in the spam pile.
+  it('a paid order lifts a block on the buyer\'s email', async () => {
+    const store = await seedConfig();
+    await store.upsertContact({ email: 'buyer@x.com', name: 'B', phone: null });
+    await store.blockContact('buyer@x.com', 'repeat message x3');
+    await store.upsertContact({ email: 'other@x.com', name: 'O', phone: null });
+    await store.blockContact('other@x.com', 'repeat message x3');
+    const res = await postWebhook('/webhooks/orders-paid', JSON.stringify({ ...ORDERS_PAID_PAYLOAD, id: 999009, email: 'Buyer@X.com' }), { topic: 'orders/paid' });
+    expect(res.status).toBe(200);
+    expect((await store.getContactByEmail('buyer@x.com'))!.blocked_at).toBeNull();
+    expect((await store.getContactByEmail('other@x.com'))!.blocked_at).not.toBeNull();
+  });
+
   it('a hold writes received then held with the hold reasons joined by a comma', async () => {
     const store = await seedConfig(); // a config is required for the route to proceed past its config check
     const payload = { ...ORDERS_PAID_PAYLOAD, id: 999002, name: '#1002', shipping_address: null }; // incomplete-address hold

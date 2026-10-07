@@ -788,4 +788,37 @@ function showReconnectBanner(){
   banner.style.display='';
   banner.innerHTML='Re-authorisation required. <a href="'+esc(href)+'" style="color:var(--no-ink);font-weight:600">Click here to reconnect ↗</a>';
 }
+// Blocked senders (aramid b4b33fbf, 2026-10-07): every blocked address in one
+// place, each with its own Unblock, so a wrong block is found without opening
+// spam. Loaded when the panel is opened, not with every inbox refresh.
+function ibxBlockedHtml(senders){
+  if(!senders.length) return '<p class="muted">No blocked senders.</p>';
+  return senders.map(function(x){
+    return '<div class="ibx-blocked-row"><div class="ibx-blocked-who"><strong>'+esc(x.email)+'</strong>'
+      +(x.name?' <span class="muted">'+esc(x.name)+'</span>':'')
+      +'<div class="muted">'+esc(x.reason||'blocked')+' · '+esc(String(x.blockedAt||'').slice(0,10))+'</div></div>'
+      +'<button type="button" class="ghost" data-unblock-email="'+esc(x.email)+'">Unblock</button></div>';
+  }).join('');
+}
+async function loadBlockedSenders(){
+  var box=el('ibx-blocked-list'); if(!box) return;
+  box.innerHTML='<p class="muted">Loading…</p>';
+  try{
+    var r=await api('/inbox/blocked',{});
+    box.innerHTML=r.ok?ibxBlockedHtml(r.senders||[]):'<p class="msg no">Failed: '+esc(r.error||'unknown error')+'</p>';
+  }catch(e){ box.innerHTML='<p class="msg no">Failed: '+esc(errText(e))+'</p>'; }
+}
+(function(){
+  var d=el('ibx-blocked'); if(!d) return;
+  d.addEventListener('toggle',function(){ if(d.open) loadBlockedSenders(); });
+  d.addEventListener('click',async function(ev){
+    var b=ev.target&&ev.target.closest?ev.target.closest('[data-unblock-email]'):null; if(!b) return;
+    b.disabled=true;
+    try{
+      var r=await api('/inbox/unblock',{email:b.getAttribute('data-unblock-email')});
+      if(r.ok){ setMsg('inboxmsg','Sender unblocked. Their next message will be handled normally.','ok'); loadBlockedSenders(); }
+      else { setMsg('inboxmsg','Failed: '+(r.error||'unknown error'),'no'); b.disabled=false; }
+    }catch(e){ setMsg('inboxmsg','Failed: '+errText(e),'no'); b.disabled=false; }
+  });
+})();
 `;

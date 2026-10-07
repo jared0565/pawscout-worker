@@ -2,8 +2,9 @@ import { DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_F
 import type { LogisticsRoute } from './logistics';
 import { deriveModels } from './llm-migrate';
 import { DEFAULT_INBOX, type InboxConfig } from './inbox/types';
-import type { ContactRow, ThreadRow, MessageRow, ThreadStatus, DraftRow, DraftStatus, InvoiceRow, InvoiceLineItem, InvoiceStatus, ApplicantRow, PartnershipStage, ScreenVerdict } from './inbox/types';
+import type { ContactRow, ThreadRow, MessageRow, ThreadStatus, DraftRow, DraftStatus, DraftMeta, InvoiceRow, InvoiceLineItem, InvoiceStatus, ApplicantRow, PartnershipStage, ScreenVerdict } from './inbox/types';
 import { mergeSupplier, SUPPLIER_STATUSES, type SupplierFacts, type SupplierRow, type SupplierStatus } from './inbox/supplier-register';
+import { isOtherAlertMarker } from './order-alert';
 
 /** ISO cutoff for the commission clearance hold: an order whose age basis
  *  (placed_at, or its insert timestamp created_at when placed_at is missing, so
@@ -1127,16 +1128,21 @@ export class TenantStore {
   }
 
   /** Counts the matching-kind run at the tail of the trail (most recent
-   *  events first), stopping at the first event that does not match. */
-  async countTrailingOrderEvents(shopifyOrderId: string, kind: OrderEventKind): Promise<number> {
+   *  events first), stopping at the first event that does not match.
+   *  `guardedSubject` is the subject of the alert this run raises: another
+   *  alert's markers (isOtherAlertMarker) are stepped over, its own still end
+   *  the run. Required, so no caller can count the old way by leaving it out.
+   *  The read goes well past 4 rows because the stepped-over markers are
+   *  read too: one per other pending alert per tick. */
+  async countTrailingOrderEvents(shopifyOrderId: string, kind: OrderEventKind, guardedSubject: string): Promise<number> {
     const rs = await this.db
-      .prepare(`SELECT kind FROM order_events WHERE shop = ?1 AND shopify_order_id = ?2 ORDER BY seq DESC LIMIT 20`)
+      .prepare(`SELECT kind, detail FROM order_events WHERE shop = ?1 AND shopify_order_id = ?2 ORDER BY seq DESC LIMIT 200`)
       .bind(this.shop, shopifyOrderId)
-      .all<{ kind: string }>();
+      .all<{ kind: string; detail: string | null }>();
     let n = 0;
     for (const row of rs.results ?? []) {
-      if (row.kind !== kind) break;
-      n++;
+      if (row.kind === kind) n++;
+      else if (!isOtherAlertMarker(row, guardedSubject)) break;
     }
     return n;
   }
@@ -2092,6 +2098,29 @@ export class TenantStore {
     return (rs.results ?? []).map((r) => ({ ...r, replied_after: !!r.replied_after }));
   }
 
+  /** Every blocked contact, newest block first (the console's blocked-senders list). */
+  async listBlockedContacts(limit = 200): Promise<Array<{ email: string; name: string | null; blocked_at: string; blocked_reason: string | null }>> {
+    const rs = await this.db
+      .prepare(`SELECT email, name, blocked_at, blocked_reason FROM inbox_contacts WHERE shop = ?1 AND blocked_at IS NOT NULL ORDER BY blocked_at DESC LIMIT ?2`)
+      .bind(this.shop, Math.min(Math.max(limit, 1), 500))
+      .all<{ email: string; name: string | null; blocked_at: string; blocked_reason: string | null }>();
+    return rs.results ?? [];
+  }
+
+  /** True when the classify sweep will still take one of these threads: the
+   *  same selection as threadsNeedingClassification (unclassified and still
+   *  'new'), stored since `sinceIso`. A thread the sweep never reaches is not
+   *  counted, so it cannot hold anything back for ever. */
+  async anyThreadAwaitingSweep(threadIds: readonly string[], sinceIso: string): Promise<boolean> {
+    if (threadIds.length === 0) return false;
+    const ph = threadIds.map((_, i) => `?${i + 3}`).join(',');
+    const row = await this.db
+      .prepare(`SELECT 1 AS x FROM inbox_threads WHERE shop = ?1 AND created_at >= ?2 AND id IN (${ph}) AND classified_at IS NULL AND status = 'new' LIMIT 1`)
+      .bind(this.shop, sinceIso, ...threadIds)
+      .first<{ x: number }>();
+    return !!row;
+  }
+
   /** A contact the repeat rule must never block: linked to a Shopify customer,
    * or any of their threads sits in a customer-service lane. A frustrated
    * customer re-sending "where is my order" is exactly who this protects. */
@@ -2313,12 +2342,13 @@ export class TenantStore {
 
   // --- W-INBOX-2: draft + outbound-message store methods ---
 
-  async insertDraft(d: { threadId: string; bodyText: string; bodyHtml: string; confidence: number | null; quotesPriceOrder: boolean; commercialIntent?: boolean; holdReasons: string[]; model: string; status: DraftStatus }): Promise<string> {
+  async insertDraft(d: { threadId: string; bodyText: string; bodyHtml: string; confidence: number | null; quotesPriceOrder: boolean; commercialIntent?: boolean; holdReasons: string[]; model: string; status: DraftStatus; meta?: DraftMeta }): Promise<string> {
     const id = crypto.randomUUID();
+    const meta = d.meta && Object.keys(d.meta).length ? JSON.stringify(d.meta) : null;
     await this.db
-      .prepare(`INSERT INTO inbox_drafts (shop, id, thread_id, body_text, body_html, status, confidence, quotes_price_order, commercial_intent, hold_reasons, model, created_at)
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)`)
-      .bind(this.shop, id, d.threadId, d.bodyText, d.bodyHtml, d.status, d.confidence, d.quotesPriceOrder ? 1 : 0, d.commercialIntent ? 1 : 0, JSON.stringify(d.holdReasons), d.model, new Date().toISOString())
+      .prepare(`INSERT INTO inbox_drafts (shop, id, thread_id, body_text, body_html, status, confidence, quotes_price_order, commercial_intent, hold_reasons, model, created_at, meta_json)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)`)
+      .bind(this.shop, id, d.threadId, d.bodyText, d.bodyHtml, d.status, d.confidence, d.quotesPriceOrder ? 1 : 0, d.commercialIntent ? 1 : 0, JSON.stringify(d.holdReasons), d.model, new Date().toISOString(), meta)
       .run();
     return id;
   }
@@ -3325,6 +3355,41 @@ export class TenantStore {
       .bind(this.shop, task, sinceIso)
       .first<{ usd: number }>();
     return row?.usd ?? 0;
+  }
+
+  /** Reserve `costUsd` on a task before a paid call: one statement inserts the
+   *  row only while the task's spend since `sinceIso` plus this amount stays
+   *  within `capUsd`, so requests that arrive together cannot all pass. The row
+   *  is model 'reserved' until the call starts; returns its id, or null when the
+   *  cap refuses. */
+  async reserveTaskSpend(task: string, costUsd: number, capUsd: number, sinceIso: string): Promise<number | null> {
+    const r = await this.db
+      .prepare(
+        `INSERT INTO llm_usage (shop, task, model, prompt_tokens, completion_tokens, cost_usd, created_at)
+         SELECT ?1, ?2, 'reserved', 0, 0, ?3, ?4
+         WHERE (SELECT COALESCE(SUM(cost_usd), 0) FROM llm_usage WHERE shop = ?1 AND task = ?2 AND created_at >= ?5) + ?3 <= ?6`
+      )
+      .bind(this.shop, task, costUsd, new Date().toISOString(), sinceIso, capUsd)
+      .run();
+    return r.meta.changes ? Number(r.meta.last_row_id) : null;
+  }
+
+  /** The paid call is starting: from here the reserved amount stands unless the
+   *  real cost replaces it (settleReservedSpend). */
+  async markReservedSpendAttempted(id: number): Promise<void> {
+    await this.db.prepare(`UPDATE llm_usage SET model = 'attempted' WHERE shop = ?1 AND id = ?2`).bind(this.shop, id).run();
+  }
+
+  async settleReservedSpend(id: number, model: string, promptTokens: number, completionTokens: number, costUsd: number): Promise<void> {
+    await this.db
+      .prepare(`UPDATE llm_usage SET model = ?3, prompt_tokens = ?4, completion_tokens = ?5, cost_usd = ?6 WHERE shop = ?1 AND id = ?2`)
+      .bind(this.shop, id, model, promptTokens, completionTokens, costUsd)
+      .run();
+  }
+
+  /** Give back a reservation whose paid call never started. */
+  async releaseUnattemptedSpend(id: number): Promise<void> {
+    await this.db.prepare(`DELETE FROM llm_usage WHERE shop = ?1 AND id = ?2 AND model = 'reserved'`).bind(this.shop, id).run();
   }
 
   // --- W-INBOX-3: invoices ---

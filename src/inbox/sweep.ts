@@ -22,8 +22,8 @@ import { repeatsPriorOutbound, outboundBodies } from './repeat';
 import { recallAnswers, ensureAnswerBackfill } from './answer-memory';
 import { agentFor } from './agents/registry';
 import { resolveAgents } from './agents/config';
-import type { AgentContext, Department } from './agents/types';
-import type { ThreadRow, InvoiceLineItem } from './types';
+import type { AgentContext, Department, Grounding } from './agents/types';
+import type { ThreadRow, InvoiceLineItem, DraftMeta } from './types';
 import { CjClient, CjTokenManager, cjFetchFromEnv } from '../cj';
 import { readThread, isSupplierRole, type ThreadReading } from './thread-read';
 import { promisesSupplier } from './draft-quality';
@@ -523,9 +523,18 @@ export async function composeDraftForThread(
     threadId: t.id, bodyText: composed.bodyText, bodyHtml: renderReplyHtml(composed.bodyText),
     confidence: draft.confidence, quotesPriceOrder: composed.quotesPriceOrder,
     commercialIntent: draft.commercialIntent, holdReasons,
-    model: (resolveChain(cfg, 'text')[0] as { models: string[] }).models[0], status: 'pending'
+    model: (resolveChain(cfg, 'text')[0] as { models: string[] }).models[0], status: 'pending',
+    meta: draftMetaFromGrounding(grounding)
   });
   return { draftId, send }; // trusted appendix no longer force-holds
+}
+
+/** A held sourcing offer remembers the supplier item it quoted, so the send
+ * can refuse it once that item has changed (aramid 53d7292e). */
+export function draftMetaFromGrounding(grounding: Grounding): DraftMeta | undefined {
+  if (grounding.holdReason !== 'sourcing_offer') return undefined;
+  const pid = (grounding.data as { sourcingPid?: unknown } | undefined)?.sourcingPid;
+  return typeof pid === 'string' && pid ? { sourcingPid: pid } : undefined;
 }
 
 async function draftOne(env: Env, store: TenantStore, cfg: TenantConfig, thread: ThreadRow, fetchImpl: typeof fetch): Promise<void> {

@@ -14,7 +14,7 @@ import { ensureInstalled } from './auth/ensure-installed';
 import { handleUninstall } from './auth/uninstall';
 import { resolveShopFromToken } from './console/session';
 import { connectCj, saveGates, savePricing, saveLlm, saveAddons, saveCollectionMap, getStatus, getInsights, getGlance, getAudit, getAuditConversation, saveGbFreeUk, getPartners, createPartner, partnerVoucherAction, getPartnerOrders, removeQueuedPartner, parseHoldReasons } from './console/routes';
-import { listInboxThreads, getInboxThread, setInboxStatus, setInboxLabels, getInboxConfig, saveInboxConfig, approveDraft, regenerateDraft, applyDraftTemplate, queuePartnerFromThread, setPartnerConsentFromThread, unblockSender, listSuppliersRoute, updateSupplierRoute, startSupplierBackfillRoute, draftAnyway } from './inbox/routes';
+import { listInboxThreads, getInboxThread, setInboxStatus, setInboxLabels, getInboxConfig, saveInboxConfig, approveDraft, regenerateDraft, applyDraftTemplate, queuePartnerFromThread, setPartnerConsentFromThread, unblockSender, unblockSenderByEmail, listBlockedSenders, listSuppliersRoute, updateSupplierRoute, startSupplierBackfillRoute, draftAnyway } from './inbox/routes';
 import { buildInvoiceForThread, discardInvoice, searchCatalog, adminForShop } from './inbox/invoice-routes';
 import { validateCampaignPayload, resolveCampaignAudience, sendCampaignBatch, sendCampaignTest, campaignForUi, ownerTestAddress, campaignSendBlock, type CampaignAudience } from './campaigns';
 import { collectSystemStates } from './system-states';
@@ -22,7 +22,7 @@ import { validateEventRequest, findOverlappingPromo, createEventDiscount, buildE
 import { reservedWindowClash, templateByKey } from './event-catalogue';
 import { ensureRecurringDiscount, retireRecurringDiscount, refreshPublicEventFeed, buildPublicEventFeed, listRecurringForConsole } from './recurring-events';
 import { runBlogPipeline, enrichBlogPost, proposeBlogTopics, listPostsSynced, regenerateArticle } from './blog/pipeline';
-import { deepResearchBudget } from './blog/research';
+import { reserveDeepResearch } from './blog/research';
 import { runArticleHealth } from './blog/article-health';
 import type { BlogBrief } from './blog/types';
 import { issueVoucher, fetchActiveOrderPromos, voucherDateLabel, deactivateVoucherDiscount } from './affiliate-discounts';
@@ -520,15 +520,20 @@ app.post('/api/blog/topics', async (c) => {
   const mode = (body as { deep?: unknown })?.deep === true ? 'deep' : 'fast';
   // The session token says which shop, not who: the deep pass is bounded by a
   // per-shop daily spend cap on its own usage rows rather than an owner role
-  // (aramid review c1029563). The fast source is never capped.
-  if (mode === 'deep') {
-    const budget = await deepResearchBudget(store);
-    if (!budget.allowed) {
-      return c.json({ ok: false, error: `Deep research is capped at $${budget.capUsd.toFixed(2)} a day and $${budget.spentUsd.toFixed(2)} has been spent in the last 24 hours; the standard suggestions still work` });
-    }
+  // (aramid review c1029563; the owner accepted any staff running it,
+  // 2026-10-07). The run's cost is reserved before it starts, so concurrent
+  // requests and a paid run that fails cannot slip past the cap. The fast
+  // source is never capped.
+  if (mode !== 'deep') return c.json(await proposeBlogTopics(c.env, store, cfg, { nowMonth0: new Date().getMonth(), mode }));
+  const reserved = await reserveDeepResearch(store);
+  if (!reserved.ok) {
+    return c.json({ ok: false, error: `Deep research is capped at $${reserved.capUsd.toFixed(2)} a day and $${reserved.spentUsd.toFixed(2)} has been spent in the last 24 hours; the standard suggestions still work` });
   }
-  const result = await proposeBlogTopics(c.env, store, cfg, { nowMonth0: new Date().getMonth(), mode });
-  return c.json(result);
+  try {
+    return c.json(await proposeBlogTopics(c.env, store, cfg, { nowMonth0: new Date().getMonth(), mode, reservationId: reserved.reservationId }));
+  } finally {
+    await store.releaseUnattemptedSpend(reserved.reservationId);
+  }
 });
 app.post('/api/blog/list', async (c) => {
   const s = await shopOf(c); if (typeof s !== 'string') return s;
@@ -1764,10 +1769,16 @@ app.post('/api/inbox/labels', async (c) => {
 });
 app.post('/api/inbox/unblock', async (c) => {
   const s = await shopOf(c); if (typeof s !== 'string') return s;
-  let body: { id?: string } = {};
+  let body: { id?: string; email?: string } = {};
   try { body = await c.req.json(); } catch { return c.json({ ok: false, error: 'Invalid JSON body' }, 400); }
+  // From a thread (its id) or from the blocked-senders list (the address).
+  if (typeof body.email === 'string' && body.email.trim()) return c.json(await unblockSenderByEmail(c.env.DB, s, body.email));
   if (!body.id) return c.json({ ok: false, error: 'id required' }, 400);
   return c.json(await unblockSender(c.env.DB, s, body.id));
+});
+app.post('/api/inbox/blocked', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  return c.json(await listBlockedSenders(c.env.DB, s));
 });
 app.post('/api/inbox/config', async (c) => {
   const s = await shopOf(c); if (typeof s !== 'string') return s;
@@ -1932,9 +1943,10 @@ app.post('/api/inbox/source-status', async (c) => {
   const store = new TenantStore(c.env.DB, s);
   const status = await inquiryImportStatus(store, pid);
   // The held offer was drafted before the item existed: once it lands, redraft
-  // it so the reply links the product page. A failed redraft keeps the old
-  // draft and never fails the status the console is waiting on.
-  const draftRefreshed = status.state === 'imported' && threadId
+  // it so the reply links the product page; once it is refused, redraft it so
+  // the reply stops offering it (aramid 53d7292e). A failed redraft keeps the
+  // old draft and never fails the status the console is waiting on.
+  const draftRefreshed = (status.state === 'imported' || status.state === 'failed') && threadId
     ? await refreshSourcingDraft(store, threadId, pid, async (id) => (await regenerateDraft(c.env.DB, c.env, s, id)).ok).catch(() => false)
     : false;
   return c.json({ ...status, draftRefreshed });
@@ -2381,6 +2393,10 @@ app.post('/webhooks/orders-paid', async (c) => {
       }
     }
     c.executionCtx.waitUntil(attributePaidOrder(store, order).then(() => undefined));
+    // A paying customer is never left in the spam pile (aramid b4b33fbf,
+    // 2026-10-07): a sender block on the buyer's address lifts. Best-effort,
+    // and idempotent across redeliveries.
+    if (order.customerEmail) await store.unblockContact(order.customerEmail.trim().toLowerCase()).catch(() => undefined);
   } catch (e) {
     return handleOrderWebhookFailure(c, store, cfg, webhookId, 'orders/paid', orderId, e);
   }

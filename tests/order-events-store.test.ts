@@ -70,13 +70,52 @@ describe('order events (order trail)', () => {
 
   it('countTrailingOrderEvents counts the run of a matching kind at the tail', async () => {
     const store = new TenantStore(env.DB, SHOP);
-    expect(await store.countTrailingOrderEvents('O1', 'gate-unreadable')).toBe(0);
+    const mine = 'Order #O1 cannot be checked against Shopify';
+    expect(await store.countTrailingOrderEvents('O1', 'gate-unreadable', mine)).toBe(0);
     await store.addOrderEvent('O1', 'gate-passed');
     await store.addOrderEvent('O1', 'gate-unreadable');
     await store.addOrderEvent('O1', 'gate-unreadable');
-    expect(await store.countTrailingOrderEvents('O1', 'gate-unreadable')).toBe(2);
+    expect(await store.countTrailingOrderEvents('O1', 'gate-unreadable', mine)).toBe(2);
     await store.addOrderEvent('O1', 'gate-passed');
-    expect(await store.countTrailingOrderEvents('O1', 'gate-unreadable')).toBe(0);
+    expect(await store.countTrailingOrderEvents('O1', 'gate-unreadable', mine)).toBe(0);
+  });
+
+  // The retry sweep runs first on every tick and writes a marker for each
+  // other alert it re-sends on this order. Those markers say nothing about the
+  // run being counted; the guarded alert's own markers still end it, so the
+  // owner is told once and not on every tick from the fifth.
+  it("countTrailingOrderEvents steps over another alert's markers and still stops at the guarded alert's own", async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const mine = 'Order #O1 cannot be checked against Shopify';
+    const other = 'Order #O1: tracking could not be written to Shopify';
+    await store.addOrderEvent('O1', 'gate-unreadable');
+    await store.addOrderEvent('O1', 'owner-alert-due', other);
+    await store.addOrderEvent('O1', 'gate-unreadable');
+    await store.addOrderEvent('O1', 'owner-alert-failed', other);
+    await store.addOrderEvent('O1', 'gate-unreadable');
+    await store.addOrderEvent('O1', 'owner-alerted', other);
+    await store.addOrderEvent('O1', 'owner-alert-unconfigured', other);
+    await store.addOrderEvent('O1', 'gate-unreadable');
+    expect(await store.countTrailingOrderEvents('O1', 'gate-unreadable', mine)).toBe(4);
+    for (const kind of ['owner-alert-due', 'owner-alerted', 'owner-alert-failed', 'owner-alert-unconfigured'] as const) {
+      await store.addOrderEvent('O1', kind, mine);
+      await store.addOrderEvent('O1', 'gate-unreadable');
+      expect(await store.countTrailingOrderEvents('O1', 'gate-unreadable', mine)).toBe(1);
+    }
+    // Anything that is not an alert marker still ends the run as before.
+    await store.addOrderEvent('O1', 'gate-passed');
+    expect(await store.countTrailingOrderEvents('O1', 'gate-unreadable', mine)).toBe(0);
+  });
+
+  it('countTrailingOrderEvents still reaches the fourth guarded event when many other markers sit between them', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const mine = 'Order #O1 cannot be checked against Shopify';
+    // Six other alerts re-sent on every tick: 28 rows hold the four that count.
+    for (let tick = 0; tick < 4; tick++) {
+      for (let a = 0; a < 6; a++) await store.addOrderEvent('O1', 'owner-alert-failed', `Order #O1: other alert ${a}`);
+      await store.addOrderEvent('O1', 'gate-unreadable');
+    }
+    expect(await store.countTrailingOrderEvents('O1', 'gate-unreadable', mine)).toBe(4);
   });
 
   it('redactOrders removes O1 events and leaves O2 events', async () => {

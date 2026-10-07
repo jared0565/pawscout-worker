@@ -3,12 +3,13 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
 import { SignJWT } from 'jose';
 import { TenantStore } from '../src/tenant-store';
-import { listInboxThreads, getInboxThread, setInboxStatus, setInboxLabels, regenerateDraft, applyDraftTemplate, unblockSender, DRAFT_TEMPLATES } from '../src/inbox/routes';
+import { listInboxThreads, getInboxThread, setInboxStatus, setInboxLabels, regenerateDraft, applyDraftTemplate, unblockSender, unblockSenderByEmail, listBlockedSenders, DRAFT_TEMPLATES } from '../src/inbox/routes';
 import { AFFILIATE_APPLY_URL, buildSignupInvite, buildSecondTouch } from '../src/inbox/partnership';
 import { countWords } from '../src/inbox/draft-quality';
 import { DEFAULT_INBOX } from '../src/inbox/types';
 import { ACTIVE_PAW_COLLECTION_MAP, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, type Env } from '../src/types';
 import { app } from '../src/index';
+import { sendReply } from '../src/inbox/send';
 
 beforeEach(async () => { await applyD1Migrations(env.DB, env.TEST_MIGRATIONS); });
 const SHOP = 'a.myshopify.com';
@@ -45,6 +46,21 @@ async function seed() {
   const tid = await s.createThread({ contactEmail: 'jane@x.com', subject: 'Hi', subjectNorm: 'hi', receivedAt: '2026-06-18T10:00:00Z', initialStatus: 'new' });
   await s.insertInboundMessageIfNew({ threadId: tid, messageId: '<m@x>', inReplyTo: null, references: [], from: 'jane@x.com', to: 'support@activepaw.co.uk', subject: 'Hi', bodyText: 'hello', bodyHtml: null, headersJson: '{}', receivedAt: '2026-06-18T10:00:00Z' });
   return tid;
+}
+
+/** Send the thread's pending draft through the real send path, with Resend
+ *  faked as accepting (or refusing) it. Returns the From it was sent with. */
+async function sendPending(s: TenantStore, tid: string, accept = true): Promise<{ ok: boolean; from: string | null }> {
+  const cfg = (await s.getConfig())!;
+  const draft = (await s.getPendingDraft(tid))!;
+  const thread = (await s.getThreadWithMessages(tid))!.thread;
+  let from: string | null = null;
+  const fetchImpl = (async (_u: unknown, init: RequestInit) => {
+    from = JSON.parse(init.body as string).from;
+    return accept ? new Response(JSON.stringify({ id: 'em_t' }), { status: 200 }) : new Response('down', { status: 500 });
+  }) as unknown as typeof fetch;
+  const r = await sendReply({ ...env, RESEND_API_KEY: 'rk' } as never, s, cfg, thread, draft, undefined, fetchImpl);
+  return { ok: r.ok, from };
 }
 
 describe('inbox routes', () => {
@@ -256,7 +272,7 @@ describe('applyDraftTemplate', () => {
     expect(DRAFT_TEMPLATES[6].label).toMatch(/^Supplier: thanks, link and dropshipping question/);
   });
 
-  it('the access decline renders with the link and stages a fresh thread passed_to_form', async () => {
+  it('the access decline renders with the link and, once sent, stages a fresh thread passed_to_form', async () => {
     const { s, tid } = await seedWithConfig();
     const r = await applyDraftTemplate(env.DB, SHOP, tid, 'access_decline');
     expect(r.ok).toBe(true);
@@ -264,6 +280,8 @@ describe('applyDraftTemplate', () => {
     expect(body).toContain('Hi Jane,');
     expect(body).toMatch(/do not give store, admin, collaborator or staff access/i);
     expect(body).toContain(AFFILIATE_APPLY_URL);
+    expect(await s.getApplicantByThread(tid)).toBeNull(); // nothing staged by a draft
+    expect((await sendPending(s, tid)).ok).toBe(true);
     expect((await s.getApplicantByThread(tid))?.stage).toBe('passed_to_form');
   });
 
@@ -271,6 +289,7 @@ describe('applyDraftTemplate', () => {
     const { s, tid } = await seedWithConfig();
     await s.upsertApplicant({ threadId: tid, contactEmail: 'jane@x.com', stage: 'escalated' });
     expect((await applyDraftTemplate(env.DB, SHOP, tid, 'access_decline')).ok).toBe(true);
+    expect((await sendPending(s, tid)).ok).toBe(true);
     expect((await s.getApplicantByThread(tid))?.stage).toBe('escalated');
   });
 
@@ -279,6 +298,7 @@ describe('applyDraftTemplate', () => {
     const pid = await s.upsertAffiliatePartner({ contactEmail: 'jane@x.com' });
     await s.createAffiliateVoucher({ partnerId: pid, code: 'JANE5', pctOff: 5, commissionPct: 2, endsAt: new Date(Date.now() + 30 * 86400000).toISOString() });
     expect((await applyDraftTemplate(env.DB, SHOP, tid, 'access_decline')).ok).toBe(true);
+    expect((await sendPending(s, tid)).ok).toBe(true);
     expect(await s.getApplicantByThread(tid)).toBeNull();
   });
 
@@ -292,6 +312,8 @@ describe('applyDraftTemplate', () => {
     expect(body).toMatch(/do not skip the trial for anyone/i);
     expect(body).toContain(AFFILIATE_APPLY_URL);
     expect(body).toMatch(/no reply is needed/i);
+    expect(await s.getApplicantByThread(tid)).toBeNull();
+    expect((await sendPending(s, tid)).ok).toBe(true);
     expect((await s.getApplicantByThread(tid))?.stage).toBe('declined');
   });
 
@@ -316,8 +338,10 @@ describe('applyDraftTemplate', () => {
     expect(body).toMatch(/who can actually deliver/i);
     expect(body).toContain(AFFILIATE_APPLY_URL);
     expect(body).not.toMatch(/in-house/);
-    expect((await s.getApplicantByThread(tid))?.stage).toBe('passed_to_form');
     expect((await s.getThreadWithMessages(tid))?.thread.status).toBe('needs_reply');
+    expect(await s.getApplicantByThread(tid)).toBeNull();
+    expect((await sendPending(s, tid)).ok).toBe(true);
+    expect((await s.getApplicantByThread(tid))?.stage).toBe('passed_to_form');
   });
 
   it('the supplier acknowledgement thanks them for the listing, never declines, and leaves the funnel untouched', async () => {
@@ -346,6 +370,8 @@ describe('applyDraftTemplate', () => {
     const body = (r as { draft?: { body_text?: string } }).draft?.body_text ?? '';
     expect(body).toContain('internal operations');
     expect(body).toContain('regardless of the reason for asking'); // never engages the discovery question itself
+    expect(await s.getApplicantByThread(tid)).toBeNull();
+    expect((await sendPending(s, tid)).ok).toBe(true);
     expect((await s.getApplicantByThread(tid))?.stage).toBe('declined');
   });
 
@@ -364,6 +390,8 @@ describe('applyDraftTemplate', () => {
     expect(body).toContain(AFFILIATE_APPLY_URL);
     expect(body).toBe(buildSecondTouch('signup_invite', 'Jane'));
     expect(JSON.parse((await s.getPendingDraft(tid))!.hold_reasons ?? '[]')).toEqual([]);
+    expect(await s.getApplicantByThread(tid)).toBeNull();
+    expect((await sendPending(s, tid)).ok).toBe(true);
     expect((await s.getApplicantByThread(tid))?.stage).toBe('passed_to_form');
   });
 
@@ -429,7 +457,35 @@ describe('applyDraftTemplate', () => {
     // ...and none of the claims the service decline was inventing for them.
     expect(body).not.toMatch(/in-house|collaborator access/i);
     expect((await s.getDraft(did))?.status).toBe('superseded');
+    expect(await s.getApplicantByThread(tid)).toBeNull();
+    expect((await sendPending(s, tid)).ok).toBe(true);
     expect((await s.getApplicantByThread(tid))?.stage).toBe('passed_to_form');
+  });
+
+  // aramid 785e4f91, rest of it (2026-10-07): the stage was written when the
+  // template was chosen, so a draft the owner then threw away had already
+  // reversed a decline. It is written when the reply is sent, and only then.
+  it('a template draft that is discarded never changes the stage', async () => {
+    const { s, tid } = await seedWithConfig();
+    await s.upsertApplicant({ threadId: tid, contactEmail: 'jane@x.com', stage: 'declined' });
+    expect((await applyDraftTemplate(env.DB, SHOP, tid, 'signup_invite')).ok).toBe(true);
+    expect((await s.getApplicantByThread(tid))?.stage).toBe('declined');
+    expect((await applyDraftTemplate(env.DB, SHOP, tid, 'keep_to_email')).ok).toBe(true); // supersedes the invite
+    expect((await sendPending(s, tid)).ok).toBe(true);
+    expect((await s.getApplicantByThread(tid))?.stage).toBe('declined');
+  });
+
+  it('a send that fails never changes the stage', async () => {
+    const { s, tid } = await seedWithConfig();
+    expect((await applyDraftTemplate(env.DB, SHOP, tid, 'collaboration_decline')).ok).toBe(true);
+    expect((await sendPending(s, tid, false)).ok).toBe(false);
+    expect(await s.getApplicantByThread(tid)).toBeNull();
+  });
+
+  it('a template reply that will stage the sender still goes out from the partnerships address', async () => {
+    const { s, tid } = await seedWithConfig();
+    expect((await applyDraftTemplate(env.DB, SHOP, tid, 'signup_invite')).ok).toBe(true);
+    expect((await sendPending(s, tid)).from).toContain('sales@activepaw.co.uk');
   });
 
   // aramid llm-review 785e4f91 (fixed 2026-09-07): the invite template staged
@@ -594,6 +650,46 @@ describe('getInboxThread - affiliate applicant', () => {
 // Sender-level block (owner rule 2026-09-04): the repeat rule blocks a contact
 // at ingest; the console shows the block on the thread and can lift it. The
 // thread payload carries the contact's blocked_at so the badge has a source.
+// aramid b4b33fbf, rest of it (2026-10-07): a block silences every later
+// message from an address, and nothing listed who was blocked, so a wrong block
+// was only found by opening a spam thread. The console now lists them.
+describe('blocked senders list', () => {
+  it('lists blocked contacts newest first with name and reason, and leaves out everyone else', async () => {
+    const s = new TenantStore(env.DB, SHOP);
+    for (const e of ['old@x.com', 'new@x.com', 'fine@x.com']) await s.upsertContact({ email: e, name: e.split('@')[0], phone: null });
+    await s.blockContact('old@x.com', 'repeat message: same text sent 3 times');
+    await env.DB.prepare(`UPDATE inbox_contacts SET blocked_at = '2026-09-01T10:00:00.000Z' WHERE shop = ?1 AND email = 'old@x.com'`).bind(SHOP).run();
+    await s.blockContact('new@x.com', 'blocked by owner');
+    const r = await listBlockedSenders(env.DB, SHOP);
+    expect(r.ok).toBe(true);
+    expect(r.senders.map((x) => x.email)).toEqual(['new@x.com', 'old@x.com']);
+    expect(r.senders[1]).toEqual({ email: 'old@x.com', name: 'old', blockedAt: '2026-09-01T10:00:00.000Z', reason: 'repeat message: same text sent 3 times' });
+  });
+
+  it('unblockSenderByEmail lifts that address only, and refuses one that is not blocked', async () => {
+    const s = new TenantStore(env.DB, SHOP);
+    for (const e of ['a@x.com', 'b@x.com']) { await s.upsertContact({ email: e, name: null, phone: null }); await s.blockContact(e, 'repeat'); }
+    expect(await unblockSenderByEmail(env.DB, SHOP, 'A@X.com')).toEqual({ ok: true, email: 'a@x.com' });
+    expect((await s.getContactByEmail('a@x.com'))!.blocked_at).toBeNull();
+    expect((await s.getContactByEmail('b@x.com'))!.blocked_at).not.toBeNull();
+    expect((await unblockSenderByEmail(env.DB, SHOP, 'a@x.com')).ok).toBe(false);
+  });
+
+  it('POST /api/inbox/blocked lists them and POST /api/inbox/unblock takes an email', async () => {
+    const s = new TenantStore(env.DB, ANSWERS_SHOP);
+    await s.upsertTenant({ accessTokenEnc: 'tok', dekWrapped: 'd', scopes: 's' });
+    await s.upsertContact({ email: 'v@x.com', name: 'V', phone: null });
+    await s.blockContact('v@x.com', 'repeat message');
+    const token = await answersBearerToken(ANSWERS_SHOP);
+    const list = await callAnswersRoute('/api/inbox/blocked', {}, token);
+    expect(list.status).toBe(200);
+    expect(((await list.json()) as { senders: { email: string }[] }).senders.map((x) => x.email)).toEqual(['v@x.com']);
+    const res = await callAnswersRoute('/api/inbox/unblock', { email: 'v@x.com' }, token);
+    expect(((await res.json()) as { ok: boolean }).ok).toBe(true);
+    expect((await s.getContactByEmail('v@x.com'))!.blocked_at).toBeNull();
+  });
+});
+
 describe('unblockSender', () => {
   it('the thread payload shows the block, and unblockSender lifts it', async () => {
     const tid = await seed();

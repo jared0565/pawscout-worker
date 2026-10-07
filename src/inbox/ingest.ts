@@ -2,7 +2,7 @@ import type { TenantStore } from '../tenant-store';
 import type { ParsedEmail, ThreadStatus } from './types';
 import { parseInbound, extractContactForm } from './mime';
 import { parseAuthResults, isAutomated, isHardSpam, normalizeSubject } from './gates';
-import { repeatVerdict, looksLikeCustomerMessage, PROTECTED_CATEGORIES } from './repeat';
+import { repeatVerdict, isRepeatOf, looksLikeCustomerMessage, PROTECTED_CATEGORIES } from './repeat';
 
 /** Store one parsed inbound email: resolve the real sender, match-or-create the
  * thread, insert the message (deduped), and set the thread's initial status from
@@ -34,10 +34,18 @@ export async function ingestParsed(store: TenantStore, p: ParsedEmail): Promise<
   // review b4b33fbf): the same deterministic guard that keeps a customer from
   // being blocked, an order-shaped message from an AUTHENTICATED sender, lets a
   // wrongly blocked one back in. The block lifts here and the message is handled
-  // as a normal inbound. Contact-form posts stay out: their DMARC is the relay's.
-  if (blocked && !form && auth.dmarc === 'pass' && looksLikeCustomerMessage(bodyText)) {
-    await store.unblockContact(email);
-    blocked = false;
+  // as a normal inbound. A contact-form post (2026-10-07) only lets its own
+  // order-shaped message through: its DMARC is the relay's and its address is
+  // whatever was typed, so it proves nothing and never lifts the block (that
+  // is the owner's call, from the blocked-senders list). A form post never
+  // sets a block either.
+  if (blocked && looksLikeCustomerMessage(bodyText)) {
+    if (!form && auth.dmarc === 'pass') {
+      await store.unblockContact(email);
+      blocked = false;
+    } else if (form) {
+      blocked = false;
+    }
   }
   // A Shopify contact-form notification arrives from a no-reply relay wrapping a
   // real human - so a form submission must NOT be gated as "automated" on the
@@ -90,6 +98,17 @@ export async function ingestParsed(store: TenantStore, p: ParsedEmail): Promise<
     if (!form && !automated && !spam && earlier.length > 0 && auth.dmarc === 'pass' && !looksLikeCustomerMessage(bodyText)) {
       repeat = repeatVerdict(bodyText, earlier.map((e) => ({ text: e.body_text, repliedAfter: e.replied_after })));
       if (repeat && await store.senderIsProtected(email, PROTECTED_CATEGORIES)) repeat = false;
+      // The protection reads thread categories the sweep writes later (aramid
+      // 114e2e7b): while a thread holding an earlier copy is still waiting for
+      // the sweep, the sender might be a customer the protection cannot see
+      // yet, so the block waits. Only a thread the sweep will still take (new,
+      // unclassified, under a day old) holds it back, so one it never reaches
+      // cannot hold it back for ever. A copy after that decides it.
+      if (repeat) {
+        const copyThreads = [...new Set(earlier.filter((e) => isRepeatOf(bodyText, e.body_text)).map((e) => e.thread_id))];
+        const sinceIso = new Date(Date.now() - 86_400_000).toISOString();
+        if (await store.anyThreadAwaitingSweep(copyThreads, sinceIso)) repeat = false;
+      }
     }
     if (repeat) {
       const copies = earlier.length + 1;

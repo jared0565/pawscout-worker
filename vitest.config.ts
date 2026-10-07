@@ -1,5 +1,5 @@
 import { cloudflareTest, readD1Migrations } from '@cloudflare/vitest-pool-workers';
-import { defineConfig } from 'vitest/config';
+import { configDefaults, defineConfig } from 'vitest/config';
 
 // Upgraded 2026-07-28 from vitest 2.1.9 / @cloudflare/vitest-pool-workers 0.5.41.
 // The old stack could not START the full 150-file suite on Node 24: workerd
@@ -37,7 +37,12 @@ export default defineConfig({
   // quiet full run on 14504fc the slowest test took 4149ms and 38 took over a
   // second, so the default sat at the edge. 20s is about 4.8x the slowest
   // quiet test, and a hung test still fails in 20s.
-  test: { setupFiles: ['./tests/setup-reset-db.ts'], testTimeout: 20_000 },
+  //
+  // exclude: an agent worktree under .claude/worktrees is a whole second
+  // checkout, tests included, and vitest's defaults skip only node_modules and
+  // .git. On 2026-10-07 aramid's pre-push run timed out at its 600s budget
+  // while one such worktree sat in the tree.
+  test: { setupFiles: ['./tests/setup-reset-db.ts'], testTimeout: 20_000, exclude: [...configDefaults.exclude, '.claude/**'] },
   plugins: [
     cloudflareTest({
       wrangler: { configPath: './wrangler.toml' },

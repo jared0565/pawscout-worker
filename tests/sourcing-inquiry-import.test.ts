@@ -182,6 +182,28 @@ describe('refreshSourcingDraft', () => {
     expect(seen).toEqual([]);
   });
 
+  // aramid 53d7292e (2026-10-07): a refused import left the stale offer in
+  // place. Redrafting after a refusal falls back honestly (supplierOffers skips
+  // a gate-refused item). A profit-review draft is left for the owner, and the
+  // send refuses the stale offer until they decide.
+  it('redrafts the held offer after the import is refused', async () => {
+    const t = await setup([]);
+    const id = await draftAt(t.store, ['sourcing_offer'], HOUR_AGO());
+    await t.store.putLink({ cjPid: 'T1', state: 'failed', failReason: 'not-pet-relevant' });
+    const seen: string[] = [];
+    expect(await refreshSourcingDraft(t.store, 'th1', 'T1', async (d) => { seen.push(d); return true; })).toBe(true);
+    expect(seen).toEqual([id]);
+  });
+
+  it('leaves the held offer for the owner while the import waits for profit review', async () => {
+    const t = await setup([]);
+    await draftAt(t.store, ['sourcing_offer'], HOUR_AGO());
+    await t.store.putLink({ cjPid: 'T1', state: 'draft', handle: 'h' });
+    const seen: string[] = [];
+    expect(await refreshSourcingDraft(t.store, 'th1', 'T1', async (d) => { seen.push(d); return true; })).toBe(false);
+    expect(seen).toEqual([]);
+  });
+
   it('does nothing until the import has landed', async () => {
     const t = await setup([]);
     await draftAt(t.store, ['sourcing_offer'], HOUR_AGO());

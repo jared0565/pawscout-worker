@@ -41,6 +41,10 @@ export const inboxView = `  <section class="ibx" data-panel="inbox">
         </div>
         <div id="inbox-threads" class="ibx-list"><p class="muted" style="padding:12px">Loading…</p></div>
         <p id="inboxmsg" class="msg muted"></p>
+        <details id="ibx-blocked" class="ibx-blocked">
+          <summary>Blocked senders</summary>
+          <div id="ibx-blocked-list" class="ibx-blocked-list"><p class="muted">Loading…</p></div>
+        </details>
       </aside>
       <section class="ibx-convo" aria-label="Conversation">
         <div id="inbox-reconnect-banner" class="ibx-banner" style="display:none"></div>
@@ -78,6 +82,11 @@ export const inboxCss = `
   .ibx-chip.is-on{background:rgba(232,89,12,.18);border-color:#e8590c;color:#f0854b}
   .ibx-filters select{font-size:12.5px;padding:6px 8px}
   .ibx-list{flex:1 1 auto;min-height:0;overflow-y:auto}
+  .ibx-blocked{flex:0 0 auto;border-top:1px solid var(--border);padding:8px 12px;font-size:13px}
+  .ibx-blocked summary{cursor:pointer;font-weight:600}
+  .ibx-blocked-list{max-height:240px;overflow-y:auto;margin-top:6px}
+  .ibx-blocked-row{display:flex;gap:8px;align-items:flex-start;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)}
+  .ibx-blocked-who{min-width:0;overflow-wrap:anywhere}
   /* id selectors, NOT classes: setMsg() rewrites className to "msg <kind>",
      which would strip any extra layout class off these two elements. */
   #inboxmsg{flex:0 0 auto;padding:0 12px 8px;margin:0}

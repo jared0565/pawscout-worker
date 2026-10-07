@@ -1,0 +1,16 @@
+-- Facts a drafted reply carries to the moment it is SENT (2026-10-07).
+--
+-- Two aramid findings needed the draft to remember something until it goes out:
+--   53d7292e  a held sourcing offer quotes a supplier item's pre-import price;
+--             if that item is imported, refused or put up for profit review
+--             after the draft was written, sending it would offer a price or
+--             an item the store no longer honours. The draft keeps the
+--             supplier product id so the send can check.
+--   785e4f91  choosing a partnership template staged the applicant at once,
+--             so a draft the owner then discarded had already reversed a
+--             decline. The draft keeps the stage, and the send applies it.
+--
+-- One JSON column rather than a column per fact: both are optional, read only
+-- by the send path, and NULL on every draft written before this migration
+-- (those send exactly as they did).
+ALTER TABLE inbox_drafts ADD COLUMN meta_json TEXT;

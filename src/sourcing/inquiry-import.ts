@@ -74,8 +74,12 @@ export async function startInquiryImport(deps: InquiryImportDeps, pid: string, d
  * The thread's held offer was drafted before the item existed, so it carries
  * no product link. Once the import lands, a pending draft held for
  * 'sourcing_offer' and written before the import finished is regenerated: the
- * product agent then finds the imported item and links its page. A draft
- * written after the import, or held for anything else, is left alone.
+ * product agent then finds the imported item and links its page. A refused
+ * import redrafts too (aramid 53d7292e, 2026-10-07): supplierOffers skips a
+ * gate-refused item, so the new draft falls back honestly instead of offering
+ * it. A profit-review draft is left for the owner; the send refuses the stale
+ * offer until they decide. A draft written after the import, or held for
+ * anything else, is left alone.
  */
 export async function refreshSourcingDraft(
   store: TenantStore,
@@ -85,7 +89,7 @@ export async function refreshSourcingDraft(
   regenerate: (draftId: string) => Promise<boolean>
 ): Promise<boolean> {
   const link = await store.getLink(pid);
-  if (link?.state !== 'imported') return false;
+  if (link?.state !== 'imported' && link?.state !== 'failed') return false;
   const draft = await store.getPendingDraft(threadId);
   if (!draft) return false;
   let holds: unknown = [];
