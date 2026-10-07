@@ -69,10 +69,13 @@ function hasFraudHoldHistory(holdReasonsJson: string | null): boolean {
 }
 
 /** Same shape as hasFraudHoldHistory, for the live freight counter-check: an
- *  operator who released a freight-mismatch hold decided to book the order at
- *  the live cost, and the next run must not hold it again for the same
- *  reason. The check still runs (the live channel is the one booked, and the
- *  trail still records the figure); only the hold is skipped. */
+ *  operator who released a freight-mismatch hold approved the live figure
+ *  that hold showed them (approvedFreightUsd), not whatever the supplier
+ *  charges by the time the order is booked. The next run compares the fresh
+ *  quote with THAT figure instead of the synced rate: within the same
+ *  tolerance it books, above it, or with no figure on record, it is held
+ *  again. The check still runs (the live channel is the one booked, and the
+ *  trail still records the figure). */
 function hasFreightHoldHistory(holdReasonsJson: string | null): boolean {
   if (!holdReasonsJson) return false;
   try {
@@ -86,6 +89,13 @@ function hasFreightHoldHistory(holdReasonsJson: string | null): boolean {
  *  the nightly sync, still books, while a rate that has doubled does not. */
 const FREIGHT_TOLERANCE_RATIO = 0.25;
 const FREIGHT_TOLERANCE_USD = 1;
+
+/** The most the live freight may be, against `baseUsd`, and still book. One
+ *  rule for both bases: the synced allowed-for figure, and the figure an
+ *  operator approved by releasing a freight-mismatch hold. */
+function freightLimitUsd(baseUsd: number): number {
+  return baseUsd * (1 + FREIGHT_TOLERANCE_RATIO) + FREIGHT_TOLERANCE_USD;
+}
 
 /** Consecutive ticks that ended in a freight-unreadable line. The gate-passed
  *  and stock-ok lines a tick writes on its way to the quote say nothing about
@@ -114,6 +124,27 @@ const unitsText = (n: number) => `${n} unit${n === 1 ? '' : 's'}`;
 function freightQuotedDetail(origin: string, dest: string, units: number, live: { priceUsd: number; days: string; name: string }, allowedUsd: number | null): string {
   const compared = allowedUsd == null ? `no synced ${origin}->${dest} rate to compare with` : `allowed for ${usd(allowedUsd)}`;
   return `${origin}->${dest}, ${unitsText(units)}: live ${usd(live.priceUsd)} via ${live.name} (${live.days} days); ${compared}`;
+}
+
+/** How a freight-mismatch hold's trail line starts; freightQuotedDetail
+ *  follows it, so the line carries the live figure the owner was shown. */
+const FREIGHT_HOLD_PREFIX = 'freight-mismatch: ';
+
+/** The live figure the newest freight-mismatch hold showed the owner, read
+ *  back from that hold's own trail line (FREIGHT_HOLD_PREFIX, then
+ *  freightQuotedDetail, whose "live USD n via" is the live figure). Releasing
+ *  that hold approves this figure. Kept beside the writer above so the two
+ *  cannot drift. Null when no such line stands, or the newest one cannot be
+ *  read, and null is never taken as approval of anything. */
+function approvedFreightUsd(trail: { kind: string; detail: string | null }[]): number | null {
+  for (let i = trail.length - 1; i >= 0; i--) {
+    const e = trail[i];
+    if (e.kind !== 'gate-held' || !e.detail?.startsWith(FREIGHT_HOLD_PREFIX)) continue;
+    const m = /: live USD (\d+(?:\.\d+)?) via /.exec(e.detail);
+    const n = m ? Number(m[1]) : NaN;
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
 }
 
 /** Write a cancel/hold gate decision to the row + trail in one place, so the
@@ -645,8 +676,11 @@ export async function processDueOrders(
         // unit, times the units ordered - the same rate the delivery
         // profiles charge and the baked-in freight is priced from. Live
         // above that by more than the tolerance holds the order before
-        // anything is sent to the supplier; a released hold books at the
-        // live cost. An unreadable quote is "could not tell": nothing is
+        // anything is sent to the supplier. A released hold approved the
+        // figure that hold showed: it books while the live cost is within
+        // the same tolerance of THAT figure, and is held again above it, so a
+        // later tick cannot book at whatever the cost has become by then.
+        // An unreadable quote is "could not tell": nothing is
         // booked, the row stays queued for the next tick, the owner hears on
         // the fourth failure in a row - the gate-unreadable pattern.
         step = 'freight';
@@ -685,18 +719,39 @@ export async function processDueOrders(
         const allowedUsd = route?.freight_cost_usd != null ? route.freight_cost_usd * units : null;
         const quotedDetail = freightQuotedDetail(origin, dest, units, live, allowedUsd);
         await store.addOrderEvent(o.shopify_order_id, 'freight-quoted', quotedDetail);
-        const overAllowed = allowedUsd == null || live.priceUsd > allowedUsd * (1 + FREIGHT_TOLERANCE_RATIO) + FREIGHT_TOLERANCE_USD;
-        if (overAllowed && !hasFreightHoldHistory(o.hold_reasons)) {
-          await writeGateStop(store, o.shopify_order_id, 'held', 'freight-mismatch', null, `freight-mismatch: ${quotedDetail}`);
+        const overAllowed = allowedUsd == null || live.priceUsd > freightLimitUsd(allowedUsd);
+        // Only read on a released hold that the allowed-for figure alone
+        // would hold again: within it, the order books either way.
+        const released = overAllowed && hasFreightHoldHistory(o.hold_reasons);
+        const approvedUsd = released ? approvedFreightUsd(await store.listOrderEvents(o.shopify_order_id)) : null;
+        const withinApproved = approvedUsd != null && live.priceUsd <= freightLimitUsd(approvedUsd);
+        if (overAllowed && !withinApproved) {
+          const againDetail = !released ? '' : approvedUsd == null ? '; no figure approved at release on record' : `; approved at release ${usd(approvedUsd)}`;
+          await writeGateStop(store, o.shopify_order_id, 'held', 'freight-mismatch', null, `${FREIGHT_HOLD_PREFIX}${quotedDetail}${againDetail}`);
           held++;
           if (opts.alert) {
             const name = o.order_name ?? o.shopify_order_id;
-            const quote = `The supplier quotes ${usd(live.priceUsd)} (${live.name}, ${live.days} days) to deliver its ${unitsText(units)} ${origin}->${dest}`;
-            const against = allowedUsd == null ? `and there is no synced ${origin}->${dest} rate to check it against` : `against ${usd(allowedUsd)} allowed for from the synced rate`;
-            await deliverOrderAlert(store, o.shopify_order_id, {
-              subject: allowedUsd == null ? `Order ${name}: the supplier's delivery cost could not be compared` : `Order ${name}: the supplier's delivery cost is above what was allowed for`,
-              text: `Order ${name} is held. ${quote}, ${against}. Nothing has been sent to the supplier. Release the order in the console to book it at the live cost, or cancel it.`
-            }, opts.alert);
+            const basket = `${unitsText(units)} ${origin}->${dest}`;
+            const channel = `${live.name}, ${live.days} days`;
+            let notice: OwnerAlert;
+            if (!released) {
+              const against = allowedUsd == null ? `and there is no synced ${origin}->${dest} rate to check it against` : `against ${usd(allowedUsd)} allowed for from the synced rate`;
+              notice = {
+                subject: allowedUsd == null ? `Order ${name}: the supplier's delivery cost could not be compared` : `Order ${name}: the supplier's delivery cost is above what was allowed for`,
+                text: `Order ${name} is held. The supplier quotes ${usd(live.priceUsd)} (${channel}) to deliver its ${basket}, ${against}. Nothing has been sent to the supplier. Release the order in the console to book it at the live cost, or cancel it.`
+              };
+            } else if (approvedUsd == null) {
+              notice = {
+                subject: `Order ${name}: the delivery cost approved at release could not be found`,
+                text: `Order ${name} is held again. It was released from a delivery cost hold, but the figure that hold showed could not be found in its timeline, so PawScout cannot tell whether the supplier's quote of ${usd(live.priceUsd)} (${channel}) for its ${basket} is the cost that was approved. Nothing has been sent to the supplier. Release the order in the console to approve this figure and book it, or cancel it.`
+              };
+            } else {
+              notice = {
+                subject: `Order ${name}: the supplier's delivery cost rose above the figure approved at release`,
+                text: `Order ${name} is held again. The supplier now quotes ${usd(live.priceUsd)} (${channel}) to deliver its ${basket}, above the ${usd(approvedUsd)} approved when the order was released. Nothing has been sent to the supplier. Release the order in the console to approve the new figure and book it, or cancel it.`
+              };
+            }
+            await deliverOrderAlert(store, o.shopify_order_id, notice, opts.alert);
           }
           continue;
         }

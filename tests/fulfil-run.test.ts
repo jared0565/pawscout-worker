@@ -2383,19 +2383,112 @@ describe('live freight counter-check before the supplier order', () => {
     expect(spy.create).toHaveLength(1);
   });
 
-  it("a released freight-mismatch hold is not held again for the same reason: the operator's decision outranks the counter-check, and the live channel is still the one booked", async () => {
-    const store = new TenantStore(env.DB, SHOP);
+  /** What the console's Release does to a held row (src/index.ts,
+   *  /api/order-action): back to queued, hold reasons left as they were. */
+  async function release(store: TenantStore, id: string) {
+    await store.updateOrder(id, { status: 'queued' });
+    await store.addOrderEvent(id, 'operator-action', 'release');
+    await store.addOrderEvent(id, 'released');
+  }
+  /** Tick 0 of a released-hold story: CN->US, 4 units, allowed for USD 22.00,
+   *  and a live quote of USD 40.00 that holds the order. */
+  async function holdAt40(store: TenantStore, spy: { create: unknown[]; pay: string[] }) {
     await seedWarehouse(store, 'CJ1', 'S1', 'v1');
     await seedRoute(store, 'CN', 'US', 5.5);
-    await seedOrder(store, 'O1', [{ sku: 'S1', quantity: 4, cjPid: 'CJ1' }], { addressJson: JSON.stringify(US_ADDRESS), holdReasons: ['freight-mismatch'] });
+    await seedOrder(store, 'O1', [{ sku: 'S1', quantity: 4, cjPid: 'CJ1' }], { addressJson: JSON.stringify(US_ADDRESS) });
+    const r = await processDueOrders(store, quoting(spy, [], async () => ({ priceUsd: 40, days: '12-20', name: 'Economy' })), liveAdmin({ order: US_LIVE }), cfg('pawscout'), { now: atTick(0), alert: async () => 'sent' });
+    expect(r).toMatchObject({ held: 1 });
+  }
+
+  it('a released freight-mismatch hold is not held again while the live figure is still the one the owner approved, and the live channel is the one booked', async () => {
+    const store = new TenantStore(env.DB, SHOP);
     const spy = { create: [] as any[], pay: [] as string[] };
+    await holdAt40(store, spy);
+    await release(store, 'O1');
     const alerts: unknown[] = [];
     const cj = quoting(spy, [], async () => ({ priceUsd: 40, days: '12-20', name: 'Economy' }));
-    const r = await processDueOrders(store, cj, liveAdmin({ order: US_LIVE }), cfg('pawscout'), { alert: async (s, t) => { alerts.push({ s, t }); return 'sent'; } });
+    const r = await processDueOrders(store, cj, liveAdmin({ order: US_LIVE }), cfg('pawscout'), { now: atTick(1), alert: async (s, t) => { alerts.push({ s, t }); return 'sent'; } });
     expect(r).toMatchObject({ submitted: 1, held: 0 });
     expect(spy.create[0].logisticName).toBe('Economy');
     expect(alerts).toHaveLength(0);
-    expect((await store.listOrderEvents('O1')).find((e) => e.kind === 'freight-quoted')?.detail).toContain('live USD 40.00');
+    expect((await store.listOrderEvents('O1')).filter((e) => e.kind === 'freight-quoted').map((e) => e.detail)).toEqual([
+      'CN->US, 4 units: live USD 40.00 via Economy (12-20 days); allowed for USD 22.00',
+      'CN->US, 4 units: live USD 40.00 via Economy (12-20 days); allowed for USD 22.00'
+    ]);
+  });
+
+  it('released: a fresh quote that moved but stays within 25% plus USD 1 of the approved figure books (USD 51.00 against an approved USD 40.00)', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const spy = { create: [] as any[], pay: [] as string[] };
+    await holdAt40(store, spy);
+    await release(store, 'O1');
+    const cj = quoting(spy, [], async () => ({ priceUsd: 51, days: '12-20', name: 'Economy' }));
+    const r = await processDueOrders(store, cj, liveAdmin({ order: US_LIVE }), cfg('pawscout'), { now: atTick(1), alert: async () => 'sent' });
+    expect(r).toMatchObject({ submitted: 1, held: 0 });
+    expect(spy.create).toHaveLength(1);
+  });
+
+  it('released: a fresh quote above 25% plus USD 1 of the approved figure is held again with a new alert, and a second release approves the new figure', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const spy = { create: [] as any[], pay: [] as string[] };
+    await holdAt40(store, spy);
+    await release(store, 'O1');
+    const alerts: { subject: string; text: string }[] = [];
+    const justAbove = quoting(spy, [], async () => ({ priceUsd: 51.01, days: '12-20', name: 'Economy' }));
+    const r = await processDueOrders(store, justAbove, liveAdmin({ order: US_LIVE }), cfg('pawscout'), { now: atTick(1), alert: async (subject, text) => { alerts.push({ subject, text }); return 'sent'; } });
+    expect(r).toMatchObject({ submitted: 0, held: 1, errored: 0 });
+    expect(spy.create).toHaveLength(0);
+    const o = await store.getOrder('O1');
+    expect(o?.status).toBe('held');
+    expect(JSON.parse(o!.hold_reasons!)).toEqual(['freight-mismatch']);
+    const holds = (await store.listOrderEvents('O1')).filter((e) => e.kind === 'gate-held');
+    expect(holds.map((e) => e.detail)).toEqual([
+      'freight-mismatch: CN->US, 4 units: live USD 40.00 via Economy (12-20 days); allowed for USD 22.00',
+      'freight-mismatch: CN->US, 4 units: live USD 51.01 via Economy (12-20 days); allowed for USD 22.00; approved at release USD 40.00'
+    ]);
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].subject).toBe("Order #O1: the supplier's delivery cost rose above the figure approved at release");
+    expect(alerts[0].text).toBe('Order #O1 is held again. The supplier now quotes USD 51.01 (Economy, 12-20 days) to deliver its 4 units CN->US, above the USD 40.00 approved when the order was released. Nothing has been sent to the supplier. Release the order in the console to approve the new figure and book it, or cancel it.');
+
+    // The figure this second hold showed is what a second release approves.
+    await release(store, 'O1');
+    const r3 = await processDueOrders(store, justAbove, liveAdmin({ order: US_LIVE }), cfg('pawscout'), { now: atTick(2), alert: async () => 'sent' });
+    expect(r3).toMatchObject({ submitted: 1, held: 0 });
+    expect(spy.create).toHaveLength(1);
+  });
+
+  it('released: a tick whose quote cannot be read books nothing, and the next readable quote is still capped at the approved figure', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const spy = { create: [] as any[], pay: [] as string[] };
+    await holdAt40(store, spy);
+    await release(store, 'O1');
+    const unreadable = quoting(spy, [], async () => { throw new Error('CJ HTTP 502'); });
+    const r1 = await processDueOrders(store, unreadable, liveAdmin({ order: US_LIVE }), cfg('pawscout'), { now: atTick(1), alert: async () => 'sent' });
+    expect(r1).toMatchObject({ submitted: 0, held: 0, errored: 0 });
+    expect((await store.getOrder('O1'))?.status).toBe('queued');
+    const jumped = quoting(spy, [], async () => ({ priceUsd: 90, days: '12-20', name: 'Economy' }));
+    const r2 = await processDueOrders(store, jumped, liveAdmin({ order: US_LIVE }), cfg('pawscout'), { now: atTick(2), alert: async () => 'sent' });
+    expect(r2).toMatchObject({ submitted: 0, held: 1 });
+    expect(spy.create).toHaveLength(0);
+    expect((await store.getOrder('O1'))?.status).toBe('held');
+  });
+
+  it('released, but no held quote on record to approve: held again rather than booked blind, and the alert says the approved figure was not found', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedWarehouse(store, 'CJ1', 'S1', 'v1');
+    await seedRoute(store, 'CN', 'US', 5.5);
+    // The hold reason without the hold's own trail line (a refused trail write).
+    await seedOrder(store, 'O1', [{ sku: 'S1', quantity: 4, cjPid: 'CJ1' }], { addressJson: JSON.stringify(US_ADDRESS), holdReasons: ['freight-mismatch'] });
+    const spy = { create: [] as any[], pay: [] as string[] };
+    const alerts: { subject: string; text: string }[] = [];
+    const cj = quoting(spy, [], async () => ({ priceUsd: 40, days: '12-20', name: 'Economy' }));
+    const r = await processDueOrders(store, cj, liveAdmin({ order: US_LIVE }), cfg('pawscout'), { alert: async (subject, text) => { alerts.push({ subject, text }); return 'sent'; } });
+    expect(r).toMatchObject({ submitted: 0, held: 1 });
+    expect(spy.create).toHaveLength(0);
+    expect((await store.listOrderEvents('O1')).find((e) => e.kind === 'gate-held')?.detail).toBe('freight-mismatch: CN->US, 4 units: live USD 40.00 via Economy (12-20 days); allowed for USD 22.00; no figure approved at release on record');
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].subject).toBe('Order #O1: the delivery cost approved at release could not be found');
+    expect(alerts[0].text).toBe("Order #O1 is held again. It was released from a delivery cost hold, but the figure that hold showed could not be found in its timeline, so PawScout cannot tell whether the supplier's quote of USD 40.00 (Economy, 12-20 days) for its 4 units CN->US is the cost that was approved. Nothing has been sent to the supplier. Release the order in the console to approve this figure and book it, or cancel it.");
   });
 
   it('no synced route to compare with: held as freight-mismatch with a detail that says so, rather than booked unchecked', async () => {
