@@ -1943,9 +1943,10 @@ app.post('/api/inbox/source-status', async (c) => {
   const store = new TenantStore(c.env.DB, s);
   const status = await inquiryImportStatus(store, pid);
   // The held offer was drafted before the item existed: once it lands, redraft
-  // it so the reply links the product page. A failed redraft keeps the old
-  // draft and never fails the status the console is waiting on.
-  const draftRefreshed = status.state === 'imported' && threadId
+  // it so the reply links the product page; once it is refused, redraft it so
+  // the reply stops offering it (aramid 53d7292e). A failed redraft keeps the
+  // old draft and never fails the status the console is waiting on.
+  const draftRefreshed = (status.state === 'imported' || status.state === 'failed') && threadId
     ? await refreshSourcingDraft(store, threadId, pid, async (id) => (await regenerateDraft(c.env.DB, c.env, s, id)).ok).catch(() => false)
     : false;
   return c.json({ ...status, draftRefreshed });

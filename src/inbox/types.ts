@@ -87,6 +87,26 @@ export interface DraftRow {
   status: DraftStatus; confidence: number | null; quotes_price_order: number; commercial_intent: number;
   hold_reasons: string | null; model: string | null;
   created_at: string; sent_at: string | null; sent_message_id: string | null;
+  /** DraftMeta as JSON (migration 0045); NULL on older drafts. */
+  meta_json: string | null;
+}
+
+/** What a draft carries to the moment it is sent (migration 0045). */
+export interface DraftMeta {
+  /** A held sourcing offer: the supplier product it offered (aramid 53d7292e). */
+  sourcingPid?: string;
+  /** A template's applicant stage, written only when the reply is SENT (aramid
+   *  785e4f91). 'set' always writes it; 'if-none' only for a thread with no
+   *  applicant whose contact is not already a partner. */
+  stageOnSend?: { stage: 'passed_to_form' | 'declined'; mode: 'set' | 'if-none' };
+}
+
+export function parseDraftMeta(json: string | null | undefined): DraftMeta {
+  if (!json) return {};
+  try {
+    const v = JSON.parse(json) as unknown;
+    return v && typeof v === 'object' && !Array.isArray(v) ? (v as DraftMeta) : {};
+  } catch { return {}; }
 }
 
 export type InvoiceStatus = 'proposed' | 'sent' | 'paid' | 'discarded' | 'expired' | 'failed' | 'superseded';

@@ -2,7 +2,7 @@ import { DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_F
 import type { LogisticsRoute } from './logistics';
 import { deriveModels } from './llm-migrate';
 import { DEFAULT_INBOX, type InboxConfig } from './inbox/types';
-import type { ContactRow, ThreadRow, MessageRow, ThreadStatus, DraftRow, DraftStatus, InvoiceRow, InvoiceLineItem, InvoiceStatus, ApplicantRow, PartnershipStage, ScreenVerdict } from './inbox/types';
+import type { ContactRow, ThreadRow, MessageRow, ThreadStatus, DraftRow, DraftStatus, DraftMeta, InvoiceRow, InvoiceLineItem, InvoiceStatus, ApplicantRow, PartnershipStage, ScreenVerdict } from './inbox/types';
 import { mergeSupplier, SUPPLIER_STATUSES, type SupplierFacts, type SupplierRow, type SupplierStatus } from './inbox/supplier-register';
 
 /** ISO cutoff for the commission clearance hold: an order whose age basis
@@ -2336,12 +2336,13 @@ export class TenantStore {
 
   // --- W-INBOX-2: draft + outbound-message store methods ---
 
-  async insertDraft(d: { threadId: string; bodyText: string; bodyHtml: string; confidence: number | null; quotesPriceOrder: boolean; commercialIntent?: boolean; holdReasons: string[]; model: string; status: DraftStatus }): Promise<string> {
+  async insertDraft(d: { threadId: string; bodyText: string; bodyHtml: string; confidence: number | null; quotesPriceOrder: boolean; commercialIntent?: boolean; holdReasons: string[]; model: string; status: DraftStatus; meta?: DraftMeta }): Promise<string> {
     const id = crypto.randomUUID();
+    const meta = d.meta && Object.keys(d.meta).length ? JSON.stringify(d.meta) : null;
     await this.db
-      .prepare(`INSERT INTO inbox_drafts (shop, id, thread_id, body_text, body_html, status, confidence, quotes_price_order, commercial_intent, hold_reasons, model, created_at)
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)`)
-      .bind(this.shop, id, d.threadId, d.bodyText, d.bodyHtml, d.status, d.confidence, d.quotesPriceOrder ? 1 : 0, d.commercialIntent ? 1 : 0, JSON.stringify(d.holdReasons), d.model, new Date().toISOString())
+      .prepare(`INSERT INTO inbox_drafts (shop, id, thread_id, body_text, body_html, status, confidence, quotes_price_order, commercial_intent, hold_reasons, model, created_at, meta_json)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)`)
+      .bind(this.shop, id, d.threadId, d.bodyText, d.bodyHtml, d.status, d.confidence, d.quotesPriceOrder ? 1 : 0, d.commercialIntent ? 1 : 0, JSON.stringify(d.holdReasons), d.model, new Date().toISOString(), meta)
       .run();
     return id;
   }

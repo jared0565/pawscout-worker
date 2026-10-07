@@ -1,6 +1,6 @@
 import { TenantStore } from '../tenant-store';
 import { validateThreadStatus, validateLabels, validateInboxPayload } from '../validate';
-import { DEFAULT_INBOX, type InboxConfig, type ThreadStatus } from './types';
+import { DEFAULT_INBOX, type InboxConfig, type ThreadStatus, type DraftMeta } from './types';
 import type { Env } from '../types';
 import { sendReply } from './send';
 import { composeDraftForThread } from './sweep';
@@ -312,33 +312,30 @@ export async function applyDraftTemplate(db: D1Database, shop: string, threadId:
     first: body, second: followup ? pointer : buildSecondTouch(touchKey, name), pointer,
   });
   const touch: TouchKind = touched.body === pointer ? 'pointer' : touched.touch;
-  await store.supersedePendingDrafts(threadId);
-  await store.insertDraft({
-    threadId, bodyText: touched.body, bodyHtml: renderReplyHtml(touched.body),
-    confidence: null, quotesPriceOrder: false, holdReasons: touch === 'first' ? [] : ['repeat_touch'], model: 'template', status: 'pending'
-  });
 
-  const applicant = await store.getApplicantByThread(threadId);
   // signup_invite stages 'passed_to_form', exactly as the funnel's own
   // signup_page first-touch branch does - the FORM now does the screening. Left
   // at a stale 'declined' the next inbound would route off a decision we just
   // reversed.
   // The prove-first answer stages passed_to_form too (2026-09-17): the vendor
   // was pointed at the form, so their next reply rides the applicant ladder.
+  // The access decline points a fresh sender at the trial, so a thread with no
+  // applicant is staged passed_to_form; an existing applicant keeps its stage,
+  // and an accepted or queued partner is never turned into an applicant by it.
   // The supplier thank-you, like keep-to-email, touches no stage at all.
-  const stage = (key === 'signup_invite' || key === 'signup_followup' || key === 'service_prove_first') ? 'passed_to_form'
-    : (key === 'operations_decline' || key === 'collaboration_decline') ? 'declined'
-    : null;
-  if (stage) {
-    if (!applicant) await store.upsertApplicant({ threadId, contactEmail: got.thread.contact_email, stage });
-    else await store.setApplicantStage(threadId, stage, null);
-  } else if (key === 'access_decline' && !applicant && (await store.partnerPoolState(got.thread.contact_email)) === 'none') {
-    // The access decline points a fresh sender at the trial, so a thread with
-    // no applicant is staged passed_to_form (their next reply rides the
-    // ladder). An existing applicant keeps its stage, and an accepted or
-    // queued partner is never turned into an applicant by it.
-    await store.upsertApplicant({ threadId, contactEmail: got.thread.contact_email, stage: 'passed_to_form' });
-  }
+  // The stage rides on the draft and is written only when the reply is SENT
+  // (aramid 785e4f91): a draft the owner discards changes nothing.
+  const stageOnSend: DraftMeta['stageOnSend'] =
+    (key === 'signup_invite' || key === 'signup_followup' || key === 'service_prove_first') ? { stage: 'passed_to_form', mode: 'set' }
+    : (key === 'operations_decline' || key === 'collaboration_decline') ? { stage: 'declined', mode: 'set' }
+    : key === 'access_decline' ? { stage: 'passed_to_form', mode: 'if-none' }
+    : undefined;
+  await store.supersedePendingDrafts(threadId);
+  await store.insertDraft({
+    threadId, bodyText: touched.body, bodyHtml: renderReplyHtml(touched.body),
+    confidence: null, quotesPriceOrder: false, holdReasons: touch === 'first' ? [] : ['repeat_touch'], model: 'template', status: 'pending',
+    meta: stageOnSend ? { stageOnSend } : undefined
+  });
   if (got.thread.status === 'closed') await store.setThreadStatus(threadId, 'needs_reply');
   return { ok: true as const, touch, draft: await store.getPendingDraft(threadId) };
 }

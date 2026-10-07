@@ -3,10 +3,67 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
 import { TenantStore } from '../src/tenant-store';
 import { sendReply } from '../src/inbox/send';
+import { draftMetaFromGrounding } from '../src/inbox/sweep';
 import { DEFAULT_INBOX } from '../src/inbox/types';
 import { DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, type TenantConfig } from '../src/types';
 beforeEach(async () => { await applyD1Migrations(env.DB, env.TEST_MIGRATIONS); });
 const CFG: TenantConfig = { collectionMap: {}, gates: { popularityFloor: 1, priceMin: 1, priceMax: 9, relevance: 'title' }, pricing: DEFAULT_PRICING, floors: DEFAULT_FLOORS, llm: DEFAULT_LLM, addons: DEFAULT_ADDONS, fulfil: DEFAULT_FULFIL, inbox: DEFAULT_INBOX, target: 12 };
+
+// aramid 53d7292e (2026-10-07): a held sourcing offer quotes the supplier
+// item's pre-import price. If the item was imported, refused or put up for
+// profit review after the draft was written, sending it would offer a price or
+// an item the store no longer honours, so the send refuses and says why.
+describe('sendReply: a held sourcing offer', () => {
+  async function heldOffer(shop: string) {
+    const s = new TenantStore(env.DB, shop);
+    await s.upsertContact({ email: 'aloha@x.com', name: null, phone: null });
+    const tid = await s.createThread({ contactEmail: 'aloha@x.com', subject: 'Collar', subjectNorm: 'collar', receivedAt: '2026-09-30T10:00:00Z', initialStatus: 'needs_reply' });
+    await s.insertInboundMessageIfNew({ threadId: tid, messageId: '<a1@x>', inReplyTo: null, references: [], from: 'aloha@x.com', to: 'contact@activepaw.co.uk', subject: 'Collar', bodyText: 'Do you sell a trackable collar?', bodyHtml: null, headersJson: '{}', receivedAt: '2026-09-30T10:00:00Z' });
+    const did = await s.insertDraft({ threadId: tid, bodyText: 'We can get the GPS collar for GBP 41.99.', bodyHtml: '<p>x</p>', confidence: 80, quotesPriceOrder: true, holdReasons: ['sourcing_offer'], model: 'm', status: 'pending', meta: { sourcingPid: 'T1' } });
+    await env.DB.prepare('UPDATE inbox_drafts SET created_at = ?1 WHERE id = ?2').bind(new Date(Date.now() - 3_600_000).toISOString(), did).run();
+    return { s, tid, did };
+  }
+  const calls: string[] = [];
+  const okFetch = (async (u: unknown) => { calls.push(String(u)); return new Response(JSON.stringify({ id: 'em_s' }), { status: 200 }); }) as unknown as typeof fetch;
+  async function send(s: TenantStore, tid: string, did: string) {
+    calls.length = 0;
+    const thread = (await s.getThreadWithMessages(tid))!.thread;
+    return sendReply({ ...env, RESEND_API_KEY: 'rk' } as any, s, CFG, thread, (await s.getDraft(did))!, undefined, okFetch);
+  }
+
+  for (const [state, why] of [['imported', /imported since this reply was written/i], ['failed', /refused/i], ['draft', /profit review/i], ['importing', /being imported/i]] as const) {
+    it(`is not sent once its item is ${state} after the draft was written, and says why`, async () => {
+      const { s, tid, did } = await heldOffer(`so-${state}.myshopify.com`);
+      await s.putLink({ cjPid: 'T1', state, handle: state === 'imported' ? 'gps-collar' : undefined });
+      const r = await send(s, tid, did);
+      expect(r.ok).toBe(false);
+      expect(r.error).toMatch(why);
+      expect(r.error).toMatch(/regenerate/i);
+      expect(calls).toEqual([]);                                // nothing reached Resend
+      expect((await s.getDraft(did))!.status).toBe('pending');
+    });
+  }
+
+  it('the drafted offer remembers the supplier item it quoted, and only a sourcing hold does', () => {
+    expect(draftMetaFromGrounding({ confident: true, quotesFigure: true, holdReason: 'sourcing_offer', facts: 'f', data: { sourcingPid: 'T1', sourcingHandle: null } })).toEqual({ sourcingPid: 'T1' });
+    expect(draftMetaFromGrounding({ confident: true, quotesFigure: true, facts: 'f', data: { sourcingPid: 'T1' } })).toBeUndefined();
+    expect(draftMetaFromGrounding({ confident: true, quotesFigure: true, holdReason: 'sourcing_offer', facts: 'f' })).toBeUndefined();
+  });
+
+  it('is sent as before when its item has not changed since the draft was written', async () => {
+    const { s, tid, did } = await heldOffer('so-same.myshopify.com');
+    const r = await send(s, tid, did);
+    expect(r.ok).toBe(true);
+    expect(calls).toHaveLength(1);
+  });
+
+  it('is sent as before when the item changed BEFORE the draft was written', async () => {
+    const { s, tid, did } = await heldOffer('so-before.myshopify.com');
+    await s.putLink({ cjPid: 'T1', state: 'failed', failReason: 'import-error' });
+    await env.DB.prepare('UPDATE product_links SET updated_at = ?1 WHERE cj_pid = ?2').bind(new Date(Date.now() - 2 * 3_600_000).toISOString(), 'T1').run();
+    expect((await send(s, tid, did)).ok).toBe(true);
+  });
+});
 
 describe('sendReply', () => {
   it('sends To the contact, stores our Message-ID outbound, flips draft+thread; reply re-threads', async () => {
