@@ -430,19 +430,93 @@ describe('consolePage', () => {
 
   // --- Traffic view (2026-07-05): acquisition strategy board ---
 
-  // Traffic quality card (2026-09-05): measured session quality above the
-  // strategy board, fetched from /traffic/quality when the view loads. The
-  // renderer must carry the three bucket labels and the scope-missing state,
-  // so a missing read_reports grant reads as a named step, not an error.
-  it('renders the Traffic quality card and its loader above the board', async () => {
+  // Traffic activity card (2026-10-07): daily charts above the strategy board,
+  // replacing the two fixed-window tile walls of the 2026-09-05 quality card.
+  // It reads /traffic/activity for a 7, 30 or 90 day window, and only when the
+  // Traffic view is open: the console boots every view, and three ShopifyQL
+  // calls on every open of any view would be load for nothing.
+  it('renders the Traffic activity card above the board, with a 7/30/90 day range control', async () => {
     const html = await consolePage('test-api-key').text();
-    expect(html).toContain('id="trf-quality"');
-    expect(html.indexOf('id="trf-quality"')).toBeLessThan(html.indexOf('id="trf-list"'));
+    expect(html).toContain('id="trf-activity"');
+    expect(html.indexOf('id="trf-activity"')).toBeLessThan(html.indexOf('id="trf-list"'));
+    for (const d of ['7', '30', '90']) expect(html).toContain('data-trf-days="' + d + '"');
     const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
-    expect(scripts).toContain('function loadTrafficQuality(');
-    expect(scripts).toContain("'/traffic/quality'");
-    expect(scripts).toContain('loadTrafficQuality();');
-    for (const label of ['Automated', 'Engaged', 'Single-page', 'read_reports']) expect(scripts).toContain(label);
+    expect(scripts).toContain('function trfActivityLoad(');
+    expect(scripts).toContain("'/traffic/activity'");
+    expect(scripts).not.toContain("'/traffic/quality'");
+    for (const label of ['People', 'Automated', 'Engaged', 'Single-page', 'read_reports', 'reached checkout']) expect(scripts).toContain(label);
+  });
+
+  it('loads the activity charts only when the Traffic view is open, not on every console boot', async () => {
+    const html = await consolePage('test-api-key').text();
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+    expect(scripts).toContain('function trfMaybeLoadActivity(');
+    expect(scripts).toContain("currentRoute()==='traffic'");
+    expect(scripts).toContain("window.addEventListener('hashchange',trfMaybeLoadActivity)");
+    const boot = scripts.slice(scripts.lastIndexOf('loadCampaigns();'));
+    expect(boot).not.toContain('trfActivityLoad(');
+  });
+
+  describe('traffic chart helpers', () => {
+    async function helpers() {
+      const html = await consolePage('test-api-key').text();
+      const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+      const escSrc = scripts.match(/function esc\([\s\S]*?\n\}/)![0];
+      const start = scripts.indexOf('function trfNiceMax(');
+      const end = scripts.indexOf('// --- end traffic charts ---');
+      expect(start).toBeGreaterThan(-1);
+      expect(end).toBeGreaterThan(start);
+      return new Function(escSrc + '\n' + scripts.slice(start, end) + '\nreturn { trfNiceMax: trfNiceMax, trfBarsSvg: trfBarsSvg, trfRankHtml: trfRankHtml };')() as {
+        trfNiceMax: (v: number) => number;
+        trfBarsSvg: (series: Record<string, unknown>[], layers: { key: string; color: string; label: string }[], opts: { height: number; partialLast?: boolean; marks?: string }) => string;
+        trfRankHtml: (items: { label: string; people: number }[], empty: string) => string;
+      };
+    }
+    const week = [
+      { day: '2026-10-05', people: 1, engaged: 0, singlePage: 1, cartAdds: 0, reachedCheckout: 0 },
+      { day: '2026-10-06', people: 3, engaged: 1, singlePage: 2, cartAdds: 1, reachedCheckout: 1 },
+      { day: '2026-10-07', people: 0, engaged: 0, singlePage: 0, cartAdds: 0, reachedCheckout: 0 },
+    ];
+    const layers = [{ key: 'engaged', color: '#8fe0a6', label: 'Engaged' }, { key: 'singlePage', color: '#4f7a5c', label: 'Single-page' }];
+
+    it('picks a readable axis top: small counts stay whole, a bot spike gets a round ceiling', async () => {
+      const { trfNiceMax } = await helpers();
+      expect(trfNiceMax(0)).toBe(1);
+      expect(trfNiceMax(3)).toBe(3);
+      expect(trfNiceMax(11)).toBe(15);
+      expect(trfNiceMax(242)).toBe(300);
+    });
+
+    it('draws one hoverable column per day with its date and counts, the last day marked as so far', async () => {
+      const { trfBarsSvg } = await helpers();
+      const svg = trfBarsSvg(week, layers, { height: 160, partialLast: true, marks: 'cartAdds' });
+      expect(svg.startsWith('<svg')).toBe(true);
+      expect(svg).toContain('viewBox=');
+      expect(svg.match(/<title>/g)?.length).toBe(3);
+      expect(svg).toContain('Tue 6 Oct');
+      expect(svg).toContain('Engaged 1');
+      expect(svg).toContain('Single-page 2');
+      expect(svg).toContain('so far');
+      expect(svg).toContain('trf-mark'); // the day someone added to cart is marked
+    });
+
+    it('draws at the width it is given, so axis text stays its real size in a wide card', async () => {
+      const { trfBarsSvg } = await helpers();
+      expect(trfBarsSvg(week, layers, { height: 160 })).toContain('viewBox="0 0 700 160"');
+      expect(trfBarsSvg(week, layers, { height: 160, width: 1290 } as never)).toContain('viewBox="0 0 1290 160"');
+      expect(trfBarsSvg(week, layers, { height: 160, width: 40 } as never)).toContain('viewBox="0 0 320 160"'); // floor
+    });
+
+    it('escapes every label it writes into the chart', async () => {
+      const { trfBarsSvg, trfRankHtml } = await helpers();
+      const svg = trfBarsSvg(week, [{ key: 'engaged', color: '#fff', label: '<b>x</b>' }], { height: 100 });
+      expect(svg).not.toContain('<b>x</b>');
+      expect(svg).toContain('&lt;b&gt;x&lt;/b&gt;');
+      const ranked = trfRankHtml([{ label: '/products/<script>', people: 2 }], 'none');
+      expect(ranked).not.toContain('<script>');
+      expect(ranked).toContain('2');
+      expect(trfRankHtml([], 'No people yet')).toContain('No people yet');
+    });
   });
 
   it('renders the Traffic view: rail entry, board, editor wired to /traffic endpoints', async () => {

@@ -257,6 +257,39 @@ describe('productAgent on a catalog miss (inquiry sourcing)', () => {
     expect(g.facts).toContain('team will look into');
   });
 
+  // aramid js-mutation e90e99d3 (2026-10-07): "productQuery || typed" -> "&&"
+  // survived, because no test looked at WHICH phrase reached the supplier.
+  const recordingCj = (seen: string[]) => ({ ...cj, search: async (q: string, n: number) => {
+    seen.push(q); return (cj.search as (q: string, n: number) => Promise<unknown>)(q, n);
+  } }) as unknown as CjClient;
+  const ASK = 'Do you sell a trackable dog collar? I live in England.';
+
+  it('searches the supplier with the reader\'s product phrase, or the message itself when there is none', async () => {
+    const seen: string[] = [];
+    const c = await ctx(ASK);
+    await productAgent.ground({ ...c, cj: recordingCj(seen) });
+    expect(seen[0]).toBe('gps tracker dog collar');
+    seen.length = 0;
+    await productAgent.ground({ ...c, cj: recordingCj(seen), productQuery: null });
+    expect(seen[0]).toBe(ASK);
+  });
+
+  it('searches the supplier with the same phrase when the catalogue matcher finds nothing', async () => {
+    const seen: string[] = [];
+    const c = await ctx(ASK);
+    c.admin = async (query: string) => query.includes('pawscoutCatalogList')
+      ? { products: { nodes: [{ handle: 'cat-teaser', title: 'Cat Teaser', productType: '', description: 'A toy.', collections: { nodes: [] } }] }, collections: { nodes: [] } }
+      : { products: { edges: [] } };
+    c.cfg = { ...c.cfg, llm: DEFAULT_LLM };
+    const llm = new LlmClient({ openrouter: 'k' }, (async () => new Response(JSON.stringify({
+      choices: [{ message: { content: '{"handles":[],"collection":null}' } }], usage: { cost: 0 } }), { status: 200 })) as unknown as typeof fetch);
+    await productAgent.ground({ ...c, cj: recordingCj(seen), llm });
+    expect(seen[0]).toBe('gps tracker dog collar');
+    seen.length = 0;
+    await productAgent.ground({ ...c, cj: recordingCj(seen), llm, productQuery: null });
+    expect(seen[0]).toBe(ASK);
+  });
+
   it('says we do not deliver to a country with no lane', async () => {
     const g = await productAgent.ground(await ctx('Do you sell a trackable dog collar? I live in Japan.'));
     expect(g.facts).toContain('do not currently deliver');
