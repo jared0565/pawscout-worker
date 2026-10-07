@@ -28,7 +28,7 @@ refunded, PawScout stops rather than guessing.
 | `received` | Defined in PawScout's own records as a possible status, but no part of PawScout today ever leaves an order sitting in it: the moment an order is recorded, it is written straight into either `queued` or `held`. You should not expect to see this status in the console. | Nothing; there is nothing in this status today. |
 | `queued` | The order passed its checks and is waiting out its one hour grace window. It will be sent to the supplier automatically once that hour passes, unless fulfilment is off or something changes first. | Nothing, unless you want to stop it yourself: press Cancel next to the order in the console. |
 | `held` | Something needs the owner (or the team) to decide before this order goes any further. **A held order may already have a supplier order**, and often does: every stop found by the 15 minute re-check below happens to an order that already has one, as does an address change caught after it was created. The console shows the supplier order's id next to any order that has one. PawScout has not paid it. | Read the reason(s) shown next to the order (see "Hold reasons" below), then press Release to send it back into the queue, or Cancel it. **Before you press Cancel, look for a supplier order id next to the order**: Cancel only changes PawScout's own record, so a supplier order left behind by it is one nobody is watching any more. Cancel it at the supplier yourself, or handle the order by hand. A released order does not wait out another hour: the next 15 minute run picks it up, or the one after that when a run took the order less than ten minutes before (see "Run fulfilment now appearing to do nothing" below). |
-| `awaiting-payment` | PawScout has created the supplier order and has not paid it. Either PawScout is set to create orders only and leave the paying to you (see "Create-only", below), or an automatic payment attempt failed for a money reason. | Pay the supplier order shown next to the order (labelled "CJ" in the console) at the supplier's own site. **PawScout cannot see that you paid it:** the order stays `awaiting-payment` here, and the console banner keeps naming it, until the supplier ships and a tracking number arrives. It only ever reaches `submitted` when PawScout itself paid it. Before paying anything in this list, check that supplier order's own state at the supplier, so a slow shipment is never paid for twice. |
+| `awaiting-payment` | PawScout has created the supplier order and has not paid it. Either PawScout is set to create orders only and leave the paying to you (see "Create-only", below), or an automatic payment attempt failed for a money reason. | Check the supplier order shown next to the order (labelled "CJ" in the console) at the supplier's own site, and pay it there if it is still unpaid. **PawScout cannot see a payment you make at the supplier, so tell it:** press **I paid this** next to the order, then press it again within 8 seconds to confirm. From then on the console shows the order as "paid by you, waiting for tracking", it leaves the banner and the overview's count of orders PawScout has not paid, and PawScout never pays that supplier order itself. The order keeps its `awaiting-payment` status on purpose, so the 15 minute re-check below still watches it for a cancellation, and its tracking number still syncs back when the supplier ships. Pressed it by mistake? **Not paid after all** next to the order puts it back in the list. Until you press I paid this, the order stays in the banner even if you have paid it, so check a supplier order's own state at the supplier before paying anything in this list. An order only ever reaches `submitted` when PawScout itself paid it. |
 | `submitted` | The supplier order was created and PawScout itself has paid it. An order you paid by hand never shows this status (see `awaiting-payment` above). | Nothing normally. See the note below: once an order reaches this status, PawScout stops re-reading it against Shopify; a cancellation or refund that does reach it by webhook is still alerted. |
 | `fulfilled` | A tracking number has been written back into Shopify, and Shopify has sent the customer its own shipping notification. | Nothing. |
 | `cancelled` | This order will not be sent to the supplier. If a supplier order already existed when the cancellation happened, check whether you received one of the alerts below telling you what to do about it. | Depends on the alert, if any; see "Alerts" below. |
@@ -38,18 +38,20 @@ Pressing Release or Cancel in the console only changes PawScout's own record
 of the order. Cancel does not cancel or refund the order in Shopify, and
 Release does not un-cancel one. To actually cancel or refund an order, do it
 in the Shopify admin, as you always have; PawScout will then react to that
-through the gate and the webhooks described below. Today the console shows
-Release and Cancel buttons only next to a `held` order, and a Cancel button
-next to a `queued` one; an `error` order has no button in the console (see
-above).
+through the gate and the webhooks described below. I paid this, and its undo,
+also only change PawScout's own record: they pay nothing and tell the supplier
+nothing. Today the console shows Release and Cancel buttons only next to a
+`held` order, a Cancel button next to a `queued` one, and I paid this (or Not
+paid after all, once pressed) next to an `awaiting-payment` order that has a
+supplier order; an `error` order has no button in the console (see above).
 
 **Once PawScout itself has paid a supplier order, that order stops being
 re-read against Shopify for a cancellation or a refund.** PawScout re-checks
 `awaiting-payment`, `held` and `error` orders that carry a supplier order
 against Shopify every 15 minutes (see "How PawScout catches a cancellation
-once a supplier order exists" below). An order you paid by hand is still
-`awaiting-payment` as far as PawScout knows, so it stays in that check until
-its tracking number arrives. A `submitted` order (paid by PawScout) is not
+once a supplier order exists" below). An order you paid by hand stays
+`awaiting-payment` whether or not you pressed I paid this, so it stays in that
+check until its tracking number arrives. A `submitted` order (paid by PawScout) is not
 part of that check, and is only ever looked at again to find its tracking
 number. If a
 `submitted` order is cancelled or refunded in Shopify and the cancel or
@@ -325,6 +327,13 @@ nothing. Do not pay it. If it is still unpaid, cancel it yourself at the
 supplier. If you had already paid it by hand, PawScout does not know that:
 ask the supplier to cancel and refund it, and treat it as a return if it has
 already shipped. The email says the same.
+
+**"Order `<name>` was cancelled after you paid its supplier order"**
+The same cancellation, for an order you had marked with I paid this. The
+email gives the date you marked it. Ask the supplier to cancel and refund the
+supplier order, and treat it as a return if it has already shipped. If it
+turns out it was not paid after all, do not pay it now: cancel it at the
+supplier.
 
 **"Order `<name>` was cancelled after it was paid at the supplier"**
 The order was cancelled in Shopify after PawScout had already paid the

@@ -361,7 +361,9 @@ export async function getGlance(db: D1Database, shop: string): Promise<Glance> {
   const autoSent24h = await store.countAutoSentSince(since24h);
   const byStatus = await store.countOrdersByStatus();
   const held = byStatus['held'] ?? 0;
-  const awaiting = byStatus['awaiting-payment'] ?? 0;
+  // Only the rows the owner has not marked paid by hand ("I paid this"): a
+  // marked one is waiting for its tracking number, not for anyone to pay it.
+  const awaiting = await store.countAwaitingOwnerPayment();
   const pipeline: Record<string, number> = {};
   for (const s of ['received', 'queued', 'submitted', 'awaiting-payment'] as const) {
     if (byStatus[s]) pipeline[s] = byStatus[s];

@@ -226,6 +226,22 @@ export interface OrderRow {
   fulfil_after: string | null;
   created_at: string;
   updated_at: string;
+  /** When the owner marked this row's supplier order as paid by hand (migration
+   *  0047); null when they have not. The status stays 'awaiting-payment'. */
+  owner_paid_at?: string | null;
+}
+
+/** The reason an awaiting-payment row carries while PawScout has not paid its
+ *  supplier order (it may still have been paid by hand). */
+export function notPaidByPawScoutReason(cjOrderId: string): string {
+  return `awaiting-payment: CJ order ${cjOrderId} is not paid by PawScout`;
+}
+
+/** The reason a row carries once the owner has marked its supplier order paid
+ *  by hand. Not prefixed 'awaiting-payment:', so a stop by the cancellation
+ *  re-check keeps it (that check drops the instruction to pay, not this). */
+export function ownerPaidReason(cjOrderId: string): string {
+  return `owner-paid: CJ order ${cjOrderId} was paid by you at the supplier`;
 }
 
 export type OrderEventKind =
@@ -233,7 +249,8 @@ export type OrderEventKind =
   | 'gate-passed' | 'gate-held' | 'gate-unreadable' | 'address-refreshed'
   | 'stock-ok' | 'stockout' | 'freight-quoted' | 'freight-unreadable' | 'supplier-order-created' | 'awaiting-payment' | 'paid'
   | 'tracking-found' | 'tracking-written' | 'tracking-write-failed'
-  | 'cancel-received' | 'refund-received' | 'owner-alert-due' | 'owner-alerted' | 'owner-alert-unconfigured' | 'owner-alert-failed' | 'operator-action' | 'error';
+  | 'cancel-received' | 'refund-received' | 'owner-alert-due' | 'owner-alerted' | 'owner-alert-unconfigured' | 'owner-alert-failed' | 'operator-action' | 'error'
+  | 'owner-paid' | 'owner-paid-undone';
 
 /** One append-only row of the order trail - `detail` is short plain text and
  *  must never hold a name, an address, an email or a phone number. */
@@ -1046,6 +1063,53 @@ export class TenantStore {
         `SELECT COUNT(*) AS n FROM orders
          WHERE shop = ?1 AND cj_order_id IS NOT NULL AND status IN ('awaiting-payment', 'held', 'error')`
       )
+      .bind(this.shop)
+      .first<{ n: number }>();
+    return row?.n ?? 0;
+  }
+
+  /** "I paid this" (aramid 87a8dc74, owner 2026-10-07): the owner paid this
+   *  row's supplier order by hand. Only an awaiting-payment row that has a
+   *  supplier order and is not marked yet; one statement, conditional on the
+   *  supplier order read here, so a console that loaded before the row moved
+   *  changes nothing. The status stays awaiting-payment, so the cancellation
+   *  re-check and the tracking poll still watch the row. False, with nothing
+   *  written, when the row was not in that state. */
+  async markOrderPaidByOwner(shopifyOrderId: string, atIso: string): Promise<boolean> {
+    const o = await this.getOrder(shopifyOrderId);
+    if (!o || o.status !== 'awaiting-payment' || !o.cj_order_id || o.owner_paid_at) return false;
+    const r = await this.db
+      .prepare(
+        `UPDATE orders SET owner_paid_at = ?3, hold_reasons = ?4, updated_at = ?5
+         WHERE shop = ?1 AND shopify_order_id = ?2 AND status = 'awaiting-payment' AND cj_order_id = ?6 AND owner_paid_at IS NULL`
+      )
+      .bind(this.shop, shopifyOrderId, atIso, JSON.stringify([ownerPaidReason(o.cj_order_id)]), new Date().toISOString(), o.cj_order_id)
+      .run();
+    return (r.meta.changes ?? 0) > 0;
+  }
+
+  /** Undoes markOrderPaidByOwner while the row is still awaiting payment (a
+   *  mis-click would otherwise drop an unpaid supplier order from every prompt,
+   *  and it would never ship). False, with nothing written, when there is no
+   *  mark to undo. */
+  async unmarkOrderPaidByOwner(shopifyOrderId: string): Promise<boolean> {
+    const o = await this.getOrder(shopifyOrderId);
+    if (!o || o.status !== 'awaiting-payment' || !o.cj_order_id || !o.owner_paid_at) return false;
+    const r = await this.db
+      .prepare(
+        `UPDATE orders SET owner_paid_at = NULL, hold_reasons = ?3, updated_at = ?4
+         WHERE shop = ?1 AND shopify_order_id = ?2 AND status = 'awaiting-payment' AND cj_order_id = ?5 AND owner_paid_at IS NOT NULL`
+      )
+      .bind(this.shop, shopifyOrderId, JSON.stringify([notPaidByPawScoutReason(o.cj_order_id)]), new Date().toISOString(), o.cj_order_id)
+      .run();
+    return (r.meta.changes ?? 0) > 0;
+  }
+
+  /** Awaiting-payment rows the owner has NOT marked paid by hand: the ones the
+   *  console still asks them to look at and pay. */
+  async countAwaitingOwnerPayment(): Promise<number> {
+    const row = await this.db
+      .prepare(`SELECT COUNT(*) AS n FROM orders WHERE shop = ?1 AND status = 'awaiting-payment' AND owner_paid_at IS NULL`)
       .bind(this.shop)
       .first<{ n: number }>();
     return row?.n ?? 0;

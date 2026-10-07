@@ -247,6 +247,41 @@ describe('processDueOrders', () => {
   });
 });
 
+describe('a supplier order the owner marked paid by hand is never paid by PawScout', () => {
+  // "I paid this" (aramid 87a8dc74): a marked row that was stopped (held by the
+  // cancellation re-check, say) and then released comes back to the queue still
+  // carrying its supplier order. Whether create-only is on or off, the run
+  // neither pays it, nor asks the supplier about it, nor emails the owner to
+  // pay it: it goes straight back to waiting for its tracking number.
+  for (const createOnly of [false, true]) {
+    it(`create-only ${createOnly ? 'on' : 'off'}: back to awaiting-payment with the paid-by-you reason, no read, no pay, no email`, async () => {
+      const store = new TenantStore(env.DB, SHOP);
+      await seedWarehouse(store, 'CJ1', 'S1', 'v1');
+      await seedOrder(store, 'O1', [{ sku: 'S1', quantity: 1, cjPid: 'CJ1' }]);
+      await store.updateOrder('O1', { status: 'awaiting-payment', cj_order_id: 'CJORD-O1' });
+      expect(await store.markOrderPaidByOwner('O1', '2026-10-07T16:00:00.000Z')).toBe(true);
+      await store.updateOrder('O1', { status: 'queued' }); // released by the owner
+      const spy = { create: [] as unknown[], pay: [] as string[] };
+      const detailCalls: string[] = [];
+      const notices: unknown[] = [];
+      const r = await processDueOrders(
+        store,
+        fakeCj(spy, { getOrderDetail: async (id: string) => { detailCalls.push(id); return { orderId: id, orderNum: '', trackNumber: '', trackUrl: '', logisticName: '', status: 'CREATED' }; } }),
+        liveAdmin(), cfg('pawscout', createOnly), { notify: async (n) => { notices.push(n); } }
+      );
+      expect(r).toMatchObject({ submitted: 0, awaiting: 1, held: 0, errored: 0 });
+      expect(spy.create).toHaveLength(0);
+      expect(spy.pay).toHaveLength(0);
+      expect(detailCalls).toEqual([]);
+      expect(notices).toEqual([]);
+      const o = (await store.getOrder('O1'))!;
+      expect(o.status).toBe('awaiting-payment');
+      expect(o.owner_paid_at).toBe('2026-10-07T16:00:00.000Z');
+      expect(JSON.parse(o.hold_reasons!)).toEqual(['owner-paid: CJ order CJORD-O1 was paid by you at the supplier']);
+    });
+  }
+});
+
 describe('a pay-retry reads the supplier order before it pays it', () => {
   // A row that already carries a supplier order can come back to the queue
   // after the owner paid that order by hand: wallet short, awaiting-payment,

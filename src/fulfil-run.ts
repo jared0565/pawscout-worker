@@ -1,5 +1,5 @@
 import { Vault } from './vault';
-import { TenantStore, listActiveShops } from './tenant-store';
+import { TenantStore, listActiveShops, notPaidByPawScoutReason, ownerPaidReason } from './tenant-store';
 import { makeAdminGraphql, type AdminGraphql } from './shopify-admin';
 import { CjClient, CjTokenManager, cjFetchFromEnv, chooseOrigin, type CjDetail } from './cj';
 import { getPrimaryLocationId, productInventoryItems, setInventoryQuantities } from './proxy/inventory';
@@ -618,6 +618,21 @@ export async function processDueOrders(
           continue;
         }
       }
+      if (o.cj_order_id && o.owner_paid_at) {
+        // The owner marked this supplier order paid by hand ("I paid this",
+        // aramid 87a8dc74), then the row came back to the queue (held by the
+        // cancellation re-check, say, and released). PawScout never pays it
+        // and never asks for it to be paid: it goes straight back to waiting
+        // for its tracking number, still carrying the owner's mark. Checked
+        // after the gate, so a cancellation still stops it, and before both
+        // exits below (create-only and pay), each of which would ask again.
+        const wrote = await store.updateOrderUnlessCancelled(o.shopify_order_id, { status: 'awaiting-payment', hold_reasons: JSON.stringify([ownerPaidReason(o.cj_order_id)]) });
+        if (wrote) {
+          await store.addOrderEvent(o.shopify_order_id, 'awaiting-payment', 'paid by the owner');
+          awaiting++;
+        } else held++;
+        continue;
+      }
       if (decision.riskLevel) await store.updateOrder(o.shopify_order_id, { risk_level: decision.riskLevel }); // console visibility on clean flows too
 
       lineItems = JSON.parse(o.line_items_json ?? '[]') as OrderLineItem[];
@@ -772,7 +787,7 @@ export async function processDueOrders(
 
       if (createOnly) {
         // Interim: created but unpaid - owner pays it manually in CJ.
-        await markAwaiting(o, cjOrderId, `awaiting-payment: CJ order ${cjOrderId} is not paid by PawScout`);
+        await markAwaiting(o, cjOrderId, notPaidByPawScoutReason(cjOrderId));
         continue;
       }
 
