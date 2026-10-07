@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { parseInbound, extractContactForm } from '../src/inbox/mime';
+import { parseAuthResults, isHardSpam } from '../src/inbox/gates';
 
 const RAW = [
   'From: Jane Doe <jane@example.com>',
@@ -35,6 +36,35 @@ describe('parseInbound', () => {
     const garbage = await parseInbound('}{ not an email at all \x00\x01');
     expect(garbage).toBeDefined();
     expect(Array.isArray(garbage.references)).toBe(true);
+  });
+
+  // aramid 2f32d185 (2026-10-07): the receiving server adds its
+  // Authentication-Results at the TOP; anything below it came with the
+  // message, so the sender wrote it. Reading the bottom one let a spoofer
+  // forge "dmarc=pass" past a real "dmarc=fail".
+  it('reads the receiver\'s Authentication-Results (the topmost), never one the sender put further down', async () => {
+    const raw = [
+      'Authentication-Results: mx.cloudflare.net; spf=fail smtp.mailfrom=bank.example; dkim=none; dmarc=fail header.from=bank.example',
+      'Received: from attacker.example by mx.cloudflare.net',
+      'Authentication-Results: attacker.example; spf=pass; dkim=pass; dmarc=pass',
+      'From: Bank <help@bank.example>',
+      'To: support@activepaw.co.uk',
+      'Subject: Hello',
+      '',
+      'Hi'
+    ].join('\r\n');
+    const p = await parseInbound(raw);
+    expect(p.headers['authentication-results']).toMatch(/^mx\.cloudflare\.net;/);
+    const auth = parseAuthResults(p.headers);
+    expect(auth).toEqual({ spf: 'fail', dkim: 'none', dmarc: 'fail' });
+    expect(isHardSpam(auth)).toBe(true);
+  });
+
+  it('still reads a single Authentication-Results header as before', async () => {
+    const raw = ['Authentication-Results: mx.cloudflare.net; spf=pass; dkim=pass; dmarc=pass', RAW].join('\r\n');
+    const p = await parseInbound(raw);
+    expect(parseAuthResults(p.headers)).toEqual({ spf: 'pass', dkim: 'pass', dmarc: 'pass' });
+    expect(p.from.email).toBe('jane@example.com');
   });
 });
 

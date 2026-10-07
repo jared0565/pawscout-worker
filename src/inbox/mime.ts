@@ -5,9 +5,18 @@ import type { ParsedEmail } from './types';
 const SHOPIFY_SENDER = /@([\w-]+\.)*shopify(?:email)?\.com$/i;
 const EMAIL_RE = /[\w.+-]+@[\w-]+(?:\.[\w-]+)+/;
 
+// The receiving server adds its Authentication-Results at the TOP, and
+// postal-mime lists headers top first. Any copy further down arrived inside
+// the message, so the sender wrote it: keep the first one, never the last.
+const RECEIVER_FIRST = new Set(['authentication-results']);
+
 function lowerHeaders(headers: { key: string; value: string }[]): Record<string, string> {
   const out: Record<string, string> = {};
-  for (const h of headers) out[h.key.toLowerCase()] = h.value;
+  for (const h of headers) {
+    const key = h.key.toLowerCase();
+    if (RECEIVER_FIRST.has(key) && key in out) continue;
+    out[key] = h.value;
+  }
   return out;
 }
 
