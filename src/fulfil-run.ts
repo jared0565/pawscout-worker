@@ -215,6 +215,55 @@ async function holdForAddressChangeAfterSupplierOrder(
   }, alert);
 }
 
+/** The one status a supplier order detail carries while the order is created
+ *  and not yet paid. Nothing else in this code reads a supplier order status,
+ *  so the value comes from the only recorded reading of one: a read-only
+ *  getOrderList on 2026-06-15 showed an unpaid test order as CREATED
+ *  (docs/WAREHOUSE_PLAN.md). Not yet confirmed on getOrderDetail itself.
+ *  Matched exactly, and any other value holds the order, so a wrong value
+ *  here costs the owner a hold, never a second payment. */
+const SUPPLIER_UNPAID_STATUS = 'CREATED';
+
+/** Asks the supplier, before a pay-retry spends, whether its order is still
+ *  unpaid there: true only on SUPPLIER_UNPAID_STATUS. Otherwise answers why
+ *  not, as text for the trail and the alert: a status is repeated only when
+ *  it is a short plain word, and a thrown message never is (it goes to the
+ *  worker log). Never throws: a failed or empty read is an answer too, and it
+ *  must hold the row, not land it in error as a failed payment. */
+async function supplierOrderStillUnpaid(cj: CjClient, cjOrderId: string): Promise<{ unpaid: true } | { unpaid: false; why: string }> {
+  const unreadable = { unpaid: false as const, why: 'the supplier order could not be read' };
+  let status: string;
+  try {
+    const d = await cj.getOrderDetail(cjOrderId);
+    if (!d) return unreadable;
+    status = d.status;
+  } catch (e) {
+    console.warn(`supplier order ${cjOrderId} could not be read before paying it: ${e instanceof Error ? e.message : String(e)}`);
+    return unreadable;
+  }
+  if (status === SUPPLIER_UNPAID_STATUS) return { unpaid: true };
+  const shown = !status ? 'no status' : /^[A-Za-z_]{1,32}$/.test(status) ? `status ${status}` : 'a status PawScout does not recognise';
+  return { unpaid: false, why: `the supplier reports ${shown}, not ${SUPPLIER_UNPAID_STATUS}` };
+}
+
+/** A pay-retry whose supplier order could not be confirmed as still unpaid.
+ *  The owner may have paid it by hand since PawScout last looked, and
+ *  PawScout cannot see that payment, so the row is held rather than paid. The
+ *  hold replaces the row's reasons: an awaiting-payment reason names an order
+ *  to pay, which is now the opposite of the advice. */
+async function holdForSupplierOrderNotConfirmedUnpaid(
+  store: TenantStore, o: { shopify_order_id: string; order_name: string | null }, cjOrderId: string, why: string, alert?: AlertSend
+): Promise<void> {
+  const reason = 'supplier-order-not-confirmed-unpaid';
+  await writeGateStop(store, o.shopify_order_id, 'held', reason, null, `${reason}: ${why}`);
+  if (!alert) return;
+  const name = o.order_name ?? o.shopify_order_id;
+  await deliverOrderAlert(store, o.shopify_order_id, {
+    subject: `Order ${name}: PawScout did not pay its supplier order, which may already be paid`,
+    text: `Order ${name} came back to the queue with supplier order ${cjOrderId}. Before paying it, PawScout checked it at the supplier: ${why}. It may already have been paid by hand, so PawScout has not paid it and the order is held. Check it at the supplier. If it is still unpaid, pay it there, or press Release and PawScout pays it once the supplier shows it unpaid. If it is paid, there is nothing more to pay, but tracking is not synced to Shopify while the order is held here, so add the tracking by hand once it ships.`
+  }, alert);
+}
+
 /** What a failed gate read leaves in the trail. The trail classifies, it
  *  never copies: the message can be Shopify's own GraphQL error text. Our own
  *  "Shopify HTTP <status>" wording carries a status code and nothing else,
@@ -377,7 +426,9 @@ const CLAIM_MINUTES = 10;
  * Submit queued orders to CJ and (optionally) pay them. GATED on
  * cfg.fulfil.mode==='pawscout' - a no-op in 'manual'/'cj' (orders stay queued /
  * left to CJ's app). createOrder is skipped when cj_order_id is already set (so a
- * pay-retry never duplicates the CJ order).
+ * pay-retry never duplicates the CJ order), and such a pay-retry pays only when
+ * the supplier still reports that order unpaid (the owner may have paid it by
+ * hand); otherwise it holds the row as supplier-order-not-confirmed-unpaid.
  *
  * Payment legs:
  *  - cfg.fulfil.createOnly === true → PS creates the CJ order and STOPS, leaving
@@ -710,6 +761,20 @@ export async function processDueOrders(
         await holdForAddressChangeAfterSupplierOrder(store, o, cjOrderId, opts.alert);
         held++;
         continue;
+      }
+      if (o.cj_order_id) {
+        // A pay-retry: the supplier order was there before this run took the
+        // row, so it may have been paid by hand since (wallet short, paid at
+        // the supplier, then released). Read it at the supplier, last thing
+        // before spending, and pay only when it is still unpaid there; any
+        // other answer, or none, holds the row. A supplier order this run has
+        // just created is paid straight away, as before.
+        const check = await supplierOrderStillUnpaid(cj, cjOrderId);
+        if (!check.unpaid) {
+          await holdForSupplierOrderNotConfirmedUnpaid(store, o, cjOrderId, check.why, opts.alert);
+          held++;
+          continue;
+        }
       }
 
       step = 'pay';

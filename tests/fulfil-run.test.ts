@@ -57,6 +57,13 @@ function fakeCj(spy: { create: unknown[]; pay: string[] }, over: Partial<Record<
     ...over
   } as unknown as CjClient;
 }
+/** A supplier order that is still unpaid at the supplier. A pay-retry (a row
+ *  that already carries a supplier order) reads the order back before paying
+ *  it and pays only on this status, so every test whose retry is meant to pay
+ *  states that premise with this override. */
+const UNPAID_AT_SUPPLIER = {
+  getOrderDetail: async (id: string) => ({ orderId: id, orderNum: '', trackNumber: '', trackUrl: '', logisticName: '', status: 'CREATED' })
+};
 /** The default gate-query answer: a live, paid, unfulfilled order that Shopify's
  *  fraud check has accepted, with a shipping address matching the seeded ADDRESS. */
 const LIVE_ORDER: Record<string, unknown> = {
@@ -233,10 +240,115 @@ describe('processDueOrders', () => {
     await seedOrder(store, 'O1', [{ sku: 'S1', quantity: 1, cjPid: 'CJ1' }], { cjOrderId: undefined });
     await store.updateOrder('O1', { cj_order_id: 'CJORD-EXISTING' }); // simulate created-but-unpaid
     const spy = { create: [] as unknown[], pay: [] as string[] };
-    const r = await processDueOrders(store, fakeCj(spy), liveAdmin(), cfg('pawscout'));
+    const r = await processDueOrders(store, fakeCj(spy, UNPAID_AT_SUPPLIER), liveAdmin(), cfg('pawscout'));
     expect(r).toMatchObject({ submitted: 1 });
     expect(spy.create.length).toBe(0); // did NOT duplicate the CJ order
     expect(spy.pay).toEqual(['CJORD-EXISTING']);
+  });
+});
+
+describe('a pay-retry reads the supplier order before it pays it', () => {
+  // A row that already carries a supplier order can come back to the queue
+  // after the owner paid that order by hand: wallet short, awaiting-payment,
+  // paid at the supplier, then Release. PawScout cannot see a payment made by
+  // hand, so the retry reads the order at the supplier first and pays only
+  // when it is still unpaid there. Anything else holds it for the owner.
+  const REASON = 'supplier-order-not-confirmed-unpaid';
+  async function seedRetry(store: TenantStore, id: string) {
+    await seedWarehouse(store, 'CJ1', 'S1', 'v1');
+    await seedOrder(store, id, [{ sku: 'S1', quantity: 1, cjPid: 'CJ1' }]);
+    await store.updateOrder(id, { cj_order_id: `CJORD-${id}`, hold_reasons: JSON.stringify([`awaiting-payment: CJ wallet short, CJ order CJORD-${id} is not paid by PawScout`]) });
+  }
+  const detailAnswering = (calls: string[], status: string) => async (id: string) => {
+    calls.push(id);
+    return { orderId: id, orderNum: '', trackNumber: '', trackUrl: '', logisticName: '', status };
+  };
+
+  it('the supplier still reports the order unpaid: it is read once and paid as before', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedRetry(store, 'O1');
+    const spy = { create: [] as unknown[], pay: [] as string[] };
+    const detailCalls: string[] = [];
+    const r = await processDueOrders(store, fakeCj(spy, { getOrderDetail: detailAnswering(detailCalls, 'CREATED') }), liveAdmin(), cfg('pawscout'));
+    expect(r).toMatchObject({ submitted: 1, held: 0, errored: 0 });
+    expect(detailCalls).toEqual(['CJORD-O1']);
+    expect(spy.create).toHaveLength(0);
+    expect(spy.pay).toEqual(['CJORD-O1']);
+    expect((await store.getOrder('O1'))?.status).toBe('submitted');
+  });
+
+  it('the supplier reports any other status: not paid, held with the reason, and the owner is told', async () => {
+    // 'shipped' and 'processing' are the other values this file's fakes use;
+    // 'created' shows the match is exact, and an empty status is not unpaid.
+    const cases: { id: string; status: string; reads: string }[] = [
+      { id: 'O1', status: 'shipped', reads: 'status shipped' },
+      { id: 'O2', status: 'processing', reads: 'status processing' },
+      { id: 'O3', status: 'created', reads: 'status created' },
+      { id: 'O4', status: '', reads: 'no status' },
+      { id: 'O5', status: 'paid <script>', reads: 'a status PawScout does not recognise' }
+    ];
+    for (const c of cases) {
+      const store = new TenantStore(env.DB, SHOP);
+      await seedRetry(store, c.id);
+      const spy = { create: [] as unknown[], pay: [] as string[] };
+      const alerts: { subject: string; text: string }[] = [];
+      const r = await processDueOrders(store, fakeCj(spy, { getOrderDetail: detailAnswering([], c.status) }), liveAdmin(), cfg('pawscout'), {
+        alert: async (subject, text) => { alerts.push({ subject, text }); return 'sent'; }
+      });
+      expect(r).toMatchObject({ submitted: 0, held: 1, errored: 0 });
+      expect(spy.pay).toEqual([]);
+      const o = await store.getOrder(c.id);
+      expect(o?.status).toBe('held');
+      expect(o?.cj_order_id).toBe(`CJORD-${c.id}`);
+      expect(JSON.parse(o!.hold_reasons!)).toEqual([REASON]);
+      const events = await store.listOrderEvents(c.id);
+      expect(events.find((e) => e.kind === 'gate-held')?.detail).toBe(`${REASON}: the supplier reports ${c.reads}, not CREATED`);
+      expect(events.map((e) => e.kind)).not.toContain('paid');
+      expect(alerts).toHaveLength(1);
+      expect(alerts[0].subject).toBe(`Order #${c.id}: PawScout did not pay its supplier order, which may already be paid`);
+      expect(alerts[0].text).toBe(`Order #${c.id} came back to the queue with supplier order CJORD-${c.id}. Before paying it, PawScout checked it at the supplier: the supplier reports ${c.reads}, not CREATED. It may already have been paid by hand, so PawScout has not paid it and the order is held. Check it at the supplier. If it is still unpaid, pay it there, or press Release and PawScout pays it once the supplier shows it unpaid. If it is paid, there is nothing more to pay, but tracking is not synced to Shopify while the order is held here, so add the tracking by hand once it ships.`);
+    }
+  });
+
+  it('the supplier order cannot be read: not paid, held with the reason (not error), the thrown text stays out of the trail and the alert', async () => {
+    const MARKER = 'RAWSUPPLIERTEXT';
+    const answers: Record<string, () => Promise<unknown>> = {
+      O1: async () => { throw new Error(`CJ HTTP 502 ${MARKER}`); },
+      O2: async () => null
+    };
+    for (const id of Object.keys(answers)) {
+      const store = new TenantStore(env.DB, SHOP);
+      await seedRetry(store, id);
+      const spy = { create: [] as unknown[], pay: [] as string[] };
+      const alerts: { subject: string; text: string }[] = [];
+      const r = await processDueOrders(store, fakeCj(spy, { getOrderDetail: answers[id] }), liveAdmin(), cfg('pawscout'), {
+        alert: async (subject, text) => { alerts.push({ subject, text }); return 'sent'; }
+      });
+      expect(r).toMatchObject({ submitted: 0, held: 1, errored: 0 });
+      expect(spy.pay).toEqual([]);
+      const o = await store.getOrder(id);
+      expect(o?.status).toBe('held');
+      expect(JSON.parse(o!.hold_reasons!)).toEqual([REASON]);
+      const events = await store.listOrderEvents(id);
+      expect(events.find((e) => e.kind === 'gate-held')?.detail).toBe(`${REASON}: the supplier order could not be read`);
+      expect(events.map((e) => e.kind)).not.toContain('error');
+      for (const e of events) expect(e.detail ?? '').not.toContain(MARKER);
+      expect(alerts).toHaveLength(1);
+      expect(alerts[0].text).toContain('Before paying it, PawScout checked it at the supplier: the supplier order could not be read. It may already have been paid by hand, so PawScout has not paid it and the order is held.');
+      expect(alerts[0].text).not.toContain(MARKER);
+    }
+  });
+
+  it('a first-time order is created and paid in the same run without reading it back', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedWarehouse(store, 'CJ1', 'S1', 'v1');
+    await seedOrder(store, 'O1', [{ sku: 'S1', quantity: 1, cjPid: 'CJ1' }]);
+    const spy = { create: [] as unknown[], pay: [] as string[] };
+    const detailCalls: string[] = [];
+    const r = await processDueOrders(store, fakeCj(spy, { getOrderDetail: detailAnswering(detailCalls, 'shipped') }), liveAdmin(), cfg('pawscout'));
+    expect(r).toMatchObject({ submitted: 1, held: 0 });
+    expect(detailCalls).toEqual([]);
+    expect(spy.pay).toEqual(['CJORD-O1']);
   });
 });
 
@@ -621,7 +733,7 @@ describe('Stage-B live-order gate (2026-09-19: readOrderGate/decideGate, fetched
     await seedOrder(store, 'O1', [{ sku: 'S1', quantity: 1, cjPid: 'CJ1' }]);
     await store.updateOrder('O1', { cj_order_id: 'CJORD-O1' });
     const spy = { create: [] as unknown[], pay: [] as string[] };
-    const r = await processDueOrders(store, fakeCj(spy), liveAdmin({ order: { risk: { recommendation: 'CANCEL' } } }), cfg('pawscout'));
+    const r = await processDueOrders(store, fakeCj(spy, UNPAID_AT_SUPPLIER), liveAdmin({ order: { risk: { recommendation: 'CANCEL' } } }), cfg('pawscout'));
     expect(r).toMatchObject({ submitted: 1, held: 0 });
     expect(spy.pay).toEqual(['CJORD-O1']); // paid the existing order, no re-create
   });
@@ -946,7 +1058,7 @@ describe('Stage-B live-order gate (2026-09-19: readOrderGate/decideGate, fetched
     // address are left as they are.
     await store.updateOrder('O1', { status: 'queued' });
 
-    const r2 = await processDueOrders(store, fakeCj(spy), liveAdmin({ order: { shippingAddress: newAddr } }), cfg('pawscout'), {
+    const r2 = await processDueOrders(store, fakeCj(spy, UNPAID_AT_SUPPLIER), liveAdmin({ order: { shippingAddress: newAddr } }), cfg('pawscout'), {
       now: atTick(1),
       alert: async () => 'sent'
     });
@@ -1596,7 +1708,7 @@ describe('an order that lands in error tells the owner', () => {
     await seedWarehouse(store, 'CJ1', 'S1', 'v1');
     await seedOrder(store, 'O1', [{ sku: 'S1', quantity: 1, cjPid: 'CJ1' }]);
     await store.updateOrder('O1', { cj_order_id: 'CJORD-EXISTING' });
-    const cj = fakeCj({ create: [], pay: [] }, { payBalance: async () => { throw new Error('supplier refused the payment'); } });
+    const cj = fakeCj({ create: [], pay: [] }, { ...UNPAID_AT_SUPPLIER, payBalance: async () => { throw new Error('supplier refused the payment'); } });
     const alerts: { subject: string; text: string }[] = [];
     const r = await processDueOrders(store, cj, liveAdmin(), cfg('pawscout'), {
       alert: async (subject, text) => { alerts.push({ subject, text }); return 'sent'; }
@@ -2208,10 +2320,11 @@ describe('live freight counter-check before the supplier order', () => {
   const US_ADDRESS = { ...ADDRESS, city: 'Austin', province: 'TX', zip: '73301', countryCode: 'US' };
   const US_LIVE = { shippingAddress: { ...(LIVE_ORDER.shippingAddress as Record<string, unknown>), city: 'Austin', province: 'TX', zip: '73301', countryCodeV2: 'US' } };
   type BasketCall = { products: { vid: string; quantity: number }[]; from: string; to: string };
-  function quoting(spy: { create: unknown[]; pay: string[] }, calls: BasketCall[], answer: () => Promise<{ priceUsd: number; days: string; name: string } | null>) {
+  function quoting(spy: { create: unknown[]; pay: string[] }, calls: BasketCall[], answer: () => Promise<{ priceUsd: number; days: string; name: string } | null>, extra: Partial<Record<string, unknown>> = {}) {
     return fakeCj(spy, {
       freightForBasket: async (products: { vid: string; quantity: number }[], from: string, to: string) => { calls.push({ products, from, to }); return answer(); },
-      freightEstimate: async () => { throw new Error('the single-unit default-destination quote must not be used by the pipeline'); }
+      freightEstimate: async () => { throw new Error('the single-unit default-destination quote must not be used by the pipeline'); },
+      ...extra
     });
   }
 
@@ -2348,7 +2461,7 @@ describe('live freight counter-check before the supplier order', () => {
     await store.updateOrder('O1', { cj_order_id: 'CJORD-EXISTING' }); // a pay-retry: created earlier, payment still owed
     const spy = { create: [] as unknown[], pay: [] as string[] };
     const calls: BasketCall[] = [];
-    const cj = quoting(spy, calls, async () => ({ priceUsd: 999, days: '1', name: 'Gold' }));
+    const cj = quoting(spy, calls, async () => ({ priceUsd: 999, days: '1', name: 'Gold' }), UNPAID_AT_SUPPLIER);
     const r = await processDueOrders(store, cj, liveAdmin(), cfg('pawscout'));
     expect(r).toMatchObject({ submitted: 1 });
     expect(calls).toHaveLength(0);
