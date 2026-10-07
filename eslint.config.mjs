@@ -25,6 +25,8 @@ export default defineConfig(
       'graph-out/**',
       '.cache/**',
       '.playwright-mcp/**',
+      // Agent worktrees are whole second checkouts of this repo.
+      '.claude/**',
     ],
   },
   {
