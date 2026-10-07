@@ -77,6 +77,14 @@ function cancelAlertFor(firstStatus: OrderRow['status'], order: OrderRow): Owner
     // tracking number arrives), so the text must not claim the supplier order
     // is unpaid or that nothing has been spent: it says what to do either way.
     const cj = order.cj_order_id ?? NOT_RECORDED;
+    if (order.owner_paid_at) {
+      // The owner told PawScout they paid it by hand ("I paid this"), so the
+      // money is out: the refund is the ask. Still never "PawScout paid it".
+      return {
+        subject: `Order ${name} was cancelled after you paid its supplier order`,
+        text: `Order ${name} was cancelled in Shopify. Supplier order ${cj} was created for it, and on ${order.owner_paid_at.slice(0, 10)} you marked it as paid by you at the supplier. Ask the supplier to cancel and refund it, and treat it as a return if it has shipped. If it was not paid after all, do NOT pay it now: cancel it at the supplier.`
+      };
+    }
     return {
       subject: `Order ${name} was cancelled: do NOT pay the supplier`,
       text: `Order ${name} was cancelled in Shopify. Supplier order ${cj} was created for it and PawScout has not paid it. Do NOT pay it. If it is still unpaid, cancel it at the supplier. If you have already paid it by hand, PawScout cannot see that: ask the supplier to cancel and refund it, and treat it as a return if it has shipped.`

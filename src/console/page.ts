@@ -693,25 +693,23 @@ async function loadOrders(){
     renderHookLine(r.hooks||null);
     if(r.alertEmail&&el('alertemail')) el('alertemail').value=r.alertEmail;
     var list=el('ordlist');
-    var awaiting=(r.orders||[]).filter(function(o){return o.status==='awaiting-payment';});
+    var awaiting=ordersAwaitingOwnerPayment(r.orders);
     var banner=el('awaitbanner');
     if(banner){
       if(awaiting.length){
         var ids=awaiting.map(function(o){return esc(o.cj||o.name||o.id);}).join(', ');
         banner.className='msg no'; banner.style.display='';
-        banner.textContent='⚠ '+awaiting.length+' order(s) have a CJ order that PawScout has not paid: '+ids+'. Pay any you have not paid yet in app.cjdropshipping.com. PawScout cannot see a payment you make by hand, so an order stays in this list until its tracking number arrives: check its state at the supplier before you pay. Tracking will sync back automatically.';
+        banner.textContent='⚠ '+awaiting.length+' order(s) have a CJ order that PawScout has not paid: '+ids+'. Pay any you have not paid yet in app.cjdropshipping.com, then press I paid this next to it. PawScout cannot see a payment you make by hand until you tell it, so check its state at the supplier before you pay. Tracking will sync back automatically.';
       } else { banner.style.display='none'; banner.textContent=''; }
     }
     if(!r.orders.length){ list.innerHTML=''; setMsg('ordmsg','No orders yet.','muted'); return; }
     setMsg('ordmsg','','muted');
     var rows=r.orders.map(function(o){
       var holds=(o.holds&&o.holds.length)?(' · '+o.holds.join(', ')):'';
-      var act='';
-      if(o.status==='held') act='<button class="ghost" data-act="release" data-id="'+esc(o.id)+'">Release</button> <button class="ghost" data-act="cancel" data-id="'+esc(o.id)+'">Cancel</button>';
-      else if(o.status==='queued') act='<button class="ghost" data-act="cancel" data-id="'+esc(o.id)+'">Cancel</button>';
+      var act=orderRowActions(o);
       var tn=o.tracking?(' · '+esc(o.tracking)):'';
       var cjid=o.cj?(' · CJ '+esc(o.cj)):'';
-      return '<tr><td><button class="ghost" data-ev="'+esc(o.id)+'">'+esc(o.name||o.id)+'</button></td><td>'+esc((o.currency||'')+' '+(o.total!=null?o.total:''))+'</td><td><strong>'+esc(o.status)+'</strong>'+esc(holds)+cjid+tn+'</td><td>'+act+'</td></tr>';
+      return '<tr><td><button class="ghost" data-ev="'+esc(o.id)+'">'+esc(o.name||o.id)+'</button></td><td>'+esc((o.currency||'')+' '+(o.total!=null?o.total:''))+'</td><td><strong>'+esc(orderStatusLabel(o))+'</strong>'+esc(holds)+cjid+tn+'</td><td>'+act+'</td></tr>';
     }).join('');
     list.innerHTML='<table style="width:100%;border-collapse:collapse;font-size:13px"><thead><tr><th style="text-align:left">Order</th><th style="text-align:left">Total</th><th style="text-align:left">Status</th><th></th></tr></thead><tbody>'+rows+'</tbody></table>';
     var bts=list.querySelectorAll('button[data-act]');
@@ -721,7 +719,36 @@ async function loadOrders(){
   }catch(e){ setMsg('ordmsg','Failed: '+errText(e),'no'); }
   finally{ btn.disabled=false; }
 }
+// Awaiting-payment rows the owner has not marked "I paid this": the ones the
+// banner still asks them to pay (aramid 87a8dc74).
+function ordersAwaitingOwnerPayment(orders){
+  return (orders||[]).filter(function(o){return o.status==='awaiting-payment'&&!o.ownerPaidAt;});
+}
+// The mark outlives the wait (shipping, a cancellation or a hold leave it on
+// the row), so it only labels a row that is still waiting.
+function orderStatusLabel(o){
+  return (o.status==='awaiting-payment'&&o.ownerPaidAt)?'paid by you, waiting for tracking':o.status;
+}
+function orderRowActions(o){
+  if(o.status==='held') return '<button class="ghost" data-act="release" data-id="'+esc(o.id)+'">Release</button> <button class="ghost" data-act="cancel" data-id="'+esc(o.id)+'">Cancel</button>';
+  if(o.status==='queued') return '<button class="ghost" data-act="cancel" data-id="'+esc(o.id)+'">Cancel</button>';
+  if(o.status==='awaiting-payment'&&o.cj){
+    if(o.ownerPaidAt) return '<button class="ghost" data-act="unpaid" data-id="'+esc(o.id)+'">Not paid after all</button>';
+    return '<button class="ghost" data-act="paid" data-id="'+esc(o.id)+'">I paid this</button>';
+  }
+  return '';
+}
+// "I paid this" is a statement about money, so it takes a second click within
+// 8s, like switching PawScout mode on (confirm() is blocked in the admin iframe).
+var armPaid='';
 async function orderAction(id,action){
+  if(action==='paid'&&armPaid!==id){
+    armPaid=id;
+    setMsg('ordmsg','Mark this supplier order as paid by you at the supplier? PawScout will stop asking you to pay it and will never pay it itself; it still watches the order for a cancellation and syncs its tracking. Click I paid this again within 8s to confirm.','no');
+    setTimeout(function(){ if(armPaid===id){ armPaid=''; setMsg('ordmsg','Cancelled.','muted'); } },8000);
+    return;
+  }
+  armPaid='';
   try{
     var r=await api('/order-action',{id:id,action:action});
     if(!r.ok){ setMsg('ordmsg','Failed: '+(r.error||'unknown error'),'no'); return; }

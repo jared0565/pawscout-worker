@@ -1606,7 +1606,8 @@ app.post('/api/orders', async (c) => {
   const cfg = await store.getConfig();
   const orders = (await store.listOrders(null, 50)).map((o) => ({
     id: o.shopify_order_id, name: o.order_name, total: o.total_price, currency: o.currency,
-    status: o.status, holds: parseHoldReasons(o.hold_reasons), cj: o.cj_order_id, tracking: o.tracking_number
+    status: o.status, holds: parseHoldReasons(o.hold_reasons), cj: o.cj_order_id, tracking: o.tracking_number,
+    ownerPaidAt: o.owner_paid_at ?? null
   }));
   // Webhook-subscription health (the daily stage, or the console's own
   // "Check order events" button) - null when never checked, unparseable, or
@@ -1721,6 +1722,25 @@ app.post('/api/order-action', async (c) => {
   const s = await shopOf(c); if (typeof s !== 'string') return s;
   let body: { id?: string; action?: string } = {};
   try { body = await c.req.json(); } catch { return c.json({ ok: false, error: 'Invalid JSON body' }, 400); }
+  if (body.action === 'paid' || body.action === 'unpaid') {
+    // "I paid this" and its undo (aramid 87a8dc74). Each is one conditional
+    // write: refused, with nothing changed, unless the row is still waiting
+    // for payment in the state the button was shown for.
+    if (!body.id) return c.json({ ok: false, error: 'Bad request' }, 400);
+    const store = new TenantStore(c.env.DB, s);
+    const order = await store.getOrder(body.id);
+    if (!order) return c.json({ ok: false, error: 'Order not found' }, 404);
+    const done = body.action === 'paid'
+      ? await store.markOrderPaidByOwner(body.id, new Date().toISOString())
+      : await store.unmarkOrderPaidByOwner(body.id);
+    if (!done) {
+      return c.json({ ok: false, error: body.action === 'paid'
+        ? 'This order is no longer waiting for payment with an unmarked supplier order. Reload the list.'
+        : 'This order is not marked as paid by you. Reload the list.' }, 409);
+    }
+    await store.addOrderEvent(body.id, body.action === 'paid' ? 'owner-paid' : 'owner-paid-undone', order.cj_order_id);
+    return c.json({ ok: true, status: 'awaiting-payment' });
+  }
   const map: Record<string, 'queued' | 'held' | 'cancelled'> = { release: 'queued', hold: 'held', cancel: 'cancelled' };
   const status = map[body.action ?? ''];
   if (!body.id || !status) return c.json({ ok: false, error: 'Bad request' }, 400);

@@ -350,17 +350,22 @@ time act by the owner until a later phase proves it safe to automate.
 Known, deliberately unclosed gaps, each judged safer to leave than to fix in
 this phase.
 
-- PawScout never learns that the owner paid a supplier order by hand. Such
-  an order stays `awaiting-payment`, and the console banner keeps listing it,
-  until the supplier ships and a tracking number arrives; `submitted` is only
-  ever written when PawScout itself paid. Every text that reads this status
-  therefore says "PawScout has not paid it", never "it is unpaid", and says
-  what to do in both cases. The risk left over is the owner paying one
-  supplier order twice, so the runbook says to check a supplier order's own
-  state at the supplier before paying it. A console action by which the owner
-  tells PawScout "I paid this" was considered and left for a later decision:
-  it changes what `submitted` means and takes the order out of the periodic
-  check of D13.
+- PawScout never learns by itself that the owner paid a supplier order by
+  hand; `submitted` is only ever written when PawScout itself paid. Every text
+  that reads `awaiting-payment` therefore says "PawScout has not paid it",
+  never "it is unpaid", and says what to do in both cases. **Closed in part
+  on 2026-10-07 (owner decision, aramid 87a8dc74):** the owner can now tell
+  PawScout with the console's "I paid this" (two clicks; "Not paid after all"
+  undoes it). It records `orders.owner_paid_at` and does NOT move the row to
+  `submitted`, the option this residual originally weighed, because that
+  would change what `submitted` means and take the order out of the periodic
+  check of D13. The row stays `awaiting-payment`, so that check and the
+  tracking poll still watch it; the banner and the overview stop counting it,
+  a cancellation alert says the owner marked it paid, and the order pipeline
+  never pays a marked supplier order (it puts a released one straight back
+  to waiting for tracking). What is left: until the owner presses it, a
+  hand-paid order still reads as not paid by PawScout, so the runbook still
+  says to check a supplier order's own state before paying it.
 - When Shopify reports a watched order already fulfilled some other way, or
   cannot find it at all, the periodic check alerts once and changes nothing:
   the row keeps its status and the console keeps listing its supplier order

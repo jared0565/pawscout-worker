@@ -1,0 +1,14 @@
+-- "I paid this" (aramid 87a8dc74, owner 2026-10-07).
+--
+-- PawScout cannot see a supplier order the owner pays by hand, so such an
+-- order stayed 'awaiting-payment' until its tracking number arrived, and every
+-- console prompt kept asking the owner to pay it: a route to paying the same
+-- supplier order twice. The owner can now mark it paid from the console.
+--
+-- When the owner marked the row's supplier order as paid by hand; NULL when
+-- they have not (and on every row written before this migration). The status
+-- deliberately stays 'awaiting-payment': the 15 minute cancellation re-check
+-- and the tracking poll both select rows by that status, so a marked row is
+-- still watched. The mark only stops the prompts to pay it, and stops
+-- PawScout from ever paying it itself.
+ALTER TABLE orders ADD COLUMN owner_paid_at TEXT;

@@ -68,6 +68,54 @@ describe('consolePage', () => {
     expect(scripts).toContain("var cjid=o.cj?(' · CJ '+esc(o.cj)):'';");
   });
 
+  // "I paid this" (aramid 87a8dc74): extracted and driven, like renderHookLine below.
+  it('orders card: "I paid this" on an unmarked awaiting-payment row, the undo on a marked one, and the banner leaves marked rows out', async () => {
+    const html = await consolePage('test-api-key').text();
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+    const extract = (name: string) => {
+      const start = scripts.indexOf('function ' + name + '(');
+      expect(start).toBeGreaterThanOrEqual(0);
+      let depth = 0;
+      let end = scripts.indexOf('{', start);
+      for (let i = end; i < scripts.length; i++) {
+        if (scripts[i] === '{') depth++;
+        else if (scripts[i] === '}') { depth--; if (depth === 0) { end = i + 1; break; } }
+      }
+      return scripts.slice(start, end);
+    };
+    const esc = (s: unknown) => String(s);
+    // One compile for all three, so the file gains one reviewed suppression, not three.
+    const src = ['orderRowActions', 'ordersAwaitingOwnerPayment', 'orderStatusLabel'].map(extract).join('\n');
+    const fns = new Function('esc', src + '\nreturn { orderRowActions, ordersAwaitingOwnerPayment, orderStatusLabel };')(esc) as {
+      orderRowActions: (o: Record<string, unknown>) => string;
+      ordersAwaitingOwnerPayment: (os: Record<string, unknown>[]) => Record<string, unknown>[];
+      orderStatusLabel: (o: Record<string, unknown>) => string;
+    };
+    const rowActions = fns.orderRowActions;
+    const awaitingOwner = fns.ordersAwaitingOwnerPayment;
+    const statusLabel = fns.orderStatusLabel;
+
+    const unmarked = { id: 'O1', status: 'awaiting-payment', cj: 'CJ1', ownerPaidAt: null };
+    const marked = { id: 'O2', status: 'awaiting-payment', cj: 'CJ2', ownerPaidAt: '2026-10-07T16:00:00.000Z' };
+    expect(rowActions(unmarked)).toBe('<button class="ghost" data-act="paid" data-id="O1">I paid this</button>');
+    expect(rowActions(marked)).toBe('<button class="ghost" data-act="unpaid" data-id="O2">Not paid after all</button>');
+    expect(rowActions({ id: 'O3', status: 'awaiting-payment', cj: null, ownerPaidAt: null })).toBe('');
+    expect(rowActions({ id: 'H1', status: 'held', cj: 'CJ4' })).toBe('<button class="ghost" data-act="release" data-id="H1">Release</button> <button class="ghost" data-act="cancel" data-id="H1">Cancel</button>');
+    expect(rowActions({ id: 'Q1', status: 'queued' })).toBe('<button class="ghost" data-act="cancel" data-id="Q1">Cancel</button>');
+    expect(rowActions({ id: 'S1', status: 'submitted', cj: 'CJ5' })).toBe('');
+    expect(awaitingOwner([unmarked, marked, { id: 'H1', status: 'held' }]).map((o) => o.id)).toEqual(['O1']);
+    // The label describes the mark only while the row is still waiting: a
+    // marked order that then ships, is cancelled or is held reads as that.
+    expect(statusLabel(marked)).toBe('paid by you, waiting for tracking');
+    expect(statusLabel(unmarked)).toBe('awaiting-payment');
+    for (const st of ['fulfilled', 'cancelled', 'held']) {
+      expect(statusLabel({ id: 'M', status: st, cj: 'CJ9', ownerPaidAt: '2026-10-07T16:00:00.000Z' })).toBe(st);
+    }
+    // Marking is a money statement, so it takes a second click, the same way
+    // switching PawScout mode on does (window.confirm is blocked in the iframe).
+    expect(scripts).toContain('Click I paid this again within 8s to confirm.');
+  });
+
   // Every remaining place the console names this status has to agree with the
   // banner above: PawScout has not paid it, and a payment made by hand is
   // invisible here, so nothing may read as "this is unpaid, go and pay it".
@@ -76,7 +124,7 @@ describe('consolePage', () => {
     const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
     expect(scripts).toContain("'awaiting-payment':'not paid by PawScout'");
     expect(scripts).not.toContain('awaiting CJ payment');
-    expect(html).toContain('it stays in that list until its tracking number arrives because PawScout cannot see a payment you make by hand');
+    expect(html).toContain('PawScout cannot see a payment you make by hand, so once you have paid it, press <em>I paid this</em> next to it');
     expect(html).not.toContain('Any order sitting unpaid shows');
     expect(html).not.toContain('a supplier order that is waiting for you to pay it');
   });
