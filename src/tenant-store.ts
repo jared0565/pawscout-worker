@@ -2101,13 +2101,16 @@ export class TenantStore {
     return rs.results ?? [];
   }
 
-  /** True when any of these threads has no category yet (the sweep has not run on it). */
-  async anyThreadUnclassified(threadIds: readonly string[]): Promise<boolean> {
+  /** True when the classify sweep will still take one of these threads: the
+   *  same selection as threadsNeedingClassification (unclassified and still
+   *  'new'), stored since `sinceIso`. A thread the sweep never reaches is not
+   *  counted, so it cannot hold anything back for ever. */
+  async anyThreadAwaitingSweep(threadIds: readonly string[], sinceIso: string): Promise<boolean> {
     if (threadIds.length === 0) return false;
-    const ph = threadIds.map((_, i) => `?${i + 2}`).join(',');
+    const ph = threadIds.map((_, i) => `?${i + 3}`).join(',');
     const row = await this.db
-      .prepare(`SELECT 1 AS x FROM inbox_threads WHERE shop = ?1 AND id IN (${ph}) AND primary_category IS NULL LIMIT 1`)
-      .bind(this.shop, ...threadIds)
+      .prepare(`SELECT 1 AS x FROM inbox_threads WHERE shop = ?1 AND created_at >= ?2 AND id IN (${ph}) AND classified_at IS NULL AND status = 'new' LIMIT 1`)
+      .bind(this.shop, sinceIso, ...threadIds)
       .first<{ x: number }>();
     return !!row;
   }

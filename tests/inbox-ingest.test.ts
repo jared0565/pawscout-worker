@@ -220,6 +220,25 @@ describe('repeat-sender block (ingest)', () => {
     expect((await store.getContactByEmail('asker@x.com'))!.blocked_at).not.toBeNull();
   });
 
+  it('a thread the sweep will never classify (no longer new) does not hold the block back', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const a = await ingestParsed(store, pv({ messageId: '<z1@x>', from: { email: VENDOR, name: 'Vendor' }, subject: 'Hello', text: PITCH, date: '2026-09-01T10:00:00Z' }));
+    await store.setThreadStatus(a.threadId, 'closed'); // closed before the sweep reached it: classified_at stays NULL
+    await ingestParsed(store, pv({ messageId: '<z2@x>', from: { email: VENDOR, name: 'Vendor' }, subject: 'Hello', text: PITCH, date: '2026-09-01T10:05:00Z' }));
+    await ingestParsed(store, pv({ messageId: '<z3@x>', from: { email: VENDOR, name: 'Vendor' }, subject: 'Hello', text: PITCH, date: '2026-09-01T10:10:00Z' }));
+    expect((await store.getContactByEmail(VENDOR))!.blocked_at).not.toBeNull();
+  });
+
+  it('a thread left unclassified for more than a day does not hold the block back', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const a = await ingestParsed(store, pv({ messageId: '<y1@x>', from: { email: VENDOR, name: 'Vendor' }, subject: 'Hello', text: PITCH, date: '2026-09-01T10:00:00Z' }));
+    await env.DB.prepare('UPDATE inbox_threads SET created_at = ?1 WHERE shop = ?2 AND id = ?3')
+      .bind(new Date(Date.now() - 2 * 86_400_000).toISOString(), SHOP, a.threadId).run();
+    await ingestParsed(store, pv({ messageId: '<y2@x>', from: { email: VENDOR, name: 'Vendor' }, subject: 'Hello', text: PITCH, date: '2026-09-01T10:05:00Z' }));
+    await ingestParsed(store, pv({ messageId: '<y3@x>', from: { email: VENDOR, name: 'Vendor' }, subject: 'Hello', text: PITCH, date: '2026-09-01T10:10:00Z' }));
+    expect((await store.getContactByEmail(VENDOR))!.blocked_at).not.toBeNull();
+  });
+
   it('the same copies on a thread the sweep classified as a product question never block', async () => {
     const store = new TenantStore(env.DB, SHOP);
     const ask = 'Is the orthopaedic memory foam dog bed available in the extra large size and grey colour please?';
@@ -311,15 +330,17 @@ describe('repeat-sender block (ingest)', () => {
   });
 
   // aramid b4b33fbf, rest of it (2026-10-07): a blocked customer who wrote
-  // through the contact form could never get out, because the lift skipped
-  // form posts. Lifting is the safe direction, so an order-shaped form message
-  // lifts the block too; a form post still never SETS one.
+  // through the contact form could never get through, because form posts were
+  // left out entirely. An order-shaped form message now reaches the queue, but
+  // the address in a form is whatever was typed, so it never lifts the block
+  // (security review of the first cut): the owner does that from the list. A
+  // form post never SETS a block either.
   const formFrom = (email: string, text: string, id: string) => pe({
     messageId: id, from: { email: 'no-reply@shopifyemail.com', name: 'Active Paw' }, subject: 'New customer message',
     headers: { 'reply-to': `Buyer <${email}>` }, text: `Name: Buyer\nEmail: ${email}\n\nMessage:\n${text}`, date: '2026-09-06T10:00:00Z'
   });
 
-  it('an order-shaped contact-form message from a blocked sender lifts the block and enters the queue', async () => {
+  it('an order-shaped contact-form message from a blocked sender enters the queue, and the block stays', async () => {
     const store = new TenantStore(env.DB, SHOP);
     await store.upsertContact({ email: 'buyer@x.com', name: 'Buyer', phone: null });
     await store.blockContact('buyer@x.com', 'repeat message x3');
@@ -327,7 +348,8 @@ describe('repeat-sender block (ingest)', () => {
     const got = (await store.getThreadWithMessages(r.threadId))!;
     expect(got.thread.contact_email).toBe('buyer@x.com');
     expect(got.thread.status).toBe('new');
-    expect((await store.getContactByEmail('buyer@x.com'))!.blocked_at).toBeNull();
+    expect(got.labels).not.toContain('spam');
+    expect((await store.getContactByEmail('buyer@x.com'))!.blocked_at).not.toBeNull();
   });
 
   it('three identical contact-form messages never block the address typed into the form', async () => {
