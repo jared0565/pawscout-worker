@@ -11,7 +11,7 @@ import type { OrderLineItem, OrderAddress } from './fulfil';
 import { readOrderGate, decideGate, type RiskLevel } from './order-gate';
 import { resolveLogistics } from './logistics';
 import { alertOwner } from './owner-alert';
-import { deliverOrderAlert, recordAlertDue, retryOrderAlerts, type AlertSend } from './order-alert';
+import { deliverOrderAlert, isOtherAlertMarker, recordAlertDue, retryOrderAlerts, type AlertSend } from './order-alert';
 import { applyCancel, type OwnerAlert } from './order-cancel';
 
 // W-FULFIL Stage B: turn queued orders into paid CJ orders, then write tracking
@@ -89,17 +89,18 @@ const FREIGHT_TOLERANCE_USD = 1;
 
 /** Consecutive ticks that ended in a freight-unreadable line. The gate-passed
  *  and stock-ok lines a tick writes on its way to the quote say nothing about
- *  the quote, so they do not break the run; anything else does, including the
- *  owner-alert markers, so a run of failures gets one alert, not one per tick
- *  from the fourth on (the countTrailingOrderEvents rule, with the two
- *  on-the-way lines skipped). */
-async function countTrailingFreightFailures(store: TenantStore, shopifyOrderId: string): Promise<number> {
+ *  the quote, so they do not break the run, and neither do the markers the
+ *  retry sweep writes for another alert on this order. Anything else does,
+ *  including this alert's own markers (`guardedSubject` is its subject), so a
+ *  run of failures gets one alert, not one per tick from the fourth on (the
+ *  countTrailingOrderEvents rule, with the two on-the-way lines skipped). */
+async function countTrailingFreightFailures(store: TenantStore, shopifyOrderId: string, guardedSubject: string): Promise<number> {
   const events = await store.listOrderEvents(shopifyOrderId);
   let n = 0;
   for (let i = events.length - 1; i >= 0; i--) {
     const kind = events[i].kind;
     if (kind === 'freight-unreadable') n++;
-    else if (kind !== 'gate-passed' && kind !== 'stock-ok') break;
+    else if (kind !== 'gate-passed' && kind !== 'stock-ok' && !isOtherAlertMarker(events[i], guardedSubject)) break;
   }
   return n;
 }
@@ -250,15 +251,16 @@ async function handleGateUnreadable(
 ): Promise<void> {
   console.warn(`gate unreadable for ${o.order_name ?? o.shopify_order_id}: ${error}`);
   await store.addOrderEvent(o.shopify_order_id, 'gate-unreadable', gateUnreadableDetail(error));
-  if ((await store.countTrailingOrderEvents(o.shopify_order_id, 'gate-unreadable')) < 4) return;
   const name = o.order_name ?? o.shopify_order_id;
+  const subject = `Order ${name} cannot be checked against Shopify`;
+  if ((await store.countTrailingOrderEvents(o.shopify_order_id, 'gate-unreadable', subject)) < 4) return;
   if (!alert) return;
   const text = cjOrderId
     ? (opts?.ownerPays
         ? `Order ${name} could not be checked against Shopify on the last 4 checks (${error}). Supplier order ${cjOrderId} exists for it. Check the order in Shopify before you pay or settle anything for it at the supplier. It is retried every 15 minutes.`
         : `Order ${name} could not be checked against Shopify on the last 4 checks (${error}). Supplier order ${cjOrderId} exists for it, and PawScout will not pay it until the check succeeds. It is retried every 15 minutes.`)
     : `Order ${name} is due, but its state in Shopify could not be read on the last 4 checks (${error}). Nothing has been sent to the supplier. It is retried every 15 minutes.`;
-  await deliverOrderAlert(store, o.shopify_order_id, { subject: `Order ${name} cannot be checked against Shopify`, text }, alert);
+  await deliverOrderAlert(store, o.shopify_order_id, { subject, text }, alert);
 }
 
 const FULFILL = `mutation pawscoutFulfill($f: FulfillmentInput!) {
@@ -605,10 +607,11 @@ export async function processDueOrders(
         } catch (fe) {
           console.warn(`freight quote failed for ${o.order_name ?? o.shopify_order_id}: ${fe instanceof Error ? fe.message : String(fe)}`);
           await store.addOrderEvent(o.shopify_order_id, 'freight-unreadable', 'quote failed');
-          if ((await countTrailingFreightFailures(store, o.shopify_order_id)) >= 4 && opts.alert) {
-            const name = o.order_name ?? o.shopify_order_id;
+          const name = o.order_name ?? o.shopify_order_id;
+          const subject = `Order ${name}: the supplier's delivery cost could not be checked`;
+          if ((await countTrailingFreightFailures(store, o.shopify_order_id, subject)) >= 4 && opts.alert) {
             await deliverOrderAlert(store, o.shopify_order_id, {
-              subject: `Order ${name}: the supplier's delivery cost could not be checked`,
+              subject,
               text: `Order ${name} is due, but the supplier's live delivery cost for it could not be read on the last 4 checks. Nothing has been sent to the supplier. It is retried every 15 minutes.`
             }, opts.alert);
           }
@@ -898,13 +901,14 @@ export async function pollTracking(
         // above and in the alert text below, which goes to the owner's
         // inbox, not into the trail.
         await store.addOrderEvent(o.shopify_order_id, 'tracking-write-failed', 'write to Shopify failed');
+        const name = o.order_name ?? o.shopify_order_id;
+        const subject = `Order ${name}: tracking could not be written to Shopify`;
         // >= 4, not === 4, so a single swallowed addOrderEvent write can
         // never permanently silence this order's alert.
-        if ((await store.countTrailingOrderEvents(o.shopify_order_id, 'tracking-write-failed')) >= 4) {
-          const name = o.order_name ?? o.shopify_order_id;
+        if ((await store.countTrailingOrderEvents(o.shopify_order_id, 'tracking-write-failed', subject)) >= 4) {
           if (opts.alert) {
             await deliverOrderAlert(store, o.shopify_order_id, {
-              subject: `Order ${name}: tracking could not be written to Shopify`,
+              subject,
               // A write that reached Shopify can still be recorded here as
               // failed (the row update after it can be refused, or the run
               // killed between the two), and from then on every retry fails

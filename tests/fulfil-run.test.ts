@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
 import { processDueOrders, pollTracking, recheckUnsettledSupplierOrders, runOrderPipelineForShop, isStockoutError, awaitingPaymentEmailBody, type StockoutNotice } from '../src/fulfil-run';
 import { TenantStore } from '../src/tenant-store';
+import { retryOrderAlerts } from '../src/order-alert';
 import { Vault } from '../src/vault';
 import { DEFAULT_GATES, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_INBOX, type Env, type TenantConfig } from '../src/types';
 import type { CjClient, CjDetail } from '../src/cj';
@@ -1261,6 +1262,82 @@ describe('no latch - a >= 4 comparison, not === 4', () => {
     expect(alerts).toHaveLength(1);
     const events = await store.listOrderEvents('O8');
     expect(events.filter((e) => e.kind === 'tracking-write-failed')).toHaveLength(6);
+  });
+});
+
+describe("another alert's retry markers do not break a trailing run", () => {
+  // The retry sweep runs first on every tick and, for each other alert still
+  // pending on this order, writes the outcome of its re-send. Before this, any
+  // such marker ended the run of failures being counted, so an order with one
+  // other undelivered alert never reached the threshold of 4 in a row.
+  const OTHER = 'Order #O1: an earlier alert that has not reached the owner yet';
+  const failingSweep = (sent: string[]) => async (subject: string) => { sent.push(subject); return 'failed' as const; };
+
+  it('gate read throws on four ticks with the sweep re-sending another alert before each: the fourth still alerts, once, and the fifth stays silent', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedWarehouse(store, 'CJ1', 'S1', 'v1');
+    await seedOrder(store, 'O1', [{ sku: 'S1', quantity: 1, cjPid: 'CJ1' }]);
+    await store.addOrderEvent('O1', 'owner-alert-failed', OTHER);
+    const admin = liveAdmin({ throws: 'gate api down' });
+    const swept: string[] = [];
+    const alerts: { subject: string; text: string }[] = [];
+    for (let i = 0; i < 5; i++) {
+      await retryOrderAlerts(store, failingSweep(swept), new Date(atTick(i)()));
+      await processDueOrders(store, fakeCj({ create: [], pay: [] }), admin, cfg('pawscout'), {
+        now: atTick(i),
+        alert: async (subject, text) => { alerts.push({ subject, text }); return 'sent'; }
+      });
+      if (i === 3) expect(alerts).toHaveLength(1);
+    }
+    expect(swept.filter((s) => s === OTHER)).toHaveLength(5); // the other alert really was re-sent before every tick
+    expect(alerts).toHaveLength(1); // the guarded alert's own marker still ends the run
+    expect(alerts[0].subject).toBe('Order #O1 cannot be checked against Shopify');
+    expect((await store.listOrderEvents('O1')).filter((e) => e.kind === 'gate-unreadable')).toHaveLength(5);
+  });
+
+  it('tracking write fails on four polls with the sweep re-sending another alert before each: the fourth still alerts, once', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await store.insertOrderIfNew({ shopifyOrderId: 'O1', orderName: '#O1', totalPrice: 15, currency: 'GBP', financialStatus: 'paid', riskLevel: null, status: 'submitted', holdReasons: [], addressJson: null, lineItemsJson: null, fulfilAfter: null });
+    await store.updateOrder('O1', { cj_order_id: 'CJORD-O1' });
+    await store.addOrderEvent('O1', 'owner-alert-failed', OTHER);
+    const failAdmin: AdminGraphql = (async (query: string) => {
+      if (query.includes('fulfillmentOrders')) throw new Error('write failed');
+      return {};
+    }) as unknown as AdminGraphql;
+    const swept: string[] = [];
+    const alerts: { subject: string; text: string }[] = [];
+    for (let i = 0; i < 5; i++) {
+      await retryOrderAlerts(store, failingSweep(swept), new Date(atTick(i)()));
+      await pollTracking(store, fakeCj({ create: [], pay: [] }), failAdmin, {
+        alert: async (subject, text) => { alerts.push({ subject, text }); return 'sent'; }
+      });
+      if (i === 3) expect(alerts).toHaveLength(1);
+    }
+    expect(swept.filter((s) => s === OTHER)).toHaveLength(5);
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].subject).toBe('Order #O1: tracking could not be written to Shopify');
+  });
+
+  it('the freight quote fails on four ticks with the sweep re-sending another alert before each: the fourth still alerts, once', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedWarehouse(store, 'CJ1', 'S1', 'v1');
+    await seedOrder(store, 'O1', [{ sku: 'S1', quantity: 1, cjPid: 'CJ1' }]);
+    await store.addOrderEvent('O1', 'owner-alert-failed', OTHER);
+    const cj = fakeCj({ create: [], pay: [] }, { freightForBasket: async () => { throw new Error('CJ HTTP 502'); } });
+    const swept: string[] = [];
+    const alerts: { subject: string; text: string }[] = [];
+    for (let i = 0; i < 5; i++) {
+      await retryOrderAlerts(store, failingSweep(swept), new Date(atTick(i)()));
+      await processDueOrders(store, cj, liveAdmin(), cfg('pawscout'), {
+        now: atTick(i),
+        alert: async (subject, text) => { alerts.push({ subject, text }); return 'sent'; }
+      });
+      if (i === 3) expect(alerts).toHaveLength(1);
+    }
+    expect(swept.filter((s) => s === OTHER)).toHaveLength(5);
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].subject).toBe("Order #O1: the supplier's delivery cost could not be checked");
+    expect((await store.getOrder('O1'))?.status).toBe('queued');
   });
 });
 

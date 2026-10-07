@@ -4,6 +4,7 @@ import { deriveModels } from './llm-migrate';
 import { DEFAULT_INBOX, type InboxConfig } from './inbox/types';
 import type { ContactRow, ThreadRow, MessageRow, ThreadStatus, DraftRow, DraftStatus, InvoiceRow, InvoiceLineItem, InvoiceStatus, ApplicantRow, PartnershipStage, ScreenVerdict } from './inbox/types';
 import { mergeSupplier, SUPPLIER_STATUSES, type SupplierFacts, type SupplierRow, type SupplierStatus } from './inbox/supplier-register';
+import { isOtherAlertMarker } from './order-alert';
 
 /** ISO cutoff for the commission clearance hold: an order whose age basis
  *  (placed_at, or its insert timestamp created_at when placed_at is missing, so
@@ -1127,16 +1128,21 @@ export class TenantStore {
   }
 
   /** Counts the matching-kind run at the tail of the trail (most recent
-   *  events first), stopping at the first event that does not match. */
-  async countTrailingOrderEvents(shopifyOrderId: string, kind: OrderEventKind): Promise<number> {
+   *  events first), stopping at the first event that does not match.
+   *  `guardedSubject` is the subject of the alert this run raises: another
+   *  alert's markers (isOtherAlertMarker) are stepped over, its own still end
+   *  the run. Required, so no caller can count the old way by leaving it out.
+   *  The read goes well past 4 rows because the stepped-over markers are
+   *  read too: one per other pending alert per tick. */
+  async countTrailingOrderEvents(shopifyOrderId: string, kind: OrderEventKind, guardedSubject: string): Promise<number> {
     const rs = await this.db
-      .prepare(`SELECT kind FROM order_events WHERE shop = ?1 AND shopify_order_id = ?2 ORDER BY seq DESC LIMIT 20`)
+      .prepare(`SELECT kind, detail FROM order_events WHERE shop = ?1 AND shopify_order_id = ?2 ORDER BY seq DESC LIMIT 200`)
       .bind(this.shop, shopifyOrderId)
-      .all<{ kind: string }>();
+      .all<{ kind: string; detail: string | null }>();
     let n = 0;
     for (const row of rs.results ?? []) {
-      if (row.kind !== kind) break;
-      n++;
+      if (row.kind === kind) n++;
+      else if (!isOtherAlertMarker(row, guardedSubject)) break;
     }
     return n;
   }
