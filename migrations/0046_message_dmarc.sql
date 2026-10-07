@@ -1,0 +1,17 @@
+-- The DMARC result each inbound message arrived with (2026-10-07).
+--
+-- aramid 2f32d185: the repeat-message rule blocks a sender on the 2nd copy of
+-- a message we answered, or the 3rd copy overall. Only the copy that sets the
+-- block had to pass DMARC; the earlier copies it counted were read back with
+-- no check, so forged copies under someone else's address (on a domain whose
+-- DMARC result is 'none', which is not treated as spam) could be counted
+-- toward blocking the real owner of that address. Ingest now records the
+-- result here and the rule counts only copies that passed.
+--
+-- 'pass', 'fail' or 'none' as parsed at ingest. NULL for a contact-form post
+-- (its result is the relay's, and its address is whatever was typed) and for
+-- every message stored before this migration. NULL is never counted. It is not
+-- back-filled from headers_json on purpose: that column is cut at 8000
+-- characters, and rows stored before 40fab61 kept whichever
+-- Authentication-Results header the old parser picked, a forged one included.
+ALTER TABLE inbox_messages ADD COLUMN dmarc TEXT;

@@ -79,7 +79,9 @@ export async function ingestParsed(store: TenantStore, p: ParsedEmail): Promise<
   const inserted = await store.insertInboundMessageIfNew({
     threadId, messageId: p.messageId, inReplyTo: p.inReplyTo, references: p.references,
     from: email, to: p.to[0] ?? null, subject: p.subject, bodyText, bodyHtml: p.html,
-    headersJson: JSON.stringify(p.headers).slice(0, 8000), receivedAt: p.date
+    headersJson: JSON.stringify(p.headers).slice(0, 8000), receivedAt: p.date,
+    // A form post's DMARC result is the relay's, not the typed address's.
+    dmarc: form ? null : auth.dmarc
   });
 
   if (inserted) {
@@ -94,9 +96,14 @@ export async function ingestParsed(store: TenantStore, p: ParsedEmail): Promise<
     // one - a spoofer must never be able to silence a third party; and a message
     // that reads like a customer's order or delivery query is never blocked, so
     // the protection does not wait on the LLM sweep's classification.
+    // The earlier copies must have passed DMARC too (aramid 2f32d185): a check
+    // on the last copy alone let forged earlier copies count toward blocking
+    // the real owner of the address. A copy stored without a result (a form
+    // post, or before migration 0046) is not counted either.
+    const authedEarlier = earlier.filter((e) => e.dmarc === 'pass');
     let repeat = false;
-    if (!form && !automated && !spam && earlier.length > 0 && auth.dmarc === 'pass' && !looksLikeCustomerMessage(bodyText)) {
-      repeat = repeatVerdict(bodyText, earlier.map((e) => ({ text: e.body_text, repliedAfter: e.replied_after })));
+    if (!form && !automated && !spam && authedEarlier.length > 0 && auth.dmarc === 'pass' && !looksLikeCustomerMessage(bodyText)) {
+      repeat = repeatVerdict(bodyText, authedEarlier.map((e) => ({ text: e.body_text, repliedAfter: e.replied_after })));
       if (repeat && await store.senderIsProtected(email, PROTECTED_CATEGORIES)) repeat = false;
       // The protection reads thread categories the sweep writes later (aramid
       // 114e2e7b): while a thread holding an earlier copy is still waiting for
@@ -111,7 +118,8 @@ export async function ingestParsed(store: TenantStore, p: ParsedEmail): Promise<
       }
     }
     if (repeat) {
-      const copies = earlier.length + 1;
+      // The copies counted, plus this one (this used to be every recent message).
+      const copies = authedEarlier.filter((e) => isRepeatOf(bodyText, e.body_text)).length + 1;
       await store.blockContact(email, `repeat message: same text sent ${copies} times, blocked at ingest`);
       await markThreadSpam(store, threadId, 'Repeated the same message after our reply - sender blocked');
     } else if (blocked && isExistingThread) {
