@@ -3327,6 +3327,41 @@ export class TenantStore {
     return row?.usd ?? 0;
   }
 
+  /** Reserve `costUsd` on a task before a paid call: one statement inserts the
+   *  row only while the task's spend since `sinceIso` plus this amount stays
+   *  within `capUsd`, so requests that arrive together cannot all pass. The row
+   *  is model 'reserved' until the call starts; returns its id, or null when the
+   *  cap refuses. */
+  async reserveTaskSpend(task: string, costUsd: number, capUsd: number, sinceIso: string): Promise<number | null> {
+    const r = await this.db
+      .prepare(
+        `INSERT INTO llm_usage (shop, task, model, prompt_tokens, completion_tokens, cost_usd, created_at)
+         SELECT ?1, ?2, 'reserved', 0, 0, ?3, ?4
+         WHERE (SELECT COALESCE(SUM(cost_usd), 0) FROM llm_usage WHERE shop = ?1 AND task = ?2 AND created_at >= ?5) + ?3 <= ?6`
+      )
+      .bind(this.shop, task, costUsd, new Date().toISOString(), sinceIso, capUsd)
+      .run();
+    return r.meta.changes ? Number(r.meta.last_row_id) : null;
+  }
+
+  /** The paid call is starting: from here the reserved amount stands unless the
+   *  real cost replaces it (settleReservedSpend). */
+  async markReservedSpendAttempted(id: number): Promise<void> {
+    await this.db.prepare(`UPDATE llm_usage SET model = 'attempted' WHERE shop = ?1 AND id = ?2`).bind(this.shop, id).run();
+  }
+
+  async settleReservedSpend(id: number, model: string, promptTokens: number, completionTokens: number, costUsd: number): Promise<void> {
+    await this.db
+      .prepare(`UPDATE llm_usage SET model = ?3, prompt_tokens = ?4, completion_tokens = ?5, cost_usd = ?6 WHERE shop = ?1 AND id = ?2`)
+      .bind(this.shop, id, model, promptTokens, completionTokens, costUsd)
+      .run();
+  }
+
+  /** Give back a reservation whose paid call never started. */
+  async releaseUnattemptedSpend(id: number): Promise<void> {
+    await this.db.prepare(`DELETE FROM llm_usage WHERE shop = ?1 AND id = ?2 AND model = 'reserved'`).bind(this.shop, id).run();
+  }
+
   // --- W-INBOX-3: invoices ---
   async insertInvoice(i: { threadId: string; lineItems: InvoiceLineItem[]; total: number; currency: string; coverText: string; confidence: number | null; holdReasons: string[]; status: InvoiceStatus }): Promise<string> {
     const id = crypto.randomUUID();

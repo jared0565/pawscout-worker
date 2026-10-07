@@ -22,7 +22,7 @@ import { validateEventRequest, findOverlappingPromo, createEventDiscount, buildE
 import { reservedWindowClash, templateByKey } from './event-catalogue';
 import { ensureRecurringDiscount, retireRecurringDiscount, refreshPublicEventFeed, buildPublicEventFeed, listRecurringForConsole } from './recurring-events';
 import { runBlogPipeline, enrichBlogPost, proposeBlogTopics, listPostsSynced, regenerateArticle } from './blog/pipeline';
-import { deepResearchBudget } from './blog/research';
+import { reserveDeepResearch } from './blog/research';
 import { runArticleHealth } from './blog/article-health';
 import type { BlogBrief } from './blog/types';
 import { issueVoucher, fetchActiveOrderPromos, voucherDateLabel, deactivateVoucherDiscount } from './affiliate-discounts';
@@ -520,15 +520,20 @@ app.post('/api/blog/topics', async (c) => {
   const mode = (body as { deep?: unknown })?.deep === true ? 'deep' : 'fast';
   // The session token says which shop, not who: the deep pass is bounded by a
   // per-shop daily spend cap on its own usage rows rather than an owner role
-  // (aramid review c1029563). The fast source is never capped.
-  if (mode === 'deep') {
-    const budget = await deepResearchBudget(store);
-    if (!budget.allowed) {
-      return c.json({ ok: false, error: `Deep research is capped at $${budget.capUsd.toFixed(2)} a day and $${budget.spentUsd.toFixed(2)} has been spent in the last 24 hours; the standard suggestions still work` });
-    }
+  // (aramid review c1029563; the owner accepted any staff running it,
+  // 2026-10-07). The run's cost is reserved before it starts, so concurrent
+  // requests and a paid run that fails cannot slip past the cap. The fast
+  // source is never capped.
+  if (mode !== 'deep') return c.json(await proposeBlogTopics(c.env, store, cfg, { nowMonth0: new Date().getMonth(), mode }));
+  const reserved = await reserveDeepResearch(store);
+  if (!reserved.ok) {
+    return c.json({ ok: false, error: `Deep research is capped at $${reserved.capUsd.toFixed(2)} a day and $${reserved.spentUsd.toFixed(2)} has been spent in the last 24 hours; the standard suggestions still work` });
   }
-  const result = await proposeBlogTopics(c.env, store, cfg, { nowMonth0: new Date().getMonth(), mode });
-  return c.json(result);
+  try {
+    return c.json(await proposeBlogTopics(c.env, store, cfg, { nowMonth0: new Date().getMonth(), mode, reservationId: reserved.reservationId }));
+  } finally {
+    await store.releaseUnattemptedSpend(reserved.reservationId);
+  }
 });
 app.post('/api/blog/list', async (c) => {
   const s = await shopOf(c); if (typeof s !== 'string') return s;

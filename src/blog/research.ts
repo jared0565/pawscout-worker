@@ -295,7 +295,12 @@ export function validateDemandSignals(v: unknown, validHandles: string[]): Deman
  */
 export async function researchDemand(
   llm: LlmClient, store: TenantStore, cfg: TenantConfig,
-  opts: { validHandles: string[]; catalog: string; window: { season: string; months: string[] } }
+  opts: {
+    validHandles: string[]; catalog: string; window: { season: string; months: string[] };
+    /** The cap's reservation (reserveDeepResearch): settled to the real cost on
+     *  success, left at the reserved amount when the paid call fails. */
+    reservationId?: number;
+  }
 ): Promise<DemandSignal[]> {
   if (!llm.available) return [];
   const chain = resolveSearchChain(cfg);
@@ -311,14 +316,20 @@ export async function researchDemand(
     'Respond with ONLY JSON: {"signals": [ up to 8 objects, each {"term": <what people actually search or ask for, in their words>, "collectionHandle": <one handle from the list>, "why": <one sentence: the evidence that this is current>, "sourceName": <source display name>, "sourceUrl": <the exact page URL you found it on>} ]}.'
   ].join(' ');
 
+  if (opts.reservationId !== undefined) await store.markReservedSpendAttempted(opts.reservationId);
   const r = await llm.jsonChain<DemandSignal[]>({
     chain, maxTokens: 1400, web: { maxResults: 8, required: true },
     system,
     user: JSON.stringify({ readInMonths: opts.window.months, season: opts.window.season }),
     validate: (v) => validateDemandSignals(v, opts.validHandles)
   });
+  // A failed run may still have paid for its search, so its reservation stands.
   if (!r.ok) { console.warn(`blog demand research produced nothing: ${r.error}`); return []; }
-  await store.logLlmUsage('blog-demand', r.usage.model, r.usage.promptTokens, r.usage.completionTokens, r.usage.costUsd);
+  if (opts.reservationId !== undefined) {
+    await store.settleReservedSpend(opts.reservationId, r.usage.model, r.usage.promptTokens, r.usage.completionTokens, r.usage.costUsd);
+  } else {
+    await store.logLlmUsage(DEEP_RESEARCH_TASK, r.usage.model, r.usage.promptTokens, r.usage.completionTokens, r.usage.costUsd);
+  }
   // Belt AND braces with `web.required`: that flag stops the OpenAI tier being
   // TRIED, this check stops an OpenAI-served answer being TRUSTED if the chain
   // shape ever changes. The guard `collectSourcedFacts` already had is the only
@@ -441,16 +452,24 @@ export const DEEP_RESEARCH_TASK = 'blog-demand';
  * "an explicit owner choice" is enforced as a bound on what any session can
  * spend, not as a role check (aramid review c1029563, 2026-09-07). */
 export const DEEP_RESEARCH_DAILY_CAP_USD = 1;
+/** What one deep run is assumed to cost until its real cost is known: above
+ * the dearest run measured (USD 0.2576 of three, 2026-10-07). */
+export const DEEP_RESEARCH_RESERVE_USD = 0.3;
 
-/** Whether another deep run may start: the last 24 hours of the deep pass's
- * own llm_usage rows against the cap. Read by the /api/blog/topics route
- * before it selects the deep mode; the fast mode is never capped. */
-export async function deepResearchBudget(
+/** Whether another deep run may start, decided by reserving its cost: one
+ * statement checks the last 24 hours of the deep pass's own llm_usage rows
+ * plus this run against the cap and writes the reservation (2026-10-07: the
+ * old read-then-log-on-success let a paid run that failed validation, and
+ * requests that arrived together, past the cap). researchDemand settles the
+ * row to the real cost; the route gives back a reservation whose run never
+ * reached the paid call. The fast mode is never capped. */
+export async function reserveDeepResearch(
   store: TenantStore, nowMs = Date.now()
-): Promise<{ allowed: boolean; spentUsd: number; capUsd: number }> {
+): Promise<{ ok: true; reservationId: number } | { ok: false; spentUsd: number; capUsd: number }> {
   const sinceIso = new Date(nowMs - 86_400_000).toISOString();
-  const spentUsd = await store.sumTaskSpendUsdSince(DEEP_RESEARCH_TASK, sinceIso);
-  return { allowed: spentUsd < DEEP_RESEARCH_DAILY_CAP_USD, spentUsd, capUsd: DEEP_RESEARCH_DAILY_CAP_USD };
+  const id = await store.reserveTaskSpend(DEEP_RESEARCH_TASK, DEEP_RESEARCH_RESERVE_USD, DEEP_RESEARCH_DAILY_CAP_USD, sinceIso);
+  if (id !== null) return { ok: true, reservationId: id };
+  return { ok: false, spentUsd: await store.sumTaskSpendUsdSince(DEEP_RESEARCH_TASK, sinceIso), capUsd: DEEP_RESEARCH_DAILY_CAP_USD };
 }
 
 export async function proposeTopics(
@@ -458,6 +477,8 @@ export async function proposeTopics(
   opts: {
     packs: FactPack[]; window: { season: string; months: string[] }; count?: number;
     mode?: DemandMode; suggestSource?: SuggestSource;
+    /** Deep mode only: the cap's reservation for the paid search. */
+    reservationId?: number;
   }
 ): Promise<TopicResearchResult> {
   const count = opts.count ?? 5;
@@ -484,7 +505,7 @@ export async function proposeTopics(
   let signals: DemandSignal[];
   let sourceLabel: string;
   if (mode === 'deep') {
-    signals = await researchDemand(llm, store, cfg, { validHandles: handles, catalog, window: opts.window });
+    signals = await researchDemand(llm, store, cfg, { validHandles: handles, catalog, window: opts.window, reservationId: opts.reservationId });
     sourceLabel = 'live web research';
   } else {
     const source = opts.suggestSource ?? new GoogleSuggestSource();
