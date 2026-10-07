@@ -14,7 +14,7 @@ import { ensureInstalled } from './auth/ensure-installed';
 import { handleUninstall } from './auth/uninstall';
 import { resolveShopFromToken } from './console/session';
 import { connectCj, saveGates, savePricing, saveLlm, saveAddons, saveCollectionMap, getStatus, getInsights, getGlance, getAudit, getAuditConversation, saveGbFreeUk, getPartners, createPartner, partnerVoucherAction, getPartnerOrders, removeQueuedPartner, parseHoldReasons } from './console/routes';
-import { listInboxThreads, getInboxThread, setInboxStatus, setInboxLabels, getInboxConfig, saveInboxConfig, approveDraft, regenerateDraft, applyDraftTemplate, queuePartnerFromThread, setPartnerConsentFromThread, unblockSender, listSuppliersRoute, updateSupplierRoute, startSupplierBackfillRoute, draftAnyway } from './inbox/routes';
+import { listInboxThreads, getInboxThread, setInboxStatus, setInboxLabels, getInboxConfig, saveInboxConfig, approveDraft, regenerateDraft, applyDraftTemplate, queuePartnerFromThread, setPartnerConsentFromThread, unblockSender, unblockSenderByEmail, listBlockedSenders, listSuppliersRoute, updateSupplierRoute, startSupplierBackfillRoute, draftAnyway } from './inbox/routes';
 import { buildInvoiceForThread, discardInvoice, searchCatalog, adminForShop } from './inbox/invoice-routes';
 import { validateCampaignPayload, resolveCampaignAudience, sendCampaignBatch, sendCampaignTest, campaignForUi, ownerTestAddress, campaignSendBlock, type CampaignAudience } from './campaigns';
 import { collectSystemStates } from './system-states';
@@ -1769,10 +1769,16 @@ app.post('/api/inbox/labels', async (c) => {
 });
 app.post('/api/inbox/unblock', async (c) => {
   const s = await shopOf(c); if (typeof s !== 'string') return s;
-  let body: { id?: string } = {};
+  let body: { id?: string; email?: string } = {};
   try { body = await c.req.json(); } catch { return c.json({ ok: false, error: 'Invalid JSON body' }, 400); }
+  // From a thread (its id) or from the blocked-senders list (the address).
+  if (typeof body.email === 'string' && body.email.trim()) return c.json(await unblockSenderByEmail(c.env.DB, s, body.email));
   if (!body.id) return c.json({ ok: false, error: 'id required' }, 400);
   return c.json(await unblockSender(c.env.DB, s, body.id));
+});
+app.post('/api/inbox/blocked', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  return c.json(await listBlockedSenders(c.env.DB, s));
 });
 app.post('/api/inbox/config', async (c) => {
   const s = await shopOf(c); if (typeof s !== 'string') return s;
@@ -2386,6 +2392,10 @@ app.post('/webhooks/orders-paid', async (c) => {
       }
     }
     c.executionCtx.waitUntil(attributePaidOrder(store, order).then(() => undefined));
+    // A paying customer is never left in the spam pile (aramid b4b33fbf,
+    // 2026-10-07): a sender block on the buyer's address lifts. Best-effort,
+    // and idempotent across redeliveries.
+    if (order.customerEmail) await store.unblockContact(order.customerEmail.trim().toLowerCase()).catch(() => undefined);
   } catch (e) {
     return handleOrderWebhookFailure(c, store, cfg, webhookId, 'orders/paid', orderId, e);
   }

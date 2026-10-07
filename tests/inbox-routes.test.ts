@@ -3,7 +3,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
 import { SignJWT } from 'jose';
 import { TenantStore } from '../src/tenant-store';
-import { listInboxThreads, getInboxThread, setInboxStatus, setInboxLabels, regenerateDraft, applyDraftTemplate, unblockSender, DRAFT_TEMPLATES } from '../src/inbox/routes';
+import { listInboxThreads, getInboxThread, setInboxStatus, setInboxLabels, regenerateDraft, applyDraftTemplate, unblockSender, unblockSenderByEmail, listBlockedSenders, DRAFT_TEMPLATES } from '../src/inbox/routes';
 import { AFFILIATE_APPLY_URL, buildSignupInvite, buildSecondTouch } from '../src/inbox/partnership';
 import { countWords } from '../src/inbox/draft-quality';
 import { DEFAULT_INBOX } from '../src/inbox/types';
@@ -594,6 +594,46 @@ describe('getInboxThread - affiliate applicant', () => {
 // Sender-level block (owner rule 2026-09-04): the repeat rule blocks a contact
 // at ingest; the console shows the block on the thread and can lift it. The
 // thread payload carries the contact's blocked_at so the badge has a source.
+// aramid b4b33fbf, rest of it (2026-10-07): a block silences every later
+// message from an address, and nothing listed who was blocked, so a wrong block
+// was only found by opening a spam thread. The console now lists them.
+describe('blocked senders list', () => {
+  it('lists blocked contacts newest first with name and reason, and leaves out everyone else', async () => {
+    const s = new TenantStore(env.DB, SHOP);
+    for (const e of ['old@x.com', 'new@x.com', 'fine@x.com']) await s.upsertContact({ email: e, name: e.split('@')[0], phone: null });
+    await s.blockContact('old@x.com', 'repeat message: same text sent 3 times');
+    await env.DB.prepare(`UPDATE inbox_contacts SET blocked_at = '2026-09-01T10:00:00.000Z' WHERE shop = ?1 AND email = 'old@x.com'`).bind(SHOP).run();
+    await s.blockContact('new@x.com', 'blocked by owner');
+    const r = await listBlockedSenders(env.DB, SHOP);
+    expect(r.ok).toBe(true);
+    expect(r.senders.map((x) => x.email)).toEqual(['new@x.com', 'old@x.com']);
+    expect(r.senders[1]).toEqual({ email: 'old@x.com', name: 'old', blockedAt: '2026-09-01T10:00:00.000Z', reason: 'repeat message: same text sent 3 times' });
+  });
+
+  it('unblockSenderByEmail lifts that address only, and refuses one that is not blocked', async () => {
+    const s = new TenantStore(env.DB, SHOP);
+    for (const e of ['a@x.com', 'b@x.com']) { await s.upsertContact({ email: e, name: null, phone: null }); await s.blockContact(e, 'repeat'); }
+    expect(await unblockSenderByEmail(env.DB, SHOP, 'A@X.com')).toEqual({ ok: true, email: 'a@x.com' });
+    expect((await s.getContactByEmail('a@x.com'))!.blocked_at).toBeNull();
+    expect((await s.getContactByEmail('b@x.com'))!.blocked_at).not.toBeNull();
+    expect((await unblockSenderByEmail(env.DB, SHOP, 'a@x.com')).ok).toBe(false);
+  });
+
+  it('POST /api/inbox/blocked lists them and POST /api/inbox/unblock takes an email', async () => {
+    const s = new TenantStore(env.DB, ANSWERS_SHOP);
+    await s.upsertTenant({ accessTokenEnc: 'tok', dekWrapped: 'd', scopes: 's' });
+    await s.upsertContact({ email: 'v@x.com', name: 'V', phone: null });
+    await s.blockContact('v@x.com', 'repeat message');
+    const token = await answersBearerToken(ANSWERS_SHOP);
+    const list = await callAnswersRoute('/api/inbox/blocked', {}, token);
+    expect(list.status).toBe(200);
+    expect(((await list.json()) as { senders: { email: string }[] }).senders.map((x) => x.email)).toEqual(['v@x.com']);
+    const res = await callAnswersRoute('/api/inbox/unblock', { email: 'v@x.com' }, token);
+    expect(((await res.json()) as { ok: boolean }).ok).toBe(true);
+    expect((await s.getContactByEmail('v@x.com'))!.blocked_at).toBeNull();
+  });
+});
+
 describe('unblockSender', () => {
   it('the thread payload shows the block, and unblockSender lifts it', async () => {
     const tid = await seed();

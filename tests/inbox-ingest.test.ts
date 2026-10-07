@@ -143,8 +143,14 @@ describe('repeat-sender block (ingest)', () => {
    * their address (DMARC pass) can earn one. Spoofed copies never block anyone. */
   const pv = (over: Parameters<typeof pe>[0]) => pe({ headers: AUTH_PASS, ...over });
 
+  /** The sweep's verdict on a vendor pitch: a category no customer lane protects. */
+  const classifyOther = (store: TenantStore, threadId: string, status: 'new' | 'needs_reply' = 'needs_reply') =>
+    store.setThreadClassification(threadId, { status, primaryCategory: 'other', intentScore: 5, summary: null, classifiedAt: '2026-09-01T10:01:00Z' });
+
   async function firstPitchAnswered(store: TenantStore) {
     const a = await ingestParsed(store, pv({ messageId: '<p1@x>', from: { email: VENDOR, name: 'Vendor' }, subject: 'Collaboration', text: PITCH, date: '2026-09-01T10:00:00Z' }));
+    // We only reply to a thread the sweep has classified (drafting needs it).
+    await classifyOther(store, a.threadId);
     await store.insertOutboundMessage({ threadId: a.threadId, messageId: '<our1@activepaw>', from: 'sales@activepaw.co.uk', to: VENDOR, subject: 'Re: Collaboration', bodyText: 'Our affiliate programme is the only partnership we run.', bodyHtml: '<p>x</p>', sentAt: '2026-09-01T12:00:00Z' });
     await store.setThreadStatus(a.threadId, 'awaiting_customer');
     return a.threadId;
@@ -191,8 +197,38 @@ describe('repeat-sender block (ingest)', () => {
     await ingestParsed(store, pv({ messageId: '<q2@x>', from: { email: VENDOR, name: 'Vendor' }, subject: 'Hello', text: PITCH, date: '2026-09-01T10:05:00Z' }));
     expect((await store.getContactByEmail(VENDOR))!.blocked_at).toBeNull();
     expect((await store.getThreadWithMessages(a.threadId))!.thread.status).toBe('new');
+    await classifyOther(store, a.threadId, 'new');
     await ingestParsed(store, pv({ messageId: '<q3@x>', from: { email: VENDOR, name: 'Vendor' }, subject: 'Hello again', text: PITCH, date: '2026-09-02T10:00:00Z' }));
     expect((await store.getContactByEmail(VENDOR))!.blocked_at).not.toBeNull();
+  });
+
+  // aramid 114e2e7b (2026-10-07): customer protection reads the thread's
+  // category, which the sweep writes later. A customer who sent the same
+  // product question three times before the sweep ran was unprotected and got
+  // blocked. The block now waits until every thread holding an earlier copy has
+  // been classified; then the protection can see what the sender is.
+  it('copies on a thread the sweep has not classified yet never block; once it is classified as no customer lane, the next copy does', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const ask = 'Is the orthopaedic memory foam dog bed available in the extra large size and grey colour please?';
+    const a = await ingestParsed(store, pv({ messageId: '<n1@x>', from: { email: 'asker@x.com', name: 'A' }, subject: 'Dog bed', text: ask, date: '2026-09-01T10:00:00Z' }));
+    await ingestParsed(store, pv({ messageId: '<n2@x>', from: { email: 'asker@x.com', name: 'A' }, subject: 'Dog bed', text: ask, date: '2026-09-01T10:02:00Z' }));
+    await ingestParsed(store, pv({ messageId: '<n3@x>', from: { email: 'asker@x.com', name: 'A' }, subject: 'Dog bed', text: ask, date: '2026-09-01T10:04:00Z' }));
+    expect((await store.getContactByEmail('asker@x.com'))!.blocked_at).toBeNull();
+    expect((await store.getThreadWithMessages(a.threadId))!.thread.status).toBe('new');
+    await classifyOther(store, a.threadId, 'new');
+    await ingestParsed(store, pv({ messageId: '<n4@x>', from: { email: 'asker@x.com', name: 'A' }, subject: 'Dog bed', text: ask, date: '2026-09-01T10:30:00Z' }));
+    expect((await store.getContactByEmail('asker@x.com'))!.blocked_at).not.toBeNull();
+  });
+
+  it('the same copies on a thread the sweep classified as a product question never block', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const ask = 'Is the orthopaedic memory foam dog bed available in the extra large size and grey colour please?';
+    const a = await ingestParsed(store, pv({ messageId: '<pq1@x>', from: { email: 'asker2@x.com', name: 'A' }, subject: 'Dog bed', text: ask, date: '2026-09-01T10:00:00Z' }));
+    await store.setThreadClassification(a.threadId, { status: 'new', primaryCategory: 'product-question', intentScore: 60, summary: null, classifiedAt: '2026-09-01T10:01:00Z' });
+    for (const [id, when] of [['<pq2@x>', '2026-09-01T10:02:00Z'], ['<pq3@x>', '2026-09-01T10:04:00Z']]) {
+      await ingestParsed(store, pv({ messageId: id, from: { email: 'asker2@x.com', name: 'A' }, subject: 'Dog bed', text: ask, date: when }));
+    }
+    expect((await store.getContactByEmail('asker2@x.com'))!.blocked_at).toBeNull();
   });
 
   it('a customer in an order-status thread is never blocked for re-sending the same message', async () => {
@@ -272,6 +308,34 @@ describe('repeat-sender block (ingest)', () => {
     const r = await ingestParsed(store, pe({ messageId: '<ord2@x>', from: { email: VENDOR, name: 'Vendor' }, subject: 'Order 1042', text: 'Hi, I placed order #1042 last week and it has not arrived yet.', date: '2026-09-06T10:00:00Z' }));
     expect((await store.getThreadWithMessages(r.threadId))!.thread.status).toBe('spam');
     expect((await store.getContactByEmail(VENDOR))!.blocked_at).not.toBeNull();
+  });
+
+  // aramid b4b33fbf, rest of it (2026-10-07): a blocked customer who wrote
+  // through the contact form could never get out, because the lift skipped
+  // form posts. Lifting is the safe direction, so an order-shaped form message
+  // lifts the block too; a form post still never SETS one.
+  const formFrom = (email: string, text: string, id: string) => pe({
+    messageId: id, from: { email: 'no-reply@shopifyemail.com', name: 'Active Paw' }, subject: 'New customer message',
+    headers: { 'reply-to': `Buyer <${email}>` }, text: `Name: Buyer\nEmail: ${email}\n\nMessage:\n${text}`, date: '2026-09-06T10:00:00Z'
+  });
+
+  it('an order-shaped contact-form message from a blocked sender lifts the block and enters the queue', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await store.upsertContact({ email: 'buyer@x.com', name: 'Buyer', phone: null });
+    await store.blockContact('buyer@x.com', 'repeat message x3');
+    const r = await ingestParsed(store, formFrom('buyer@x.com', 'Hi, I placed order #1042 last week and it has not arrived yet. Can you check the tracking for me?', '<f1@shopify>'));
+    const got = (await store.getThreadWithMessages(r.threadId))!;
+    expect(got.thread.contact_email).toBe('buyer@x.com');
+    expect(got.thread.status).toBe('new');
+    expect((await store.getContactByEmail('buyer@x.com'))!.blocked_at).toBeNull();
+  });
+
+  it('three identical contact-form messages never block the address typed into the form', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    for (const id of ['<f2@shopify>', '<f3@shopify>', '<f4@shopify>']) {
+      await ingestParsed(store, formFrom('typed@x.com', PITCH, id));
+    }
+    expect((await store.getContactByEmail('typed@x.com'))!.blocked_at).toBeNull();
   });
 
   it('linking the contact to a Shopify customer lifts an existing block', async () => {

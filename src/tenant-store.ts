@@ -2092,6 +2092,26 @@ export class TenantStore {
     return (rs.results ?? []).map((r) => ({ ...r, replied_after: !!r.replied_after }));
   }
 
+  /** Every blocked contact, newest block first (the console's blocked-senders list). */
+  async listBlockedContacts(limit = 200): Promise<Array<{ email: string; name: string | null; blocked_at: string; blocked_reason: string | null }>> {
+    const rs = await this.db
+      .prepare(`SELECT email, name, blocked_at, blocked_reason FROM inbox_contacts WHERE shop = ?1 AND blocked_at IS NOT NULL ORDER BY blocked_at DESC LIMIT ?2`)
+      .bind(this.shop, Math.min(Math.max(limit, 1), 500))
+      .all<{ email: string; name: string | null; blocked_at: string; blocked_reason: string | null }>();
+    return rs.results ?? [];
+  }
+
+  /** True when any of these threads has no category yet (the sweep has not run on it). */
+  async anyThreadUnclassified(threadIds: readonly string[]): Promise<boolean> {
+    if (threadIds.length === 0) return false;
+    const ph = threadIds.map((_, i) => `?${i + 2}`).join(',');
+    const row = await this.db
+      .prepare(`SELECT 1 AS x FROM inbox_threads WHERE shop = ?1 AND id IN (${ph}) AND primary_category IS NULL LIMIT 1`)
+      .bind(this.shop, ...threadIds)
+      .first<{ x: number }>();
+    return !!row;
+  }
+
   /** A contact the repeat rule must never block: linked to a Shopify customer,
    * or any of their threads sits in a customer-service lane. A frustrated
    * customer re-sending "where is my order" is exactly who this protects. */

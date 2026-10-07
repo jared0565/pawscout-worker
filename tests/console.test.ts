@@ -831,6 +831,20 @@ describe('consolePage', () => {
     expect(scripts).toContain("'/inbox/unblock'");
   });
 
+  // aramid b4b33fbf, rest of it (2026-10-07): every blocked address in one
+  // place, each with its own Unblock, loaded only when the panel is opened.
+  it('Inbox lists blocked senders on demand, each with an Unblock by email', async () => {
+    const html = await consolePage('test-api-key').text();
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+    expect(html).toContain('id="ibx-blocked"');
+    expect(html).toContain('id="ibx-blocked-list"');
+    expect(scripts).toContain("'/inbox/blocked'");
+    expect(scripts).toContain('data-unblock-email');
+    expect(scripts).toMatch(/api\('\/inbox\/unblock',\s*\{\s*email:/);
+    expect(scripts).toContain('esc(x.email)');
+    expect(scripts).toContain('esc(x.reason');
+  });
+
   // Owner review 2026-09-04: the picker mirrors the five live templates and
   // nothing else; the four superseded funnel entries must not linger in the JS.
   it('the picker no longer offers the superseded funnel templates', async () => {

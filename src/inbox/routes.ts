@@ -121,6 +121,26 @@ export async function unblockSender(db: D1Database, shop: string, threadId: stri
   return { ok: true as const, email: got.thread.contact_email };
 }
 
+/** Lift a block from the blocked-senders list, where there is no thread to
+ *  start from (aramid review b4b33fbf, 2026-10-07). */
+export async function unblockSenderByEmail(db: D1Database, shop: string, rawEmail: string) {
+  const store = new TenantStore(db, shop);
+  const email = rawEmail.trim().toLowerCase();
+  const contact = await store.getContactByEmail(email);
+  if (!contact?.blocked_at) return { ok: false as const, error: 'Not a blocked sender' };
+  await store.unblockContact(email);
+  return { ok: true as const, email };
+}
+
+/** Every blocked address, so a wrong block is found without opening spam. */
+export async function listBlockedSenders(db: D1Database, shop: string) {
+  const rows = await new TenantStore(db, shop).listBlockedContacts();
+  return {
+    ok: true as const,
+    senders: rows.map((r) => ({ email: r.email, name: r.name, blockedAt: r.blocked_at, reason: r.blocked_reason })),
+  };
+}
+
 export async function setInboxLabels(db: D1Database, shop: string, threadId: string, labels: unknown) {
   const v = validateLabels(labels);
   if (!v.ok) return { ok: false as const, error: v.error };

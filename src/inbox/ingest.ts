@@ -2,7 +2,7 @@ import type { TenantStore } from '../tenant-store';
 import type { ParsedEmail, ThreadStatus } from './types';
 import { parseInbound, extractContactForm } from './mime';
 import { parseAuthResults, isAutomated, isHardSpam, normalizeSubject } from './gates';
-import { repeatVerdict, looksLikeCustomerMessage, PROTECTED_CATEGORIES } from './repeat';
+import { repeatVerdict, isRepeatOf, looksLikeCustomerMessage, PROTECTED_CATEGORIES } from './repeat';
 
 /** Store one parsed inbound email: resolve the real sender, match-or-create the
  * thread, insert the message (deduped), and set the thread's initial status from
@@ -34,8 +34,10 @@ export async function ingestParsed(store: TenantStore, p: ParsedEmail): Promise<
   // review b4b33fbf): the same deterministic guard that keeps a customer from
   // being blocked, an order-shaped message from an AUTHENTICATED sender, lets a
   // wrongly blocked one back in. The block lifts here and the message is handled
-  // as a normal inbound. Contact-form posts stay out: their DMARC is the relay's.
-  if (blocked && !form && auth.dmarc === 'pass' && looksLikeCustomerMessage(bodyText)) {
+  // as a normal inbound. A contact-form post lifts it too (2026-10-07): its
+  // DMARC is the relay's and the address is whatever was typed, but lifting is
+  // the safe direction, and a form post can never set a block.
+  if (blocked && (form || auth.dmarc === 'pass') && looksLikeCustomerMessage(bodyText)) {
     await store.unblockContact(email);
     blocked = false;
   }
@@ -90,6 +92,14 @@ export async function ingestParsed(store: TenantStore, p: ParsedEmail): Promise<
     if (!form && !automated && !spam && earlier.length > 0 && auth.dmarc === 'pass' && !looksLikeCustomerMessage(bodyText)) {
       repeat = repeatVerdict(bodyText, earlier.map((e) => ({ text: e.body_text, repliedAfter: e.replied_after })));
       if (repeat && await store.senderIsProtected(email, PROTECTED_CATEGORIES)) repeat = false;
+      // The protection reads thread categories the sweep writes later (aramid
+      // 114e2e7b): while a thread holding an earlier copy is still unclassified,
+      // the sender might be a customer the protection cannot see yet, so the
+      // block waits for the sweep. A copy after classification decides it.
+      if (repeat) {
+        const copyThreads = [...new Set(earlier.filter((e) => isRepeatOf(bodyText, e.body_text)).map((e) => e.thread_id))];
+        if (await store.anyThreadUnclassified(copyThreads)) repeat = false;
+      }
     }
     if (repeat) {
       const copies = earlier.length + 1;
