@@ -258,4 +258,16 @@ describe('POST /api/traffic/activity', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ ok: false, reason: 'not_connected' });
   });
+
+  it('answers a body that is not JSON with 400 Invalid JSON body, from a signed-in session', async () => {
+    await new TenantStore(env.DB, TQ_SHOP).upsertTenant({ accessTokenEnc: 'tok', dekWrapped: 'd', scopes: 's' });
+    const e = { ...env, SHOPIFY_API_SECRET: TQ_SECRET } as unknown as Env;
+    const res = await app.request('/api/traffic/activity', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${await tqBearer(TQ_SHOP)}`, 'content-type': 'application/json' },
+      body: '{days: 30',
+    }, e);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ ok: false, error: 'Invalid JSON body' });
+  });
 });
