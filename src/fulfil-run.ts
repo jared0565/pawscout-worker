@@ -11,7 +11,7 @@ import type { OrderLineItem, OrderAddress } from './fulfil';
 import { readOrderGate, decideGate, type RiskLevel } from './order-gate';
 import { resolveLogistics } from './logistics';
 import { alertOwner } from './owner-alert';
-import { deliverOrderAlert, recordAlertDue, retryOrderAlerts, type AlertSend } from './order-alert';
+import { deliverOrderAlert, isOtherAlertMarker, recordAlertDue, retryOrderAlerts, type AlertSend } from './order-alert';
 import { applyCancel, type OwnerAlert } from './order-cancel';
 
 // W-FULFIL Stage B: turn queued orders into paid CJ orders, then write tracking
@@ -69,10 +69,13 @@ function hasFraudHoldHistory(holdReasonsJson: string | null): boolean {
 }
 
 /** Same shape as hasFraudHoldHistory, for the live freight counter-check: an
- *  operator who released a freight-mismatch hold decided to book the order at
- *  the live cost, and the next run must not hold it again for the same
- *  reason. The check still runs (the live channel is the one booked, and the
- *  trail still records the figure); only the hold is skipped. */
+ *  operator who released a freight-mismatch hold approved the live figure
+ *  that hold showed them (approvedFreightUsd), not whatever the supplier
+ *  charges by the time the order is booked. The next run compares the fresh
+ *  quote with THAT figure instead of the synced rate: within the same
+ *  tolerance it books, above it, or with no figure on record, it is held
+ *  again. The check still runs (the live channel is the one booked, and the
+ *  trail still records the figure). */
 function hasFreightHoldHistory(holdReasonsJson: string | null): boolean {
   if (!holdReasonsJson) return false;
   try {
@@ -87,19 +90,27 @@ function hasFreightHoldHistory(holdReasonsJson: string | null): boolean {
 const FREIGHT_TOLERANCE_RATIO = 0.25;
 const FREIGHT_TOLERANCE_USD = 1;
 
+/** The most the live freight may be, against `baseUsd`, and still book. One
+ *  rule for both bases: the synced allowed-for figure, and the figure an
+ *  operator approved by releasing a freight-mismatch hold. */
+function freightLimitUsd(baseUsd: number): number {
+  return baseUsd * (1 + FREIGHT_TOLERANCE_RATIO) + FREIGHT_TOLERANCE_USD;
+}
+
 /** Consecutive ticks that ended in a freight-unreadable line. The gate-passed
  *  and stock-ok lines a tick writes on its way to the quote say nothing about
- *  the quote, so they do not break the run; anything else does, including the
- *  owner-alert markers, so a run of failures gets one alert, not one per tick
- *  from the fourth on (the countTrailingOrderEvents rule, with the two
- *  on-the-way lines skipped). */
-async function countTrailingFreightFailures(store: TenantStore, shopifyOrderId: string): Promise<number> {
+ *  the quote, so they do not break the run, and neither do the markers the
+ *  retry sweep writes for another alert on this order. Anything else does,
+ *  including this alert's own markers (`guardedSubject` is its subject), so a
+ *  run of failures gets one alert, not one per tick from the fourth on (the
+ *  countTrailingOrderEvents rule, with the two on-the-way lines skipped). */
+async function countTrailingFreightFailures(store: TenantStore, shopifyOrderId: string, guardedSubject: string): Promise<number> {
   const events = await store.listOrderEvents(shopifyOrderId);
   let n = 0;
   for (let i = events.length - 1; i >= 0; i--) {
     const kind = events[i].kind;
     if (kind === 'freight-unreadable') n++;
-    else if (kind !== 'gate-passed' && kind !== 'stock-ok') break;
+    else if (kind !== 'gate-passed' && kind !== 'stock-ok' && !isOtherAlertMarker(events[i], guardedSubject)) break;
   }
   return n;
 }
@@ -113,6 +124,27 @@ const unitsText = (n: number) => `${n} unit${n === 1 ? '' : 's'}`;
 function freightQuotedDetail(origin: string, dest: string, units: number, live: { priceUsd: number; days: string; name: string }, allowedUsd: number | null): string {
   const compared = allowedUsd == null ? `no synced ${origin}->${dest} rate to compare with` : `allowed for ${usd(allowedUsd)}`;
   return `${origin}->${dest}, ${unitsText(units)}: live ${usd(live.priceUsd)} via ${live.name} (${live.days} days); ${compared}`;
+}
+
+/** How a freight-mismatch hold's trail line starts; freightQuotedDetail
+ *  follows it, so the line carries the live figure the owner was shown. */
+const FREIGHT_HOLD_PREFIX = 'freight-mismatch: ';
+
+/** The live figure the newest freight-mismatch hold showed the owner, read
+ *  back from that hold's own trail line (FREIGHT_HOLD_PREFIX, then
+ *  freightQuotedDetail, whose "live USD n via" is the live figure). Releasing
+ *  that hold approves this figure. Kept beside the writer above so the two
+ *  cannot drift. Null when no such line stands, or the newest one cannot be
+ *  read, and null is never taken as approval of anything. */
+function approvedFreightUsd(trail: { kind: string; detail: string | null }[]): number | null {
+  for (let i = trail.length - 1; i >= 0; i--) {
+    const e = trail[i];
+    if (e.kind !== 'gate-held' || !e.detail?.startsWith(FREIGHT_HOLD_PREFIX)) continue;
+    const m = /: live USD (\d+(?:\.\d+)?) via /.exec(e.detail);
+    const n = m ? Number(m[1]) : NaN;
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
 }
 
 /** Write a cancel/hold gate decision to the row + trail in one place, so the
@@ -214,6 +246,55 @@ async function holdForAddressChangeAfterSupplierOrder(
   }, alert);
 }
 
+/** The one status a supplier order detail carries while the order is created
+ *  and not yet paid. Nothing else in this code reads a supplier order status,
+ *  so the value comes from the only recorded reading of one: a read-only
+ *  getOrderList on 2026-06-15 showed an unpaid test order as CREATED
+ *  (docs/WAREHOUSE_PLAN.md). Not yet confirmed on getOrderDetail itself.
+ *  Matched exactly, and any other value holds the order, so a wrong value
+ *  here costs the owner a hold, never a second payment. */
+const SUPPLIER_UNPAID_STATUS = 'CREATED';
+
+/** Asks the supplier, before a pay-retry spends, whether its order is still
+ *  unpaid there: true only on SUPPLIER_UNPAID_STATUS. Otherwise answers why
+ *  not, as text for the trail and the alert: a status is repeated only when
+ *  it is a short plain word, and a thrown message never is (it goes to the
+ *  worker log). Never throws: a failed or empty read is an answer too, and it
+ *  must hold the row, not land it in error as a failed payment. */
+async function supplierOrderStillUnpaid(cj: CjClient, cjOrderId: string): Promise<{ unpaid: true } | { unpaid: false; why: string }> {
+  const unreadable = { unpaid: false as const, why: 'the supplier order could not be read' };
+  let status: string;
+  try {
+    const d = await cj.getOrderDetail(cjOrderId);
+    if (!d) return unreadable;
+    status = d.status;
+  } catch (e) {
+    console.warn(`supplier order ${cjOrderId} could not be read before paying it: ${e instanceof Error ? e.message : String(e)}`);
+    return unreadable;
+  }
+  if (status === SUPPLIER_UNPAID_STATUS) return { unpaid: true };
+  const shown = !status ? 'no status' : /^[A-Za-z_]{1,32}$/.test(status) ? `status ${status}` : 'a status PawScout does not recognise';
+  return { unpaid: false, why: `the supplier reports ${shown}, not ${SUPPLIER_UNPAID_STATUS}` };
+}
+
+/** A pay-retry whose supplier order could not be confirmed as still unpaid.
+ *  The owner may have paid it by hand since PawScout last looked, and
+ *  PawScout cannot see that payment, so the row is held rather than paid. The
+ *  hold replaces the row's reasons: an awaiting-payment reason names an order
+ *  to pay, which is now the opposite of the advice. */
+async function holdForSupplierOrderNotConfirmedUnpaid(
+  store: TenantStore, o: { shopify_order_id: string; order_name: string | null }, cjOrderId: string, why: string, alert?: AlertSend
+): Promise<void> {
+  const reason = 'supplier-order-not-confirmed-unpaid';
+  await writeGateStop(store, o.shopify_order_id, 'held', reason, null, `${reason}: ${why}`);
+  if (!alert) return;
+  const name = o.order_name ?? o.shopify_order_id;
+  await deliverOrderAlert(store, o.shopify_order_id, {
+    subject: `Order ${name}: PawScout did not pay its supplier order, which may already be paid`,
+    text: `Order ${name} came back to the queue with supplier order ${cjOrderId}. Before paying it, PawScout checked it at the supplier: ${why}. It may already have been paid by hand, so PawScout has not paid it and the order is held. Check it at the supplier. If it is still unpaid, pay it there, or press Release and PawScout pays it once the supplier shows it unpaid. If it is paid, there is nothing more to pay, but tracking is not synced to Shopify while the order is held here, so add the tracking by hand once it ships.`
+  }, alert);
+}
+
 /** What a failed gate read leaves in the trail. The trail classifies, it
  *  never copies: the message can be Shopify's own GraphQL error text. Our own
  *  "Shopify HTTP <status>" wording carries a status code and nothing else,
@@ -250,15 +331,16 @@ async function handleGateUnreadable(
 ): Promise<void> {
   console.warn(`gate unreadable for ${o.order_name ?? o.shopify_order_id}: ${error}`);
   await store.addOrderEvent(o.shopify_order_id, 'gate-unreadable', gateUnreadableDetail(error));
-  if ((await store.countTrailingOrderEvents(o.shopify_order_id, 'gate-unreadable')) < 4) return;
   const name = o.order_name ?? o.shopify_order_id;
+  const subject = `Order ${name} cannot be checked against Shopify`;
+  if ((await store.countTrailingOrderEvents(o.shopify_order_id, 'gate-unreadable', subject)) < 4) return;
   if (!alert) return;
   const text = cjOrderId
     ? (opts?.ownerPays
         ? `Order ${name} could not be checked against Shopify on the last 4 checks (${error}). Supplier order ${cjOrderId} exists for it. Check the order in Shopify before you pay or settle anything for it at the supplier. It is retried every 15 minutes.`
         : `Order ${name} could not be checked against Shopify on the last 4 checks (${error}). Supplier order ${cjOrderId} exists for it, and PawScout will not pay it until the check succeeds. It is retried every 15 minutes.`)
     : `Order ${name} is due, but its state in Shopify could not be read on the last 4 checks (${error}). Nothing has been sent to the supplier. It is retried every 15 minutes.`;
-  await deliverOrderAlert(store, o.shopify_order_id, { subject: `Order ${name} cannot be checked against Shopify`, text }, alert);
+  await deliverOrderAlert(store, o.shopify_order_id, { subject, text }, alert);
 }
 
 const FULFILL = `mutation pawscoutFulfill($f: FulfillmentInput!) {
@@ -375,7 +457,9 @@ const CLAIM_MINUTES = 10;
  * Submit queued orders to CJ and (optionally) pay them. GATED on
  * cfg.fulfil.mode==='pawscout' - a no-op in 'manual'/'cj' (orders stay queued /
  * left to CJ's app). createOrder is skipped when cj_order_id is already set (so a
- * pay-retry never duplicates the CJ order).
+ * pay-retry never duplicates the CJ order), and such a pay-retry pays only when
+ * the supplier still reports that order unpaid (the owner may have paid it by
+ * hand); otherwise it holds the row as supplier-order-not-confirmed-unpaid.
  *
  * Payment legs:
  *  - cfg.fulfil.createOnly === true → PS creates the CJ order and STOPS, leaving
@@ -592,8 +676,11 @@ export async function processDueOrders(
         // unit, times the units ordered - the same rate the delivery
         // profiles charge and the baked-in freight is priced from. Live
         // above that by more than the tolerance holds the order before
-        // anything is sent to the supplier; a released hold books at the
-        // live cost. An unreadable quote is "could not tell": nothing is
+        // anything is sent to the supplier. A released hold approved the
+        // figure that hold showed: it books while the live cost is within
+        // the same tolerance of THAT figure, and is held again above it, so a
+        // later tick cannot book at whatever the cost has become by then.
+        // An unreadable quote is "could not tell": nothing is
         // booked, the row stays queued for the next tick, the owner hears on
         // the fourth failure in a row - the gate-unreadable pattern.
         step = 'freight';
@@ -605,10 +692,11 @@ export async function processDueOrders(
         } catch (fe) {
           console.warn(`freight quote failed for ${o.order_name ?? o.shopify_order_id}: ${fe instanceof Error ? fe.message : String(fe)}`);
           await store.addOrderEvent(o.shopify_order_id, 'freight-unreadable', 'quote failed');
-          if ((await countTrailingFreightFailures(store, o.shopify_order_id)) >= 4 && opts.alert) {
-            const name = o.order_name ?? o.shopify_order_id;
+          const name = o.order_name ?? o.shopify_order_id;
+          const subject = `Order ${name}: the supplier's delivery cost could not be checked`;
+          if ((await countTrailingFreightFailures(store, o.shopify_order_id, subject)) >= 4 && opts.alert) {
             await deliverOrderAlert(store, o.shopify_order_id, {
-              subject: `Order ${name}: the supplier's delivery cost could not be checked`,
+              subject,
               text: `Order ${name} is due, but the supplier's live delivery cost for it could not be read on the last 4 checks. Nothing has been sent to the supplier. It is retried every 15 minutes.`
             }, opts.alert);
           }
@@ -631,18 +719,39 @@ export async function processDueOrders(
         const allowedUsd = route?.freight_cost_usd != null ? route.freight_cost_usd * units : null;
         const quotedDetail = freightQuotedDetail(origin, dest, units, live, allowedUsd);
         await store.addOrderEvent(o.shopify_order_id, 'freight-quoted', quotedDetail);
-        const overAllowed = allowedUsd == null || live.priceUsd > allowedUsd * (1 + FREIGHT_TOLERANCE_RATIO) + FREIGHT_TOLERANCE_USD;
-        if (overAllowed && !hasFreightHoldHistory(o.hold_reasons)) {
-          await writeGateStop(store, o.shopify_order_id, 'held', 'freight-mismatch', null, `freight-mismatch: ${quotedDetail}`);
+        const overAllowed = allowedUsd == null || live.priceUsd > freightLimitUsd(allowedUsd);
+        // Only read on a released hold that the allowed-for figure alone
+        // would hold again: within it, the order books either way.
+        const released = overAllowed && hasFreightHoldHistory(o.hold_reasons);
+        const approvedUsd = released ? approvedFreightUsd(await store.listOrderEvents(o.shopify_order_id)) : null;
+        const withinApproved = approvedUsd != null && live.priceUsd <= freightLimitUsd(approvedUsd);
+        if (overAllowed && !withinApproved) {
+          const againDetail = !released ? '' : approvedUsd == null ? '; no figure approved at release on record' : `; approved at release ${usd(approvedUsd)}`;
+          await writeGateStop(store, o.shopify_order_id, 'held', 'freight-mismatch', null, `${FREIGHT_HOLD_PREFIX}${quotedDetail}${againDetail}`);
           held++;
           if (opts.alert) {
             const name = o.order_name ?? o.shopify_order_id;
-            const quote = `The supplier quotes ${usd(live.priceUsd)} (${live.name}, ${live.days} days) to deliver its ${unitsText(units)} ${origin}->${dest}`;
-            const against = allowedUsd == null ? `and there is no synced ${origin}->${dest} rate to check it against` : `against ${usd(allowedUsd)} allowed for from the synced rate`;
-            await deliverOrderAlert(store, o.shopify_order_id, {
-              subject: allowedUsd == null ? `Order ${name}: the supplier's delivery cost could not be compared` : `Order ${name}: the supplier's delivery cost is above what was allowed for`,
-              text: `Order ${name} is held. ${quote}, ${against}. Nothing has been sent to the supplier. Release the order in the console to book it at the live cost, or cancel it.`
-            }, opts.alert);
+            const basket = `${unitsText(units)} ${origin}->${dest}`;
+            const channel = `${live.name}, ${live.days} days`;
+            let notice: OwnerAlert;
+            if (!released) {
+              const against = allowedUsd == null ? `and there is no synced ${origin}->${dest} rate to check it against` : `against ${usd(allowedUsd)} allowed for from the synced rate`;
+              notice = {
+                subject: allowedUsd == null ? `Order ${name}: the supplier's delivery cost could not be compared` : `Order ${name}: the supplier's delivery cost is above what was allowed for`,
+                text: `Order ${name} is held. The supplier quotes ${usd(live.priceUsd)} (${channel}) to deliver its ${basket}, ${against}. Nothing has been sent to the supplier. Release the order in the console to book it at the live cost, or cancel it.`
+              };
+            } else if (approvedUsd == null) {
+              notice = {
+                subject: `Order ${name}: the delivery cost approved at release could not be found`,
+                text: `Order ${name} is held again. It was released from a delivery cost hold, but the figure that hold showed could not be found in its timeline, so PawScout cannot tell whether the supplier's quote of ${usd(live.priceUsd)} (${channel}) for its ${basket} is the cost that was approved. Nothing has been sent to the supplier. Release the order in the console to approve this figure and book it, or cancel it.`
+              };
+            } else {
+              notice = {
+                subject: `Order ${name}: the supplier's delivery cost rose above the figure approved at release`,
+                text: `Order ${name} is held again. The supplier now quotes ${usd(live.priceUsd)} (${channel}) to deliver its ${basket}, above the ${usd(approvedUsd)} approved when the order was released. Nothing has been sent to the supplier. Release the order in the console to approve the new figure and book it, or cancel it.`
+              };
+            }
+            await deliverOrderAlert(store, o.shopify_order_id, notice, opts.alert);
           }
           continue;
         }
@@ -707,6 +816,20 @@ export async function processDueOrders(
         await holdForAddressChangeAfterSupplierOrder(store, o, cjOrderId, opts.alert);
         held++;
         continue;
+      }
+      if (o.cj_order_id) {
+        // A pay-retry: the supplier order was there before this run took the
+        // row, so it may have been paid by hand since (wallet short, paid at
+        // the supplier, then released). Read it at the supplier, last thing
+        // before spending, and pay only when it is still unpaid there; any
+        // other answer, or none, holds the row. A supplier order this run has
+        // just created is paid straight away, as before.
+        const check = await supplierOrderStillUnpaid(cj, cjOrderId);
+        if (!check.unpaid) {
+          await holdForSupplierOrderNotConfirmedUnpaid(store, o, cjOrderId, check.why, opts.alert);
+          held++;
+          continue;
+        }
       }
 
       step = 'pay';
@@ -898,13 +1021,14 @@ export async function pollTracking(
         // above and in the alert text below, which goes to the owner's
         // inbox, not into the trail.
         await store.addOrderEvent(o.shopify_order_id, 'tracking-write-failed', 'write to Shopify failed');
+        const name = o.order_name ?? o.shopify_order_id;
+        const subject = `Order ${name}: tracking could not be written to Shopify`;
         // >= 4, not === 4, so a single swallowed addOrderEvent write can
         // never permanently silence this order's alert.
-        if ((await store.countTrailingOrderEvents(o.shopify_order_id, 'tracking-write-failed')) >= 4) {
-          const name = o.order_name ?? o.shopify_order_id;
+        if ((await store.countTrailingOrderEvents(o.shopify_order_id, 'tracking-write-failed', subject)) >= 4) {
           if (opts.alert) {
             await deliverOrderAlert(store, o.shopify_order_id, {
-              subject: `Order ${name}: tracking could not be written to Shopify`,
+              subject,
               // A write that reached Shopify can still be recorded here as
               // failed (the row update after it can be refused, or the run
               // killed between the two), and from then on every retry fails

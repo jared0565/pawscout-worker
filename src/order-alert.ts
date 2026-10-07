@@ -130,6 +130,19 @@ function sendWithTimeout(send: AlertSend, subject: string, text: string, timeout
  *  compared in its cut form. */
 const TRAIL_DETAIL_MAX = 300;
 
+const ALERT_MARKER_KINDS: ReadonlySet<string> = new Set(['owner-alert-due', 'owner-alerted', 'owner-alert-failed', 'owner-alert-unconfigured']);
+
+/** True when a trail event is one of the four markers this file writes, for
+ *  an alert OTHER than `subject`. A trailing run of failures that ends in an
+ *  alert steps over these: the retry sweep runs first on every tick and
+ *  writes one for each other alert it re-sends on the order, and they say
+ *  nothing about the run being counted. The guarded alert's own markers are
+ *  not stepped over, so they still end the run and the owner is told once,
+ *  not on every tick from the fifth. */
+export function isOtherAlertMarker(e: { kind: string; detail: string | null }, subject: string): boolean {
+  return ALERT_MARKER_KINDS.has(e.kind) && e.detail !== subject.slice(0, TRAIL_DETAIL_MAX);
+}
+
 /** The trail line that records an alert was given up on. Nothing parses it to
  *  decide what is pending (an abandoned alert is `untold` because of its
  *  failure count); it exists so the trail says out loud that nobody was told. */
