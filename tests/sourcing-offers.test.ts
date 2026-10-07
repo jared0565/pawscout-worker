@@ -77,6 +77,15 @@ describe('supplierOffers', () => {
     expect(calls.some((c) => c.startsWith('search:'))).toBe(false);
   });
 
+  // aramid 94b9b378 (2026-10-07): a SKU in a customer's email skipped the
+  // pet-product filter the keyword search applies.
+  it('offers nothing for a pasted SKU whose item is not a pet product', async () => {
+    const store = await seededStore();
+    const cj = fakeCj([NECKLACE]);
+    (cj as unknown as { detailBySku: () => Promise<CjDetail> }).detailBySku = async () => NECKLACE;
+    expect(await supplierOffers(store, cj, CFG, 'CJPC262132401AZ', 'GB', { limit: 3, pause: noPause })).toEqual([]);
+  });
+
   it('offers nothing where no China route reaches the buyer', async () => {
     const store = await seededStore();
     expect(await supplierOffers(store, fakeCj([TRACKER]), CFG, 'gps tracker', 'AU', { limit: 3, pause: noPause })).toEqual([]);

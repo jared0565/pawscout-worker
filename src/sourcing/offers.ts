@@ -59,7 +59,9 @@ export async function supplierOffers(
   const skuDetail = sku ? await cj.detailBySku(sku) : null;
   let pids: string[];
   if (sku) {
-    pids = skuDetail ? [skuDetail.pid] : [];
+    // The same pet-product rule as the search below: a SKU can come from a
+    // customer's email. (prohibitedInDetail still runs on it further down.)
+    pids = skuDetail && isPetProductStrict(skuDetail.nameEn) ? [skuDetail.pid] : [];
   } else {
     let items = await cj.search(query, 40);
     // A feature the customer asked for ("trackable") must be in the title; when
