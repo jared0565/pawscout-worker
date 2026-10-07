@@ -2080,13 +2080,15 @@ export class TenantStore {
 
   /** The sender's earlier inbound messages across ALL their threads, newest
    * first, each flagged with whether we sent a reply on its thread after it
-   * arrived. Call it BEFORE inserting the new message so the new one is not in
-   * the list. Capped: a repeat only needs a few recent copies to show. */
-  async recentInboundBySender(email: string, limit = 20): Promise<Array<{ id: string; thread_id: string; body_text: string | null; received_at: string; replied_after: boolean }>> {
+   * arrived, and with the DMARC result it arrived with (NULL before migration
+   * 0046 and for a contact-form post). Call it BEFORE inserting the new message
+   * so the new one is not in the list. Capped: a repeat only needs a few recent
+   * copies to show. */
+  async recentInboundBySender(email: string, limit = 20): Promise<Array<{ id: string; thread_id: string; body_text: string | null; received_at: string; replied_after: boolean; dmarc: string | null }>> {
     const lim = Math.min(Math.max(limit, 1), 50);
     const rs = await this.db
       .prepare(
-        `SELECT m.id, m.thread_id, m.body_text, m.received_at,
+        `SELECT m.id, m.thread_id, m.body_text, m.received_at, m.dmarc,
                 EXISTS (SELECT 1 FROM inbox_messages o
                         WHERE o.shop = m.shop AND o.thread_id = m.thread_id AND o.direction = 'outbound' AND o.received_at > m.received_at) AS replied_after
          FROM inbox_messages m
@@ -2094,7 +2096,7 @@ export class TenantStore {
          ORDER BY m.received_at DESC LIMIT ${lim}`
       )
       .bind(this.shop, email)
-      .all<{ id: string; thread_id: string; body_text: string | null; received_at: string; replied_after: number }>();
+      .all<{ id: string; thread_id: string; body_text: string | null; received_at: string; replied_after: number; dmarc: string | null }>();
     return (rs.results ?? []).map((r) => ({ ...r, replied_after: !!r.replied_after }));
   }
 
@@ -2176,17 +2178,20 @@ export class TenantStore {
     threadId: string; messageId: string | null; inReplyTo: string | null; references: string[];
     from: string; to: string | null; subject: string | null; bodyText: string | null;
     bodyHtml: string | null; headersJson: string | null; receivedAt: string;
+    /** The DMARC result for `from`; leave it out when `from` was not the
+     *  authenticated sender (a contact-form post). */
+    dmarc?: string | null;
   }): Promise<boolean> {
     const now = new Date().toISOString();
     const r = await this.db
       .prepare(
         `INSERT INTO inbox_messages
-           (shop, id, thread_id, direction, message_id, in_reply_to, ref_ids, from_addr, to_addr, subject, body_text, body_html, headers_json, received_at, created_at)
-         VALUES (?1, ?2, ?3, 'inbound', ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+           (shop, id, thread_id, direction, message_id, in_reply_to, ref_ids, from_addr, to_addr, subject, body_text, body_html, headers_json, received_at, created_at, dmarc)
+         VALUES (?1, ?2, ?3, 'inbound', ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
          ON CONFLICT(shop, message_id) DO NOTHING`
       )
       .bind(this.shop, crypto.randomUUID(), m.threadId, m.messageId, m.inReplyTo,
-        m.references.join(' ') || null, m.from, m.to, m.subject, m.bodyText, m.bodyHtml, m.headersJson, m.receivedAt, now)
+        m.references.join(' ') || null, m.from, m.to, m.subject, m.bodyText, m.bodyHtml, m.headersJson, m.receivedAt, now, m.dmarc ?? null)
       .run();
     return (r.meta.changes ?? 0) > 0;
   }

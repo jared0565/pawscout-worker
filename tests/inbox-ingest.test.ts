@@ -293,6 +293,62 @@ describe('repeat-sender block (ingest)', () => {
     expect((await store.getContactByEmail('victim@x.com'))!.blocked_at).toBeNull();
   });
 
+  // aramid 2f32d185 (2026-10-07): only the message that SETS the block had to
+  // pass DMARC. The earlier copies it counted were read back with no check, so
+  // two forged copies under a victim's address (on a domain whose DMARC result
+  // is 'none', which is not spam) plus one genuine message with the same text
+  // blocked the genuine sender. Every counted copy must now have passed DMARC.
+  it('forged earlier copies are not counted: two unauthenticated copies and a genuine third never block', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const a = await ingestParsed(store, pe({ messageId: '<g1@x>', from: { email: 'victim@x.com', name: 'V' }, subject: 'Hello', text: PITCH, date: '2026-09-01T10:00:00Z', headers: {} }));
+    const b = await ingestParsed(store, pe({ messageId: '<g2@x>', from: { email: 'victim@x.com', name: 'V' }, subject: 'Hello there', text: PITCH, date: '2026-09-01T10:05:00Z', headers: {} }));
+    // Classified, so the wait for the sweep cannot be what holds the block back.
+    await classifyOther(store, a.threadId, 'new');
+    await classifyOther(store, b.threadId, 'new');
+    await ingestParsed(store, pv({ messageId: '<g3@x>', from: { email: 'victim@x.com', name: 'V' }, subject: 'Hello again', text: PITCH, date: '2026-09-02T10:00:00Z' }));
+    expect((await store.getContactByEmail('victim@x.com'))!.blocked_at).toBeNull();
+  });
+
+  it('a forged copy we replied to is not counted: a genuine second copy never blocks', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const a = await ingestParsed(store, pe({ messageId: '<h1@x>', from: { email: VENDOR, name: 'Vendor' }, subject: 'Collaboration', text: PITCH, date: '2026-09-01T10:00:00Z', headers: {} }));
+    await classifyOther(store, a.threadId);
+    await store.insertOutboundMessage({ threadId: a.threadId, messageId: '<our-h1@activepaw>', from: 'sales@activepaw.co.uk', to: VENDOR, subject: 'Re: Collaboration', bodyText: 'Our affiliate programme is the only partnership we run.', bodyHtml: '<p>x</p>', sentAt: '2026-09-01T12:00:00Z' });
+    await store.setThreadStatus(a.threadId, 'awaiting_customer');
+    await ingestParsed(store, pv({ messageId: '<h2@x>', from: { email: VENDOR, name: 'Vendor' }, subject: 'Collaboration', text: PITCH, date: '2026-09-02T10:00:00Z' }));
+    expect((await store.getContactByEmail(VENDOR))!.blocked_at).toBeNull();
+  });
+
+  it("the block's reason counts the copies, not every recent message from the sender", async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const tid = await firstPitchAnswered(store);
+    // A different message in between: not a copy, so not in the count.
+    await ingestParsed(store, pv({ messageId: '<r2@x>', from: { email: VENDOR, name: 'Vendor' }, subject: 'Re: Collaboration', inReplyTo: '<our1@activepaw>', references: ['<p1@x>'], text: 'Hello, wondering if you saw my last message on driving predictable sales? Open for a brief chat this week?', date: '2026-09-02T10:00:00Z' }));
+    expect((await store.getThreadWithMessages(tid))!.thread.status).toBe('needs_reply');
+    await ingestParsed(store, pv({ messageId: '<r3@x>', from: { email: VENDOR, name: 'Vendor' }, subject: 'Collaboration', text: PITCH, date: '2026-09-03T10:00:00Z' }));
+    expect((await store.getContactByEmail(VENDOR))!.blocked_reason).toBe('repeat message: same text sent 2 times, blocked at ingest');
+  });
+
+  it('contact-form copies are not counted toward a block on the address typed into the form', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    // A form post's DMARC result is the relay's, and its address is whatever
+    // was typed, so it proves nothing about that address.
+    const form = (id: string, when: string) => pe({
+      messageId: id, from: { email: 'no-reply@shopifyemail.com', name: 'Active Paw' }, subject: 'New customer message',
+      headers: { ...AUTH_PASS, 'reply-to': 'Typed <typed@x.com>' }, text: `Name: Typed
+Email: typed@x.com
+
+Message:
+${PITCH}`, date: when
+    });
+    const a = await ingestParsed(store, form('<k1@shopify>', '2026-09-01T10:00:00Z'));
+    const b = await ingestParsed(store, form('<k2@shopify>', '2026-09-01T10:05:00Z'));
+    await classifyOther(store, a.threadId, 'new');
+    await classifyOther(store, b.threadId, 'new');
+    await ingestParsed(store, pv({ messageId: '<k3@x>', from: { email: 'typed@x.com', name: 'Typed' }, subject: 'Hello', text: PITCH, date: '2026-09-02T10:00:00Z' }));
+    expect((await store.getContactByEmail('typed@x.com'))!.blocked_at).toBeNull();
+  });
+
   it('an order-shaped message re-sent three times on an UNCLASSIFIED thread never blocks (no dependence on the sweep)', async () => {
     const store = new TenantStore(env.DB, SHOP);
     const ask = 'Hello, I placed order 1042 nine days ago and the tracking has not moved since Friday. Can you tell me where my parcel is and when it will arrive?';
