@@ -154,3 +154,21 @@ tool = "semgrep"
 rule = "owasp-top-ten.a03-injection.javascript-dangerous-function-constructor"
 path = "tests/console.test.ts"
 reason = "Test runs the console page's own Traffic chart helpers, cut from consolePage() output in the same process, on fixed sample data to check the SVG; no external input, test-only, not in the Worker bundle."
+
+# 2026-10-07: "I paid this" (aramid 87a8dc74), one more `new Function(...)` in
+# tests/console.test.ts, same shape as the entries above. Verified at source:
+# the compiled string is three functions (orderRowActions,
+# ordersAwaitingOwnerPayment, orderStatusLabel) cut out of the console page's
+# own inline script, produced by consolePage() in the same test run, plus a
+# fixed `return`. Executing them is what caught a real defect before it
+# shipped: the status label kept saying "paid by you, waiting for tracking" on
+# an order that had since shipped, been cancelled or been held, which a
+# source-text check had not seen. The three compiles the first cut used were
+# merged into this one so the file gained one entry, not three. No external or
+# user-supplied input; test-only; vitest never ships to the Worker bundle.
+[[suppress]]
+id = "131e8806b7876125cf0224f1d330155eec41d05e3c14ed024e3d56367326a538"
+tool = "semgrep"
+rule = "owasp-top-ten.a03-injection.javascript-dangerous-function-constructor"
+path = "tests/console.test.ts"
+reason = "Test runs the console page's own order-row helpers (row actions, banner filter, status label), cut from consolePage() output in the same process, on fixed sample rows; no external input, test-only, not in the Worker bundle."

@@ -84,8 +84,16 @@ describe('consolePage', () => {
       return scripts.slice(start, end);
     };
     const esc = (s: unknown) => String(s);
-    const rowActions = new Function('esc', extract('orderRowActions') + '\nreturn orderRowActions;')(esc) as (o: Record<string, unknown>) => string;
-    const awaitingOwner = new Function(extract('ordersAwaitingOwnerPayment') + '\nreturn ordersAwaitingOwnerPayment;')() as (os: Record<string, unknown>[]) => Record<string, unknown>[];
+    // One compile for all three, so the file gains one reviewed suppression, not three.
+    const src = ['orderRowActions', 'ordersAwaitingOwnerPayment', 'orderStatusLabel'].map(extract).join('\n');
+    const fns = new Function('esc', src + '\nreturn { orderRowActions, ordersAwaitingOwnerPayment, orderStatusLabel };')(esc) as {
+      orderRowActions: (o: Record<string, unknown>) => string;
+      ordersAwaitingOwnerPayment: (os: Record<string, unknown>[]) => Record<string, unknown>[];
+      orderStatusLabel: (o: Record<string, unknown>) => string;
+    };
+    const rowActions = fns.orderRowActions;
+    const awaitingOwner = fns.ordersAwaitingOwnerPayment;
+    const statusLabel = fns.orderStatusLabel;
 
     const unmarked = { id: 'O1', status: 'awaiting-payment', cj: 'CJ1', ownerPaidAt: null };
     const marked = { id: 'O2', status: 'awaiting-payment', cj: 'CJ2', ownerPaidAt: '2026-10-07T16:00:00.000Z' };
@@ -98,7 +106,6 @@ describe('consolePage', () => {
     expect(awaitingOwner([unmarked, marked, { id: 'H1', status: 'held' }]).map((o) => o.id)).toEqual(['O1']);
     // The label describes the mark only while the row is still waiting: a
     // marked order that then ships, is cancelled or is held reads as that.
-    const statusLabel = new Function(extract('orderStatusLabel') + '\nreturn orderStatusLabel;')() as (o: Record<string, unknown>) => string;
     expect(statusLabel(marked)).toBe('paid by you, waiting for tracking');
     expect(statusLabel(unmarked)).toBe('awaiting-payment');
     for (const st of ['fulfilled', 'cancelled', 'held']) {
