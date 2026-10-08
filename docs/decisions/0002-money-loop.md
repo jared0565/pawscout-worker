@@ -630,19 +630,22 @@ marked paid by hand in Shopify so no card was charged, run on production
   `CREATED`, where the `payType: 2` order of #1002 reads `UNPAID` (still so
   at 18:33Z). The recipient again reads "Ina"; still unexplained, the order
   detail was not read.
-- Finding, not fixed: the id PawScout recorded is not the id the supplier's
-  list shows. The create answer's order id field held
-  `SD2610081831150667400`; the list shows 2610081831170660600 for the same
-  order number. The supplier's docs give the create answer both an
-  `orderId` and a `shipmentOrderId`, and say the order detail call takes
-  "custom order id, CJ order id"; they do not say whether it takes an `SD`
-  id. The tracking poll reads every awaiting-payment row by its recorded
-  id, and it ran at 18:45Z under a live log tail (18:35Z to 18:49Z): no
-  "tracking poll failed" line, so the supplier did not refuse the `SD` id.
-  A read that answers with no order would also log nothing, so whether that
-  read returns this order's tracking once it ships is not proven. The
-  console banner and the awaiting-payment email also name the `SD` id,
-  which may not be the number the supplier's website shows the owner.
+- The supplier's list carries two ids for every order: `orderId`
+  (2610081831170660600 here) and `cjOrderId` (`SD2610081831150667400`, read
+  again at 18:56Z; #1002's is `SD2610081301230654600`). PawScout recorded
+  the `SD` one, which is what the create answer's order id field held, so
+  the recorded id is the supplier's own `cjOrderId` for this order. (The
+  first version of this entry called it a mismatch; it was written before
+  the `cjOrderId` field was read.) The supplier's docs say the order detail
+  call takes "custom order id, CJ order id" without saying which of the two
+  ids that means. The tracking poll reads every awaiting-payment row by its
+  recorded id, and it ran at 18:45Z under a live log tail (18:35Z to
+  18:49Z): no "tracking poll failed" line, so the supplier did not refuse
+  the `SD` id. A read that answers with no order would also log nothing, so
+  whether that read returns this order's tracking once it ships is not
+  proven. Which of the two ids the supplier's website shows the owner was
+  not checked; the console banner and the awaiting-payment email name the
+  `SD` one.
 - Banner and "I paid this": the banner listed the order by its `SD` id. The
   first click asks for confirmation, the second within 8 seconds marks it:
   at 18:36:20Z `owner_paid_at` was set, the trail gained `owner-paid`, the
