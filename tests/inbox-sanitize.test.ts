@@ -44,6 +44,30 @@ describe('salutationName (skip honorifics, never greet a title)', () => {
     expect(salutationName('Jane Store', null)).toBeNull(); // any role token means a role inbox (existing rule)
     expect(salutationName('Sabrina Liu', 'sales@doukecatlitter.com')).toBe('Sabrina');
   });
+
+  it('greets the declared name in a self-introduction, never "Hi My," (2026-10-08 audit)', () => {
+    // Real display names (inbox_contacts) behind sent "Hi My," / "Hi Am," greetings.
+    expect(salutationName('MY NAME IS SAMAD')).toBe('Samad');
+    expect(salutationName('MY NAME IS ABDULMALIK')).toBe('Abdulmalik');
+    expect(salutationName('I AM MR OLAITAN')).toBe('Olaitan');
+    expect(salutationName('CALL ME MUKARAMOT')).toBe('Mukaramot');
+    expect(salutationName("I'm Jane")).toBe('Jane');
+    expect(salutationName('I am')).toBeNull();
+  });
+
+  it('falls back to "Hi there," for a brand or a question, never "Hi The," (2026-10-08 audit)', () => {
+    expect(salutationName('The Zetee Professional')).toBeNull();
+    // the brand rule beats the email match: an address leading with "zetee" is still a brand
+    expect(salutationName('The Zetee Professional', 'zeteepro@example.com')).toBeNull();
+    expect(salutationName('Are u active?')).toBeNull();
+    expect(applySalutation('Thanks.', 'The Zetee Professional')).toBe('Hi there,\n\nThanks.');
+  });
+
+  it('keeps real names that only look like those words', () => {
+    expect(salutationName('My Nguyen')).toBe('My'); // My is a given name
+    expect(salutationName('Jeff Expert')).toBe('Jeff');
+    expect(salutationName('Theo Smith')).toBe('Theo');
+  });
 });
 
 // Construct the dash glyphs at runtime so this test file contains NO literal em/en-dash
