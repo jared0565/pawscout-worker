@@ -246,17 +246,21 @@ async function holdForAddressChangeAfterSupplierOrder(
   }, alert);
 }
 
-/** The one status a supplier order detail carries while the order is created
- *  and not yet paid. Nothing else in this code reads a supplier order status,
- *  so the value comes from the only recorded reading of one: a read-only
- *  getOrderList on 2026-06-15 showed an unpaid test order as CREATED
- *  (docs/WAREHOUSE_PLAN.md). Not yet confirmed on getOrderDetail itself.
- *  Matched exactly, and any other value holds the order, so a wrong value
- *  here costs the owner a hold, never a second payment. */
-const SUPPLIER_UNPAID_STATUS = 'CREATED';
+/** The statuses a supplier order carries while it exists and is not yet paid.
+ *  CJ documents both (Shopping API, "Order Status"): CREATED "create order,
+ *  wait confirm" and UNPAID "confirm order, CJ order number create"; every paid
+ *  state comes after both (UNSHIPPED with its PENDING and PROCESSING sub-states,
+ *  then SHIPPED, DELIVERED), so neither can be an order the owner already paid.
+ *  The docs do not say which of the two an order created through the API sits
+ *  in before payment, and no unpaid order existed to read on 2026-10-07 (both
+ *  orders in the account read TRASH, a value the docs do not list), so both
+ *  are accepted (owner decision 2026-10-07). Matched exactly, and any other
+ *  value holds the order, so an unexpected value costs the owner a hold,
+ *  never a second payment. */
+const SUPPLIER_UNPAID_STATUSES: ReadonlySet<string> = new Set(['CREATED', 'UNPAID']);
 
 /** Asks the supplier, before a pay-retry spends, whether its order is still
- *  unpaid there: true only on SUPPLIER_UNPAID_STATUS. Otherwise answers why
+ *  unpaid there: true only on SUPPLIER_UNPAID_STATUSES. Otherwise answers why
  *  not, as text for the trail and the alert: a status is repeated only when
  *  it is a short plain word, and a thrown message never is (it goes to the
  *  worker log). Never throws: a failed or empty read is an answer too, and it
@@ -272,9 +276,9 @@ async function supplierOrderStillUnpaid(cj: CjClient, cjOrderId: string): Promis
     console.warn(`supplier order ${cjOrderId} could not be read before paying it: ${e instanceof Error ? e.message : String(e)}`);
     return unreadable;
   }
-  if (status === SUPPLIER_UNPAID_STATUS) return { unpaid: true };
+  if (SUPPLIER_UNPAID_STATUSES.has(status)) return { unpaid: true };
   const shown = !status ? 'no status' : /^[A-Za-z_]{1,32}$/.test(status) ? `status ${status}` : 'a status PawScout does not recognise';
-  return { unpaid: false, why: `the supplier reports ${shown}, not ${SUPPLIER_UNPAID_STATUS}` };
+  return { unpaid: false, why: `the supplier reports ${shown}, not ${[...SUPPLIER_UNPAID_STATUSES].join(' or ')}` };
 }
 
 /** A pay-retry whose supplier order could not be confirmed as still unpaid.

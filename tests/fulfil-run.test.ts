@@ -299,28 +299,42 @@ describe('a pay-retry reads the supplier order before it pays it', () => {
     return { orderId: id, orderNum: '', trackNumber: '', trackUrl: '', logisticName: '', status };
   };
 
-  it('the supplier still reports the order unpaid: it is read once and paid as before', async () => {
-    const store = new TenantStore(env.DB, SHOP);
-    await seedRetry(store, 'O1');
-    const spy = { create: [] as unknown[], pay: [] as string[] };
-    const detailCalls: string[] = [];
-    const r = await processDueOrders(store, fakeCj(spy, { getOrderDetail: detailAnswering(detailCalls, 'CREATED') }), liveAdmin(), cfg('pawscout'));
-    expect(r).toMatchObject({ submitted: 1, held: 0, errored: 0 });
-    expect(detailCalls).toEqual(['CJORD-O1']);
-    expect(spy.create).toHaveLength(0);
-    expect(spy.pay).toEqual(['CJORD-O1']);
-    expect((await store.getOrder('O1'))?.status).toBe('submitted');
-  });
+  // CJ documents two statuses before payment (developers.cjdropshipping.com,
+  // Shopping API, "Order Status"): CREATED "create order, wait confirm" and
+  // UNPAID "confirm order, CJ order number create". Every paid state comes
+  // after both (UNSHIPPED and its PENDING/PROCESSING sub-states, then SHIPPED,
+  // DELIVERED), so neither can be an order the owner already paid.
+  for (const unpaid of ['CREATED', 'UNPAID']) {
+    it(`the supplier still reports the order unpaid (${unpaid}): it is read once and paid as before`, async () => {
+      const store = new TenantStore(env.DB, SHOP);
+      await seedRetry(store, 'O1');
+      const spy = { create: [] as unknown[], pay: [] as string[] };
+      const detailCalls: string[] = [];
+      const r = await processDueOrders(store, fakeCj(spy, { getOrderDetail: detailAnswering(detailCalls, unpaid) }), liveAdmin(), cfg('pawscout'));
+      expect(r).toMatchObject({ submitted: 1, held: 0, errored: 0 });
+      expect(detailCalls).toEqual(['CJORD-O1']);
+      expect(spy.create).toHaveLength(0);
+      expect(spy.pay).toEqual(['CJORD-O1']);
+      expect((await store.getOrder('O1'))?.status).toBe('submitted');
+    });
+  }
 
   it('the supplier reports any other status: not paid, held with the reason, and the owner is told', async () => {
     // 'shipped' and 'processing' are the other values this file's fakes use;
-    // 'created' shows the match is exact, and an empty status is not unpaid.
+    // UNSHIPPED is CJ's own word for paid, CANCELLED its cancelled, and TRASH
+    // what CJ actually returned for both deleted orders on 2026-10-07 (it is
+    // not in the documented list). 'created' and 'unpaid' show the match is
+    // exact, and an empty status is not unpaid.
     const cases: { id: string; status: string; reads: string }[] = [
       { id: 'O1', status: 'shipped', reads: 'status shipped' },
       { id: 'O2', status: 'processing', reads: 'status processing' },
       { id: 'O3', status: 'created', reads: 'status created' },
       { id: 'O4', status: '', reads: 'no status' },
-      { id: 'O5', status: 'paid <script>', reads: 'a status PawScout does not recognise' }
+      { id: 'O5', status: 'paid <script>', reads: 'a status PawScout does not recognise' },
+      { id: 'O6', status: 'UNSHIPPED', reads: 'status UNSHIPPED' },
+      { id: 'O7', status: 'CANCELLED', reads: 'status CANCELLED' },
+      { id: 'O8', status: 'TRASH', reads: 'status TRASH' },
+      { id: 'O9', status: 'unpaid', reads: 'status unpaid' }
     ];
     for (const c of cases) {
       const store = new TenantStore(env.DB, SHOP);
@@ -337,11 +351,11 @@ describe('a pay-retry reads the supplier order before it pays it', () => {
       expect(o?.cj_order_id).toBe(`CJORD-${c.id}`);
       expect(JSON.parse(o!.hold_reasons!)).toEqual([REASON]);
       const events = await store.listOrderEvents(c.id);
-      expect(events.find((e) => e.kind === 'gate-held')?.detail).toBe(`${REASON}: the supplier reports ${c.reads}, not CREATED`);
+      expect(events.find((e) => e.kind === 'gate-held')?.detail).toBe(`${REASON}: the supplier reports ${c.reads}, not CREATED or UNPAID`);
       expect(events.map((e) => e.kind)).not.toContain('paid');
       expect(alerts).toHaveLength(1);
       expect(alerts[0].subject).toBe(`Order #${c.id}: PawScout did not pay its supplier order, which may already be paid`);
-      expect(alerts[0].text).toBe(`Order #${c.id} came back to the queue with supplier order CJORD-${c.id}. Before paying it, PawScout checked it at the supplier: the supplier reports ${c.reads}, not CREATED. It may already have been paid by hand, so PawScout has not paid it and the order is held. Check it at the supplier. If it is still unpaid, pay it there, or press Release and PawScout pays it once the supplier shows it unpaid. If it is paid, there is nothing more to pay, but tracking is not synced to Shopify while the order is held here, so add the tracking by hand once it ships.`);
+      expect(alerts[0].text).toBe(`Order #${c.id} came back to the queue with supplier order CJORD-${c.id}. Before paying it, PawScout checked it at the supplier: the supplier reports ${c.reads}, not CREATED or UNPAID. It may already have been paid by hand, so PawScout has not paid it and the order is held. Check it at the supplier. If it is still unpaid, pay it there, or press Release and PawScout pays it once the supplier shows it unpaid. If it is paid, there is nothing more to pay, but tracking is not synced to Shopify while the order is held here, so add the tracking by hand once it ships.`);
     }
   });
 
