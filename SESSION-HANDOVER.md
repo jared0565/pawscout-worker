@@ -1,120 +1,169 @@
-# Session handover: security gate pass (2026-10-07 to 2026-10-08)
+# Session handover: owner task list T1 to T7 (2026-10-08)
 
-Written 2026-10-08 04:00Z at the owner's request before a restart. Every
-"verified" fact below was checked first-hand at that time; re-check anything
-before repeating it (a note is a lead, not a fact).
+Written 2026-10-08 08:30Z at the owner's request before a restart. It
+replaces the 04:00Z handover of the same day. Every "verified" fact below was
+checked first-hand at 08:26Z to 08:30Z; re-check anything before repeating it
+(a note is a lead, not a fact).
 
 ## 1. Resume here
 
 - **Nothing is mid-flight.** No uncommitted work, no unpushed commits, no
-  undeployed commits, no open worktrees.
-- **Production = `3445b78ff204`** (verified: `curl
-  https://pawscout.activepaw.co.uk/healthz` reported that version; staging was
-  deployed with the same commit). Master is ahead of it only by the docs-only
-  commit that added this file, so a production deploy now would change nothing
-  at runtime.
+  undeployed runtime change, no extra worktrees, no unmerged branches.
+- **Production = `be1417f2f098`** (verified: `curl
+  https://pawscout.activepaw.co.uk/healthz` at 08:26Z). master =
+  origin/master = `be1417f`; CI run 37741331463 on that commit: success.
+  Master is ahead of production only by the docs-only commit that adds this
+  file, so a production deploy now would change nothing at runtime.
 - Working tree: clean apart from three owner files that must be left alone:
   `GRAPHITE-HANDOVER.md`, `cart-summary.png`, `how-we-bundle.png`.
-- Live fulfilment config (verified by D1 read): `fulfil.mode = manual`,
-  `createOnly = 1`. The store has exactly 1 order (cancelled, no supplier
-  order). So none of the order-path changes below can run yet.
-- The owner's original ask was "deal with the security gate". That pass is
-  **done and live**. There is no pending owner question.
+- `git stash list` holds one old entry, `stash@{0}` from 2026-07-11 ("WIP on
+  master: d5d9999 docs(plan): blog distribution phase 1"). Not from this
+  session; leave it unless the owner asks.
+- Live fulfilment config (verified by D1 read 08:27Z): `fulfil.mode = manual`,
+  `createOnly = 1`. The store has exactly 1 order, status `cancelled`. So the
+  order-path work (T5) cannot run yet.
+- The task list lives in memory `pawscout-backlog.md`, top bullet of the
+  RESUME block ("TASK LIST FOR THIS SESSION"), with full history per task.
+  There is no pending owner question.
 
-## 2. What shipped (all live in production)
+## 2. This session's task list
 
-| Production version | Deployed (UTC) | What |
+The owner asked for the open items as a list and worked them one at a time.
+
+| Task | Status | What |
 |---|---|---|
-| `40fab613d9c2` | 2026-10-07 08:52 | Part 1: dev toolchain overrides (undici 7.29.1, sharp 0.35.5), receiver-first Authentication-Results (`src/inbox/mime.ts`), SKU path pet rule (`src/sourcing/offers.ts`) |
-| `fee3018e2d5a` | 2026-10-07 14:04 | Part 2: deep research reserves its cost before it runs (c1029563); sender blocking waits for the sweep, lifts for paying/DMARC-passing customers, blocked-senders list in the Inbox (114e2e7b, b4b33fbf); stale held sourcing offer refused at send + migration 0045 `inbox_drafts.meta_json` (53d7292e); template stage written on send (785e4f91); order fixes: alert-marker run counting (64aa5a81), pay-retry reads the CJ order first (87a8dc74 part), released freight hold capped near the approved figure (741095d3) |
-| `bae8c7484711` | 2026-10-07 15:48 | Spoofed block (2f32d185): every copy counted toward a block must have passed DMARC; migration 0046 `inbox_messages.dmarc` (NULL for form posts and all pre-0046 rows, deliberately not back-filled) |
-| `2fb45df2e26a` | 2026-10-07 17:48 | "I paid this" (87a8dc74): console button (two clicks) on an awaiting-payment order with a supplier order, "Not paid after all" undo; migration 0047 `orders.owner_paid_at`. Row STAYS `awaiting-payment` on purpose (the 15 minute cancellation re-check and the tracking poll select by that status); banner + overview count skip it; pipeline never pays a marked order; cancel alert says "you marked it paid on <date>" |
-| `3445b78ff204` | 2026-10-08 03:38 | Pay-retry pays when CJ reports `CREATED` or `UNPAID` (owner decision); everything else (TRASH, CANCELLED, UNSHIPPED, lowercase, empty) holds. Plus a headers round-trip test killing mutant 9d40cb6e |
+| T1 | Done, live | Traffic chart's final x-axis date label no longer runs off the right edge (`text-anchor="end"` at its bar's right edge, `src/console/traffic-js.ts`). Re-measured live in the admin iframe at 90 days. |
+| T2 | Done | Old branch `claude/inbox-suppress-blank-emails` archived as annotated tag `archive/inbox-suppress-blank-emails` (-> 58591e4, on origin) and deleted locally and on origin. Nothing ported: its three commits are superseded on master. Owner kept the sales@ partnership rule (memory `sales-address-partnership-lane-kept`). |
+| T3 | Checked, waiting on upstream | `package.json` `overrides` (undici 7.29.1, sharp 0.35.5) are still needed: without them npm audit shows 5 high. Re-checked 08:28Z: pool-workers 0.23.0 still pins miniflare 5.20260815.0-alpha; wrangler 4.148.0 uses 5.20261006.0-alpha. Unchanged. |
+| T4 | Waiting on aramid | 12 fixed findings wait for aramid to re-examine their files (section 4). None drained this session. |
+| T5 | Blocked on the owner | First real PawScout create-only order (section 5). |
+| T6 | Done, live | Greeting no longer says "Hi My," / "Hi The," / "Hi Am," when the display name is a sentence ("MY NAME IS SAMAD" -> "Hi Samad,"; "The Zetee Professional" -> "Hi there,"). |
+| T7 | Done, live | Business display names no longer greeted as a first name ("Shopify Review", "Boostura Agency" -> "Hi there,"); a job word beside a real name is skipped ("Developer mubarak" -> "Hi Mubarak,"). |
 
-Also on master (no runtime effect): vitest + eslint exclude `.claude/**`
-(commit `6c3a511`); one new reviewed entry in `.aramid-suppressions.toml`
-(`131e8806`, a `new Function()` in `tests/console.test.ts`, same standard as
-the earlier entries).
+Production deploys this session (each on the owner's explicit go, guarded
+script, staging first, no migrations, prod smoke 3/3, healthz confirmed):
 
-Accepted risks overridden in the ledger (owner choices, 2026-10-07):
-8e168ffb (paid orders not re-checked), 6d668489 (shopper picks country),
-c1029563 (any staff can run research; its cost part is fixed).
+| Production version | Deployed (UTC) | Task |
+|---|---|---|
+| `ae41cb59db28` | 2026-10-08 04:57 | T1 |
+| `0c8e6e03bf3d` | 2026-10-08 06:23 | T6 |
+| `be1417f2f098` | 2026-10-08 07:22 | T7 |
 
-## 3. Security ledger: 22 open (verified 04:00Z), all accounted for
+Earlier work (security gate pass, "I paid this", pay-retry CREATED/UNPAID,
+2026-10-07 to 03:38Z today) is in `git log` and the backlog memory.
+
+## 3. Greeting rules as they stand (src/inbox/draft.ts)
+
+`salutationName(rawName, email?)` is called only by `applySalutation`
+(graphite `callers`, decision_grade). It produces "Hi <name>," or
+"Hi there,". Order of checks:
+
+1. Strip a leading self-introduction (`my name is`, `I am`, `I'm`, `call me`).
+2. First token `the` or `are` -> "Hi there," (`NOT_A_NAME_LEAD`).
+3. Per token: skip `TITLES` (mr, mrs, dr, lady...) and `JOB_WORDS` (shopify,
+   expert, developer, investor, specialist, hub, web, logistics, logisticss,
+   power); any token in `ROLE_NAMES` (role mailboxes plus words seen only in
+   business names: agency, solutions, factory, review, microsoft, prime...)
+   -> "Hi there,".
+4. Then the existing email-prefix disambiguation and title-casing.
+
+Safety net used for T6 and T7: every rule change was compared old vs new over
+all 425 stored `inbox_contacts` names, against a change list written before
+the run (T7: 44 rows changed, exactly as listed). Given names that are also
+words (Favour, Blessing, Precious, Gift, Peace, Wisdom, Unique) still greet,
+and so do personal brands like "Ibrahim Expert", "TEMI DIGITAL".
+
+**Known residue, by design (a word list cannot tell):** one-word brands
+(Buddify, Vortex, Easesupply, Shopifysupportpartner) and brand plus tag
+(Smartify Pro, Gobo Creative, Hilluxe Tech, Desent Tech, Holar Consult,
+Sjbest Consult) still get "Hi <Brand>,". Not a task; only if the owner asks.
+
+The comparison harness lived in the old session's scratchpad
+(`...\Temp\claude\F--Projects-Shopify-demo-store2-pawscout-worker\441c8784-0d29-49e9-9be6-77bb22332da2\scratchpad\t6`:
+`contacts.json`, `run-*.mts`, `t7-expected.json`). Temp files may be cleaned;
+it is quick to rebuild (D1 `SELECT name, email FROM inbox_contacts`, extract
+the function, run old and new, diff).
+
+## 4. Security ledger: 22 open (verified 08:26Z), all accounted for
 
 Read it with `aramid ledger filter --status open`. None needs action now.
 
-- **10 semgrep `new Function()` entries in test files**, all suppressed or
-  owner-ruled "leave": 3319eabd, bf407751, 4d2c2f64, 17644a59, c22a7640,
-  c03de5b0, 6bf8c11c, ca50661e, 00d9bd3f, 131e8806.
+- **10 semgrep `new Function()` entries in test files**, all suppressed by
+  reviewed `.aramid-suppressions.toml` entries: 3319eabd, bf407751, 4d2c2f64,
+  17644a59, c22a7640, c03de5b0, 6bf8c11c, ca50661e, 00d9bd3f, 131e8806.
 - **9 LLM-review findings fixed in live code**, waiting for aramid to
   re-examine their files (they clear by "evidence gone"; `ledger resolve`
-  only takes `--out-of-scope`, so they cannot be closed by hand):
-  114e2e7b, b4b33fbf, 53d7292e, 2f32d185, 0029992d, 901d2392, 9cb8eddc,
-  82d77aaa, ab7ce5d8.
-- **3 js-mutation survivors already killed by tests**, waiting for the drain to
-  re-sample (2 mutants per item): e90e99d3 (product.ts:168), 17f1323
-  (index.ts:822), 9d40cb6e (ingest.ts:82).
-- Cleared this pass: the 3 npm findings, 94b9b378, 785e4f91, 64aa5a81,
-  741095d3, 87a8dc74.
+  only takes `--out-of-scope`): 114e2e7b, b4b33fbf, 53d7292e, 2f32d185,
+  0029992d, 901d2392, 9cb8eddc, 82d77aaa, ab7ce5d8.
+- **3 js-mutation survivors already killed by tests**, waiting for the drain
+  to re-sample: e90e99d3 (product.ts:168), 17f1323 (index.ts:822), 9d40cb6e
+  (ingest.ts:82).
+- Overridden this session on the owner's choice: b98786e0 (raised at 06:01Z
+  against the previous version of this file; same accepted risk as c1029563).
+  Overridden list: `aramid ledger filter --status overridden` (8 entries).
 
-## 4. Open items, in order
+## 5. Open items, in order
 
-1. **First real create-only order (when the owner switches fulfilment to
-   PawScout create-only; that switch is the owner's):**
-   - Confirm what status CJ gives an order PawScout created before it is
-     paid. Read-only route: `/api/cj-order-diag` (getOrderList, via the admin
-     iframe recipe in memory `call-session-authed-routes-via-iframe`). CJ docs
-     list CREATED ("wait confirm") and UNPAID ("confirm order"); which one an
-     API order (createOrderV2 payType 2) sits in is UNCONFIRMED. On
-     2026-10-07 the account held only 2 orders, both `TRASH`.
-   - Check the "I paid this" button appears on that order and the banner
-     drops it once pressed.
-2. Watch the ledger next session: the 12 "waiting" items above should drain
-   on their own. If one stays open long after its file was re-examined,
-   investigate, do not override a fixed finding.
-3. Remove the `package.json` `overrides` (undici 7.29.1, sharp 0.35.5) once
-   miniflare ships sharp >= 0.35.5 and the vitest pool pins undici >= 7.29.1.
-4. Cosmetic, offered and not applied: the traffic chart's last x-axis label
-   overruns by 2px (fix: `text-anchor: end` on the final label).
-5. Pre-existing, untouched: branch `claude/inbox-suppress-blank-emails`
-   (2026-06-24, "Suppress quote-only inbox drafts") is not merged into master.
-   Not from this session; ask the owner before doing anything with it.
+1. **T4, next session:** re-run `aramid ledger filter --status open`. The 12
+   waiting ids above should drain on their own. Investigate one only if it
+   stays open after aramid has demonstrably re-examined its file. Never
+   override a fixed finding.
+2. **T5, when the owner switches fulfilment to PawScout create-only (the
+   switch is the owner's):**
+   - Read the status CJ gives an order PawScout created before payment
+     (CREATED or UNPAID; unconfirmed). Read-only route `/api/cj-order-diag`
+     via the admin iframe recipe in memory
+     `call-session-authed-routes-via-iframe`.
+   - Check that the "I paid this" button appears on that order and that the
+     banner drops it once pressed.
+3. **T3, whenever:** re-check upstream with
+   `npm view @cloudflare/vitest-pool-workers version dependencies.miniflare`,
+   `npm view wrangler version dependencies.miniflare`, then
+   `npm view miniflare@<each> dependencies.sharp dependencies.undici`.
+   Remove an override only when BOTH miniflares declare sharp >= 0.35.5 and
+   undici >= 7.29.1, then confirm `npm audit` shows 0 high.
 
-## 5. Gotchas learned this session
+## 6. Gotchas (this session and the last)
 
-- **Agent worktrees inside the repo double the test suite.** An Agent run
-  with `isolation: worktree` puts a full checkout under `.claude/worktrees/`;
-  vitest collected it and the pre-push gate timed out at 600s. Fixed with an
-  exclude, but remove finished worktrees anyway (`git worktree remove`, then
-  `git worktree prune`). Full suite is about 250 to 375s now.
-- **Cloudflare D1 reads flap with code 7403.** The guarded deploy refuses at
-  state-gathering (nothing written); simply re-run it. Happened 2x on
-  2026-10-07.
 - **The strict graphite hook denies cross-file greps whose pattern contains a
-  known symbol** (even words like `FAIL`, `open`, `order`, `api`, `text`).
-  Use `python -P -m graphite query "callers X"` / `search`, or grep ONE file
-  per command.
-- **Python heredoc edits:** a `'\\n'` inside the Python string can land in a
-  TypeScript test as a literal line break. After a scripted edit, grep the
-  result; use the Edit tool for lines containing escapes.
-- **semgrep blocks every NEW `new Function()` line at push** (BLOCK tier, not
-  overridable). Precedent: one compile per test, plus a reviewed
-  `.aramid-suppressions.toml` entry with a verified-at-source reason.
-- **Deploy timing:** a pending migration triggers a rehearsal that exports
-  the production DB; keep clear of minutes 0/15/30/45 and 04:17 UTC.
-- **GitHub push can 500** after the gate passes; re-push (the gate re-runs).
+  known symbol** (seen this session: `FAIL`, `attempt`, `email`; also `open`,
+  `order`, `api`, `text`). Use `python -P -m graphite query "callers X"` /
+  `search`, or grep ONE file per command.
+- **Cloudflare D1 calls flap with code 7403.** Reads and the guarded deploy's
+  state-gathering both hit it this session; simply re-run.
+- **Post-deploy healthz lags about 15s**; the smoke retries and catches up.
+- **wrangler `--json` output** has banner text before the JSON: parse from
+  the first `[\n  {`.
+- **The contacts table is `inbox_contacts`** (there is no `contacts`).
+- **`git rev-parse --short=12 A B`** fails ("Needed a single revision"); use
+  plain `git rev-parse A B`.
+- **`grep -P` is unavailable** in this shell; use a node script.
+- **Heredocs mangle backslashes** in inline scripts; write the script to a
+  file, or build the character with `String.fromCharCode(92)`.
+- **Playwright MCP blocks `file:` URLs** and saves only under the repo or
+  `.playwright-mcp/` (gitignored); serve local pages with
+  `python -P -m http.server` on 127.0.0.1.
+- **Console JS lives in template literals** (`src/console/*-js.ts`): tsc cannot
+  see errors inside; run `tests/console.test.ts` and `npm run lint`.
+- **Agent worktrees inside the repo double the test suite**; remove finished
+  worktrees (`git worktree remove`, then `git worktree prune`).
+- **semgrep blocks every NEW `new Function()` line at push** (not
+  overridable). Precedent: one compile per test plus a reviewed
+  `.aramid-suppressions.toml` entry.
+- **Deploy timing:** a pending migration triggers a rehearsal that exports the
+  production DB; keep clear of minutes 0/15/30/45 and 04:17 UTC.
 
-## 6. Standing rules (short)
+## 7. Standing rules (short)
 
 Production deploy only on the owner's explicit "go", only via
 `npm run deploy -- --env production`; a feature request is not a deploy go.
 Staging needs no go. Never `--no-verify`. Auto-push after commits. aramid and
 graphite are tools: use their commands, never talk to their agents. Never use
 the demo-store2 Python scripts app for Shopify operations. No em or en dashes
-in code or customer text. Leave the three owner files above alone.
+in code or customer text. Stay inside this repository. Leave the three owner
+files above alone.
 
-## 7. Quick state checks
+## 8. Quick state checks
 
 ```
 curl -s https://pawscout.activepaw.co.uk/healthz
@@ -124,5 +173,5 @@ npx wrangler d1 execute pawscout --remote --json --command "SELECT json_extract(
 npm run deploy -- --env production --dry-run
 ```
 
-Durable memory: `pawscout-backlog.md` (newest bullet at the top of the RESUME
-block) and `hand-payment-invisible.md` were updated through 2026-10-08 03:40Z.
+Durable memory: `pawscout-backlog.md` (top bullets of the RESUME block) was
+updated through 2026-10-08 08:30Z.
