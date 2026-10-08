@@ -541,3 +541,33 @@ this phase.
 ## Evidence from the supervised runs
 
 Written when the runs happen; this record is not complete without it.
+
+### 2026-10-08, the no-money create-only test (order #1002)
+
+A test order, marked paid by hand in Shopify so no card was charged, was the
+first order PawScout itself ever sent to the supplier's create call. (The
+CREATED order seen on 2026-06-15 came from the supplier's own Shopify app,
+since uninstalled, not from PawScout.)
+
+- 11:51Z received and queued, no holds. 13:01Z gate passed, stock checked,
+  and the live freight counter-check passed (CN to GB, USD 3.51 by CJPacket
+  Ordinary against USD 3.65 allowed).
+- 13:01:35Z the supplier refused the create: "Balance is insufficient (CJ
+  code 1604000, /shopping/order/createOrderV2)". The order went to `error`
+  with no supplier order, and the owner was alerted. No money moved.
+- Cause: the create call sent `payType: 2`. The supplier's order API notice
+  (read 2026-10-08) says `payType=2` means "pay with balance directly while
+  creating the order", and `payType=3` means "create the order only, then
+  call Pay Balance V2 yourself". So create-only mode, the whole of D7, would
+  have paid the supplier from the wallet at creation whenever the wallet held
+  enough money. It was safe on 2026-10-08 only because the wallet was empty.
+  The value had never been checked against the docs: the build-time spec of
+  2026-06-15 lists `payType` among the fields to confirm, and the docs site
+  refused automated reads then.
+- Fix: the create call sends `payType: 3`. A test pins it.
+- Not fixed here, because automatic payment is not part of this phase (D7):
+  the supplier's notice points an order created with `payType=3` at Pay
+  Balance V2 (`/shopping/pay/payBalanceV2`, keyed by `shipmentOrderId`),
+  while PawScout's automatic-payment path calls the older `payBalance` with
+  the order id. Whoever builds automatic payment must settle which call pays
+  an order created this way before turning create-only off.
