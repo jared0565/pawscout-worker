@@ -1319,7 +1319,11 @@ app.post('/api/fulfil', async (c) => {
     if (v && !v.includes('@')) return c.json({ ok: false, error: 'Invalid alert email' }, 400);
     alertEmail = v || undefined;
   }
-  await store.saveFulfil({ mode, createOnly, ...(alertEmail ? { alertEmail } : {}) });
+  // Merge into the stored block: saveFulfil replaces the whole column, and a
+  // console press names only these three, so every other setting
+  // (gbFreeUkLive, logistics, shipFx, servedCountries...) is carried over.
+  const { alertEmail: _previousAlert, ...kept } = cfg.fulfil;
+  await store.saveFulfil({ ...kept, mode, createOnly, ...(alertEmail ? { alertEmail } : {}) });
   return c.json({ ok: true, mode, createOnly, alertEmail: alertEmail ?? '' });
 });
 // Resend connectivity test: sends a one-off email using the RESEND_API_KEY
