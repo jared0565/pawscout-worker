@@ -52,15 +52,30 @@ export function renderReplyHtml(text: string): string {
 
 // Display names come from untrusted From headers - never these (role inboxes, not people).
 // 2026-09-24 audit: "Hi Store" and "Hi Ecormerce" went out, so business words join the list.
+// 2026-10-08 audit of the 425 stored names added the second line: words seen ONLY in
+// business names ("Boostura Agency", "Shopify Review", "Vertex Dimension", "Active Paw").
 const ROLE_NAMES = new Set([
   'info', 'support', 'sales', 'admin', 'contact', 'team', 'hello', 'help',
   'enquiries', 'inquiries', 'orders', 'noreply', 'no-reply', 'mail', 'office', 'customer',
   'store', 'shop', 'ecommerce', 'ecormerce', 'ecom', 'marketing', 'business', 'export',
+  'agency', 'solution', 'solutions', 'factory', 'registration', 'engines', 'review', 'billing', 'security',
+  'account', 'partner', 'lab', 'dimension', 'websites', 'test', 'skills', 'microsoft', 'sharepoint',
+  'postmaster', 'concept', 'prime', 'rising', 'imperial', 'strategic', 'dynamic', 'creativity', 'paw',
 ]);
 
 // Honorifics - never greet with these ("Hi Mr"); skip past to the real name token.
 const TITLES = new Set([
   'mr', 'mrs', 'ms', 'miss', 'mx', 'dr', 'prof', 'professor', 'sir', 'madam', 'madame', 'rev', 'reverend',
+  'lady',
+]);
+
+// Job words that sit beside a real name ("Developer mubarak", "Expert Solomon", "Gabriel
+// Shopify"): skipped like a title, so the person is greeted and the word never is, even when
+// the email starts with it ("JAMES HUB", hub...@). Alone they leave no name ("Hi there,").
+// Kept apart from ROLE_NAMES on purpose: live names pair these with real names, so they
+// must not blank the greeting. Only words that changed a live greeting are listed.
+const JOB_WORDS = new Set([
+  'shopify', 'expert', 'developer', 'investor', 'specialist', 'hub', 'web', 'logistics', 'logisticss', 'power',
 ]);
 
 // A display name that is a sentence, not a name. "Hi My," / "Hi Am," / "Hi The," went out
@@ -90,7 +105,7 @@ export function salutationName(rawName: string | null | undefined, email?: strin
     const tok = raw.replace(/[.,]+$/, ''); // drop trailing punctuation ("Mr." -> "Mr")
     if (!/^[\p{L}][\p{L}'-]{1,40}$/u.test(tok)) continue; // skip emails/junk/non-alpha/1-char
     const lower = tok.toLowerCase();
-    if (TITLES.has(lower)) continue;        // honorific -> try the next token
+    if (TITLES.has(lower) || JOB_WORDS.has(lower)) continue; // honorific or job word -> try the next token
     if (ROLE_NAMES.has(lower)) return null; // a role inbox, not a person
     candidates.push(tok);
   }
