@@ -301,6 +301,34 @@ describe('origins + freight', () => {
   });
 });
 
+// CJ's createOrderV2 payType: 2 pays from the wallet balance while creating the
+// order, 3 creates the order only (CJ order API notice, read 2026-10-08). The
+// first live create (order #1002, 2026-10-08) sent 2 and was refused "Balance
+// is insufficient": with money in the wallet, "create-only" would have paid.
+describe('CjClient.createOrder', () => {
+  it('asks CJ to create the order only, never to pay it from the wallet balance', async () => {
+    const calls: { url: string; body: string }[] = [];
+    const fakeFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ url: String(input), body: String(init?.body ?? '') });
+      return new Response(JSON.stringify({ result: true, data: { orderId: 'CJ-1', orderNum: '8505727222098' } }), { status: 200 });
+    }) as typeof fetch;
+    const cj = new CjClient(async () => 'tok', fakeFetch);
+    const created = await cj.createOrder({
+      orderNumber: '8505727222098',
+      address: { name: 'A Buyer', phone: '+44 7700 900123', address1: '1 High St', city: 'London', province: 'England', zip: 'E6 2JA', countryCode: 'GB' },
+      products: [{ vid: 'v1', quantity: 1 }],
+      fromCountryCode: 'CN',
+      logisticName: 'CJPacket Ordinary'
+    });
+    expect(created).toEqual({ orderId: 'CJ-1', orderNum: '8505727222098' });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toContain('/shopping/order/createOrderV2');
+    const body = JSON.parse(calls[0].body) as { payType: unknown; products: unknown };
+    expect(body.payType).toBe(3);
+    expect(body.products).toEqual([{ vid: 'v1', quantity: 1 }]);
+  });
+});
+
 describe('CjClient.searchByWarehouse', () => {
   it('searchByWarehouse queries /product/list with the warehouse countryCode', async () => {
     let calledUrl = '';

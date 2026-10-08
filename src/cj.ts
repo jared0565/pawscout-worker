@@ -613,7 +613,10 @@ export class CjClient {
       fromCountryCode: input.fromCountryCode,
       ...(input.logisticName ? { logisticName: input.logisticName } : {}),
       remark: input.remark ?? '',
-      payType: 2, // pay from wallet balance (settled later via payBalance)
+      // 3 = create the order only. 2 would pay it from the wallet balance in
+      // the same call (CJ order API notice), which made create-only mode pay
+      // whenever the wallet held money; payment is payBalance's job alone.
+      payType: 3,
       products: input.products.map((p) => ({ vid: p.vid, quantity: p.quantity }))
     })) as Record<string, unknown> | string | null;
     if (typeof data === 'string') return { orderId: data, orderNum: input.orderNumber };
