@@ -1,5 +1,5 @@
 import { Vault } from './vault';
-import { TenantStore, listActiveShops, notPaidByPawScoutReason, ownerPaidReason } from './tenant-store';
+import { TenantStore, listActiveShops, notPaidByPawScoutReason, ownerPaidReason, foundAtSupplierReason } from './tenant-store';
 import { makeAdminGraphql, type AdminGraphql } from './shopify-admin';
 import { CjClient, CjTokenManager, cjFetchFromEnv, chooseOrigin, type CjDetail } from './cj';
 import { getPrimaryLocationId, productInventoryItems, setInventoryQuantities } from './proxy/inventory';
@@ -281,6 +281,27 @@ async function supplierOrderStillUnpaid(cj: CjClient, cjOrderId: string): Promis
   return { unpaid: false, why: `the supplier reports ${shown}, not ${[...SUPPLIER_UNPAID_STATUSES].join(' or ')}` };
 }
 
+/** Supplier statuses of an order that no longer exists in any useful sense:
+ *  it cannot be paid or shipped, so it is never taken over. TRASH is what
+ *  CJ's unpaid orders turned into (seen 2026-10-08), not a documented value. */
+const SUPPLIER_DEAD_STATUSES: ReadonlySet<string> = new Set(['CANCELLED', 'TRASH']);
+
+/** After a failed create: the id of the order the supplier holds under the
+ *  order number PawScout gave it, or null. Only an answer that names exactly
+ *  that number with a status other than SUPPLIER_DEAD_STATUSES counts; an
+ *  empty, different or dead answer, or a failed read, is null, which leaves
+ *  the create error exactly as it was. Never throws. */
+async function orderHeldAtSupplier(cj: CjClient, orderNumber: string): Promise<string | null> {
+  try {
+    const d = await cj.findOrderByNumber(orderNumber);
+    if (!d || d.orderNum !== orderNumber || !d.status || SUPPLIER_DEAD_STATUSES.has(d.status.toUpperCase())) return null;
+    return d.cjOrderId;
+  } catch (e) {
+    console.warn(`supplier order lookup by number ${orderNumber} after a failed create did not answer: ${e instanceof Error ? e.message : String(e)}`);
+    return null;
+  }
+}
+
 /** A pay-retry whose supplier order could not be confirmed as still unpaid.
  *  The owner may have paid it by hand since PawScout last looked, and
  *  PawScout cannot see that payment, so the row is held rather than paid. The
@@ -421,6 +442,10 @@ export interface AwaitingPaymentNotice {
    *  Then nothing has just been created: the same supplier order is coming
    *  back into the list, and it may have been paid by hand since. */
   existing: boolean;
+  /** True when the create call failed and the supplier turned out to hold the
+   *  order anyway: PawScout did not see it being made, so it may have been
+   *  paid by hand already. */
+  found?: boolean;
 }
 
 /** The body of the awaiting-payment email, in its two meanings. A first
@@ -431,6 +456,14 @@ export interface AwaitingPaymentNotice {
 export function awaitingPaymentEmailBody(n: AwaitingPaymentNotice): { text: string; html: string } {
   const amount = n.total != null ? `${n.currency ?? ''} ${n.total}`.trim() : '';
   const money = amount ? ` (${amount})` : '';
+  if (n.found) {
+    return {
+      text: `PawScout's create call for order ${n.orderName}${money} failed, but CJ already holds an order for it.\n\nCJ order id: ${n.cjOrderId}\n\nPawScout has not paid it. Check its state at the supplier before you pay it, so it is not paid twice. Tracking will sync back to Shopify automatically once it ships.`,
+      html: `<p>PawScout's create call for order <strong>${n.orderName}</strong>${money} failed, but <strong>CJ already holds an order for it</strong>.</p>`
+        + `<p>CJ order id: <strong>${n.cjOrderId}</strong></p>`
+        + `<p>PawScout has not paid it. Check its state at the supplier before you pay it, so it is not paid twice. Tracking will sync back to Shopify automatically once it ships.</p>`
+    };
+  }
   if (n.existing) {
     return {
       text: `Order ${n.orderName}${money} is back in the list of CJ orders PawScout has not paid, after being released.\n\nCJ order id: ${n.cjOrderId}\n\nPawScout has not paid it. Check its state at the supplier before you pay it, so it is not paid twice. Tracking will sync back to Shopify automatically once it ships.`,
@@ -505,7 +538,7 @@ export async function processDueOrders(
   let awaiting = 0;
   let held = 0;
   let errored = 0;
-  const markAwaiting = async (o: typeof due[number], cjOrderId: string, reason: string) => {
+  const markAwaiting = async (o: typeof due[number], cjOrderId: string, reason: string, found = false) => {
     // A cancel can land in Shopify while createOrder (or an insufficient-
     // balance retry) is in flight. updateOrderUnlessCancelled is the one
     // atomic check-and-write; if it refuses, the row is already 'cancelled'
@@ -528,10 +561,16 @@ export async function processDueOrders(
     await store.addOrderEvent(o.shopify_order_id, 'awaiting-payment');
     awaiting++;
     if (opts.notify) {
+      // The trail says whether the owner was emailed: without it a failed
+      // send was only a log line, and nobody could tell afterwards whether
+      // the owner had been asked to pay (#1003, 2026-10-08). The provider's
+      // error text stays in the log, never in the trail.
       try {
-        await opts.notify({ shopifyOrderId: o.shopify_order_id, orderName: o.order_name ?? o.shopify_order_id, cjOrderId, total: o.total_price, currency: o.currency, reason, existing: !!o.cj_order_id });
+        await opts.notify({ shopifyOrderId: o.shopify_order_id, orderName: o.order_name ?? o.shopify_order_id, cjOrderId, total: o.total_price, currency: o.currency, reason, existing: !!o.cj_order_id, ...(found ? { found: true } : {}) });
+        await store.addOrderEvent(o.shopify_order_id, 'awaiting-payment-emailed');
       } catch (e) {
         console.warn(`awaiting-payment notify failed for ${o.order_name ?? o.shopify_order_id}: ${e instanceof Error ? e.message : String(e)}`);
+        await store.addOrderEvent(o.shopify_order_id, 'awaiting-payment-email-failed');
       }
     }
   };
@@ -775,18 +814,40 @@ export async function processDueOrders(
           continue;
         }
         step = 'create';
-        const created = await cj.createOrder({
-          orderNumber: o.shopify_order_id,
-          address,
-          products,
-          fromCountryCode: origin,
-          logisticName: live.name,
-          remark: 'Active Paw'
-        });
-        cjOrderId = created.orderId;
+        let found = false;
+        try {
+          const created = await cj.createOrder({
+            orderNumber: o.shopify_order_id,
+            address,
+            products,
+            fromCountryCode: origin,
+            logisticName: live.name,
+            remark: 'Active Paw'
+          });
+          cjOrderId = created.orderId;
+        } catch (createErr) {
+          // A failed create is not proof that nothing was made: #1002
+          // (2026-10-08) was answered with an error and CJ held an UNPAID
+          // order under its number anyway, and its retry was refused as a
+          // duplicate (CJ code 1603003). Read the supplier back by the number
+          // it was given; anything short of a live order under exactly that
+          // number leaves the original error to the catch below, unchanged.
+          const atSupplier = await orderHeldAtSupplier(cj, o.shopify_order_id);
+          if (!atSupplier) throw createErr;
+          cjOrderId = atSupplier;
+          found = true;
+        }
         step = 'record';
         await store.updateOrder(o.shopify_order_id, { cj_order_id: cjOrderId }); // persist BEFORE paying (no re-create on retry)
-        await store.addOrderEvent(o.shopify_order_id, 'supplier-order-created', cjOrderId);
+        await store.addOrderEvent(o.shopify_order_id, found ? 'supplier-order-found' : 'supplier-order-created', cjOrderId);
+        if (found) {
+          // PawScout did not see this order being made and cannot tell whether
+          // it was paid by hand since (the create error email told the owner
+          // to look for it), so it is never paid here, in either mode: it goes
+          // to the owner as not paid by PawScout, like a wallet-short order.
+          await markAwaiting(o, cjOrderId, foundAtSupplierReason(cjOrderId), true);
+          continue;
+        }
       }
 
       if (createOnly) {
@@ -941,7 +1002,7 @@ export async function processDueOrders(
           ? ` The supplier may already hold an order for it${cjOrderId ? `: supplier order ${cjOrderId}` : ''}. PawScout gives the supplier the order number ${o.shopify_order_id} for this order. Look for that number at the supplier before anything is retried, so it is not ordered twice.`
           : ' Nothing was sent to the supplier.';
         const opening = wroteError
-          ? `Order ${name} failed at ${step} and is now in error. Nothing will retry it by itself.`
+          ? `Order ${name} failed at ${step} and is now in error. Nothing will retry it by itself: release it in the console to try again.`
           : `Order ${name} failed at ${step}, and it was cancelled in Shopify in the meantime, so it stays cancelled.`;
         try {
           await deliverOrderAlert(store, o.shopify_order_id, {

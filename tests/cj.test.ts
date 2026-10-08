@@ -20,7 +20,7 @@ describe('validateCjKey', () => {
   });
 });
 
-import { CjClient, looksLikeCjSku } from '../src/cj';
+import { CjClient, looksLikeCjSku, diagOrderId } from '../src/cj';
 
 function clientWith(responder: (url: string) => unknown): { client: CjClient; urls: string[] } {
   const urls: string[] = [];
@@ -326,6 +326,66 @@ describe('CjClient.createOrder', () => {
     const body = JSON.parse(calls[0].body) as { payType: unknown; products: unknown };
     expect(body.payType).toBe(3);
     expect(body.products).toEqual([{ vid: 'v1', quantity: 1 }]);
+  });
+});
+
+// A create call can fail after CJ has made the order (#1002, 2026-10-08: an
+// error answer, and an UNPAID order under its number anyway; its retry was
+// refused as a duplicate, CJ code 1603003). CJ's order detail call takes "custom
+// order id, CJ order id", so the order PawScout numbered can be read back by
+// that number. CJ's order list carries two ids per order, `orderId` and
+// `cjOrderId`; the create answer gave the `cjOrderId` one (#1003), so that one
+// is preferred, keeping a found order's id in the same form as a created one.
+describe('CjClient.findOrderByNumber', () => {
+  function detailFetch(data: unknown, calls: string[] = []): typeof fetch {
+    return (async (input: RequestInfo | URL) => {
+      calls.push(String(input));
+      return new Response(JSON.stringify({ result: true, data }), { status: 200 });
+    }) as typeof fetch;
+  }
+
+  it('reads the order detail by the order number PawScout gave CJ, and answers its cjOrderId, number and status', async () => {
+    const calls: string[] = [];
+    const cj = new CjClient(async () => 'tok', detailFetch({ orderId: '2610081301260650000', cjOrderId: 'SD2610081301230654600', orderNum: '8505727222098', orderStatus: 'UNPAID' }, calls));
+    expect(await cj.findOrderByNumber('8505727222098')).toEqual({ cjOrderId: 'SD2610081301230654600', orderNum: '8505727222098', status: 'UNPAID' });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toContain('/shopping/order/getOrderDetail?orderId=8505727222098');
+  });
+
+  it('falls back to orderId when the answer has no cjOrderId', async () => {
+    const cj = new CjClient(async () => 'tok', detailFetch({ orderId: '2610081301260650000', orderNum: '8505727222098', orderStatus: 'CREATED' }));
+    expect(await cj.findOrderByNumber('8505727222098')).toEqual({ cjOrderId: '2610081301260650000', orderNum: '8505727222098', status: 'CREATED' });
+  });
+
+  it('answers null when CJ holds no order under that number', async () => {
+    expect(await new CjClient(async () => 'tok', detailFetch(null)).findOrderByNumber('1')).toBeNull();
+    expect(await new CjClient(async () => 'tok', detailFetch({ orderNum: '1', orderStatus: 'CREATED' })).findOrderByNumber('1')).toBeNull();
+  });
+});
+
+describe('CjClient.getOrderDetailRaw', () => {
+  it('answers CJ\'s order detail exactly as CJ sent it, for the read-only diagnostic', async () => {
+    const calls: string[] = [];
+    const raw = { orderId: '2610081831170660600', cjOrderId: 'SD2610081831150667400', orderNum: '8506621854034', shippingCustomerName: 'PawScout Test Order', orderStatus: 'CREATED' };
+    const cj = new CjClient(async () => 'tok', (async (input: RequestInfo | URL) => {
+      calls.push(String(input));
+      return new Response(JSON.stringify({ result: true, data: raw }), { status: 200 });
+    }) as typeof fetch);
+    expect(await cj.getOrderDetailRaw('SD2610081831150667400')).toEqual(raw);
+    expect(calls[0]).toContain('/shopping/order/getOrderDetail?orderId=SD2610081831150667400');
+  });
+});
+
+describe('diagOrderId', () => {
+  it('no id asks for the order list; an id of letters and digits is read, trimmed; anything else is refused', () => {
+    expect(diagOrderId({})).toEqual({ ok: true, orderId: null });
+    expect(diagOrderId(null)).toEqual({ ok: true, orderId: null });
+    expect(diagOrderId({ orderId: '' })).toEqual({ ok: true, orderId: null });
+    expect(diagOrderId({ orderId: 'SD2610081831150667400' })).toEqual({ ok: true, orderId: 'SD2610081831150667400' });
+    expect(diagOrderId({ orderId: ' 8506621854034 ' })).toEqual({ ok: true, orderId: '8506621854034' });
+    for (const bad of ['a b', '../x', 'x'.repeat(65), 5, ['SD1']]) {
+      expect(diagOrderId({ orderId: bad }).ok).toBe(false);
+    }
   });
 });
 

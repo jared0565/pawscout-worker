@@ -645,8 +645,45 @@ export class CjClient {
     };
   }
 
+  /**
+   * The order CJ holds under the order number PawScout gave it, or null. Read
+   * after a create call fails, because a failed create is not proof that
+   * nothing was made (#1002, 2026-10-08). CJ's order detail call takes "custom
+   * order id, CJ order id" (CJ order API). CJ's order list carries two ids per
+   * order, `orderId` and `cjOrderId`; the create answer gave the `cjOrderId`
+   * one (#1003), so that one is preferred. Whether to take the order over is
+   * the caller's decision: this only reports what CJ answered.
+   */
+  async findOrderByNumber(orderNumber: string): Promise<{ cjOrderId: string; orderNum: string; status: string } | null> {
+    const d = (await this.get('/shopping/order/getOrderDetail', { orderId: orderNumber })) as Record<string, unknown> | null;
+    if (!d) return null;
+    const cjOrderId = String(d.cjOrderId ?? d.orderId ?? '');
+    if (!cjOrderId) return null;
+    return { cjOrderId, orderNum: String(d.orderNum ?? ''), status: String(d.orderStatus ?? d.status ?? '') };
+  }
+
+  /** Read-only: CJ's order detail exactly as CJ sent it, for the diagnostic
+   *  route. It holds the recipient's name and address, so it is answered to
+   *  the signed-in owner only and never cached. */
+  async getOrderDetailRaw(orderId: string): Promise<unknown> {
+    return this.get('/shopping/order/getOrderDetail', { orderId });
+  }
+
   /** Read-only: list recent CJ orders. Used to verify the order API + field names without creating/paying. */
   async getOrderList(pageSize = 5): Promise<unknown> {
     return this.get('/shopping/order/list', { pageNum: '1', pageSize: String(pageSize) });
   }
+}
+
+/** The order id the read-only order diagnostic was asked about: none means
+ *  "list the latest orders"; otherwise a CJ order id or an order number,
+ *  letters and digits only, up to 64. */
+export function diagOrderId(body: unknown): { ok: true; orderId: string | null } | { ok: false; error: string } {
+  const raw = body && typeof body === 'object' ? (body as { orderId?: unknown }).orderId : undefined;
+  if (raw == null || raw === '') return { ok: true, orderId: null };
+  if (typeof raw !== 'string') return { ok: false, error: 'orderId must be text' };
+  const id = raw.trim();
+  if (!id) return { ok: true, orderId: null };
+  if (!/^[A-Za-z0-9]{1,64}$/.test(id)) return { ok: false, error: 'orderId must be letters and digits, up to 64' };
+  return { ok: true, orderId: id };
 }

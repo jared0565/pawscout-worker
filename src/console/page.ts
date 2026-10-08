@@ -730,7 +730,10 @@ function orderStatusLabel(o){
   return (o.status==='awaiting-payment'&&o.ownerPaidAt)?'paid by you, waiting for tracking':o.status;
 }
 function orderRowActions(o){
-  if(o.status==='held') return '<button class="ghost" data-act="release" data-id="'+esc(o.id)+'">Release</button> <button class="ghost" data-act="cancel" data-id="'+esc(o.id)+'">Cancel</button>';
+  // An error row is retried the same way a held one is released: a retry
+  // cannot order twice, because the supplier refuses a repeated order number
+  // and a failed create takes over the order the supplier already holds.
+  if(o.status==='held'||o.status==='error') return '<button class="ghost" data-act="release" data-id="'+esc(o.id)+'">Release</button> <button class="ghost" data-act="cancel" data-id="'+esc(o.id)+'">Cancel</button>';
   if(o.status==='queued') return '<button class="ghost" data-act="cancel" data-id="'+esc(o.id)+'">Cancel</button>';
   if(o.status==='awaiting-payment'&&o.cj){
     if(o.ownerPaidAt) return '<button class="ghost" data-act="unpaid" data-id="'+esc(o.id)+'">Not paid after all</button>';

@@ -30,7 +30,7 @@ import { hashBuyerEmail } from './affiliate-attribution';
 import { buildVoucherInviteWithCode } from './inbox/partnership';
 import { renderReplyHtml } from './inbox/draft';
 import { consolePage } from './console/page';
-import { validateCjKey, CjClient, CjTokenManager, cjFetchFromEnv, chooseOrigin, type CjDetail } from './cj';
+import { validateCjKey, CjClient, CjTokenManager, cjFetchFromEnv, chooseOrigin, diagOrderId, type CjDetail } from './cj';
 import { startInquiryImport, inquiryImportStatus, isStaleImporting, refreshSourcingDraft } from './sourcing/inquiry-import';
 import { inquiryDestination } from './sourcing/destination';
 import { supplierSearchForThread } from './sourcing/console-search';
@@ -1670,15 +1670,24 @@ app.post('/api/ensure-webhooks', async (c) => {
   return c.json({ ok: true, hooks: projectHooks(hooks) });
 });
 // Read-only CJ order-API check: lists recent CJ orders to verify the order
-// endpoints + field names work, WITHOUT creating or paying anything.
+// endpoints + field names work, WITHOUT creating or paying anything. Given an
+// `orderId` (a CJ order id or the order number PawScout gave CJ), it answers
+// CJ's order detail for that one order instead, exactly as CJ sent it: which
+// ids CJ's detail call accepts, and what it holds, are only known by asking.
 app.post('/api/cj-order-diag', async (c) => {
   const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: unknown = null;
+  try { body = await c.req.json(); } catch { body = null; }
+  const asked = diagOrderId(body);
+  if (!asked.ok) return c.json({ ok: false, error: asked.error }, 400);
   const store = new TenantStore(c.env.DB, s);
   if (!(await store.getSupplierCredential('cj'))) return c.json({ ok: false, error: 'CJ not connected' }, 400);
   const vault = await Vault.fromMasterKey(c.env.PAWSCOUT_MASTER_KEY);
   const f = cjFetchFromEnv(c.env);
   const cj = new CjClient(() => new CjTokenManager(store, vault, f).getToken(), f);
   try {
+    // Never cached: the detail holds the recipient's name and address.
+    if (asked.orderId) return c.json({ ok: true, orderId: asked.orderId, detail: await cj.getOrderDetailRaw(asked.orderId) });
     const data = await cj.getOrderList(5);
     await store.putSearchCache('diag:cj-orders', JSON.stringify(data).slice(0, 4000), 1);
     return c.json({ ok: true, sample: data });

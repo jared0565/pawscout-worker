@@ -679,3 +679,36 @@ marked paid by hand in Shopify so no card was charged, run on production
 - Still not proven: that the tracking poll picks up tracking through an `SD`
   id once an order ships, the awaiting-payment email's text, and anything
   about automatic payment (D7, not built).
+
+### 2026-10-08, what the two runs changed
+
+- A failed create now reads the supplier back by the order number it was
+  given (the order detail call, which the supplier's docs say takes a
+  custom order id) and takes over a live order held under exactly that
+  number: the id is recorded, the trail says `supplier-order-found`, and the
+  row goes to `awaiting-payment` with its own reason and email. PawScout
+  never pays an order it took over, in either mode, because it did not see
+  it being made and the owner may have paid it by hand after the create
+  error email. A different number, a `CANCELLED` or `TRASH` order, an empty
+  status or a failed read leaves the create error exactly as before. Not yet
+  proven live: that the detail call answers by order number, and which id
+  field its answer carries.
+- An `error` row has Release and Cancel in the console, and the error email
+  points at Release. A retry cannot order twice: the supplier refuses a
+  repeated order number (1603003, above), and the read-back takes over the
+  order it holds.
+- The awaiting-payment email leaves `awaiting-payment-emailed` or
+  `awaiting-payment-email-failed` in the trail, never the provider's text.
+- `/api/cj-order-diag` takes an `orderId` and answers the supplier's order
+  detail as sent, never cached (it holds the recipient's address). It is
+  how the open questions above get settled: the recipient name ("Ina"),
+  whether a detail read takes the `SD` id, and whether it takes the order
+  number.
+- Not changed: the automatic-payment call (`payBalance` by order id, where
+  the supplier's notice points `payType: 3` orders at `payBalanceV2` by
+  `shipmentOrderId`). Automatic payment is off (D7), a wrong call there
+  fails into an error and an owner alert rather than a wrong payment, and
+  settling it needs a paid order: no pay endpoint is ever called as a test.
+- Not built: cancelling the supplier's order when the Shopify order is
+  cancelled, which would empty the never-pay list above. That is a new
+  feature, not a fix.
