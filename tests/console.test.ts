@@ -573,6 +573,31 @@ describe('consolePage', () => {
       expect(trfBarsSvg(week, layers, { height: 160, width: 40 } as never)).toContain('viewBox="0 0 320 160"'); // floor
     });
 
+    // Centred on a narrow last column (90 days in a wide card, or 30 days at
+    // the 320 floor), the final date ran past the right edge and lost its
+    // last letter. It now ends at its own bar's right edge, inside the plot.
+    it('keeps the final date label inside the chart at every range and width', async () => {
+      const { trfBarsSvg } = await helpers();
+      const days = (n: number) => Array.from({ length: n }, (_, i) => {
+        const d = new Date(Date.UTC(2026, 9, 7) - (n - 1 - i) * 86_400_000).toISOString().slice(0, 10);
+        return { day: d, engaged: 1, singlePage: 1 };
+      });
+      const lastLabel = (svg: string) => {
+        const labels = [...svg.matchAll(/<text x="([\d.]+)" y="155" text-anchor="(\w+)">([^<]*)<\/text>/g)];
+        const m = labels[labels.length - 1];
+        return { x: Number(m[1]), anchor: m[2], text: m[3] };
+      };
+      for (const [n, width] of [[90, 1022], [30, 1022], [7, 1022], [90, 320], [30, 320], [7, 320]]) {
+        const W = Math.max(320, width), padL = 30, padR = 6, slot = (W - padL - padR) / n;
+        const cx = padL + (n - 1) * slot + slot / 2;
+        const label = lastLabel(trfBarsSvg(days(n), layers, { height: 160, width } as never));
+        expect(label.text).toBe(n <= 7 ? 'Wed 7' : '7 Oct');
+        expect(label.anchor).toBe('end');
+        expect(label.x).toBeLessThanOrEqual(W - padR); // never past the plot's right edge
+        expect(label.x).toBeGreaterThanOrEqual(cx); // still under its own bar
+      }
+    });
+
     it('escapes every label it writes into the chart', async () => {
       const { trfBarsSvg, trfRankHtml } = await helpers();
       const svg = trfBarsSvg(week, [{ key: 'engaged', color: '#fff', label: '<b>x</b>' }], { height: 100 });

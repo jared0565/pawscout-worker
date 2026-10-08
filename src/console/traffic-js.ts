@@ -79,7 +79,10 @@ function trfBarsSvg(series,layers,opts){
     s+='</g>';
     if((series.length-1-i)%step===0){
       var lbl=n<=7?trfDayLong(d.day).split(' ').slice(0,2).join(' '):trfDayShort(d.day);
-      s+='<text x="'+cx.toFixed(1)+'" y="'+(H-5)+'" text-anchor="middle">'+esc(lbl)+'</text>';
+      // The final date ends at its own bar's right edge: centred on a narrow
+      // last column (90 days, or 30 at the 320 floor) it ran off the chart.
+      var last=i===series.length-1,lx=last?cx+bw/2:cx;
+      s+='<text x="'+lx.toFixed(1)+'" y="'+(H-5)+'" text-anchor="'+(last?'end':'middle')+'">'+esc(lbl)+'</text>';
     }
   }
   return s+'</svg>';
