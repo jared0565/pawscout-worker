@@ -552,9 +552,25 @@ since uninstalled, not from PawScout.)
 - 11:51Z received and queued, no holds. 13:01Z gate passed, stock checked,
   and the live freight counter-check passed (CN to GB, USD 3.51 by CJPacket
   Ordinary against USD 3.65 allowed).
-- 13:01:35Z the supplier refused the create: "Balance is insufficient (CJ
-  code 1604000, /shopping/order/createOrderV2)". The order went to `error`
-  with no supplier order, and the owner was alerted. No money moved.
+- 13:01:35Z the supplier answered the create with an error: "Balance is
+  insufficient (CJ code 1604000, /shopping/order/createOrderV2)". The order
+  went to `error` with no supplier order id recorded, and the owner was
+  alerted that the supplier may already hold an order under the number
+  8505727222098 (a failure at the create step always says so). No money
+  moved.
+- The supplier HAD created the order despite the error. Its order list, read
+  through `/api/cj-order-diag` at 16:17Z, holds order 2610081301260650000,
+  order number 8505727222098, created 13:01:26, status `UNPAID`, no payment
+  date, USD 3.97 (0.46 product, 3.51 delivery by CJPacket Ordinary, from
+  Jinhua). So an order created with `payType: 2` that the wallet cannot pay
+  is left at the supplier as `UNPAID`, and the error does not mean nothing
+  was created. The two June orders created by the supplier's own app, also
+  never paid, now read `TRASH`.
+- The list shows the recipient as "Ina" where PawScout sent "PawScout Test
+  Order"; the address, city and phone match what was sent. The list view
+  showed the account name in June while the order detail held the right
+  recipient, so this may be the same thing, but the detail of this order
+  was not read. Unexplained.
 - Cause: the create call sent `payType: 2`. The supplier's order API notice
   (read 2026-10-08) says `payType=2` means "pay with balance directly while
   creating the order", and `payType=3` means "create the order only, then
@@ -571,3 +587,24 @@ since uninstalled, not from PawScout.)
   while PawScout's automatic-payment path calls the older `payBalance` with
   the order id. Whoever builds automatic payment must settle which call pays
   an order created this way before turning create-only off.
+- 16:00Z the fix went live (729e17e5a25f). 16:01:53Z the order was released
+  for a retry (the console shows no Release button on an `error` row, so the
+  same `/api/order-action` release the held-row button sends was called from
+  the console frame). 16:16Z gate, stock and freight passed again, and the
+  supplier refused the create: "Order exist, please do not duplicate create
+  (CJ code 1603003)". This settles the residual above about a second run
+  after a crash between create and record: the supplier refuses a repeated
+  order number, so no second supplier order is made. PawScout still does not
+  learn the existing order's id from that answer; the row went back to
+  `error`.
+- 16:19Z the order was cancelled in Shopify with a refund of the GBP 9.99
+  marked paid by hand (no money), restock on, no customer notification.
+  PawScout recorded `refund-received` and then `cancel-received` ("was
+  error") within a second and set the row to `cancelled`. No "do not pay the
+  supplier" alert was sent, because the row carries no supplier order id;
+  the only warning the owner has about supplier order 2610081301260650000 is
+  the 13:01 error email. That order must never be paid.
+- Not proven by this test: an order created with `payType: 3` (no create has
+  succeeded since the fix), the status the supplier gives such an order, the
+  awaiting-payment email, the "I paid this" button and its undo, and the
+  cancel alert for an order whose supplier order PawScout knows about.
