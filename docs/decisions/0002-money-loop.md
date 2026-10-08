@@ -607,4 +607,66 @@ since uninstalled, not from PawScout.)
 - Not proven by this test: an order created with `payType: 3` (no create has
   succeeded since the fix), the status the supplier gives such an order, the
   awaiting-payment email, the "I paid this" button and its undo, and the
-  cancel alert for an order whose supplier order PawScout knows about.
+  cancel alert for an order whose supplier order PawScout knows about. The
+  second run below covers these.
+
+### 2026-10-08, the second no-money create-only test (order #1003)
+
+A copy of #1002 (same product, same test customer, same business address),
+marked paid by hand in Shopify so no card was charged, run on production
+729e17e5a25f, the first build that creates with `payType: 3`.
+
+- 17:28:11Z received and queued, no holds. 18:31Z gate passed, stock
+  checked, and the live freight counter-check passed (CN to GB, USD 3.51 by
+  CJPacket Ordinary, 4-9 days, against USD 3.65 allowed).
+- 18:31:17Z the create succeeded with no error, PawScout recorded supplier
+  order `SD2610081831150667400` (`supplier-order-created`), and at
+  18:31:18Z the row went to `awaiting-payment`. Create-only mode now
+  creates without paying.
+- The supplier's order list, read through `/api/cj-order-diag` at about
+  18:33Z, holds order 2610081831170660600, order number 8506621854034,
+  created 18:31:17, status `CREATED`, USD 3.97 (0.46 product, 3.51 delivery
+  by CJPacket Ordinary). So an order created with `payType: 3` reads
+  `CREATED`, where the `payType: 2` order of #1002 reads `UNPAID` (still so
+  at 18:33Z). The recipient again reads "Ina"; still unexplained, the order
+  detail was not read.
+- Finding, not fixed: the id PawScout recorded is not the id the supplier's
+  list shows. The create answer's order id field held
+  `SD2610081831150667400`; the list shows 2610081831170660600 for the same
+  order number. The supplier's docs give the create answer both an
+  `orderId` and a `shipmentOrderId`, and say the order detail call takes
+  "custom order id, CJ order id"; they do not say whether it takes an `SD`
+  id. The tracking poll reads every awaiting-payment row by its recorded
+  id, and it ran at 18:45Z under a live log tail (18:35Z to 18:49Z): no
+  "tracking poll failed" line, so the supplier did not refuse the `SD` id.
+  A read that answers with no order would also log nothing, so whether that
+  read returns this order's tracking once it ships is not proven. The
+  console banner and the awaiting-payment email also name the `SD` id,
+  which may not be the number the supplier's website shows the owner.
+- Banner and "I paid this": the banner listed the order by its `SD` id. The
+  first click asks for confirmation, the second within 8 seconds marks it:
+  at 18:36:20Z `owner_paid_at` was set, the trail gained `owner-paid`, the
+  row read "paid by you, waiting for tracking", the banner went away, and
+  the status stayed `awaiting-payment`, so the cancel watch and the tracking
+  poll still cover it. At 18:36:47Z "Not paid after all" cleared
+  `owner_paid_at`, the trail gained `owner-paid-undone`, and the banner
+  listed the order again.
+- The awaiting-payment email is not proven. It goes to the configured alert
+  address, which this test could not read, and it leaves no record either
+  way: the trail has no marker for it, and a failed send leaves only a log
+  line, while this send came at 18:31Z, before the log tail started.
+- 18:51:39Z the order was cancelled in Shopify with a refund of the GBP 9.99
+  marked paid by hand (no money), restock on, no customer notification.
+  Within the same second PawScout recorded `refund-received`,
+  `cancel-received` ("was awaiting-payment"), set the row to `cancelled`
+  with the supplier order id kept, and delivered two owner alerts
+  (`owner-alert-due` then `owner-alerted`, which is written only for a send
+  that succeeded): "Order #1003 was refunded GBP 9.99" and "Order #1003 was
+  cancelled: do NOT pay the supplier".
+- Two supplier orders from these tests must never be paid: 2610081301260650000
+  (#1002, `UNPAID`) and 2610081831170660600, recorded by PawScout as
+  `SD2610081831150667400` (#1003, `CREATED`). PawScout cannot cancel an order
+  at the supplier.
+- Still not proven: that the tracking poll picks up tracking through an `SD`
+  id once an order ships, the awaiting-payment email arriving, and anything
+  about automatic payment (D7, not built).
