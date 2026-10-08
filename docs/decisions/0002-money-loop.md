@@ -640,10 +640,11 @@ marked paid by hand in Shopify so no card was charged, run on production
   call takes "custom order id, CJ order id" without saying which of the two
   ids that means. The tracking poll reads every awaiting-payment row by its
   recorded id, and it ran at 18:45Z under a live log tail (18:35Z to
-  18:49Z): no "tracking poll failed" line, so the supplier did not refuse
-  the `SD` id. A read that answers with no order would also log nothing, so
-  whether that read returns this order's tracking once it ships is not
-  proven. Which of the two ids the supplier's website shows the owner was
+  18:49Z): no "tracking poll failed" line was seen. That is weak evidence:
+  the tail caught no log line of any kind from those runs, so nothing shows
+  it would have caught a failure line, and a read that answers with no
+  order would log nothing either. Whether that read returns this order's
+  tracking once it ships is not proven. Which of the two ids the supplier's website shows the owner was
   not checked; the console banner and the awaiting-payment email name the
   `SD` one.
 - Banner and "I paid this": the banner listed the order by its `SD` id. The
@@ -654,10 +655,15 @@ marked paid by hand in Shopify so no card was charged, run on production
   poll still cover it. At 18:36:47Z "Not paid after all" cleared
   `owner_paid_at`, the trail gained `owner-paid-undone`, and the banner
   listed the order again.
-- The awaiting-payment email is not proven. It goes to the configured alert
-  address, which this test could not read, and it leaves no record either
-  way: the trail has no marker for it, and a failed send leaves only a log
-  line, while this send came at 18:31Z, before the log tail started.
+- The awaiting-payment email was delivered, read from Resend's record rather
+  than from the inbox, which this test could not read. The trail keeps no
+  marker for this email (a failed send leaves only a log line), but the
+  `email_events` table, filled by Resend's delivery webhook, holds a
+  `delivered` event to the alert address at 18:31:21.756Z, 3.6 seconds
+  after the row went to `awaiting-payment`, and no order alert was raised
+  between 18:29Z and 18:34Z. The table keeps no subject, so the email's
+  text was not read. The two cancel alerts below have matching `delivered`
+  events at 18:51:40Z.
 - 18:51:39Z the order was cancelled in Shopify with a refund of the GBP 9.99
   marked paid by hand (no money), restock on, no customer notification.
   Within the same second PawScout recorded `refund-received`,
@@ -671,5 +677,5 @@ marked paid by hand in Shopify so no card was charged, run on production
   `SD2610081831150667400` (#1003, `CREATED`). PawScout cannot cancel an order
   at the supplier.
 - Still not proven: that the tracking poll picks up tracking through an `SD`
-  id once an order ships, the awaiting-payment email arriving, and anything
+  id once an order ships, the awaiting-payment email's text, and anything
   about automatic payment (D7, not built).
