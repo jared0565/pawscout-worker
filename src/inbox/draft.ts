@@ -63,6 +63,14 @@ const TITLES = new Set([
   'mr', 'mrs', 'ms', 'miss', 'mx', 'dr', 'prof', 'professor', 'sir', 'madam', 'madame', 'rev', 'reverend',
 ]);
 
+// A display name that is a sentence, not a name. "Hi My," / "Hi Am," / "Hi The," went out
+// (2026-10-08 audit of the 425 stored contact names). A leading self-introduction is
+// stripped so the declared name is greeted ("MY NAME IS SAMAD" -> "Samad"); a name that
+// opens with "The" or "Are" is a brand or a question and gets "Hi there,". Only words seen
+// in that audit are listed: "my" alone is deliberately NOT banned (My is a given name).
+const SELF_INTRO = /^\s*(?:my\s+name\s+is|i\s+am|i['’]?m|call\s+me)(?:\s+|$)/i;
+const NOT_A_NAME_LEAD = new Set(['the', 'are']);
+
 /** A safe first NAME for the greeting, or null if we have nothing usable. Walks the name
  * tokens, SKIPS leading honorifics (so "Mr Dhikirullah" greets "Dhikirullah", not "Mr"),
  * rejects emails / role addresses / non-alphabetic junk, and Title-cases the result so a
@@ -75,8 +83,10 @@ const TITLES = new Set([
  * greet the surname for "John Smith". No email, or no match, keeps the first token. */
 export function salutationName(rawName: string | null | undefined, email?: string | null): string | null {
   if (!rawName) return null;
+  const tokens = rawName.replace(SELF_INTRO, '').trim().split(/\s+/);
+  if (NOT_A_NAME_LEAD.has((tokens[0] ?? '').toLowerCase())) return null;
   const candidates: string[] = [];
-  for (const raw of rawName.trim().split(/\s+/)) {
+  for (const raw of tokens) {
     const tok = raw.replace(/[.,]+$/, ''); // drop trailing punctuation ("Mr." -> "Mr")
     if (!/^[\p{L}][\p{L}'-]{1,40}$/u.test(tok)) continue; // skip emails/junk/non-alpha/1-char
     const lower = tok.toLowerCase();
