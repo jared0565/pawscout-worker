@@ -68,6 +68,41 @@ describe('salutationName (skip honorifics, never greet a title)', () => {
     expect(salutationName('Jeff Expert')).toBe('Jeff');
     expect(salutationName('Theo Smith')).toBe('Theo');
   });
+
+  // 2026-10-08 audit of the 425 stored contact names, second pass: business display names.
+  it('falls back to "Hi there," for a business name, wherever the business word sits', () => {
+    for (const name of [
+      'Shopify Review', 'Shopify Partner', 'Shopify Billing', 'Shopify Account Security', 'Microsoft SharePoint',
+      'Search Engines Registration', 'Clothing Factory PK27', 'Consent Test', 'Site test (please ignore)', 'Postmaster',
+      'SOFT SKILLS', 'STRATEGIC CREATIVE', 'Creativity Tech', 'Dynamic hub', 'Imperial E-commerce', 'Rising Commerce',
+      'PRIME TECH', 'Prime Nova', 'Boostura Agency', 'Kontatsac Solution', 'Vertex Dimension', 'VERTEX GROWTH LAB',
+      'Vox Websites', 'Tango Concept', 'Active Paw', '50 Power',
+    ]) expect(salutationName(name), name).toBeNull();
+  });
+
+  it('skips a job word beside a real name, like a title, and greets the person', () => {
+    expect(salutationName('Developer mubarak')).toBe('Mubarak');
+    expect(salutationName('Expert Solomon')).toBe('Solomon');
+    expect(salutationName('Investor Mark')).toBe('Mark');
+    expect(salutationName('Jimmy Web', 'webjimmy@example.com')).toBe('Jimmy'); // the email match never picks the job word
+    expect(salutationName('JAMES HUB', 'hubjames@example.com')).toBe('James');
+    expect(salutationName('Nafisat Expert', 'expertnafisat@example.com')).toBe('Nafisat');
+    expect(salutationName('Nana Logisticss', 'logisticssnana@example.com')).toBe('Nana');
+    expect(salutationName('Lady Favour')).toBe('Favour'); // Lady is a title
+    expect(salutationName('Gabriel Shopify')).toBe('Gabriel');
+    expect(salutationName('Shopify')).toBeNull(); // a job word alone leaves no name
+    expect(salutationName('Specialist')).toBeNull();
+  });
+
+  it('keeps personal brands and given names that are also words', () => {
+    for (const [name, greet] of [
+      ['Ibrahim Expert', 'Ibrahim'], ['TEMI DIGITAL', 'Temi'], ['OPEYEMI CONSULT', 'Opeyemi'], ['BIOLA COMMERCE', 'Biola'],
+      ['Timothy Tech', 'Timothy'], ['MUNNY CEO', 'Munny'], ['Favour Studio', 'Favour'], ['Godwin Networking', 'Godwin'],
+      ['Harry Growth', 'Harry'], ['Ali Hub', 'Ali'], ['RODIAT PRO', 'Rodiat'], ['Victor From Shopify', 'Victor'],
+      ['Blessing', 'Blessing'], ['Precious', 'Precious'], ['Gift', 'Gift'], ['Peace', 'Peace'], ['Wisdom Dunamis', 'Wisdom'],
+      ['Unique Sam', 'Unique'],
+    ]) expect(salutationName(name), name).toBe(greet);
+  });
 });
 
 // Construct the dash glyphs at runtime so this test file contains NO literal em/en-dash
