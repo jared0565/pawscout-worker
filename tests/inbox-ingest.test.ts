@@ -27,6 +27,17 @@ describe('ingestParsed', () => {
     expect(got?.messages[0].body_text).toContain('Ireland');
   });
 
+  // aramid 9d40cb6e: nothing read the stored headers back, so cutting their
+  // first character went unnoticed. Headers under the 8000 character cap are
+  // stored whole, as JSON that reads back as what arrived.
+  it('stores the headers whole, as JSON that reads back as what arrived', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const headers = { 'authentication-results': 'mx; spf=pass dkim=pass dmarc=pass', 'x-cf-spamh-score': '0' };
+    const r = await ingestParsed(store, pe({ headers }));
+    const got = await store.getThreadWithMessages(r.threadId);
+    expect(JSON.parse(got!.messages[0].headers_json!)).toEqual(headers);
+  });
+
   it('marks a DMARC-fail email as spam (no classification needed)', async () => {
     const store = new TenantStore(env.DB, SHOP);
     const r = await ingestParsed(store, pe({
