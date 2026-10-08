@@ -54,6 +54,10 @@ function fakeCj(spy: { create: unknown[]; pay: string[] }, over: Partial<Record<
     createOrder: async (input: { orderNumber: string }) => { spy.create.push(input); return { orderId: 'CJORD-' + input.orderNumber, orderNum: input.orderNumber }; },
     payBalance: async (id: string) => { spy.pay.push(id); },
     getOrderDetail: async (id: string) => ({ orderId: id, orderNum: '', trackNumber: 'TRK1', trackUrl: '', logisticName: 'CJPacket', status: 'shipped' }),
+    // After a failed create, the supplier holds nothing under the number
+    // unless a test says it does: every older create-failure test is the
+    // "nothing was made" case.
+    findOrderByNumber: async () => null,
     ...over
   } as unknown as CjClient;
 }
@@ -1269,6 +1273,172 @@ describe('a cancelled row stays cancelled', () => {
   });
 });
 
+// A failed create is not proof that nothing was created (#1002, 2026-10-08:
+// CJ answered "Balance is insufficient" and held an UNPAID order under the
+// number anyway, then refused the retry as a duplicate, CJ code 1603003). So a
+// failed create reads the supplier back by the order number it was given, and
+// takes the order over when the supplier holds one: recorded, and handed to the
+// owner as not paid by PawScout. PawScout did not see it being made and does
+// not know whether it was paid by hand since, so it never pays it, in either
+// mode.
+describe('a failed create whose order the supplier holds anyway', () => {
+  const DUPLICATE = 'Order exist, please do not duplicate create (CJ code 1603003, /shopping/order/createOrderV2)';
+  function cjWithFound(spy: { create: unknown[]; pay: string[] }, found: unknown, lookups: string[] = []) {
+    return fakeCj(spy, {
+      createOrder: async () => { throw new Error(DUPLICATE); },
+      findOrderByNumber: async (n: string) => { lookups.push(n); return found; }
+    });
+  }
+
+  for (const createOnly of [true, false]) {
+    it(`takes the order over: recorded, awaiting payment, never paid (createOnly ${createOnly})`, async () => {
+      const store = new TenantStore(env.DB, SHOP);
+      await seedWarehouse(store, 'CJ1', 'S1', 'v1');
+      await seedOrder(store, 'O1', [{ sku: 'S1', quantity: 1, cjPid: 'CJ1' }]);
+      const spy = { create: [] as unknown[], pay: [] as string[] };
+      const lookups: string[] = [];
+      const notes: { cjOrderId: string; existing: boolean; found?: boolean }[] = [];
+      const alerts: { subject: string; text: string }[] = [];
+      const r = await processDueOrders(store, cjWithFound(spy, { cjOrderId: 'SD-FOUND', orderNum: 'O1', status: 'UNPAID' }, lookups), liveAdmin(), cfg('pawscout', createOnly), {
+        notify: async (n) => { notes.push({ cjOrderId: n.cjOrderId, existing: n.existing, found: n.found }); },
+        alert: async (subject, text) => { alerts.push({ subject, text }); return 'sent'; }
+      });
+      expect(r).toMatchObject({ awaiting: 1, errored: 0, submitted: 0 });
+      expect(lookups).toEqual(['O1']);
+      expect(spy.pay).toEqual([]);
+      const o = await store.getOrder('O1');
+      expect(o).toMatchObject({ status: 'awaiting-payment', cj_order_id: 'SD-FOUND' });
+      const events = await store.listOrderEvents('O1');
+      const kinds = events.map((e) => e.kind);
+      expect(events.find((e) => e.kind === 'supplier-order-found')?.detail).toBe('SD-FOUND');
+      expect(kinds).not.toContain('supplier-order-created');
+      expect(kinds).not.toContain('error');
+      expect(kinds).toContain('awaiting-payment');
+      expect(alerts).toEqual([]);
+      expect(notes).toEqual([{ cjOrderId: 'SD-FOUND', existing: false, found: true }]);
+      expect(JSON.parse(o?.hold_reasons ?? '[]')).toEqual(['awaiting-payment: CJ order SD-FOUND was found at the supplier after its create call failed, and is not paid by PawScout']);
+    });
+  }
+
+  it('a found order under a different number is not taken over: the create error stands', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedWarehouse(store, 'CJ1', 'S1', 'v1');
+    await seedOrder(store, 'O1', [{ sku: 'S1', quantity: 1, cjPid: 'CJ1' }]);
+    const spy = { create: [] as unknown[], pay: [] as string[] };
+    const r = await processDueOrders(store, cjWithFound(spy, { cjOrderId: 'SD-OTHER', orderNum: 'O2', status: 'UNPAID' }), liveAdmin(), cfg('pawscout', true));
+    expect(r).toMatchObject({ awaiting: 0, errored: 1 });
+    expect(await store.getOrder('O1')).toMatchObject({ status: 'error', cj_order_id: null });
+    expect((await store.listOrderEvents('O1')).find((e) => e.kind === 'error')?.detail).toBe('failed at create');
+  });
+
+  for (const status of ['CANCELLED', 'TRASH']) {
+    it(`a found order that reads ${status} is not taken over: the create error stands`, async () => {
+      const store = new TenantStore(env.DB, SHOP);
+      await seedWarehouse(store, 'CJ1', 'S1', 'v1');
+      await seedOrder(store, 'O1', [{ sku: 'S1', quantity: 1, cjPid: 'CJ1' }]);
+      const spy = { create: [] as unknown[], pay: [] as string[] };
+      const r = await processDueOrders(store, cjWithFound(spy, { cjOrderId: 'SD-DEAD', orderNum: 'O1', status }), liveAdmin(), cfg('pawscout', true));
+      expect(r).toMatchObject({ awaiting: 0, errored: 1 });
+      expect(await store.getOrder('O1')).toMatchObject({ status: 'error', cj_order_id: null });
+    });
+  }
+
+  it('a lookup that throws leaves the original create error and its classification untouched', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedWarehouse(store, 'CJ1', 'S1', 'v1');
+    await seedOrder(store, 'O1', [{ sku: 'S1', quantity: 1, cjPid: 'CJ1' }]);
+    const spy = { create: [] as unknown[], pay: [] as string[] };
+    const cj = fakeCj(spy, {
+      createOrder: async () => { throw new Error('the product is out of stock'); },
+      findOrderByNumber: async () => { throw new Error('CJ system error 500'); }
+    });
+    const r = await processDueOrders(store, cj, liveAdmin(), cfg('pawscout', true));
+    expect(r).toMatchObject({ errored: 1, awaiting: 0 });
+    expect((await store.getOrder('O1'))?.status).toBe('error');
+    const events = await store.listOrderEvents('O1');
+    expect(events.map((e) => e.kind)).toContain('stockout');
+    expect(events.map((e) => e.kind)).not.toContain('supplier-order-found');
+  });
+
+  it('a row cancelled while the supplier is read back stays cancelled, with the cancelled-while-created alert', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedWarehouse(store, 'CJ1', 'S1', 'v1');
+    await seedOrder(store, 'O1', [{ sku: 'S1', quantity: 1, cjPid: 'CJ1' }]);
+    const spy = { create: [] as unknown[], pay: [] as string[] };
+    const cj = fakeCj(spy, {
+      createOrder: async () => { throw new Error(DUPLICATE); },
+      findOrderByNumber: async () => {
+        await store.updateOrder('O1', { status: 'cancelled', hold_reasons: JSON.stringify(['shopify-cancelled']) });
+        return { cjOrderId: 'SD-FOUND', orderNum: 'O1', status: 'UNPAID' };
+      }
+    });
+    const notifies: unknown[] = [];
+    const alerts: { subject: string; text: string }[] = [];
+    const r = await processDueOrders(store, cj, liveAdmin(), cfg('pawscout', true), {
+      notify: async (n) => { notifies.push(n); },
+      alert: async (subject, text) => { alerts.push({ subject, text }); return 'sent'; }
+    });
+    expect(r).toMatchObject({ held: 1, awaiting: 0, errored: 0 });
+    expect(notifies).toEqual([]);
+    expect(alerts.map((a) => a.subject)).toEqual(['Order #O1 was cancelled while its supplier order was being created']);
+    expect(alerts[0].text).toContain('supplier order SD-FOUND');
+    expect(await store.getOrder('O1')).toMatchObject({ status: 'cancelled', cj_order_id: 'SD-FOUND' });
+  });
+
+  it('a create that succeeds never reads the supplier back', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedWarehouse(store, 'CJ1', 'S1', 'v1');
+    await seedOrder(store, 'O1', [{ sku: 'S1', quantity: 1, cjPid: 'CJ1' }]);
+    const spy = { create: [] as unknown[], pay: [] as string[] };
+    const lookups: string[] = [];
+    const cj = fakeCj(spy, { findOrderByNumber: async (n: string) => { lookups.push(n); return null; } });
+    await processDueOrders(store, cj, liveAdmin(), cfg('pawscout', true));
+    expect(lookups).toEqual([]);
+  });
+});
+
+// The awaiting-payment email used to leave nothing behind: a failed send was
+// only a log line, so whether the owner had been told could not be read after
+// the fact (#1003, 2026-10-08). The trail now says which happened, with a fixed
+// detail, never the provider's error text.
+describe('the awaiting-payment email leaves a trail marker', () => {
+  it('a delivered email: awaiting-payment-emailed after awaiting-payment', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedWarehouse(store, 'CJ1', 'S1', 'v1');
+    await seedOrder(store, 'O1', [{ sku: 'S1', quantity: 1, cjPid: 'CJ1' }]);
+    await processDueOrders(store, fakeCj({ create: [], pay: [] }), liveAdmin(), cfg('pawscout', true), { notify: async () => {} });
+    const kinds = (await store.listOrderEvents('O1')).map((e) => e.kind);
+    expect(kinds.slice(-2)).toEqual(['awaiting-payment', 'awaiting-payment-emailed']);
+    expect(kinds).not.toContain('awaiting-payment-email-failed');
+  });
+
+  it('a failed email: awaiting-payment-email-failed, with no provider text in the trail, and the row still waits', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedWarehouse(store, 'CJ1', 'S1', 'v1');
+    await seedOrder(store, 'O1', [{ sku: 'S1', quantity: 1, cjPid: 'CJ1' }]);
+    const r = await processDueOrders(store, fakeCj({ create: [], pay: [] }), liveAdmin(), cfg('pawscout', true), {
+      notify: async () => { throw new Error('resend 422: to fbm@example.com rejected'); }
+    });
+    expect(r).toMatchObject({ awaiting: 1 });
+    const events = await store.listOrderEvents('O1');
+    const failed = events.find((e) => e.kind === 'awaiting-payment-email-failed');
+    expect(failed).toBeDefined();
+    expect(failed?.detail).toBeNull();
+    expect(events.map((e) => e.kind)).not.toContain('awaiting-payment-emailed');
+    expect((await store.getOrder('O1'))?.status).toBe('awaiting-payment');
+  });
+
+  it('no email configured: no marker either way', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedWarehouse(store, 'CJ1', 'S1', 'v1');
+    await seedOrder(store, 'O1', [{ sku: 'S1', quantity: 1, cjPid: 'CJ1' }]);
+    await processDueOrders(store, fakeCj({ create: [], pay: [] }), liveAdmin(), cfg('pawscout', true));
+    const kinds = (await store.listOrderEvents('O1')).map((e) => e.kind);
+    expect(kinds).not.toContain('awaiting-payment-emailed');
+    expect(kinds).not.toContain('awaiting-payment-email-failed');
+  });
+});
+
 describe('a gate stop on a row with an existing supplier order alerts', () => {
   it('a queued row with cj_order_id whose gate says cancelled: exact alert, row cancelled, no create/pay', async () => {
     const store = new TenantStore(env.DB, SHOP);
@@ -1658,6 +1828,17 @@ describe('the awaiting-payment email', () => {
     expect(body.html).toContain('back in the list');
   });
 
+  it('says an order found at the supplier after a failed create is unpaid by PawScout, and to check it at the supplier first', async () => {
+    const body = awaitingPaymentEmailBody({ ...notice(false), found: true });
+    expect(body.text).toContain('PawScout\'s create call for order #O1 (GBP 15) failed, but CJ already holds an order for it');
+    expect(body.text).toContain('CJORD-O1');
+    expect(body.text).toContain('PawScout has not paid it');
+    expect(body.text).toContain('Check its state at the supplier before you pay it, so it is not paid twice');
+    expect(body.text).not.toContain('has been created in CJ and is awaiting your payment');
+    expect(body.text).not.toContain('back in the list');
+    expect(body.html).toContain('CJ already holds an order for it');
+  });
+
   it('a first creation and a released row are told apart by whether the row already carried a supplier order', async () => {
     const store = new TenantStore(env.DB, SHOP);
     await seedWarehouse(store, 'CJ1', 'S1', 'v1');
@@ -1687,7 +1868,7 @@ describe('an order that lands in error tells the owner', () => {
     expect(r).toMatchObject({ errored: 1 });
     expect(alerts).toHaveLength(1);
     expect(alerts[0].subject).toBe('Order #O1 could not be sent to the supplier');
-    expect(alerts[0].text).toBe('Order #O1 failed at resolve and is now in error. Nothing will retry it by itself. Nothing was sent to the supplier.');
+    expect(alerts[0].text).toBe('Order #O1 failed at resolve and is now in error. Nothing will retry it by itself: release it in the console to try again. Nothing was sent to the supplier.');
   });
 
   it('a failure at the create step warns that the supplier may already hold the order, and never repeats the thrown message', async () => {
@@ -1701,7 +1882,7 @@ describe('an order that lands in error tells the owner', () => {
     });
     expect(r).toMatchObject({ errored: 1 });
     expect(alerts).toHaveLength(1);
-    expect(alerts[0].text).toBe('Order #O1 failed at create and is now in error. Nothing will retry it by itself. The supplier may already hold an order for it. PawScout gives the supplier the order number O1 for this order. Look for that number at the supplier before anything is retried, so it is not ordered twice.');
+    expect(alerts[0].text).toBe('Order #O1 failed at create and is now in error. Nothing will retry it by itself: release it in the console to try again. The supplier may already hold an order for it. PawScout gives the supplier the order number O1 for this order. Look for that number at the supplier before anything is retried, so it is not ordered twice.');
     expect(alerts[0].text).not.toContain('RAWMARKER');
     expect(alerts[0].subject).not.toContain('RAWMARKER');
   });
@@ -1764,7 +1945,7 @@ describe('an order that lands in error tells the owner', () => {
     });
     expect(r).toMatchObject({ errored: 1 });
     expect(alerts).toHaveLength(1);
-    expect(alerts[0].text).toBe('Order #O1 failed at pay and is now in error. Nothing will retry it by itself. The supplier may already hold an order for it: supplier order CJORD-EXISTING. PawScout gives the supplier the order number O1 for this order. Look for that number at the supplier before anything is retried, so it is not ordered twice.');
+    expect(alerts[0].text).toBe('Order #O1 failed at pay and is now in error. Nothing will retry it by itself: release it in the console to try again. The supplier may already hold an order for it: supplier order CJORD-EXISTING. PawScout gives the supplier the order number O1 for this order. Look for that number at the supplier before anything is retried, so it is not ordered twice.');
   });
 
   it('a stockout sends its own email and NOT this alert', async () => {

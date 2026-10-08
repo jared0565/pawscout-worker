@@ -237,6 +237,12 @@ export function notPaidByPawScoutReason(cjOrderId: string): string {
   return `awaiting-payment: CJ order ${cjOrderId} is not paid by PawScout`;
 }
 
+/** The same, for a supplier order PawScout did not see being made: its create
+ *  call failed and the supplier turned out to hold the order anyway. */
+export function foundAtSupplierReason(cjOrderId: string): string {
+  return `awaiting-payment: CJ order ${cjOrderId} was found at the supplier after its create call failed, and is not paid by PawScout`;
+}
+
 /** The reason a row carries once the owner has marked its supplier order paid
  *  by hand. Not prefixed 'awaiting-payment:', so a stop by the cancellation
  *  re-check keeps it (that check drops the instruction to pay, not this). */
@@ -247,7 +253,8 @@ export function ownerPaidReason(cjOrderId: string): string {
 export type OrderEventKind =
   | 'received' | 'held' | 'queued' | 'released'
   | 'gate-passed' | 'gate-held' | 'gate-unreadable' | 'address-refreshed'
-  | 'stock-ok' | 'stockout' | 'freight-quoted' | 'freight-unreadable' | 'supplier-order-created' | 'awaiting-payment' | 'paid'
+  | 'stock-ok' | 'stockout' | 'freight-quoted' | 'freight-unreadable' | 'supplier-order-created' | 'supplier-order-found'
+  | 'awaiting-payment' | 'awaiting-payment-emailed' | 'awaiting-payment-email-failed' | 'paid'
   | 'tracking-found' | 'tracking-written' | 'tracking-write-failed'
   | 'cancel-received' | 'refund-received' | 'owner-alert-due' | 'owner-alerted' | 'owner-alert-unconfigured' | 'owner-alert-failed' | 'operator-action' | 'error'
   | 'owner-paid' | 'owner-paid-undone';

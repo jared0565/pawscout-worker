@@ -102,6 +102,11 @@ describe('consolePage', () => {
     expect(rowActions({ id: 'O3', status: 'awaiting-payment', cj: null, ownerPaidAt: null })).toBe('');
     expect(rowActions({ id: 'H1', status: 'held', cj: 'CJ4' })).toBe('<button class="ghost" data-act="release" data-id="H1">Release</button> <button class="ghost" data-act="cancel" data-id="H1">Cancel</button>');
     expect(rowActions({ id: 'Q1', status: 'queued' })).toBe('<button class="ghost" data-act="cancel" data-id="Q1">Cancel</button>');
+    // An error row can be retried from the console (#1002, 2026-10-08, had to be
+    // released by calling the route by hand). A retry cannot order twice: the
+    // supplier refuses a repeated order number, and a failed create reads the
+    // supplier back and takes over the order it holds.
+    expect(rowActions({ id: 'E1', status: 'error', cj: null })).toBe('<button class="ghost" data-act="release" data-id="E1">Release</button> <button class="ghost" data-act="cancel" data-id="E1">Cancel</button>');
     expect(rowActions({ id: 'S1', status: 'submitted', cj: 'CJ5' })).toBe('');
     expect(awaitingOwner([unmarked, marked, { id: 'H1', status: 'held' }]).map((o) => o.id)).toEqual(['O1']);
     // The label describes the mark only while the row is still waiting: a
