@@ -648,16 +648,19 @@ export class CjClient {
   /**
    * The order CJ holds under the order number PawScout gave it, or null. Read
    * after a create call fails, because a failed create is not proof that
-   * nothing was made (#1002, 2026-10-08). CJ's order detail call takes "custom
-   * order id, CJ order id" (CJ order API). CJ's order list carries two ids per
-   * order, `orderId` and `cjOrderId`; the create answer gave the `cjOrderId`
-   * one (#1003), so that one is preferred. Whether to take the order over is
-   * the caller's decision: this only reports what CJ answered.
+   * nothing was made (#1002, 2026-10-08). CJ's order detail call answers by
+   * that number (read live 2026-10-09). The detail names its ids differently
+   * from CJ's order list: the SD id, which the create answer gives and every
+   * created order is recorded under, is `cjOrderCode`; `orderId` is the
+   * numeric id; and the detail's own `cjOrderId` is null on a CREATED order
+   * and a CJ-prefixed id once CJ moves it on, so it is never used. Whether to
+   * take the order over is the caller's decision: this only reports what CJ
+   * answered.
    */
   async findOrderByNumber(orderNumber: string): Promise<{ cjOrderId: string; orderNum: string; status: string } | null> {
     const d = (await this.get('/shopping/order/getOrderDetail', { orderId: orderNumber })) as Record<string, unknown> | null;
     if (!d) return null;
-    const cjOrderId = String(d.cjOrderId ?? d.orderId ?? '');
+    const cjOrderId = String(d.cjOrderCode ?? d.orderId ?? '');
     if (!cjOrderId) return null;
     return { cjOrderId, orderNum: String(d.orderNum ?? ''), status: String(d.orderStatus ?? d.status ?? '') };
   }
