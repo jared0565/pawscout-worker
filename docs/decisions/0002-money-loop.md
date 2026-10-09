@@ -712,3 +712,40 @@ marked paid by hand in Shopify so no card was charged, run on production
 - Not built: cancelling the supplier's order when the Shopify order is
   cancelled, which would empty the never-pay list above. That is a new
   feature, not a fix.
+
+### 2026-10-09, the supplier's order detail, read after the deploy
+
+- 00:34Z `1cddfef09535` went to production on the owner's go (the guarded
+  deploy, after one transient 7403 refusal on its migrations read; smoke
+  3 of 3). `/healthz` reported `1cddfef09535` at 00:34:53Z.
+- About 00:35Z, through `/api/cj-order-diag` with an `orderId`, the detail
+  call answered the same order for every form of id it was given: the `SD`
+  id, the numeric order id, the order number PawScout gave, and, for #1002,
+  a `CJ`-prefixed id. So the read-back after a failed create answers by
+  order number, and the tracking poll's read by the `SD` id PawScout records
+  answers too.
+- The detail answer names its ids differently from the list. In the detail,
+  `orderId` is the numeric id, `orderNum` is PawScout's order number,
+  `cjOrderCode` is the `SD` id (the one the list calls `cjOrderId`, and the
+  one the create answer gives), and `cjOrderId` is something else: null on
+  #1003 (`CREATED`) and `CJ26100854844661980370` on #1002 (`UNPAID`, which
+  also had a warehouse assigned). The same field name means two things, and
+  in the detail it changes as the order moves on.
+- That caught the read-back in `1cddfef`: it took the detail's `cjOrderId`
+  first, so an order it takes over would be recorded under the numeric id
+  or a `CJ` id, where every created order is recorded under its `SD` id.
+  Every one of those ids reads back, and a taken-over order is never paid,
+  so no money was at risk; but the awaiting-payment email and the never-pay
+  trail would have shown a different kind of id from every other row. Fixed
+  by taking `cjOrderCode`, then the numeric `orderId`, never the detail's
+  `cjOrderId`; the tests now use the detail's real shape.
+- Recipient: the detail holds "PawScout Test Order" for both orders. The
+  "Ina" above is how the list shows the order, as in June; the create call
+  sends the right name and is unchanged.
+- Tracking: the tracking poll reads `trackNumber`, `trackingUrl`,
+  `logisticName` and `orderStatus`, and those are the names the live detail
+  carries (the tracking ones empty, nothing has shipped). That the tracking
+  number fills in when an order ships is still not proven.
+- At 00:35Z #1003 was `CREATED` and #1002 `UNPAID`, neither with a payment
+  date. The never-pay list stands, and #1002 can also appear at the
+  supplier as `CJ26100854844661980370`.

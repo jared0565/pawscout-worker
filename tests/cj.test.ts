@@ -331,11 +331,13 @@ describe('CjClient.createOrder', () => {
 
 // A create call can fail after CJ has made the order (#1002, 2026-10-08: an
 // error answer, and an UNPAID order under its number anyway; its retry was
-// refused as a duplicate, CJ code 1603003). CJ's order detail call takes "custom
-// order id, CJ order id", so the order PawScout numbered can be read back by
-// that number. CJ's order list carries two ids per order, `orderId` and
-// `cjOrderId`; the create answer gave the `cjOrderId` one (#1003), so that one
-// is preferred, keeping a found order's id in the same form as a created one.
+// refused as a duplicate, CJ code 1603003). CJ's order detail call answers by
+// the order number PawScout gave it (read live 2026-10-09). The detail names its
+// ids differently from CJ's order list: the SD id, which the create answer gives
+// and PawScout records, is `cjOrderCode`; `orderId` is the numeric id; and the
+// detail's `cjOrderId` is null on a CREATED order and a CJ-prefixed id once CJ
+// moves it on, so it is never used. The fixtures are the live answers' id
+// fields for #1002 and #1003.
 describe('CjClient.findOrderByNumber', () => {
   function detailFetch(data: unknown, calls: string[] = []): typeof fetch {
     return (async (input: RequestInfo | URL) => {
@@ -344,22 +346,28 @@ describe('CjClient.findOrderByNumber', () => {
     }) as typeof fetch;
   }
 
-  it('reads the order detail by the order number PawScout gave CJ, and answers its cjOrderId, number and status', async () => {
+  it('reads the order detail by the order number PawScout gave CJ, and answers its SD id, number and status', async () => {
     const calls: string[] = [];
-    const cj = new CjClient(async () => 'tok', detailFetch({ orderId: '2610081301260650000', cjOrderId: 'SD2610081301230654600', orderNum: '8505727222098', orderStatus: 'UNPAID' }, calls));
-    expect(await cj.findOrderByNumber('8505727222098')).toEqual({ cjOrderId: 'SD2610081301230654600', orderNum: '8505727222098', status: 'UNPAID' });
+    const cj = new CjClient(async () => 'tok', detailFetch({ orderId: '2610081831170660600', orderNum: '8506621854034', cjOrderId: null, cjOrderCode: 'SD2610081831150667400', orderStatus: 'CREATED' }, calls));
+    expect(await cj.findOrderByNumber('8506621854034')).toEqual({ cjOrderId: 'SD2610081831150667400', orderNum: '8506621854034', status: 'CREATED' });
     expect(calls).toHaveLength(1);
-    expect(calls[0]).toContain('/shopping/order/getOrderDetail?orderId=8505727222098');
+    expect(calls[0]).toContain('/shopping/order/getOrderDetail?orderId=8506621854034');
   });
 
-  it('falls back to orderId when the answer has no cjOrderId', async () => {
-    const cj = new CjClient(async () => 'tok', detailFetch({ orderId: '2610081301260650000', orderNum: '8505727222098', orderStatus: 'CREATED' }));
-    expect(await cj.findOrderByNumber('8505727222098')).toEqual({ cjOrderId: '2610081301260650000', orderNum: '8505727222098', status: 'CREATED' });
+  it("answers the SD id, not the detail's CJ-prefixed cjOrderId, once CJ has moved the order on", async () => {
+    const cj = new CjClient(async () => 'tok', detailFetch({ orderId: '2610081301260650000', orderNum: '8505727222098', cjOrderId: 'CJ26100854844661980370', cjOrderCode: 'SD2610081301230654600', orderStatus: 'UNPAID' }));
+    expect(await cj.findOrderByNumber('8505727222098')).toEqual({ cjOrderId: 'SD2610081301230654600', orderNum: '8505727222098', status: 'UNPAID' });
   });
 
-  it('answers null when CJ holds no order under that number', async () => {
+  it('falls back to the numeric orderId when the answer has no SD id', async () => {
+    const cj = new CjClient(async () => 'tok', detailFetch({ orderId: '2610081301260650000', orderNum: '8505727222098', cjOrderId: 'CJ26100854844661980370', orderStatus: 'UNPAID' }));
+    expect(await cj.findOrderByNumber('8505727222098')).toEqual({ cjOrderId: '2610081301260650000', orderNum: '8505727222098', status: 'UNPAID' });
+  });
+
+  it("answers null when CJ holds no order under that number, or only the detail's own cjOrderId", async () => {
     expect(await new CjClient(async () => 'tok', detailFetch(null)).findOrderByNumber('1')).toBeNull();
     expect(await new CjClient(async () => 'tok', detailFetch({ orderNum: '1', orderStatus: 'CREATED' })).findOrderByNumber('1')).toBeNull();
+    expect(await new CjClient(async () => 'tok', detailFetch({ orderNum: '1', cjOrderId: 'CJ1', orderStatus: 'UNPAID' })).findOrderByNumber('1')).toBeNull();
   });
 });
 
