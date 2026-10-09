@@ -12,11 +12,15 @@ import type { CjClient } from './cj';
 // unpaid order under exactly this order number. The order is looked up by the
 // number PawScout gave CJ, not by a recorded id, because a failed create can
 // leave a supplier order PawScout never recorded (#1002).
+//
+// CJ accepting the delete is not taken as proof it took. The order is read
+// back, and the trail says supplier-order-deleted only when CJ shows this same
+// order as TRASH or CANCELLED; anything else is recorded as unconfirmed.
 
 export type SupplierOrderDeleter = Pick<CjClient, 'findOrderByNumber' | 'deleteOrder'>;
 
 export type SupplierDeleteResult =
-  | { ok: true; cjOrderId: string; before: string; after: string | null; readBack: boolean }
+  | { ok: true; cjOrderId: string; before: string; after: string }
   | { ok: false; code: 409 | 502; error: string };
 
 const DELETABLE: ReadonlySet<string> = new Set(['CREATED', 'IN_CART']);
@@ -56,14 +60,28 @@ export async function deleteSupplierOrder(store: TenantStore, cj: SupplierOrderD
   } catch (e) {
     return { ok: false, code: 502, error: `CJ refused the delete: ${(e as Error).message}. Nothing changed in PawScout.` };
   }
-  await store.addOrderEvent(number, 'supplier-order-deleted', found.cjOrderId);
 
-  // What CJ shows now. CJ has already accepted the delete, so a read that
-  // fails changes nothing; the console says it could not be confirmed.
+  // What CJ shows now. At first use (2026-10-09) both deleted orders still
+  // answered under every id, as TRASH, so an order CJ no longer finds is not
+  // what a delete looks like either. The trail gets the reason in fixed words,
+  // never CJ's own text; the owner sees CJ's text in the answer.
+  const deleted = found.cjOrderId;
+  const unconfirmed = async (note: string, seen: string): Promise<SupplierDeleteResult> => {
+    await store.addOrderEvent(number, 'supplier-delete-unconfirmed', `${deleted} ${note}`);
+    return { ok: false, code: 502, error: `CJ accepted the delete of ${deleted}, but ${seen}, so PawScout has not recorded it as deleted. Check it in CJ's dashboard.` };
+  };
+  let after: Awaited<ReturnType<SupplierOrderDeleter['findOrderByNumber']>>;
   try {
-    const after = await cj.findOrderByNumber(number);
-    return { ok: true, cjOrderId: found.cjOrderId, before: status, after: after ? after.status.toUpperCase() : null, readBack: true };
-  } catch {
-    return { ok: true, cjOrderId: found.cjOrderId, before: status, after: null, readBack: false };
+    after = await cj.findOrderByNumber(number);
+  } catch (e) {
+    return unconfirmed('read-back failed', `reading it back failed (${(e as Error).message})`);
   }
+  if (!after) return unconfirmed('not found', `reading it back found no order under order number ${number}`);
+  if (after.orderNum !== number || after.cjOrderId !== deleted) {
+    return unconfirmed('answered as another order', `reading it back answered ${after.cjOrderId || 'no id'} under order number ${after.orderNum || 'none'}`);
+  }
+  const now = after.status.toUpperCase();
+  if (!GONE.has(now)) return unconfirmed(`still ${now || 'no status'}`, `it still shows as ${now || 'no status'}`);
+  await store.addOrderEvent(number, 'supplier-order-deleted', deleted);
+  return { ok: true, cjOrderId: deleted, before: status, after: now };
 }

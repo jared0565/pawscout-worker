@@ -1759,7 +1759,8 @@ app.post('/api/order-action', async (c) => {
   if (body.action === 'cj-delete') {
     // "Delete at CJ" (owner 2026-10-09): removes a cancelled order's supplier
     // order at CJ. Cannot be undone, so the row is checked before CJ is asked,
-    // and CJ's own state is checked again before the delete is sent.
+    // and CJ's own state is checked again before the delete is sent. It
+    // answers ok only once CJ, read back, shows the order TRASH or CANCELLED.
     if (!body.id) return c.json({ ok: false, error: 'Bad request' }, 400);
     const store = new TenantStore(c.env.DB, s);
     const order = await store.getOrder(body.id);
@@ -1772,7 +1773,7 @@ app.post('/api/order-action', async (c) => {
     const cj = new CjClient(() => new CjTokenManager(store, vault, f).getToken(), f);
     const r = await deleteSupplierOrder(store, cj, order);
     if (!r.ok) return c.json({ ok: false, error: r.error }, r.code);
-    return c.json({ ok: true, status: 'cancelled', cjOrderId: r.cjOrderId, before: r.before, after: r.after, readBack: r.readBack });
+    return c.json({ ok: true, status: 'cancelled', cjOrderId: r.cjOrderId, before: r.before, after: r.after });
   }
   const map: Record<string, 'queued' | 'held' | 'cancelled'> = { release: 'queued', hold: 'held', cancel: 'cancelled' };
   const status = map[body.action ?? ''];

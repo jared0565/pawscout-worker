@@ -769,11 +769,11 @@ async function orderAction(id,action){
     loadOrders();
   }catch(e){ setMsg('ordmsg','Failed: '+errText(e),'no'); }
 }
-// What CJ showed before the delete and after it. A read-back that did not
-// answer is said plainly, never shown as gone.
+// What CJ showed before the delete and after it. The server answers ok only
+// when reading the order back showed it TRASH or CANCELLED; any other
+// read-back comes back as a failure with its reason.
 function cjDeleteDoneText(r){
-  var now=!r.readBack?'reading it back did not answer, so check it in the CJ dashboard':(r.after?'CJ now shows it as '+r.after:'CJ no longer finds it');
-  return 'Deleted at CJ: '+r.cjOrderId+' (was '+r.before+'); '+now+'.';
+  return 'Deleted at CJ: '+r.cjOrderId+' (was '+r.before+'); CJ now shows it as '+r.after+'.';
 }
 async function fixCategoriesNow(){
   var btn=el('catbtn'); btn.disabled=true;

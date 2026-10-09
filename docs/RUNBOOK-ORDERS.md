@@ -55,14 +55,23 @@ that number, with no payment, in `CREATED` or `IN_CART`: those are the only
 states CJ's delete accepts. Anything else is refused with the reason and
 nothing is sent: an `UNPAID` or later order has to be cancelled in CJ's
 dashboard, and one CJ already shows as `TRASH` or `CANCELLED` needs nothing.
-It takes a second click within 8 seconds. Afterwards the console shows what
-CJ said the order was before and what it shows now, and the timeline says
-`supplier-order-deleted`. The Shopify order and PawScout's row stay
-`cancelled`. A deleted order does not vanish at CJ: CJ still lists it and
-still answers it by any of its ids, with the status `TRASH` (seen on both
-test orders, 2026-10-09). `TRASH` is what a delete looks like, not a
-failure. The button stays next to the order afterwards, and pressing it
-again is refused because CJ already shows the order as `TRASH`.
+It takes a second click within 8 seconds. The Shopify order and PawScout's
+row stay `cancelled`. A deleted order does not vanish at CJ: CJ still lists
+it and still answers it by any of its ids, with the status `TRASH` (seen on
+both test orders, 2026-10-09). `TRASH` is what a delete looks like, not a
+failure.
+
+After the delete, PawScout reads the order back from CJ. Only when CJ shows
+that same order as `TRASH` or `CANCELLED` does the console say "Deleted at
+CJ", with what CJ showed before and what it shows now, and the timeline say
+`supplier-order-deleted`. Any other answer is shown as a failure with its
+reason, and the timeline says `supplier-delete-unconfirmed`: CJ still shows
+the order as `CREATED` or `IN_CART`, it finds no order under the number, it
+answers with a different order, or the read itself fails. CJ did accept the
+delete in each of those cases, so check the order in CJ's dashboard. The
+button stays next to the order afterwards. Pressing it again reads CJ first:
+an order CJ shows as `TRASH` by then is refused with that, nothing is sent,
+and the timeline keeps only the unconfirmed entry.
 
 **Once PawScout itself has paid a supplier order, that order stops being
 re-read against Shopify for a cancellation or a refund.** PawScout re-checks
@@ -249,7 +258,8 @@ What the labels mean:
 | `owner-alert-failed` | An attempt to send that email failed; it will be tried again on a later run (see "How an alert reaches you" below). |
 | `owner-alert-unconfigured` | PawScout tried to email you about this order, but no alert address or no email sending key is set up, so nobody could be told. |
 | `operator-action` | The owner, or someone on the team, pressed Release or Cancel on this order in the console. |
-| `supplier-order-deleted` | Delete at CJ was pressed on this cancelled order and CJ accepted the delete (the detail names the supplier order's id). |
+| `supplier-order-deleted` | Delete at CJ was pressed on this cancelled order, CJ accepted the delete, and reading it back showed that same order as `TRASH` or `CANCELLED` (the detail names the supplier order's id). |
+| `supplier-delete-unconfirmed` | Delete at CJ was pressed and CJ accepted the delete, but reading it back did not show the order gone. The detail names the supplier order's id and what was seen: `still CREATED` (or another status), `not found`, `answered as another order`, or `read-back failed`. Check the order in CJ's dashboard. |
 | `error` | Something failed; the detail says what. This can also record that an alert was given up on after repeated failures (see below). |
 
 ## Checking that order events are reaching PawScout

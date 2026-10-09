@@ -71,7 +71,7 @@ describe('deleteSupplierOrder', () => {
     const store = new TenantStore(env.DB, SHOP);
     const o = await seed(store, '8506621854034', 'cancelled', 'SD2610081831150667400');
     const { cj, lookups, deletes } = fakeCj([held('8506621854034', 'CREATED'), held('8506621854034', 'TRASH')]);
-    expect(await deleteSupplierOrder(store, cj, o)).toEqual({ ok: true, cjOrderId: 'SD-8506621854034', before: 'CREATED', after: 'TRASH', readBack: true });
+    expect(await deleteSupplierOrder(store, cj, o)).toEqual({ ok: true, cjOrderId: 'SD-8506621854034', before: 'CREATED', after: 'TRASH' });
     expect(lookups).toEqual(['8506621854034', '8506621854034']);
     expect(deletes).toEqual(['N-8506621854034']);
     expect((await store.listOrderEvents('8506621854034')).map((e) => [e.kind, e.detail])).toEqual([['supplier-order-deleted', 'SD-8506621854034']]);
@@ -81,18 +81,44 @@ describe('deleteSupplierOrder', () => {
   it('finds an order PawScout never recorded a supplier id for (#1002), and takes IN_CART too', async () => {
     const store = new TenantStore(env.DB, SHOP);
     const o = await seed(store, '8505727222098', 'cancelled', null);
-    const { cj, deletes } = fakeCj([held('8505727222098', 'IN_CART'), null]);
-    expect(await deleteSupplierOrder(store, cj, o)).toEqual({ ok: true, cjOrderId: 'SD-8505727222098', before: 'IN_CART', after: null, readBack: true });
+    const { cj, deletes } = fakeCj([held('8505727222098', 'IN_CART'), held('8505727222098', 'TRASH')]);
+    expect(await deleteSupplierOrder(store, cj, o)).toEqual({ ok: true, cjOrderId: 'SD-8505727222098', before: 'IN_CART', after: 'TRASH' });
     expect(deletes).toEqual(['N-8505727222098']);
   });
 
-  it('still reports the delete, and its trail, when reading it back fails', async () => {
+  it('takes CANCELLED on the read-back as gone too', async () => {
     const store = new TenantStore(env.DB, SHOP);
-    const o = await seed(store, 'R1', 'cancelled');
-    const { cj } = fakeCj([held('R1', 'CREATED'), new Error('timeout')]);
-    expect(await deleteSupplierOrder(store, cj, o)).toEqual({ ok: true, cjOrderId: 'SD-R1', before: 'CREATED', after: null, readBack: false });
-    expect((await store.listOrderEvents('R1')).map((e) => e.kind)).toEqual(['supplier-order-deleted']);
+    const o = await seed(store, 'G1', 'cancelled');
+    const { cj } = fakeCj([held('G1', 'CREATED'), held('G1', 'cancelled')]);
+    expect(await deleteSupplierOrder(store, cj, o)).toEqual({ ok: true, cjOrderId: 'SD-G1', before: 'CREATED', after: 'CANCELLED' });
+    expect((await store.listOrderEvents('G1')).map((e) => [e.kind, e.detail])).toEqual([['supplier-order-deleted', 'SD-G1']]);
   });
+
+  // CJ accepting the delete is not proof it took: at first use (2026-10-09)
+  // a deleted order still answered under every id, as TRASH. Anything else on
+  // the read-back, including no order at all, leaves the delete unconfirmed:
+  // the trail says so, and never says supplier-order-deleted.
+  const unconfirmed: Array<[string, Found | Error, string, RegExp]> = [
+    ['CJ still shows it CREATED', held('U1', 'CREATED'), 'SD-U1 still CREATED', /CJ accepted the delete of SD-U1, but it still shows as CREATED/],
+    ['CJ still shows it IN_CART', held('U1', 'IN_CART'), 'SD-U1 still IN_CART', /still shows as IN_CART/],
+    ['CJ finds no order under the number', null, 'SD-U1 not found', /reading it back found no order under order number U1/],
+    ['CJ answers another order number', held('OTHER', 'TRASH'), 'SD-U1 answered as another order', /reading it back answered SD-OTHER under order number OTHER/],
+    ['CJ answers another supplier order', held('U1', 'TRASH', { cjOrderId: 'SD-ELSE' }), 'SD-U1 answered as another order', /reading it back answered SD-ELSE under order number U1/],
+    ['reading it back fails', new Error('timeout'), 'SD-U1 read-back failed', /reading it back failed \(timeout\)/]
+  ];
+  for (const [name, answer, detail, message] of unconfirmed) {
+    it(`records the delete as unconfirmed, never as deleted, when ${name}`, async () => {
+      const store = new TenantStore(env.DB, SHOP);
+      const o = await seed(store, 'U1', 'cancelled');
+      const { cj, deletes } = fakeCj([held('U1', 'CREATED'), answer]);
+      const r = await deleteSupplierOrder(store, cj, o);
+      expect(r).toMatchObject({ ok: false, code: 502 });
+      expect(r.ok ? '' : r.error).toMatch(message);
+      expect(r.ok ? '' : r.error).toMatch(/so PawScout has not recorded it as deleted\. Check it in CJ's dashboard\.$/);
+      expect(deletes).toEqual(['N-U1']);
+      expect((await store.listOrderEvents('U1')).map((e) => [e.kind, e.detail])).toEqual([['supplier-delete-unconfirmed', detail]]);
+    });
+  }
 
   it('asks CJ nothing for an order the store-side check refuses', async () => {
     const store = new TenantStore(env.DB, SHOP);
