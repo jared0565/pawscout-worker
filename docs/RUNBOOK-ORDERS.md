@@ -58,7 +58,11 @@ dashboard, and one CJ already shows as `TRASH` or `CANCELLED` needs nothing.
 It takes a second click within 8 seconds. Afterwards the console shows what
 CJ said the order was before and what it shows now, and the timeline says
 `supplier-order-deleted`. The Shopify order and PawScout's row stay
-`cancelled`.
+`cancelled`. A deleted order does not vanish at CJ: CJ still lists it and
+still answers it by any of its ids, with the status `TRASH` (seen on both
+test orders, 2026-10-09). `TRASH` is what a delete looks like, not a
+failure. The button stays next to the order afterwards, and pressing it
+again is refused because CJ already shows the order as `TRASH`.
 
 **Once PawScout itself has paid a supplier order, that order stops being
 re-read against Shopify for a cancellation or a refund.** PawScout re-checks
