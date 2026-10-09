@@ -257,7 +257,7 @@ export type OrderEventKind =
   | 'awaiting-payment' | 'awaiting-payment-emailed' | 'awaiting-payment-email-failed' | 'paid'
   | 'tracking-found' | 'tracking-written' | 'tracking-write-failed'
   | 'cancel-received' | 'refund-received' | 'owner-alert-due' | 'owner-alerted' | 'owner-alert-unconfigured' | 'owner-alert-failed' | 'operator-action' | 'error'
-  | 'owner-paid' | 'owner-paid-undone' | 'supplier-order-deleted' | 'supplier-delete-unconfirmed';
+  | 'owner-paid' | 'owner-paid-undone' | 'supplier-order-deleted' | 'supplier-delete-unconfirmed' | 'supplier-order-gone';
 
 /** One append-only row of the order trail - `detail` is short plain text and
  *  must never hold a name, an address, an email or a phone number. */
@@ -1196,6 +1196,17 @@ export class TenantStore {
       .bind(this.shop, shopifyOrderId)
       .all<OrderEventRow>();
     return rs.results ?? [];
+  }
+
+  /** The orders whose supplier order CJ is known to show as gone: deleted
+   *  from the console and confirmed by the read-back, or found already TRASH
+   *  or CANCELLED by a press. An unconfirmed delete is not counted. */
+  async supplierGoneOrderIds(): Promise<Set<string>> {
+    const rs = await this.db
+      .prepare(`SELECT DISTINCT shopify_order_id FROM order_events WHERE shop = ?1 AND kind IN ('supplier-order-deleted', 'supplier-order-gone')`)
+      .bind(this.shop)
+      .all<{ shopify_order_id: string }>();
+    return new Set((rs.results ?? []).map((r) => r.shopify_order_id));
   }
 
   /** Counts the matching-kind run at the tail of the trail (most recent

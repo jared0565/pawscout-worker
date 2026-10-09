@@ -1609,10 +1609,13 @@ app.post('/api/orders', async (c) => {
   const s = await shopOf(c); if (typeof s !== 'string') return s;
   const store = new TenantStore(c.env.DB, s);
   const cfg = await store.getConfig();
+  // cjGone: CJ is known to show the supplier order as gone, so the console no
+  // longer offers Delete at CJ for it (src/order-supplier-delete.ts).
+  const gone = await store.supplierGoneOrderIds();
   const orders = (await store.listOrders(null, 50)).map((o) => ({
     id: o.shopify_order_id, name: o.order_name, total: o.total_price, currency: o.currency,
     status: o.status, holds: parseHoldReasons(o.hold_reasons), cj: o.cj_order_id, tracking: o.tracking_number,
-    ownerPaidAt: o.owner_paid_at ?? null
+    ownerPaidAt: o.owner_paid_at ?? null, cjGone: gone.has(o.shopify_order_id)
   }));
   // Webhook-subscription health (the daily stage, or the console's own
   // "Check order events" button) - null when never checked, unparseable, or

@@ -115,6 +115,19 @@ describe('consolePage', () => {
     expect(rowActions({ id: 'C1', status: 'cancelled', cj: 'CJ6', ownerPaidAt: null })).toBe('<button class="ghost" data-act="cj-delete" data-id="C1">Delete at CJ</button>');
     expect(rowActions({ id: 'C2', status: 'cancelled', cj: null, ownerPaidAt: null })).toBe('<button class="ghost" data-act="cj-delete" data-id="C2">Delete at CJ</button>');
     expect(rowActions({ id: 'C3', status: 'cancelled', cj: 'CJ7', ownerPaidAt: '2026-10-07T16:00:00.000Z' })).toBe('');
+    // Nor once CJ is known to show the supplier order as gone, deleted from
+    // here or found already in TRASH by a press (#1001): there is nothing left
+    // to delete, and the status says why the button is not there.
+    expect(rowActions({ id: 'C4', status: 'cancelled', cj: 'CJ8', ownerPaidAt: null, cjGone: true })).toBe('');
+    expect(rowActions({ id: 'C5', status: 'cancelled', cj: null, ownerPaidAt: null, cjGone: false })).toBe('<button class="ghost" data-act="cj-delete" data-id="C5">Delete at CJ</button>');
+    expect(statusLabel({ id: 'C4', status: 'cancelled', cj: 'CJ8', ownerPaidAt: null, cjGone: true })).toBe('cancelled · supplier order removed at CJ');
+    expect(statusLabel({ id: 'C5', status: 'cancelled', cj: null, ownerPaidAt: null, cjGone: false })).toBe('cancelled');
+    // A refused delete reloads the list as a successful one does: a press that
+    // finds the order already gone at CJ records it, so the button goes at once.
+    const act = extract('orderAction');
+    const deleteBranch = act.indexOf("if(action==='cj-delete'){ await loadOrders();");
+    expect(deleteBranch).toBeGreaterThan(0);
+    expect(deleteBranch).toBeLessThan(act.indexOf('if(!r.ok)'));
     expect(awaitingOwner([unmarked, marked, { id: 'H1', status: 'held' }]).map((o) => o.id)).toEqual(['O1']);
     // The label describes the mark only while the row is still waiting: a
     // marked order that then ships, is cancelled or is held reads as that.

@@ -826,3 +826,27 @@ marked paid by hand in Shopify so no card was charged, run on production
 - Production cannot show this working: no order at CJ is deletable now
   (both test orders read `TRASH`), and no test order is made to prove it.
   The evidence is the tests.
+
+### 2026-10-09, Delete at CJ leaves a row CJ shows as gone
+
+- The button was still offered on a cancelled row whose supplier order CJ
+  already shows as `TRASH`. Pressing it was harmless (a read, then a
+  refusal, nothing sent), but the owner was offered an action with nothing
+  left to do.
+- A press that finds the order already `TRASH` or `CANCELLED` now records
+  `supplier-order-gone`, with the `SD` id and the status CJ showed. Nothing
+  is sent to CJ, as before.
+- The orders list marks a row `cjGone` when its trail holds
+  `supplier-order-deleted` or `supplier-order-gone`. The console then shows
+  no Delete at CJ button for it, and its status reads `cancelled · supplier
+  order removed at CJ`. An unconfirmed delete does not count, so its button
+  stays.
+- This replaces "That is left as it is" in the section above: a press after
+  an unconfirmed delete that finds the order `TRASH` now records it as gone.
+- A refused press reloads the orders list as a successful one does, so the
+  button goes at once.
+- #1002 and #1003 already carry `supplier-order-deleted`. #1001 was put in
+  `TRASH` by hand at CJ in June (read 2026-10-09 14:52Z through the
+  diagnostic route: order number `8016041476434`, `SD26061516452006560001`,
+  `TRASH`), so it carries neither, and it keeps the button until one press
+  records it as gone.
