@@ -87,7 +87,7 @@ function cancelAlertFor(firstStatus: OrderRow['status'], order: OrderRow): Owner
     }
     return {
       subject: `Order ${name} was cancelled: do NOT pay the supplier`,
-      text: `Order ${name} was cancelled in Shopify. Supplier order ${cj} was created for it and PawScout has not paid it. Do NOT pay it. If it is still unpaid, cancel it at the supplier. If you have already paid it by hand, PawScout cannot see that: ask the supplier to cancel and refund it, and treat it as a return if it has shipped.`
+      text: `Order ${name} was cancelled in Shopify. Supplier order ${cj} was created for it and PawScout has not paid it. Do NOT pay it. If it is still unpaid, remove it at the supplier: Delete at CJ next to this order in PawScout's Orders list does that while CJ shows it as CREATED or IN_CART, otherwise cancel it in CJ's dashboard. If you have already paid it by hand, PawScout cannot see that: ask the supplier to cancel and refund it, and treat it as a return if it has shipped.`
     };
   }
   if (firstStatus === 'submitted') {

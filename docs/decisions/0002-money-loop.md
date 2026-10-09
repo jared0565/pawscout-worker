@@ -749,3 +749,31 @@ marked paid by hand in Shopify so no card was charged, run on production
 - At 00:35Z #1003 was `CREATED` and #1002 `UNPAID`, neither with a payment
   date. The never-pay list stands, and #1002 can also appear at the
   supplier as `CJ26100854844661980370`.
+
+### 2026-10-09, Delete at CJ
+
+- At 03:08Z the owner said both test orders were cancelled; the supplier
+  showed neither as cancelled. #1002 had moved from `UNPAID` to `IN_CART`
+  since 00:35Z, #1003 was still `CREATED`, neither had a payment date, and
+  the two June orders that were cancelled read `TRASH`. PawScout's rows were
+  both `cancelled`, neither marked paid.
+- The supplier's Order Delete (order API page, read 2026-10-09):
+  `DELETE /shopping/order/deleteOrder?orderId=...`, and "only orders whose
+  status is CREATED (created, not yet added to cart) or IN_CART (in cart)
+  can be deleted"; an `UNPAID` or later order cannot be. Its example id is
+  the numeric kind. No cancel call for an `UNPAID` order was found in the
+  order section that was read.
+- Built on the owner's go: **Delete at CJ** next to a `cancelled` order the
+  owner has not marked paid. It looks the supplier order up by the order
+  number PawScout gave it (so it finds #1002, whose id PawScout never
+  recorded), and deletes only when the answer carries exactly that number,
+  no payment date, a status of `CREATED` or `IN_CART` and a numeric id; the
+  delete is sent by that numeric id. Every other answer is refused with the
+  reason and nothing is sent. It takes a second click. After the delete it
+  reads the order back and reports what the supplier shows, and the trail
+  records `supplier-order-deleted` with the `SD` id.
+- Not built: deleting automatically when Shopify reports a cancel. A delete
+  cannot be undone and the owner asked for a button.
+- Not proven until it is first used: that the delete call takes the numeric
+  id, and what the detail read answers for a deleted order (`TRASH`, nothing,
+  or an error). The console says which of those it got.

@@ -31,7 +31,7 @@ refunded, PawScout stops rather than guessing.
 | `awaiting-payment` | PawScout has created the supplier order and has not paid it. Either PawScout is set to create orders only and leave the paying to you (see "Create-only", below), or an automatic payment attempt failed for a money reason, or a create call failed and the supplier turned out to hold the order anyway (the timeline says `supplier-order-found`; PawScout never pays one of those itself, and the email about it asks you to check its state first, since it may already have been paid by hand). | Check the supplier order shown next to the order (labelled "CJ" in the console) at the supplier's own site, and pay it there if it is still unpaid. **PawScout cannot see a payment you make at the supplier, so tell it:** press **I paid this** next to the order, then press it again within 8 seconds to confirm. From then on the console shows the order as "paid by you, waiting for tracking", it leaves the banner and the overview's count of orders PawScout has not paid, and PawScout never pays that supplier order itself. The order keeps its `awaiting-payment` status on purpose, so the 15 minute re-check below still watches it for a cancellation, and its tracking number still syncs back when the supplier ships. Pressed it by mistake? **Not paid after all** next to the order puts it back in the list. Until you press I paid this, the order stays in the banner even if you have paid it, so check a supplier order's own state at the supplier before paying anything in this list. An order only ever reaches `submitted` when PawScout itself paid it. |
 | `submitted` | The supplier order was created and PawScout itself has paid it. An order you paid by hand never shows this status (see `awaiting-payment` above). | Nothing normally. See the note below: once an order reaches this status, PawScout stops re-reading it against Shopify; a cancellation or refund that does reach it by webhook is still alerted. |
 | `fulfilled` | A tracking number has been written back into Shopify, and Shopify has sent the customer its own shipping notification. | Nothing. |
-| `cancelled` | This order will not be sent to the supplier. If a supplier order already existed when the cancellation happened, check whether you received one of the alerts below telling you what to do about it. | Depends on the alert, if any; see "Alerts" below. |
+| `cancelled` | This order will not be sent to the supplier. If a supplier order already existed when the cancellation happened, check whether you received one of the alerts below telling you what to do about it. | Depends on the alert, if any; see "Alerts" below. A supplier order that is still unpaid can be removed with **Delete at CJ** next to the order (see below). |
 | `error` | Something went wrong while trying to process this order, for example the supplier had no stock for one of the items, or a step failed unexpectedly. Nothing retries it by itself. You are emailed about it (see "Order `<name>` could not be sent to the supplier" below), except for a stockout, which has its own email. | Read the reason shown next to the order to understand what happened. **If the order's timeline says `failed at create` or `failed at record`, an order for it may already exist at the supplier** (the request can reach the supplier while its answer is lost on the way back). Look for **the order number PawScout gives the supplier** and check whatever you find there before you retry the order. That number is the long Shopify order id: the digits at the end of the order's page address in the Shopify admin. It is not the short order name the shop shows next to the order (`#1002`), which the supplier never sees. It is the number the email about this order prints, and the number meant everywhere below by "the order number at the supplier". To retry it, press **Release** next to the order (or **Cancel** to stop it). A retry cannot order it twice: the supplier refuses a second order under the same number (seen 2026-10-08), and when a create call fails PawScout reads the supplier back by that number and takes over a live order it finds there. The timeline then says `supplier-order-found` and the order goes to `awaiting-payment`; PawScout never pays an order it took over this way, because it did not see it being made. |
 
 Pressing Release or Cancel in the console only changes PawScout's own record
@@ -43,7 +43,22 @@ also only change PawScout's own record: they pay nothing and tell the supplier
 nothing. Today the console shows Release and Cancel buttons next to a `held`
 or `error` order, a Cancel button next to a `queued` one, and I paid this (or
 Not paid after all, once pressed) next to an `awaiting-payment` order that has
-a supplier order.
+a supplier order, and Delete at CJ next to a `cancelled` order you have not
+marked as paid.
+
+**Delete at CJ is the one console button that acts at the supplier.** It
+deletes the order's supplier order at CJ, for good, so it can never be paid
+by mistake. It looks the supplier order up by the order number at the
+supplier, so it also finds one PawScout never recorded (a create call that
+failed, like #1002). It deletes only when CJ shows a live order under exactly
+that number, with no payment, in `CREATED` or `IN_CART`: those are the only
+states CJ's delete accepts. Anything else is refused with the reason and
+nothing is sent: an `UNPAID` or later order has to be cancelled in CJ's
+dashboard, and one CJ already shows as `TRASH` or `CANCELLED` needs nothing.
+It takes a second click within 8 seconds. Afterwards the console shows what
+CJ said the order was before and what it shows now, and the timeline says
+`supplier-order-deleted`. The Shopify order and PawScout's row stay
+`cancelled`.
 
 **Once PawScout itself has paid a supplier order, that order stops being
 re-read against Shopify for a cancellation or a refund.** PawScout re-checks
@@ -230,6 +245,7 @@ What the labels mean:
 | `owner-alert-failed` | An attempt to send that email failed; it will be tried again on a later run (see "How an alert reaches you" below). |
 | `owner-alert-unconfigured` | PawScout tried to email you about this order, but no alert address or no email sending key is set up, so nobody could be told. |
 | `operator-action` | The owner, or someone on the team, pressed Release or Cancel on this order in the console. |
+| `supplier-order-deleted` | Delete at CJ was pressed on this cancelled order and CJ accepted the delete (the detail names the supplier order's id). |
 | `error` | Something failed; the detail says what. This can also record that an alert was given up on after repeated failures (see below). |
 
 ## Checking that order events are reaching PawScout
@@ -326,8 +342,10 @@ lands in your inbox.
 **"Order `<name>` was cancelled: do NOT pay the supplier"**
 The order was cancelled in Shopify after a supplier order was created for
 it, and PawScout has not paid that supplier order. PawScout has spent
-nothing. Do not pay it. If it is still unpaid, cancel it yourself at the
-supplier. If you had already paid it by hand, PawScout does not know that:
+nothing. Do not pay it. If it is still unpaid, remove it at the supplier:
+Delete at CJ next to the order in the console does that while CJ shows it as
+`CREATED` or `IN_CART`; otherwise cancel it in CJ's dashboard. If you had
+already paid it by hand, PawScout does not know that:
 ask the supplier to cancel and refund it, and treat it as a return if it has
 already shipped. The email says the same.
 

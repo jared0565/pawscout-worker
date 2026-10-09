@@ -108,6 +108,13 @@ describe('consolePage', () => {
     // supplier back and takes over the order it holds.
     expect(rowActions({ id: 'E1', status: 'error', cj: null })).toBe('<button class="ghost" data-act="release" data-id="E1">Release</button> <button class="ghost" data-act="cancel" data-id="E1">Cancel</button>');
     expect(rowActions({ id: 'S1', status: 'submitted', cj: 'CJ5' })).toBe('');
+    // A cancelled order's supplier order can be deleted at CJ (owner
+    // 2026-10-09), including one PawScout never recorded an id for (#1002);
+    // the server decides whether CJ still allows it. Not once the owner has
+    // marked it paid: CJ does not delete a paid order.
+    expect(rowActions({ id: 'C1', status: 'cancelled', cj: 'CJ6', ownerPaidAt: null })).toBe('<button class="ghost" data-act="cj-delete" data-id="C1">Delete at CJ</button>');
+    expect(rowActions({ id: 'C2', status: 'cancelled', cj: null, ownerPaidAt: null })).toBe('<button class="ghost" data-act="cj-delete" data-id="C2">Delete at CJ</button>');
+    expect(rowActions({ id: 'C3', status: 'cancelled', cj: 'CJ7', ownerPaidAt: '2026-10-07T16:00:00.000Z' })).toBe('');
     expect(awaitingOwner([unmarked, marked, { id: 'H1', status: 'held' }]).map((o) => o.id)).toEqual(['O1']);
     // The label describes the mark only while the row is still waiting: a
     // marked order that then ships, is cancelled or is held reads as that.
@@ -119,6 +126,8 @@ describe('consolePage', () => {
     // Marking is a money statement, so it takes a second click, the same way
     // switching PawScout mode on does (window.confirm is blocked in the iframe).
     expect(scripts).toContain('Click I paid this again within 8s to confirm.');
+    // Deleting at CJ cannot be undone, so it takes the same second click.
+    expect(scripts).toContain('Click Delete at CJ again within 8s to confirm.');
   });
 
   // Every remaining place the console names this status has to agree with the
