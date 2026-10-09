@@ -133,8 +133,6 @@ describe('deleteSupplierOrder', () => {
   const refusals: Array<[string, Found | Error, RegExp, 409 | 502]> = [
     ['CJ holds nothing under the number', null, /holds no order under order number X1/, 409],
     ['CJ answers a different number', held('OTHER', 'CREATED'), /answered with order number OTHER/, 409],
-    ['CJ already shows it as TRASH', held('X1', 'TRASH'), /already shows this order as TRASH/, 409],
-    ['CJ already shows it as CANCELLED', held('X1', 'cancelled'), /already shows this order as CANCELLED/, 409],
     ['CJ shows it UNPAID', held('X1', 'UNPAID'), /shows this order as UNPAID.*only an order that is CREATED or IN_CART/, 409],
     ['CJ shows it shipped', held('X1', 'SHIPPED'), /shows this order as SHIPPED/, 409],
     ['CJ shows a payment', held('X1', 'CREATED', { paymentDate: '2026-10-09 10:00:00' }), /shows a payment on this order/, 409],
@@ -154,6 +152,21 @@ describe('deleteSupplierOrder', () => {
     });
   }
 
+  // An order CJ already shows as gone is nothing to delete, and nothing is
+  // sent. The trail still records what CJ showed, so the console stops
+  // offering the button: #1001 was put in TRASH by hand at CJ in June, so
+  // PawScout never recorded a delete for it.
+  for (const [answered, status] of [['TRASH', 'TRASH'], ['cancelled', 'CANCELLED']]) {
+    it(`sends no delete and records the order as gone when CJ already shows it as ${status}`, async () => {
+      const store = new TenantStore(env.DB, SHOP);
+      const o = await seed(store, 'X1', 'cancelled', 'SD-X1');
+      const { cj, deletes } = fakeCj([held('X1', answered)]);
+      expect(await deleteSupplierOrder(store, cj, o)).toEqual({ ok: false, code: 409, error: `CJ already shows this order as ${status}, so there is nothing to delete.` });
+      expect(deletes).toEqual([]);
+      expect((await store.listOrderEvents('X1')).map((e) => [e.kind, e.detail])).toEqual([['supplier-order-gone', `SD-X1 ${status}`]]);
+    });
+  }
+
   it("passes on CJ's refusal of the delete and records nothing", async () => {
     const store = new TenantStore(env.DB, SHOP);
     const o = await seed(store, 'X2', 'cancelled');
@@ -162,6 +175,18 @@ describe('deleteSupplierOrder', () => {
     expect(r).toEqual({ ok: false, code: 502, error: 'CJ refused the delete: Param error (CJ code 1600100, /shopping/order/deleteOrder). Nothing changed in PawScout.' });
     expect(deletes).toEqual(['N-X2']);
     expect(await store.listOrderEvents('X2')).toEqual([]);
+  });
+});
+
+describe('supplierGoneOrderIds', () => {
+  it('names the orders CJ is known to show as gone: deleted from here, or found already gone', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await store.addOrderEvent('D1', 'supplier-order-deleted', 'SD-D1');
+    await store.addOrderEvent('G1', 'supplier-order-gone', 'SD-G1 TRASH');
+    await store.addOrderEvent('U1', 'supplier-delete-unconfirmed', 'SD-U1 still CREATED');
+    await store.addOrderEvent('C1', 'supplier-order-created', 'SD-C1');
+    expect([...await store.supplierGoneOrderIds()].sort()).toEqual(['D1', 'G1']);
+    expect([...await new TenantStore(env.DB, 'other.myshopify.com').supplierGoneOrderIds()]).toEqual([]);
   });
 });
 
@@ -198,5 +223,21 @@ describe('the console action', () => {
     expect(c).toMatchObject({ status: 409, json: { ok: false, error: 'CJ not connected' } });
     expect((await store.getOrder('H1'))!.status).toBe('held');
     expect(await store.listOrderEvents('C1')).toEqual([]);
+  });
+
+  it('marks each listed order whose supplier order CJ is known to show as gone, and only those', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await store.upsertTenant({ accessTokenEnc: 'tok', dekWrapped: 'd', scopes: 's' });
+    await seed(store, 'D1', 'cancelled', 'SD-D1');
+    await seed(store, 'G1', 'cancelled');
+    await seed(store, 'U1', 'cancelled');
+    await seed(store, 'N1', 'cancelled');
+    await store.addOrderEvent('D1', 'supplier-order-deleted', 'SD-D1');
+    await store.addOrderEvent('G1', 'supplier-order-gone', 'SD-G1 TRASH');
+    await store.addOrderEvent('U1', 'supplier-delete-unconfirmed', 'SD-U1 still CREATED');
+    const listed = await post('/api/orders', {});
+    expect(listed.status).toBe(200);
+    const gone = Object.fromEntries((listed.json.orders as Array<Record<string, unknown>>).map((o) => [o.id, o.cjGone]));
+    expect(gone).toEqual({ D1: true, G1: true, U1: false, N1: false });
   });
 });

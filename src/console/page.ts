@@ -725,8 +725,11 @@ function ordersAwaitingOwnerPayment(orders){
   return (orders||[]).filter(function(o){return o.status==='awaiting-payment'&&!o.ownerPaidAt;});
 }
 // The mark outlives the wait (shipping, a cancellation or a hold leave it on
-// the row), so it only labels a row that is still waiting.
+// the row), so it only labels a row that is still waiting. A cancelled row
+// whose supplier order CJ shows as gone says so, as that is why it has no
+// Delete at CJ button.
 function orderStatusLabel(o){
+  if(o.status==='cancelled'&&o.cjGone) return 'cancelled · supplier order removed at CJ';
   return (o.status==='awaiting-payment'&&o.ownerPaidAt)?'paid by you, waiting for tracking':o.status;
 }
 function orderRowActions(o){
@@ -741,8 +744,9 @@ function orderRowActions(o){
   }
   // A cancelled order can still have a supplier order at CJ, recorded or not
   // (#1002 was never recorded); the server asks CJ whether it can be deleted.
-  // Not once the owner marked it paid: CJ does not delete a paid order.
-  if(o.status==='cancelled'&&!o.ownerPaidAt) return '<button class="ghost" data-act="cj-delete" data-id="'+esc(o.id)+'">Delete at CJ</button>';
+  // Not once the owner marked it paid: CJ does not delete a paid order. Not
+  // once CJ is known to show it gone (cjGone): nothing is left to delete.
+  if(o.status==='cancelled'&&!o.ownerPaidAt&&!o.cjGone) return '<button class="ghost" data-act="cj-delete" data-id="'+esc(o.id)+'">Delete at CJ</button>';
   return '';
 }
 // "I paid this" is a statement about money and "Delete at CJ" cannot be
@@ -764,8 +768,11 @@ async function orderAction(id,action){
   armed='';
   try{
     var r=await api('/order-action',{id:id,action:action});
+    // A refused delete reloads the list too: one that found the order already
+    // gone at CJ has recorded it, and the button has to go. The list is loaded
+    // first because loading it clears the message.
+    if(action==='cj-delete'){ await loadOrders(); setMsg('ordmsg',r.ok?cjDeleteDoneText(r):'Failed: '+(r.error||'unknown error'),r.ok?'ok':'no'); return; }
     if(!r.ok){ setMsg('ordmsg','Failed: '+(r.error||'unknown error'),'no'); return; }
-    if(action==='cj-delete'){ await loadOrders(); setMsg('ordmsg',cjDeleteDoneText(r),'ok'); return; }
     loadOrders();
   }catch(e){ setMsg('ordmsg','Failed: '+errText(e),'no'); }
 }

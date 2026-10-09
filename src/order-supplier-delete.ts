@@ -15,7 +15,9 @@ import type { CjClient } from './cj';
 //
 // CJ accepting the delete is not taken as proof it took. The order is read
 // back, and the trail says supplier-order-deleted only when CJ shows this same
-// order as TRASH or CANCELLED; anything else is recorded as unconfirmed.
+// order as TRASH or CANCELLED; anything else is recorded as unconfirmed. An
+// order CJ already shows that way is recorded as supplier-order-gone. Either
+// record takes the button off the order's row in the console.
 
 export type SupplierOrderDeleter = Pick<CjClient, 'findOrderByNumber' | 'deleteOrder'>;
 
@@ -48,7 +50,13 @@ export async function deleteSupplierOrder(store: TenantStore, cj: SupplierOrderD
   if (!found) return { ok: false, code: 409, error: `CJ holds no order under order number ${number}, so there is nothing to delete.` };
   if (found.orderNum !== number) return { ok: false, code: 409, error: `CJ answered with order number ${found.orderNum || 'none'}, not ${number}, so nothing was deleted.` };
   const status = found.status.toUpperCase();
-  if (GONE.has(status)) return { ok: false, code: 409, error: `CJ already shows this order as ${status}, so there is nothing to delete.` };
+  if (GONE.has(status)) {
+    // Nothing is sent, but the trail records what CJ showed, so the console
+    // stops offering the button. #1001 was put in TRASH by hand at CJ, and a
+    // press after an unconfirmed delete can find it gone by then.
+    await store.addOrderEvent(number, 'supplier-order-gone', `${found.cjOrderId} ${status}`);
+    return { ok: false, code: 409, error: `CJ already shows this order as ${status}, so there is nothing to delete.` };
+  }
   if (found.paymentDate) return { ok: false, code: 409, error: `CJ shows a payment on this order (${found.paymentDate}), so it cannot be deleted. Ask CJ to cancel and refund it.` };
   if (!DELETABLE.has(status)) {
     return { ok: false, code: 409, error: `CJ shows this order as ${status || 'no status'}, and CJ deletes only an order that is CREATED or IN_CART. Cancel it in CJ's dashboard instead.` };

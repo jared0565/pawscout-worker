@@ -44,7 +44,8 @@ nothing. Today the console shows Release and Cancel buttons next to a `held`
 or `error` order, a Cancel button next to a `queued` one, and I paid this (or
 Not paid after all, once pressed) next to an `awaiting-payment` order that has
 a supplier order, and Delete at CJ next to a `cancelled` order you have not
-marked as paid.
+marked as paid and whose supplier order CJ is not already known to show as
+gone.
 
 **Delete at CJ is the one console button that acts at the supplier.** It
 deletes the order's supplier order at CJ, for good, so it can never be paid
@@ -54,7 +55,8 @@ failed, like #1002). It deletes only when CJ shows a live order under exactly
 that number, with no payment, in `CREATED` or `IN_CART`: those are the only
 states CJ's delete accepts. Anything else is refused with the reason and
 nothing is sent: an `UNPAID` or later order has to be cancelled in CJ's
-dashboard, and one CJ already shows as `TRASH` or `CANCELLED` needs nothing.
+dashboard, and one CJ already shows as `TRASH` or `CANCELLED` needs nothing
+(the timeline records that PawScout saw it gone, `supplier-order-gone`).
 It takes a second click within 8 seconds. The Shopify order and PawScout's
 row stay `cancelled`. A deleted order does not vanish at CJ: CJ still lists
 it and still answers it by any of its ids, with the status `TRASH` (seen on
@@ -71,7 +73,12 @@ answers with a different order, or the read itself fails. CJ did accept the
 delete in each of those cases, so check the order in CJ's dashboard. The
 button stays next to the order afterwards. Pressing it again reads CJ first:
 an order CJ shows as `TRASH` by then is refused with that, nothing is sent,
-and the timeline keeps only the unconfirmed entry.
+and the timeline adds `supplier-order-gone`.
+
+Once the timeline says `supplier-order-deleted` or `supplier-order-gone`, the
+button is no longer shown next to the order and its status reads
+`cancelled · supplier order removed at CJ`. An unconfirmed delete does not
+take the button away.
 
 **Once PawScout itself has paid a supplier order, that order stops being
 re-read against Shopify for a cancellation or a refund.** PawScout re-checks
@@ -260,6 +267,7 @@ What the labels mean:
 | `operator-action` | The owner, or someone on the team, pressed Release or Cancel on this order in the console. |
 | `supplier-order-deleted` | Delete at CJ was pressed on this cancelled order, CJ accepted the delete, and reading it back showed that same order as `TRASH` or `CANCELLED` (the detail names the supplier order's id). |
 | `supplier-delete-unconfirmed` | Delete at CJ was pressed and CJ accepted the delete, but reading it back did not show the order gone. The detail names the supplier order's id and what was seen: `still CREATED` (or another status), `not found`, `answered as another order`, or `read-back failed`. Check the order in CJ's dashboard. |
+| `supplier-order-gone` | Delete at CJ was pressed, and CJ already showed this order as `TRASH` or `CANCELLED`, so nothing was sent. The detail names the supplier order's id and the status CJ showed. |
 | `error` | Something failed; the detail says what. This can also record that an alert was given up on after repeated failures (see below). |
 
 ## Checking that order events are reaching PawScout
