@@ -39,6 +39,7 @@ import { registerWebhooks, ensureWebhooks, ORDER_EVENT_TOPICS, type RegisterWebh
 import { cancelledOrderId, refundInfo, applyCancel, applyRefund, type OwnerAlert } from './order-cancel';
 import { alertOwner } from './owner-alert';
 import { deliverOrderAlert, recordAlertDue } from './order-alert';
+import { deleteSupplierOrder, supplierDeleteRefusal } from './order-supplier-delete';
 import { onWebhookFailure } from './webhook-retry';
 import { validateGatesPayload, validatePricingPayload, validateLlmPayload, validateAddonsPayload, validateCollectionMap, validatePartnerPayload, validateSelfServePayload } from './validate';
 import { sendEmail, SENDING_DOMAIN } from './email';
@@ -1730,7 +1731,8 @@ app.post('/api/freight-quote', async (c) => {
     return c.json({ ok: false, error: `CJ freight: ${(e as Error).message}` }, 200);
   }
 });
-// Operator override on a held/queued order (release to auto-fulfil, hold, cancel).
+// Operator override on a held/queued order (release to auto-fulfil, hold, cancel),
+// "I paid this" and its undo, and deleting a cancelled order's supplier order at CJ.
 app.post('/api/order-action', async (c) => {
   const s = await shopOf(c); if (typeof s !== 'string') return s;
   let body: { id?: string; action?: string } = {};
@@ -1753,6 +1755,24 @@ app.post('/api/order-action', async (c) => {
     }
     await store.addOrderEvent(body.id, body.action === 'paid' ? 'owner-paid' : 'owner-paid-undone', order.cj_order_id);
     return c.json({ ok: true, status: 'awaiting-payment' });
+  }
+  if (body.action === 'cj-delete') {
+    // "Delete at CJ" (owner 2026-10-09): removes a cancelled order's supplier
+    // order at CJ. Cannot be undone, so the row is checked before CJ is asked,
+    // and CJ's own state is checked again before the delete is sent.
+    if (!body.id) return c.json({ ok: false, error: 'Bad request' }, 400);
+    const store = new TenantStore(c.env.DB, s);
+    const order = await store.getOrder(body.id);
+    if (!order) return c.json({ ok: false, error: 'Order not found' }, 404);
+    const refusal = supplierDeleteRefusal(order);
+    if (refusal) return c.json({ ok: false, error: refusal }, 409);
+    if (!(await store.getSupplierCredential('cj'))) return c.json({ ok: false, error: 'CJ not connected' }, 409);
+    const vault = await Vault.fromMasterKey(c.env.PAWSCOUT_MASTER_KEY);
+    const f = cjFetchFromEnv(c.env);
+    const cj = new CjClient(() => new CjTokenManager(store, vault, f).getToken(), f);
+    const r = await deleteSupplierOrder(store, cj, order);
+    if (!r.ok) return c.json({ ok: false, error: r.error }, r.code);
+    return c.json({ ok: true, status: 'cancelled', cjOrderId: r.cjOrderId, before: r.before, after: r.after, readBack: r.readBack });
   }
   const map: Record<string, 'queued' | 'held' | 'cancelled'> = { release: 'queued', hold: 'held', cancel: 'cancelled' };
   const status = map[body.action ?? ''];

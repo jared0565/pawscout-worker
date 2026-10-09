@@ -349,25 +349,63 @@ describe('CjClient.findOrderByNumber', () => {
   it('reads the order detail by the order number PawScout gave CJ, and answers its SD id, number and status', async () => {
     const calls: string[] = [];
     const cj = new CjClient(async () => 'tok', detailFetch({ orderId: '2610081831170660600', orderNum: '8506621854034', cjOrderId: null, cjOrderCode: 'SD2610081831150667400', orderStatus: 'CREATED' }, calls));
-    expect(await cj.findOrderByNumber('8506621854034')).toEqual({ cjOrderId: 'SD2610081831150667400', orderNum: '8506621854034', status: 'CREATED' });
+    expect(await cj.findOrderByNumber('8506621854034')).toEqual({ cjOrderId: 'SD2610081831150667400', numericId: '2610081831170660600', orderNum: '8506621854034', status: 'CREATED', paymentDate: null });
     expect(calls).toHaveLength(1);
     expect(calls[0]).toContain('/shopping/order/getOrderDetail?orderId=8506621854034');
   });
 
   it("answers the SD id, not the detail's CJ-prefixed cjOrderId, once CJ has moved the order on", async () => {
     const cj = new CjClient(async () => 'tok', detailFetch({ orderId: '2610081301260650000', orderNum: '8505727222098', cjOrderId: 'CJ26100854844661980370', cjOrderCode: 'SD2610081301230654600', orderStatus: 'UNPAID' }));
-    expect(await cj.findOrderByNumber('8505727222098')).toEqual({ cjOrderId: 'SD2610081301230654600', orderNum: '8505727222098', status: 'UNPAID' });
+    expect(await cj.findOrderByNumber('8505727222098')).toEqual({ cjOrderId: 'SD2610081301230654600', numericId: '2610081301260650000', orderNum: '8505727222098', status: 'UNPAID', paymentDate: null });
   });
 
   it('falls back to the numeric orderId when the answer has no SD id', async () => {
     const cj = new CjClient(async () => 'tok', detailFetch({ orderId: '2610081301260650000', orderNum: '8505727222098', cjOrderId: 'CJ26100854844661980370', orderStatus: 'UNPAID' }));
-    expect(await cj.findOrderByNumber('8505727222098')).toEqual({ cjOrderId: '2610081301260650000', orderNum: '8505727222098', status: 'UNPAID' });
+    expect(await cj.findOrderByNumber('8505727222098')).toEqual({ cjOrderId: '2610081301260650000', numericId: '2610081301260650000', orderNum: '8505727222098', status: 'UNPAID', paymentDate: null });
   });
 
   it("answers null when CJ holds no order under that number, or only the detail's own cjOrderId", async () => {
     expect(await new CjClient(async () => 'tok', detailFetch(null)).findOrderByNumber('1')).toBeNull();
     expect(await new CjClient(async () => 'tok', detailFetch({ orderNum: '1', orderStatus: 'CREATED' })).findOrderByNumber('1')).toBeNull();
     expect(await new CjClient(async () => 'tok', detailFetch({ orderNum: '1', cjOrderId: 'CJ1', orderStatus: 'UNPAID' })).findOrderByNumber('1')).toBeNull();
+  });
+  it('answers the payment date when CJ shows one, and no numeric id when the answer has none', async () => {
+    const cj = new CjClient(async () => 'tok', detailFetch({ orderNum: '7', cjOrderCode: 'SD7', orderStatus: 'UNSHIPPED', paymentDate: '2026-10-09 10:00:00' }));
+    expect(await cj.findOrderByNumber('7')).toEqual({ cjOrderId: 'SD7', numericId: null, orderNum: '7', status: 'UNSHIPPED', paymentDate: '2026-10-09 10:00:00' });
+  });
+});
+
+// CJ's Order Delete (read 2026-10-09): DELETE /shopping/order/deleteOrder with
+// the order id as a query parameter, and "only orders whose status is CREATED
+// or IN_CART can be deleted". Its example id is the numeric one. Whether an
+// order may be deleted is the caller's decision; this only sends the call.
+describe('CjClient.deleteOrder', () => {
+  it('sends a DELETE with the order id as a query parameter and the access token', async () => {
+    const calls: { url: string; init: RequestInit | undefined }[] = [];
+    const f = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ url: String(input), init });
+      return new Response(JSON.stringify({ code: 200, result: true, message: 'Success', data: '2610081831170660600' }), { status: 200 });
+    }) as typeof fetch;
+    await new CjClient(async () => 'tok', f).deleteOrder('2610081831170660600');
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toContain('/shopping/order/deleteOrder?orderId=2610081831170660600');
+    expect(calls[0].init?.method).toBe('DELETE');
+    expect((calls[0].init?.headers as Record<string, string>)['CJ-Access-Token']).toBe('tok');
+  });
+
+  it("throws CJ's refusal with its code, so a refused delete is never read as done", async () => {
+    const f = (async () => new Response(JSON.stringify({ code: 1600100, result: false, message: 'Param error', data: null }), { status: 200 })) as typeof fetch;
+    await expect(new CjClient(async () => 'tok', f).deleteOrder('1')).rejects.toThrow(/Param error \(CJ code 1600100, \/shopping\/order\/deleteOrder\)/);
+  });
+
+  it('leaves every read a plain GET', async () => {
+    const inits: (RequestInit | undefined)[] = [];
+    const f = (async (_i: RequestInfo | URL, init?: RequestInit) => {
+      inits.push(init);
+      return new Response(JSON.stringify({ result: true, data: null }), { status: 200 });
+    }) as typeof fetch;
+    await new CjClient(async () => 'tok', f).findOrderByNumber('1');
+    expect(inits[0]?.method).toBeUndefined();
   });
 });
 

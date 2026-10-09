@@ -739,24 +739,41 @@ function orderRowActions(o){
     if(o.ownerPaidAt) return '<button class="ghost" data-act="unpaid" data-id="'+esc(o.id)+'">Not paid after all</button>';
     return '<button class="ghost" data-act="paid" data-id="'+esc(o.id)+'">I paid this</button>';
   }
+  // A cancelled order can still have a supplier order at CJ, recorded or not
+  // (#1002 was never recorded); the server asks CJ whether it can be deleted.
+  // Not once the owner marked it paid: CJ does not delete a paid order.
+  if(o.status==='cancelled'&&!o.ownerPaidAt) return '<button class="ghost" data-act="cj-delete" data-id="'+esc(o.id)+'">Delete at CJ</button>';
   return '';
 }
-// "I paid this" is a statement about money, so it takes a second click within
-// 8s, like switching PawScout mode on (confirm() is blocked in the admin iframe).
-var armPaid='';
+// "I paid this" is a statement about money and "Delete at CJ" cannot be
+// undone, so each takes a second click within 8s, like switching PawScout mode
+// on (confirm() is blocked in the admin iframe).
+var armed='';
+var ARM_TEXT={
+  'paid':'Mark this supplier order as paid by you at the supplier? PawScout will stop asking you to pay it and will never pay it itself; it still watches the order for a cancellation and syncs its tracking. Click I paid this again within 8s to confirm.',
+  'cj-delete':'Delete the supplier order for this cancelled order at CJ? CJ removes it for good, and only while it is unpaid and CREATED or IN_CART. Click Delete at CJ again within 8s to confirm.'
+};
 async function orderAction(id,action){
-  if(action==='paid'&&armPaid!==id){
-    armPaid=id;
-    setMsg('ordmsg','Mark this supplier order as paid by you at the supplier? PawScout will stop asking you to pay it and will never pay it itself; it still watches the order for a cancellation and syncs its tracking. Click I paid this again within 8s to confirm.','no');
-    setTimeout(function(){ if(armPaid===id){ armPaid=''; setMsg('ordmsg','Cancelled.','muted'); } },8000);
+  var key=action+':'+id;
+  if(ARM_TEXT[action]&&armed!==key){
+    armed=key;
+    setMsg('ordmsg',ARM_TEXT[action],'no');
+    setTimeout(function(){ if(armed===key){ armed=''; setMsg('ordmsg','Cancelled.','muted'); } },8000);
     return;
   }
-  armPaid='';
+  armed='';
   try{
     var r=await api('/order-action',{id:id,action:action});
     if(!r.ok){ setMsg('ordmsg','Failed: '+(r.error||'unknown error'),'no'); return; }
+    if(action==='cj-delete'){ await loadOrders(); setMsg('ordmsg',cjDeleteDoneText(r),'ok'); return; }
     loadOrders();
   }catch(e){ setMsg('ordmsg','Failed: '+errText(e),'no'); }
+}
+// What CJ showed before the delete and after it. A read-back that did not
+// answer is said plainly, never shown as gone.
+function cjDeleteDoneText(r){
+  var now=!r.readBack?'reading it back did not answer, so check it in the CJ dashboard':(r.after?'CJ now shows it as '+r.after:'CJ no longer finds it');
+  return 'Deleted at CJ: '+r.cjOrderId+' (was '+r.before+'); '+now+'.';
 }
 async function fixCategoriesNow(){
   var btn=el('catbtn'); btn.disabled=true;

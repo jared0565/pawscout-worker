@@ -271,11 +271,18 @@ export class CjClient {
   ) {}
 
   private async get(path: string, params: Record<string, string>): Promise<unknown> {
+    return this.query('GET', path, params);
+  }
+
+  /** A call whose arguments go in the query string: every read, and CJ's
+   *  Order Delete. A GET is sent exactly as before, with no method field. */
+  private async query(method: 'GET' | 'DELETE', path: string, params: Record<string, string>): Promise<unknown> {
     const qs = new URLSearchParams(params).toString();
     // CJ free tier allows ~1 request/second; a cold-token mint followed
     // immediately by this call can 429. Back off briefly and retry.
     for (let attempt = 0; ; attempt++) {
       const resp = await this.fetchImpl(`${CJ_BASE}${path}?${qs}`, {
+        ...(method === 'GET' ? {} : { method }),
         headers: { 'CJ-Access-Token': await this.token(), ...CJ_HEADERS }
       });
       if (resp.status === 429 && attempt < 2) {
@@ -655,14 +662,31 @@ export class CjClient {
    * numeric id; and the detail's own `cjOrderId` is null on a CREATED order
    * and a CJ-prefixed id once CJ moves it on, so it is never used. Whether to
    * take the order over is the caller's decision: this only reports what CJ
-   * answered.
+   * answered. `numericId` is CJ's numeric `orderId`, the form Order Delete's
+   * example takes; `paymentDate` is null until CJ records a payment.
    */
-  async findOrderByNumber(orderNumber: string): Promise<{ cjOrderId: string; orderNum: string; status: string } | null> {
+  async findOrderByNumber(orderNumber: string): Promise<{ cjOrderId: string; numericId: string | null; orderNum: string; status: string; paymentDate: string | null } | null> {
     const d = (await this.get('/shopping/order/getOrderDetail', { orderId: orderNumber })) as Record<string, unknown> | null;
     if (!d) return null;
     const cjOrderId = String(d.cjOrderCode ?? d.orderId ?? '');
     if (!cjOrderId) return null;
-    return { cjOrderId, orderNum: String(d.orderNum ?? ''), status: String(d.orderStatus ?? d.status ?? '') };
+    return {
+      cjOrderId,
+      numericId: d.orderId == null || d.orderId === '' ? null : String(d.orderId),
+      orderNum: String(d.orderNum ?? ''),
+      status: String(d.orderStatus ?? d.status ?? ''),
+      paymentDate: d.paymentDate == null || d.paymentDate === '' ? null : String(d.paymentDate)
+    };
+  }
+
+  /**
+   * CJ's Order Delete (read 2026-10-09): "only orders whose status is CREATED
+   * or IN_CART can be deleted". It cannot be undone. Whether an order may be
+   * deleted is the caller's decision (src/order-supplier-delete.ts); a refusal
+   * throws with CJ's code, so it is never read as done.
+   */
+  async deleteOrder(orderId: string): Promise<void> {
+    await this.query('DELETE', '/shopping/order/deleteOrder', { orderId });
   }
 
   /** Read-only: CJ's order detail exactly as CJ sent it, for the diagnostic
