@@ -777,3 +777,32 @@ marked paid by hand in Shopify so no card was charged, run on production
 - Not proven until it is first used: that the delete call takes the numeric
   id, and what the detail read answers for a deleted order (`TRASH`, nothing,
   or an error). The console says which of those it got.
+
+### 2026-10-09, Delete at CJ, first use
+
+- 09:31Z `d832897b30c3` went to production on the owner's go (the guarded
+  deploy, after one transient 7403 refusal on its migrations read; smoke
+  3 of 3). `/healthz` reported `d832897b30c3` at 09:31:39Z.
+- Read just before, at 08:12Z: #1003 `CREATED`, #1002 `IN_CART`, neither
+  with a payment date.
+- 09:34Z, **Delete at CJ** pressed in the console on #1003 (both clicks):
+  the route answered `before: CREATED`, `after: TRASH`, `readBack: true`,
+  and the trail recorded `supplier-order-deleted` with
+  `SD2610081831150667400` at 09:34:42Z. 09:35Z, the same on #1002:
+  `before: IN_CART`, `after: TRASH`, trail event at 09:35:45Z with
+  `SD2610081301230654600`.
+- Settled: the delete call takes the numeric id (the detail's `orderId`),
+  sent through the relay as a `DELETE`. A deleted order is not gone from
+  the supplier: the detail still answers it under the order number, the
+  `SD` id and the numeric id alike, with `orderStatus` `TRASH` and no
+  payment date, and the list still carries it, as `TRASH` (4 orders, all
+  `TRASH`, at 09:35:59Z). That is how the two June orders read too.
+- Both test orders are off the never-pay list: the supplier shows each as
+  `TRASH`, with no payment date, under every id it has.
+- Still open: the route reports success once the supplier accepts the
+  delete, whatever the read-back shows. Here the read-back said `TRASH`
+  both times. Had it still said `CREATED` or `IN_CART`, the console would
+  have shown that state in its message, but the trail would still have
+  recorded `supplier-order-deleted`. The button also stays on a cancelled
+  row after its supplier order reads `TRASH`; pressing it again is refused
+  ("already shows this order as TRASH") after a read, and nothing is sent.
