@@ -257,7 +257,7 @@ export type OrderEventKind =
   | 'awaiting-payment' | 'awaiting-payment-emailed' | 'awaiting-payment-email-failed' | 'paid'
   | 'tracking-found' | 'tracking-written' | 'tracking-write-failed'
   | 'cancel-received' | 'refund-received' | 'owner-alert-due' | 'owner-alerted' | 'owner-alert-unconfigured' | 'owner-alert-failed' | 'operator-action' | 'error'
-  | 'owner-paid' | 'owner-paid-undone' | 'supplier-order-deleted';
+  | 'owner-paid' | 'owner-paid-undone' | 'supplier-order-deleted' | 'supplier-delete-unconfirmed';
 
 /** One append-only row of the order trail - `detail` is short plain text and
  *  must never hold a name, an address, an email or a phone number. */

@@ -806,3 +806,23 @@ marked paid by hand in Shopify so no card was charged, run on production
   recorded `supplier-order-deleted`. The button also stays on a cancelled
   row after its supplier order reads `TRASH`; pressing it again is refused
   ("already shows this order as TRASH") after a read, and nothing is sent.
+
+### 2026-10-09, Delete at CJ counts only a confirmed delete
+
+- The gap recorded at first use is closed: the trail says
+  `supplier-order-deleted`, and the console says "Deleted at CJ", only when
+  the order read back after the delete carries the same order number and
+  the same `SD` id and shows `TRASH` or `CANCELLED`.
+- Anything else after CJ accepted the delete is recorded as
+  `supplier-delete-unconfirmed`, with the `SD` id and one of `still
+  <status>`, `not found`, `answered as another order` or `read-back failed`
+  (fixed words, never CJ's own text), and the console shows it as a failure
+  with CJ's answer and asks for a check in CJ's dashboard.
+- An order CJ no longer finds counts as unconfirmed, not as deleted: at
+  first use both deleted orders still answered under every id, as `TRASH`.
+- A second press after an unconfirmed result reads CJ first. If CJ shows
+  `TRASH` by then it is refused and nothing more is recorded, so the trail
+  keeps the unconfirmed entry. That is left as it is.
+- Production cannot show this working: no order at CJ is deletable now
+  (both test orders read `TRASH`), and no test order is made to prove it.
+  The evidence is the tests.
