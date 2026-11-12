@@ -15,11 +15,20 @@ main = "src/index.ts"
 compatibility_date = "2026-07-22"
 compatibility_flags = ["nodejs_compat"]
 
-# Wrangler 4.150+ uploads source maps on deploy unless this is set. Pinned to
-# false on 2026-11-12 so the wrangler upgrade changes nothing about what a
-# deploy uploads. Turning it on (readable stack traces in Workers Logs) is a
-# separate decision: check the bundle stays within the plan's size limit first.
-upload_source_maps = false
+# Source maps: ON since 2026-11-12 (owner: "Turn on source maps"). They were
+# pinned false for the wrangler 4.161 upgrade so that deploy changed only the
+# toolchain; this is the separate change that turns them on.
+# - What it buys: Cloudflare remaps the stack trace of an UNCAUGHT exception
+#   (real-time logs, Tail Workers, Workers Issues) to src/*.ts lines. It does
+#   NOT rewrite an error this code catches and logs itself (console.error of
+#   e.message or e.stack): the Worker cannot see its maps at runtime.
+# - Cost: none at runtime (remapping runs after the invocation). Size measured
+#   2026-11-12: bundle 1953 KiB plus a 4 MB map, against Cloudflare's 64 MiB
+#   Worker limit and 60 MiB per map.
+# - `true`, not unset: unset (wrangler 4.150+) uploads maps but SKIPS any it
+#   cannot resolve, silently; `true` fails the upload instead, so a missing map
+#   shows up as a failed staging deploy rather than as maps quietly absent.
+upload_source_maps = true
 
 routes = [
   { pattern = "pawscout.activepaw.co.uk", custom_domain = true }
