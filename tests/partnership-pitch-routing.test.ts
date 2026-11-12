@@ -1,4 +1,4 @@
-/// <reference types="@cloudflare/vitest-pool-workers" />
+/// <reference types="@cloudflare/vitest-plugin" />
 /**
  * Pitch-pattern routing (owner-observed patterns, 2026-07-05):
  *  - commission-for-volume pitches get the SAME funnel plus the earned-tier

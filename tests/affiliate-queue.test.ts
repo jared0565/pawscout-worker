@@ -1,4 +1,4 @@
-/// <reference types="@cloudflare/vitest-pool-workers" />
+/// <reference types="@cloudflare/vitest-plugin" />
 // Trial-code queue (2026-07-06): qualify an applicant in the Inbox now, issue
 // their code from Partners later. The queue is affiliate_partners rows with
 // status 'queued'; issuing runs through upsertAffiliatePartner which flips the

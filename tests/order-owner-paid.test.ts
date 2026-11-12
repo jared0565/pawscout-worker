@@ -1,4 +1,4 @@
-/// <reference types="@cloudflare/vitest-pool-workers" />
+/// <reference types="@cloudflare/vitest-plugin" />
 // "I paid this" (aramid 87a8dc74, owner 2026-10-07): the owner can tell
 // PawScout that a supplier order it did not pay has been paid by hand. The row
 // keeps its awaiting-payment status, so the 15 minute cancellation re-check

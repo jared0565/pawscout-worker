@@ -1,4 +1,4 @@
-/// <reference types="@cloudflare/vitest-pool-workers" />
+/// <reference types="@cloudflare/vitest-plugin" />
 /**
  * Storewide event facts for the inbox (owner design 2026-09-17): the agents
  * answer "is there a running event?" from the SAME feed the storefront reads

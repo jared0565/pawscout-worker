@@ -1,4 +1,4 @@
-/// <reference types="@cloudflare/vitest-pool-workers" />
+/// <reference types="@cloudflare/vitest-plugin" />
 // Affiliate voucher attribution (2026-07-04): the 15-minute sweep polls orders
 // updated since the cursor, matches discount codes to registered vouchers, and
 // keeps the ledger's CURRENT amounts honest (refunds claw commission back).

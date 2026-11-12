@@ -1,5 +1,10 @@
-/// <reference types="@cloudflare/vitest-pool-workers" />
-import type { D1Migration } from '@cloudflare/vitest-pool-workers/config';
+// The package was renamed from @cloudflare/vitest-pool-workers at its 1.0.0
+// (upgraded here 2026-11-12). It has no `/config` subpath; D1Migration is
+// exported from the main entry instead. That import also brings in the
+// package's types, so the old `/// <reference types>` line went: with the
+// import and the reference naming the same package, lint rejects the reference
+// (@typescript-eslint/triple-slash-reference).
+import type { D1Migration } from '@cloudflare/vitest-plugin';
 
 // Test-only bindings provided by the Workers pool (vitest.config.ts).
 //
@@ -11,7 +16,7 @@ import type { D1Migration } from '@cloudflare/vitest-pool-workers/config';
 // "Property 'DB' does not exist on type 'Env'". Keeping both means the file is
 // correct under either resolution and does not silently rot if it changes back.
 // v4 declares `export const env: Cloudflare.Env` (see
-// node_modules/@cloudflare/vitest-pool-workers/types/cloudflare-test.d.ts), so
+// node_modules/@cloudflare/vitest-plugin/types/cloudflare-test.d.ts), so
 // the namespaced interface is what has to carry the bindings. `ProvidedEnv`,
 // which v0.5 used and which every migration note still mentions, is no longer
 // referenced by the `env` export at all: augmenting it compiles fine and does

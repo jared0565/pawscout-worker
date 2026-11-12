@@ -1,6 +1,10 @@
-import { cloudflareTest, readD1Migrations } from '@cloudflare/vitest-pool-workers';
+import { cloudflareTest, readD1Migrations } from '@cloudflare/vitest-plugin';
 import { configDefaults, defineConfig } from 'vitest/config';
 
+// 2026-11-12: @cloudflare/vitest-pool-workers 0.22.0 replaced by its renamed
+// successor @cloudflare/vitest-plugin 1.8.1 (the old name is deprecated and gets
+// no updates). Same API: only the package name changed.
+//
 // Upgraded 2026-07-28 from vitest 2.1.9 / @cloudflare/vitest-pool-workers 0.5.41.
 // The old stack could not START the full 150-file suite on Node 24: workerd
 // failed to fetch even vitest's own runner chunk over loopback, giving 150-180

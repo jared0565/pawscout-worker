@@ -1,4 +1,4 @@
-/// <reference types="@cloudflare/vitest-pool-workers" />
+/// <reference types="@cloudflare/vitest-plugin" />
 // "Delete at CJ" (owner 2026-10-09): a cancelled order's supplier order can be
 // removed at CJ from the console, so it can never be paid by mistake. CJ's
 // Order Delete takes only an order that is CREATED or IN_CART; an order CJ

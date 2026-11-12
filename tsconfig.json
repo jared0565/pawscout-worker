@@ -4,11 +4,12 @@
     "module": "es2022",
     "moduleResolution": "bundler",
     "lib": ["es2022"],
-    // @cloudflare/vitest-pool-workers/types declares the `cloudflare:test`
+    // @cloudflare/vitest-plugin/types declares the `cloudflare:test`
     // module (env, applyD1Migrations, ...). v0.5 pulled it in implicitly; v4
     // requires it listed explicitly or every test file fails tsc with
-    // "Cannot find module 'cloudflare:test'". Added with the 2026-07-28 upgrade.
-    "types": ["@cloudflare/workers-types", "@cloudflare/vitest-pool-workers/types"],
+    // "Cannot find module 'cloudflare:test'". Added with the 2026-07-28 upgrade;
+    // the package was renamed from @cloudflare/vitest-pool-workers on 2026-11-12.
+    "types": ["@cloudflare/workers-types", "@cloudflare/vitest-plugin/types"],
     "strict": true,
     "skipLibCheck": true,
     "noEmit": true,

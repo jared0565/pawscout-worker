@@ -9,7 +9,7 @@
 // errors and `Test Files no tests`. There are ZERO assertion failures in that
 // output; it is an environment/startup failure, not a broken test. Serialising
 // with --no-file-parallelism does not help, and --maxWorkers does not apply
-// (this repo uses @cloudflare/vitest-pool-workers, which spawns its own
+// (this repo uses @cloudflare/vitest-plugin, which spawns its own
 // isolated runtime per file and ignores that flag). Small batches DO work
 // reliably, which is what this script exploits.
 //

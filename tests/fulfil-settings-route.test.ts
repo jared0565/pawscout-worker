@@ -1,4 +1,4 @@
-/// <reference types="@cloudflare/vitest-pool-workers" />
+/// <reference types="@cloudflare/vitest-plugin" />
 // POST /api/fulfil is the console's fulfilment card: the mode buttons, the
 // Create-only toggle and "Save alert email". Each press names only mode,
 // createOnly and alertEmail, but the stored fulfil block holds more than that
