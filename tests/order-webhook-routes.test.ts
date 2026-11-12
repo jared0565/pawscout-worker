@@ -1,4 +1,4 @@
-/// <reference types="@cloudflare/vitest-pool-workers" />
+/// <reference types="@cloudflare/vitest-plugin" />
 // The two new Shopify order webhook routes (orders-cancelled, refunds-create)
 // plus HTTP-level coverage of orders-paid's new trail writes. Drives the real
 // Hono app with HMAC-signed requests, same pattern as

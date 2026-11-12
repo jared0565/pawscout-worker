@@ -168,7 +168,7 @@ Products that never reach a preview are **never imported** - no catalog pollutio
 - **Router:** [Hono](https://hono.dev)
 - **Shopify:** [`@shopify/shopify-api`](https://github.com/Shopify/shopify-api-js) v11 (cf-worker adapter), App Bridge v4, Admin GraphQL, App Proxy
 - **Database:** [D1](https://developers.cloudflare.com/d1/) (SQLite), migrations in `migrations/`
-- **Tests:** [Vitest](https://vitest.dev) with [`@cloudflare/vitest-pool-workers`](https://developers.cloudflare.com/workers/testing/vitest-integration/) - the suites run inside workerd against an in-memory D1 with real migrations
+- **Tests:** [Vitest](https://vitest.dev) with [`@cloudflare/vitest-plugin`](https://developers.cloudflare.com/workers/testing/vitest-integration/) - the suites run inside workerd against an in-memory D1 with real migrations
 
 ## Project layout
 
@@ -387,7 +387,7 @@ version:
 
 ### Testing notes
 
-Tests run in real workerd via `@cloudflare/vitest-pool-workers` with migrations applied to in-memory D1. External boundaries (Shopify Admin GraphQL, CJ API, token exchange) are injected as functions or fake `fetch` implementations - no network in tests. Cron logic is tested with backdated rows written directly by tests (production code still goes through `TenantStore` only, enforced by the guard test).
+Tests run in real workerd via `@cloudflare/vitest-plugin` with migrations applied to in-memory D1. External boundaries (Shopify Admin GraphQL, CJ API, token exchange) are injected as functions or fake `fetch` implementations - no network in tests. Cron logic is tested with backdated rows written directly by tests (production code still goes through `TenantStore` only, enforced by the guard test).
 
 ## Roadmap
 

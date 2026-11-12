@@ -1,4 +1,4 @@
-/// <reference types="@cloudflare/vitest-pool-workers" />
+/// <reference types="@cloudflare/vitest-plugin" />
 // Partners view API (2026-07-04): register a collaborator's voucher, read the
 // rolled-up ledger, revoke a code on record, stamp payouts, and drill into the
 // attributed orders behind one voucher's numbers.

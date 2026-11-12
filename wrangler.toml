@@ -7,8 +7,19 @@ main = "src/index.ts"
 # can exercise. Raise it only together with that package, run the full suite,
 # deploy to staging, and ship it to production as ITS OWN deploy so a runtime
 # behaviour change is never confused with a code change.
+# 2026-11-12: the test runtime moved to miniflare 5.20261110.2-beta (via
+# @cloudflare/vitest-plugin 1.8.1, the renamed package) but this date was
+# deliberately NOT raised with it. The suite now runs on a newer workerd at the
+# same date, which is how production runs too. Raising the date is still its own
+# change and its own deploy, as above.
 compatibility_date = "2026-07-22"
 compatibility_flags = ["nodejs_compat"]
+
+# Wrangler 4.150+ uploads source maps on deploy unless this is set. Pinned to
+# false on 2026-11-12 so the wrangler upgrade changes nothing about what a
+# deploy uploads. Turning it on (readable stack traces in Workers Logs) is a
+# separate decision: check the bundle stays within the plan's size limit first.
+upload_source_maps = false
 
 routes = [
   { pattern = "pawscout.activepaw.co.uk", custom_domain = true }

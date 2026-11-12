@@ -1,4 +1,4 @@
-/// <reference types="@cloudflare/vitest-pool-workers" />
+/// <reference types="@cloudflare/vitest-plugin" />
 // onWebhookFailure counts failed processing attempts per Shopify delivery
 // (X-Shopify-Webhook-Id) and decides whether the route should still ask
 // Shopify to retry. Most of these use the real D1-backed TenantStore

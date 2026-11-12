@@ -1,4 +1,4 @@
-/// <reference types="@cloudflare/vitest-pool-workers" />
+/// <reference types="@cloudflare/vitest-plugin" />
 // Commission payout records (2026-07-06): the accounting documentation. Every
 // "Mark commission paid" writes an immutable affiliate_payouts row - amount,
 // method, reference, and the covered orders SNAPSHOT at payout time - so the

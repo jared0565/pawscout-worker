@@ -1,4 +1,4 @@
-/// <reference types="@cloudflare/vitest-pool-workers" />
+/// <reference types="@cloudflare/vitest-plugin" />
 // Traffic activity (2026-10-07): what the store's visitors did, day by day.
 // Shopify's own session table is read through the worker's token
 // (shopifyqlQuery, read_reports). A session is AUTOMATED when Shopify labels it

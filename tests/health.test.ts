@@ -1,4 +1,4 @@
-/// <reference types="@cloudflare/vitest-pool-workers" />
+/// <reference types="@cloudflare/vitest-plugin" />
 // /healthz (2026-09-18, deploy-safety phase): the one public answer to "is this
 // deploy alive, and which commit is it". No store data, no auth, never cached.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';

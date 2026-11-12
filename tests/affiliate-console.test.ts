@@ -1,4 +1,4 @@
-/// <reference types="@cloudflare/vitest-pool-workers" />
+/// <reference types="@cloudflare/vitest-plugin" />
 // Task 6: console visibility + owner overrides for the self-serve affiliate
 // funnel. Three things live here: (1) the /api/affiliate/config validator
 // (reject NaN/negative caps -> error, like every other config saver in

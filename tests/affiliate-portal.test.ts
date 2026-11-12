@@ -1,4 +1,4 @@
-/// <reference types="@cloudflare/vitest-pool-workers" />
+/// <reference types="@cloudflare/vitest-plugin" />
 // Task 5: partner self-serve portal (worker domain, NOT /proxy). Ships DARK
 // behind cfg.selfServe.enabled - exactly like Task 4's verify route and Task
 // 0's apply route. Task 6 later wired cfg.selfServe into the real

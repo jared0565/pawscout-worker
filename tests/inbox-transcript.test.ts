@@ -1,4 +1,4 @@
-/// <reference types="@cloudflare/vitest-pool-workers" />
+/// <reference types="@cloudflare/vitest-plugin" />
 import { describe, it, expect } from 'vitest';
 import { buildDraftTranscript, neutralizeRoleMarkers } from '../src/inbox/draft';
 import type { MessageRow } from '../src/inbox/types';

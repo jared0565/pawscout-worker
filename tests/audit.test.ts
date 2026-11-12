@@ -1,4 +1,4 @@
-/// <reference types="@cloudflare/vitest-pool-workers" />
+/// <reference types="@cloudflare/vitest-plugin" />
 // Audit view v2 (2026-07-04, owner redesign): the landing list is CONTACTS
 // (email + name + latest-contact date), filterable by thread classification;
 // clicking one opens the full conversation (all threads with that contact),
