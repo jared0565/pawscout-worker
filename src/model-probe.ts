@@ -1,4 +1,4 @@
-import type { LlmClient } from './llm';
+import type { LlmClient, LlmUsage } from './llm';
 import type { TenantStore } from './tenant-store';
 import type { ReasoningEffort } from './types';
 
@@ -39,6 +39,12 @@ function plainReason(error: string): string {
   return `OpenRouter refused the call: ${error}`;
 }
 
+/**
+ * `defer` keeps work alive after the response (the route passes waitUntil). It
+ * is used once: a call that answers after the timeout was still billed, so its
+ * usage is logged when it lands. It never caches a pass, because the save that
+ * asked for it was already refused.
+ */
 export async function probeModel(
   llm: LlmClient,
   store: Pick<TenantStore, 'getSearchCache' | 'putSearchCache' | 'logLlmUsage'>,
@@ -46,9 +52,13 @@ export async function probeModel(
   mode: ProbeMode,
   effort?: ReasoningEffort,
   timeoutMs: number = PROBE_TIMEOUT_MS,
+  defer?: (late: Promise<unknown>) => void,
 ): Promise<ProbeResult> {
   const key = probeCacheKey(model.id, mode, effort);
   if (await store.getSearchCache(key)) return { ok: true };
+  // Every call that returns usage was billed, pass or fail, so it is logged
+  // under the model that actually answered.
+  const logUsage = (u: LlmUsage) => store.logLlmUsage('model-probe', u.model, u.promptTokens, u.completionTokens, u.costUsd);
 
   const call = llm.jsonChain<true>({
     chain: [{ provider: 'openrouter', models: [model.id], ...(effort ? { effort } : {}) }],
@@ -63,14 +73,17 @@ export async function probeModel(
   const out = await Promise.race([call, timeout]);
   if (timer !== undefined) clearTimeout(timer);
 
-  if (out === 'timeout') return { ok: false, reason: `did not answer within ${Math.round(timeoutMs / 1000)} seconds` };
+  if (out === 'timeout') {
+    defer?.(call.then((late) => (late.ok ? logUsage(late.usage) : undefined)).catch(() => undefined));
+    return { ok: false, reason: `did not answer within ${Math.round(timeoutMs / 1000)} seconds` };
+  }
   // A failed call's tokens are not logged: jsonChain returns no usage on failure,
   // which is how every task in this worker already behaves.
   if (!out.ok) return { ok: false, reason: plainReason(out.error) };
+  await logUsage(out.usage);
   if (out.usage.model !== model.id && out.usage.model !== model.canonicalSlug) {
     return { ok: false, reason: `OpenRouter answered with a different model (${out.usage.model})` };
   }
-  await store.logLlmUsage('model-probe', out.usage.model, out.usage.promptTokens, out.usage.completionTokens, out.usage.costUsd);
   await store.putSearchCache(key, '1', PROBE_CACHE_DAYS);
   return { ok: true };
 }

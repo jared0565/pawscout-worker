@@ -38,6 +38,16 @@ function perMillion(v: unknown): number | null {
   return Number.isFinite(n) ? Math.round(n * 1e12) / 1e6 : null;
 }
 
+/** An expiration date as YYYY-MM-DD: the date part of an ISO string, else any
+ *  other date string read in UTC; null when it is not a readable date. A full
+ *  timestamp once reached the watch unparsed and switched its alert off. */
+function isoDay(v: unknown): string | null {
+  if (typeof v !== 'string') return null;
+  if (/^\d{4}-\d{2}-\d{2}/.test(v)) return v.slice(0, 10);
+  const t = Date.parse(v);
+  return Number.isFinite(t) ? new Date(t).toISOString().slice(0, 10) : null;
+}
+
 /** Reduce the /api/v1/models payload. Never throws: a malformed row is skipped,
  *  an unparseable price becomes null, unknown effort names are dropped. */
 export function reduceFeed(payload: unknown): FeedModel[] {
@@ -54,7 +64,7 @@ export function reduceFeed(payload: unknown): FeedModel[] {
       canonicalSlug: typeof r.canonical_slug === 'string' ? r.canonical_slug : null,
       name: typeof r.name === 'string' ? r.name : r.id,
       created: r.created,
-      expiresOn: typeof r.expiration_date === 'string' ? r.expiration_date : null,
+      expiresOn: isoDay(r.expiration_date),
       inputs: strings(r.architecture?.input_modalities),
       outputs: strings(r.architecture?.output_modalities),
       promptPriceM: perMillion(r.pricing?.prompt),

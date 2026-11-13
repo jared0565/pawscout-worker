@@ -47,6 +47,17 @@ describe('reduceFeed', () => {
     expect(feedCost(f.find((m) => m.id === 'openai/gpt-5.6-luna')!)).toBe(1.4);
   });
 
+  // Deferred minor (final review 2026-11-13): a full timestamp used to reach the
+  // watch unparsed and silently switch off its retirement alert.
+  it('reduces an expiration date to YYYY-MM-DD and drops one it cannot read', () => {
+    const exp = (v: unknown) => reduceFeed({ data: [{ id: 'a/b', created: 1, expiration_date: v }] })[0].expiresOn;
+    expect(exp('2026-12-11')).toBe('2026-12-11');
+    expect(exp('2026-12-11T00:00:00Z')).toBe('2026-12-11');
+    expect(exp('December 11, 2026 UTC')).toBe('2026-12-11');
+    expect(exp('soon')).toBeNull();
+    expect(exp(20261211)).toBeNull();
+  });
+
   it('skips malformed rows and never throws', () => {
     expect(reduceFeed(null)).toEqual([]);
     expect(reduceFeed({ data: [null, 5, 'x', { name: 'no id' }] })).toEqual([]);

@@ -83,10 +83,31 @@ describe('probeModel', () => {
     expect(r).toEqual({ ok: true });
   });
 
-  it('fails when another model answered', async () => {
+  // Deferred minor (final review 2026-11-13): the answering model's call is
+  // billed, so it is logged (under the model that answered) though it fails.
+  it('fails when another model answered, logs that call, and caches no pass', async () => {
     const r = await probeModel(llmWith({ model: 'y/z' }), store, MODEL, 'text');
     expect(r.ok).toBe(false);
     expect(reason(r)).toContain('different model (y/z)');
+    expect(logged).toEqual([['model-probe', 'y/z', 10, 5, 0.0001]]);
+    expect(store.mem.size).toBe(0);
+  });
+
+  // Deferred minor: a call that answers after the save gave up on it is still
+  // billed. Its usage is logged through the deferral the route hands in
+  // (waitUntil), and it never counts as a pass, since that save was refused.
+  it('a call that answers after the timeout is logged through the deferral and never cached', async () => {
+    const late = (() => new Promise<Response>((resolve) => setTimeout(() => resolve(new Response(JSON.stringify({
+      model: 'x/m', choices: [{ message: { content: '{"ok":true}' } }], usage: { prompt_tokens: 10, completion_tokens: 5, cost: 0.0001 },
+    }), { status: 200 })), 80))) as unknown as typeof fetch;
+    const deferred: Promise<unknown>[] = [];
+    const r = await probeModel(new LlmClient({ openrouter: 'k' }, late), store, MODEL, 'text', undefined, 20, (p) => { deferred.push(p); });
+    expect(reason(r)).toMatch(/did not answer within/);
+    expect(logged).toEqual([]);
+    expect(deferred).toHaveLength(1);
+    await Promise.all(deferred);
+    expect(logged).toEqual([['model-probe', 'x/m', 10, 5, 0.0001]]);
+    expect(store.mem.size).toBe(0);
   });
 
   it('explains an empty reply as a token budget problem', async () => {

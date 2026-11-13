@@ -11,8 +11,10 @@ import { EFFORT_LEVELS, type ModelsConfig, type ReasoningEffort } from './types'
  * SYSTEM_DEFAULT_MODEL, so it is checked as a change to that model; a cleared
  * fallback runs nothing and only widens the efforts allowed, so it is not.
  *
- * Order matters: refusals first, then the price confirmation, then the live
- * tests, so a cancelled save spends nothing.
+ * Order matters: a missing OpenRouter key first (nothing can be tested, so
+ * the owner is never asked to confirm a price for a save that cannot happen),
+ * then refusals, then the price confirmation, then the live tests, so a
+ * cancelled save spends nothing.
  */
 
 export type SlotName = 'image' | 'text' | 'fallback';
@@ -26,6 +28,12 @@ export interface HeldSlot {
   ratio: number | null;
   promptPriceM: number | null;
   completionPriceM: number | null;
+  /** Image or text slot cleared: it will run SYSTEM_DEFAULT_MODEL, which is the
+   *  model held here. */
+  cleared: boolean;
+  /** Fallback set where none was: there is no current fallback, so the ratio
+   *  is measured against SYSTEM_DEFAULT_MODEL. */
+  newFallback: boolean;
 }
 
 export type ProbeFn = (model: FeedModel, mode: ProbeMode, effort: ReasoningEffort | undefined) => Promise<ProbeResult>;
@@ -69,12 +77,15 @@ export async function checkModelSave(input: {
   const changed = SLOTS.filter((s) => runs[s] !== undefined);
   if (changed.length === 0) return { ok: true };
 
-  // 2. One feed read for the whole save.
+  // 2. Every change needs a live test, and the tests need our OpenRouter key.
+  if (!input.probe) return bad('No OpenRouter key is configured, so new models cannot be tested.');
+
+  // 3. One feed read for the whole save.
   const feed = await input.loadFeed();
   if (!feed) return bad('Cannot verify new models right now; try again shortly.');
   const byId = new Map(feed.map((m) => [m.id, m]));
 
-  // 3. Every changed slot must name a real, specific, capable model.
+  // 4. Every changed slot must name a real, specific, capable model.
   for (const s of changed) {
     const slug = runs[s]!;
     if (slug.startsWith('~')) return bad(`${s} model ${slug} is a floating "-latest" alias; pick a specific model instead.`);
@@ -83,7 +94,7 @@ export async function checkModelSave(input: {
     if (s !== 'text' && !m.inputs.includes('image')) return bad('Image and Fallback must be vision-capable models');
   }
 
-  // 4. An effort must run on the slot's model and on the fallback behind it. A
+  // 5. An effort must run on the slot's model and on the fallback behind it. A
   //    model no longer in the feed (only possible for an unchanged one) cannot
   //    be checked here; the model watch reports it instead.
   const fallbackModel = requested.fallback ? byId.get(requested.fallback) ?? null : null;
@@ -97,7 +108,7 @@ export async function checkModelSave(input: {
     }
   }
 
-  // 5. Price: only a model change, never an effort-only change.
+  // 6. Price: only a model change, never an effort-only change.
   const held: HeldSlot[] = [];
   for (const s of changed) {
     if (!modelChanged(s)) continue;
@@ -107,13 +118,14 @@ export async function checkModelSave(input: {
     const nextCost = feedCost(next);
     const ratio = baseCost !== null && baseCost > 0 && nextCost !== null ? Math.round((nextCost / baseCost) * 100) / 100 : null;
     if (ratio === null || ratio > COST_CONFIRM_RATIO) {
-      held.push({ slot: s, slug: next.id, name: next.name, ratio, promptPriceM: next.promptPriceM, completionPriceM: next.completionPriceM });
+      held.push({
+        slot: s, slug: next.id, name: next.name, ratio, promptPriceM: next.promptPriceM, completionPriceM: next.completionPriceM,
+        cleared: s !== 'fallback' && !requested[s],
+        newFallback: s === 'fallback' && !stored.fallback,
+      });
     }
   }
   if (held.length > 0 && !input.confirmCost) return { ok: false, status: 409, held };
-
-  // 6. Live tests need our OpenRouter key.
-  if (!input.probe) return bad('No OpenRouter key is configured, so new models cannot be tested.');
 
   // 7. The tests, one per model, mode and effort, in slot order.
   const tests = new Map<string, { slot: SlotName; model: FeedModel; mode: ProbeMode; effort: ReasoningEffort | undefined }>();

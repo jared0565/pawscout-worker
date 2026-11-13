@@ -1291,7 +1291,9 @@ app.post('/api/llm', async (c) => {
     requested: v.value.models,
     loadFeed: () => loadFeed(store),
     confirmCost: flags.confirmCost === true,
-    probe: key ? (m, mode, effort) => probeModel(new LlmClient({ openrouter: key }), store, m, mode, effort) : null,
+    // A live test that answers after its timeout is logged once it lands
+    // (waitUntil keeps that alive past this response); see probeModel.
+    probe: key ? (m, mode, effort) => probeModel(new LlmClient({ openrouter: key }), store, m, mode, effort, undefined, (p) => c.executionCtx.waitUntil(p)) : null,
   });
   if (!check.ok) {
     return check.status === 409 ? c.json({ ok: false, held: check.held }, 409) : c.json({ ok: false, error: check.error }, 400);

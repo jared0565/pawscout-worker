@@ -1596,6 +1596,57 @@ describe('AI models card', () => {
     expect(heldMessage({ name: 'Fable', ratio: 3.43, promptPriceM: 8, completionPriceM: 40 }, 'text')).toContain('about 3.4x');
   });
 
+  // Deferred minors (final review 2026-11-13): a cleared slot did not say it
+  // would run the system default, and a new fallback read "your current fallback
+  // model" when there was none. The plain wording above stays byte-identical.
+  it('heldMessage explains a cleared slot and a new fallback, each with and without a ratio', async () => {
+    const { heldMessage } = await fns(['heldMessage', 'fmtPrice']);
+    expect(heldMessage({ name: 'Gemini 3.1 Pro Preview', ratio: 10, promptPriceM: 2, completionPriceM: 12, cleared: true }, 'text'))
+      .toBe('Clearing the text slot makes it run the system default model, Gemini 3.1 Pro Preview, which costs about 10x your current text model ($2/M in, $12/M out). Save anyway?');
+    expect(heldMessage({ name: 'G', ratio: null, promptPriceM: 2, completionPriceM: 12, cleared: true }, 'image'))
+      .toBe('Clearing the image slot makes it run the system default model, G, which costs $2/M in, $12/M out, and the current image model has no known price to compare. Save anyway?');
+    expect(heldMessage({ name: 'G', ratio: null, promptPriceM: null, completionPriceM: null, cleared: true }, 'image'))
+      .toBe('Clearing the image slot makes it run the system default model, G, which has no listed price on OpenRouter. Save anyway?');
+    expect(heldMessage({ name: 'Claude Fable 5.2', ratio: 3.43, promptPriceM: 8, completionPriceM: 40, newFallback: true }, 'fallback'))
+      .toBe('No fallback model is set now, so Claude Fable 5.2 ($8/M in, $40/M out) is compared with the system default model: it costs about 3.4x that. Save anyway?');
+    expect(heldMessage({ name: 'F', ratio: null, promptPriceM: 8, completionPriceM: 40, newFallback: true }, 'fallback'))
+      .toBe('No fallback model is set now, so F ($8/M in, $40/M out) is compared with the system default model, which has no known price. Save anyway?');
+  });
+
+  it('renderModelsWarn names a blank slot as running the system default', async () => {
+    const nodes: Record<string, any> = { 'llm-models-warn': { innerHTML: '', style: {} } };
+    const { renderModelsWarn } = await fns(['renderModelsWarn', 'esc'], { el: (id: string) => nodes[id] });
+    renderModelsWarn({ feedAvailable: true, selectedStatus: {
+      image: { slug: 'google/g', state: 'retiring', retiresOn: '2026-11-30', systemDefault: true, effortSupported: true },
+      text: { slug: 'openai/l', state: 'delisted', retiresOn: null, systemDefault: false, effortSupported: true } } });
+    const html = nodes['llm-models-warn'].innerHTML;
+    expect(html).toContain('Image (blank, runs the system default): google/g retires on 2026-11-30. Pick a model for this slot.');
+    expect(html).toContain('Text: openai/l is no longer offered by OpenRouter. Pick a replacement.');
+  });
+
+  // Deferred minor: a failed menu load resets the cached promise, so a second
+  // load inside the same fill used to refetch and mix an empty select with a
+  // full panel. One fill now reads the menu once.
+  it('fillModels reads the menu once, so a failed load cannot mix an empty select with a full panel', async () => {
+    let calls = 0;
+    const full = { ok: true, groups: [{ provider: 'm', entries: [] }], feedAvailable: true, selectedStatus: {}, menu: { providers: ['m'], pins: [], hides: [] } };
+    const api = async () => { calls++; if (calls === 1) throw new Error('down'); return full; };
+    const seen: unknown[] = [];
+    const nodes: Record<string, any> = {};
+    const deps = {
+      api, el: (id: string) => (nodes[id] ??= { value: '', innerHTML: '', options: [] }),
+      modelOptionsHtml: (g: unknown[]) => { seen.push(g.length); return ''; }, setSelectValue: () => {}, effortInfo: () => null,
+      effortOptionsHtml: () => '', selVal: () => '', esc: String, renderFallbackHint: () => {},
+      renderModelsWarn: (m: any) => { seen.push(m.feedAvailable); }, renderMenuPanel: (m: any) => { seen.push(m.feedAvailable); },
+      document: { createElement: () => ({}) },
+    };
+    const { fillModels } = await fns(['fillModels', 'setModelSelect', 'fillEffort', 'loadModelMenu'], deps,
+      'var modelMenuPromise=null;var modelsReady=false;var storedModels={};');
+    await fillModels({ image: '', text: '', fallback: '' });
+    expect(calls).toBe(1);
+    expect(seen).toEqual([0, 0, 0, false, false]);
+  });
+
   it('loadModelMenu survives a failed fetch with an empty, unavailable menu', async () => {
     const { loadModelMenu } = await fns(['loadModelMenu'], { api: async () => { throw new Error('x'); } }, 'var modelMenuPromise=null;');
     await expect(loadModelMenu()).resolves.toEqual({ groups: [], feedAvailable: false, selectedStatus: {} });
@@ -1679,12 +1730,12 @@ describe('AI models card', () => {
       s.appendChild = (o: any) => s.options.push(o);
       return s;
     }
-    const menu = { groups: [{ provider: 'm', entries: [
+    const menu = { feedAvailable: true, groups: [{ provider: 'm', entries: [
       { slug: 'm/x', efforts: ['high'], defaultEffort: 'high' },
       { slug: 'm/y', efforts: ['high', 'medium'], defaultEffort: null }] }], selectedStatus: {} };
-    async function run(textModel: string) {
+    async function run(textModel: string, m: unknown = menu) {
       const nodes: Record<string, any> = { 'mdl-text-effort': fakeSelect(), 'mdl-text': { value: textModel }, 'mdl-fallback': { value: '' } };
-      const deps = { el: (id: string) => nodes[id], loadModelMenu: async () => menu, document: { createElement: () => ({}) } };
+      const deps = { el: (id: string) => nodes[id], loadModelMenu: async () => m, document: { createElement: () => ({}) } };
       const { fillEffort } = await fns(['fillEffort', 'selVal', 'effortInfo', 'effortOptionsHtml'], deps,
         `var storedModels=${JSON.stringify({ text: 'm/x', fallback: '', textEffort: 'medium' })};`);
       await fillEffort('text', 'medium');
@@ -1695,5 +1746,10 @@ describe('AI models card', () => {
     expect(kept.options.at(-1).textContent).toBe('medium (not offered)');
     expect((await run('m/z')).value).toBe('');      // model changed, effort unknown to it: back to the default
     expect((await run('m/y')).value).toBe('medium'); // model changed and offers it: kept as a normal option
+    // Deferred minor: with the model list down nothing is known about efforts,
+    // so the kept effort is marked as saved, not as "not offered".
+    const down = await run('m/x', { groups: [], feedAvailable: false, selectedStatus: {} });
+    expect(down.value).toBe('medium');
+    expect(down.options.at(-1).textContent).toBe('medium (saved)');
   });
 });

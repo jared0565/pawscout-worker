@@ -274,15 +274,21 @@ function effortOptionsHtml(efforts,defaultEffort,fallbackEfforts){
   });
   return html;
 }
+// A held save, in words. A cleared slot runs the system default model, which
+// is the model held (h.cleared); a fallback set where none was is priced
+// against the system default, since there is no current fallback (h.newFallback).
 function heldMessage(h,slotLabel){
   var known=h.promptPriceM!=null&&h.completionPriceM!=null;
   var prices=known?fmtPrice(h.promptPriceM)+'/M in, '+fmtPrice(h.completionPriceM)+'/M out':'';
-  if(h.ratio!=null){
-    var x=h.ratio>=10?Math.round(h.ratio):Math.round(h.ratio*10)/10;
-    return h.name+' costs about '+x+'x your current '+slotLabel+' model ('+prices+'). Save anyway?';
+  var x=h.ratio==null?null:(h.ratio>=10?Math.round(h.ratio):Math.round(h.ratio*10)/10);
+  var who=h.cleared?'Clearing the '+slotLabel+' slot makes it run the system default model, '+h.name+', which':h.name;
+  if(!known) return who+' has no listed price on OpenRouter. Save anyway?';
+  if(h.newFallback){
+    return 'No fallback model is set now, so '+h.name+' ('+prices+') is compared with the system default model'
+      +(x!=null?': it costs about '+x+'x that.':', which has no known price.')+' Save anyway?';
   }
-  if(!known) return h.name+' has no listed price on OpenRouter. Save anyway?';
-  return h.name+' costs '+prices+', and the current '+slotLabel+' model has no known price to compare. Save anyway?';
+  if(x!=null) return who+' costs about '+x+'x your current '+slotLabel+' model ('+prices+'). Save anyway?';
+  return who+' costs '+prices+', and the current '+slotLabel+' model has no known price to compare. Save anyway?';
 }
 // Preserve a saved slug not in the curated list as a selected option, so
 // converting free-text → dropdown never silently changes a tenant's config.
@@ -293,9 +299,9 @@ function setSelectValue(id,slug){
   if(!has){ var o=document.createElement('option'); o.value=slug; o.textContent=slug+' (current)'; s.insertBefore(o,s.options[0]||null); }
   s.value=slug;
 }
-async function setModelSelect(id,slug,opts){
+async function setModelSelect(id,slug,opts,m){
   opts=opts||{};
-  var m=await loadModelMenu();
+  m=m||await loadModelMenu();
   var e=el(id); if(!e) return;
   var html=modelOptionsHtml(m.groups,!!opts.vision);
   if(opts.blank) html='<option value="">'+esc(opts.blank)+'</option>'+html;
@@ -328,9 +334,10 @@ function effortInfo(m,slug){
 // Rebuild one effort select. A saved effort the model no longer offers stays
 // selected, marked "(not offered)", while the slot and fallback are unchanged,
 // so a save that does not touch it keeps it; after a model change it resets to
-// the model default.
-async function fillEffort(slot,keep){
-  var m=await loadModelMenu();
+// the model default. With the model list down nothing is known about efforts,
+// so a kept effort is marked "(saved)" instead. m is the menu fillModels read.
+async function fillEffort(slot,keep,m){
+  m=m||await loadModelMenu();
   var sel=el('mdl-'+slot+'-effort'); if(!sel) return;
   var slug=selVal('mdl-'+slot), fb=selVal('mdl-fallback');
   var own=effortInfo(m,slug), fbi=fb?effortInfo(m,fb):null;
@@ -341,7 +348,7 @@ async function fillEffort(slot,keep){
   if(!has){
     var unchanged=slug===storedModels[slot]&&fb===storedModels.fallback&&want===storedModels[slot+'Effort'];
     if(!unchanged) return;
-    var o=document.createElement('option'); o.value=want; o.textContent=want+' (not offered)'; sel.appendChild(o);
+    var o=document.createElement('option'); o.value=want; o.textContent=want+(m.feedAvailable?' (not offered)':' (saved)'); sel.appendChild(o);
   }
   sel.value=want;
 }
@@ -357,9 +364,13 @@ function renderModelsWarn(m){
   if(!m.feedAvailable) lines.push('Model list unavailable right now. Saved models stay as they are; a changed model can be saved once the list is back.');
   ['image','text','fallback'].forEach(function(s){
     var st=(m.selectedStatus||{})[s]; if(!st) return;
-    if(st.state==='delisted') lines.push(labels[s]+': '+st.slug+' is no longer offered by OpenRouter. Pick a replacement.');
-    else if(st.state==='retiring') lines.push(labels[s]+': '+st.slug+' retires on '+st.retiresOn+'. Pick a replacement.');
-    if(st.effortSupported===false) lines.push(labels[s]+': the saved effort is no longer offered by this model or its fallback, and OpenRouter may refuse these calls. Pick another effort.');
+    // A blank slot runs the system default model: say so, since the owner
+    // never chose that model by name.
+    var who=st.systemDefault?labels[s]+' (blank, runs the system default)':labels[s];
+    var act=st.systemDefault?' Pick a model for this slot.':' Pick a replacement.';
+    if(st.state==='delisted') lines.push(who+': '+st.slug+' is no longer offered by OpenRouter.'+act);
+    else if(st.state==='retiring') lines.push(who+': '+st.slug+' retires on '+st.retiresOn+'.'+act);
+    if(st.effortSupported===false) lines.push(who+': the saved effort is no longer offered by this model or its fallback, and OpenRouter may refuse these calls. Pick another effort.');
   });
   n.innerHTML=lines.map(function(t){ return '<div>'+esc(t)+'</div>'; }).join('');
   n.style.display=lines.length?'':'none';
@@ -386,18 +397,20 @@ function renderMenuPanel(m){
     +'<div class="mdl-head">Pinned</div>'+list(currentMenu.pins,'unpin','Unpin');
 }
 // Fill the three model selects, then the effort selects, the fallback hint, the
-// status lines and the menu panel.
+// status lines and the menu panel, all from ONE menu read: a failed read resets
+// the cached promise, so a second read in the same fill could refetch and mix
+// an empty select with a full panel.
 async function fillModels(v){
+  var m=await loadModelMenu();
   await Promise.all([
-    setModelSelect('mdl-image', v.image, {vision:true, blank:'- system default'}),
-    setModelSelect('mdl-text', v.text, {blank:'- system default'}),
-    setModelSelect('mdl-fallback', v.fallback, {vision:true, blank:'- none'})
+    setModelSelect('mdl-image', v.image, {vision:true, blank:'- system default'}, m),
+    setModelSelect('mdl-text', v.text, {blank:'- system default'}, m),
+    setModelSelect('mdl-fallback', v.fallback, {vision:true, blank:'- none'}, m)
   ]);
-  await fillEffort('image', v.imageEffort||'');
-  await fillEffort('text', v.textEffort||'');
+  await fillEffort('image', v.imageEffort||'', m);
+  await fillEffort('text', v.textEffort||'', m);
   modelsReady=true;
   renderFallbackHint();
-  var m=await loadModelMenu();
   renderModelsWarn(m);
   renderMenuPanel(m);
 }
