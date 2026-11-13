@@ -125,6 +125,14 @@ export interface ModelsConfig {
   textEffort?: ReasoningEffort;
 }
 
+/** The owner's controls over the self-updating model menu (spec 5.3): which
+ *  OpenRouter providers count, plus slugs pinned onto or hidden from it. */
+export interface ModelMenuConfig {
+  providers: string[];
+  pins: string[];
+  hides: string[];
+}
+
 /**
  * LLM behavioral config. Model SELECTION lives in `models` (one dashboard block);
  * `enabled`/`scoreThreshold` are the behavioral knobs. Disabled (or no key) =
