@@ -107,10 +107,16 @@ export const SYSTEM_DEFAULT_MODEL = 'google/gemini-3.1-pro-preview';
 export const REASONING_HEADROOM = 3000;
 
 /**
- * Ceiling for an effort-sized max_tokens. It sits under the smallest output
- * limit among the models the menu offered on 2026-11-13 (65,536, Gemini Flash),
- * so the cap itself never makes a request invalid; the live test
- * (src/model-probe.ts) still checks each model at its chosen effort.
+ * Ceiling for an effort-sized max_tokens. The menu updates itself from
+ * OpenRouter's feed, so no fixed model list can justify this number. Measured
+ * on 2026-11-13: all 63 models the menu could offer (the ten default providers,
+ * text output, JSON mode, released within six months) allowed at least 65,536
+ * output tokens (the Gemini Flash models), so the cap sat under every limit.
+ * A model that appears later with a smaller limit meets this cap first in its
+ * live test (src/model-probe.ts): the probe sends the largest production task
+ * budget, sized at the chosen effort, so a model that refuses the cap is
+ * refused at save time rather than on a real call. Search calls send no
+ * effort, so SEARCH_MODEL's limit of exactly 64,000 never meets this cap.
  */
 export const EFFORT_TOKEN_CEILING = 64000;
 /**

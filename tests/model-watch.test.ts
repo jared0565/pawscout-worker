@@ -18,6 +18,7 @@ const LUNA = 'openai/gpt-5.6-luna';
 const FABLE = 'anthropic/claude-fable-5.2';
 const MISTRAL = 'mistralai/mistral-large-4-0';
 const SEARCH_OK = 'anthropic/claude-haiku-5.5';
+const SYSTEM_DEFAULT = 'google/gemini-3.1-pro-preview';
 const DASHES = new RegExp(`[${String.fromCharCode(0x2013, 0x2014)}]`);
 
 let mem: Map<string, string>;
@@ -40,13 +41,25 @@ describe('modelState', () => {
     expect(modelState('openai/gone', feed, NOW)).toEqual({ state: 'delisted', retiresOn: null });
     expect(modelState(MINI, feed, Date.parse('2026-11-01T00:00:00Z')).state).toBe('ok'); // 40 days out
   });
+
+  // A feed cached before reduceFeed normalised dates can still hold a full
+  // timestamp for up to a day.
+  it('reads a retirement date given as a full timestamp', () => {
+    const row = { ...feed.find((m) => m.id === LUNA)!, expiresOn: '2026-12-01T00:00:00Z' };
+    expect(modelState(LUNA, [row], NOW)).toEqual({ state: 'retiring', retiresOn: '2026-12-01' });
+  });
 });
 
 describe('selectedStatus', () => {
-  it('covers set slots only, with efforts', () => {
+  // Deferred minor (final review 2026-11-13): a blank image or text slot runs
+  // SYSTEM_DEFAULT_MODEL, so it is watched as that model even with no effort set.
+  // A blank fallback runs nothing and stays out.
+  it('covers every set slot, and a blank image or text slot as the system default it runs', () => {
     const row = feed.find((m) => m.id === MINI)!;
+    const def = feed.find((m) => m.id === SYSTEM_DEFAULT)!;
     expect(selectedStatus({ text: MINI }, feed, NOW)).toEqual({
-      text: { slug: MINI, state: 'retiring', retiresOn: '2026-12-11', efforts: row.efforts, defaultEffort: row.defaultEffort, effortSupported: true },
+      image: { slug: SYSTEM_DEFAULT, state: 'ok', retiresOn: null, efforts: def.efforts, defaultEffort: def.defaultEffort, effortSupported: true, systemDefault: true },
+      text: { slug: MINI, state: 'retiring', retiresOn: '2026-12-11', efforts: row.efforts, defaultEffort: row.defaultEffort, effortSupported: true, systemDefault: false },
     });
   });
 
@@ -61,8 +74,9 @@ describe('selectedStatus', () => {
 
   it('a blank slot with an effort is watched on the model it runs, SYSTEM_DEFAULT_MODEL', () => {
     const s = selectedStatus({ textEffort: 'max' }, feed, NOW);
-    expect(s.text).toMatchObject({ slug: 'google/gemini-3.1-pro-preview', effortSupported: false });
-    expect(s.image).toBeUndefined();
+    expect(s.text).toMatchObject({ slug: SYSTEM_DEFAULT, effortSupported: false, systemDefault: true });
+    expect(s.image).toMatchObject({ slug: SYSTEM_DEFAULT, effortSupported: true, systemDefault: true });
+    expect(s.fallback).toBeUndefined();
   });
 });
 
@@ -87,8 +101,13 @@ describe('runModelWatch', () => {
     expect(await run({ text: MINI })).toBe(0);
   });
 
-  it('an unconfigured mailer still counts as handled', async () => {
+  // Deferred minor (final review 2026-11-13), reversing the Task 8 ruling: an
+  // alert address set up later must still hear about an issue that already exists.
+  it('an unconfigured mailer is asked again each run, until a send goes through', async () => {
     send.mockResolvedValue('unconfigured');
+    expect(await run({ text: MINI })).toBe(1);
+    expect(await run({ text: MINI })).toBe(1);
+    send.mockResolvedValue('sent');
     expect(await run({ text: MINI })).toBe(1);
     expect(await run({ text: MINI })).toBe(0);
   });
@@ -103,6 +122,19 @@ describe('runModelWatch', () => {
     expect(await run({ image: 'openai/gone', fallback: 'openai/gone' })).toBe(1);
     expect(sent()[0].subject).toBe('PawScout: AI model openai/gone is no longer offered by OpenRouter');
     expect(sent()[0].text).toContain('image and fallback');
+  });
+
+  it('blank slots running a retiring system default alert once, and the email says they are blank', async () => {
+    const soon = feed.map((m) => (m.id === SYSTEM_DEFAULT ? { ...m, expiresOn: '2026-11-30' } : m));
+    expect(await runModelWatch(store, {}, SEARCH_OK, soon, NOW, send)).toBe(1);
+    expect(sent()[0].subject).toBe(`PawScout: AI model ${SYSTEM_DEFAULT} is retiring on 2026-11-30`);
+    expect(sent()[0].text).toContain('The image and text slots are left blank, so PawScout runs it there as the system default.');
+    expect(sent()[0].text).toContain('Open Settings > AI models and pick a replacement.');
+    // A slot set to the same model by name is named as chosen, not as blank.
+    send.mockClear();
+    mem.clear();
+    expect(await runModelWatch(store, { text: SYSTEM_DEFAULT }, SEARCH_OK, soon, NOW, send)).toBe(1);
+    expect(sent()[0].text).toContain('PawScout runs it in the text slot. The image slot is left blank, so PawScout runs it there as the system default.');
   });
 
   it('the search model alert says a code change is needed', async () => {

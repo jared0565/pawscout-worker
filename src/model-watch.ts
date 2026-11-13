@@ -25,6 +25,8 @@ export interface SlotStatus {
   defaultEffort: string | null;
   /** Image and text only: false when the stored effort is no longer offered. */
   effortSupported: boolean;
+  /** The slot is blank, so it runs SYSTEM_DEFAULT_MODEL (the slug above). */
+  systemDefault: boolean;
 }
 
 export const RETIRE_WARN_DAYS = 30;
@@ -38,8 +40,11 @@ const DAY_MS = 86_400_000;
 export function modelState(slug: string, feed: FeedModel[], nowMs: number): { state: WatchState; retiresOn: string | null } {
   const m = feed.find((x) => x.id === slug);
   if (!m) return { state: 'delisted', retiresOn: null };
-  const ends = m.expiresOn ? Date.parse(`${m.expiresOn}T00:00:00Z`) : NaN;
-  if (Number.isFinite(ends) && ends - nowMs <= RETIRE_WARN_DAYS * DAY_MS) return { state: 'retiring', retiresOn: m.expiresOn };
+  // reduceFeed stores YYYY-MM-DD, but a feed cached before it did can still
+  // hold a full timestamp for up to a day: read only the date part.
+  const day = m.expiresOn ? m.expiresOn.slice(0, 10) : null;
+  const ends = day ? Date.parse(`${day}T00:00:00Z`) : NaN;
+  if (Number.isFinite(ends) && ends - nowMs <= RETIRE_WARN_DAYS * DAY_MS) return { state: 'retiring', retiresOn: day };
   return { state: 'ok', retiresOn: null };
 }
 
@@ -58,13 +63,14 @@ function effortGap(models: ModelsConfig, feed: FeedModel[], s: 'image' | 'text')
   return null;
 }
 
-/** Status of every slot that runs something chosen by the owner: a set model,
- *  or a blank image or text slot with an effort (it runs SYSTEM_DEFAULT_MODEL
- *  at that effort). */
+/** Status of every slot that runs a model: a set model, and a blank image or
+ *  text slot as SYSTEM_DEFAULT_MODEL, which is what it runs (with or without an
+ *  effort). A blank fallback runs nothing, so it has no status. */
 export function selectedStatus(models: ModelsConfig, feed: FeedModel[], nowMs: number): Partial<Record<SlotName, SlotStatus>> {
   const out: Partial<Record<SlotName, SlotStatus>> = {};
   for (const s of SLOTS) {
-    const slug = s === 'fallback' ? models.fallback : models[s] || (models[EFFORT_KEY[s]] ? SYSTEM_DEFAULT_MODEL : undefined);
+    const blank = s !== 'fallback' && !models[s];
+    const slug = s === 'fallback' ? models.fallback : slotSlug(models, s);
     if (!slug) continue;
     const row = feed.find((x) => x.id === slug);
     out[s] = {
@@ -73,6 +79,7 @@ export function selectedStatus(models: ModelsConfig, feed: FeedModel[], nowMs: n
       efforts: row?.efforts ?? [],
       defaultEffort: row?.defaultEffort ?? null,
       effortSupported: s === 'fallback' || effortGap(models, feed, s) === null,
+      systemDefault: blank,
     };
   }
   return out;
@@ -85,15 +92,20 @@ interface Issue { key: string; subject: string; text: string }
 
 function currentIssues(models: ModelsConfig, searchModel: string, feed: FeedModel[], nowMs: number): Issue[] {
   const status = selectedStatus(models, feed, nowMs);
-  const groups = new Map<string, { state: WatchState; retiresOn: string | null; slots: SlotName[]; search: boolean }>();
+  // slots: set to this model by name; blank: left blank, so running it as the
+  // system default. Both are the owner's to change in Settings.
+  const groups = new Map<string, { state: WatchState; retiresOn: string | null; slots: SlotName[]; blank: SlotName[]; search: boolean }>();
   const group = (slug: string, st: { state: WatchState; retiresOn: string | null }) => {
-    const g = groups.get(slug) ?? { ...st, slots: [], search: false };
+    const g = groups.get(slug) ?? { state: st.state, retiresOn: st.retiresOn, slots: [], blank: [], search: false };
     groups.set(slug, g);
     return g;
   };
   for (const s of SLOTS) {
     const st = status[s];
-    if (st && st.state !== 'ok') group(st.slug, st).slots.push(s);
+    if (st && st.state !== 'ok') {
+      const g = group(st.slug, st);
+      (st.systemDefault ? g.blank : g.slots).push(s);
+    }
   }
   const search = modelState(searchModel, feed, nowMs);
   if (search.state !== 'ok') group(searchModel, search).search = true;
@@ -102,7 +114,13 @@ function currentIssues(models: ModelsConfig, searchModel: string, feed: FeedMode
   for (const [slug, g] of groups) {
     const delisted = g.state === 'delisted';
     const lines = [delisted ? `OpenRouter no longer lists ${slug}.` : `OpenRouter is retiring ${slug} on ${g.retiresOn}.`];
-    if (g.slots.length) lines.push(`PawScout runs it in ${slotList(g.slots)}. Open Settings > AI models and pick a replacement.`);
+    const owner: string[] = [];
+    if (g.slots.length) owner.push(`PawScout runs it in ${slotList(g.slots)}.`);
+    if (g.blank.length) {
+      const list = slotList(g.blank);
+      owner.push(`${list[0].toUpperCase()}${list.slice(1)} ${g.blank.length === 1 ? 'is' : 'are'} left blank, so PawScout runs it there as the system default.`);
+    }
+    if (owner.length) lines.push(`${owner.join(' ')} Open Settings > AI models and pick a replacement.`);
     if (g.search) lines.push(`This is PawScout's built-in research model, so replacing it needs a code change.`);
     issues.push({
       key: `model|${slug}|${g.state}`,
@@ -137,8 +155,10 @@ function readRemembered(raw: string | null): string[] {
 }
 
 /** Emails each issue not already sent, and returns how many sends it made. An
- *  issue is remembered unless its send failed, so a failure retries tomorrow;
- *  an issue that clears is forgotten, so its return alerts again. */
+ *  issue is remembered only once its email is sent: a failed send, or no
+ *  alert address configured yet, is tried again the next day, so an address
+ *  set up later still hears about an issue that already exists. An issue that
+ *  clears is forgotten, so its return alerts again. */
 export async function runModelWatch(
   store: Pick<TenantStore, 'getSearchCache' | 'putSearchCache'>,
   models: ModelsConfig,
@@ -157,7 +177,7 @@ export async function runModelWatch(
     calls++;
     let result: AlertResult;
     try { result = await send(issue.subject, issue.text); } catch { result = 'failed'; }
-    if (result !== 'failed') keep.push(issue.key);
+    if (result === 'sent') keep.push(issue.key);
   }
   await store.putSearchCache(WATCH_ALERT_KEY, JSON.stringify(keep), WATCH_ALERT_TTL_DAYS);
   return calls;

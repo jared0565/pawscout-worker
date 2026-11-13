@@ -62,7 +62,7 @@ describe('checkModelSave: what counts as a change', () => {
 
   it('clearing text is a change to SYSTEM_DEFAULT_MODEL and is held at about 10x', async () => {
     const r = await check({ text: LUNA }, {});
-    expect(r).toMatchObject({ ok: false, status: 409, held: [{ slot: 'text', slug: SYSTEM_DEFAULT }] });
+    expect(r).toMatchObject({ ok: false, status: 409, held: [{ slot: 'text', slug: SYSTEM_DEFAULT, cleared: true, newFallback: false }] });
     expect(held(r)[0].ratio).toBeCloseTo(10, 1);
     expect(probe).not.toHaveBeenCalled();
   });
@@ -101,6 +101,16 @@ describe('checkModelSave: refusals', () => {
       .toEqual({ ok: false, status: 400, error: 'No OpenRouter key is configured, so new models cannot be tested.' });
   });
 
+  // Deferred minor (final review 2026-11-13): the owner must never confirm a
+  // price only to be told afterwards that nothing can be tested.
+  it('no OpenRouter key refuses before any feed read or price hold, and an unchanged save still passes', async () => {
+    const loadFeed = vi.fn(async () => feed);
+    expect(await checkModelSave({ stored: { text: LUNA }, requested: { text: 'anthropic/claude-opus-5.5' }, loadFeed, confirmCost: false, probe: null }))
+      .toEqual({ ok: false, status: 400, error: 'No OpenRouter key is configured, so new models cannot be tested.' });
+    expect(loadFeed).not.toHaveBeenCalled();
+    expect(await checkModelSave({ stored: { text: LUNA }, requested: { text: LUNA }, loadFeed, confirmCost: false, probe: null })).toEqual({ ok: true });
+  });
+
   it('a failed live test refuses the slot with the reason', async () => {
     probe.mockResolvedValue({ ok: false, reason: 'r' });
     expect(await check({ text: LUNA }, { text: HAIKU }))
@@ -111,9 +121,19 @@ describe('checkModelSave: refusals', () => {
 describe('checkModelSave: price confirmation', () => {
   it('holds Luna -> Opus at about 17x and does not probe', async () => {
     const r = await check({ text: LUNA }, { text: 'anthropic/claude-opus-5.5' });
-    expect(r).toMatchObject({ ok: false, status: 409, held: [{ slot: 'text', slug: 'anthropic/claude-opus-5.5', name: expect.any(String), promptPriceM: 4, completionPriceM: 20 }] });
+    expect(r).toMatchObject({ ok: false, status: 409, held: [{ slot: 'text', slug: 'anthropic/claude-opus-5.5', name: expect.any(String), promptPriceM: 4, completionPriceM: 20, cleared: false, newFallback: false }] });
     expect(held(r)[0].ratio).toBeCloseTo(17.14, 1);
     expect(probe).not.toHaveBeenCalled();
+  });
+
+  // Deferred minor: with no fallback set, a new one is priced against the
+  // system default, and the hold must say so rather than "your current fallback".
+  it('a new fallback where none was set is held against the system default and marked as new', async () => {
+    const r = await check({ text: LUNA }, { text: LUNA, fallback: FABLE }); // 48 vs 14 = 3.43x
+    expect(r).toMatchObject({ ok: false, status: 409, held: [{ slot: 'fallback', slug: FABLE, cleared: false, newFallback: true }] });
+    expect(held(r)[0].ratio).toBeCloseTo(3.43, 2);
+    const replaced = await check({ text: LUNA, fallback: HAIKU }, { text: LUNA, fallback: FABLE });
+    expect(held(replaced)[0]).toMatchObject({ slot: 'fallback', newFallback: false });
   });
 
   it('confirmCost lets the held change through to its live test', async () => {
