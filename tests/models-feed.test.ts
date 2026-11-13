@@ -1,18 +1,27 @@
 // The OpenRouter feed reader behind the self-updating model menu (spec 5.1).
 // Pinned to a trimmed copy of the real 2026-11-13 feed so the reducer is
 // tested against the shapes OpenRouter actually publishes, not a hand-made one.
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import feedJson from './fixtures/openrouter-models-2026-11-13.json';
-import { reduceFeed, loadFeed, feedCost, FEED_CACHE_KEY } from '../src/models-feed';
+import { reduceFeed, loadFeed, readFeed, feedCost, feedCacheEntry, FEED_CACHE_KEY, FEED_KEEP_DAYS, MIN_FEED_ROWS } from '../src/models-feed';
 
 function fakeStore() {
   const mem = new Map<string, string>();
+  const ttls = new Map<string, number>();
   return {
     mem,
+    ttls,
     getSearchCache: async (k: string) => mem.get(k) ?? null,
-    putSearchCache: async (k: string, p: string) => { mem.set(k, p); },
+    putSearchCache: async (k: string, p: string, ttlDays: number) => { mem.set(k, p); ttls.set(k, ttlDays); },
   };
 }
+
+const DAY = 86_400_000;
+const NOW = Date.parse('2026-11-13T12:00:00Z');
+const FULL = reduceFeed(feedJson);
+/** The first n rows of the real feed, as OpenRouter would send them. */
+const firstRows = (n: number) => ({ data: (feedJson as { data: unknown[] }).data.slice(0, n) });
+afterEach(() => { vi.restoreAllMocks(); });
 
 function feedFetch(counter: { calls: number }, body: unknown = feedJson, status = 200): typeof fetch {
   return (async () => { counter.calls++; return new Response(JSON.stringify(body), { status }); }) as unknown as typeof fetch;
@@ -71,25 +80,31 @@ describe('reduceFeed', () => {
 });
 
 describe('loadFeed', () => {
-  it('caches under the v2 key; a second call does not fetch', async () => {
+  // Spec 5.11 (owner go 2026-11-13): one copy, stamped with its fetch time and
+  // kept 30 days, so the menu and the save check can fall back to it.
+  it('caches under the v3 key with its fetch time, kept 30 days; a second call within a day does not fetch', async () => {
     const store = fakeStore();
     const counter = { calls: 0 };
-    expect(await loadFeed(store, feedFetch(counter))).toHaveLength(331);
-    expect(await loadFeed(store, feedFetch(counter))).toHaveLength(331);
+    expect(await loadFeed(store, feedFetch(counter), undefined, NOW)).toHaveLength(331);
+    expect(await loadFeed(store, feedFetch(counter), undefined, NOW + DAY - 1)).toHaveLength(331);
     expect(counter.calls).toBe(1);
-    expect(store.mem.get(FEED_CACHE_KEY)).toBeTruthy();
+    expect(FEED_CACHE_KEY).toBe('openrouter:models:v3');
+    expect(JSON.parse(store.mem.get(FEED_CACHE_KEY)!)).toMatchObject({ fetchedAt: NOW });
+    expect(store.ttls.get(FEED_CACHE_KEY)).toBe(FEED_KEEP_DAYS);
+    expect(FEED_KEEP_DAYS).toBe(30);
   });
 
-  it('ignores an old-shape entry under the v1 key', async () => {
+  it('ignores old-shape entries under the v1 and v2 keys', async () => {
     const store = fakeStore();
     store.mem.set('openrouter:models', JSON.stringify([['anthropic/claude-haiku-4.5', { name: 'x', vision: true }]]));
+    store.mem.set('openrouter:models:v2', JSON.stringify(FULL));
     const counter = { calls: 0 };
     expect(await loadFeed(store, feedFetch(counter))).toHaveLength(331);
     expect(counter.calls).toBe(1);
   });
 
-  it('refetches when the cached JSON is corrupt or not a list', async () => {
-    for (const bad of ['{not json', '{"a":1}']) {
+  it('refetches when the cached JSON is corrupt or not a feed copy', async () => {
+    for (const bad of ['{not json', '{"a":1}', JSON.stringify(FULL), '{"fetchedAt":1,"models":[]}']) {
       const store = fakeStore();
       store.mem.set(FEED_CACHE_KEY, bad);
       const counter = { calls: 0 };
@@ -119,5 +134,53 @@ describe('loadFeed', () => {
       expect(await loadFeed(store, f)).toBeNull();
       expect(store.mem.has(FEED_CACHE_KEY)).toBe(false);
     }
+  });
+
+  // Spec 5.11: a cut-short list must never be trusted. A first fetch has no
+  // copy to compare with, so only the floor applies.
+  it('refuses a first fetch under MIN_FEED_ROWS and caches nothing', async () => {
+    expect(MIN_FEED_ROWS).toBe(100);
+    const store = fakeStore();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    expect(await readFeed(store, feedFetch({ calls: 0 }, firstRows(99)), undefined, NOW)).toBeNull();
+    expect(store.mem.has(FEED_CACHE_KEY)).toBe(false);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('models.feed.refused rows=99'));
+    expect(await readFeed(store, feedFetch({ calls: 0 }, firstRows(100)), undefined, NOW)).toMatchObject({ stale: false });
+  });
+
+  it('a copy older than a day is refetched; if that fails, readFeed serves it as stale and loadFeed gives null', async () => {
+    const store = fakeStore();
+    store.mem.set(FEED_CACHE_KEY, feedCacheEntry(FULL, NOW - 2 * DAY));
+    const down = feedFetch({ calls: 0 }, feedJson, 503);
+    const stale = await readFeed(store, down, undefined, NOW);
+    expect(stale).toMatchObject({ stale: true, fetchedAt: NOW - 2 * DAY });
+    expect(stale!.models).toHaveLength(331);
+    // The daily watch never judges "delisted" or "retiring" from an old copy.
+    expect(await loadFeed(store, down, undefined, NOW)).toBeNull();
+    // A good fetch replaces the copy and is fresh again.
+    expect(await readFeed(store, feedFetch({ calls: 0 }), undefined, NOW)).toMatchObject({ stale: false, fetchedAt: NOW });
+  });
+
+  it('while the copy is under 3 days old, a fetch with under half its rows is refused, warned, and the copy is served as stale', async () => {
+    const store = fakeStore();
+    store.mem.set(FEED_CACHE_KEY, feedCacheEntry(FULL, NOW - 1.5 * DAY));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const r = await readFeed(store, feedFetch({ calls: 0 }, firstRows(150)), undefined, NOW);
+    expect(r).toMatchObject({ stale: true, fetchedAt: NOW - 1.5 * DAY });
+    expect(r!.models).toHaveLength(331);
+    expect(JSON.parse(store.mem.get(FEED_CACHE_KEY)!).models).toHaveLength(331);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('models.feed.refused rows=150 copy=331'));
+    // Half or more is a normal day's change and is taken.
+    expect(await readFeed(store, feedFetch({ calls: 0 }, firstRows(166)), undefined, NOW)).toMatchObject({ stale: false });
+  });
+
+  // A real catalogue cut must not freeze the menu on an ageing copy: past 3
+  // days only the floor applies.
+  it('past 3 days, a smaller but plausible fetch replaces the copy', async () => {
+    const store = fakeStore();
+    store.mem.set(FEED_CACHE_KEY, feedCacheEntry(FULL, NOW - 4 * DAY));
+    const r = await readFeed(store, feedFetch({ calls: 0 }, firstRows(150)), undefined, NOW);
+    expect(r).toMatchObject({ stale: false, fetchedAt: NOW });
+    expect(r!.models).toHaveLength(150);
   });
 });

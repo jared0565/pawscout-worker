@@ -10,7 +10,7 @@ import { SignJWT } from 'jose';
 import feedJson from './fixtures/openrouter-models-2026-11-13.json';
 import { TenantStore } from '../src/tenant-store';
 import { app, modelsPayload } from '../src/index';
-import { FEED_CACHE_KEY, reduceFeed } from '../src/models-feed';
+import { FEED_CACHE_KEY, FEED_KEEP_DAYS, feedCacheEntry, reduceFeed } from '../src/models-feed';
 import { probeCacheKey, type ProbeMode } from '../src/model-probe';
 import { DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, DEFAULT_INBOX, type Env, type ReasoningEffort } from '../src/types';
 
@@ -37,7 +37,12 @@ async function bearer(): Promise<string> {
     .sign(new TextEncoder().encode(SECRET));
 }
 
-async function seed(opts: { feed?: boolean } = {}): Promise<TenantStore> {
+const DAY = 86_400_000;
+/** The feed copy as the worker stores it, fetched `ageMs` ago (fresh under a day). */
+const seedFeed = (store: TenantStore, ageMs = 0) =>
+  store.putSearchCache(FEED_CACHE_KEY, feedCacheEntry(reduceFeed(feedJson), Date.now() - ageMs), FEED_KEEP_DAYS);
+
+async function seed(opts: { feed?: boolean; feedAgeMs?: number } = {}): Promise<TenantStore> {
   const store = new TenantStore(env.DB, SHOP);
   await store.upsertTenant({ accessTokenEnc: 'tok', dekWrapped: 'd', scopes: 's' });
   await store.seedConfig({
@@ -47,7 +52,7 @@ async function seed(opts: { feed?: boolean } = {}): Promise<TenantStore> {
     addons: DEFAULT_ADDONS, fulfil: DEFAULT_FULFIL, inbox: DEFAULT_INBOX,
     target: 16,
   });
-  if (opts.feed !== false) await store.putSearchCache(FEED_CACHE_KEY, JSON.stringify(reduceFeed(feedJson)), 1);
+  if (opts.feed !== false) await seedFeed(store, opts.feedAgeMs);
   return store;
 }
 
@@ -75,6 +80,7 @@ describe('GET /api/models', () => {
     const body = await res.json() as any;
     expect(body.ok).toBe(true);
     expect(body.feedAvailable).toBe(true);
+    expect(body.feedStaleSince).toBeNull();
     expect(body.groups[0].provider).toBe('anthropic');
     expect(body.groups[0].entries[0].slug).toBe('anthropic/claude-fable-5.2');
     expect(body.menu.providers).toHaveLength(10);
@@ -84,7 +90,19 @@ describe('GET /api/models', () => {
 
   it('modelsPayload with no feed returns pins only and feedAvailable false', () => {
     const p = modelsPayload(null, { ...DEFAULT_LLM, models: { text: LUNA }, menu: { providers: ['anthropic'], pins: ['a/b'], hides: [] } }, Date.now());
-    expect(p).toMatchObject({ ok: true, feedAvailable: false, selectedStatus: {}, groups: [{ provider: 'a', entries: [{ slug: 'a/b', available: false }] }] });
+    expect(p).toMatchObject({ ok: true, feedAvailable: false, feedStaleSince: null, selectedStatus: {}, groups: [{ provider: 'a', entries: [{ slug: 'a/b', available: false }] }] });
+  });
+
+  // Spec 5.11: with OpenRouter unreachable, the menu falls back to the last
+  // good copy and says how old it is.
+  it('serves the last good copy, dated, when the live list cannot be fetched', async () => {
+    await seed({ feedAgeMs: 2 * DAY });
+    const res = await call('/api/models', 'GET');
+    const body = await res.json() as any;
+    expect(body.feedAvailable).toBe(true);
+    expect(body.feedStaleSince).toBe(new Date(Date.now() - 2 * DAY).toISOString().slice(0, 10));
+    expect(body.groups[0].provider).toBe('anthropic');
+    expect(fetchCalls).toEqual(['https://openrouter.ai/api/v1/models']);
   });
 });
 
@@ -142,6 +160,14 @@ describe('POST /api/llm', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true, dryRun: true });
     expect((await storedLlm()).models.text).toBe(LUNA);
+  });
+
+  it('a change is checked against the last good copy when the live list cannot be fetched', async () => {
+    const store = await seed({ feedAgeMs: 2 * DAY });
+    await passed(store, 'anthropic/claude-haiku-5.5', 'text');
+    const res = await saveLlm({}, { ...ALL_LUNA, text: 'anthropic/claude-haiku-5.5' });
+    expect(res.status).toBe(200);
+    expect((await storedLlm()).models.text).toBe('anthropic/claude-haiku-5.5');
   });
 
   it('a change with no OpenRouter key is refused', async () => {

@@ -236,7 +236,7 @@ function loadModelMenu(){
   if(!modelMenuPromise){
     modelMenuPromise=Promise.resolve().then(function(){ return api('/models',null,'GET'); }).then(function(r){
       if(!r||!r.ok) throw new Error('model list unavailable');
-      return { groups:r.groups||[], feedAvailable:!!r.feedAvailable, selectedStatus:r.selectedStatus||{}, menu:r.menu||null };
+      return { groups:r.groups||[], feedAvailable:!!r.feedAvailable, feedStaleSince:r.feedStaleSince||null, selectedStatus:r.selectedStatus||{}, menu:r.menu||null };
     }).catch(function(){ modelMenuPromise=null; return { groups:[], feedAvailable:false, selectedStatus:{} }; });
   }
   return modelMenuPromise;
@@ -278,6 +278,15 @@ function effortOptionsHtml(efforts,defaultEffort,fallbackEfforts){
 // is the model held (h.cleared); a fallback set where none was is priced
 // against the system default, since there is no current fallback (h.newFallback).
 function heldMessage(h,slotLabel){
+  // An effort raise (spec 5.11): the slot will think more than it did, and
+  // thinking is billed as output tokens. from is null when the old level is unknown.
+  if(h.kind==='effort'){
+    var ef=h.effort||{}, lv=function(x){ return x==='none'?'off':x; };
+    var to=lv(ef.to)+(ef.toDefault?' (the model default)':'');
+    var tail=', and thinking is billed as output tokens'+(h.completionPriceM!=null?' ('+fmtPrice(h.completionPriceM)+'/M out)':'')+'. Save anyway?';
+    if(ef.from) return 'Raising the '+slotLabel+' effort on '+h.name+' from '+lv(ef.from)+(ef.fromDefault?' (the model default)':'')+' to '+to+' makes each call think longer'+tail;
+    return 'Setting the '+slotLabel+' effort on '+h.name+' to '+to+' can make each call think longer'+tail;
+  }
   var known=h.promptPriceM!=null&&h.completionPriceM!=null;
   var prices=known?fmtPrice(h.promptPriceM)+'/M in, '+fmtPrice(h.completionPriceM)+'/M out':'';
   var x=h.ratio==null?null:(h.ratio>=10?Math.round(h.ratio):Math.round(h.ratio*10)/10);
@@ -362,6 +371,7 @@ function renderModelsWarn(m){
   var n=el('llm-models-warn'); if(!n) return;
   var lines=[], labels={image:'Image',text:'Text',fallback:'Fallback'};
   if(!m.feedAvailable) lines.push('Model list unavailable right now. Saved models stay as they are; a changed model can be saved once the list is back.');
+  else if(m.feedStaleSince) lines.push('The live model list from OpenRouter is unavailable right now, so this is the last good copy, from '+m.feedStaleSince+'. Saved models stay as they are, and a changed model is still live-tested before it saves.');
   ['image','text','fallback'].forEach(function(s){
     var st=(m.selectedStatus||{})[s]; if(!st) return;
     // A blank slot runs the system default model: say so, since the owner

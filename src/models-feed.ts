@@ -21,11 +21,21 @@ export interface FeedModel {
   defaultEffort: string | null;        // reasoning.default_effort
 }
 
-/** v2: the v1 key ('openrouter:models') held a different shape, so a new key
- *  means an old cache entry can never be misread as this one. */
-export const FEED_CACHE_KEY = 'openrouter:models:v2';
+/** v3 holds { fetchedAt, models } (v1 and v2 held other shapes, so a new key
+ *  means an old cache entry can never be misread as this one). */
+export const FEED_CACHE_KEY = 'openrouter:models:v3';
 const FEED_URL = 'https://openrouter.ai/api/v1/models';
-const FEED_TTL_DAYS = 1;
+/** A copy is fresh for a day; after that the next read fetches again. */
+export const FEED_FRESH_MS = 86_400_000;
+/** The copy is kept 30 days as the last good list (spec 5.11), for when
+ *  OpenRouter cannot be reached or sends a list that is cut short. */
+export const FEED_KEEP_DAYS = 30;
+/** A list with fewer rows is not a whole catalogue (470 rows on 2026-11-13). */
+export const MIN_FEED_ROWS = 100;
+/** While the copy is younger than this, a fetch with under half its rows is
+ *  refused as cut short. After it, only MIN_FEED_ROWS applies, so a real cut
+ *  to OpenRouter's catalogue cannot freeze the menu on an ageing copy. */
+export const FEED_SHRINK_WINDOW_MS = 3 * 86_400_000;
 
 const strings = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []);
 
@@ -87,42 +97,90 @@ export function feedCost(m: FeedModel): number | null {
  *  a model save reads the feed, so it must not hang the console. */
 export const FEED_TIMEOUT_MS = 10_000;
 
+/** A list as read: `stale` when it is the last good copy, older than a day,
+ *  because a fresh fetch failed or was refused as cut short. */
+export interface Feed { models: FeedModel[]; fetchedAt: number; stale: boolean }
+
+type FeedStore = Pick<TenantStore, 'getSearchCache' | 'putSearchCache'>;
+
+/** The cached copy as stored under FEED_CACHE_KEY. */
+export function feedCacheEntry(models: FeedModel[], fetchedAt: number): string {
+  return JSON.stringify({ fetchedAt, models });
+}
+
+function readCopy(raw: string | null): { models: FeedModel[]; fetchedAt: number } | null {
+  if (!raw) return null;
+  try {
+    const v = JSON.parse(raw) as { fetchedAt?: unknown; models?: unknown };
+    if (v && typeof v.fetchedAt === 'number' && Number.isFinite(v.fetchedAt) && Array.isArray(v.models) && v.models.length) {
+      return { models: v.models as FeedModel[], fetchedAt: v.fetchedAt };
+    }
+  } catch { /* corrupt entry: treat as a miss */ }
+  return null;
+}
+
+/** One fetch of the public endpoint (no key needed), reduced. null on a
+ *  throw, a non-200 or no answer within timeoutMs. */
+async function fetchFeed(fetchImpl: typeof fetch, timeoutMs: number): Promise<FeedModel[] | null> {
+  // Raced as well as aborted, so a fetch that ignores the signal (or a body
+  // that stalls mid-read) still gives up on time. The request never rejects
+  // past this point, so a late abort error is not an unhandled rejection.
+  const controller = new AbortController();
+  const request = (async () => {
+    const res = await fetchImpl(FEED_URL, { signal: controller.signal });
+    return res.ok ? reduceFeed(await res.json()) : null;
+  })().catch(() => null);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<null>((resolve) => { timer = setTimeout(() => { controller.abort(); resolve(null); }, timeoutMs); });
+  const feed = await Promise.race([request, timeout]);
+  if (timer !== undefined) clearTimeout(timer);
+  return feed;
+}
+
 /**
- * The reduced feed: from the per-shop cache when fresh, else one fetch of the
- * public endpoint (no key needed), cached for a day. Never throws. null means
- * "unavailable": a failed fetch, a non-200, a payload with no usable rows, or
- * no answer within timeoutMs, none of which is cached, so the next call tries
- * again.
+ * The reduced feed for the menu and the save check (spec 5.11). A copy under a
+ * day old is used as it is. Otherwise one fetch: a whole list replaces the
+ * copy (kept 30 days); a failed fetch, or one refused as cut short (under
+ * MIN_FEED_ROWS rows, or under half the rows of a copy younger than 3 days),
+ * caches nothing and returns the old copy marked stale. null only when there
+ * is no copy at all. Never throws.
  */
-export async function loadFeed(
-  store: Pick<TenantStore, 'getSearchCache' | 'putSearchCache'>,
+export async function readFeed(
+  store: FeedStore,
   fetchImpl: typeof fetch = defaultFetch,
   timeoutMs: number = FEED_TIMEOUT_MS,
-): Promise<FeedModel[] | null> {
+  nowMs: number = Date.now(),
+): Promise<Feed | null> {
   try {
-    const cached = await store.getSearchCache(FEED_CACHE_KEY);
-    if (cached) {
-      try {
-        const parsed: unknown = JSON.parse(cached);
-        if (Array.isArray(parsed) && parsed.length) return parsed as FeedModel[];
-      } catch { /* corrupt entry: treat as a miss */ }
+    const copy = readCopy(await store.getSearchCache(FEED_CACHE_KEY));
+    if (copy && nowMs - copy.fetchedAt < FEED_FRESH_MS) return { ...copy, stale: false };
+    const fetched = await fetchFeed(fetchImpl, timeoutMs);
+    if (fetched && fetched.length) {
+      const recentCopy = copy && nowMs - copy.fetchedAt < FEED_SHRINK_WINDOW_MS ? copy : null;
+      const cutShort = fetched.length < MIN_FEED_ROWS || (recentCopy !== null && fetched.length * 2 < recentCopy.models.length);
+      if (!cutShort) {
+        await store.putSearchCache(FEED_CACHE_KEY, feedCacheEntry(fetched, nowMs), FEED_KEEP_DAYS);
+        return { models: fetched, fetchedAt: nowMs, stale: false };
+      }
+      // Logged every time, with both counts, so a list stuck on refusal shows in Workers Logs.
+      const age = copy ? `${Math.round((nowMs - copy.fetchedAt) / 3_600_000)}h` : 'none';
+      console.warn(`models.feed.refused rows=${fetched.length} copy=${copy?.models.length ?? 0} copyAge=${age} (cut short: under ${MIN_FEED_ROWS} rows or under half a recent copy)`);
     }
-    // Raced as well as aborted, so a fetch that ignores the signal (or a body
-    // that stalls mid-read) still gives up on time. The request never rejects
-    // past this point, so a late abort error is not an unhandled rejection.
-    const controller = new AbortController();
-    const request = (async () => {
-      const res = await fetchImpl(FEED_URL, { signal: controller.signal });
-      return res.ok ? reduceFeed(await res.json()) : null;
-    })().catch(() => null);
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const timeout = new Promise<null>((resolve) => { timer = setTimeout(() => { controller.abort(); resolve(null); }, timeoutMs); });
-    const feed = await Promise.race([request, timeout]);
-    if (timer !== undefined) clearTimeout(timer);
-    if (!feed || !feed.length) return null;
-    await store.putSearchCache(FEED_CACHE_KEY, JSON.stringify(feed), FEED_TTL_DAYS);
-    return feed;
+    return copy ? { ...copy, stale: true } : null;
   } catch {
     return null;
   }
+}
+
+/** The feed for the daily watch: fresh only. The watch never judges a model
+ *  delisted or retiring from an old copy, so a stale copy reads as null and
+ *  the watch skips that day. */
+export async function loadFeed(
+  store: FeedStore,
+  fetchImpl: typeof fetch = defaultFetch,
+  timeoutMs: number = FEED_TIMEOUT_MS,
+  nowMs: number = Date.now(),
+): Promise<FeedModel[] | null> {
+  const feed = await readFeed(store, fetchImpl, timeoutMs, nowMs);
+  return feed && !feed.stale ? feed.models : null;
 }

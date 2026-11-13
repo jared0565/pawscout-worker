@@ -121,7 +121,8 @@ describe('checkModelSave: refusals', () => {
 describe('checkModelSave: price confirmation', () => {
   it('holds Luna -> Opus at about 17x and does not probe', async () => {
     const r = await check({ text: LUNA }, { text: 'anthropic/claude-opus-5.5' });
-    expect(r).toMatchObject({ ok: false, status: 409, held: [{ slot: 'text', slug: 'anthropic/claude-opus-5.5', name: expect.any(String), promptPriceM: 4, completionPriceM: 20, cleared: false, newFallback: false }] });
+    expect(held(r)[0]).toMatchObject({ kind: 'model', slot: 'text', slug: 'anthropic/claude-opus-5.5', name: expect.any(String), promptPriceM: 4, completionPriceM: 20, cleared: false, newFallback: false });
+    expect(r).toMatchObject({ ok: false, status: 409 });
     expect(held(r)[0].ratio).toBeCloseTo(17.14, 1);
     expect(probe).not.toHaveBeenCalled();
   });
@@ -152,7 +153,8 @@ describe('checkModelSave: price confirmation', () => {
   });
 
   it('a blank slot compares with SYSTEM_DEFAULT_MODEL', async () => {
-    expect(await check({}, { text: 'anthropic/claude-opus-5.5' })).toEqual({ ok: true }); // 24 vs 14 = 1.71x
+    // 24 vs 14 = 1.71x: no price hold (Opus is held only for its higher default effort, below).
+    expect(held(await check({}, { text: 'anthropic/claude-opus-5.5' })).filter((h) => h.kind === 'model')).toEqual([]);
     const r = await check({}, { text: FABLE });                                              // 48 vs 14 = 3.43x
     expect(r).toMatchObject({ ok: false, status: 409 });
     expect(held(r)[0].ratio).toBeCloseTo(3.43, 2);
@@ -175,9 +177,43 @@ describe('checkModelSave: reasoning effort', () => {
     expect(allowedEfforts(by(LUNA), by('qwen/qwen3.8-flash'))).toEqual([]); // fallback lists none: only the default
   });
 
-  it('an effort-only change is live-tested at that effort and never price-held', async () => {
-    expect(await check({ text: LUNA }, { text: LUNA, textEffort: 'high' })).toEqual({ ok: true });
+  // Amended 2026-11-13 (owner go after the audit, spec 5.11): more thinking is
+  // billed as output, so a slot that will run at a higher effort than it ran
+  // before is held like an expensive model change. The comparison is the
+  // effort each side actually runs: the chosen one, else the model's default.
+  it('raising an effort is held; with confirmCost it is live-tested at that effort', async () => {
+    const r = await check({ text: LUNA }, { text: LUNA, textEffort: 'high' });
+    expect(r).toMatchObject({ ok: false, status: 409, held: [{ kind: 'effort', slot: 'text', slug: LUNA, ratio: null,
+      effort: { from: 'medium', fromDefault: true, to: 'high', toDefault: false } }] });
+    expect(probe).not.toHaveBeenCalled();
+    expect(await check({ text: LUNA }, { text: LUNA, textEffort: 'high' }, { confirmCost: true })).toEqual({ ok: true });
     expect(probeCalls()).toEqual([[LUNA, 'text', 'high']]);
+  });
+
+  it('a lowered effort, or the model default made explicit, is not held', async () => {
+    expect(await check({ text: LUNA }, { text: LUNA, textEffort: 'low' })).toEqual({ ok: true });
+    expect(await check({ text: LUNA }, { text: LUNA, textEffort: 'medium' })).toEqual({ ok: true });
+    expect(await check({ text: LUNA, imageEffort: 'high' }, { text: LUNA, imageEffort: 'medium' })).toEqual({ ok: true });
+  });
+
+  it('clearing a low effort back to Model default is a raise to the default, and is held', async () => {
+    expect(held(await check({ text: LUNA, textEffort: 'low' }, { text: LUNA })))
+      .toEqual([expect.objectContaining({ kind: 'effort', effort: { from: 'low', fromDefault: false, to: 'medium', toDefault: true } })]);
+  });
+
+  it('a model switch left on Model default is held when the new default thinks more, even under the price line', async () => {
+    const r = await check({ text: LUNA }, { text: MISTRAL }); // 2.8 vs 1.4 = 2x: no price hold
+    expect(held(r)).toEqual([expect.objectContaining({ kind: 'effort', slot: 'text', slug: MISTRAL,
+      effort: { from: 'medium', fromDefault: true, to: 'high', toDefault: true } })]);
+  });
+
+  // A model's own default after an unreadable level is not a known raise (the
+  // delisted-model test above holds only on price); a chosen effort is.
+  it('from an effort PawScout cannot read, a chosen effort above off is held, and off is not', async () => {
+    const r = await check({ text: 'openai/gone' }, { text: HAIKU, textEffort: 'low' });
+    expect(held(r)).toContainEqual(expect.objectContaining({ kind: 'effort', effort: { from: null, fromDefault: true, to: 'low', toDefault: false } }));
+    const off = await check({ text: 'openai/gone' }, { text: HAIKU, textEffort: 'none' });
+    expect(held(off).filter((h) => h.kind === 'effort')).toEqual([]);
   });
 
   it('refuses an effort the model does not offer', async () => {
