@@ -172,3 +172,21 @@ tool = "semgrep"
 rule = "owasp-top-ten.a03-injection.javascript-dangerous-function-constructor"
 path = "tests/console.test.ts"
 reason = "Test runs the console page's own order-row helpers (row actions, banner filter, status label), cut from consolePage() output in the same process, on fixed sample rows; no external input, test-only, not in the Worker bundle."
+
+# 2026-11-13: fourth `new Function(...)` in tests/console.test.ts, same shape as
+# the three above: the `fns` helper of the "AI models card" tests. Verified at
+# source: the compiled string is functions brace-extracted from the console
+# page's own inline script (consolePage() output in the same test run:
+# modelOptionsHtml, effortOptionsHtml, heldMessage, loadModelMenu and their
+# helpers), plus parameter names and a prelude fixed in the test file
+# ('api', 'var modelMenuPromise=null;') and a fixed `return`. The tests exist
+# because the page script is a template literal tsc cannot check. The suite's
+# two new compile sites were folded into this one before suppressing. No
+# external or user-supplied input; test-only; vitest never ships to the Worker
+# bundle. Approved by the owner on 2026-11-13.
+[[suppress]]
+id = "dd4b7e48804e281b9353565db4f1b9eacddd760f2d665e284ace9d48423d67b7"
+tool = "semgrep"
+rule = "owasp-top-ten.a03-injection.javascript-dangerous-function-constructor"
+path = "tests/console.test.ts"
+reason = "Test compiles functions extracted from the console's own generated inline script (consolePage() output, same process) with test-fixed parameter names and prelude, to unit-test the AI models card; no external input, test-only, not in the Worker bundle."
