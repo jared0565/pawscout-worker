@@ -69,6 +69,16 @@ export const DEFAULT_MODEL_PRICE = { promptPerM: 0.75, completionPerM: 4.50 };
  * keep the tenant's as OpenRouter-native failover.
  */
 export const SEARCH_MODEL = 'anthropic/claude-haiku-4.5';
+/**
+ * The model a BLANK image or text slot runs (resolveChain). It used to be
+ * "whatever sits first in the curated menu", which made the menu's order a
+ * hidden behaviour switch; it is now a fixed constant holding the value that
+ * menu head had on 2026-11-13, so a tenant with a blank slot runs exactly what
+ * it ran before the menu became self-updating. Changing it changes every
+ * blank-slot tenant, and a save that clears a slot is price-checked and
+ * live-tested against it (src/model-save.ts).
+ */
+export const SYSTEM_DEFAULT_MODEL = 'google/gemini-3.1-pro-preview';
 
 /**
  * Minimum completion budget for ANY tier.

@@ -109,8 +109,8 @@ export interface Floors {
 }
 
 export interface ModelsConfig {
-  image?: string;    // OpenRouter slug; blank → CURATED_MODELS[0] (menu head)
-  text?: string;     // OpenRouter slug; blank → CURATED_MODELS[0]
+  image?: string;    // OpenRouter slug; blank → SYSTEM_DEFAULT_MODEL (src/llm.ts)
+  text?: string;     // OpenRouter slug; blank → SYSTEM_DEFAULT_MODEL
   fallback?: string; // OpenRouter slug; blank → omitted from the models[] array
 }
 
