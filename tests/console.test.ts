@@ -1535,7 +1535,7 @@ describe('AI models card', () => {
   }
   /** One top-level `function NAME(` from the page script, brace-matched. */
   function extract(scripts: string, name: string): string {
-    const start = scripts.indexOf(`function ${name}(`);
+    const at = scripts.indexOf(`function ${name}(`), start = scripts.slice(at - 6, at) === 'async ' ? at - 6 : at; // keep `async`
     expect(start, name).toBeGreaterThanOrEqual(0);
     let depth = 0;
     let end = scripts.indexOf('{', start);
@@ -1608,5 +1608,92 @@ describe('AI models card', () => {
       'Model list unavailable right now', 'Higher effort means more thinking, billed as output tokens.',
       'Fallback is the same as the text model, so there is no second model to switch to.', 'Last resort: GPT-5.4 mini']) expect(html).toContain(s);
     expect(html).not.toContain('ensureModelOptions');
+  });
+
+  // Final review 2026-11-13. saveLlm, onModelChange and fillEffort are driven
+  // against stand-ins for the DOM and the API, since the page script is a
+  // template literal that only a browser would otherwise run.
+  const OPUS = 'anthropic/claude-opus-5.5';
+  const LUNA = 'openai/gpt-5.6-luna';
+  function saveHarness(opts: { stored: Record<string, string>; ready: boolean; selects: Record<string, string>; replies: unknown[] }) {
+    const nodes: Record<string, any> = {};
+    const el = (id: string) => (nodes[id] ??= { value: opts.selects[id] ?? '', textContent: '', className: '', innerHTML: '' });
+    el('llmon').value = 'true';
+    el('llmthresh').value = '60';
+    const sent: any[] = [];
+    const msgs: unknown[][] = [];
+    const replies = [...opts.replies];
+    const deps = {
+      el, api: async (_path: string, body: unknown) => { sent.push(JSON.parse(JSON.stringify(body))); return replies.shift(); },
+      setMsg: (...a: unknown[]) => { msgs.push(a); }, errText: String,
+      invalidateModelMenu: () => {}, fillModels: () => {}, refresh: () => {}, fillEffort: () => {}, renderFallbackHint: () => {},
+    };
+    const prelude = `var storedModels=${JSON.stringify(opts.stored)};var modelsReady=${opts.ready};var heldSave=null;`;
+    return { el, sent, msgs, deps, prelude };
+  }
+  const SAVE_FNS = ['saveLlm', 'llmMsg', 'currentModelVals', 'selVal', 'heldMessage', 'fmtPrice', 'esc', 'onModelChange'];
+  const HELD = { ok: false, held: [{ slot: 'text', slug: OPUS, name: 'Claude Opus 5.5', ratio: 17.14, promptPriceM: 4, completionPriceM: 20 }] };
+  const STORED = { image: LUNA, text: LUNA, fallback: LUNA, imageEffort: '', textEffort: 'low' };
+
+  it('Save anyway re-sends the held save, not whatever the selects hold now', async () => {
+    const h = saveHarness({ stored: STORED, ready: true, selects: { 'mdl-image': LUNA, 'mdl-text': OPUS, 'mdl-fallback': LUNA, 'mdl-text-effort': 'low' }, replies: [HELD, { ok: true }] });
+    const { saveLlm } = await fns(SAVE_FNS, h.deps, h.prelude);
+    await saveLlm();
+    expect(h.sent[0]).toMatchObject({ models: { text: OPUS }, confirmCost: false });
+    expect(h.el('llm-models-msg').innerHTML).toContain('Save anyway');
+    h.el('mdl-text').value = 'anthropic/claude-fable-5.2'; // a pricier model, never shown in a hold
+    await saveLlm(true);
+    expect(h.sent[1]).toMatchObject({ models: { text: OPUS, textEffort: 'low' }, confirmCost: true });
+  });
+
+  it('changing a model after a hold drops the held confirmation', async () => {
+    const h = saveHarness({ stored: STORED, ready: true, selects: { 'mdl-image': LUNA, 'mdl-text': OPUS, 'mdl-fallback': LUNA }, replies: [HELD, { ok: true }] });
+    const { saveLlm, onModelChange } = await fns(SAVE_FNS, h.deps, h.prelude);
+    await saveLlm();
+    h.el('mdl-text').value = 'anthropic/claude-fable-5.2';
+    onModelChange('text');
+    expect(h.msgs).toContainEqual(['llm-models-msg', '', 'muted']);
+    await saveLlm(true); // a stale button press confirms nothing
+    expect(h.sent[1]).toMatchObject({ models: { text: 'anthropic/claude-fable-5.2' }, confirmCost: false });
+  });
+
+  it('a save before the selects are filled sends the saved selection, never blanks', async () => {
+    const early = saveHarness({ stored: STORED, ready: false, selects: {}, replies: [{ ok: true }] });
+    await (await fns(SAVE_FNS, early.deps, early.prelude)).saveLlm();
+    expect(early.sent[0].models).toEqual(STORED);
+    // Control: once the selects are filled, their values are what is sent.
+    const ready = saveHarness({ stored: STORED, ready: true, selects: {}, replies: [{ ok: true }] });
+    await (await fns(SAVE_FNS, ready.deps, ready.prelude)).saveLlm();
+    expect(ready.sent[0].models.text).toBe('');
+  });
+
+  it('fillEffort keeps a saved effort the model dropped while nothing changed, and resets it after a model change', async () => {
+    /** A select whose options follow innerHTML, enough to run fillEffort. */
+    function fakeSelect() {
+      const s: any = { options: [] as { value: string; textContent: string }[], v: '' };
+      Object.defineProperty(s, 'innerHTML', { set(html: string) {
+        s.options = [...html.matchAll(/<option value="([^"]*)">([^<]*)<\/option>/g)].map((m) => ({ value: m[1], textContent: m[2] }));
+        s.v = s.options[0]?.value ?? '';
+      } });
+      Object.defineProperty(s, 'value', { get: () => s.v, set: (x: string) => { s.v = s.options.some((o: any) => o.value === x) ? x : ''; } });
+      s.appendChild = (o: any) => s.options.push(o);
+      return s;
+    }
+    const menu = { groups: [{ provider: 'm', entries: [
+      { slug: 'm/x', efforts: ['high'], defaultEffort: 'high' },
+      { slug: 'm/y', efforts: ['high', 'medium'], defaultEffort: null }] }], selectedStatus: {} };
+    async function run(textModel: string) {
+      const nodes: Record<string, any> = { 'mdl-text-effort': fakeSelect(), 'mdl-text': { value: textModel }, 'mdl-fallback': { value: '' } };
+      const deps = { el: (id: string) => nodes[id], loadModelMenu: async () => menu, document: { createElement: () => ({}) } };
+      const { fillEffort } = await fns(['fillEffort', 'selVal', 'effortInfo', 'effortOptionsHtml'], deps,
+        `var storedModels=${JSON.stringify({ text: 'm/x', fallback: '', textEffort: 'medium' })};`);
+      await fillEffort('text', 'medium');
+      return nodes['mdl-text-effort'];
+    }
+    const kept = await run('m/x');
+    expect(kept.value).toBe('medium');
+    expect(kept.options.at(-1).textContent).toBe('medium (not offered)');
+    expect((await run('m/z')).value).toBe('');      // model changed, effort unknown to it: back to the default
+    expect((await run('m/y')).value).toBe('medium'); // model changed and offers it: kept as a normal option
   });
 });

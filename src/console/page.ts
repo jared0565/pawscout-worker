@@ -402,6 +402,7 @@ async function fillModels(v){
   renderMenuPanel(m);
 }
 function onModelChange(which){
+  if(heldSave){ heldSave=null; setMsg('llm-models-msg','','muted'); }
   if(which!=='text') fillEffort('image');
   if(which!=='image') fillEffort('text');
   renderFallbackHint();
@@ -660,23 +661,35 @@ function llmMsg(t,kind){ setMsg('llmmsg',t,kind); setMsg('llm-models-msg',t,kind
 // confirm is true only from the "Save anyway" button: a change that makes a slot
 // more than 3x as expensive comes back as a 409 listing the held slots, and is
 // saved only once the owner confirms it (confirm() is blocked in the admin iframe).
+// "Save anyway" re-sends exactly the save that was held, never the selects as
+// they are now; changing a model drops the hold (onModelChange).
+var heldSave=null;
 async function saveLlm(confirm){
-  var v=modelsReady?currentModelVals():storedModels;
-  var changed=['image','text','fallback','imageEffort','textEffort'].some(function(k){ return (v[k]||'')!==(storedModels[k]||''); });
-  llmMsg(changed?'Testing the new model...':'Saving…','muted');
-  try{
-    var r=await api('/llm',{
+  var payload;
+  if(confirm===true&&heldSave){
+    payload={ enabled:heldSave.enabled, scoreThreshold:heldSave.scoreThreshold, models:heldSave.models, confirmCost:true };
+  } else {
+    var v=modelsReady?currentModelVals():storedModels;
+    payload={
       enabled:el('llmon').value==='true',
       scoreThreshold:Number(el('llmthresh').value),
       models:{ image:v.image, text:v.text, fallback:v.fallback, imageEffort:v.imageEffort, textEffort:v.textEffort },
-      confirmCost:confirm===true
-    });
+      confirmCost:false
+    };
+  }
+  heldSave=null;
+  var mv=payload.models;
+  var changed=['image','text','fallback','imageEffort','textEffort'].some(function(k){ return (mv[k]||'')!==(storedModels[k]||''); });
+  llmMsg(changed?'Testing the new model...':'Saving…','muted');
+  try{
+    var r=await api('/llm',payload);
     if(r.ok){
       llmMsg('Saved ✓','ok');
-      storedModels={ image:v.image, text:v.text, fallback:v.fallback, imageEffort:v.imageEffort, textEffort:v.textEffort };
+      storedModels={ image:mv.image, text:mv.text, fallback:mv.fallback, imageEffort:mv.imageEffort, textEffort:mv.textEffort };
       invalidateModelMenu(); fillModels(storedModels);
       refresh();
     } else if(r.held){
+      heldSave={ enabled:payload.enabled, scoreThreshold:payload.scoreThreshold, models:mv };
       var lines=r.held.map(function(h){ return heldMessage(h,h.slot); });
       setMsg('llmmsg',lines.join(' ')+' Confirm in Settings, AI models.','no');
       var box=el('llm-models-msg');

@@ -73,15 +73,21 @@ export function feedCost(m: FeedModel): number | null {
   return Math.round((m.promptPriceM + m.completionPriceM) * 1e6) / 1e6;
 }
 
+/** A feed request that has not answered by then is abandoned (and aborted):
+ *  a model save reads the feed, so it must not hang the console. */
+export const FEED_TIMEOUT_MS = 10_000;
+
 /**
  * The reduced feed: from the per-shop cache when fresh, else one fetch of the
  * public endpoint (no key needed), cached for a day. Never throws. null means
- * "unavailable": a failed fetch, a non-200, or a payload with no usable rows,
- * none of which is cached, so the next call tries again.
+ * "unavailable": a failed fetch, a non-200, a payload with no usable rows, or
+ * no answer within timeoutMs, none of which is cached, so the next call tries
+ * again.
  */
 export async function loadFeed(
   store: Pick<TenantStore, 'getSearchCache' | 'putSearchCache'>,
   fetchImpl: typeof fetch = defaultFetch,
+  timeoutMs: number = FEED_TIMEOUT_MS,
 ): Promise<FeedModel[] | null> {
   try {
     const cached = await store.getSearchCache(FEED_CACHE_KEY);
@@ -91,10 +97,19 @@ export async function loadFeed(
         if (Array.isArray(parsed) && parsed.length) return parsed as FeedModel[];
       } catch { /* corrupt entry: treat as a miss */ }
     }
-    const res = await fetchImpl(FEED_URL);
-    if (!res.ok) return null;
-    const feed = reduceFeed(await res.json());
-    if (!feed.length) return null;
+    // Raced as well as aborted, so a fetch that ignores the signal (or a body
+    // that stalls mid-read) still gives up on time. The request never rejects
+    // past this point, so a late abort error is not an unhandled rejection.
+    const controller = new AbortController();
+    const request = (async () => {
+      const res = await fetchImpl(FEED_URL, { signal: controller.signal });
+      return res.ok ? reduceFeed(await res.json()) : null;
+    })().catch(() => null);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<null>((resolve) => { timer = setTimeout(() => { controller.abort(); resolve(null); }, timeoutMs); });
+    const feed = await Promise.race([request, timeout]);
+    if (timer !== undefined) clearTimeout(timer);
+    if (!feed || !feed.length) return null;
     await store.putSearchCache(FEED_CACHE_KEY, JSON.stringify(feed), FEED_TTL_DAYS);
     return feed;
   } catch {

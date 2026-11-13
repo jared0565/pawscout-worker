@@ -87,6 +87,19 @@ describe('loadFeed', () => {
     }
   });
 
+  // Final review 2026-11-13: a save with a changed slot reads the feed, so a
+  // feed request that never answers must not hang the console save.
+  it('gives up on a feed request that never answers, aborts it, and caches nothing', async () => {
+    const store = fakeStore();
+    let signal: AbortSignal | undefined;
+    const hang = ((_url: string, init?: RequestInit) => { signal = init?.signal ?? undefined; return new Promise(() => {}); }) as unknown as typeof fetch;
+    const started = Date.now();
+    expect(await loadFeed(store, hang, 50)).toBeNull();
+    expect(Date.now() - started).toBeLessThan(2000);
+    expect(signal?.aborted).toBe(true);
+    expect(store.mem.has(FEED_CACHE_KEY)).toBe(false);
+  });
+
   it('returns null on a throw, a 500, or a 200 with zero usable rows, and caches none of them', async () => {
     const throwing = (async () => { throw new Error('network'); }) as unknown as typeof fetch;
     const cases: (typeof fetch)[] = [throwing, feedFetch({ calls: 0 }, feedJson, 500), feedFetch({ calls: 0 }, { data: [] })];
