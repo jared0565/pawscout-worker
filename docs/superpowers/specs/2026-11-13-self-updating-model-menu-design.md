@@ -129,6 +129,7 @@ When the owner saves a slug into a slot that **differs from what is stored**, th
 
 For each slot, in `POST /api/llm`:
 - **Unchanged** from the stored value: accepted with no check (fixes the anti-goal in section 2).
+- **Cleared** (blank where a model was stored): for image and text this is a change to `SYSTEM_DEFAULT_MODEL`, because that is what a blank slot runs, so it goes through every check below, including the price check (Luna to the system default is about 10x). Clearing fallback needs no check, since a blank fallback is simply omitted. This also catches a select that was saved before its options loaded.
 - **Changed**: must be in the feed (not necessarily on the menu, since a pin may add it), must not be a `~` alias, must pass the vision rule for image and fallback (existing `visionModelRejected`, now fed from the feed), and must pass the live test (5.5).
 - **Feed unreachable**: unchanged slugs are accepted; a changed slug is refused with "Cannot verify new models right now; try again shortly."
 - **`dryRun: true`** in the body runs every check above, including the live test, and stores nothing. It exists so the real OpenRouter path can be verified on production without changing the store's models (section 8); the console does not send it.
@@ -195,4 +196,6 @@ Feature branch, full suite, CI, staging deploy (staging has no shop, so its sess
 
 **My calls (stated to the owner as proposals; correctable):** the default provider list in 5.3; 6-month staleness; 6 families per provider; 30-day retirement window; 7-day live-test cache; the variant filter list in 5.2; `-preview` merged into its family; `llm.menu` with its own merge route; `SYSTEM_DEFAULT_MODEL` keeping today's head; live tests in parallel with a 60-second timeout; the pass cache keyed by slug and mode; `~` aliases refused as pins; changed slugs refused when no OpenRouter key is configured; cost measured as input plus output price per million; an unknown current price holds the save; the price check enforced on the server and run before the live test.
 
-**Left to the builder:** the exact family-key regex (must satisfy the fixture tests in section 7); the image used in the vision live test; the chip and pin UI details within the existing console style; how the reduced feed is shaped in the cache.
+**Settled in the plan (2026-11-13):** the vision live test sends a small inline PNG (base64 data URI) rather than an https link, so the test never depends on an outside host being reachable. Production sends https image links, so the probe's image transport differs from production; both forms are accepted by OpenRouter.
+
+**Left to the builder:** the exact family-key regex (must satisfy the fixture tests in section 7); the chip and pin UI details within the existing console style; how the reduced feed is shaped in the cache.

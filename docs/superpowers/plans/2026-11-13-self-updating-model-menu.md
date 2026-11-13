@@ -46,7 +46,9 @@
 2. **A model moved into another slot** (the text model reused as fallback) counts as changed for that slot only, is tested in that slot's mode (vision for fallback), and the untouched slot gets no probe. Pinned in Task 6.
 3. **OpenRouter never answers.** The save comes back with a plain reason instead of hanging the console. Pinned in Task 5 (timeout test).
 4. **The feed's shape drifts:** malformed rows, non-numeric prices, a corrupt cache entry, or a 200 with zero usable rows. The menu degrades and never throws, and an empty result is not cached. Pinned in Task 2.
-5. **A free (zero-price) or delisted current model** means the price ratio cannot be computed. The save is held with `ratio: null` (never `Infinity`/`NaN`), and the console names the new prices instead of a ratio. Pinned in Task 6 and Task 9.
+5. **A select saved blank by accident**, because the menu fetch failed or Save was clicked before the options loaded. The saved slug must stay selected as "(current)". If a blank still reaches the server, it is treated as a change to `SYSTEM_DEFAULT_MODEL` (about 10x Luna) and held, never stored silently. Pinned in Task 6 (cleared-slot tests) and Task 9 (rejected-fetch test).
+
+A free (zero-price) or delisted current model also has its own Task 6 test: the save is held with `ratio: null`, never `Infinity` or `NaN`.
 
 ---
 
@@ -302,6 +304,7 @@ export type ProbeMode = 'text' | 'vision';
 export type ProbeResult = { ok: true } | { ok: false; reason: string };
 export const PROBE_TIMEOUT_MS = 60_000;
 export const PROBE_CACHE_DAYS = 7;
+// Inline on purpose (spec section 9): no outside host has to be reachable. Production sends https image links instead.
 export const PROBE_IMAGE_DATA_URI = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAT0lEQVR42u3PQQkAAAgEsItjWNOawAi+hcEKLNP1WgQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQELgsbomGHIoj2rgAAAABJRU5ErkJggg=='; // 64x64 orange PNG, verified to decode
 export function probeCacheKey(slug: string, mode: ProbeMode): string; // `modelprobe:${slug}:${mode}`
 export async function probeModel(llm: LlmClient, store: Pick<TenantStore, 'getSearchCache' | 'putSearchCache' | 'logLlmUsage'>,
@@ -387,7 +390,15 @@ it('unchanged slots never load the feed or probe', async () => {
   expect(await checkModelSave({ stored: { image: LUNA, text: LUNA, fallback: LUNA }, requested: { image: LUNA, text: LUNA, fallback: LUNA }, loadFeed, confirmCost: false, probe })).toEqual({ ok: true });
   expect(loadFeed).not.toHaveBeenCalled(); expect(probe).not.toHaveBeenCalled();
 });
-it('clearing a slot needs no check', async () => { /* stored fallback LUNA, requested fallback undefined -> ok, no probe */ });
+it('clearing fallback needs no check', async () => { /* stored fallback LUNA, requested fallback undefined -> ok, no feed load, no probe */ });
+it('clearing text is a change to SYSTEM_DEFAULT_MODEL and is held at about 10x', async () => {
+  const r = await checkModelSave({ stored: { text: LUNA }, requested: {}, loadFeed: async () => feed, confirmCost: false, probe });
+  expect(r).toMatchObject({ ok: false, status: 409, held: [{ slot: 'text', slug: 'google/gemini-3.1-pro-preview' }] });
+  expect((r as { held: HeldSlot[] }).held[0].ratio).toBeCloseTo(10, 1); expect(probe).not.toHaveBeenCalled();
+});
+it('a confirmed clear of image runs the vision live test on SYSTEM_DEFAULT_MODEL', async () => {
+  /* stored { image: LUNA }, requested {}, confirmCost true -> ok; probe calls == [['google/gemini-3.1-pro-preview', 'vision']] */
+});
 it('feed down refuses only a change', async () => { /* changed text, loadFeed -> null -> 400 'Cannot verify new models right now; try again shortly.' */ });
 it('refuses a slug OpenRouter does not list', async () => { /* text 'openai/nope' -> 400 'text model openai/nope is not offered by OpenRouter' */ });
 it('refuses a floating alias even though the feed lists it', async () => { /* text '~anthropic/claude-sonnet-latest' -> 400 */ });
@@ -416,7 +427,11 @@ it('the same slug in image and fallback is probed once', async () => { /* both c
 
 - [ ] **Step 2: Run them.** `npx vitest run tests/model-save.test.ts`. Expected: FAIL, the module is missing.
 - [ ] **Step 3: Implement `checkModelSave`.** Steps, in order:
-  1. Find the changed slots: `requested[s]` is non-empty and differs from `stored[s]`. If there are none, return ok.
+  1. Find the changed slots. A slot is changed when `requested[s] || ''` differs from `stored[s] || ''`.
+     - The model a changed slot will run is `requested[s]`.
+     - A cleared image or text slot runs `SYSTEM_DEFAULT_MODEL`, which is checked like any other model.
+     - A cleared fallback runs nothing and drops out of the changed set.
+     - If no slots are changed, return ok.
   2. Load the feed once. If it is `null`, return a 400.
   3. Per changed slot, refuse a slug that is not in the feed, a `~` slug, or a model without `image` input in the image or fallback slot. Return the first refusal, in slot order image, text, fallback.
   4. Run the price check. The baseline is `stored[s] || SYSTEM_DEFAULT_MODEL`.
@@ -589,6 +604,10 @@ it('heldMessage gives a ratio, or the prices when the ratio is unknown', async (
   expect(heldMessage({ name: 'X', ratio: null, promptPriceM: 4, completionPriceM: 20 }, 'image'))
     .toBe('X costs $4/M in, $20/M out, and the current image model has no known price to compare. Save anyway?');
 });
+it('loadModelMenu survives a failed fetch with an empty, unavailable menu', async () => {
+  /* extract loadModelMenu; new Function('api', 'var modelMenuPromise=null;' + src + '\nreturn loadModelMenu;')(async () => { throw new Error('x'); })
+     -> resolves (does not reject) to { groups: [], feedAvailable: false, selectedStatus: {} } */
+});
 it('the AI models card carries the menu controls and the fixed copy', async () => {
   const html = await consolePage('test-key').text();
   for (const s of ['id="llm-menu"', 'id="mdl-provider-add"', 'id="mdl-pin"', 'id="llm-fallback-hint"', 'id="llm-models-warn"',
@@ -599,7 +618,9 @@ it('the AI models card carries the menu controls and the fixed copy', async () =
 
 - [ ] **Step 2: Run them.** `npx vitest run tests/console.test.ts`. Expected: the new tests FAIL.
 - [ ] **Step 3: Implement.**
-  - Replace `ensureModelOptions` with `loadModelMenu()`. It caches the GET promise, and `invalidateModelMenu()` clears it after a menu save.
+  - Replace `ensureModelOptions` with `loadModelMenu()`.
+    - It caches the GET promise, and `invalidateModelMenu()` clears it after a menu save.
+    - It catches every failure and resolves to `{ groups: [], feedAvailable: false, selectedStatus: {} }`, so `setModelSelect` still runs `setSelectValue` and the saved slug stays selected as "(current)".
   - `setModelSelect` builds its options from `modelOptionsHtml` and keeps `setSelectValue`'s "(current)" behaviour. The blank labels are `- system default` for image and text and `- none` for fallback.
   - `providerLabel` maps:
     - `anthropic` to Anthropic;
