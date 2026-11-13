@@ -21,7 +21,7 @@
   },
   "dependencies": {
     "@shopify/shopify-api": "^11.6.0",
-    "hono": "^4.6.0",
+    "hono": "^4.13.18",
     "postal-mime": "^2.7.4"
   },
   "devDependencies": {
