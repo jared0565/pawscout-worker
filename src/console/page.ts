@@ -291,12 +291,14 @@ function heldMessage(h,slotLabel){
   var prices=known?fmtPrice(h.promptPriceM)+'/M in, '+fmtPrice(h.completionPriceM)+'/M out':'';
   var x=h.ratio==null?null:(h.ratio>=10?Math.round(h.ratio):Math.round(h.ratio*10)/10);
   var who=h.cleared?'Clearing the '+slotLabel+' slot makes it run the system default model, '+h.name+', which':h.name;
+  // Spec 5.11: a ratio weighted by the shop's own input/output mix says so.
+  var use=h.basis==='usage'?' at your last 30 days of usage':'';
   if(!known) return who+' has no listed price on OpenRouter. Save anyway?';
   if(h.newFallback){
     return 'No fallback model is set now, so '+h.name+' ('+prices+') is compared with the system default model'
-      +(x!=null?': it costs about '+x+'x that.':', which has no known price.')+' Save anyway?';
+      +(x!=null?': it costs about '+x+'x that'+use+'.':', which has no known price.')+' Save anyway?';
   }
-  if(x!=null) return who+' costs about '+x+'x your current '+slotLabel+' model ('+prices+'). Save anyway?';
+  if(x!=null) return who+' costs about '+x+'x your current '+slotLabel+' model'+use+' ('+prices+'). Save anyway?';
   return who+' costs '+prices+', and the current '+slotLabel+' model has no known price to compare. Save anyway?';
 }
 // Preserve a saved slug not in the curated list as a selected option, so

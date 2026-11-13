@@ -1571,6 +1571,18 @@ export class TenantStore {
       .run();
   }
 
+  /** Input and output tokens logged since `sinceIso`, leaving out one task tag
+   *  (the save check passes 'model-probe', so its own live tests never shape
+   *  the shop's mix). Read-only; uses idx_llm_usage_shop_time. */
+  async llmTokensSince(sinceIso: string, excludeTask: string): Promise<{ prompt: number; completion: number }> {
+    const row = await this.db
+      .prepare(`SELECT COALESCE(SUM(prompt_tokens), 0) AS prompt, COALESCE(SUM(completion_tokens), 0) AS completion
+                FROM llm_usage WHERE shop = ?1 AND created_at >= ?2 AND task <> ?3`)
+      .bind(this.shop, sinceIso, excludeTask)
+      .first<{ prompt: number; completion: number }>();
+    return { prompt: row?.prompt ?? 0, completion: row?.completion ?? 0 };
+  }
+
   async llmSpendSince(sinceIso: string): Promise<{ calls: number; costUsd: number }> {
     const row = await this.db
       .prepare(`SELECT COUNT(*) AS calls, COALESCE(SUM(cost_usd), 0) AS cost FROM llm_usage WHERE shop = ?1 AND created_at >= ?2`)

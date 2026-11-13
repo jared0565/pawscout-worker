@@ -7,7 +7,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import feedJson from './fixtures/openrouter-models-2026-11-13.json';
 import { reduceFeed, type FeedModel } from '../src/models-feed';
-import { checkModelSave, allowedEfforts, type HeldSlot, type ProbeFn, type SaveCheck } from '../src/model-save';
+import { checkModelSave, allowedEfforts, usageMix, MIN_MIX_TOKENS, type HeldSlot, type ProbeFn, type SaveCheck, type UsageMix } from '../src/model-save';
 import type { ProbeResult } from '../src/model-probe';
 import type { ModelsConfig } from '../src/types';
 
@@ -166,6 +166,60 @@ describe('checkModelSave: price confirmation', () => {
     const free = await check({ text: 'a/free' }, { text: 'a/paid' }, { feed: [fm('a/free', 0, 0), fm('a/paid', 1, 1)] });
     expect(held(free)).toEqual([expect.objectContaining({ ratio: null })]);
     expect(JSON.stringify([delisted, free])).not.toMatch(/Infinity|NaN/);
+  });
+});
+
+// Spec 5.11 (owner go 2026-11-13, "go ahead"): a model's cost is its input and
+// output prices weighted by the shop's own token mix over the last 30 days, not
+// their plain sum. Production ran 89% input tokens, so input price dominates.
+describe('checkModelSave: price weighted by the shop\'s own usage', () => {
+  const PROD = usageMix(4_938_811, 626_703)!; // production llm_usage, 30 days to 2026-11-13
+  const GROK = 'x-ai/grok-4.3';  // $1.25 in / $2.50 out, default effort low
+  const GLM = 'z-ai/glm-5.2';    // $0.01 in / $6.80 out
+  const withMix = (stored: ModelsConfig, requested: ModelsConfig, mix: UsageMix | null) =>
+    checkModelSave({ stored, requested, confirmCost: false, loadFeed: async () => feed, probe, loadMix: async () => mix });
+  const modelHolds = (r: SaveCheck) => (held(r) ?? []).filter((h) => h.kind === 'model');
+
+  it('usageMix needs MIN_MIX_TOKENS of history, else there is no mix', () => {
+    expect(MIN_MIX_TOKENS).toBe(100_000);
+    expect(usageMix(60_000, 39_999)).toBeNull();
+    expect(usageMix(75_000, 25_000)).toEqual({ promptShare: 0.75 });
+    expect(PROD.promptShare).toBeCloseTo(0.887, 3);
+  });
+
+  it('a model cheap on the list but dear on input is held at the usage ratio', async () => {
+    expect(modelHolds(await check({ text: LUNA }, { text: GROK }))).toEqual([]); // 2.68x on the list
+    const r = await withMix({ text: LUNA }, { text: GROK }, PROD);
+    expect(modelHolds(r)).toEqual([expect.objectContaining({ slot: 'text', slug: GROK, basis: 'usage' })]);
+    expect(modelHolds(r)[0].ratio).toBeCloseTo(4.45, 2);
+  });
+
+  it('a model dear on the list but cheap on input is no longer held', async () => {
+    const req = { text: GLM, textEffort: 'none' as const };
+    expect(modelHolds(await check({ text: LUNA }, req))).toEqual([expect.objectContaining({ slug: GLM, basis: 'list' })]); // 4.86x
+    expect(await withMix({ text: LUNA }, req, PROD)).toEqual({ ok: true }); // 2.47x at this usage
+    expect(probeCalls()).toEqual([[GLM, 'text', 'none']]);
+  });
+
+  it('Luna to Opus is about 18.6x at production usage', async () => {
+    const r = await withMix({ text: LUNA }, { text: 'anthropic/claude-opus-5.5' }, PROD);
+    expect(modelHolds(r)[0]).toMatchObject({ basis: 'usage' });
+    expect(modelHolds(r)[0].ratio).toBeCloseTo(18.56, 2);
+  });
+
+  it('with too little history the list prices apply, and say so', async () => {
+    expect(modelHolds(await withMix({ text: LUNA }, { text: GROK }, null))).toEqual([]);
+    expect(modelHolds(await withMix({ text: LUNA }, { text: 'anthropic/claude-opus-5.5' }, null))[0]).toMatchObject({ basis: 'list' });
+  });
+
+  it('the mix is read only when a model changes', async () => {
+    const loadMix = vi.fn(async () => PROD);
+    const run = (stored: ModelsConfig, requested: ModelsConfig) => checkModelSave({ stored, requested, confirmCost: false, loadFeed: async () => feed, probe, loadMix });
+    await run({ text: LUNA }, { text: LUNA });                     // nothing changed
+    await run({ text: LUNA }, { text: LUNA, textEffort: 'low' });  // effort only
+    expect(loadMix).not.toHaveBeenCalled();
+    await run({ text: LUNA }, { text: HAIKU });
+    expect(loadMix).toHaveBeenCalledTimes(1);
   });
 });
 
