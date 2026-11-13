@@ -1,23 +1,25 @@
 import type { TenantConfig } from './types';
-import { DEFAULT_MODEL, SEARCH_MODEL, type LlmRole, type ChainTier } from './llm';
-import { CURATED_MODELS } from './models-catalog';
+import { DEFAULT_MODEL, SEARCH_MODEL, SYSTEM_DEFAULT_MODEL, type LlmRole, type ChainTier } from './llm';
 
 /**
  * Turn a tenant's model selection into an ordered tier chain:
  *   1. OpenRouter, models:[primary, fallback] (native failover; blanks dropped,
- *      deduped, never empty - a blank primary falls back to the menu head).
- *   2. OpenAI-direct DEFAULT_MODEL (the system floor; gpt-5.6-luna since
- *      2026-08-02). Named by the constant rather than spelled out, so this
- *      comment cannot drift from src/llm.ts the way the last one did.
+ *      deduped, never empty - a blank primary runs SYSTEM_DEFAULT_MODEL).
+ *   2. OpenAI-direct DEFAULT_MODEL, the system floor. Named by the constant
+ *      and never spelled out here, so this comment cannot drift from
+ *      src/llm.ts again (it once named a model the floor had stopped using).
  * The chain is provider-aware; LlmClient.jsonChain walks it and skips a tier
  * whose provider key is absent. Pure - no env, no I/O.
  */
 export function resolveChain(cfg: TenantConfig, role: LlmRole): ChainTier[] {
   const m = cfg.llm.models ?? {};
-  const primary = (role === 'image' ? m.image : m.text) || CURATED_MODELS[0].slug;
+  const primary = (role === 'image' ? m.image : m.text) || SYSTEM_DEFAULT_MODEL;
   const models = [...new Set([primary, m.fallback].filter((s): s is string => !!s))];
+  // The role's effort rides on the whole OpenRouter tier, so the fallback runs
+  // at it too (one request body). No key at all when unset: unchanged request.
+  const effort = role === 'image' ? m.imageEffort : m.textEffort;
   return [
-    { provider: 'openrouter', models },
+    { provider: 'openrouter', models, ...(effort ? { effort } : {}) },
     { provider: 'openai', model: DEFAULT_MODEL },
   ];
 }

@@ -19,15 +19,39 @@ export const settingsView = `  <section class="card">
 
   <section class="card">
     <h2>AI models</h2>
-    <div class="row">
-      <div class="grow"><label for="mdl-image">Image (vision) model</label><select id="mdl-image"></select></div>
-      <div class="grow"><label for="mdl-text">Text model</label><select id="mdl-text"></select></div>
-      <div class="grow"><label for="mdl-fallback">Fallback model</label><select id="mdl-fallback"></select></div>
+    <p class="sub" style="margin:0 0 10px">The newest model of each family from OpenRouter, grouped by provider and refreshed daily. A new choice is tested live before it is saved, and a choice that costs more than 3x the current one asks you to confirm first.</p>
+    <div class="row" style="align-items:flex-start">
+      <div class="grow">
+        <label for="mdl-image">Image (vision) model</label><select id="mdl-image" onchange="onModelChange('image')"></select>
+        <label for="mdl-image-effort" style="margin-top:6px">Image effort</label><select id="mdl-image-effort"><option value="">Model default</option></select>
+      </div>
+      <div class="grow">
+        <label for="mdl-text">Text model</label><select id="mdl-text" onchange="onModelChange('text')"></select>
+        <label for="mdl-text-effort" style="margin-top:6px">Text effort</label><select id="mdl-text-effort"><option value="">Model default</option></select>
+      </div>
+      <div class="grow"><label for="mdl-fallback">Fallback model</label><select id="mdl-fallback" onchange="onModelChange('fallback')"></select></div>
     </div>
+    <p class="sub muted" style="margin:6px 0 0">Effort is how long a model thinks before it answers. Higher effort means more thinking, billed as output tokens. Model default sends no effort at all, and the fallback runs at the effort of the slot it backs.</p>
+    <p id="llm-fallback-hint" class="msg muted" style="display:none"></p>
+    <div id="llm-models-warn" class="msg no mdl-warn" style="display:none"></div>
     <div class="row" style="margin-top:10px">
       <button onclick="saveLlm()">Save AI models</button>
     </div>
-    <p id="llm-models-msg" class="msg muted"></p>
+    <div id="llm-models-msg" class="msg muted"></div>
+    <details id="llm-menu" class="mdl-menu">
+      <summary>Menu: providers, pins and hidden models</summary>
+      <p class="sub" style="margin:8px 0">The menu lists the newest model of each family from these providers. Pin a model to keep it listed; hide one to drop it from the menu. A model already saved in a slot stays selected either way.</p>
+      <div id="mdl-menu-body"><p class="muted">Loading…</p></div>
+      <div class="row" style="margin-top:10px">
+        <div class="grow"><label for="mdl-provider-add">Add a provider (its OpenRouter id, for example x-ai)</label><input id="mdl-provider-add" type="text" spellcheck="false" autocomplete="off"></div>
+        <button type="button" class="ghost" onclick="menuAddProvider()">Add</button>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <div class="grow"><label for="mdl-pin">Pin a model (its OpenRouter slug, for example openai/gpt-5.6-luna)</label><input id="mdl-pin" type="text" spellcheck="false" autocomplete="off"></div>
+        <button type="button" class="ghost" onclick="menuPin()">Pin</button>
+      </div>
+      <p id="mdl-menu-msg" class="msg muted"></p>
+    </details>
     <p class="sub muted" style="margin:8px 0 0">Last resort: GPT-5.4 mini · OpenAI direct (system-managed, used only if OpenRouter fails).</p>
   </section>
 
@@ -131,6 +155,14 @@ export const settingsView = `  <section class="card">
 
 // Namespaced (.sys-*) styles for the states register table.
 export const settingsCss = `
+  /* --- Settings: AI models card --- */
+  .mdl-warn div{margin:2px 0}
+  .mdl-menu{margin-top:12px}
+  .mdl-menu summary{cursor:pointer;font-weight:600;color:var(--ink)}
+  .mdl-head{margin:12px 0 4px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--subdued)}
+  .mdl-chip{display:inline-flex;align-items:center;gap:6px;padding:2px 4px 2px 10px;margin:0 6px 6px 0;border:1px solid var(--border);border-radius:999px;font-size:12.5px}
+  .mdl-entry{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:3px 0;border-bottom:1px solid var(--border);font-size:12.5px;overflow-wrap:anywhere}
+  .mdl-mini{padding:2px 8px;font-size:12px}
   /* --- Settings: System states register --- */
   .sys-group{margin:14px 0 4px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--subdued)}
   .sys-row{display:grid;grid-template-columns:230px 130px minmax(0,1fr);gap:10px;align-items:baseline;padding:5px 0;border-bottom:1px solid var(--border);font-size:12.5px}

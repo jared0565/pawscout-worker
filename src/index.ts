@@ -1,11 +1,15 @@
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { RequestedTokenType } from '@shopify/shopify-api';
-import { type Env, type TenantConfig, type TenantRow, SYNDICATE_CHANNEL_KEYS, mergeSyndicate, type SyndicateChannelConfig } from './types';
+import { type Env, type TenantConfig, type TenantRow, SYNDICATE_CHANNEL_KEYS, mergeSyndicate, type SyndicateChannelConfig, DEFAULT_LLM, type LlmConfig, type ModelMenuConfig } from './types';
 import { makeShopify } from './shopify';
 import { Vault } from './vault';
 import { TenantStore, listActiveShops } from './tenant-store';
-import { getModelCatalog, type CatalogModel } from './models-catalog';
+import { loadFeed, type FeedModel } from './models-feed';
+import { buildMenu, effectiveMenu, type MenuGroup } from './model-menu';
+import { checkModelSave, type SlotName } from './model-save';
+import { probeModel } from './model-probe';
+import { selectedStatus, type SlotStatus } from './model-watch';
 import { processInbound } from './inbox/ingest';
 import { runInboxClassifySweep } from './inbox/sweep';
 import { beginAuth } from './auth/install';
@@ -13,7 +17,7 @@ import { handleCallback } from './auth/callback';
 import { ensureInstalled } from './auth/ensure-installed';
 import { handleUninstall } from './auth/uninstall';
 import { resolveShopFromToken } from './console/session';
-import { connectCj, saveGates, savePricing, saveLlm, saveAddons, saveCollectionMap, getStatus, getInsights, getGlance, getAudit, getAuditConversation, saveGbFreeUk, getPartners, createPartner, partnerVoucherAction, getPartnerOrders, removeQueuedPartner, parseHoldReasons } from './console/routes';
+import { connectCj, saveGates, savePricing, saveLlm, saveModelMenu, saveAddons, saveCollectionMap, getStatus, getInsights, getGlance, getAudit, getAuditConversation, saveGbFreeUk, getPartners, createPartner, partnerVoucherAction, getPartnerOrders, removeQueuedPartner, parseHoldReasons } from './console/routes';
 import { listInboxThreads, getInboxThread, setInboxStatus, setInboxLabels, getInboxConfig, saveInboxConfig, approveDraft, regenerateDraft, applyDraftTemplate, queuePartnerFromThread, setPartnerConsentFromThread, unblockSender, unblockSenderByEmail, listBlockedSenders, listSuppliersRoute, updateSupplierRoute, startSupplierBackfillRoute, draftAnyway } from './inbox/routes';
 import { buildInvoiceForThread, discardInvoice, searchCatalog, adminForShop } from './inbox/invoice-routes';
 import { validateCampaignPayload, resolveCampaignAudience, sendCampaignBatch, sendCampaignTest, campaignForUi, ownerTestAddress, campaignSendBlock, type CampaignAudience } from './campaigns';
@@ -41,7 +45,7 @@ import { alertOwner } from './owner-alert';
 import { deliverOrderAlert, recordAlertDue } from './order-alert';
 import { deleteSupplierOrder, supplierDeleteRefusal } from './order-supplier-delete';
 import { onWebhookFailure } from './webhook-retry';
-import { validateGatesPayload, validatePricingPayload, validateLlmPayload, validateAddonsPayload, validateCollectionMap, validatePartnerPayload, validateSelfServePayload } from './validate';
+import { validateGatesPayload, validatePricingPayload, validateLlmPayload, validateModelMenuPayload, validateAddonsPayload, validateCollectionMap, validatePartnerPayload, validateSelfServePayload } from './validate';
 import { sendEmail, SENDING_DOMAIN } from './email';
 import { verifySvixSignature, parseResendEvent, applyResendEvent, getTrackingStatus, enableTracking, ensureEventsWebhook } from './resend-events';
 import { checkPrivacyPolicy, applyPrivacyPolicy } from './legal-policy';
@@ -249,15 +253,6 @@ app.post('/unsubscribe', handleUnsubscribe);
 // --- /api/* : session-token authed (embedded console) ---
 // Resolves the shop from the App Bridge session token and, on a managed install,
 // lazily mints + persists an offline access token via token exchange (first call only).
-// Defense-in-depth for the image (vision) model setting: reject only a slug the
-// catalog positively marks text-only. Unknown/unset → allow (the UI already
-// constrains the picker to vision models; the catalog may have gaps).
-export function visionModelRejected(slug: string | undefined, catalog: CatalogModel[]): boolean {
-  if (!slug) return false;
-  const m = catalog.find((cm) => cm.slug === slug);
-  return m ? m.vision === false : false;
-}
-
 async function shopOf(c: Context<{ Bindings: Env }>): Promise<string | Response> {
   const shopify = makeShopify(c.env);
   const authHeader = c.req.header('Authorization') ?? null;
@@ -1283,22 +1278,61 @@ app.post('/api/llm', async (c) => {
   const v = validateLlmPayload(body);
   if (!v.ok) return c.json({ ok: false, error: v.error }, 400);
   const store = new TenantStore(c.env.DB, s);
-  const catalog = await getModelCatalog(store);
-  const inCatalog = (slug?: string) => !slug || catalog.some((m) => m.slug === slug);
-  const { image, text, fallback } = v.value.models;
-  for (const [label, slug] of [['image', image], ['text', text], ['fallback', fallback]] as const) {
-    if (slug && !inCatalog(slug)) return c.json({ ok: false, error: `${label} model is not in the catalog` }, 400);
+  const cfg = await store.getConfig();
+  if (!cfg) return c.json({ ok: false, error: 'Not configured' }, 400);
+  const flags = body as { confirmCost?: unknown; dryRun?: unknown };
+  // Only a changed slot is checked (spec 5.6): refusals, then the price
+  // confirmation above 3x (a 409 the console asks about), then live tests
+  // through our own OpenRouter key. A curation-threshold save changes no slot,
+  // so it never reads the feed or calls a model.
+  const key = c.env.OPENROUTER_API_KEY;
+  const check = await checkModelSave({
+    stored: cfg.llm.models,
+    requested: v.value.models,
+    loadFeed: () => loadFeed(store),
+    confirmCost: flags.confirmCost === true,
+    probe: key ? (m, mode, effort) => probeModel(new LlmClient({ openrouter: key }), store, m, mode, effort) : null,
+  });
+  if (!check.ok) {
+    return check.status === 409 ? c.json({ ok: false, held: check.held }, 409) : c.json({ ok: false, error: check.error }, 400);
   }
-  if (visionModelRejected(image, catalog) || visionModelRejected(fallback, catalog)) {
-    return c.json({ ok: false, error: 'Image and Fallback must be vision-capable models' }, 400);
-  }
+  // dryRun runs every check, live tests included, and stores nothing: how the
+  // real OpenRouter path is verified on production without changing the store.
+  if (flags.dryRun === true) return c.json({ ok: true, dryRun: true });
   await saveLlm(c.env.DB, s, v.value);
   return c.json({ ok: true });
 });
+/** The GET /api/models body (spec 5.4, 5.7). Pure, so the no-feed case is
+ *  tested without a network call: with no feed the menu holds only the pins,
+ *  each marked unavailable, and no slot status is claimed. */
+export function modelsPayload(feed: FeedModel[] | null, llm: LlmConfig, nowMs: number): {
+  ok: true; feedAvailable: boolean; groups: MenuGroup[]; menu: ModelMenuConfig; selectedStatus: Partial<Record<SlotName, SlotStatus>>;
+} {
+  return {
+    ok: true,
+    feedAvailable: feed !== null,
+    groups: buildMenu(feed ?? [], llm.menu, Math.floor(nowMs / 1000)),
+    menu: effectiveMenu(llm.menu),
+    selectedStatus: feed ? selectedStatus(llm.models, feed, nowMs) : {},
+  };
+}
 app.get('/api/models', async (c) => {
   const s = await shopOf(c); if (typeof s !== 'string') return s;
   const store = new TenantStore(c.env.DB, s);
-  return c.json({ ok: true, models: await getModelCatalog(store) });
+  const cfg = await store.getConfig();
+  return c.json(modelsPayload(await loadFeed(store), cfg?.llm ?? DEFAULT_LLM, Date.now()));
+});
+// The owner's menu controls (providers, pins, hidden models). Stored apart from
+// the model selection, so neither save can drop the other (saveModelMenu).
+app.post('/api/models/menu', async (c) => {
+  const s = await shopOf(c); if (typeof s !== 'string') return s;
+  let body: unknown;
+  try { body = await c.req.json(); } catch { return c.json({ ok: false, error: 'Invalid JSON body' }, 400); }
+  const v = validateModelMenuPayload(body);
+  if (!v.ok) return c.json({ ok: false, error: v.error }, 400);
+  if (!(await new TenantStore(c.env.DB, s).getConfig())) return c.json({ ok: false, error: 'Not configured' }, 400);
+  await saveModelMenu(c.env.DB, s, v.value);
+  return c.json({ ok: true, menu: v.value });
 });
 // W-FULFIL Stage B: set the fulfilment mode (manual | pawscout | cj).
 // 'pawscout' is the money leg - only choose it once the CJ wallet is funded

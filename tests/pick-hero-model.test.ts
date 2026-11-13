@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { pickHeroImage } from '../src/llm';
-import { CURATED_MODELS } from '../src/models-catalog';
+import { pickHeroImage, SYSTEM_DEFAULT_MODEL } from '../src/llm';
 
 // Stub the LLM client: capture the chain passed to jsonChain, and return the
 // shape pickHeroImage expects. A no-op logLlmUsage store keeps this a pure unit
@@ -28,10 +27,10 @@ describe('pickHeroImage model resolution', () => {
     expect(cap.chain![0].models[0]).toBe('m/vis');
   });
 
-  it('falls back to the catalog head when image is blank', async () => {
+  it('falls back to the system default model when image is blank', async () => {
     const cap: { chain?: any[] } = {};
     await pickHeroImage(stubLlm(cap), store, cfg({}), 'Dog bed', ['a', 'b']);
-    expect(cap.chain![0].models[0]).toBe(CURATED_MODELS[0].slug);
+    expect(cap.chain![0].models[0]).toBe(SYSTEM_DEFAULT_MODEL);
   });
 
   it('adds fallback as the second OpenRouter model', async () => {

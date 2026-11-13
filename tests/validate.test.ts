@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { validateGatesPayload, validatePricingPayload, validateLlmPayload, validateAddonsPayload, validateCollectionMap, validatePartnerPayload, MAX_COLLECTIONS } from '../src/validate';
+import { validateGatesPayload, validatePricingPayload, validateLlmPayload, validateModelMenuPayload, validateAddonsPayload, validateCollectionMap, validatePartnerPayload, MAX_COLLECTIONS } from '../src/validate';
 
 const GOOD_GATES = { popularityFloor: 50, priceMin: 5, priceMax: 80, relevance: 'title' };
 
@@ -88,6 +88,39 @@ describe('validateLlmPayload', () => {
     [{ ...GOOD, models: { image: '<script>' } }, 'bad override slug']
   ] as [unknown, string][])('rejects %j (%s)', (body: unknown) => {
     expect(validateLlmPayload(body).ok).toBe(false);
+  });
+
+  it('accepts efforts and drops a blank one', () => {
+    const v = validateLlmPayload({ ...GOOD, models: { text: 'a/b', imageEffort: 'high', textEffort: '' } });
+    expect(v).toEqual({ ok: true, value: { ...GOOD, models: { text: 'a/b', imageEffort: 'high' } } });
+  });
+
+  it('rejects an unknown effort', () => {
+    expect(validateLlmPayload({ enabled: true, scoreThreshold: 50, models: { textEffort: 'extreme' } }))
+      .toEqual({ ok: false, error: 'textEffort must be one of max, xhigh, high, medium, low, minimal, none' });
+  });
+});
+
+describe('validateModelMenuPayload', () => {
+  it('accepts a menu and dedupes providers', () => {
+    expect(validateModelMenuPayload({ providers: ['anthropic', 'anthropic', 'x-ai'], pins: ['a/b'], hides: [] }))
+      .toEqual({ ok: true, value: { providers: ['anthropic', 'x-ai'], pins: ['a/b'], hides: [] } });
+  });
+
+  it('missing pins/hides default to []', () => {
+    expect(validateModelMenuPayload({ providers: ['openai'] })).toEqual({ ok: true, value: { providers: ['openai'], pins: [], hides: [] } });
+  });
+
+  it('rejects bad menus', () => {
+    for (const b of [null, [], { providers: [] }, { providers: ['Bad Id'] }, { providers: Array.from({ length: 21 }, (_, i) => `p${i}`) },
+      { providers: ['a'], pins: Array.from({ length: 31 }, (_, i) => `a/m${i}`) }, { providers: ['a'], hides: ['not a slug'] },
+      { providers: ['a'], pins: [`a/${'x'.repeat(100)}`] }, { providers: ['a'], pins: 'a/b' }])
+      expect(validateModelMenuPayload(b).ok).toBe(false);
+  });
+
+  it('refuses a floating alias pin with a specific message', () => {
+    const v = validateModelMenuPayload({ providers: ['anthropic'], pins: ['~anthropic/claude-sonnet-latest'] });
+    expect(v).toEqual({ ok: false, error: 'Floating "-latest" aliases cannot be pinned; pin a specific model instead.' });
   });
 });
 

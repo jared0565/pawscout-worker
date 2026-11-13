@@ -55,7 +55,9 @@ import { syncUsFixedPrices } from './shipping/us-price-list';
 import { resolveShipConfig } from './shipping/ship-config';
 import { LOGISTICS_DESTINATIONS } from './inbox/freight';
 import type { CjDetail } from './cj';
-import { LlmClient, curateProduct, pickHeroImage, rewriteDescription, type Curation, type HeroPick } from './llm';
+import { LlmClient, curateProduct, pickHeroImage, rewriteDescription, SEARCH_MODEL, type Curation, type HeroPick } from './llm';
+import { loadFeed } from './models-feed';
+import { runModelWatch } from './model-watch';
 import { DEFAULT_SEMANTIC, type Env, type TenantConfig, type Gates } from './types';
 import { rotateRecurringEvents, alertRotationErrors } from './recurring-events';
 import { alertOwner, type AlertResult } from './owner-alert';
@@ -1702,6 +1704,18 @@ export const DAILY_SHOP_STAGES: DailyStage[] = [
         await alertOwner(ctx.env, ctx.cfg, 'Order event subscriptions could not be checked',
           `PawScout has not been able to check its Shopify order event subscriptions for ${consecutiveFailures} days in a row (${firstError}). Until a check succeeds, it is not known whether cancelled or refunded orders reach PawScout. Open the console and press "Check order events".`);
       }
+    }
+  },
+  // Warn the owner, once per issue, about a selected model OpenRouter is
+  // retiring or no longer lists, the system SEARCH_MODEL likewise, and a stored
+  // effort a model stopped offering. Only reads the OpenRouter feed (cached a
+  // day); a feed that cannot be read skips the check until tomorrow.
+  {
+    name: 'model-watch', maxMs: 1 * MIN_MS, needsCj: false,
+    run: async (ctx) => {
+      const feed = await loadFeed(ctx.store);
+      if (!feed) return;
+      await runModelWatch(ctx.store, ctx.cfg.llm.models, SEARCH_MODEL, feed, Date.now(), (s, t) => alertOwner(ctx.env, ctx.cfg, s, t));
     }
   },
   // MUST precede 'cull'. The cull is the only automated takedown left, and it

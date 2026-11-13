@@ -1523,3 +1523,177 @@ describe('inbox supplier results', () => {
     expect(out).toContain('local stock');
   });
 });
+
+// The AI models card (spec 5.4, 5.6.1, 5.10): the provider-grouped menu, the
+// effort selects, the menu settings panel and the price confirmation. The page
+// script is a template literal, so each function is extracted from the served
+// HTML and driven directly.
+describe('AI models card', () => {
+  async function pageScripts(): Promise<string> {
+    const html = await consolePage('test-key').text();
+    return [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+  }
+  /** One top-level `function NAME(` from the page script, brace-matched. */
+  function extract(scripts: string, name: string): string {
+    const at = scripts.indexOf(`function ${name}(`), start = scripts.slice(at - 6, at) === 'async ' ? at - 6 : at; // keep `async`
+    expect(start, name).toBeGreaterThanOrEqual(0);
+    let depth = 0;
+    let end = scripts.indexOf('{', start);
+    for (let i = end; i < scripts.length; i++) {
+      if (scripts[i] === '{') depth++;
+      else if (scripts[i] === '}') { depth--; if (depth === 0) { end = i + 1; break; } }
+    }
+    return scripts.slice(start, end);
+  }
+  /** The named functions of the console's OWN generated script (consolePage()
+   *  output in this process, never outside input), defined together so they
+   *  can call each other. `deps` stands in for page globals they read (api),
+   *  and `prelude` declares page variables (modelMenuPromise). The one place
+   *  this suite compiles page code for the AI models card. */
+  async function fns(names: string[], deps: Record<string, unknown> = {}, prelude = ''): Promise<Record<string, any>> {
+    const scripts = await pageScripts();
+    const src = names.map((n) => extract(scripts, n)).join('\n');
+    return new Function(...Object.keys(deps), `${prelude}${src}\nreturn { ${names.join(', ')} };`)(...Object.values(deps));
+  }
+
+  it('modelOptionsHtml groups by provider, filters vision, flags retirement and unavailable pins', async () => {
+    const { modelOptionsHtml } = await fns(['modelOptionsHtml', 'providerLabel', 'fmtPrice', 'esc']);
+    const groups = [{ provider: 'anthropic', entries: [
+      { slug: 'anthropic/a', name: 'A <b>', vision: true, promptPriceM: 4, completionPriceM: 20, retiresOn: '2026-12-11', pinned: false, available: true, efforts: [], defaultEffort: null },
+      { slug: 'anthropic/t', name: 'T', vision: false, promptPriceM: 1, completionPriceM: 2, retiresOn: null, pinned: false, available: true, efforts: [], defaultEffort: null },
+      { slug: 'anthropic/p', name: 'anthropic/p', vision: false, promptPriceM: null, completionPriceM: null, retiresOn: null, pinned: true, available: false, efforts: [], defaultEffort: null }] }];
+    const all = modelOptionsHtml(groups, false);
+    const vis = modelOptionsHtml(groups, true);
+    expect(all).toContain('<optgroup label="Anthropic">');
+    expect(all).toContain('A &lt;b&gt; - $4/M in · $20/M out · 👁 · retires 2026-12-11');
+    expect(all).toMatch(/<option value="anthropic\/p" disabled>[^<]*unavailable/);
+    expect(vis).not.toContain('anthropic/t');
+    expect(modelOptionsHtml([{ provider: 'x-ai', entries: [] }, { provider: 'acme', entries: [groups[0].entries[1]] }], false))
+      .toBe('<optgroup label="acme"><option value="anthropic/t">T - $1/M in · $2/M out</option></optgroup>');
+  });
+
+  it('providerLabel names the default providers and passes others through', async () => {
+    const { providerLabel } = await fns(['providerLabel']);
+    expect(['anthropic', 'openai', 'google', 'x-ai', 'deepseek', 'qwen', 'moonshotai', 'z-ai', 'minimax', 'mistralai', 'acme'].map(providerLabel))
+      .toEqual(['Anthropic', 'OpenAI', 'Google', 'xAI', 'DeepSeek', 'Qwen', 'Moonshot (Kimi)', 'Z.ai', 'MiniMax', 'Mistral', 'acme']);
+  });
+
+  it('effortOptionsHtml offers the model default, then the shared levels in order, with none as Off', async () => {
+    const { effortOptionsHtml } = await fns(['effortOptionsHtml']);
+    expect(effortOptionsHtml(['max', 'xhigh', 'high', 'medium', 'low'], 'high', ['high', 'none']))
+      .toBe('<option value="">Model default (high)</option><option value="high">high</option>');
+    expect(effortOptionsHtml(['high', 'none'], 'high', null)).toContain('<option value="none">Off</option>');
+    expect(effortOptionsHtml([], null, null)).toBe('<option value="">Model default</option>');
+    expect(effortOptionsHtml(['low', 'max'], null, [])).toBe('<option value="">Model default</option>');
+  });
+
+  it('heldMessage gives a ratio, or the prices when the ratio is unknown', async () => {
+    const { heldMessage } = await fns(['heldMessage', 'fmtPrice']);
+    expect(heldMessage({ name: 'Claude Opus 5.5', ratio: 17.14, promptPriceM: 4, completionPriceM: 20 }, 'text'))
+      .toBe('Claude Opus 5.5 costs about 17x your current text model ($4/M in, $20/M out). Save anyway?');
+    expect(heldMessage({ name: 'X', ratio: null, promptPriceM: 4, completionPriceM: 20 }, 'image'))
+      .toBe('X costs $4/M in, $20/M out, and the current image model has no known price to compare. Save anyway?');
+    expect(heldMessage({ name: 'Fable', ratio: 3.43, promptPriceM: 8, completionPriceM: 40 }, 'text')).toContain('about 3.4x');
+  });
+
+  it('loadModelMenu survives a failed fetch with an empty, unavailable menu', async () => {
+    const { loadModelMenu } = await fns(['loadModelMenu'], { api: async () => { throw new Error('x'); } }, 'var modelMenuPromise=null;');
+    await expect(loadModelMenu()).resolves.toEqual({ groups: [], feedAvailable: false, selectedStatus: {} });
+  });
+
+  it('the AI models card carries the menu and effort controls and the fixed copy', async () => {
+    const html = await consolePage('test-key').text();
+    for (const s of ['id="llm-menu"', 'id="mdl-provider-add"', 'id="mdl-pin"', 'id="llm-fallback-hint"', 'id="llm-models-warn"',
+      'id="mdl-image-effort"', 'id="mdl-text-effort"', "'/models/menu'", 'confirmCost', 'Save anyway', 'Testing the new model...',
+      'Model list unavailable right now', 'Higher effort means more thinking, billed as output tokens.',
+      'Fallback is the same as the text model, so there is no second model to switch to.', 'Last resort: GPT-5.4 mini']) expect(html).toContain(s);
+    expect(html).not.toContain('ensureModelOptions');
+  });
+
+  // Final review 2026-11-13. saveLlm, onModelChange and fillEffort are driven
+  // against stand-ins for the DOM and the API, since the page script is a
+  // template literal that only a browser would otherwise run.
+  const OPUS = 'anthropic/claude-opus-5.5';
+  const LUNA = 'openai/gpt-5.6-luna';
+  function saveHarness(opts: { stored: Record<string, string>; ready: boolean; selects: Record<string, string>; replies: unknown[] }) {
+    const nodes: Record<string, any> = {};
+    const el = (id: string) => (nodes[id] ??= { value: opts.selects[id] ?? '', textContent: '', className: '', innerHTML: '' });
+    el('llmon').value = 'true';
+    el('llmthresh').value = '60';
+    const sent: any[] = [];
+    const msgs: unknown[][] = [];
+    const replies = [...opts.replies];
+    const deps = {
+      el, api: async (_path: string, body: unknown) => { sent.push(JSON.parse(JSON.stringify(body))); return replies.shift(); },
+      setMsg: (...a: unknown[]) => { msgs.push(a); }, errText: String,
+      invalidateModelMenu: () => {}, fillModels: () => {}, refresh: () => {}, fillEffort: () => {}, renderFallbackHint: () => {},
+    };
+    const prelude = `var storedModels=${JSON.stringify(opts.stored)};var modelsReady=${opts.ready};var heldSave=null;`;
+    return { el, sent, msgs, deps, prelude };
+  }
+  const SAVE_FNS = ['saveLlm', 'llmMsg', 'currentModelVals', 'selVal', 'heldMessage', 'fmtPrice', 'esc', 'onModelChange'];
+  const HELD = { ok: false, held: [{ slot: 'text', slug: OPUS, name: 'Claude Opus 5.5', ratio: 17.14, promptPriceM: 4, completionPriceM: 20 }] };
+  const STORED = { image: LUNA, text: LUNA, fallback: LUNA, imageEffort: '', textEffort: 'low' };
+
+  it('Save anyway re-sends the held save, not whatever the selects hold now', async () => {
+    const h = saveHarness({ stored: STORED, ready: true, selects: { 'mdl-image': LUNA, 'mdl-text': OPUS, 'mdl-fallback': LUNA, 'mdl-text-effort': 'low' }, replies: [HELD, { ok: true }] });
+    const { saveLlm } = await fns(SAVE_FNS, h.deps, h.prelude);
+    await saveLlm();
+    expect(h.sent[0]).toMatchObject({ models: { text: OPUS }, confirmCost: false });
+    expect(h.el('llm-models-msg').innerHTML).toContain('Save anyway');
+    h.el('mdl-text').value = 'anthropic/claude-fable-5.2'; // a pricier model, never shown in a hold
+    await saveLlm(true);
+    expect(h.sent[1]).toMatchObject({ models: { text: OPUS, textEffort: 'low' }, confirmCost: true });
+  });
+
+  it('changing a model after a hold drops the held confirmation', async () => {
+    const h = saveHarness({ stored: STORED, ready: true, selects: { 'mdl-image': LUNA, 'mdl-text': OPUS, 'mdl-fallback': LUNA }, replies: [HELD, { ok: true }] });
+    const { saveLlm, onModelChange } = await fns(SAVE_FNS, h.deps, h.prelude);
+    await saveLlm();
+    h.el('mdl-text').value = 'anthropic/claude-fable-5.2';
+    onModelChange('text');
+    expect(h.msgs).toContainEqual(['llm-models-msg', '', 'muted']);
+    await saveLlm(true); // a stale button press confirms nothing
+    expect(h.sent[1]).toMatchObject({ models: { text: 'anthropic/claude-fable-5.2' }, confirmCost: false });
+  });
+
+  it('a save before the selects are filled sends the saved selection, never blanks', async () => {
+    const early = saveHarness({ stored: STORED, ready: false, selects: {}, replies: [{ ok: true }] });
+    await (await fns(SAVE_FNS, early.deps, early.prelude)).saveLlm();
+    expect(early.sent[0].models).toEqual(STORED);
+    // Control: once the selects are filled, their values are what is sent.
+    const ready = saveHarness({ stored: STORED, ready: true, selects: {}, replies: [{ ok: true }] });
+    await (await fns(SAVE_FNS, ready.deps, ready.prelude)).saveLlm();
+    expect(ready.sent[0].models.text).toBe('');
+  });
+
+  it('fillEffort keeps a saved effort the model dropped while nothing changed, and resets it after a model change', async () => {
+    /** A select whose options follow innerHTML, enough to run fillEffort. */
+    function fakeSelect() {
+      const s: any = { options: [] as { value: string; textContent: string }[], v: '' };
+      Object.defineProperty(s, 'innerHTML', { set(html: string) {
+        s.options = [...html.matchAll(/<option value="([^"]*)">([^<]*)<\/option>/g)].map((m) => ({ value: m[1], textContent: m[2] }));
+        s.v = s.options[0]?.value ?? '';
+      } });
+      Object.defineProperty(s, 'value', { get: () => s.v, set: (x: string) => { s.v = s.options.some((o: any) => o.value === x) ? x : ''; } });
+      s.appendChild = (o: any) => s.options.push(o);
+      return s;
+    }
+    const menu = { groups: [{ provider: 'm', entries: [
+      { slug: 'm/x', efforts: ['high'], defaultEffort: 'high' },
+      { slug: 'm/y', efforts: ['high', 'medium'], defaultEffort: null }] }], selectedStatus: {} };
+    async function run(textModel: string) {
+      const nodes: Record<string, any> = { 'mdl-text-effort': fakeSelect(), 'mdl-text': { value: textModel }, 'mdl-fallback': { value: '' } };
+      const deps = { el: (id: string) => nodes[id], loadModelMenu: async () => menu, document: { createElement: () => ({}) } };
+      const { fillEffort } = await fns(['fillEffort', 'selVal', 'effortInfo', 'effortOptionsHtml'], deps,
+        `var storedModels=${JSON.stringify({ text: 'm/x', fallback: '', textEffort: 'medium' })};`);
+      await fillEffort('text', 'medium');
+      return nodes['mdl-text-effort'];
+    }
+    const kept = await run('m/x');
+    expect(kept.value).toBe('medium');
+    expect(kept.options.at(-1).textContent).toBe('medium (not offered)');
+    expect((await run('m/z')).value).toBe('');      // model changed, effort unknown to it: back to the default
+    expect((await run('m/y')).value).toBe('medium'); // model changed and offers it: kept as a normal option
+  });
+});

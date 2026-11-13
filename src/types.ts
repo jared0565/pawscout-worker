@@ -108,10 +108,29 @@ export interface Floors {
   stockFloor: number;     // CJ units required to admit/sell a product
 }
 
+/** OpenRouter's reasoning effort levels, in display order (strongest first).
+ *  The feed's per-model `reasoning.supported_efforts` is drawn from this set. */
+export const EFFORT_LEVELS = ['max', 'xhigh', 'high', 'medium', 'low', 'minimal', 'none'] as const;
+export type ReasoningEffort = typeof EFFORT_LEVELS[number];
+
 export interface ModelsConfig {
-  image?: string;    // OpenRouter slug; blank → CURATED_MODELS[0] (menu head)
-  text?: string;     // OpenRouter slug; blank → CURATED_MODELS[0]
+  image?: string;    // OpenRouter slug; blank → SYSTEM_DEFAULT_MODEL (src/llm.ts)
+  text?: string;     // OpenRouter slug; blank → SYSTEM_DEFAULT_MODEL
   fallback?: string; // OpenRouter slug; blank → omitted from the models[] array
+  // Reasoning effort for the image / text request. Absent = "Model default":
+  // no reasoning field is sent at all. The fallback has no effort of its own -
+  // it rides in the same OpenRouter request, so it runs at the effort of the
+  // slot it backs up.
+  imageEffort?: ReasoningEffort;
+  textEffort?: ReasoningEffort;
+}
+
+/** The owner's controls over the self-updating model menu (spec 5.3): which
+ *  OpenRouter providers count, plus slugs pinned onto or hidden from it. */
+export interface ModelMenuConfig {
+  providers: string[];
+  pins: string[];
+  hides: string[];
 }
 
 /**
@@ -123,6 +142,9 @@ export interface LlmConfig {
   enabled: boolean;
   scoreThreshold: number; // 0-100: minimum relevance score to admit
   models: ModelsConfig;
+  // Owner's menu controls; absent = defaults (DEFAULT_MENU_PROVIDERS, no pins or
+  // hides). Saved only by saveModelMenu; every other save carries it through.
+  menu?: ModelMenuConfig;
 }
 
 /**

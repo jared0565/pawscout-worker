@@ -226,23 +226,63 @@ async function api(path,body,method){
   var r=await fetch('/api'+path,opts);
   return r.json();
 }
-// Model dropdowns: fetch the curated catalog (with live pricing + vision flags)
-// once, cache the option HTML, and populate selects. The vision (image) select
-// is built only from vision-capable models - a text-only model can never be
-// chosen for image QA.
-var modelOptionsPromise=null;
-function ensureModelOptions(){
-  if(!modelOptionsPromise){
-    modelOptionsPromise=api('/models',null,'GET').then(function(r){
-      var models=(r&&r.models)||[];
-      function opt(m){
-        var price=(m.promptPriceM==null)?'price n/a':('$'+m.promptPriceM+'/M in · $'+m.completionPriceM+'/M out');
-        return '<option value="'+esc(m.slug)+'">'+esc(m.name)+' - '+price+(m.vision?' · 👁':'')+'</option>';
-      }
-      return { all:models.map(opt).join(''), vision:models.filter(function(m){return m.vision;}).map(opt).join('') };
-    }).catch(function(){ return {all:'',vision:''}; });
+// AI models card. GET /api/models gives the menu built from OpenRouter's live
+// feed (newest model per family, grouped by provider), the owner's menu
+// settings, and the status of each saved slot. Fetched once and cached; a menu
+// save invalidates it. A failed fetch resolves to an empty, unavailable menu, so
+// the selects still show the saved models as "(current)" and nothing changes.
+var modelMenuPromise=null;
+function loadModelMenu(){
+  if(!modelMenuPromise){
+    modelMenuPromise=Promise.resolve().then(function(){ return api('/models',null,'GET'); }).then(function(r){
+      if(!r||!r.ok) throw new Error('model list unavailable');
+      return { groups:r.groups||[], feedAvailable:!!r.feedAvailable, selectedStatus:r.selectedStatus||{}, menu:r.menu||null };
+    }).catch(function(){ modelMenuPromise=null; return { groups:[], feedAvailable:false, selectedStatus:{} }; });
   }
-  return modelOptionsPromise;
+  return modelMenuPromise;
+}
+function invalidateModelMenu(){ modelMenuPromise=null; }
+function providerLabel(id){
+  var names={ 'anthropic':'Anthropic', 'openai':'OpenAI', 'google':'Google', 'x-ai':'xAI', 'deepseek':'DeepSeek', 'qwen':'Qwen',
+    'moonshotai':'Moonshot (Kimi)', 'z-ai':'Z.ai', 'minimax':'MiniMax', 'mistralai':'Mistral' };
+  return names[id]||id;
+}
+function fmtPrice(n){ return '$'+Number(n); }
+// One optgroup per provider. The image and fallback selects pass vision=true, so
+// a text-only model can never be chosen where an image must be read. A pinned
+// model OpenRouter no longer offers is listed but cannot be newly selected.
+function modelOptionsHtml(groups,vision){
+  return (groups||[]).map(function(g){
+    var opts=(g.entries||[]).filter(function(m){ return !vision||m.vision; }).map(function(m){
+      if(!m.available) return '<option value="'+esc(m.slug)+'" disabled>'+esc(m.name)+' - pinned, unavailable on OpenRouter</option>';
+      var price=(m.promptPriceM==null||m.completionPriceM==null)?'price n/a':(fmtPrice(m.promptPriceM)+'/M in · '+fmtPrice(m.completionPriceM)+'/M out');
+      return '<option value="'+esc(m.slug)+'">'+esc(m.name)+' - '+price+(m.vision?' · 👁':'')+(m.retiresOn?' · retires '+esc(m.retiresOn):'')+(m.pinned?' · pinned':'')+'</option>';
+    }).join('');
+    return opts?'<optgroup label="'+esc(providerLabel(g.provider))+'">'+opts+'</optgroup>':'';
+  }).join('');
+}
+// The effort levels a slot can run: the model's, intersected with the
+// fallback's (the fallback runs at the effort of the slot it backs), in a fixed
+// order. "Model default" sends nothing. fallbackEfforts is null with no fallback.
+function effortOptionsHtml(efforts,defaultEffort,fallbackEfforts){
+  var order=['max','xhigh','high','medium','low','minimal','none'];
+  var html='<option value="">Model default'+(order.indexOf(defaultEffort)>=0?' ('+defaultEffort+')':'')+'</option>';
+  order.forEach(function(e){
+    if((efforts||[]).indexOf(e)<0) return;
+    if(fallbackEfforts&&fallbackEfforts.indexOf(e)<0) return;
+    html+='<option value="'+e+'">'+(e==='none'?'Off':e)+'</option>';
+  });
+  return html;
+}
+function heldMessage(h,slotLabel){
+  var known=h.promptPriceM!=null&&h.completionPriceM!=null;
+  var prices=known?fmtPrice(h.promptPriceM)+'/M in, '+fmtPrice(h.completionPriceM)+'/M out':'';
+  if(h.ratio!=null){
+    var x=h.ratio>=10?Math.round(h.ratio):Math.round(h.ratio*10)/10;
+    return h.name+' costs about '+x+'x your current '+slotLabel+' model ('+prices+'). Save anyway?';
+  }
+  if(!known) return h.name+' has no listed price on OpenRouter. Save anyway?';
+  return h.name+' costs '+prices+', and the current '+slotLabel+' model has no known price to compare. Save anyway?';
 }
 // Preserve a saved slug not in the curated list as a selected option, so
 // converting free-text → dropdown never silently changes a tenant's config.
@@ -255,12 +295,154 @@ function setSelectValue(id,slug){
 }
 async function setModelSelect(id,slug,opts){
   opts=opts||{};
-  var o=await ensureModelOptions();
+  var m=await loadModelMenu();
   var e=el(id); if(!e) return;
-  var html=opts.vision?o.vision:o.all;
-  if(opts.blank) html='<option value="">'+opts.blank+'</option>'+html;
+  var html=modelOptionsHtml(m.groups,!!opts.vision);
+  if(opts.blank) html='<option value="">'+esc(opts.blank)+'</option>'+html;
   e.innerHTML=html;
   setSelectValue(id,slug);
+}
+// The saved selection (from /api/status), and whether the selects have been
+// filled. Until they are, a save sends the saved selection, so a Catalog
+// "Save AI" made early can never read as clearing the models.
+var storedModels={image:'',text:'',fallback:'',imageEffort:'',textEffort:''};
+var modelsReady=false;
+var currentMenu=null;
+function selVal(id){ return (el(id)&&el(id).value)||''; }
+function currentModelVals(){
+  return { image:selVal('mdl-image'), text:selVal('mdl-text'), fallback:selVal('mdl-fallback'), imageEffort:selVal('mdl-image-effort'), textEffort:selVal('mdl-text-effort') };
+}
+// A model's efforts: from its menu entry, else from the saved slot status (an
+// off-menu "(current)" model). null when unknown.
+function effortInfo(m,slug){
+  if(!slug) return null;
+  for(var i=0;i<(m.groups||[]).length;i++){
+    var es=m.groups[i].entries||[];
+    for(var j=0;j<es.length;j++){ if(es[j].slug===slug) return { efforts:es[j].efforts||[], defaultEffort:es[j].defaultEffort||null }; }
+  }
+  var st=m.selectedStatus||{};
+  var slots=['image','text','fallback'];
+  for(var k=0;k<slots.length;k++){ var s=st[slots[k]]; if(s&&s.slug===slug) return { efforts:s.efforts||[], defaultEffort:s.defaultEffort||null }; }
+  return null;
+}
+// Rebuild one effort select. A saved effort the model no longer offers stays
+// selected, marked "(not offered)", while the slot and fallback are unchanged,
+// so a save that does not touch it keeps it; after a model change it resets to
+// the model default.
+async function fillEffort(slot,keep){
+  var m=await loadModelMenu();
+  var sel=el('mdl-'+slot+'-effort'); if(!sel) return;
+  var slug=selVal('mdl-'+slot), fb=selVal('mdl-fallback');
+  var own=effortInfo(m,slug), fbi=fb?effortInfo(m,fb):null;
+  var want=(keep!==undefined)?keep:sel.value;
+  sel.innerHTML=effortOptionsHtml(own?own.efforts:[], own?own.defaultEffort:null, fbi?fbi.efforts:null);
+  if(!want) return;
+  var has=false; for(var i=0;i<sel.options.length;i++){ if(sel.options[i].value===want){ has=true; break; } }
+  if(!has){
+    var unchanged=slug===storedModels[slot]&&fb===storedModels.fallback&&want===storedModels[slot+'Effort'];
+    if(!unchanged) return;
+    var o=document.createElement('option'); o.value=want; o.textContent=want+' (not offered)'; sel.appendChild(o);
+  }
+  sel.value=want;
+}
+function renderFallbackHint(){
+  var n=el('llm-fallback-hint'); if(!n) return;
+  var fb=selVal('mdl-fallback'), same=!!fb&&fb===selVal('mdl-text');
+  n.textContent=same?'Fallback is the same as the text model, so there is no second model to switch to.':'';
+  n.style.display=same?'':'none';
+}
+function renderModelsWarn(m){
+  var n=el('llm-models-warn'); if(!n) return;
+  var lines=[], labels={image:'Image',text:'Text',fallback:'Fallback'};
+  if(!m.feedAvailable) lines.push('Model list unavailable right now. Saved models stay as they are; a changed model can be saved once the list is back.');
+  ['image','text','fallback'].forEach(function(s){
+    var st=(m.selectedStatus||{})[s]; if(!st) return;
+    if(st.state==='delisted') lines.push(labels[s]+': '+st.slug+' is no longer offered by OpenRouter. Pick a replacement.');
+    else if(st.state==='retiring') lines.push(labels[s]+': '+st.slug+' retires on '+st.retiresOn+'. Pick a replacement.');
+    if(st.effortSupported===false) lines.push(labels[s]+': the saved effort is no longer offered by this model or its fallback, and OpenRouter may refuse these calls. Pick another effort.');
+  });
+  n.innerHTML=lines.map(function(t){ return '<div>'+esc(t)+'</div>'; }).join('');
+  n.style.display=lines.length?'':'none';
+}
+function menuButton(act,v,label){
+  return '<button type="button" class="ghost mdl-mini" data-act="'+act+'" data-v="'+esc(v)+'" onclick="menuAct(this)">'+label+'</button>';
+}
+function renderMenuPanel(m){
+  var body=el('mdl-menu-body'); if(!body) return;
+  currentMenu=m.menu||null;
+  if(!currentMenu){ body.innerHTML='<p class="muted">Model list unavailable right now, so the menu cannot be changed.</p>'; return; }
+  var chips=currentMenu.providers.map(function(p){ return '<span class="mdl-chip">'+esc(providerLabel(p))+' '+menuButton('rmprov',p,'Remove')+'</span>'; }).join('');
+  var groups=(m.groups||[]).map(function(g){
+    return '<div class="mdl-group"><div class="mdl-head">'+esc(providerLabel(g.provider))+'</div>'+(g.entries||[]).map(function(e){
+      return '<div class="mdl-entry"><span>'+esc(e.name)+' <span class="muted">'+esc(e.slug)+'</span></span>'+(e.pinned?'<span class="muted">pinned</span>':menuButton('hide',e.slug,'Hide'))+'</div>';
+    }).join('')+'</div>';
+  }).join('');
+  function list(items,act,label){
+    return items.length?items.map(function(s){ return '<div class="mdl-entry"><span>'+esc(s)+'</span>'+menuButton(act,s,label)+'</div>'; }).join(''):'<div class="muted">None</div>';
+  }
+  body.innerHTML='<div class="mdl-head">Providers</div><div>'+chips+'</div>'
+    +'<div class="mdl-head">On the menu</div>'+(groups||'<div class="muted">Nothing listed.</div>')
+    +'<div class="mdl-head">Hidden</div>'+list(currentMenu.hides,'unhide','Unhide')
+    +'<div class="mdl-head">Pinned</div>'+list(currentMenu.pins,'unpin','Unpin');
+}
+// Fill the three model selects, then the effort selects, the fallback hint, the
+// status lines and the menu panel.
+async function fillModels(v){
+  await Promise.all([
+    setModelSelect('mdl-image', v.image, {vision:true, blank:'- system default'}),
+    setModelSelect('mdl-text', v.text, {blank:'- system default'}),
+    setModelSelect('mdl-fallback', v.fallback, {vision:true, blank:'- none'})
+  ]);
+  await fillEffort('image', v.imageEffort||'');
+  await fillEffort('text', v.textEffort||'');
+  modelsReady=true;
+  renderFallbackHint();
+  var m=await loadModelMenu();
+  renderModelsWarn(m);
+  renderMenuPanel(m);
+}
+function onModelChange(which){
+  if(heldSave){ heldSave=null; setMsg('llm-models-msg','','muted'); }
+  if(which!=='text') fillEffort('image');
+  if(which!=='image') fillEffort('text');
+  renderFallbackHint();
+}
+// Every menu change POSTs the whole block, then reloads the menu and refills the
+// selects with what is currently chosen in them.
+async function menuSave(next){
+  setMsg('mdl-menu-msg','Saving…','muted');
+  try{
+    var r=await api('/models/menu',next);
+    if(!r.ok){ setMsg('mdl-menu-msg','Failed: '+(r.error||'unknown error'),'no'); return; }
+    setMsg('mdl-menu-msg','Saved ✓','ok');
+    invalidateModelMenu();
+    await fillModels(currentModelVals());
+  }catch(e){ setMsg('mdl-menu-msg','Failed: '+errText(e),'no'); }
+}
+function menuCopy(){ return { providers:currentMenu.providers.slice(), pins:currentMenu.pins.slice(), hides:currentMenu.hides.slice() }; }
+function menuAct(b){
+  if(!currentMenu){ setMsg('mdl-menu-msg','Menu settings are unavailable right now.','no'); return; }
+  var a=b.getAttribute('data-act'), v=b.getAttribute('data-v'), n=menuCopy();
+  function drop(arr){ return arr.filter(function(x){ return x!==v; }); }
+  if(a==='rmprov') n.providers=drop(n.providers);
+  else if(a==='hide'){ if(n.hides.indexOf(v)<0) n.hides.push(v); }
+  else if(a==='unhide') n.hides=drop(n.hides);
+  else if(a==='unpin') n.pins=drop(n.pins);
+  menuSave(n);
+}
+function menuAddProvider(){
+  if(!currentMenu){ setMsg('mdl-menu-msg','Menu settings are unavailable right now.','no'); return; }
+  var v=selVal('mdl-provider-add').trim().toLowerCase(); if(!v) return;
+  var n=menuCopy(); if(n.providers.indexOf(v)<0) n.providers.push(v);
+  el('mdl-provider-add').value='';
+  menuSave(n);
+}
+function menuPin(){
+  if(!currentMenu){ setMsg('mdl-menu-msg','Menu settings are unavailable right now.','no'); return; }
+  var v=selVal('mdl-pin').trim(); if(!v) return;
+  var n=menuCopy(); if(n.pins.indexOf(v)<0) n.pins.push(v);
+  el('mdl-pin').value='';
+  menuSave(n);
 }
 function renderStatus(s){
   var g=s.gates||{}; var p=s.pricing||{};
@@ -298,9 +480,8 @@ function populateForms(s){
   if(p.fxBufferPct!=null) el('pfxb').value=p.fxBufferPct;
   var l=s.llm||{};
   var mm=(l.models||{});
-  setModelSelect('mdl-image', mm.image, {vision:true, blank:'- top model'});
-  setModelSelect('mdl-text', mm.text, {blank:'- top model'});
-  setModelSelect('mdl-fallback', mm.fallback, {vision:true, blank:'- none'});
+  storedModels={ image:mm.image||'', text:mm.text||'', fallback:mm.fallback||'', imageEffort:mm.imageEffort||'', textEffort:mm.textEffort||'' };
+  fillModels(storedModels);
   if(l.scoreThreshold!=null) el('llmthresh').value=l.scoreThreshold;
   if(l.enabled!=null) el('llmon').value=String(l.enabled);
   var a=s.addons||{};
@@ -477,15 +658,46 @@ async function savePricing(){
 // Settings "Save AI models" -> #llm-models-msg), so the confirmation is written
 // to both message slots - whichever view the merchant clicked in shows it.
 function llmMsg(t,kind){ setMsg('llmmsg',t,kind); setMsg('llm-models-msg',t,kind); }
-async function saveLlm(){
-  llmMsg('Saving…','muted');
-  try{
-    var r=await api('/llm',{
+// confirm is true only from the "Save anyway" button: a change that makes a slot
+// more than 3x as expensive comes back as a 409 listing the held slots, and is
+// saved only once the owner confirms it (confirm() is blocked in the admin iframe).
+// "Save anyway" re-sends exactly the save that was held, never the selects as
+// they are now; changing a model drops the hold (onModelChange).
+var heldSave=null;
+async function saveLlm(confirm){
+  var payload;
+  if(confirm===true&&heldSave){
+    payload={ enabled:heldSave.enabled, scoreThreshold:heldSave.scoreThreshold, models:heldSave.models, confirmCost:true };
+  } else {
+    var v=modelsReady?currentModelVals():storedModels;
+    payload={
       enabled:el('llmon').value==='true',
       scoreThreshold:Number(el('llmthresh').value),
-      models:{ image:(el('mdl-image')&&el('mdl-image').value)||'', text:(el('mdl-text')&&el('mdl-text').value)||'', fallback:(el('mdl-fallback')&&el('mdl-fallback').value)||'' }
-    });
-    if(r.ok){ llmMsg('Saved ✓','ok'); refresh(); }
+      models:{ image:v.image, text:v.text, fallback:v.fallback, imageEffort:v.imageEffort, textEffort:v.textEffort },
+      confirmCost:false
+    };
+  }
+  heldSave=null;
+  var mv=payload.models;
+  var changed=['image','text','fallback','imageEffort','textEffort'].some(function(k){ return (mv[k]||'')!==(storedModels[k]||''); });
+  llmMsg(changed?'Testing the new model...':'Saving…','muted');
+  try{
+    var r=await api('/llm',payload);
+    if(r.ok){
+      llmMsg('Saved ✓','ok');
+      storedModels={ image:mv.image, text:mv.text, fallback:mv.fallback, imageEffort:mv.imageEffort, textEffort:mv.textEffort };
+      invalidateModelMenu(); fillModels(storedModels);
+      refresh();
+    } else if(r.held){
+      heldSave={ enabled:payload.enabled, scoreThreshold:payload.scoreThreshold, models:mv };
+      var lines=r.held.map(function(h){ return heldMessage(h,h.slot); });
+      setMsg('llmmsg',lines.join(' ')+' Confirm in Settings, AI models.','no');
+      var box=el('llm-models-msg');
+      if(box){
+        box.className='msg no';
+        box.innerHTML=lines.map(function(t){ return '<div>'+esc(t)+'</div>'; }).join('')+'<button type="button" style="margin-top:6px" onclick="saveLlm(true)">Save anyway</button>';
+      }
+    }
     else llmMsg('Failed: '+(r.error||'unknown error'),'no');
   }catch(e){ llmMsg('Failed: '+errText(e),'no'); }
 }

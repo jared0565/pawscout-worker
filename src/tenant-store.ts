@@ -1,6 +1,7 @@
 import { DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, DEFAULT_SEMANTIC, DEFAULT_PROFIT, DEFAULT_SELF_SERVE, COMMISSION_CLEARANCE_DAYS, mergeSyndicate, type TenantRow, type TenantConfig, type Fulfil, type ProfitConfig, type SyndicateConfig, type SelfServeConfig } from './types';
 import type { LogisticsRoute } from './logistics';
 import { deriveModels } from './llm-migrate';
+import { validateModelMenuPayload } from './validate';
 import { DEFAULT_INBOX, type InboxConfig } from './inbox/types';
 import type { ContactRow, ThreadRow, MessageRow, ThreadStatus, DraftRow, DraftStatus, DraftMeta, InvoiceRow, InvoiceLineItem, InvoiceStatus, ApplicantRow, PartnershipStage, ScreenVerdict } from './inbox/types';
 import { mergeSupplier, SUPPLIER_STATUSES, type SupplierFacts, type SupplierRow, type SupplierStatus } from './inbox/supplier-register';
@@ -429,10 +430,15 @@ export class TenantStore {
         const models = (raw.models && typeof raw.models === 'object' && !Array.isArray(raw.models))
           ? (raw.models as TenantConfig['llm']['models'])
           : deriveModels(raw);
+        // The owner's menu controls ride in the same JSON. Kept only when they
+        // still validate, so a hand-edited or legacy value degrades to the
+        // defaults instead of reaching the menu builder malformed.
+        const menu = raw.menu === undefined ? null : validateModelMenuPayload(raw.menu);
         return {
           enabled: typeof raw.enabled === 'boolean' ? raw.enabled : DEFAULT_LLM.enabled,
           scoreThreshold: typeof raw.scoreThreshold === 'number' ? raw.scoreThreshold : DEFAULT_LLM.scoreThreshold,
           models,
+          ...(menu?.ok ? { menu: menu.value } : {}),
         };
       })(),
       addons: { ...DEFAULT_ADDONS, ...JSON.parse(row.addons || '{}') },
