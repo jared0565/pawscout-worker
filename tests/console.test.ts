@@ -1613,6 +1613,35 @@ describe('AI models card', () => {
       .toBe('No fallback model is set now, so F ($8/M in, $40/M out) is compared with the system default model, which has no known price. Save anyway?');
   });
 
+  // Spec 5.11 (owner go 2026-11-13): an effort raise is held like an expensive
+  // model, and the list can be the last good copy.
+  it('heldMessage words an effort raise, with the old level known or not', async () => {
+    const { heldMessage } = await fns(['heldMessage', 'fmtPrice']);
+    expect(heldMessage({ kind: 'effort', name: 'GPT-5.6 Luna', ratio: null, promptPriceM: 0.2, completionPriceM: 1.2,
+      effort: { from: 'medium', fromDefault: true, to: 'high', toDefault: false } }, 'text'))
+      .toBe('Raising the text effort on GPT-5.6 Luna from medium (the model default) to high makes each call think longer, and thinking is billed as output tokens ($1.2/M out). Save anyway?');
+    expect(heldMessage({ kind: 'effort', name: 'Mistral', ratio: null, promptPriceM: 0.7, completionPriceM: 2.1,
+      effort: { from: 'none', fromDefault: false, to: 'high', toDefault: true } }, 'image'))
+      .toBe('Raising the image effort on Mistral from off to high (the model default) makes each call think longer, and thinking is billed as output tokens ($2.1/M out). Save anyway?');
+    expect(heldMessage({ kind: 'effort', name: 'Haiku', ratio: null, promptPriceM: null, completionPriceM: null,
+      effort: { from: null, fromDefault: true, to: 'low', toDefault: false } }, 'text'))
+      .toBe('Setting the text effort on Haiku to low can make each call think longer, and thinking is billed as output tokens. Save anyway?');
+  });
+
+  it('renderModelsWarn says when the list is the last good copy, with its date', async () => {
+    const nodes: Record<string, any> = { 'llm-models-warn': { innerHTML: '', style: {} } };
+    const { renderModelsWarn } = await fns(['renderModelsWarn', 'esc'], { el: (id: string) => nodes[id] });
+    renderModelsWarn({ feedAvailable: true, feedStaleSince: '2026-11-11', selectedStatus: {} });
+    expect(nodes['llm-models-warn'].innerHTML)
+      .toBe('<div>The live model list from OpenRouter is unavailable right now, so this is the last good copy, from 2026-11-11. Saved models stay as they are, and a changed model is still live-tested before it saves.</div>');
+  });
+
+  it('loadModelMenu carries the date of a last good copy', async () => {
+    const reply = { ok: true, groups: [], feedAvailable: true, feedStaleSince: '2026-11-11', selectedStatus: {}, menu: null };
+    const { loadModelMenu } = await fns(['loadModelMenu'], { api: async () => reply }, 'var modelMenuPromise=null;');
+    expect((await loadModelMenu()).feedStaleSince).toBe('2026-11-11');
+  });
+
   it('renderModelsWarn names a blank slot as running the system default', async () => {
     const nodes: Record<string, any> = { 'llm-models-warn': { innerHTML: '', style: {} } };
     const { renderModelsWarn } = await fns(['renderModelsWarn', 'esc'], { el: (id: string) => nodes[id] });
@@ -1657,6 +1686,7 @@ describe('AI models card', () => {
     for (const s of ['id="llm-menu"', 'id="mdl-provider-add"', 'id="mdl-pin"', 'id="llm-fallback-hint"', 'id="llm-models-warn"',
       'id="mdl-image-effort"', 'id="mdl-text-effort"', "'/models/menu'", 'confirmCost', 'Save anyway', 'Testing the new model...',
       'Model list unavailable right now', 'Higher effort means more thinking, billed as output tokens.',
+      'Raising it asks you to confirm first.',
       'Fallback is the same as the text model, so there is no second model to switch to.', 'Last resort: GPT-5.4 mini']) expect(html).toContain(s);
     expect(html).not.toContain('ensureModelOptions');
   });

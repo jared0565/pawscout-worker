@@ -20,7 +20,22 @@ import { EFFORT_LEVELS, type ModelsConfig, type ReasoningEffort } from './types'
 export type SlotName = 'image' | 'text' | 'fallback';
 export const COST_CONFIRM_RATIO = 3;
 
+/** An effort change held for confirmation: the slot will think more than it
+ *  did. A level is null when it cannot be read (the old model is not in the
+ *  feed, or lists efforts with no default). */
+export interface HeldEffort {
+  from: string | null;
+  /** The old level was the model's own default (no effort chosen). */
+  fromDefault: boolean;
+  to: string;
+  /** The new level is the model's own default (no effort chosen). */
+  toDefault: boolean;
+}
+
 export interface HeldSlot {
+  /** model: the new model costs more than 3x (or cannot be compared).
+   *  effort: the slot will run at a higher reasoning effort (spec 5.11). */
+  kind: 'model' | 'effort';
   slot: SlotName;
   slug: string;
   name: string;
@@ -34,6 +49,8 @@ export interface HeldSlot {
   /** Fallback set where none was: there is no current fallback, so the ratio
    *  is measured against SYSTEM_DEFAULT_MODEL. */
   newFallback: boolean;
+  /** Set when kind is 'effort'. */
+  effort?: HeldEffort;
 }
 
 export type ProbeFn = (model: FeedModel, mode: ProbeMode, effort: ReasoningEffort | undefined) => Promise<ProbeResult>;
@@ -55,6 +72,21 @@ export function allowedEfforts(model: FeedModel, fallback: FeedModel | null): st
 }
 
 const bad = (error: string): SaveCheck => ({ ok: false, status: 400, error });
+
+/** Effort levels from least thinking (none, 0) to most (max, 6). */
+const RANK = new Map<string, number>([...EFFORT_LEVELS].reverse().map((e, i) => [e, i]));
+
+/** The effort a slot runs at: the chosen one, else its model's default; 'none'
+ *  for a model that takes no effort (it does not think); null when it cannot
+ *  be read (the model is not in the feed, or lists no usable default). */
+function runsAt(models: ModelsConfig, s: 'image' | 'text', byId: Map<string, FeedModel>): { level: string | null; isDefault: boolean } {
+  const chosen = models[EFFORT_KEY[s]];
+  if (chosen) return { level: chosen, isDefault: false };
+  const m = byId.get(models[s] || SYSTEM_DEFAULT_MODEL);
+  if (!m) return { level: null, isDefault: true };
+  if (!m.efforts.length) return { level: 'none', isDefault: true };
+  return { level: m.defaultEffort !== null && RANK.has(m.defaultEffort) ? m.defaultEffort : null, isDefault: true };
+}
 
 export async function checkModelSave(input: {
   stored: ModelsConfig;
@@ -108,20 +140,37 @@ export async function checkModelSave(input: {
     }
   }
 
-  // 6. Price: only a model change, never an effort-only change.
+  // 6. Price. A model change more than 3x as expensive is held; so is a slot
+  //    that will run at a higher reasoning effort than it did (spec 5.11),
+  //    since thinking is billed as output tokens. A lower effort never is.
   const held: HeldSlot[] = [];
   for (const s of changed) {
-    if (!modelChanged(s)) continue;
     const next = byId.get(runs[s]!)!;
-    const base = byId.get(stored[s] || SYSTEM_DEFAULT_MODEL);
-    const baseCost = base ? feedCost(base) : null;
-    const nextCost = feedCost(next);
-    const ratio = baseCost !== null && baseCost > 0 && nextCost !== null ? Math.round((nextCost / baseCost) * 100) / 100 : null;
-    if (ratio === null || ratio > COST_CONFIRM_RATIO) {
+    if (modelChanged(s)) {
+      const base = byId.get(stored[s] || SYSTEM_DEFAULT_MODEL);
+      const baseCost = base ? feedCost(base) : null;
+      const nextCost = feedCost(next);
+      const ratio = baseCost !== null && baseCost > 0 && nextCost !== null ? Math.round((nextCost / baseCost) * 100) / 100 : null;
+      if (ratio === null || ratio > COST_CONFIRM_RATIO) {
+        held.push({
+          kind: 'model', slot: s, slug: next.id, name: next.name, ratio, promptPriceM: next.promptPriceM, completionPriceM: next.completionPriceM,
+          cleared: s !== 'fallback' && !requested[s],
+          newFallback: s === 'fallback' && !stored.fallback,
+        });
+      }
+    }
+    if (s === 'fallback') continue; // the fallback runs at the effort of the slot it backs
+    const before = runsAt(stored, s, byId);
+    const after = runsAt(requested, s, byId);
+    // From a level that cannot be read, only an effort the owner chose counts
+    // as a raise: a model's own default there is not evidence of more thinking.
+    const raised = after.level !== null && after.level !== 'none'
+      && (before.level === null ? !after.isDefault : RANK.get(after.level)! > RANK.get(before.level)!);
+    if (raised) {
       held.push({
-        slot: s, slug: next.id, name: next.name, ratio, promptPriceM: next.promptPriceM, completionPriceM: next.completionPriceM,
-        cleared: s !== 'fallback' && !requested[s],
-        newFallback: s === 'fallback' && !stored.fallback,
+        kind: 'effort', slot: s, slug: next.id, name: next.name, ratio: null,
+        promptPriceM: next.promptPriceM, completionPriceM: next.completionPriceM, cleared: false, newFallback: false,
+        effort: { from: before.level, fromDefault: before.isDefault, to: after.level!, toDefault: after.isDefault },
       });
     }
   }

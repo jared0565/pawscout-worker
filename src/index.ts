@@ -5,7 +5,7 @@ import { type Env, type TenantConfig, type TenantRow, SYNDICATE_CHANNEL_KEYS, me
 import { makeShopify } from './shopify';
 import { Vault } from './vault';
 import { TenantStore, listActiveShops } from './tenant-store';
-import { loadFeed, type FeedModel } from './models-feed';
+import { readFeed, type Feed } from './models-feed';
 import { buildMenu, effectiveMenu, type MenuGroup } from './model-menu';
 import { checkModelSave, type SlotName } from './model-save';
 import { probeModel } from './model-probe';
@@ -1289,7 +1289,9 @@ app.post('/api/llm', async (c) => {
   const check = await checkModelSave({
     stored: cfg.llm.models,
     requested: v.value.models,
-    loadFeed: () => loadFeed(store),
+    // The last good copy counts here (spec 5.11): every changed model is still
+    // live-tested through OpenRouter, which is what proves it can be called.
+    loadFeed: async () => (await readFeed(store))?.models ?? null,
     confirmCost: flags.confirmCost === true,
     // A live test that answers after its timeout is logged once it lands
     // (waitUntil keeps that alive past this response); see probeModel.
@@ -1304,25 +1306,29 @@ app.post('/api/llm', async (c) => {
   await saveLlm(c.env.DB, s, v.value);
   return c.json({ ok: true });
 });
-/** The GET /api/models body (spec 5.4, 5.7). Pure, so the no-feed case is
- *  tested without a network call: with no feed the menu holds only the pins,
- *  each marked unavailable, and no slot status is claimed. */
-export function modelsPayload(feed: FeedModel[] | null, llm: LlmConfig, nowMs: number): {
-  ok: true; feedAvailable: boolean; groups: MenuGroup[]; menu: ModelMenuConfig; selectedStatus: Partial<Record<SlotName, SlotStatus>>;
+/** The GET /api/models body (spec 5.4, 5.7, 5.11). Pure, so the no-feed case
+ *  is tested without a network call: with no feed the menu holds only the
+ *  pins, each marked unavailable, and no slot status is claimed. With the last
+ *  good copy, feedStaleSince is its fetch date (YYYY-MM-DD) and the menu and
+ *  statuses are read from it. */
+export function modelsPayload(feed: Feed | null, llm: LlmConfig, nowMs: number): {
+  ok: true; feedAvailable: boolean; feedStaleSince: string | null; groups: MenuGroup[]; menu: ModelMenuConfig;
+  selectedStatus: Partial<Record<SlotName, SlotStatus>>;
 } {
   return {
     ok: true,
     feedAvailable: feed !== null,
-    groups: buildMenu(feed ?? [], llm.menu, Math.floor(nowMs / 1000)),
+    feedStaleSince: feed?.stale ? new Date(feed.fetchedAt).toISOString().slice(0, 10) : null,
+    groups: buildMenu(feed?.models ?? [], llm.menu, Math.floor(nowMs / 1000)),
     menu: effectiveMenu(llm.menu),
-    selectedStatus: feed ? selectedStatus(llm.models, feed, nowMs) : {},
+    selectedStatus: feed ? selectedStatus(llm.models, feed.models, nowMs) : {},
   };
 }
 app.get('/api/models', async (c) => {
   const s = await shopOf(c); if (typeof s !== 'string') return s;
   const store = new TenantStore(c.env.DB, s);
   const cfg = await store.getConfig();
-  return c.json(modelsPayload(await loadFeed(store), cfg?.llm ?? DEFAULT_LLM, Date.now()));
+  return c.json(modelsPayload(await readFeed(store), cfg?.llm ?? DEFAULT_LLM, Date.now()));
 });
 // The owner's menu controls (providers, pins, hidden models). Stored apart from
 // the model selection, so neither save can drop the other (saveModelMenu).

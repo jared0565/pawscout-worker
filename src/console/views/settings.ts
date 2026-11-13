@@ -31,7 +31,7 @@ export const settingsView = `  <section class="card">
       </div>
       <div class="grow"><label for="mdl-fallback">Fallback model</label><select id="mdl-fallback" onchange="onModelChange('fallback')"></select></div>
     </div>
-    <p class="sub muted" style="margin:6px 0 0">Effort is how long a model thinks before it answers. Higher effort means more thinking, billed as output tokens. Model default sends no effort at all, and the fallback runs at the effort of the slot it backs.</p>
+    <p class="sub muted" style="margin:6px 0 0">Effort is how long a model thinks before it answers. Higher effort means more thinking, billed as output tokens. Raising it asks you to confirm first. Model default sends no effort at all, and the fallback runs at the effort of the slot it backs.</p>
     <p id="llm-fallback-hint" class="msg muted" style="display:none"></p>
     <div id="llm-models-warn" class="msg no mdl-warn" style="display:none"></div>
     <div class="row" style="margin-top:10px">
