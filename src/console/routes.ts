@@ -1,6 +1,6 @@
 import { Vault } from '../vault';
 import { TenantStore, type KeywordDemand } from '../tenant-store';
-import { DEFAULT_GATES, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_TARGET, type Addons, type Floors, type Gates, type LlmConfig, type Pricing, type TenantConfig } from '../types';
+import { DEFAULT_GATES, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_TARGET, type Addons, type Floors, type Gates, type LlmConfig, type ModelMenuConfig, type Pricing, type TenantConfig } from '../types';
 import { LOW_STOCK_BAND, sellableQty, JOB_STAMP_DAILY, JOB_STAMP_PIPELINE, JOB_STAMP_MARKETS } from '../jobs';
 import type { ValidateResult } from '../cj';
 
@@ -32,11 +32,23 @@ export async function savePricing(db: D1Database, shop: string, pricing: Pricing
   await store.seedConfig({ ...cfg, pricing });
 }
 
+/** The AI-models save. It owns enabled, scoreThreshold and models; the menu
+ *  controls belong to saveModelMenu, so the stored menu is always carried
+ *  through whatever `llm.menu` holds. */
 export async function saveLlm(db: D1Database, shop: string, llm: LlmConfig): Promise<void> {
   const store = new TenantStore(db, shop);
   const cfg = await store.getConfig();
   if (!cfg) return;
-  await store.seedConfig({ ...cfg, llm });
+  await store.seedConfig({ ...cfg, llm: { ...llm, menu: cfg.llm.menu } });
+}
+
+/** The menu-controls save (providers, pins, hides): merges into the stored llm
+ *  block, so the model selection, efforts, enabled and scoreThreshold stay. */
+export async function saveModelMenu(db: D1Database, shop: string, menu: ModelMenuConfig): Promise<void> {
+  const store = new TenantStore(db, shop);
+  const cfg = await store.getConfig();
+  if (!cfg) return;
+  await store.seedConfig({ ...cfg, llm: { ...cfg.llm, menu } });
 }
 
 export async function saveAddons(db: D1Database, shop: string, addons: Addons): Promise<void> {

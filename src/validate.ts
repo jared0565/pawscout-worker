@@ -1,5 +1,5 @@
 import type { Addons, Gates, LlmConfig, Pricing, TenantConfig, SelfServeConfig } from './types';
-import { DEFAULT_SEMANTIC, EFFORT_LEVELS, type SemanticConfig, type ModelsConfig, type ReasoningEffort } from './types';
+import { DEFAULT_SEMANTIC, EFFORT_LEVELS, type SemanticConfig, type ModelsConfig, type ModelMenuConfig, type ReasoningEffort } from './types';
 import { DEFAULT_INBOX, INBOX_LABELS, AFFILIATE_MODES, type AffiliateMode, type InboxConfig, type ThreadStatus } from './inbox/types';
 
 export type Validation<T> = { ok: true; value: T } | { ok: false; error: string };
@@ -164,6 +164,39 @@ export function validateLlmPayload(body: unknown): Validation<LlmConfig> {
     models[k] = v as ReasoningEffort;
   }
   return { ok: true, value: { enabled: b.enabled, scoreThreshold: b.scoreThreshold as number, models } };
+}
+
+const PROVIDER_ID = /^[a-z0-9-]+$/;
+const MAX_MENU_PROVIDERS = 20;
+const MAX_MENU_SLUGS = 30;
+
+/** Validate the /api/models/menu body: the owner's provider list (1 to 20,
+ *  deduped, order kept) plus pins and hides (each at most 30 OpenRouter slugs).
+ *  A floating `~vendor/...-latest` alias is refused as a pin by name, because it
+ *  would change model underneath a saved setting with no live test (spec 2). */
+export function validateModelMenuPayload(body: unknown): Validation<ModelMenuConfig> {
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) return { ok: false, error: 'Body must be a JSON object' };
+  const b = body as Record<string, unknown>;
+  if (!Array.isArray(b.providers) || !b.providers.length || b.providers.length > MAX_MENU_PROVIDERS
+    || !b.providers.every((p) => typeof p === 'string' && PROVIDER_ID.test(p))) {
+    return { ok: false, error: `providers must be 1 to ${MAX_MENU_PROVIDERS} provider ids (lowercase letters, digits and dashes)` };
+  }
+  const slugList = (key: 'pins' | 'hides'): Validation<string[]> => {
+    const v = b[key] ?? [];
+    if (!Array.isArray(v) || v.length > MAX_MENU_SLUGS) return { ok: false, error: `${key} must be a list of at most ${MAX_MENU_SLUGS} models` };
+    for (const s of v) {
+      if (key === 'pins' && typeof s === 'string' && s.startsWith('~')) {
+        return { ok: false, error: 'Floating "-latest" aliases cannot be pinned; pin a specific model instead.' };
+      }
+      if (typeof s !== 'string' || s.length > 100 || !MODEL_SLUG.test(s)) return { ok: false, error: `${key} must contain OpenRouter slugs` };
+    }
+    return { ok: true, value: [...new Set(v as string[])] };
+  };
+  const pins = slugList('pins');
+  if (!pins.ok) return pins;
+  const hides = slugList('hides');
+  if (!hides.ok) return hides;
+  return { ok: true, value: { providers: [...new Set(b.providers as string[])], pins: pins.value, hides: hides.value } };
 }
 
 /** Validate the /api/affiliate/config body (selfServe toggles: the master

@@ -142,6 +142,9 @@ export interface LlmConfig {
   enabled: boolean;
   scoreThreshold: number; // 0-100: minimum relevance score to admit
   models: ModelsConfig;
+  // Owner's menu controls; absent = defaults (DEFAULT_MENU_PROVIDERS, no pins or
+  // hides). Saved only by saveModelMenu; every other save carries it through.
+  menu?: ModelMenuConfig;
 }
 
 /**
