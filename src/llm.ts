@@ -1,7 +1,7 @@
 import { defaultFetch } from './safe-fetch';
 import type { TenantStore } from './tenant-store';
 import type { CjDetail } from './cj';
-import type { TenantConfig } from './types';
+import type { TenantConfig, ReasoningEffort } from './types';
 import { resolveChain } from './llm-resolve';
 
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
@@ -106,9 +106,40 @@ export const SYSTEM_DEFAULT_MODEL = 'google/gemini-3.1-pro-preview';
  */
 export const REASONING_HEADROOM = 3000;
 
+/**
+ * Ceiling for an effort-sized max_tokens. It sits under the smallest output
+ * limit among the models the menu offered on 2026-11-13 (65,536, Gemini Flash),
+ * so the cap itself never makes a request invalid; the live test
+ * (src/model-probe.ts) still checks each model at its chosen effort.
+ */
+export const EFFORT_TOKEN_CEILING = 64000;
+/**
+ * Share of max_tokens left for the ANSWER at each effort, in percent. OpenRouter
+ * documents (reasoning-tokens docs, read 2026-11-13) that for Anthropic models
+ * effort becomes a thinking budget of max_tokens times 0.95 (max, xhigh), 0.8
+ * (high), 0.5 (medium), 0.2 (low) or 0.1 (minimal). Other providers do not
+ * carve a budget out, but a reasoning model at high effort still spends the
+ * same cap on thinking, so the same sizing keeps both from starving.
+ * Integers on purpose: 3000 * 100 / 80 is exactly 3750, never 3751.
+ */
+const ANSWER_PCT: Record<ReasoningEffort, number> = { max: 5, xhigh: 5, high: 20, medium: 50, low: 80, minimal: 90, none: 100 };
+
+/**
+ * max_tokens for an OpenRouter request. With no effort it is exactly the old
+ * rule, max(n, REASONING_HEADROOM), so a tenant that never picks an effort sends
+ * byte-identical requests. With one, the floored task budget is divided by the
+ * answer's share, capped at EFFORT_TOKEN_CEILING. max_tokens is a cap, not a
+ * charge: only generated tokens are billed.
+ */
+export function effortMaxTokens(n: number, effort?: ReasoningEffort): number {
+  const floor = Math.max(n, REASONING_HEADROOM);
+  if (!effort) return floor;
+  return Math.min(Math.ceil((floor * 100) / ANSWER_PCT[effort]), EFFORT_TOKEN_CEILING);
+}
+
 export type LlmRole = 'image' | 'text';
 export type ChainTier =
-  | { provider: 'openrouter'; models: string[] }
+  | { provider: 'openrouter'; models: string[]; effort?: ReasoningEffort }
   | { provider: 'openai'; model: string };
 const KEYWORD_META_TTL_DAYS = 30;
 
@@ -219,7 +250,10 @@ export class LlmClient {
     const url = isOpenai ? OPENAI_URL : OPENROUTER_URL;
     const body: Record<string, unknown> = isOpenai
       ? { model: tier.model, max_completion_tokens: Math.max(opts.maxTokens ?? 1024, 3000), reasoning_effort: 'medium', response_format: { type: 'json_object' }, messages }
-      : { models: tier.models, max_tokens: Math.max(opts.maxTokens ?? 1024, REASONING_HEADROOM), response_format: { type: 'json_object' }, usage: { include: true }, messages };
+      : { models: tier.models, max_tokens: effortMaxTokens(opts.maxTokens ?? 1024, tier.effort), response_format: { type: 'json_object' }, usage: { include: true }, messages };
+    // The owner's reasoning effort for this role (spec 5.10). Absent means
+    // "Model default": no field at all, so the body is unchanged from before.
+    if (!isOpenai && tier.effort) body.reasoning = { effort: tier.effort };
     // Web search grounding (OpenRouter only, opt-in per call): injects live search
     // results as context so the model reasons over current demand. Strictly
     // additive - the non-web request shape is unchanged.

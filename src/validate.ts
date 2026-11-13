@@ -1,5 +1,5 @@
 import type { Addons, Gates, LlmConfig, Pricing, TenantConfig, SelfServeConfig } from './types';
-import { DEFAULT_SEMANTIC, type SemanticConfig } from './types';
+import { DEFAULT_SEMANTIC, EFFORT_LEVELS, type SemanticConfig, type ModelsConfig, type ReasoningEffort } from './types';
 import { DEFAULT_INBOX, INBOX_LABELS, AFFILIATE_MODES, type AffiliateMode, type InboxConfig, type ThreadStatus } from './inbox/types';
 
 export type Validation<T> = { ok: true; value: T } | { ok: false; error: string };
@@ -147,12 +147,21 @@ export function validateLlmPayload(body: unknown): Validation<LlmConfig> {
     return { ok: false, error: 'scoreThreshold must be a number between 0 and 100' };
   }
   const rawModels = (b.models && typeof b.models === 'object' && !Array.isArray(b.models)) ? b.models as Record<string, unknown> : {};
-  const models: { image?: string; text?: string; fallback?: string } = {};
+  const models: ModelsConfig = {};
   for (const k of ['image', 'text', 'fallback'] as const) {
     const v = rawModels[k];
     if (v === undefined || v === '') continue;
     if (typeof v !== 'string' || v.length > 100 || !MODEL_SLUG.test(v)) return { ok: false, error: `${k} model must be an OpenRouter slug` };
     models[k] = v;
+  }
+  // Reasoning effort per role; '' or absent = "Model default" (nothing stored).
+  for (const k of ['imageEffort', 'textEffort'] as const) {
+    const v = rawModels[k];
+    if (v === undefined || v === '') continue;
+    if (typeof v !== 'string' || !(EFFORT_LEVELS as readonly string[]).includes(v)) {
+      return { ok: false, error: `${k} must be one of ${EFFORT_LEVELS.join(', ')}` };
+    }
+    models[k] = v as ReasoningEffort;
   }
   return { ok: true, value: { enabled: b.enabled, scoreThreshold: b.scoreThreshold as number, models } };
 }

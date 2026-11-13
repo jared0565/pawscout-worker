@@ -108,10 +108,21 @@ export interface Floors {
   stockFloor: number;     // CJ units required to admit/sell a product
 }
 
+/** OpenRouter's reasoning effort levels, in display order (strongest first).
+ *  The feed's per-model `reasoning.supported_efforts` is drawn from this set. */
+export const EFFORT_LEVELS = ['max', 'xhigh', 'high', 'medium', 'low', 'minimal', 'none'] as const;
+export type ReasoningEffort = typeof EFFORT_LEVELS[number];
+
 export interface ModelsConfig {
   image?: string;    // OpenRouter slug; blank → SYSTEM_DEFAULT_MODEL (src/llm.ts)
   text?: string;     // OpenRouter slug; blank → SYSTEM_DEFAULT_MODEL
   fallback?: string; // OpenRouter slug; blank → omitted from the models[] array
+  // Reasoning effort for the image / text request. Absent = "Model default":
+  // no reasoning field is sent at all. The fallback has no effort of its own -
+  // it rides in the same OpenRouter request, so it runs at the effort of the
+  // slot it backs up.
+  imageEffort?: ReasoningEffort;
+  textEffort?: ReasoningEffort;
 }
 
 /**

@@ -15,6 +15,13 @@ describe('resolveChain', () => {
     const c = resolveChain(base({}), 'text');
     expect(c[0]).toEqual({ provider: 'openrouter', models: [SYSTEM_DEFAULT_MODEL] });
   });
+  it('each role carries only its own effort', () => {
+    const cfg = base({ text: 'a/b', image: 'c/d', textEffort: 'high', imageEffort: 'low' });
+    expect(resolveChain(cfg, 'text')[0]).toEqual({ provider: 'openrouter', models: ['a/b'], effort: 'high' });
+    expect(resolveChain(cfg, 'image')[0]).toEqual({ provider: 'openrouter', models: ['c/d'], effort: 'low' });
+    expect(resolveChain(base({ text: 'a/b' }), 'text')[0]).toEqual({ provider: 'openrouter', models: ['a/b'] }); // no effort key at all
+    expect(resolveSearchChain(cfg)[0]).not.toHaveProperty('effort');
+  });
   it('the blank-slot default is pinned to the old menu head', () => {
     expect(SYSTEM_DEFAULT_MODEL).toBe('google/gemini-3.1-pro-preview');
     expect(resolveChain(base({}), 'image')[0]).toEqual({ provider: 'openrouter', models: [SYSTEM_DEFAULT_MODEL] });

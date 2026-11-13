@@ -89,6 +89,16 @@ describe('validateLlmPayload', () => {
   ] as [unknown, string][])('rejects %j (%s)', (body: unknown) => {
     expect(validateLlmPayload(body).ok).toBe(false);
   });
+
+  it('accepts efforts and drops a blank one', () => {
+    const v = validateLlmPayload({ ...GOOD, models: { text: 'a/b', imageEffort: 'high', textEffort: '' } });
+    expect(v).toEqual({ ok: true, value: { ...GOOD, models: { text: 'a/b', imageEffort: 'high' } } });
+  });
+
+  it('rejects an unknown effort', () => {
+    expect(validateLlmPayload({ enabled: true, scoreThreshold: 50, models: { textEffort: 'extreme' } }))
+      .toEqual({ ok: false, error: 'textEffort must be one of max, xhigh, high, medium, low, minimal, none' });
+  });
 });
 
 describe('validateAddonsPayload', () => {

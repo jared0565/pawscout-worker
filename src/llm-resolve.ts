@@ -15,8 +15,11 @@ export function resolveChain(cfg: TenantConfig, role: LlmRole): ChainTier[] {
   const m = cfg.llm.models ?? {};
   const primary = (role === 'image' ? m.image : m.text) || SYSTEM_DEFAULT_MODEL;
   const models = [...new Set([primary, m.fallback].filter((s): s is string => !!s))];
+  // The role's effort rides on the whole OpenRouter tier, so the fallback runs
+  // at it too (one request body). No key at all when unset: unchanged request.
+  const effort = role === 'image' ? m.imageEffort : m.textEffort;
   return [
-    { provider: 'openrouter', models },
+    { provider: 'openrouter', models, ...(effort ? { effort } : {}) },
     { provider: 'openai', model: DEFAULT_MODEL },
   ];
 }
