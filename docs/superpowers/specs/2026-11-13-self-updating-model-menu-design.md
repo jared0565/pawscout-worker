@@ -131,6 +131,7 @@ For each slot, in `POST /api/llm`:
 - **Unchanged** from the stored value: accepted with no check (fixes the anti-goal in section 2).
 - **Changed**: must be in the feed (not necessarily on the menu, since a pin may add it), must not be a `~` alias, must pass the vision rule for image and fallback (existing `visionModelRejected`, now fed from the feed), and must pass the live test (5.5).
 - **Feed unreachable**: unchanged slugs are accepted; a changed slug is refused with "Cannot verify new models right now; try again shortly."
+- **`dryRun: true`** in the body runs every check above, including the live test, and stores nothing. It exists so the real OpenRouter path can be verified on production without changing the store's models (section 8); the console does not send it.
 
 ### 5.6.1 Price check before an expensive save (owner decision 2026-11-13, option a)
 
@@ -175,7 +176,7 @@ Runtime calls: resolveChain (unchanged except the blank-slot default constant)
 ## 7. Testing
 
 Unit tests over a **trimmed fixture copy of the 2026-11-13 feed** (checked in under `tests/fixtures/`), so the builder's behaviour is pinned to real data:
-1. Menu builder: Anthropic yields exactly Fable 5.2, Opus 5.5, Sonnet 5.5, Haiku 5.5; Sonnet 4.6 is absent; `:batch`, `~...-latest`, `lyria`, `nano-banana`, `gemini-omni` absent; `deepseek-v4.1-flash-1017` absent while `mistral-small-2603` present; a 2024 Mistral model absent; a provider with only stale families keeps its newest one; cap of 6; hides and pins applied; group order follows the provider list.
+1. Menu builder: Anthropic yields exactly Fable 5.2, Opus 5.5, Sonnet 5.5, Haiku 5.5; Sonnet 4.6 is absent; `:batch`, `~...-latest`, `lyria`, `nano-banana`, `gemini-omni` absent; `deepseek-v4.1-flash-1017` absent (dated-snapshot rule) while `mistral-small-2603` passes that rule (it is then dropped as stale, released 2026-03-16, so the candidate filter is tested on its own); a 2024 Mistral model absent; a provider with only stale families keeps its newest one; cap of 6; hides and pins applied; group order follows the provider list.
 2. Live test: pass; HTTP error; empty content (starved reasoning); non-JSON; a different `model` in the response; the 7-day cache skips a second call; usage logged as `model-probe`.
 3. Save validation: an unchanged slug not on the menu saves; a changed slug missing from the feed is refused; a `~` alias is refused; a text-only model in the image slot is refused; feed down refuses only changed slugs.
 3a. Price check: Luna to Opus 5.5 is held with a ratio near 17 and stores nothing; the same save with `confirmCost: true` proceeds to the live test; a held save makes no live-test call; a change at 3x or less is not held; a stored model with no known price holds the save; a blank slot compares against `SYSTEM_DEFAULT_MODEL`.
@@ -186,7 +187,7 @@ Unit tests over a **trimmed fixture copy of the 2026-11-13 feed** (checked in un
 
 ## 8. Rollout
 
-Feature branch, full suite, CI, staging deploy (staging has no store and no crons, so the live test is exercised by hand there through the console), then production only on the owner's explicit "deploy <sha> to production". No migration. The store's saved models are untouched by the deploy; the owner picks new ones when ready.
+Feature branch, full suite, CI, staging deploy (staging has no shop, so its session-authed console cannot open: staging proves the build boots and passes the smoke test, not the live test), then production only on the owner's explicit "deploy <sha> to production". After that deploy the real OpenRouter path is verified through the admin console session with `dryRun: true` saves (a held expensive change answers 409; a cheap change runs the live test and stores nothing). No migration. The store's saved models are untouched by the deploy; the owner picks new ones when ready.
 
 ## 9. Decided, and left to the builder
 
