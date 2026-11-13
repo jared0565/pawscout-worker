@@ -10,6 +10,8 @@
 
 The Settings > AI models card offers a hand-curated list of 12 OpenRouter models (`CURATED_MODELS` in `src/models-catalog.ts`), last curated 2026-08-02. The live OpenRouter feed is read daily, but only to add prices and the vision flag to those 12; it never adds a model. So every new release needs a code change and a deploy before the owner can even see it.
 
+The owner also asked (2026-11-13, after approving the first version of this design) to **choose the reasoning effort together with the model**. Today no effort is sent to OpenRouter, so every model thinks at its own default, and those defaults range from medium (OpenAI, Google) to max (Kimi, GLM, MiniMax). Section 5.10 covers it.
+
 The owner wants the menu to **always surface the latest releases**, especially the frontier models from Anthropic, OpenAI, Google (Gemini) and xAI (Grok), plus the emerging providers whose models are comparable to them. They chose (2026-11-13) to define "comparable" by **a list of providers they control**, not by an external quality leaderboard, and chose **"newest model in each family, grouped by provider"** as the way the menu is built.
 
 ### 1.1 What the menu looks like today vs the feed (read 2026-11-13 from `https://openrouter.ai/api/v1/models`)
@@ -35,12 +37,14 @@ Other facts found the same day:
 4. A model can only be saved into a slot after it has passed a small live call through our own OpenRouter key, in the same JSON request shape production uses.
 5. The owner is warned, in the console and by email, when a model in use is about to be retired or has been delisted.
 6. Premium models are visible on the menu, but a save that makes a slot more than 3x as expensive asks for confirmation first (5.6.1).
+7. The owner can set a reasoning effort for the Image and Text slots, chosen from the levels the model (and the fallback) supports; "Model default" keeps today's behaviour exactly (5.10).
 
 **Non-goals**
 - An external quality ranking or leaderboard (the owner chose option (a)).
 - Changing what each slot does, or the provider chain (`resolveChain`: OpenRouter primary+fallback, then OpenAI direct).
 - Cost caps or budgets (the AI spend card already reports spend). The price check in 5.6.1 is a confirmation, not a cap: the owner can always save.
 - Hiding models by price.
+- A separate effort for the fallback (option b, rejected by the owner: it would split the fallback into its own request), one effort for every slot (option c), and per-task efforts. The research model and the OpenAI floor keep their fixed behaviour (no effort sent; `medium` on the floor).
 - Making the research model (`SEARCH_MODEL`) or the OpenAI floor (`DEFAULT_MODEL`) owner-selectable.
 
 **Anti-goals (a failure even if it technically works)**
@@ -58,6 +62,10 @@ Other facts found the same day:
 - **The feed cache is per shop** in `search_cache` (`openrouter:models`, 24h TTL) and currently stores only `{name, vision, promptPrice, completionPrice}`.
 - **The daily job runs per-shop stages** (`DAILY_SHOP_STAGES` in `src/jobs.ts`, driven by `driveDailyChain`), and `alertOwner` (`src/owner-alert.ts`) sends a plain owner email that never throws.
 - **No em or en dashes** in code, docs or customer text (standing rule).
+- **The fallback shares the request.** OpenRouter failover sends one request body, `models: [primary, fallback]`, so one `reasoning.effort` applies to whichever model answers.
+- **Effort spends `max_tokens`.** OpenRouter documents (2026-11-13, reasoning-tokens docs) that for Anthropic models effort becomes a thinking budget of `max_tokens` times 0.95 (max, xhigh), 0.8 (high), 0.5 (medium), 0.2 (low) or 0.1 (minimal), and that reasoning tokens are billed as output. At the current 3000 floor, max effort would leave 150 tokens for the answer.
+- **An unsupported effort can be a hard failure.** OpenRouter maps an unsupported level to the nearest one for Gemini, but may answer 400 otherwise, and `LlmClient` treats a 400 `invalid_request_error` as `stop`: no fallback tier runs.
+- **The largest task budget is 4800 tokens** (`src/blog/draft.ts`), and the smallest output limit among today's menu models is 65,536 tokens (Gemini Flash).
 
 ## 4. Approaches considered
 
@@ -117,12 +125,12 @@ Each entry carries: `slug`, `name`, `provider`, `vision` (input modalities inclu
 
 When the owner saves a slug into a slot that **differs from what is stored**, the save route runs one live call per changed slug, unless that slug passed within the last 7 days (cached in `search_cache` as `modelprobe:<slug>`):
 
-- Request: the production OpenRouter shape (`models: [slug]` alone, so OpenRouter cannot fail over to another model), `response_format: json_object`, `max_tokens: REASONING_HEADROOM`, a short instruction to return `{"ok": true}`. For the image and fallback slots, the message also carries one small image (builder's choice of a stable public image).
+- Request: the production OpenRouter shape (`models: [slug]` alone, so OpenRouter cannot fail over to another model), `response_format: json_object`, the slot's effort (5.10) with `max_tokens` sized for the largest production task (4800) at that effort, and a short instruction to return `{"ok": true}`. For the image and fallback slots, the message also carries one small image (builder's choice of a stable public image).
 - Pass: HTTP ok, the response's `model` matches the requested slug or its `canonical_slug`, and the content parses (with the existing fence-tolerant JSON parser) to an object whose `ok` is `true`.
 - Fail: the save is refused for that slot with the reason in plain words (for example "returned no text: may need a larger token budget", "our key cannot use this model", "did not return JSON"). Nothing is stored.
 - The call is logged to `llm_usage` as function `model-probe` so it shows in AI spend.
 - Changed slots are tested **in parallel**, each with a **60-second timeout** (a timeout is a fail: "did not answer within 60 seconds"). The console shows "Testing the new model..." while the save is in flight.
-- The 7-day pass cache is keyed by slug **and mode**: `modelprobe:<slug>:text` and `modelprobe:<slug>:vision`, because a text pass says nothing about image input.
+- The 7-day pass cache is keyed by slug, **mode and effort**: `modelprobe:<slug>:<text|vision>:<effort|default>`, because a text pass says nothing about image input and a pass at one effort says nothing about another.
 - No `OPENROUTER_API_KEY` in the environment: a changed slug is refused with "No OpenRouter key is configured, so new models cannot be tested." Unchanged slugs still save.
 
 ### 5.6 Save validation (replaces the "in the catalog" rule)
@@ -143,6 +151,17 @@ Premium models stay on the menu with their prices shown; nothing is hidden by pr
 - **Enforced by the server**, not only the page: `POST /api/llm` answers a held save with the list of held slots (slot, slug, ratio, prices) and stores nothing. The page then shows an inline confirmation in the AI models card, for example "Claude Opus 5.5 costs about 17x your current text model ($4/M in, $20/M out). Save anyway?" with a "Save anyway" button, which re-sends the same save with `confirmCost: true`. This uses the console's existing inline two-click pattern (`src/console/page.ts:588`), because `window.confirm()` is blocked inside the admin iframe.
 - **Order:** the price check runs before the live test (5.5), so a cancelled save spends nothing.
 - A cheaper or similarly priced model (3x or less) saves with no extra step.
+
+### 5.10 Reasoning effort (owner decision 2026-11-13, option a)
+
+- **Where:** an effort select beside the Image select and beside the Text select. The fallback has none: it runs at the effort of the request it backs up.
+- **Stored** in `llm.models` as `imageEffort` and `textEffort`, each one of `max, xhigh, high, medium, low, minimal, none`, or absent for "Model default". Absent sends no `reasoning` field, so a store that never touches the select behaves exactly as today.
+- **Offered levels** come from the feed's `reasoning.supported_efforts` for the slot's model, intersected with the fallback's when a fallback is set, in the order max, xhigh, high, medium, low, minimal, none ("none" shown as "Off"). A model whose reasoning is mandatory does not list "none", so it is never offered. A model (or fallback) that lists no levels allows only "Model default". The first option reads "Model default (<its default_effort>)".
+- **Sent** as `reasoning: { effort }` on the OpenRouter tier of `resolveChain` for that role. `resolveSearchChain` and the OpenAI floor are unchanged.
+- **Token budget:** with an effort set, `max_tokens = min(ceil(max(n, 3000) * 100 / answerPct), 64000)`, where `answerPct` is the share left for the answer: max 5, xhigh 5, high 20, medium 50, low 80, minimal 90, none 100. With no effort, `max_tokens = max(n, 3000)` as today. Examples: a 1200-token task at high effort gets 15000; the 4800-token blog draft gets 24000 at high and the 64000 ceiling at max (3200 left for the answer if an Anthropic model uses its whole thinking budget). `max_tokens` is a cap, not a charge.
+- **Saving:** an effort change makes its slot "changed". A changed effort must be offered by the slot's model and by the fallback (when one is set); otherwise the save is refused with the reason (for example `Text effort "medium" is not offered by mistralai/mistral-large-4-0.`). An effort-only change runs the live test at the new effort but is not price-checked, since list prices do not change with effort. The live tests become: the slot's model at its new effort; the fallback at a changed slot effort; and, when the fallback changes, the fallback at both slot efforts. All run in vision mode for the fallback, deduplicated by slug, mode and effort.
+- **Cost:** higher effort means more thinking, billed as output tokens. The select carries the hint "Higher effort means more thinking, billed as output tokens." and the live test's cost shows in AI spend; nothing is held for it.
+- **Watch:** the daily `model-watch` also flags a stored effort the slot's model or the fallback no longer lists, with one email per (slot, effort, model) and a console warning, because such a request may be rejected outright.
 
 ### 5.7 Retirement watch
 
@@ -171,7 +190,7 @@ Console load: GET /api/models --> buildMenu(feed, llm.menu, now) --> optgroups +
 Owner edits providers/pins/hides: POST /api/models/menu --merge--> tenant_config.llm.menu
 Owner saves a model: POST /api/llm --> unchanged? accept : (in feed, vision rule, price check > 3x held unless confirmCost, live test) --> saveLlm
 Daily stage model-watch: selected slugs + SEARCH_MODEL vs feed --> alertOwner once per (slug, state)
-Runtime calls: resolveChain (unchanged except the blank-slot default constant)
+Runtime calls: resolveChain (blank-slot default constant; the slot's effort on the OpenRouter tier) --> LlmClient (reasoning.effort + effort-sized max_tokens)
 ```
 
 ## 7. Testing
@@ -183,7 +202,8 @@ Unit tests over a **trimmed fixture copy of the 2026-11-13 feed** (checked in un
 3a. Price check: Luna to Opus 5.5 is held with a ratio near 17 and stores nothing; the same save with `confirmCost: true` proceeds to the live test; a held save makes no live-test call; a change at 3x or less is not held; a stored model with no known price holds the save; a blank slot compares against `SYSTEM_DEFAULT_MODEL`.
 4. Merge: an AI-models save keeps `llm.menu`; a menu save keeps `llm.models`, `enabled` and `scoreThreshold`.
 5. Model watch: retiring within 30 days alerts once; a second day does not re-alert; delisted alerts; `SEARCH_MODEL` covered.
-6. `resolveChain`: a blank slot resolves to `SYSTEM_DEFAULT_MODEL`.
+6. `resolveChain`: a blank slot resolves to `SYSTEM_DEFAULT_MODEL`; a set effort rides on the OpenRouter tier for its role only; the search chain never carries one. `LlmClient`: no effort sends no `reasoning` field and today's `max_tokens`; an effort sends `reasoning.effort` and the sized `max_tokens`.
+6a. Effort: offered levels are the model's intersected with the fallback's (Fable 5.2 with a Mistral Large 4.0 fallback offers only high); an unsupported effort is refused with the reason; an effort-only change is live-tested at the new effort and not price-checked; a fallback with no listed levels allows only the default; the watch flags an effort a model stops listing.
 7. Console: the existing `tests/console.test.ts` script-parse guard, plus the optgroup rendering and the "(current)" preservation.
 
 ## 8. Rollout
@@ -192,9 +212,9 @@ Feature branch, full suite, CI, staging deploy (staging has no shop, so its sess
 
 ## 9. Decided, and left to the builder
 
-**Decided by the owner (2026-11-13):** providers the owner controls (option a); newest per family grouped by provider (option 1); new models appear but the store never switches by itself; warnings when a selected model is retiring; research and last-resort models stay system-fixed; a live test before a model can be saved; premium models stay visible, and a save more than 3x as expensive as the slot's current model asks for confirmation (option a, 5.6.1).
+**Decided by the owner (2026-11-13):** providers the owner controls (option a); newest per family grouped by provider (option 1); new models appear but the store never switches by itself; warnings when a selected model is retiring; research and last-resort models stay system-fixed; a live test before a model can be saved; premium models stay visible, and a save more than 3x as expensive as the slot's current model asks for confirmation (option a, 5.6.1); reasoning effort is chosen beside the Image and Text models, with the fallback running at the effort of the request it backs (option a, 5.10).
 
-**My calls (stated to the owner as proposals; correctable):** the default provider list in 5.3; 6-month staleness; 6 families per provider; 30-day retirement window; 7-day live-test cache; the variant filter list in 5.2; `-preview` merged into its family; `llm.menu` with its own merge route; `SYSTEM_DEFAULT_MODEL` keeping today's head; live tests in parallel with a 60-second timeout; the pass cache keyed by slug and mode; `~` aliases refused as pins; changed slugs refused when no OpenRouter key is configured; cost measured as input plus output price per million; an unknown current price holds the save; the price check enforced on the server and run before the live test.
+**My calls (stated to the owner as proposals; correctable):** the default provider list in 5.3; 6-month staleness; 6 families per provider; 30-day retirement window; 7-day live-test cache; the variant filter list in 5.2; `-preview` merged into its family; `llm.menu` with its own merge route; `SYSTEM_DEFAULT_MODEL` keeping today's head; live tests in parallel with a 60-second timeout; the pass cache keyed by slug and mode; `~` aliases refused as pins; changed slugs refused when no OpenRouter key is configured; cost measured as input plus output price per million; an unknown current price holds the save; the price check enforced on the server and run before the live test; the effort token formula and its 64000 ceiling; the live test sized for the 4800-token blog draft; an effort-only change is live-tested but not price-held; the watch covers unsupported efforts.
 
 **Settled in the plan (2026-11-13):** the vision live test sends a small inline PNG (base64 data URI) rather than an https link, so the test never depends on an outside host being reachable. Production sends https image links, so the probe's image transport differs from production; both forms are accepted by OpenRouter.
 
