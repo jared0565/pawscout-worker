@@ -1,5 +1,5 @@
 import { SYSTEM_DEFAULT_MODEL } from './llm';
-import { feedCost, type FeedModel } from './models-feed';
+import type { FeedModel } from './models-feed';
 import type { ProbeMode, ProbeResult } from './model-probe';
 import { EFFORT_LEVELS, type ModelsConfig, type ReasoningEffort } from './types';
 
@@ -19,6 +19,21 @@ import { EFFORT_LEVELS, type ModelsConfig, type ReasoningEffort } from './types'
 
 export type SlotName = 'image' | 'text' | 'fallback';
 export const COST_CONFIRM_RATIO = 3;
+
+/** The share of the shop's tokens that are input, from its own llm_usage
+ *  (spec 5.11): prices are weighted by it, so a model is compared by what it
+ *  would cost this shop, not by the plain sum of its two list prices. */
+export interface UsageMix { promptShare: number }
+/** How far back the mix reads. */
+export const MIX_WINDOW_DAYS = 30;
+/** Less history than this is no mix: the list prices are compared instead
+ *  (production had about 5.6 million tokens in the 30 days to 2026-11-13). */
+export const MIN_MIX_TOKENS = 100_000;
+
+export function usageMix(promptTokens: number, completionTokens: number): UsageMix | null {
+  const total = promptTokens + completionTokens;
+  return total >= MIN_MIX_TOKENS ? { promptShare: promptTokens / total } : null;
+}
 
 /** An effort change held for confirmation: the slot will think more than it
  *  did. A level is null when it cannot be read (the old model is not in the
@@ -51,6 +66,10 @@ export interface HeldSlot {
   newFallback: boolean;
   /** Set when kind is 'effort'. */
   effort?: HeldEffort;
+  /** Kind 'model': 'usage' when the ratio weighs the two prices by the shop's
+   *  own token mix (spec 5.11), 'list' when there was too little history and
+   *  the plain list prices were compared. */
+  basis?: 'usage' | 'list';
 }
 
 export type ProbeFn = (model: FeedModel, mode: ProbeMode, effort: ReasoningEffort | undefined) => Promise<ProbeResult>;
@@ -73,6 +92,14 @@ export function allowedEfforts(model: FeedModel, fallback: FeedModel | null): st
 
 const bad = (error: string): SaveCheck => ({ ok: false, status: 400, error });
 
+/** A model's cost per million tokens at a given input share; null when a
+ *  price is unknown. At an even share the ratio between two models is the
+ *  ratio of their summed list prices, the rule before spec 5.11. */
+function weightedCost(m: FeedModel, promptShare: number): number | null {
+  if (m.promptPriceM === null || m.completionPriceM === null) return null;
+  return m.promptPriceM * promptShare + m.completionPriceM * (1 - promptShare);
+}
+
 /** Effort levels from least thinking (none, 0) to most (max, 6). */
 const RANK = new Map<string, number>([...EFFORT_LEVELS].reverse().map((e, i) => [e, i]));
 
@@ -94,6 +121,9 @@ export async function checkModelSave(input: {
   loadFeed: () => Promise<FeedModel[] | null>;
   confirmCost: boolean;
   probe: ProbeFn | null;
+  /** The shop's token mix (usageMix); read only when a model changes. Absent
+   *  or null: the list prices are compared. */
+  loadMix?: () => Promise<UsageMix | null>;
 }): Promise<SaveCheck> {
   const { stored, requested } = input;
 
@@ -144,18 +174,24 @@ export async function checkModelSave(input: {
   //    that will run at a higher reasoning effort than it did (spec 5.11),
   //    since thinking is billed as output tokens. A lower effort never is.
   const held: HeldSlot[] = [];
+  // Prices are weighted by the shop's own mix of input and output tokens, read
+  // once and only when a model changes; with too little history, an even
+  // weighting compares the summed list prices instead.
+  const mix = changed.some((s) => modelChanged(s)) && input.loadMix ? await input.loadMix() : null;
+  const promptShare = mix ? mix.promptShare : 0.5;
   for (const s of changed) {
     const next = byId.get(runs[s]!)!;
     if (modelChanged(s)) {
       const base = byId.get(stored[s] || SYSTEM_DEFAULT_MODEL);
-      const baseCost = base ? feedCost(base) : null;
-      const nextCost = feedCost(next);
+      const baseCost = base ? weightedCost(base, promptShare) : null;
+      const nextCost = weightedCost(next, promptShare);
       const ratio = baseCost !== null && baseCost > 0 && nextCost !== null ? Math.round((nextCost / baseCost) * 100) / 100 : null;
       if (ratio === null || ratio > COST_CONFIRM_RATIO) {
         held.push({
           kind: 'model', slot: s, slug: next.id, name: next.name, ratio, promptPriceM: next.promptPriceM, completionPriceM: next.completionPriceM,
           cleared: s !== 'fallback' && !requested[s],
           newFallback: s === 'fallback' && !stored.fallback,
+          basis: mix ? 'usage' : 'list',
         });
       }
     }

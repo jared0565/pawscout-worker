@@ -170,6 +170,24 @@ describe('POST /api/llm', () => {
     expect((await storedLlm()).models.text).toBe('anthropic/claude-haiku-5.5');
   });
 
+  // Spec 5.11 ("go ahead", 2026-11-13): the price ratio weighs input and output
+  // by the shop's own last 30 days. Grok 4.3 is 2.68x Luna on its list prices
+  // but 4.45x at production's 89% input mix. A live-test row and a 40-day-old
+  // row, each heavy in output tokens, would drag the mix below that line if
+  // either were counted.
+  it('weighs the price check by the last 30 days of usage, without live tests or older rows', async () => {
+    const store = await seed();
+    await store.logLlmUsage('curation', LUNA, 4_938_811, 626_703, 1.9);
+    await store.logLlmUsage('model-probe', LUNA, 0, 10_000_000, 0);
+    await env.DB.prepare(`INSERT INTO llm_usage (shop, task, model, prompt_tokens, completion_tokens, cost_usd, created_at) VALUES (?1, 'curation', ?2, 0, 10000000, 0, ?3)`)
+      .bind(SHOP, LUNA, new Date(Date.now() - 40 * DAY).toISOString()).run();
+    const res = await saveLlm({}, { ...ALL_LUNA, text: 'x-ai/grok-4.3' });
+    expect(res.status).toBe(409);
+    const h = ((await res.json()) as any).held[0];
+    expect(h).toMatchObject({ kind: 'model', slug: 'x-ai/grok-4.3', basis: 'usage' });
+    expect(h.ratio).toBeCloseTo(4.45, 2);
+  });
+
   it('a change with no OpenRouter key is refused', async () => {
     await seed();
     const res = await saveLlm({}, { ...ALL_LUNA, text: 'anthropic/claude-haiku-5.5' }, {});

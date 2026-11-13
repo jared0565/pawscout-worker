@@ -7,7 +7,7 @@ import { Vault } from './vault';
 import { TenantStore, listActiveShops } from './tenant-store';
 import { readFeed, type Feed } from './models-feed';
 import { buildMenu, effectiveMenu, type MenuGroup } from './model-menu';
-import { checkModelSave, type SlotName } from './model-save';
+import { checkModelSave, usageMix, MIX_WINDOW_DAYS, type SlotName } from './model-save';
 import { probeModel } from './model-probe';
 import { selectedStatus, type SlotStatus } from './model-watch';
 import { processInbound } from './inbox/ingest';
@@ -1292,6 +1292,12 @@ app.post('/api/llm', async (c) => {
     // The last good copy counts here (spec 5.11): every changed model is still
     // live-tested through OpenRouter, which is what proves it can be called.
     loadFeed: async () => (await readFeed(store))?.models ?? null,
+    // The price ratio weighs input and output by this shop's last 30 days of
+    // tokens (spec 5.11), leaving out the live tests' own calls.
+    loadMix: async () => {
+      const t = await store.llmTokensSince(new Date(Date.now() - MIX_WINDOW_DAYS * 86_400_000).toISOString(), 'model-probe');
+      return usageMix(t.prompt, t.completion);
+    },
     confirmCost: flags.confirmCost === true,
     // A live test that answers after its timeout is logged once it lands
     // (waitUntil keeps that alive past this response); see probeModel.

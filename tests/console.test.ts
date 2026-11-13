@@ -1628,6 +1628,20 @@ describe('AI models card', () => {
       .toBe('Setting the text effort on Haiku to low can make each call think longer, and thinking is billed as output tokens. Save anyway?');
   });
 
+  // Spec 5.11 ("go ahead"): a ratio weighted by the shop's own usage says so;
+  // a list-price ratio keeps the old wording byte for byte.
+  it('heldMessage says when a ratio is weighted by the shop\'s last 30 days of usage', async () => {
+    const { heldMessage } = await fns(['heldMessage', 'fmtPrice']);
+    expect(heldMessage({ kind: 'model', basis: 'usage', name: 'Claude Opus 5.5', ratio: 18.56, promptPriceM: 4, completionPriceM: 20 }, 'text'))
+      .toBe('Claude Opus 5.5 costs about 19x your current text model at your last 30 days of usage ($4/M in, $20/M out). Save anyway?');
+    expect(heldMessage({ kind: 'model', basis: 'usage', name: 'G', ratio: 10, promptPriceM: 2, completionPriceM: 12, cleared: true }, 'image'))
+      .toBe('Clearing the image slot makes it run the system default model, G, which costs about 10x your current image model at your last 30 days of usage ($2/M in, $12/M out). Save anyway?');
+    expect(heldMessage({ kind: 'model', basis: 'usage', name: 'F', ratio: 3.43, promptPriceM: 8, completionPriceM: 40, newFallback: true }, 'fallback'))
+      .toBe('No fallback model is set now, so F ($8/M in, $40/M out) is compared with the system default model: it costs about 3.4x that at your last 30 days of usage. Save anyway?');
+    expect(heldMessage({ kind: 'model', basis: 'list', name: 'Claude Opus 5.5', ratio: 17.14, promptPriceM: 4, completionPriceM: 20 }, 'text'))
+      .toBe('Claude Opus 5.5 costs about 17x your current text model ($4/M in, $20/M out). Save anyway?');
+  });
+
   it('renderModelsWarn says when the list is the last good copy, with its date', async () => {
     const nodes: Record<string, any> = { 'llm-models-warn': { innerHTML: '', style: {} } };
     const { renderModelsWarn } = await fns(['renderModelsWarn', 'esc'], { el: (id: string) => nodes[id] });
