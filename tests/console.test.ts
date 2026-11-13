@@ -1523,3 +1523,88 @@ describe('inbox supplier results', () => {
     expect(out).toContain('local stock');
   });
 });
+
+// The AI models card (spec 5.4, 5.6.1, 5.10): the provider-grouped menu, the
+// effort selects, the menu settings panel and the price confirmation. The page
+// script is a template literal, so each function is extracted from the served
+// HTML and driven directly.
+describe('AI models card', () => {
+  async function pageScripts(): Promise<string> {
+    const html = await consolePage('test-key').text();
+    return [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+  }
+  /** One top-level `function NAME(` from the page script, brace-matched. */
+  function extract(scripts: string, name: string): string {
+    const start = scripts.indexOf(`function ${name}(`);
+    expect(start, name).toBeGreaterThanOrEqual(0);
+    let depth = 0;
+    let end = scripts.indexOf('{', start);
+    for (let i = end; i < scripts.length; i++) {
+      if (scripts[i] === '{') depth++;
+      else if (scripts[i] === '}') { depth--; if (depth === 0) { end = i + 1; break; } }
+    }
+    return scripts.slice(start, end);
+  }
+  /** The named functions, defined together so they can call each other. */
+  async function fns(...names: string[]): Promise<Record<string, any>> {
+    const scripts = await pageScripts();
+    const src = names.map((n) => extract(scripts, n)).join('\n');
+    return new Function(`${src}\nreturn { ${names.join(', ')} };`)();
+  }
+
+  it('modelOptionsHtml groups by provider, filters vision, flags retirement and unavailable pins', async () => {
+    const { modelOptionsHtml } = await fns('modelOptionsHtml', 'providerLabel', 'fmtPrice', 'esc');
+    const groups = [{ provider: 'anthropic', entries: [
+      { slug: 'anthropic/a', name: 'A <b>', vision: true, promptPriceM: 4, completionPriceM: 20, retiresOn: '2026-12-11', pinned: false, available: true, efforts: [], defaultEffort: null },
+      { slug: 'anthropic/t', name: 'T', vision: false, promptPriceM: 1, completionPriceM: 2, retiresOn: null, pinned: false, available: true, efforts: [], defaultEffort: null },
+      { slug: 'anthropic/p', name: 'anthropic/p', vision: false, promptPriceM: null, completionPriceM: null, retiresOn: null, pinned: true, available: false, efforts: [], defaultEffort: null }] }];
+    const all = modelOptionsHtml(groups, false);
+    const vis = modelOptionsHtml(groups, true);
+    expect(all).toContain('<optgroup label="Anthropic">');
+    expect(all).toContain('A &lt;b&gt; - $4/M in · $20/M out · 👁 · retires 2026-12-11');
+    expect(all).toMatch(/<option value="anthropic\/p" disabled>[^<]*unavailable/);
+    expect(vis).not.toContain('anthropic/t');
+    expect(modelOptionsHtml([{ provider: 'x-ai', entries: [] }, { provider: 'acme', entries: [groups[0].entries[1]] }], false))
+      .toBe('<optgroup label="acme"><option value="anthropic/t">T - $1/M in · $2/M out</option></optgroup>');
+  });
+
+  it('providerLabel names the default providers and passes others through', async () => {
+    const { providerLabel } = await fns('providerLabel');
+    expect(['anthropic', 'openai', 'google', 'x-ai', 'deepseek', 'qwen', 'moonshotai', 'z-ai', 'minimax', 'mistralai', 'acme'].map(providerLabel))
+      .toEqual(['Anthropic', 'OpenAI', 'Google', 'xAI', 'DeepSeek', 'Qwen', 'Moonshot (Kimi)', 'Z.ai', 'MiniMax', 'Mistral', 'acme']);
+  });
+
+  it('effortOptionsHtml offers the model default, then the shared levels in order, with none as Off', async () => {
+    const { effortOptionsHtml } = await fns('effortOptionsHtml');
+    expect(effortOptionsHtml(['max', 'xhigh', 'high', 'medium', 'low'], 'high', ['high', 'none']))
+      .toBe('<option value="">Model default (high)</option><option value="high">high</option>');
+    expect(effortOptionsHtml(['high', 'none'], 'high', null)).toContain('<option value="none">Off</option>');
+    expect(effortOptionsHtml([], null, null)).toBe('<option value="">Model default</option>');
+    expect(effortOptionsHtml(['low', 'max'], null, [])).toBe('<option value="">Model default</option>');
+  });
+
+  it('heldMessage gives a ratio, or the prices when the ratio is unknown', async () => {
+    const { heldMessage } = await fns('heldMessage', 'fmtPrice');
+    expect(heldMessage({ name: 'Claude Opus 5.5', ratio: 17.14, promptPriceM: 4, completionPriceM: 20 }, 'text'))
+      .toBe('Claude Opus 5.5 costs about 17x your current text model ($4/M in, $20/M out). Save anyway?');
+    expect(heldMessage({ name: 'X', ratio: null, promptPriceM: 4, completionPriceM: 20 }, 'image'))
+      .toBe('X costs $4/M in, $20/M out, and the current image model has no known price to compare. Save anyway?');
+    expect(heldMessage({ name: 'Fable', ratio: 3.43, promptPriceM: 8, completionPriceM: 40 }, 'text')).toContain('about 3.4x');
+  });
+
+  it('loadModelMenu survives a failed fetch with an empty, unavailable menu', async () => {
+    const scripts = await pageScripts();
+    const loadModelMenu = new Function('api', `var modelMenuPromise=null;${extract(scripts, 'loadModelMenu')}\nreturn loadModelMenu;`)(
+      async () => { throw new Error('x'); });
+    await expect(loadModelMenu()).resolves.toEqual({ groups: [], feedAvailable: false, selectedStatus: {} });
+  });
+
+  it('the AI models card carries the menu and effort controls and the fixed copy', async () => {
+    const html = await consolePage('test-key').text();
+    for (const s of ['id="llm-menu"', 'id="mdl-provider-add"', 'id="mdl-pin"', 'id="llm-fallback-hint"', 'id="llm-models-warn"',
+      'id="mdl-image-effort"', 'id="mdl-text-effort"', "'/models/menu'", 'confirmCost', 'Save anyway', 'Testing the new model...',
+      'Model list unavailable right now', 'Higher effort means more thinking, billed as output tokens.',
+      'Fallback is the same as the text model, so there is no second model to switch to.', 'Last resort: GPT-5.4 mini']) expect(html).toContain(s);
+    expect(html).not.toContain('ensureModelOptions');
+  });
+});
