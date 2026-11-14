@@ -12,7 +12,7 @@ import { env, applyD1Migrations } from 'cloudflare:test';
 import {
   driveDailyChain, runDailyMaintenance, resumeDailyMaintenance,
   readDailyCursor, writeDailyCursor, chainDeadline,
-  JOB_STAMP_DAILY, JOB_STAMP_ORDER_HOOKS, DAILY_SHOP_STAGES, nextConsecutiveFailures,
+  JOB_STAMP_DAILY, JOB_STAMP_ORDER_HOOKS, DAILY_SHOP_STAGES, DAILY_GLOBAL_STAGES, nextConsecutiveFailures,
   type DailyCursor, type DailyStage, type DailyShopCtx, type StoredWebhookStatus
 } from '../src/jobs';
 import { TenantStore } from '../src/tenant-store';
@@ -429,6 +429,28 @@ describe('order-webhooks stage', () => {
 // night-4 assertion above), so each of these should give 1 - a missing or
 // unusable previous value counts as though there were no prior failed
 // night, and this is the first one.
+// Design 2026-11-14 (inbox attachments), 5.8: the daily chain finishes any R2
+// deletion a GDPR erasure still owes, across every shop, including a shop whose
+// tenant row is already gone.
+describe('file-erasures global stage', () => {
+  it('runs eraseOwedFiles across shops and skips without a bucket', async () => {
+    const stage = DAILY_GLOBAL_STAGES.find((s) => s.name === 'file-erasures')!;
+    expect(stage).toBeDefined();
+    expect(DAILY_GLOBAL_STAGES.findIndex((s) => s.name === 'file-erasures')).toBe(DAILY_GLOBAL_STAGES.findIndex((s) => s.name === 'purge') + 1);
+    const key = 'inbox/gone.myshopify.com/t1/f1';
+    await env.INBOX_FILES.put(key, 'x');
+    await env.DB.prepare('INSERT INTO inbox_file_erasures (shop, prefix, created_at) VALUES (?1, ?2, ?3)').bind('gone.myshopify.com', 'inbox/gone.myshopify.com/', '2026-11-14T00:00:00Z').run();
+
+    await stage.run({ ...E, INBOX_FILES: undefined } as Env, Date.now() + MIN);
+    expect(await env.INBOX_FILES.get(key)).not.toBeNull();
+
+    await stage.run(E, Date.now() + MIN);
+    expect(await env.INBOX_FILES.get(key)).toBeNull();
+    const left = await env.DB.prepare('SELECT COUNT(*) AS n FROM inbox_file_erasures').first<{ n: number }>();
+    expect(left?.n).toBe(0);
+  });
+});
+
 describe('nextConsecutiveFailures', () => {
   it('a missing previous value (first night) gives 1', () => {
     expect(nextConsecutiveFailures(null, false)).toBe(1);

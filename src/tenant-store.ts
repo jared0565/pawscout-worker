@@ -771,6 +771,17 @@ export class TenantStore {
     if (!e) return 0;
     const sub = `(SELECT id FROM inbox_threads WHERE shop = ?1 AND contact_email = ?2)`;
     const statements = [
+      // Inbound files (design 2026-11-14, 5.8): the R2 prefixes this erasure
+      // owes are recorded FIRST, in the same batch, while the threads still
+      // exist; eraseOwedFiles (webhook waitUntil, then the daily stage)
+      // finishes the R2 side. The webhook is never retried, so the record is
+      // what makes a failed R2 delete recoverable.
+      this.db.prepare(`INSERT OR IGNORE INTO inbox_file_erasures (shop, prefix, created_at)
+                       SELECT ?1, 'inbox/' || ?1 || '/' || id || '/', ?3 FROM inbox_threads WHERE shop = ?1 AND contact_email = ?2`)
+        .bind(this.shop, e, new Date().toISOString()),
+      this.db.prepare(`DELETE FROM inbox_attachments WHERE shop = ?1 AND thread_id IN ${sub}`).bind(this.shop, e),
+      // The supplier register holds the contact's name and email.
+      this.db.prepare(`DELETE FROM supplier_register WHERE shop = ?1 AND email = ?2`).bind(this.shop, e),
       this.db.prepare(`DELETE FROM inbox_thread_labels WHERE shop = ?1 AND thread_id IN ${sub}`).bind(this.shop, e),
       this.db.prepare(`DELETE FROM inbox_messages WHERE shop = ?1 AND thread_id IN ${sub}`).bind(this.shop, e),
       this.db.prepare(`DELETE FROM inbox_drafts WHERE shop = ?1 AND thread_id IN ${sub}`).bind(this.shop, e),
@@ -790,17 +801,25 @@ export class TenantStore {
   }
 
   /** GDPR customers/data-request: count inbox records we hold for one contact email. */
-  async inboxDataSummary(email: string): Promise<{ threads: number; messages: number; invoices: number }> {
+  async inboxDataSummary(email: string): Promise<{ threads: number; messages: number; invoices: number; attachments: number }> {
     const e = email.trim().toLowerCase();
     const t = await this.db.prepare(`SELECT COUNT(*) AS n FROM inbox_threads WHERE shop = ?1 AND contact_email = ?2`).bind(this.shop, e).first<{ n: number }>();
     const m = await this.db.prepare(`SELECT COUNT(*) AS n FROM inbox_messages WHERE shop = ?1 AND thread_id IN (SELECT id FROM inbox_threads WHERE shop = ?1 AND contact_email = ?2)`).bind(this.shop, e).first<{ n: number }>();
     const inv = await this.db.prepare(`SELECT COUNT(*) AS n FROM inbox_invoices WHERE shop = ?1 AND thread_id IN (SELECT id FROM inbox_threads WHERE shop = ?1 AND contact_email = ?2)`).bind(this.shop, e).first<{ n: number }>();
-    return { threads: t?.n ?? 0, messages: m?.n ?? 0, invoices: inv?.n ?? 0 };
+    const att = await this.db.prepare(`SELECT COUNT(*) AS n FROM inbox_attachments WHERE shop = ?1 AND thread_id IN (SELECT id FROM inbox_threads WHERE shop = ?1 AND contact_email = ?2)`).bind(this.shop, e).first<{ n: number }>();
+    return { threads: t?.n ?? 0, messages: m?.n ?? 0, invoices: inv?.n ?? 0, attachments: att?.n ?? 0 };
   }
 
   /** shop/redact: purge ALL data for this shop (sent ~48h after uninstall). */
   async redactShop(): Promise<void> {
     await this.db.batch([
+      // Every stored file of the shop is owed for R2 deletion (design
+      // 2026-11-14, 5.8); the daily file-erasures stage finishes it even
+      // though the tenant row below is gone.
+      this.db.prepare(`INSERT OR IGNORE INTO inbox_file_erasures (shop, prefix, created_at) VALUES (?1, ?2, ?3)`)
+        .bind(this.shop, `inbox/${this.shop}/`, new Date().toISOString()),
+      this.db.prepare(`DELETE FROM inbox_attachments WHERE shop = ?1`).bind(this.shop),
+      this.db.prepare(`DELETE FROM supplier_register WHERE shop = ?1`).bind(this.shop),
       this.db.prepare(`DELETE FROM orders WHERE shop = ?1`).bind(this.shop),
       this.db.prepare(`DELETE FROM order_events WHERE shop = ?1`).bind(this.shop),
       this.db.prepare(`DELETE FROM product_events WHERE shop = ?1`).bind(this.shop),

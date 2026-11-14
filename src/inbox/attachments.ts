@@ -184,3 +184,49 @@ export async function serveInboxFile(env: Env, id: string, q: { shop?: string; e
     },
   });
 }
+
+// --- Erasure (design 5.8) -----------------------------------------------------
+// A GDPR redact records the R2 prefixes it owes in inbox_file_erasures, in the
+// same D1 batch that deletes the rows. This finishes the R2 side: from the
+// webhook's waitUntil for its own shop, and from the daily file-erasures stage
+// for every shop (including one whose tenant row is already gone). A prefix
+// whose objects are all gone loses its row; a failure keeps it for the next run.
+
+const ERASE_PAGE = 1000;     // R2 deletes at most 1000 keys per call
+const ERASE_MAX_PAGES = 200; // bound one run; the daily stage carries the rest
+
+export async function eraseOwedFiles(bucket: R2Bucket, db: D1Database, shop?: string): Promise<{ deleted: number; remaining: number }> {
+  const rs = shop
+    ? await db.prepare(`SELECT shop, prefix FROM inbox_file_erasures WHERE shop = ?1 ORDER BY created_at`).bind(shop).all<{ shop: string; prefix: string }>()
+    : await db.prepare(`SELECT shop, prefix FROM inbox_file_erasures ORDER BY created_at LIMIT 500`).all<{ shop: string; prefix: string }>();
+  let deleted = 0;
+  let remaining = 0;
+  for (const row of rs.results ?? []) {
+    // Never delete outside the shop's own inbox prefix: an empty or foreign
+    // prefix would otherwise list (and delete) the whole bucket.
+    if (!row.prefix.startsWith(`inbox/${row.shop}/`)) {
+      console.warn(`inbox file erasure skipped a prefix outside its shop: ${row.shop} ${row.prefix}`);
+      remaining++;
+      continue;
+    }
+    try {
+      let done = false;
+      for (let page = 0; page < ERASE_MAX_PAGES; page++) {
+        const listed = await bucket.list({ prefix: row.prefix, limit: ERASE_PAGE });
+        const keys = listed.objects.map((o) => o.key);
+        if (keys.length === 0) { done = true; break; }
+        await bucket.delete(keys);
+        deleted += keys.length;
+      }
+      if (done) {
+        await db.prepare(`DELETE FROM inbox_file_erasures WHERE shop = ?1 AND prefix = ?2`).bind(row.shop, row.prefix).run();
+      } else {
+        remaining++;
+      }
+    } catch (e) {
+      remaining++;
+      console.warn(`inbox file erasure failed for ${row.prefix}: ${(e as Error).message}`);
+    }
+  }
+  return { deleted, remaining };
+}

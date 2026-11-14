@@ -58,6 +58,7 @@ import type { CjDetail } from './cj';
 import { LlmClient, curateProduct, pickHeroImage, rewriteDescription, SEARCH_MODEL, type Curation, type HeroPick } from './llm';
 import { loadFeed } from './models-feed';
 import { runModelWatch } from './model-watch';
+import { eraseOwedFiles } from './inbox/attachments';
 import { DEFAULT_SEMANTIC, type Env, type TenantConfig, type Gates } from './types';
 import { rotateRecurringEvents, alertRotationErrors } from './recurring-events';
 import { alertOwner, type AlertResult } from './owner-alert';
@@ -1667,6 +1668,13 @@ export const DAILY_GLOBAL_STAGES: DailyGlobalStage[] = [
       await purgeUnusedWarehouse(env.DB, new Date(Date.now() - 30 * 86400_000).toISOString());
       await trimOldLogs(env.DB, new Date(Date.now() - LOG_RETENTION_DAYS * 86400_000).toISOString());
     }
+  },
+  // Inbound email files owed for deletion by a GDPR erasure (design
+  // 2026-11-14, 5.8), across every shop. The webhook never retries, so this
+  // is what finishes an R2 delete that failed or ran out of time there.
+  {
+    name: 'file-erasures', maxMs: 2 * MIN_MS,
+    async run(env) { if (env.INBOX_FILES) await eraseOwedFiles(env.INBOX_FILES, env.DB); }
   },
   // Refresh the CJ delivery-time matrix ONCE (fetch-once-fan-out) before any
   // per-shop work, so it's fresh before any PDP metafield write.
