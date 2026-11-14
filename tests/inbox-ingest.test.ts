@@ -2,8 +2,8 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
 import { TenantStore } from '../src/tenant-store';
-import { ingestParsed } from '../src/inbox/ingest';
-import type { ParsedEmail } from '../src/inbox/types';
+import { ingestParsed, processInbound } from '../src/inbox/ingest';
+import type { ParsedEmail, InboundAttachment } from '../src/inbox/types';
 
 beforeEach(async () => { await applyD1Migrations(env.DB, env.TEST_MIGRATIONS); });
 const SHOP = 'a.myshopify.com';
@@ -180,6 +180,19 @@ describe('repeat-sender block (ingest)', () => {
     const contact = (await store.getContactByEmail(VENDOR))!;
     expect(contact.blocked_at).not.toBeNull();
     expect(contact.blocked_reason).toMatch(/repeat/i);
+  });
+
+  // Design 2026-11-14, 5.2: a thread that ends as spam keeps no files.
+  it('a sender caught by the repeat rule on this message stores no files', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const tid = await firstPitchAnswered(store);
+    await ingestParsed(store, pv({
+      messageId: '<p2f@x>', from: { email: VENDOR, name: 'Vendor' }, subject: 'Re: Collaboration', inReplyTo: '<our1@activepaw>',
+      references: ['<p1@x>', '<our1@activepaw>'], text: PITCH, date: '2026-09-03T10:00:00Z',
+      attachments: [{ filename: 'deck.pdf', contentType: 'application/pdf', disposition: 'attachment', contentId: null, related: false, bytes: new Uint8Array(50) }]
+    }), { files: env.INBOX_FILES });
+    expect((await store.getThreadWithMessages(tid))!.thread.status).toBe('spam');
+    expect(await store.listAttachmentsForThread(tid)).toEqual([]);
   });
 
   it("a blocked sender's next message lands as spam at ingest, pre-classified, even under a new subject", async () => {
@@ -435,5 +448,110 @@ ${PITCH}`, date: when
     const c = (await store.getContactByEmail(VENDOR))!;
     expect(c.blocked_at).toBeNull();
     expect(c.blocked_reason).toBeNull();
+  });
+});
+
+// Design 2026-11-14 (inbox attachments), 5.2 to 5.4: ingest keeps the files a
+// message carried, records the ones it refused, and never lets file storage
+// fail or delay the email itself.
+describe('inbound files (ingest)', () => {
+  const PDF = new TextEncoder().encode('%PDF-1.4 catalogue bytes');
+  const att = (o: Partial<InboundAttachment>): InboundAttachment => ({
+    filename: 'Catalogue-2026.pdf', contentType: 'application/pdf', disposition: 'attachment',
+    contentId: null, related: false, bytes: PDF, ...o,
+  });
+  const bucket = () => env.INBOX_FILES as R2Bucket;
+
+  it('stores a kept file in R2 and records it', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const r = await ingestParsed(store, pe({ messageId: '<f1@x>', attachments: [att({})] }), { files: bucket() });
+    const rows = await store.listAttachmentsForThread(r.threadId);
+    expect(rows).toHaveLength(1);
+    const row = rows[0];
+    expect(row).toMatchObject({ status: 'stored', filename: 'Catalogue-2026.pdf', content_type: 'application/pdf', size_bytes: PDF.byteLength });
+    expect(row.r2_key).toBe(`inbox/${SHOP}/${r.threadId}/${row.id}`);
+    const msgId = (await store.getThreadWithMessages(r.threadId))!.messages[0].id;
+    expect(row.message_id).toBe(msgId);
+    const obj = await bucket().get(row.r2_key!);
+    expect(new Uint8Array(await obj!.arrayBuffer())).toEqual(PDF);
+  });
+
+  it('records refused parts and drops logos', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const r = await ingestParsed(store, pe({ messageId: '<f2@x>', attachments: [
+      att({}),
+      att({ filename: 'prices.xlsm', contentType: 'application/vnd.ms-excel.sheet.macroEnabled.12' }),
+      att({ filename: 'logo.png', contentType: 'image/png', disposition: 'inline', contentId: '<l@x>', bytes: new Uint8Array(5000) }),
+    ] }), { files: bucket() });
+    const rows = await store.listAttachmentsForThread(r.threadId);
+    expect(rows.map((x) => [x.filename, x.status])).toEqual([['Catalogue-2026.pdf', 'stored'], ['prices.xlsm', 'skipped_type']]);
+    expect(rows[1].r2_key).toBeNull();
+  });
+
+  it('twelve PDFs: ten stored, two skipped_count', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const parts = Array.from({ length: 12 }, (_, i) => att({ filename: `p${i}.pdf` }));
+    const r = await ingestParsed(store, pe({ messageId: '<f3@x>', attachments: parts }), { files: bucket() });
+    const rows = await store.listAttachmentsForThread(r.threadId);
+    expect(rows.filter((x) => x.status === 'stored')).toHaveLength(10);
+    expect(rows.filter((x) => x.status === 'skipped_count').map((x) => x.filename).sort()).toEqual(['p10.pdf', 'p11.pdf']);
+  });
+
+  it('two parts with the same filename are both stored under distinct ids', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const r = await ingestParsed(store, pe({ messageId: '<f4@x>', attachments: [att({}), att({})] }), { files: bucket() });
+    const rows = await store.listAttachmentsForThread(r.threadId);
+    expect(rows).toHaveLength(2);
+    expect(new Set(rows.map((x) => x.r2_key)).size).toBe(2);
+  });
+
+  it('a duplicate delivery stores nothing new', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const a = await ingestParsed(store, pe({ messageId: '<f5@x>', attachments: [att({})] }), { files: bucket() });
+    const dup = await ingestParsed(store, pe({ messageId: '<f5@x>', attachments: [att({})] }), { files: bucket() });
+    expect(dup.deduped).toBe(true);
+    expect(await store.listAttachmentsForThread(a.threadId)).toHaveLength(1);
+  });
+
+  it('a DMARC-fail (spam) thread and a bulk (automated) thread store and record nothing', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const spam = await ingestParsed(store, pe({ messageId: '<f6@x>', headers: { 'authentication-results': 'mx; spf=fail dmarc=fail' }, attachments: [att({})] }), { files: bucket() });
+    const bulk = await ingestParsed(store, pe({ messageId: '<f7@x>', from: { email: 'news@y.com', name: 'News' }, headers: { precedence: 'bulk' }, attachments: [att({})] }), { files: bucket() });
+    expect(await store.listAttachmentsForThread(spam.threadId)).toEqual([]);
+    expect(await store.listAttachmentsForThread(bulk.threadId)).toEqual([]);
+  });
+
+  it('no bucket: kept parts are recorded store_failed and ingest succeeds', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const r = await ingestParsed(store, pe({ messageId: '<f8@x>', attachments: [att({})] }));
+    expect((await store.getThreadWithMessages(r.threadId))!.messages).toHaveLength(1);
+    expect((await store.listAttachmentsForThread(r.threadId)).map((x) => [x.status, x.r2_key])).toEqual([['store_failed', null]]);
+  });
+
+  it('a bucket whose put throws: rows are store_failed, the message is stored, no throw', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const broken = { put: async () => { throw new Error('quota'); } } as unknown as R2Bucket;
+    const r = await ingestParsed(store, pe({ messageId: '<f9@x>', attachments: [att({})] }), { files: broken });
+    expect((await store.getThreadWithMessages(r.threadId))!.messages).toHaveLength(1);
+    expect((await store.listAttachmentsForThread(r.threadId)).map((x) => x.status)).toEqual(['store_failed']);
+  });
+
+  // Review Focus 4: an email with no text part still stores its file.
+  it('an HTML-only email carrying a PDF stores the file and ingests as before', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const raw = [
+      'From: Lily <lily@supplier.example>', 'To: contact@activepaw.co.uk', 'Subject: Catalogue',
+      'Message-ID: <html1@supplier.example>', 'Date: Fri, 13 Nov 2026 09:00:00 +0000', 'MIME-Version: 1.0',
+      'Content-Type: multipart/mixed; boundary="b1"', '',
+      '--b1', 'Content-Type: text/html; charset=utf-8', '', '<p>Please find our catalogue attached.</p>',
+      '--b1', 'Content-Type: application/pdf; name="cat.pdf"', 'Content-Disposition: attachment; filename="cat.pdf"',
+      'Content-Transfer-Encoding: base64', '', btoa(String.fromCharCode(...PDF)),
+      '--b1--', ''
+    ].join('\r\n');
+    const r = await processInbound(store, raw, { files: bucket() });
+    const got = (await store.getThreadWithMessages(r.threadId))!;
+    expect(got.thread.status).toBe('new');
+    expect(got.messages).toHaveLength(1);
+    expect((await store.listAttachmentsForThread(r.threadId)).map((x) => [x.filename, x.status])).toEqual([['cat.pdf', 'stored']]);
   });
 });

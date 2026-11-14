@@ -8,6 +8,7 @@
 // part: keep it, drop it silently (signature logos, calendar invites), or
 // record why it was not kept so the console and the drafter stay truthful.
 import type { InboundAttachment } from './types';
+import type { TenantStore } from '../tenant-store';
 
 export const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 export const MAX_KEPT_PER_MESSAGE = 10;
@@ -73,4 +74,46 @@ export function attachmentDisposition(part: InboundAttachment, keptSoFar: number
   if (part.bytes.byteLength > MAX_ATTACHMENT_BYTES) return 'skipped_size';
   if (keptSoFar >= MAX_KEPT_PER_MESSAGE) return 'skipped_count';
   return 'store';
+}
+
+/** Where a kept file lives in R2. The filename is never part of the key: it is
+ * untrusted and may be personal data. The thread prefix is what erasure lists. */
+export function r2KeyFor(shop: string, threadId: string, attachmentId: string): string {
+  return `inbox/${shop}/${threadId}/${attachmentId}`;
+}
+
+/** Judge and store one message's file parts (design 5.4). R2 first, then the
+ * D1 record; a failed put, or no bucket at all, records the part as
+ * store_failed so nothing claims a file we do not hold. Never throws: file
+ * storage must never fail, delay or bounce the email itself. */
+export async function storeInboundAttachments(
+  bucket: R2Bucket | undefined, store: TenantStore,
+  input: { threadId: string; messageId: string; attachments: InboundAttachment[] }
+): Promise<void> {
+  try {
+    let kept = 0;
+    for (const part of input.attachments) {
+      const verdict = attachmentDisposition(part, kept);
+      if (verdict === 'drop') continue;
+      const id = crypto.randomUUID();
+      const base = {
+        id, thread_id: input.threadId, message_id: input.messageId, filename: part.filename,
+        content_type: part.contentType || 'application/octet-stream', size_bytes: part.bytes.byteLength,
+      };
+      if (verdict !== 'store') {
+        await store.insertAttachment({ ...base, status: verdict, r2_key: null });
+        continue;
+      }
+      kept++;
+      const key = r2KeyFor(store.shop, input.threadId, id);
+      let stored = false;
+      if (bucket) {
+        try { await bucket.put(key, part.bytes); stored = true; }
+        catch (e) { console.warn(`inbox attachment put failed for ${input.threadId}: ${(e as Error).message}`); }
+      }
+      await store.insertAttachment({ ...base, status: stored ? 'stored' : 'store_failed', r2_key: stored ? key : null });
+    }
+  } catch (e) {
+    console.warn(`inbox attachment store failed: ${(e as Error).message}`);
+  }
 }

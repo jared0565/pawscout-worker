@@ -2681,7 +2681,7 @@ export async function handleInboundEmail(message: ForwardableEmailMessage, env: 
     if (!shop) { console.warn('inbound email: no active shop configured'); return; }
     const store = new TenantStore(env.DB, shop);
     const raw = await new Response(message.raw).arrayBuffer();
-    const r = await processInbound(store, raw);
+    const r = await processInbound(store, raw, { files: env.INBOX_FILES });
     console.log(`inbound email stored: thread ${r.threadId}${r.deduped ? ' (dup)' : ''}`);
     // W-INBOX-1 rollback net: also forward a copy to the owner until capture is trusted.
     if (env.INBOX_FORWARD_TO) {
