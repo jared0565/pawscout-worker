@@ -117,6 +117,9 @@ export const inboxCss = `
   .ibx-bubble__hdr{font-size:11.5px;color:var(--subdued);margin-bottom:4px}
   .ibx-bubble.out .ibx-bubble__hdr{color:#9ec3ea}
   .ibx-bubble__body{font-size:13px;white-space:pre-wrap;word-break:break-word}
+  .ibx-files{margin-top:8px;padding-top:6px;border-top:1px dashed var(--line,#ddd);font-size:12px}
+  .ibx-file{margin-top:2px;word-break:break-word}
+  .ibx-file a{margin-left:4px}
   .ibx-draft{align-self:stretch;max-width:none;border:1.5px dashed #e8590c;border-radius:10px;padding:12px;background:rgba(232,89,12,.05)}
   .ibx-draft__hdr{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:8px}
   .ibx-draft__title{font-size:12px;font-weight:700;letter-spacing:.04em;color:#f0854b;margin-right:2px}

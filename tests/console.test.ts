@@ -318,7 +318,7 @@ describe('consolePage', () => {
   it('renderInboxThread accepts + renders the partnership applicant panel', async () => {
     const html = await consolePage('test-api-key').text();
     const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
-    expect(scripts).toContain('function renderInboxThread(thread,messages,labels,draft,invoice,applicant,contact,partnerPool,partnerConsent,events)');
+    expect(scripts).toContain('function renderInboxThread(thread,messages,labels,draft,invoice,applicant,contact,partnerPool,partnerConsent,events,attachments)');
     expect(scripts).toContain('Partnership screening');
     expect(scripts).toContain('r.applicant||null');
     // Email engagement rail block (2026-07-12): per-thread delivered/opened/
@@ -1425,6 +1425,36 @@ describe('consolePage', () => {
     expect(scripts).not.toMatch(/'\s*\+\s*s\.company\s*\+/);
     expect(scripts).not.toMatch(/'\s*\+\s*s\.contact_name\s*\+/);
     expect(scripts).not.toMatch(/'\s*\+\s*\(s\.productLines/);
+  });
+
+  // Design 2026-11-14 (inbox attachments), 5.6: under each message, its files:
+  // a Download link for a stored one, the reason for one not kept. Runs the
+  // ACTUAL browser source pulled out of the page, like the test above.
+  it("inbox: lists a message's files with a download link and the not-kept reason", async () => {
+    const html = await consolePage('test-api-key').text();
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+    const escSrc = scripts.match(/function esc\(s\)\{[^\n]*/)![0];
+    const skipSrc = scripts.match(/var IBX_FILE_SKIP=\{[^\n]*/)![0];
+    const sizeSrc = scripts.match(/function ibxFileSize\(n\)\{[^\n]*/)![0];
+    const filesSrc = scripts.match(/function ibxFilesFor\(mid,files\)\{[\s\S]*?\n\}/)![0];
+    const ibxFilesFor = new Function(escSrc + '\n' + skipSrc + '\n' + sizeSrc + '\n' + filesSrc + '\nreturn ibxFilesFor;')() as (mid: string, files: unknown[]) => string;
+    const out = ibxFilesFor('m1', [
+      { id: '1', messageId: 'm1', filename: 'Catalogue-2026.pdf', sizeBytes: 4404019, status: 'stored', url: 'https://x/inbox-file/1?shop=a&exp=1&sig=ab' },
+      { id: '2', messageId: 'm1', filename: 'prices.xlsm', sizeBytes: 900, status: 'skipped_type', url: null },
+      { id: '3', messageId: 'm2', filename: 'other-message.pdf', sizeBytes: 10, status: 'stored', url: 'https://x/inbox-file/3' },
+      { id: '4', messageId: 'm1', filename: '<img src=x onerror=alert(1)>.pdf', sizeBytes: 2048, status: 'stored', url: 'javascript:alert(1)' },
+    ]);
+    expect(out).toContain('<a href="https://x/inbox-file/1?shop=a&amp;exp=1&amp;sig=ab" target="_blank" rel="noopener noreferrer">Download ↗</a>');
+    expect(out).toContain('Catalogue-2026.pdf (4.2 MB)');
+    expect(out).toContain('prices.xlsm');
+    expect(out).toContain('not kept: file type not accepted');
+    expect(out).not.toContain('other-message.pdf');
+    expect(out).not.toContain('<img');
+    expect(out).toContain('&lt;img');
+    expect(out).not.toContain('javascript:');
+    expect(out).toContain('(2 KB)');
+    expect(ibxFilesFor('m9', [])).toBe('');
+    expect(scripts).toContain('r.attachments||[]');
   });
 
   // Fix round 1 (2026-09-27): opening Suppliers must go through the same
