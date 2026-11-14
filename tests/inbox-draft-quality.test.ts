@@ -556,6 +556,22 @@ describe('honest replies about files (design 2026-11-14, section 6)', () => {
     expect(appendFileAsks(once, { missing: true, refused: false })).toBe(once);
   });
 
+  it('rule D: a refusal the reply already gives in the passive voice is not asked twice (live test 2026-11-14)', () => {
+    // The live draft said this, and the fixed sentence was appended after it.
+    const live = 'We have received your price list, but the product sheet could not be accepted because its file type is not supported. If you can resend it as a PDF, we will keep it on file.';
+    const variants = [
+      live,
+      'Sadly the spreadsheet couldn’t be opened. Please send it as a PDF.',
+      'The second file cannot be accepted. Could you share a link instead?',
+      'Your workbook was not accepted because macros are not allowed. A PDF would be ideal.',
+    ];
+    const files = { held: ['price-list.pdf'], refused: ['product-sheet.docm'], openHasRecord: true };
+    for (const said of variants) {
+      expect(appendFileAsks(said, { missing: false, refused: true })).toBe(said);
+      expect(findDraftIssues(said, { files, openText: 'Please find attached our price list.' }).join(' ')).not.toMatch(/could not accept that file/i);
+    }
+  });
+
   it('the no-promises reviser text never invites a catalogue we already hold (design section 6, item 3)', () => {
     const promising = 'Thank you for your range. We will be in touch about an order.';
     const held = findDraftIssues(promising, { supplierLane: true, files: { held: ['cat.pdf'], refused: [], openHasRecord: true } }).join(' ');

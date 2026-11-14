@@ -305,7 +305,9 @@ const DISCLAIMER = /\bany\s+(?:attachments?|attached|files?|documents?)\b|\binte
 // own sentence, and beside "received" it was held as a false file claim.
 const NOT_A_DOCUMENT = /\bon\s+(?:our\s+)?files?\b|\bfile\s+(?:a|an)\s+(?:claim|return|complaint|report|dispute|request)\b/gi;
 const SAYS_MISSING = /\b(?:did\s+not|didn['’]t|has\s+not|hasn['’]t|have\s+not|haven['’]t|never)\s+(?:reach(?:ed)?\s+us|arrived?|come\s+through|came\s+through)\b/i;
-const SAYS_REFUSED = /\b(?:not\s+able\s+to|unable\s+to|could\s+not|couldn['’]t|cannot|can['’]t)\s+(?:accept|open)\b/i;
+// The passive counts too (live test 2026-11-14): "the product sheet could not
+// be accepted" already says it, and the fixed sentence after it asked twice.
+const SAYS_REFUSED = /\b(?:(?:not\s+able\s+to|unable\s+to|could\s+not|couldn['’]t|cannot|can['’]t)\s+(?:accept|open|be\s+(?:accepted|opened))|(?:was|were)\s+not\s+(?:accepted|opened)|(?:wasn|weren)['’]t\s+(?:accepted|opened))\b/i;
 
 function sentencesOf(text: string): string[] {
   return text.split(/(?<=[.!?])\s+|\n+/).filter(Boolean);
