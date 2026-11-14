@@ -62,7 +62,24 @@ export interface ParsedEmail {
   text: string;
   html: string | null;
   headers: Record<string, string>;
+  /** MIME parts carrying a file (spec 2026-11-14 inbox attachments, 5.1).
+   * Optional so a ParsedEmail built by hand (tests, form relays) needs none. */
+  attachments?: InboundAttachment[];
 }
+
+/** One file part of an inbound email, as parsed. Everything here except the
+ * bytes' length is sender-controlled and untrusted. */
+export interface InboundAttachment {
+  filename: string;          // sanitised by sanitizeFilename
+  contentType: string;       // declared, lower-cased, untrusted
+  disposition: 'attachment' | 'inline' | null;
+  contentId: string | null;
+  related: boolean;
+  bytes: Uint8Array;
+}
+
+/** What became of one file part (inbox_attachments.status, migration 0048). */
+export type AttachmentStatus = 'stored' | 'skipped_type' | 'skipped_size' | 'skipped_count' | 'store_failed';
 
 export interface Classification {
   isHuman: boolean;
