@@ -86,6 +86,25 @@ describe('parseInbound attachments', () => {
     expect(describeParts(await parseInbound(RAW))).toBe('');
   });
 
+  it('marks a part the HTML shows by cid as shown, whatever its case or percent-encoding', async () => {
+    const mk = (src: string) => [
+      'From: Kate <kate@supplier.example>', 'To: contact@activepaw.co.uk', 'Subject: x', 'MIME-Version: 1.0',
+      'Content-Type: multipart/mixed; boundary="m3"', '',
+      '--m3', 'Content-Type: text/html; charset=utf-8', '', `<p>Hi</p><img src="${src}">`,
+      '--m3', 'Content-Type: image/png; name="a.png"', 'Content-Disposition: attachment; filename="a.png"',
+      'Content-ID: <Sig.1@X>', 'Content-Transfer-Encoding: base64', '', b64(PNG_BYTES),
+      '--m3', 'Content-Type: image/png; name="b.png"', 'Content-Disposition: attachment; filename="b.png"',
+      'Content-ID: <f_other>', 'Content-Transfer-Encoding: base64', '', b64(PNG_BYTES),
+      '--m3--', '',
+    ].join('\r\n');
+    for (const src of ['cid:Sig.1@X', 'CID:sig.1@x', 'cid:Sig.1%40X']) {
+      const p = await parseInbound(mk(src));
+      expect(p.attachments?.map((a) => a.shown)).toEqual([true, false]);
+    }
+    const plain = await parseInbound(MULTIPART);
+    expect(plain.attachments?.map((a) => a.shown)).toEqual([false, false]);
+  });
+
   it('a parse failure returns attachments: []', async () =>
     expect((await parseInbound(new ArrayBuffer(0))).attachments).toEqual([]));
 

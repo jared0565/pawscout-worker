@@ -19,6 +19,18 @@ describe('attachmentDisposition', () => {
   it('keeps an inline image of 100 KB or more', () =>
     expect(attachmentDisposition(part({ filename: 'photo.jpg', contentType: 'image/jpeg', disposition: 'inline', contentId: '<p@x>', bytes: new Uint8Array(100 * 1024) }), 0)).toBe('store'));
 
+  // Live test 2026-11-14: Gmail rebuilt an inline signature logo as
+  // "disposition: attachment" outside multipart/related, Content-ID kept and
+  // still shown by the HTML. Shown by the body is what makes it a logo.
+  it('drops a small image the HTML shows by cid even when it is marked attachment', () =>
+    expect(attachmentDisposition(part({ filename: 'logo.png', contentType: 'image/png', disposition: 'attachment', contentId: '<att2_d4488a1191bd7050>', related: false, shown: true, bytes: new Uint8Array(139) }), 0)).toBe('drop'));
+
+  it('keeps an attached image with a content id that the HTML does not show (Gmail gives every attachment one)', () =>
+    expect(attachmentDisposition(part({ filename: 'damage.jpg', contentType: 'image/jpeg', disposition: 'attachment', contentId: '<f_abc123>', related: false, shown: false, bytes: new Uint8Array(5000) }), 0)).toBe('store'));
+
+  it('keeps an image the HTML shows when it is 100 KB or more', () =>
+    expect(attachmentDisposition(part({ filename: 'photo.jpg', contentType: 'image/jpeg', disposition: 'attachment', contentId: '<p@x>', shown: true, bytes: new Uint8Array(100 * 1024) }), 0)).toBe('store'));
+
   // Review Focus 1: Apple Mail sends PDFs inline with a Content-ID.
   it('stores an Apple Mail style inline PDF with a content id', () =>
     expect(attachmentDisposition(part({ disposition: 'inline', contentId: '<c@x>' }), 0)).toBe('store'));
