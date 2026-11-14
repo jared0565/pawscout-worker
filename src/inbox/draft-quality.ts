@@ -293,7 +293,17 @@ const CONDITIONAL_RE = /\b(?:if|once|whenever|should|until)\b/i;
 const INVITE_RE = new RegExp(String.raw`\b(?:(?:welcome|free)\s+to|please)\s+(?:e-?mail|send|share)\b[^.!?\n]{0,40}?\b${FILE_NOUN}\b`, 'i');
 const ATTACH_NEAR_NOUN = new RegExp(
   String.raw`\b(?:attached|enclosed)\b[^.!?\n]{0,40}?\b${FILE_NOUN}\b|\b${FILE_NOUN}\b[^.!?\n]{0,40}?\b(?:attached|enclosed)\b`, 'i');
-const ATTACH_PLAIN = /\battachments?\b|\bplease\s+find\s+(?:attached|enclosed)\b|\bsee\s+(?:the\s+)?(?:attached|enclosed)\b|\bsee\s+the\s+file\b/i;
+// The bare word "attachment" is not a mention (final review 2026-11-14): a
+// product part ("a comb attachment") is not a file sent to us. A phrase that
+// points at an attachment is.
+const ATTACH_PLAIN = /\bplease\s+find\s+(?:attached|enclosed)\b|\b(?:see|check|find|open|review)\s+(?:the\s+|our\s+|my\s+)?(?:attached|enclosed|attachments?)\b|\bin\s+the\s+attachments?\b|\bsee\s+the\s+file\b|\b(?:i|we)(?:['’]ve|\s+have)?\s+(?:attached|enclosed)\b|\battached\s+(?:is|are)\b/i;
+// A confidentiality footer ("this email and any attachments are confidential",
+// "if you are not the intended recipient") names no file sent to us.
+const DISCLAIMER = /\bany\s+(?:attachments?|attached|files?|documents?)\b|\bintended\s+recipient\b|\b(?:this|the)\s+(?:e-?mail|message)\b[^.!?\n]{0,80}\bconfidential\b/i;
+// "on file" and "file a claim" use the word without naming a document (final
+// review 2026-11-14): "we keep supplier details on file" is the supplier lane's
+// own sentence, and beside "received" it was held as a false file claim.
+const NOT_A_DOCUMENT = /\bon\s+(?:our\s+)?files?\b|\bfile\s+(?:a|an)\s+(?:claim|return|complaint|report|dispute|request)\b/gi;
 const SAYS_MISSING = /\b(?:did\s+not|didn['’]t|has\s+not|hasn['’]t|have\s+not|haven['’]t|never)\s+(?:reach(?:ed)?\s+us|arrived?|come\s+through|came\s+through)\b/i;
 const SAYS_REFUSED = /\b(?:not\s+able\s+to|unable\s+to|could\s+not|couldn['’]t|cannot|can['’]t)\s+(?:accept|open)\b/i;
 
@@ -305,7 +315,9 @@ function sentencesOf(text: string): string[] {
  * negated ("we have not received") or conditional ("if you have got") sentence
  * is not a claim, and "thank you for the information" names no file. */
 export function claimsFileReceived(text: string): boolean {
-  return sentencesOf(text).some((s) => {
+  return sentencesOf(text).some((raw) => {
+    // Blanked to the same length, so offsets into `s` still line up.
+    const s = raw.replace(NOT_A_DOCUMENT, (m) => ' '.repeat(m.length));
     if (!FILE_NOUN_RE.test(s)) return false;
     for (const m of s.matchAll(RECEIPT_RE)) {
       const at = m.index ?? 0;
@@ -321,9 +333,10 @@ export function invitesFiles(text: string): boolean { return INVITE_RE.test(text
 
 /** Rule C: the sender's open text says a file is attached ("please find
  * attached", "see the attachment", "I have enclosed our price list"). "We are
- * attached to quality" names no file and does not count. */
+ * attached to quality", "a comb attachment" and a confidentiality footer name
+ * no file and do not count. */
 export function mentionsAttachment(text: string): boolean {
-  return ATTACH_PLAIN.test(text) || ATTACH_NEAR_NOUN.test(text);
+  return sentencesOf(text).some((s) => !DISCLAIMER.test(s) && (ATTACH_PLAIN.test(s) || ATTACH_NEAR_NOUN.test(s)));
 }
 
 /** Which fixed file sentences a reply owes (rules C and D). */

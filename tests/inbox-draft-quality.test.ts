@@ -505,6 +505,40 @@ describe('honest replies about files (design 2026-11-14, section 6)', () => {
     expect(findDraftIssues('Thank you for your message about your bowls range.', { files: NONE, openText: open }).join(' ')).toMatch(/did not reach us/i);
   });
 
+  // Final review 2026-11-14 (Important 1): the bare word "attachment" is not a
+  // mention of a file sent to us. A confidentiality footer and a product part
+  // ("comb attachment") made replies say a file did not reach us.
+  it('rule C stays quiet on a confidentiality footer and on a product attachment', () => {
+    for (const s of [
+      'This email and any attachments are confidential and intended solely for the addressee.',
+      'This message and any attached files are confidential. If you are not the intended recipient, please delete it.',
+      'Does the clipper come with a comb attachment?',
+      'Is the hose attachment included with the pet dryer?',
+    ]) expect(mentionsAttachment(s), s).toBe(false);
+    expect(fileAsksOwed(NONE, 'Hello, do you stock dog beds?\n\nThis email and any attachments are confidential.')).toEqual({ missing: false, refused: false });
+    // A real mention still counts, also beside a footer.
+    expect(mentionsAttachment('Please see the attached price list.\n\nThis email and any attachments are confidential.')).toBe(true);
+    for (const s of ["We've attached it here.", 'Kindly check the attachment.', 'The details are in the attachment.', 'Please see attached.']) {
+      expect(mentionsAttachment(s), s).toBe(true);
+    }
+  });
+
+  // Final review 2026-11-14 (Important 3): "on file" and "file a claim" name no
+  // document. "We keep supplier details on file" is the supplier lane's own
+  // sentence, and beside "received" it was held as a false file claim.
+  it('rule A stays quiet on "on file" and on "file a return"', () => {
+    for (const s of [
+      'We have received your details and keep them on file for reference.',
+      'Thank you for sharing your company details, which we keep on file for reference.',
+      'We have got your message and keep supplier details on file.',
+      'We have received your request to file a return.',
+    ]) expect(claimsFileReceived(s), s).toBe(false);
+    expect(fileHoldReasons('We have received your details and keep them on file for reference.', NONE, true)).toEqual([]);
+    // A real claim beside the idiom, or in the passive, still counts.
+    expect(claimsFileReceived('We have received your catalogue and keep it on file.')).toBe(true);
+    expect(claimsFileReceived('Your price list has been received.')).toBe(true);
+  });
+
   it('rule D: a refused file is owed the refused-file sentence, except off-niche', () => {
     const files = { held: [], refused: ['p.xlsm'], openHasRecord: true };
     expect(fileAsksOwed(files, 'Prices attached.')).toEqual({ missing: false, refused: true });

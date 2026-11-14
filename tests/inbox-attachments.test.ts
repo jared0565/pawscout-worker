@@ -29,6 +29,17 @@ describe('attachmentDisposition', () => {
     expect(attachmentDisposition(part({ filename: 'meeting', contentType: 'text/calendar' }), 0)).toBe('drop');
   });
 
+  // Final review 2026-11-14 (Important 2): a mail client's signature or contact
+  // card is not a file the sender sent us; recorded as refused, it made replies
+  // say "We were not able to accept the file you sent".
+  it.each([
+    ['smime.p7s', 'application/pkcs7-signature'], ['smime.p7s', 'application/x-pkcs7-signature'],
+    ['signature.asc', 'application/pgp-signature'], ['key.asc', 'application/pgp-keys'],
+    ['anna.vcf', 'text/vcard'], ['anna.vcf', 'text/x-vcard'],
+    ['smime.p7s', 'application/octet-stream'], ['anna.vcf', ''], ['signature', 'application/pgp-signature'],
+  ])('drops %s (%s) silently', (filename, contentType) =>
+    expect(attachmentDisposition(part({ filename, contentType }), 0)).toBe('drop'));
+
   it.each(['x.html', 'x.htm', 'x.svg', 'x.xml', 'x.js', 'x.exe', 'x.msi', 'x.bat', 'x.cmd', 'x.scr', 'x.vbs', 'x.jar', 'x.ps1', 'x.lnk', 'x.iso', 'x.img', 'x.hta', 'x.docm', 'x.xlsm', 'x.pptm', 'x.dotm', 'catalogue.pdf.exe', 'x.eml'])(
     'refuses %s by type', (f) => expect(attachmentDisposition(part({ filename: f, contentType: 'application/octet-stream' }), 0)).toBe('skipped_type'));
 

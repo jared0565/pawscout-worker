@@ -50,6 +50,11 @@ const KEPT_EXTENSIONS = new Set([
 // An empty type or application/octet-stream never contradicts.
 const REFUSED_TYPE = /^(?:text\/html|image\/svg\+xml|[\w.+-]+\/[\w.+-]*xml|[\w.+-]+\/[\w.+-]*javascript|application\/x-msdownload|application\/x-sh)$/;
 
+// Parts a mail client adds by itself: S/MIME and PGP signatures, PGP keys and
+// vCards. They are dropped silently, like a calendar invite.
+const NOT_A_FILE_TYPE = /^(?:application\/(?:x-)?pkcs7-signature|application\/pgp-(?:signature|keys)|text\/(?:x-)?vcard)$/;
+const NOT_A_FILE_EXTENSIONS = new Set(['p7s', 'asc', 'vcf']);
+
 // Extension fallback for a part that arrived without a name.
 const EXT_FOR_TYPE: Record<string, string> = {
   'application/pdf': 'pdf', 'image/jpeg': 'jpg', 'image/png': 'png', 'image/gif': 'gif',
@@ -87,6 +92,10 @@ export function attachmentDisposition(part: InboundAttachment, keptSoFar: number
   const ext = extensionOf(part.filename);
   // A calendar invite is a meeting request, not a file the sender sent us.
   if (type === 'text/calendar' || ext === 'ics') return 'drop';
+  // Nor is a mail client's signature or contact card (final review 2026-11-14):
+  // recorded as refused, an S/MIME-signed email got "we were not able to accept
+  // the file you sent".
+  if (NOT_A_FILE_TYPE.test(type) || NOT_A_FILE_EXTENSIONS.has(ext)) return 'drop';
   // A small inline image with a content id is a signature logo or a pixel.
   const inlineish = part.disposition === 'inline' || part.related;
   if (inlineish && part.contentId && type.startsWith('image/') && part.bytes.byteLength < INLINE_LOGO_MAX_BYTES) return 'drop';

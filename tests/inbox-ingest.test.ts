@@ -554,4 +554,22 @@ describe('inbound files (ingest)', () => {
     expect(got.messages).toHaveLength(1);
     expect((await store.listAttachmentsForThread(r.threadId)).map((x) => [x.filename, x.status])).toEqual([['cat.pdf', 'stored']]);
   });
+
+  // Final review 2026-11-14 (Important 2): an S/MIME-signed email carries its
+  // signature as a part; it is not a refused file.
+  it('an S/MIME-signed email records no file for its signature', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const raw = [
+      'From: Omar <omar@corp.example>', 'To: contact@activepaw.co.uk', 'Subject: Stock question',
+      'Message-ID: <smime1@corp.example>', 'Date: Fri, 13 Nov 2026 09:00:00 +0000', 'MIME-Version: 1.0',
+      'Content-Type: multipart/signed; protocol="application/pkcs7-signature"; micalg=sha-256; boundary="s1"', '',
+      '--s1', 'Content-Type: text/plain; charset=utf-8', '', 'Do you stock dog beds?',
+      '--s1', 'Content-Type: application/pkcs7-signature; name="smime.p7s"', 'Content-Disposition: attachment; filename="smime.p7s"',
+      'Content-Transfer-Encoding: base64', '', btoa('not a real signature'),
+      '--s1--', ''
+    ].join('\r\n');
+    const r = await processInbound(store, raw, { files: bucket() });
+    expect((await store.getThreadWithMessages(r.threadId))!.messages).toHaveLength(1);
+    expect(await store.listAttachmentsForThread(r.threadId)).toEqual([]);
+  });
 });
