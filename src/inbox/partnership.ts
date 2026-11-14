@@ -1,5 +1,6 @@
 import type { AffiliateMode, ScreenFacts, ScreenVerdict, ThreadRow, MessageRow } from './types';
 import { applySalutation, renderReplyHtml, applyFooter, draftReply, buildDraftTranscript, openInboundTexts } from './draft';
+import { threadFilesFor } from './attachments';
 import { stripQuotedReply } from './quote';
 import { chooseTouch, outboundBodies, repeatsPriorOutbound, type TouchKind } from './repeat';
 import type { CategoryAgent, Grounding } from './agents/types';
@@ -926,7 +927,7 @@ async function draftAcceptedPartnerReply(
     const draft = await draftReply(llm, store, cfg, {
       agent: partnerSupportAgent,
       grounding: { confident: true, facts, quotesFigure: false },
-      subject: thread.subject ?? '', conversation: buildDraftTranscript(got.messages),
+      subject: thread.subject ?? '', conversation: buildDraftTranscript(got.messages, await threadFilesFor(store, thread.id)),
       latestMessage: latestText, customerName: name, customerEmail: thread.contact_email,
     });
     if (draft) return applyFooter(draft.bodyText, 'partnership');

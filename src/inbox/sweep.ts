@@ -6,6 +6,7 @@ import { defaultFetch } from '../safe-fetch';
 import { parseAuthResults } from './gates';
 import { classifyEmail, decideDisposition } from './classify';
 import { draftReply, renderReplyHtml, applyFooter, stripTrailingSignoff, sanitizeOutbound, buildDraftTranscript, openInboundText } from './draft';
+import { threadFilesFor } from './attachments';
 import { autoSendDecision, mentionsMoney, withExtraHolds } from './autosend';
 import { sendReply } from './send';
 import { maybePartnershipDraft, detectPartnershipAsk } from './partnership';
@@ -156,7 +157,7 @@ async function reopenCheckOne(env: Env, store: TenantStore, cfg: TenantConfig, t
   if (!got) return;
   const llm = new LlmClient({ openrouter: env.OPENROUTER_API_KEY, openai: env.OPENAI_API_KEY }, fetchImpl);
   const reading = await readThread(llm, store, cfg, {
-    subject: thread.subject ?? '', transcript: buildDraftTranscript(got.messages), fromEmail: thread.contact_email
+    subject: thread.subject ?? '', transcript: buildDraftTranscript(got.messages, await threadFilesFor(store, thread.id)), fromEmail: thread.contact_email
   }).catch(() => null);
   if (!reading) return;
   await store.saveThreadReading(thread.id, JSON.stringify(reading));
@@ -352,6 +353,9 @@ export async function composeDraftForThread(
   const got = await store.getThreadWithMessages(thread.id);
   if (!got) return null;
   const llm = new LlmClient({ openrouter: env.OPENROUTER_API_KEY, openai: env.OPENAI_API_KEY }, fetchImpl);
+  // The thread's file rows: both the reader and the drafter see which files
+  // arrived and which were refused (design 2026-11-14, 5.7).
+  const files = await threadFilesFor(store, thread.id);
 
   // Thread reader first (owner design 2026-09-27). Never blocking: a failed
   // reading is null and everything below runs exactly as it did before. Only
@@ -360,7 +364,7 @@ export async function composeDraftForThread(
   let t = thread;
   const reading: ThreadReading | null = cfg.inbox.enabled
     ? await readThread(llm, store, cfg, {
-      subject: thread.subject ?? '', transcript: buildDraftTranscript(got.messages), fromEmail: thread.contact_email
+      subject: thread.subject ?? '', transcript: buildDraftTranscript(got.messages, files), fromEmail: thread.contact_email
     }).catch(() => null)
     : null;
   if (reading) {
@@ -469,7 +473,7 @@ export async function composeDraftForThread(
 
   // The DRAFTER instead sees the full two-sided flow (both directions, labeled),
   // so a multi-turn reply fits what has already been said. See buildDraftTranscript.
-  const transcript = buildDraftTranscript(got.messages);
+  const transcript = buildDraftTranscript(got.messages, files);
 
   // Approved-answers recall (2026-07-12): ground the drafter with vetted past
   // answers to similar questions. Failure degrades to no recall, never blocks.

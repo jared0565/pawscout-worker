@@ -7,6 +7,7 @@ import type { TenantStore } from '../tenant-store';
 import { LlmClient } from '../llm';
 import { readThread } from './thread-read';
 import { buildDraftTranscript } from './draft';
+import { threadFilesFor } from './attachments';
 
 export const SUPPLIER_BACKFILL_KEY = 'job:supplier-backfill';
 const BATCH = 20;
@@ -39,7 +40,7 @@ export async function runSupplierBackfillStep(env: Env, store: TenantStore, cfg:
     try {
       const got = await store.getThreadWithMessages(t.id);
       if (!got) continue;
-      const reading = await readThread(llm, store, cfg, { subject: t.subject ?? '', transcript: buildDraftTranscript(got.messages), fromEmail: t.contact_email });
+      const reading = await readThread(llm, store, cfg, { subject: t.subject ?? '', transcript: buildDraftTranscript(got.messages, await threadFilesFor(store, t.id)), fromEmail: t.contact_email });
       if (!reading) continue;
       await store.saveThreadReading(t.id, JSON.stringify(reading))
         .catch((e) => console.warn(`supplier back-fill reading save failed for ${t.id}: ${(e as Error).message}`));

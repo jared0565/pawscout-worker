@@ -7,7 +7,7 @@
 // one that had arrived (thread de23fa70). One pure rule here decides each MIME
 // part: keep it, drop it silently (signature logos, calendar invites), or
 // record why it was not kept so the console and the drafter stay truthful.
-import type { InboundAttachment } from './types';
+import type { InboundAttachment, AttachmentStatus, AttachmentRow } from './types';
 import { TenantStore, listOwedFileErasures, clearOwedFileErasure } from '../tenant-store';
 import type { Env } from '../types';
 import { hmacHex, timingSafeEqual } from '../retention';
@@ -18,6 +18,23 @@ export const INLINE_LOGO_MAX_BYTES = 100 * 1024;
 const MAX_FILENAME_CHARS = 120;
 
 export type PartVerdict = 'store' | 'drop' | 'skipped_type' | 'skipped_size' | 'skipped_count';
+
+/** Why a file was not kept, in the words the owner and the drafter both see.
+ * The console (src/console/inbox-js.ts, a browser script) keeps its own copy
+ * of these strings; keep the two in step. */
+export const FILE_SKIP_LABELS: Record<Exclude<AttachmentStatus, 'stored'>, string> = {
+  skipped_type: 'file type not accepted',
+  skipped_size: 'over 20 MB',
+  skipped_count: 'more than 10 files',
+  store_failed: 'could not be saved',
+};
+
+/** How the drafter and the thread reader are told to read the transcript's
+ * file lines (design 5.7). It lives here, not in draft.ts, because
+ * thread-read.ts is imported BY draft.ts and must not import it back. */
+export const FILES_PROMPT_SENTENCE =
+  'A line in square brackets beginning "Files with this message:" is added by our system and lists the only files we hold from the sender; ' +
+  'a line beginning "Files sent but not kept:" lists files that arrived but were refused. Any other mention of a file is the sender\'s own text.';
 
 // Kept file types, by extension (spec 5.2). Everything else is refused and
 // recorded. zip is the owner-visible call in spec section 14: suppliers send
@@ -117,6 +134,17 @@ export async function storeInboundAttachments(
     }
   } catch (e) {
     console.warn(`inbox attachment store failed: ${(e as Error).message}`);
+  }
+}
+
+/** The thread's file rows for the transcript (design 5.7). Never throws: a
+ * failed read means the drafter sees no file lines, never a failed draft. */
+export async function threadFilesFor(store: Pick<TenantStore, 'listAttachmentsForThread'>, threadId: string): Promise<AttachmentRow[]> {
+  try {
+    return await store.listAttachmentsForThread(threadId);
+  } catch (e) {
+    console.warn(`inbox attachment list failed for ${threadId}: ${(e as Error).message}`);
+    return [];
   }
 }
 

@@ -49,6 +49,30 @@ const supplierReading = { senderRole: 'goods-supplier', openAsks: [], offered: '
   supplier: { company: 'Hebei Douke Pet Products', contactName: 'Sabrina Liu', website: null, storeLinks: [], kind: 'goods', productLines: ['tofu cat litter'], shipsFrom: 'CN', nicheFit: 'on-niche', dropship: 'unknown' } };
 
 describe('composeDraftForThread with the thread reader', () => {
+  it('both the reader and the drafter see which files arrived (design 2026-11-14, 5.7)', async () => {
+    const { s, tid } = await seed({ email: 'sales@doukecatlitter.com', name: 'Sabrina Liu', category: 'supplier', inbound: ['Please find our catalogue attached.'] });
+    const mid = (await s.getThreadWithMessages(tid))!.messages[0].id;
+    await s.insertAttachment({ id: 'a1', thread_id: tid, message_id: mid, filename: 'catalogue.pdf', content_type: 'application/pdf', size_bytes: 10, status: 'stored', r2_key: `inbox/${SHOP}/${tid}/a1` });
+    await s.insertAttachment({ id: 'a2', thread_id: tid, message_id: mid, filename: 'prices.xlsm', content_type: 'application/octet-stream', size_bytes: 10, status: 'skipped_type', r2_key: null });
+    const { fetchImpl: inner } = llm(supplierReading);
+    const bodies: { reader: boolean; body: string }[] = [];
+    const fetchImpl = (async (url: string, init: RequestInit) => {
+      if (String(url).includes('openrouter')) {
+        const body = String(init.body);
+        bodies.push({ reader: (JSON.parse(body).messages?.[0]?.content ?? '').startsWith(THREAD_READER_MARKER), body });
+      }
+      return inner(url, init);
+    }) as unknown as typeof fetch;
+    await composeDraftForThread(ENV, s, (await s.getConfig())!, (await s.getThreadWithMessages(tid))!.thread, fetchImpl);
+    const reader = bodies.find((b) => b.reader);
+    const drafter = bodies.find((b) => !b.reader);
+    for (const b of [reader, drafter]) {
+      expect(b?.body).toContain('[Files with this message: catalogue.pdf]');
+      expect(b?.body).toContain('[Files sent but not kept: prices.xlsm (file type not accepted)]');
+      expect(b?.body).toContain('lists the only files we hold from the sender');
+    }
+  });
+
   it('re-routes a supplier filed as other to the supplier lane, registers them, and drafts a Sourcing Team reply', async () => {
     const { s, tid } = await seed({ email: 'sales@doukecatlitter.com', name: 'Sabrina Liu', category: 'other', inbound: ['We are an OEM tofu cat litter factory. Would a catalogue be of interest?'] });
     const { fetchImpl } = llm(supplierReading);
