@@ -149,6 +149,17 @@ export async function threadFilesFor(store: Pick<TenantStore, 'listAttachmentsFo
   }
 }
 
+/** Every file row from one contact, for the honest-file rules (design section
+ * 6). Never throws: a failed read means no file context, never a failed draft. */
+export async function contactFilesFor(store: Pick<TenantStore, 'listAttachmentsForContact'>, email: string): Promise<AttachmentRow[]> {
+  try {
+    return await store.listAttachmentsForContact(email);
+  } catch (e) {
+    console.warn(`inbox contact attachment list failed: ${(e as Error).message}`);
+    return [];
+  }
+}
+
 // --- Download links (design 5.5) ---------------------------------------------
 // The console runs inside the Shopify admin iframe and every /api route is a
 // session-authed POST, so a file is opened as a plain top-level link instead.

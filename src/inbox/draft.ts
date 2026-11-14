@@ -6,7 +6,7 @@ import type { AttachmentRow, DraftResult, MessageRow } from './types';
 import { FILE_SKIP_LABELS, FILES_PROMPT_SENTENCE } from './attachments';
 import { SHARED_SCAFFOLDING, STORE_FACTS, COMMERCIAL_GUARDRAILS, OUTPUT_CONTRACT } from './agents/scaffolding';
 import type { CategoryAgent, Grounding } from './agents/types';
-import { refineUntilClean, asksDoYouDeliver, supplierAsksOwed, appendSupplierAsks, type DraftQualityContext } from './draft-quality';
+import { refineUntilClean, asksDoYouDeliver, supplierAsksOwed, appendSupplierAsks, fileAsksOwed, appendFileAsks, type DraftQualityContext, type FileContext } from './draft-quality';
 import { stripQuotedReply } from './quote';
 import { eventFacts } from './event-facts';
 import type { AdminGraphql } from '../shopify-admin';
@@ -393,7 +393,7 @@ async function reviseDraft(
  * until it passes - the worker self-corrects in production, no dev tuning needed. */
 export async function draftReply(
   llm: LlmClient, store: TenantStore, cfg: TenantConfig,
-  input: { agent: CategoryAgent; grounding: Grounding; subject: string; conversation: string; latestMessage?: string; customerName?: string | null; customerEmail?: string | null; recall?: { question: string; answer: string }[]; priorOutbound?: ReadonlyArray<string | null>; admin?: AdminGraphql | null; reading?: ThreadReading | null }
+  input: { agent: CategoryAgent; grounding: Grounding; subject: string; conversation: string; latestMessage?: string; customerName?: string | null; customerEmail?: string | null; recall?: { question: string; answer: string }[]; priorOutbound?: ReadonlyArray<string | null>; admin?: AdminGraphql | null; reading?: ThreadReading | null; files?: FileContext }
 ): Promise<DraftResult | null> {
   if (!llm.available || !cfg.inbox.enabled) return null;
   const chain = resolveChain(cfg, 'text');
@@ -434,7 +434,7 @@ export async function draftReply(
   // the revisions still leave them out.
   const supplierLane = agent.category === 'supplier';
   const supplierOwes = supplierLane ? supplierAsksOwed(input.reading?.supplier, input.priorOutbound) : undefined;
-  const qctx: DraftQualityContext = { maxWords: DRAFT_MAX_WORDS, askedDelivery: asksDoYouDeliver(latest), priorOutbound: input.priorOutbound, customerText: latest, buyingLane: BUYING_LANES.has(agent.category), supplierLane, supplierOwes };
+  const qctx: DraftQualityContext = { maxWords: DRAFT_MAX_WORDS, askedDelivery: asksDoYouDeliver(latest), priorOutbound: input.priorOutbound, customerText: latest, buyingLane: BUYING_LANES.has(agent.category), supplierLane, supplierOwes, files: input.files, openText: latest };
   const refined = await refineUntilClean(
     result.value,
     (prev, issues) => reviseDraft(llm, store, chain, agent, grounding, guidance, latest, baseUser, prev.bodyText, issues, shippingFact, eventFact, input.recall, input.reading),
@@ -442,7 +442,12 @@ export async function draftReply(
   );
   // A sign-off the model added anyway comes off first, or the questions would sit
   // under it where the footer's own strip can no longer see it.
-  const body = supplierOwes ? appendSupplierAsks(stripTrailingSignoff(refined.bodyText), supplierOwes) : refined.bodyText;
+  let body = supplierOwes ? appendSupplierAsks(stripTrailingSignoff(refined.bodyText), supplierOwes) : refined.bodyText;
+  // Files (design 2026-11-14, rules C and D): the fixed sentence for a file that
+  // was mentioned but never arrived, or that arrived and was refused, when the
+  // revisions still left it out. Same sign-off rule as the supplier questions.
+  const fileOwed = fileAsksOwed(input.files, latest);
+  if (fileOwed.missing || fileOwed.refused) body = appendFileAsks(stripTrailingSignoff(body), fileOwed);
 
   return { ...refined, bodyText: applySalutation(body, input.customerName, input.customerEmail) };
 }

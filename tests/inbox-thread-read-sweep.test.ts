@@ -124,6 +124,33 @@ describe('composeDraftForThread with the thread reader', () => {
     expect(JSON.parse(draft!.hold_reasons!)).toContain('supplier_commitment');
   });
 
+  // FOOFEE thread 2d6559b9 (design 2026-11-14, rule A): the reply thanked them
+  // for a catalogue we never held. The model keeps the claim through both
+  // revisions, so the draft is held, and the missing-file sentence is added.
+  it('a supplier draft that still claims a receipt is held with file_claim', async () => {
+    const { s, tid } = await seed({ email: 'info@foofee.com', name: 'Mia', category: 'supplier', inbound: ['Please find our catalogue attached.'] });
+    const foofee = 'Thank you for sending the FOOFEE catalogue and the details of your range. We have received the information.';
+    const { fetchImpl, calls } = llm(supplierReading, { customerAsks: [], bodyText: foofee, confidence: 95, quotesPriceOrOrder: false, commercialIntent: false });
+    await composeDraftForThread(ENV, s, (await s.getConfig())!, (await s.getThreadWithMessages(tid))!.thread, fetchImpl);
+    const draft = await s.getPendingDraft(tid);
+    expect(JSON.parse(draft!.hold_reasons!)).toContain('file_claim');
+    expect(draft!.body_text).toContain('Unfortunately the file you mentioned did not reach us. Could you send it again, or share a link to it?');
+    expect(calls.filter((c) => c === 'draft').length).toBe(3); // the reviser was asked first
+  });
+
+  it('a refused file gets the refused-file sentence, and a held file is never claimed falsely', async () => {
+    const { s, tid } = await seed({ email: 'info@bowls.com', name: 'Ann', category: 'supplier', inbound: ['Our prices are attached.'] });
+    const mid = (await s.getThreadWithMessages(tid))!.messages[0].id;
+    await s.insertAttachment({ id: 'r1', thread_id: tid, message_id: mid, filename: 'prices.xlsm', content_type: 'application/octet-stream', size_bytes: 10, status: 'skipped_type', r2_key: null });
+    const plain = 'Thank you for your message about your bowls range. We keep supplier details on file for reference.';
+    const { fetchImpl } = llm(supplierReading, { customerAsks: [], bodyText: plain, confidence: 95, quotesPriceOrOrder: false, commercialIntent: false });
+    await composeDraftForThread(ENV, s, (await s.getConfig())!, (await s.getThreadWithMessages(tid))!.thread, fetchImpl);
+    const draft = await s.getPendingDraft(tid);
+    expect(draft!.body_text).toContain('We were not able to accept the file you sent. Could you send it as a PDF, or share a link to it?');
+    expect(draft!.body_text).not.toContain('did not reach us'); // a record exists, so rule C stays quiet
+    expect(JSON.parse(draft!.hold_reasons ?? '[]')).not.toContain('file_claim');
+  });
+
   // Owner decision 2026-09-28 (the Douke preview asked for neither): a supplier
   // who gave no link and no dropshipping answer is asked both, even when the
   // model and both revisions keep leaving the questions out.

@@ -6,7 +6,7 @@ import { defaultFetch } from '../safe-fetch';
 import { parseAuthResults } from './gates';
 import { classifyEmail, decideDisposition } from './classify';
 import { draftReply, renderReplyHtml, applyFooter, stripTrailingSignoff, sanitizeOutbound, buildDraftTranscript, openInboundText } from './draft';
-import { threadFilesFor } from './attachments';
+import { threadFilesFor, contactFilesFor } from './attachments';
 import { autoSendDecision, mentionsMoney, withExtraHolds } from './autosend';
 import { sendReply } from './send';
 import { maybePartnershipDraft, detectPartnershipAsk } from './partnership';
@@ -27,7 +27,7 @@ import type { AgentContext, Department, Grounding } from './agents/types';
 import type { ThreadRow, InvoiceLineItem, DraftMeta } from './types';
 import { CjClient, CjTokenManager, cjFetchFromEnv } from '../cj';
 import { readThread, isSupplierRole, type ThreadReading } from './thread-read';
-import { promisesSupplier } from './draft-quality';
+import { promisesSupplier, buildFileContext, fileHoldReasons } from './draft-quality';
 import { Vault } from '../vault';
 import { runSupplierBackfillStep } from './supplier-backfill';
 
@@ -482,10 +482,15 @@ export async function composeDraftForThread(
     recall = await recallAnswers(store, t.primary_category ?? null, latestInbound);
   } catch (e) { console.warn(`answer recall failed for ${t.id}: ${(e as Error).message}`); }
 
+  // What the file rows say arrived (design 2026-11-14, section 6): files held
+  // from this contact on any thread, and the refused files and any file record
+  // on the open inbound messages. The honest-file rules read this, never the text.
+  const fileCtx = buildFileContext(await contactFilesFor(store, t.contact_email), files, got.messages);
+
   const draft = await draftReply(llm, store, cfg, {
     agent, grounding, subject: t.subject ?? '', conversation: transcript, latestMessage: latestInbound,
     customerName: contact?.name ?? null, customerEmail: t.contact_email, recall,
-    priorOutbound: outboundBodies(got.messages), admin, reading
+    priorOutbound: outboundBodies(got.messages), admin, reading, files: fileCtx
   });
   if (!draft) return null; // degrade: retry next sweep
 
@@ -519,6 +524,9 @@ export async function composeDraftForThread(
   const held = withExtraHolds(decision, [
     ...(supplierHold ? ['supplier_commitment'] : []),
     ...(grounding.holdReason ? [grounding.holdReason] : []),
+    // A reply still claiming a file we never held, or (supplier lane) still
+    // asking for one they already sent, after the revisions (design section 6).
+    ...fileHoldReasons(draft.bodyText, fileCtx, agent.category === 'supplier'),
   ]);
   const holdReasons = held.holdReasons;
   const send = held.send;
