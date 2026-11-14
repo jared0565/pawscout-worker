@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseInbound, extractContactForm } from '../src/inbox/mime';
+import { parseInbound, extractContactForm, describeParts } from '../src/inbox/mime';
 import { parseAuthResults, isHardSpam } from '../src/inbox/gates';
 
 const RAW = [
@@ -61,6 +61,29 @@ describe('parseInbound attachments', () => {
     expect(p.attachments?.[0].disposition).toBe('attachment');
     expect(p.attachments?.[1].contentId).toBe('<logo@x>');
     expect(p.attachments?.[1].disposition).toBe('inline');
+  });
+
+  it('describeParts sums up each part in one line, with no filenames (live test 2026-11-14)', async () => {
+    const raw = [
+      'From: Kate <kate@supplier.example>', 'To: contact@activepaw.co.uk', 'Subject: Price list',
+      'Message-ID: <p1@supplier.example>', 'MIME-Version: 1.0',
+      'Content-Type: multipart/mixed; boundary="m1"', '',
+      '--m1', 'Content-Type: text/html; charset=utf-8', '',
+      '<p>Price list attached.</p><img src="cid:sig1@x">',
+      '--m1', 'Content-Type: application/pdf; name="Secret-Name.pdf"',
+      'Content-Disposition: attachment; filename="Secret-Name.pdf"', 'Content-Transfer-Encoding: base64', '',
+      b64(PDF_BYTES),
+      '--m1', 'Content-Type: image/png; name="logo.png"',
+      'Content-Disposition: attachment; filename="logo.png"', 'Content-ID: <sig1@x>', 'Content-Transfer-Encoding: base64', '',
+      b64(PNG_BYTES),
+      '--m1--', '',
+    ].join('\r\n');
+    const line = describeParts(await parseInbound(raw));
+    expect(line).toBe(
+      `application/pdf disp=attachment cid=- related=0 shown=0 ${PDF_BYTES.byteLength}B; ` +
+      `image/png disp=attachment cid=sig1@x related=0 shown=1 ${PNG_BYTES.byteLength}B`);
+    expect(line).not.toMatch(/Secret-Name|logo\.png/);
+    expect(describeParts(await parseInbound(RAW))).toBe('');
   });
 
   it('a parse failure returns attachments: []', async () =>

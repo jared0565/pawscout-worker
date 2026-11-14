@@ -26,6 +26,21 @@ function splitRefs(value: string | undefined): string[] {
   return value.split(/\s+/).map((s) => s.trim()).filter(Boolean);
 }
 
+/** One log line per message: each file part's declared type, disposition,
+ * Content-ID, whether it sat in multipart/related, whether the HTML shows it
+ * (cid:), and its size. Never a filename (sender-chosen, may be personal).
+ * Added after the 2026-11-14 live test, where Gmail rebuilt the MIME in
+ * transit and the delivered part headers could not be recovered. */
+export function describeParts(p: Pick<ParsedEmail, 'attachments' | 'html'>): string {
+  const html = p.html ?? '';
+  return (p.attachments ?? []).map((a) => {
+    const cid = (a.contentId ?? '').trim().replace(/^<|>$/g, '');
+    const shown = cid !== '' && html.includes(`cid:${cid}`);
+    const cidOut = cid ? cid.replace(/[^\x21-\x7e]/g, '?').slice(0, 60) : '-';
+    return `${a.contentType || '?'} disp=${a.disposition ?? '-'} cid=${cidOut} related=${a.related ? 1 : 0} shown=${shown ? 1 : 0} ${a.bytes.byteLength}B`;
+  }).join('; ');
+}
+
 /** Parse raw RFC822 bytes into a normalized ParsedEmail. Never throws on a
  * malformed body - returns best-effort fields (empty text rather than reject). */
 export async function parseInbound(raw: ArrayBuffer | Uint8Array | string): Promise<ParsedEmail> {

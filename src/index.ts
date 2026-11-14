@@ -10,7 +10,8 @@ import { buildMenu, effectiveMenu, type MenuGroup } from './model-menu';
 import { checkModelSave, usageMix, MIX_WINDOW_DAYS, type SlotName } from './model-save';
 import { probeModel } from './model-probe';
 import { selectedStatus, type SlotStatus } from './model-watch';
-import { processInbound } from './inbox/ingest';
+import { ingestParsed } from './inbox/ingest';
+import { parseInbound, describeParts } from './inbox/mime';
 import { serveInboxFile, eraseOwedFiles } from './inbox/attachments';
 import { runInboxClassifySweep } from './inbox/sweep';
 import { beginAuth } from './auth/install';
@@ -2696,12 +2697,16 @@ app.post('/webhooks/resend', async (c) => {
 // shop. Classification runs later on the cron sweep, not here.
 export async function handleInboundEmail(message: ForwardableEmailMessage, env: Env, _ctx: ExecutionContext): Promise<void> {
   try {
+    // Parsed once, before the shop check, so the part summary also reaches the
+    // log on staging (no shop) - the only place a delivered MIME can be seen.
+    const raw = await new Response(message.raw).arrayBuffer();
+    const parsed = await parseInbound(raw);
+    if (parsed.attachments?.length) console.log(`inbound parts: ${describeParts(parsed)}`);
     const shops = await listActiveShops(env.DB);
     const shop = shops[0];
     if (!shop) { console.warn('inbound email: no active shop configured'); return; }
     const store = new TenantStore(env.DB, shop);
-    const raw = await new Response(message.raw).arrayBuffer();
-    const r = await processInbound(store, raw, { files: env.INBOX_FILES });
+    const r = await ingestParsed(store, parsed, { files: env.INBOX_FILES });
     console.log(`inbound email stored: thread ${r.threadId}${r.deduped ? ' (dup)' : ''}`);
     // W-INBOX-1 rollback net: also forward a copy to the owner until capture is trusted.
     if (env.INBOX_FORWARD_TO) {
