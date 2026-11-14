@@ -2,7 +2,10 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
 import { TenantStore } from '../../src/tenant-store';
-import { composeAgentDraft, composeDraftForThread } from '../../src/inbox/sweep';
+import { composeAgentDraft, composeDraftForThread, signingDepartment } from '../../src/inbox/sweep';
+import { AFFILIATE_APPLY_URL } from '../../src/inbox/partnership';
+import type { CategoryAgent } from '../../src/inbox/agents/types';
+import type { ThreadReading } from '../../src/inbox/thread-read';
 import { withReader } from '../helpers/reader-mock';
 import { DEFAULT_INBOX } from '../../src/inbox/types';
 import { ACTIVE_PAW_COLLECTION_MAP, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL } from '../../src/types';
@@ -44,6 +47,29 @@ describe('composeAgentDraft (trusted-figure exemption)', () => {
       null
     );
     expect(r.quotesPriceOrder).toBe(true); // mentionsMoney caught the £ figure
+  });
+});
+
+// ---------------------------------------------------------------------------
+// signingDepartment (design 2026-11-14, 7.1): a partnership reply drafted in
+// the general lane is signed by Partnerships, not Customer Support.
+// ---------------------------------------------------------------------------
+describe('signingDepartment', () => {
+  const other = { category: 'other', department: 'service' } as Pick<CategoryAgent, 'category' | 'department'>;
+  const supplier = { category: 'supplier', department: 'sourcing' } as Pick<CategoryAgent, 'category' | 'department'>;
+  const reading = (senderRole: string) => ({ senderRole, openAsks: [], offered: '', alreadyAnswered: [], replyNeeded: true, supplier: null, productQuery: null }) as unknown as ThreadReading;
+
+  it('signs a marketer or creator in the general lane as Partnerships', () => {
+    expect(signingDepartment(other, 'Thank you for your message.', reading('marketer'))).toBe('partnership');
+    expect(signingDepartment(other, 'Thank you for your message.', reading('creator'))).toBe('partnership');
+  });
+  it('signs as Partnerships when the body carries the apply link, even with no reading', () => {
+    expect(signingDepartment(other, `You can apply here: ${AFFILIATE_APPLY_URL}`, null)).toBe('partnership');
+  });
+  it('keeps Customer Support for a customer, and every other lane its own desk', () => {
+    expect(signingDepartment(other, 'We do not offer gift wrapping.', reading('customer'))).toBe('service');
+    expect(signingDepartment(other, 'We do not offer gift wrapping.', null)).toBe('service');
+    expect(signingDepartment(supplier, 'Thank you for informing us!', reading('marketer'))).toBe('sourcing');
   });
 });
 
@@ -188,6 +214,28 @@ describe('composeDraftForThread (agent dispatch E2E)', () => {
     expect(draft?.body_text).not.toContain('Delivery to');
     expect(draft?.body_text).not.toContain('estimated');
     expect(draft?.status).toBe('pending');
+    expect(draft?.body_text).toContain('Best Regards,\nActive Paw Customer Support');
+  });
+
+  it('Case B2: an other-category reply that carries the apply link is signed by Partnerships', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    await seedShop(store);
+    await store.upsertContact({ email: 'promo@example.com', name: 'Rui', phone: null });
+    const tid = await store.createThread({ contactEmail: 'promo@example.com', subject: 'Promotion', subjectNorm: 'promotion', receivedAt: '2026-06-24T09:20:00Z', initialStatus: 'new' });
+    await store.insertInboundMessageIfNew({
+      threadId: tid, messageId: '<promo1@x>', inReplyTo: null, references: [], from: 'promo@example.com', to: 'support@activepaw.co.uk',
+      subject: 'Promotion', bodyText: 'I run a pet blog. How can I promote your products?', bodyHtml: null,
+      headersJson: '{"authentication-results":"mx; spf=pass dkim=pass dmarc=pass"}', receivedAt: '2026-06-24T09:20:00Z'
+    });
+    await store.setThreadClassification(tid, { status: 'needs_reply', primaryCategory: 'other', intentScore: 20, summary: 'Wants to promote', classifiedAt: '2026-06-24T09:21:00Z' });
+    const body = `Thank you for getting in touch about promoting our products. You can apply to our programme here: ${AFFILIATE_APPLY_URL}`;
+    const fakeFetch = (async () => new Response(JSON.stringify({
+      choices: [{ message: { content: JSON.stringify({ bodyText: body, confidence: 88, quotesPriceOrOrder: false }) } }], usage: { cost: 0.0001 }
+    }), { status: 200 })) as unknown as typeof fetch;
+    const result = await composeDraftForThread({ ...env, OPENROUTER_API_KEY: 'k' } as any, store, (await store.getConfig())!, (await store.getThreadWithMessages(tid))!.thread, withReader(fakeFetch));
+    const draft = await store.getDraft((result as { draftId: string }).draftId);
+    expect(draft?.body_text).toContain('Best Regards,\nActive Paw Partnerships');
+    expect(draft?.body_text).not.toContain('Customer Support');
   });
 
   it('Case C: lead thread carries the search-bar P.S. after the footer on the FIRST reply only', async () => {

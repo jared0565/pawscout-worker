@@ -9,7 +9,7 @@ import { draftReply, renderReplyHtml, applyFooter, stripTrailingSignoff, sanitiz
 import { threadFilesFor, contactFilesFor } from './attachments';
 import { autoSendDecision, mentionsMoney, withExtraHolds } from './autosend';
 import { sendReply } from './send';
-import { maybePartnershipDraft, detectPartnershipAsk } from './partnership';
+import { maybePartnershipDraft, detectPartnershipAsk, AFFILIATE_APPLY_URL } from './partnership';
 import { maybeAlertOwner } from './alert';
 import { proposeInvoice } from './propose-invoice';
 import { adminForShop } from './invoice-routes';
@@ -23,7 +23,7 @@ import { repeatsPriorOutbound, outboundBodies } from './repeat';
 import { recallAnswers, ensureAnswerBackfill } from './answer-memory';
 import { agentFor } from './agents/registry';
 import { resolveAgents } from './agents/config';
-import type { AgentContext, Department, Grounding } from './agents/types';
+import type { AgentContext, CategoryAgent, Department, Grounding } from './agents/types';
 import type { ThreadRow, InvoiceLineItem, DraftMeta } from './types';
 import { CjClient, CjTokenManager, cjFetchFromEnv } from '../cj';
 import { readThread, isSupplierRole, type ThreadReading } from './thread-read';
@@ -498,7 +498,7 @@ export async function composeDraftForThread(
   // The agent's P.S. rides only the FIRST reply of a thread (no outbound yet) so a
   // multi-turn conversation is not stamped with the same nudge on every message.
   const firstReply = !got.messages.some((m) => m.direction === 'outbound');
-  const composed = composeAgentDraft(draft, appendix, agent.department, firstReply ? agent.postscript ?? null : null);
+  const composed = composeAgentDraft(draft, appendix, signingDepartment(agent, draft.bodyText, reading), firstReply ? agent.postscript ?? null : null);
 
   // Auto-send gating: per-agent opt-in behind the global Auto switch, computed on the
   // LLM body ONLY (composed.quotesPriceOrder) so a trusted appendix figure does not
@@ -561,6 +561,20 @@ async function draftOne(env: Env, store: TenantStore, cfg: TenantConfig, thread:
     const fresh = await store.getThreadWithMessages(thread.id);
     if (draftRow && fresh) await sendReply(env, store, cfg, fresh.thread, draftRow, undefined, fetchImpl);
   }
+}
+
+/** Which desk signs a reply (design 2026-11-14, 7.1). A partnership reply
+ * drafted in the general lane (the reading says marketer or creator, or the
+ * body carries the affiliate apply link, which covers a failed reading) is
+ * signed "Active Paw Partnerships"; a customer enquiry in that lane stays with
+ * Customer Support, and every other lane keeps its own desk. Lives here, not in
+ * draft.ts: partnership.ts imports draft.ts, so draft.ts must not import it. */
+export function signingDepartment(
+  agent: Pick<CategoryAgent, 'category' | 'department'>, body: string, reading: ThreadReading | null
+): Department {
+  if (agent.category !== 'other') return agent.department;
+  const partnerRole = reading?.senderRole === 'marketer' || reading?.senderRole === 'creator';
+  return partnerRole || body.includes(AFFILIATE_APPLY_URL) ? 'partnership' : agent.department;
 }
 
 /** Combine the LLM body with an optional TRUSTED appendix and the deterministic
