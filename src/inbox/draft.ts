@@ -228,11 +228,24 @@ export type TranscriptFile = Pick<AttachmentRow, 'message_id' | 'filename' | 'st
 const TRANSCRIPT_FILE_NAME_MAX = 80;
 const TRANSCRIPT_FILES_MAX = 10;
 
+/** Fold untrusted text to the form the model reads before any marker check:
+ * NFKC turns full-width letters and colons into plain ones, and invisible
+ * format characters (zero-width spaces and joiners) are removed, so neither
+ * can hide a marker from the neutraliser (security review 2026-11-14).
+ * Look-alike letters from other scripts are not folded; the file rules in
+ * draft-quality.ts decide from the stored rows, never from this text. */
+function normalizeUntrusted(s: string): string {
+  return s.normalize('NFKC').replace(/\p{Cf}/gu, '');
+}
+
 /** A filename as it may appear inside our bracketed marker: one line, no
- * brackets, at most 80 characters with its extension kept. */
+ * brackets, no commas (one file must never read as two), no marker phrase,
+ * at most 80 characters with its extension kept. */
 function transcriptFileName(raw: string): string {
-  // eslint-disable-next-line no-control-regex
-  const name = raw.replace(/[\u0000-\u001f\u007f]/g, '').replace(/\[/g, '(').replace(/\]/g, ')').replace(/\s+/g, ' ').trim() || 'file';
+  const folded = normalizeUntrusted(raw)
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u001f\u007f]/g, '').replace(/\[/g, '(').replace(/\]/g, ')').replace(/,/g, ' ');
+  const name = neutralizeRoleMarkers(folded).replace(/\s+/g, ' ').trim() || 'file';
   if (name.length <= TRANSCRIPT_FILE_NAME_MAX) return name;
   const dot = name.lastIndexOf('.');
   const ext = dot > 0 && name.length - dot <= 10 ? name.slice(dot) : '';
@@ -267,7 +280,7 @@ export function buildDraftTranscript(messages: MessageRow[], files: ReadonlyArra
     const raw = (m.body_text ?? '').trim();
     if (m.direction === 'inbound') {
       const lines = fileLines(files.filter((f) => f.message_id === m.id));
-      const text = raw ? neutralizeRoleMarkers(stripQuotedReply(raw) || raw).trim() : '';
+      const text = raw ? neutralizeRoleMarkers(normalizeUntrusted(stripQuotedReply(raw) || raw)).trim() : '';
       // A message that is only a file still shows the file it carried.
       if (text || lines) turns.push(`${TRANSCRIPT_CUSTOMER}: ${text || '(no message text)'}${lines}`);
     } else if (raw) {
