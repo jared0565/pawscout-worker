@@ -26,6 +26,36 @@ function splitRefs(value: string | undefined): string[] {
   return value.split(/\s+/).map((s) => s.trim()).filter(Boolean);
 }
 
+/** One log line per message: each file part's declared type, disposition,
+ * Content-ID, whether it sat in multipart/related, whether the HTML shows it
+ * (cid:), and its size. Never a filename (sender-chosen, may be personal).
+ * Added after the 2026-11-14 live test, where Gmail rebuilt the MIME in
+ * transit and the delivered part headers could not be recovered. */
+export function describeParts(p: Pick<ParsedEmail, 'attachments'>): string {
+  return (p.attachments ?? []).map((a) => {
+    const cid = bareCid(a.contentId);
+    const cidOut = cid ? cid.replace(/[^\x21-\x7e]/g, '?').slice(0, 60) : '-';
+    return `${a.contentType || '?'} disp=${a.disposition ?? '-'} cid=${cidOut} related=${a.related ? 1 : 0} shown=${a.shown ? 1 : 0} ${a.bytes.byteLength}B`;
+  }).join('; ');
+}
+
+/** A Content-ID without its angle brackets. */
+function bareCid(contentId: string | null | undefined): string {
+  return (contentId ?? '').trim().replace(/^<|>$/g, '');
+}
+
+/** Every cid: the HTML refers to, percent-decoded and lower-cased (RFC 2392
+ * allows encoding; senders vary the case). */
+function cidRefsIn(html: string | null | undefined): Set<string> {
+  const refs = new Set<string>();
+  for (const m of (html ?? '').matchAll(/\bcid:([^"'\s)>]+)/gi)) {
+    let ref = m[1];
+    try { ref = decodeURIComponent(ref); } catch { /* a malformed escape stays as written */ }
+    refs.add(ref.toLowerCase());
+  }
+  return refs;
+}
+
 /** Parse raw RFC822 bytes into a normalized ParsedEmail. Never throws on a
  * malformed body - returns best-effort fields (empty text rather than reject). */
 export async function parseInbound(raw: ArrayBuffer | Uint8Array | string): Promise<ParsedEmail> {
@@ -34,8 +64,10 @@ export async function parseInbound(raw: ArrayBuffer | Uint8Array | string): Prom
     const headers = lowerHeaders(email.headers ?? []);
     // File parts (spec 2026-11-14 inbox attachments, 5.1). Judged and stored
     // later, at ingest; here they are only cut out of the MIME.
+    const shownCids = cidRefsIn(email.html);
     const attachments: InboundAttachment[] = (email.attachments ?? []).map((a, i) => {
       const contentType = (a.mimeType ?? '').toLowerCase();
+      const cid = bareCid(a.contentId).toLowerCase();
       const content = a.content;
       const bytes = typeof content === 'string' ? new TextEncoder().encode(content)
         : content instanceof Uint8Array ? content : new Uint8Array(content);
@@ -45,6 +77,7 @@ export async function parseInbound(raw: ArrayBuffer | Uint8Array | string): Prom
         disposition: a.disposition ?? null,
         contentId: a.contentId ?? null,
         related: !!a.related,
+        shown: cid !== '' && shownCids.has(cid),
         bytes,
       };
     });

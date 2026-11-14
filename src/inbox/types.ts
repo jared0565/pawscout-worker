@@ -75,6 +75,9 @@ export interface InboundAttachment {
   disposition: 'attachment' | 'inline' | null;
   contentId: string | null;
   related: boolean;
+  /** The message's HTML displays this part by cid: (a signature logo, in any
+   * disposition: Gmail delivers some as "attachment"). Set by parseInbound. */
+  shown?: boolean;
   bytes: Uint8Array;
 }
 

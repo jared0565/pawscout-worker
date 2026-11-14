@@ -572,4 +572,26 @@ describe('inbound files (ingest)', () => {
     expect((await store.getThreadWithMessages(r.threadId))!.messages).toHaveLength(1);
     expect(await store.listAttachmentsForThread(r.threadId)).toEqual([]);
   });
+
+  it('a signature logo Gmail delivered as an attachment the HTML shows by cid records no file (live test 2026-11-14)', async () => {
+    // The delivered shape, read on staging: image/png disp=attachment
+    // cid=att2_d4488a1191bd7050 related=0, shown by the HTML signature.
+    const store = new TenantStore(env.DB, SHOP);
+    const raw = [
+      'From: Kate <kate@supplier.example>', 'To: contact@activepaw.co.uk', 'Subject: Trade price list',
+      'Message-ID: <gm1@supplier.example>', 'Date: Sat, 14 Nov 2026 13:15:15 +0000', 'MIME-Version: 1.0',
+      'Content-Type: multipart/mixed; boundary="000000000000fd39f906603c55b7"', '',
+      '--000000000000fd39f906603c55b7', 'Content-Type: text/html; charset="UTF-8"', '',
+      '<p>Please find attached our trade price list.</p><p>Kate<br><img src="cid:att2_d4488a1191bd7050" width="120"></p>',
+      '--000000000000fd39f906603c55b7', 'Content-Type: application/pdf; name="price-list.pdf"',
+      'Content-Disposition: attachment; filename="price-list.pdf"', 'Content-Transfer-Encoding: base64', '', btoa('%PDF-1.4 test'),
+      '--000000000000fd39f906603c55b7', 'Content-Type: image/png; name="logo.png"',
+      'Content-Disposition: attachment; filename="logo.png"', 'Content-Transfer-Encoding: base64',
+      'Content-ID: <att2_d4488a1191bd7050>', 'X-Attachment-Id: att2_d4488a1191bd7050', '', btoa('\x89PNG small logo'),
+      '--000000000000fd39f906603c55b7--', ''
+    ].join('\r\n');
+    const r = await processInbound(store, raw, { files: bucket() });
+    const rows = await store.listAttachmentsForThread(r.threadId);
+    expect(rows.map((x) => [x.filename, x.status])).toEqual([['price-list.pdf', 'stored']]);
+  });
 });

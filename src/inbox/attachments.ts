@@ -96,8 +96,10 @@ export function attachmentDisposition(part: InboundAttachment, keptSoFar: number
   // recorded as refused, an S/MIME-signed email got "we were not able to accept
   // the file you sent".
   if (NOT_A_FILE_TYPE.test(type) || NOT_A_FILE_EXTENSIONS.has(ext)) return 'drop';
-  // A small inline image with a content id is a signature logo or a pixel.
-  const inlineish = part.disposition === 'inline' || part.related;
+  // A small inline image with a content id is a signature logo or a pixel. So
+  // is one the HTML shows by cid, whatever its disposition (live test
+  // 2026-11-14: Gmail delivered a signature logo as "attachment").
+  const inlineish = part.disposition === 'inline' || part.related || part.shown === true;
   if (inlineish && part.contentId && type.startsWith('image/') && part.bytes.byteLength < INLINE_LOGO_MAX_BYTES) return 'drop';
   if (!KEPT_EXTENSIONS.has(ext) || REFUSED_TYPE.test(type)) return 'skipped_type';
   if (part.bytes.byteLength > MAX_ATTACHMENT_BYTES) return 'skipped_size';
