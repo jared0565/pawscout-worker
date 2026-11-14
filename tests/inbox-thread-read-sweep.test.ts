@@ -207,6 +207,26 @@ describe('composeDraftForThread with the thread reader', () => {
     expect(body).not.toMatch(/dropshipping/i);
   });
 
+  // Design 2026-11-14 (8.2): the owner rules an off-niche supplier gets nothing
+  // about files and no questions, only a short note that their details are kept.
+  it('an off-niche supplier gets the short prompt, no owed questions and no file sentence', async () => {
+    const { s, tid } = await seed({ email: 'sales@solarpanels.cn', name: 'Wei', category: 'supplier', inbound: ['We make solar panels. Please find our catalogue attached.'] });
+    const offNiche = { ...supplierReading, supplier: { ...supplierReading.supplier, productLines: ['solar panels'], nicheFit: 'off-niche' } };
+    const { fetchImpl: inner } = llm(offNiche, { customerAsks: [], bodyText: 'Thank you for informing us! We have noted your details and keep them on file for reference.', confidence: 95, quotesPriceOrOrder: false, commercialIntent: false });
+    let drafterSystem = '';
+    const fetchImpl = (async (url: string, init: RequestInit) => {
+      if (String(url).includes('openrouter')) {
+        const sys = JSON.parse(String(init.body)).messages?.[0]?.content ?? '';
+        if (!sys.startsWith(THREAD_READER_MARKER)) drafterSystem = sys;
+      }
+      return inner(url, init);
+    }) as unknown as typeof fetch;
+    await composeDraftForThread(ENV, s, (await s.getConfig())!, (await s.getThreadWithMessages(tid))!.thread, fetchImpl);
+    const body = (await s.getPendingDraft(tid))!.body_text;
+    expect(drafterSystem).toContain('outside our range');
+    expect(body).not.toMatch(/your website or your Alibaba|dropshipping|did not reach us/i);
+  });
+
   it('writes no draft for a bare thank-you after our reply, and parks the thread', async () => {
     const { s, tid } = await seed({ email: 'a@x.com', name: 'Ayatullah', category: 'other', inbound: ['Would you be open to ideas?', 'Thank you for your response.'], outboundAfterFirst: 'Yes, this is Active Paw.' });
     const { fetchImpl, calls } = llm({ senderRole: 'marketer', openAsks: [], offered: '', alreadyAnswered: ['Yes, this is Active Paw'], replyNeeded: false });

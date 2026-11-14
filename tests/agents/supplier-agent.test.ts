@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { supplierAgent, SUPPLIER_PROMPT } from '../../src/inbox/agents/supplier';
+import { supplierAgent, SUPPLIER_PROMPT, OFF_NICHE_SUPPLIER_PROMPT, isOffNicheGrounding } from '../../src/inbox/agents/supplier';
+import type { AgentContext } from '../../src/inbox/agents/types';
 import { agentFor } from '../../src/inbox/agents/registry';
 import { DEPARTMENT_SIGNATURES } from '../../src/inbox/draft';
 import { INBOX_LABELS } from '../../src/inbox/types';
@@ -38,6 +39,28 @@ describe('supplier lane', () => {
     expect(SUPPLIER_PROMPT).toMatch(/question they asked/i); // a direct question is still answered
     expect(SUPPLIER_PROMPT).not.toMatch(/[\u2013\u2014]/);
     expect(supplierAgent.promptFragment({ confident: true, facts: '', quotesFigure: false })).toBe(SUPPLIER_PROMPT);
+  });
+
+  // Design 2026-11-14 (8.2): an off-niche supplier, as the register records it,
+  // gets the short acknowledgement prompt; anything else keeps the full flow.
+  it('grounds an off-niche supplier from the register and picks the short prompt', async () => {
+    const ctxFor = (getSupplier: () => Promise<unknown>) => ({ store: { getSupplier }, contactEmail: 'x@y.com' }) as unknown as AgentContext;
+    const off = await supplierAgent.ground(ctxFor(async () => ({ niche_fit: 'off-niche' })));
+    expect((off.data as { offNiche: boolean }).offNiche).toBe(true);
+    expect(isOffNicheGrounding(off)).toBe(true);
+    expect(supplierAgent.promptFragment(off)).toBe(OFF_NICHE_SUPPLIER_PROMPT);
+    for (const row of [{ niche_fit: 'adjacent' }, { niche_fit: 'on-niche' }, null]) {
+      const g = await supplierAgent.ground(ctxFor(async () => row));
+      expect((g.data as { offNiche: boolean }).offNiche).toBe(false);
+      expect(supplierAgent.promptFragment(g)).toBe(SUPPLIER_PROMPT);
+    }
+    // A register read failure never throws and keeps the full flow.
+    const failed = await supplierAgent.ground(ctxFor(async () => { throw new Error('d1 down'); }));
+    expect(isOffNicheGrounding(failed)).toBe(false);
+  });
+
+  it('the off-niche prompt is the spec copy: noted, on file, no files, no asks, no promises', () => {
+    expect(OFF_NICHE_SUPPLIER_PROMPT).toBe('This sender offers goods or services outside our range (dog and cat products). Write one or two short sentences after the opener: say we have noted their details and keep them on file for reference. Answer a direct question only from the store facts. Do not invite a catalogue or any file, do not ask for links, do not ask about dropshipping, do not mention files, and promise nothing.');
   });
 
   // Design 2026-11-14 (section 6 item 1, section 8.4): the catalogue invitation

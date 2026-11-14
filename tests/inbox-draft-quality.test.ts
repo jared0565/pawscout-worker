@@ -531,6 +531,17 @@ describe('honest replies about files (design 2026-11-14, section 6)', () => {
     expect(none).toMatch(/welcome to email/i);
   });
 
+  it('off-niche suppliers: no asks, no catalogue invitation, no file sentences, 40 words (design 8.2)', () => {
+    expect(supplierAsksOwed({ website: null, storeLinks: [], kind: 'goods', dropship: 'unknown', nicheFit: 'off-niche' }, [])).toEqual({ link: false, dropship: false });
+    expect(supplierAsksOwed({ website: null, storeLinks: [], kind: 'goods', dropship: 'unknown', nicheFit: 'adjacent' }, [])).toEqual({ link: true, dropship: true });
+    const invite = 'Thank you for informing us! You are welcome to send us your catalogue.';
+    expect(findDraftIssues(invite, { supplierLane: true, offNiche: true }).join(' ')).toMatch(/do not invite a catalogue/i);
+    expect(findDraftIssues(invite, { supplierLane: true })).toEqual([]);
+    const words45 = Array.from({ length: 45 }, (_, i) => (i === 0 ? 'Noted' : 'word')).join(' ') + '.';
+    expect(findDraftIssues(words45, { maxWords: 40 }).join(' ')).toMatch(/too long/i);
+    expect(fileAsksOwed({ ...NONE, offNiche: true }, 'catalogue attached')).toEqual({ missing: false, refused: false });
+  });
+
   it('the fixed sentences never echo a filename', () => {
     expect(FILE_MISSING_SENTENCE).toBe('Unfortunately the file you mentioned did not reach us. Could you send it again, or share a link to it?');
     expect(FILE_REFUSED_SENTENCE).toBe('We were not able to accept the file you sent. Could you send it as a PDF, or share a link to it?');

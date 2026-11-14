@@ -12,8 +12,10 @@ import { eventFacts } from './event-facts';
 import type { AdminGraphql } from '../shopify-admin';
 import { readingPromptBlock, type ThreadReading } from './thread-read';
 import { supplierFactsFor, type SupplierRow } from './supplier-register';
+import { isOffNicheGrounding } from './agents/supplier';
 
 const DRAFT_MAX_WORDS = 110; // conciseness ceiling: a warm courtesy wrapper + a grounded answer
+export const OFF_NICHE_MAX_WORDS = 40; // an off-niche supplier gets a short acknowledgement (design 2026-11-14, 8.2)
 // Lanes that meet buyers (owner rule 2026-09-21): the basket delivery sentence is asked of these only.
 const BUYING_LANES: ReadonlySet<string> = new Set(['lead', 'wholesale-b2b', 'product-question']);
 
@@ -469,10 +471,15 @@ export async function draftReply(
   // The asks are owed once per SUPPLIER (design 2026-11-14, 8.1): the reading is
   // merged with the register row, and our replies on every thread with them count.
   // The thread-level priorOutbound still drives the repeat check below.
+  // Off-niche (design 2026-11-14, 8.2), from the supplier grounding: no asks, no
+  // file sentences, no catalogue invitation, and at most 40 words.
+  const offNiche = supplierLane && isOffNicheGrounding(grounding);
+  const facts = supplierFactsFor(input.reading?.supplier, input.supplierRow);
   const supplierOwes = supplierLane
-    ? supplierAsksOwed(supplierFactsFor(input.reading?.supplier, input.supplierRow), input.contactOutbound ?? input.priorOutbound)
+    ? supplierAsksOwed(facts && offNiche ? { ...facts, nicheFit: 'off-niche' } : facts, input.contactOutbound ?? input.priorOutbound)
     : undefined;
-  const qctx: DraftQualityContext = { maxWords: DRAFT_MAX_WORDS, askedDelivery: asksDoYouDeliver(latest), priorOutbound: input.priorOutbound, customerText: latest, buyingLane: BUYING_LANES.has(agent.category), supplierLane, supplierOwes, files: input.files, openText: latest };
+  const files = input.files && offNiche ? { ...input.files, offNiche: true } : input.files;
+  const qctx: DraftQualityContext = { maxWords: offNiche ? OFF_NICHE_MAX_WORDS : DRAFT_MAX_WORDS, askedDelivery: asksDoYouDeliver(latest), priorOutbound: input.priorOutbound, customerText: latest, buyingLane: BUYING_LANES.has(agent.category), supplierLane, supplierOwes, offNiche, files, openText: latest };
   const refined = await refineUntilClean(
     result.value,
     (prev, issues) => reviseDraft(llm, store, chain, agent, grounding, guidance, latest, baseUser, prev.bodyText, issues, shippingFact, eventFact, input.recall, input.reading),
@@ -486,7 +493,7 @@ export async function draftReply(
   // one thank-you at the top, short paragraphs, and the greeting last.
   let body = stripTrailingSignoff(refined.bodyText);
   if (supplierOwes) body = appendSupplierAsks(body, supplierOwes);
-  const fileOwed = fileAsksOwed(input.files, latest);
+  const fileOwed = fileAsksOwed(files, latest);
   if (fileOwed.missing || fileOwed.refused) body = appendFileAsks(body, fileOwed);
   body = paragraphize(collapseRepeatedThanks(body));
 

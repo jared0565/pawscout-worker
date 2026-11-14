@@ -160,6 +160,7 @@ export interface DraftQualityContext {
   buyingLane?: boolean;     // the thread sits on a lane that meets buyers (lead, wholesale, product question)
   supplierLane?: boolean;   // supplier lane: the reply must promise nothing (owner decision 2026-09-27)
   supplierOwes?: SupplierOwed; // supplier lane: the questions this reply must ask (owner decision 2026-09-28)
+  offNiche?: boolean;       // supplier lane: the register files the sender off-niche (design 2026-11-14, 8.2)
   files?: FileContext;      // what the stored file rows say arrived (design 2026-11-14, section 6)
   openText?: string;        // the open inbound text, for the missing-file and refused-file rules
 }
@@ -188,7 +189,8 @@ export function supplierAsksOwed(
   facts: (Pick<SupplierFacts, 'website' | 'storeLinks' | 'kind' | 'dropship'> & { nicheFit?: SupplierFacts['nicheFit'] }) | null | undefined,
   priorOutbound: ReadonlyArray<string | null> | undefined
 ): SupplierOwed {
-  if (!facts) return { link: false, dropship: false };
+  // An off-niche supplier is asked nothing (design 2026-11-14, 8.2).
+  if (!facts || facts.nicheFit === 'off-niche') return { link: false, dropship: false };
   const prior = (priorOutbound ?? []).filter((b): b is string => !!b);
   return {
     link: !facts.website && facts.storeLinks.length === 0 && !prior.some(asksSupplierLink),
@@ -496,6 +498,9 @@ export function findDraftIssues(bodyText: string, ctx: DraftQualityContext = {})
       issues.push(`This supplier has not told us this yet and we have not asked. Keep the reply as it is and add a short question to ${asks.join(', and ')}. Ask nothing else and promise nothing.`);
     }
   }
+  if (ctx.supplierLane && ctx.offNiche && invitesFiles(bodyText)) {
+    issues.push('This supplier offers goods outside our range. Do not invite a catalogue or any file; say only that we have noted their details and keep them on file for reference.');
+  }
   if (ctx.files) {
     if (ctx.files.held.length === 0 && claimsFileReceived(bodyText)) {
       issues.push('This reply says a file, catalogue or document from them arrived, but none reached us. Remove every claim that a file arrived; nothing did.');
@@ -519,7 +524,11 @@ export function findDraftIssues(bodyText: string, ctx: DraftQualityContext = {})
     const filesPart = ctx.files?.held.length
       ? 'a brief acknowledgement of the files they already sent (never ask for a catalogue)'
       : 'that they are welcome to email their catalogue or product information';
-    issues.push(`This is a reply to a supplier and it promises or suggests something: an order, a review, a reply, a meeting, a call, samples, a partnership, the affiliate programme, or 'at this stage'. Remove every promise. Keep only: thanks for what they offered, ${filesPart}, any sentence saying a file did not reach us or could not be accepted, the request for their website or online store link, the question whether they offer dropshipping (goods and packaging only), and that we keep supplier details on file for reference.`);
+    // An off-niche supplier keeps only the short acknowledgement (design 8.2).
+    const keep = ctx.offNiche
+      ? 'the opening thank-you, and that we have noted their details and keep them on file for reference'
+      : `thanks for what they offered, ${filesPart}, any sentence saying a file did not reach us or could not be accepted, the request for their website or online store link, the question whether they offer dropshipping (goods and packaging only), and that we keep supplier details on file for reference`;
+    issues.push(`This is a reply to a supplier and it promises or suggests something: an order, a review, a reply, a meeting, a call, samples, a partnership, the affiliate programme, or 'at this stage'. Remove every promise. Keep only: ${keep}.`);
   }
   return issues;
 }
