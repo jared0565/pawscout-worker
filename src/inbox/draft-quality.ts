@@ -205,6 +205,66 @@ export function appendSupplierAsks(bodyText: string, owed: SupplierOwed): string
   return add.length ? `${bodyText.trimEnd()}\n\n${add.join(' ')}` : bodyText;
 }
 
+// --- Sentences, and one thank-you at the top (design 2026-11-14, 7.3, 7.4) ----
+
+// A boundary is ".", "!" or "?" (optionally closed by a quote or bracket)
+// followed by whitespace and a capital letter or digit. A URL, an email address
+// or a decimal never has whitespace after its inner dots, so it is never cut;
+// the listed abbreviations are skipped explicitly.
+const SENTENCE_END = /[.!?]+["')\]]*(?=\s+["'(]?[A-Z0-9])/g;
+const ABBREV_ANY_CASE = /(?:^|[\s(])(?:e\.g|i\.e|approx|etc)\.$/i;
+const ABBREV_TITLE = /(?:^|[\s(])(?:Mrs|Mr|Ms|Dr|St|No)\.$/;
+
+/** Sentence spans in `text`, as [start, end) offsets into it, whitespace between
+ * them excluded. Pure; the paragraph backstop and the thank-you check share it. */
+export function sentenceSpans(text: string): { start: number; end: number }[] {
+  const spans: { start: number; end: number }[] = [];
+  let start = text.search(/\S/);
+  if (start < 0) return spans;
+  const re = new RegExp(SENTENCE_END.source, 'g');
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    if (m.index < start) continue;
+    const head = text.slice(start, m.index + 1);
+    if (text[m.index] === '.' && (ABBREV_ANY_CASE.test(head) || ABBREV_TITLE.test(head))) continue;
+    const end = m.index + m[0].length;
+    spans.push({ start, end });
+    const next = text.slice(end).search(/\S/);
+    if (next < 0) return spans;
+    start = end + next;
+  }
+  const tail = text.slice(start).trimEnd();
+  if (tail) spans.push({ start, end: start + tail.length });
+  return spans;
+}
+
+const LEAD_GREETING = /^\s*(?:hi|hello|hey|dear)\b[^\n]*\n+/i;
+const THANKS_START = /^(?:thank(?:s|\s+you)|many\s+thanks)\b/i;
+
+/** Where the second opening thank-you sits: from its start to the start of the
+ * sentence after it (or the end), skipping a leading greeting line. */
+function secondThanks(body: string): { start: number; end: number } | null {
+  const lead = LEAD_GREETING.exec(body)?.[0].length ?? 0;
+  const rest = body.slice(lead);
+  const spans = sentenceSpans(rest);
+  if (spans.length < 2) return null;
+  const first = rest.slice(spans[0].start, spans[0].end);
+  const second = rest.slice(spans[1].start, spans[1].end);
+  if (!THANKS_START.test(first) || !THANKS_START.test(second)) return null;
+  return { start: lead + spans[1].start, end: spans[2] ? lead + spans[2].start : body.length };
+}
+
+/** The reply opens with a thank-you and the very next sentence thanks them again. */
+export function repeatsThanks(body: string): boolean { return secondThanks(body) !== null; }
+
+/** Backstop when the reviser leaves it: the second thank-you sentence is removed
+ * (safer than rewriting it), whether it sits in the opener's paragraph or opens
+ * the next one. */
+export function collapseRepeatedThanks(body: string): string {
+  const r = secondThanks(body);
+  return r ? (body.slice(0, r.start) + body.slice(r.end)).trimEnd() : body;
+}
+
 // --- Honest replies about files (design 2026-11-14, section 6) ----------------
 // Replies claimed catalogues we never held (FOOFEE thread 2d6559b9) and asked
 // for one that had arrived (thread de23fa70). These rules decide from the
@@ -421,6 +481,9 @@ export function findDraftIssues(bodyText: string, ctx: DraftQualityContext = {})
   }
   if (ctx.buyingLane && ctx.customerText && owesBasketDelivery(bodyText, ctx.customerText)) {
     issues.push("The customer wants several items or several orders. Keep the reply as it is and add ONE sentence saying that the delivery cost depends on their destination and what is in the basket, and that the exact total for the whole order is shown at checkout before payment. Never quote a delivery figure, and never say the cost goes up with the quantity ordered.");
+  }
+  if (repeatsThanks(bodyText)) {
+    issues.push('The reply thanks them twice at the start. Keep only the first thank-you and continue with the answer.');
   }
   if (claimsBusinessBiography(bodyText)) {
     issues.push("This reply states facts about the business itself (how long it has been trading, its size, or its customer base). No such fact exists in the grounded store facts, so it is invented. Remove the claim entirely: say warmly that details about the business are something we keep private, and offer help with products or orders instead.");

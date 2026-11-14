@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { hasFillerBookend, countWords, substanceWordCount, affirmsDelivery, statesDayRange, findDraftIssues, refineUntilClean, asksDoYouDeliver, claimsBusinessBiography, volunteersTradeDecline, owesBasketDelivery, promisesSupplier, supplierAsksOwed, asksSupplierLink, appendSupplierAsks, claimsFileReceived, invitesFiles, mentionsAttachment, fileAsksOwed, appendFileAsks, fileHoldReasons, FILE_MISSING_SENTENCE, FILE_REFUSED_SENTENCE } from '../src/inbox/draft-quality';
+import { hasFillerBookend, countWords, substanceWordCount, affirmsDelivery, statesDayRange, findDraftIssues, refineUntilClean, asksDoYouDeliver, claimsBusinessBiography, volunteersTradeDecline, owesBasketDelivery, promisesSupplier, supplierAsksOwed, asksSupplierLink, appendSupplierAsks, claimsFileReceived, invitesFiles, mentionsAttachment, fileAsksOwed, appendFileAsks, fileHoldReasons, FILE_MISSING_SENTENCE, FILE_REFUSED_SENTENCE, repeatsThanks, collapseRepeatedThanks } from '../src/inbox/draft-quality';
 import { SHARED_SCAFFOLDING } from '../src/inbox/agents/scaffolding';
 
 // The live fabrication this gate exists to catch (Azan's thread, 2026-07-05):
@@ -424,6 +424,31 @@ describe('supplier asks (owner decision 2026-09-28: the draft must ask what the 
     expect(appendSupplierAsks(ASKS_BOTH, { link: true, dropship: true })).toBe(ASKS_BOTH);
     expect(appendSupplierAsks(DOUKE_MISS, { link: false, dropship: false })).toBe(DOUKE_MISS);
     expect(promisesSupplier(both)).toBe(false);
+  });
+});
+
+describe('one thank-you at the top (design 2026-11-14, 7.3)', () => {
+  it('removes a second thank-you sentence at the top', () => {
+    const b = 'Thank you for informing us! Thank you for sharing details of your pet bowls range. Could you send your website link?';
+    expect(repeatsThanks(b)).toBe(true);
+    expect(collapseRepeatedThanks(b)).toBe('Thank you for informing us! Could you send your website link?');
+    expect(findDraftIssues(b).join(' ')).toContain('The reply thanks them twice at the start. Keep only the first thank-you and continue with the answer.');
+  });
+  it('leaves a single thank-you alone', () => {
+    expect(repeatsThanks('Thank you for your enquiry! Yes, we ship to Ireland.')).toBe(false);
+    expect(collapseRepeatedThanks('Thank you for your enquiry! Yes, we ship to Ireland.')).toBe('Thank you for your enquiry! Yes, we ship to Ireland.');
+  });
+  it('also catches the second thank-you opening the next paragraph', () => {
+    const b = 'Thank you for informing us!\n\nThanks for sharing your range. Could you send your website link?';
+    expect(repeatsThanks(b)).toBe(true);
+    expect(collapseRepeatedThanks(b)).toBe('Thank you for informing us!\n\nCould you send your website link?');
+  });
+  it('a thank-you later in the reply is not a repeat', () => {
+    const b = 'Thank you for your enquiry! Yes, we ship to Ireland. Thank you for your patience.';
+    expect(repeatsThanks(b)).toBe(false);
+  });
+  it('removes the repeat when it is the last sentence', () => {
+    expect(collapseRepeatedThanks('Thank you for informing us! Thanks again.')).toBe('Thank you for informing us!');
   });
 });
 

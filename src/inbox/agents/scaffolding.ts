@@ -82,7 +82,7 @@ export const COMMERCIAL_GUARDRAILS =
 export const OUTPUT_CONTRACT =
   'Respond with ONLY JSON in this field order: {' +
   '"customerAsks": <array of short strings: each a distinct thing the customer is asking; [] when there is no answerable question>, ' +
-  '"bodyText": <plain-text reply addressing ONLY customerAsks, grounded in the facts; no HTML, no invented sender name, no greeting and no sign-off (both are added automatically)>, ' +
+  '"bodyText": <plain-text reply addressing ONLY customerAsks, grounded in the facts; no HTML, no invented sender name, no greeting and no sign-off (both are added automatically); write short paragraphs of one to three sentences, with a blank line between them>, ' +
   '"confidence": <0-100 integer>, ' +
   '"quotesPriceOrOrder": <true if your reply states a price/discount or commits to an order/invoice, else false>, ' +
   '"commercialIntent": <true if your reply includes a concrete next step or grounded nudge, else false>}.';

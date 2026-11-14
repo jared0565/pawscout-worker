@@ -3,7 +3,14 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
 import { TenantStore } from '../src/tenant-store';
 import { LlmClient } from '../src/llm';
-import { draftReply, renderReplyHtml, openInboundText, openInboundTexts } from '../src/inbox/draft';
+import { draftReply, renderReplyHtml, openInboundText, openInboundTexts, paragraphize } from '../src/inbox/draft';
+import { OUTPUT_CONTRACT } from '../src/inbox/agents/scaffolding';
+
+describe('OUTPUT_CONTRACT paragraphs (design 2026-11-14, 7.4)', () => {
+  it('asks for short paragraphs whatever the guidance says', () => {
+    expect(OUTPUT_CONTRACT).toMatch(/short paragraphs of one to three sentences/);
+  });
+});
 import { DEFAULT_INBOX } from '../src/inbox/types';
 import type { CategoryAgent, Grounding } from '../src/inbox/agents/types';
 import { DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, type TenantConfig } from '../src/types';
@@ -212,6 +219,48 @@ describe('draftReply asks a buying-lane reply to a buyer of several for the bask
     const status = 'I placed 2 orders last week, where are they?';
     const d = await draftReply(sequenceLlm([noDelivery, withDelivery]), store, CFG, { agent: { ...stubAgent, category: 'order-status' }, grounding: GROUNDING, subject: '', conversation: `Customer: ${status}`, latestMessage: status });
     expect(d?.bodyText).not.toContain('shown at checkout');
+  });
+});
+
+describe('paragraphize (design 2026-11-14, 7.4)', () => {
+  it('puts the opener on its own and splits a long block into runs of two', () => {
+    expect(paragraphize('Thank you for your enquiry! Yes, we ship to Ireland. Delivery cost is shown at checkout. Orders are normally processed within 24 hours. Returns are 14 days.'))
+      .toBe('Thank you for your enquiry!\n\nYes, we ship to Ireland. Delivery cost is shown at checkout.\n\nOrders are normally processed within 24 hours. Returns are 14 days.');
+  });
+  it('keeps three sentences together', () => {
+    const b = 'Yes, we ship to Ireland. Delivery cost is shown at checkout. Returns are 14 days.';
+    expect(paragraphize(b)).toBe(b);
+  });
+  it('lets the last run hold three', () => {
+    expect(paragraphize('One here. Two here. Three here. Four here. Five here.')).toBe('One here. Two here.\n\nThree here. Four here. Five here.');
+  });
+  it('never splits inside e.g., Mr, a decimal, a URL or an email', () => {
+    const b = 'See https://activepaw.co.uk/products/a.b?x=1 for details. Price is 4.99 e.g. for one. Email contact@activepaw.co.uk. Mr. Smith agreed.';
+    expect(paragraphize(b).split('\n\n')).toEqual(['See https://activepaw.co.uk/products/a.b?x=1 for details. Price is 4.99 e.g. for one.', 'Email contact@activepaw.co.uk. Mr. Smith agreed.']);
+    expect(paragraphize('It is No. 5 in the range. Dr. Lee agreed. It costs approx. 3 pounds. It ships soon.').split('\n\n'))
+      .toEqual(['It is No. 5 in the range. Dr. Lee agreed.', 'It costs approx. 3 pounds. It ships soon.']);
+  });
+  it('leaves list lines as written', () => {
+    const b = 'Here are the options:\n- Small. Fits cats.\n- Large. Fits dogs. Very sturdy. Washable.';
+    expect(paragraphize(b)).toBe(b);
+  });
+  it('is idempotent', () => {
+    const b = 'Thank you for your enquiry! Yes, we ship to Ireland. Delivery cost is shown at checkout. Orders are normally processed within 24 hours. Returns are 14 days.\n\nOne. Two. Three. Four. Five. Six.';
+    expect(paragraphize(paragraphize(b))).toBe(paragraphize(b));
+  });
+});
+
+describe('draftReply finishing order (design 2026-11-14, 7.5)', () => {
+  it('one greeting, one thank-you, and paragraphs of at most three sentences', async () => {
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    const body = 'Thank you for your enquiry! Thank you for asking about our bowls. Yes, we ship to Ireland. Delivery cost is shown at checkout. Orders are normally processed within 24 hours. Returns are accepted within 14 days.';
+    const d = await draftReply(fakeLlm({ bodyText: body, confidence: 90, quotesPriceOrOrder: false }), store, CFG, { ...base, subject: 's', conversation: 'Do you ship to Ireland?', latestMessage: 'Do you ship to Ireland?', customerName: 'Jane' });
+    const text = d!.bodyText;
+    expect(text.startsWith('Hi Jane,\n\nThank you for your enquiry!\n\n')).toBe(true);
+    expect(text.match(/thank you/gi)).toHaveLength(1);
+    for (const para of text.split('\n\n').slice(1)) {
+      expect(para.split(/(?<=[.!?])\s+(?=[A-Z])/).length).toBeLessThanOrEqual(3);
+    }
   });
 });
 

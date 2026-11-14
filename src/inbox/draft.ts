@@ -6,7 +6,7 @@ import type { AttachmentRow, DraftResult, MessageRow } from './types';
 import { FILE_SKIP_LABELS, FILES_PROMPT_SENTENCE } from './attachments';
 import { SHARED_SCAFFOLDING, STORE_FACTS, COMMERCIAL_GUARDRAILS, OUTPUT_CONTRACT } from './agents/scaffolding';
 import type { CategoryAgent, Grounding } from './agents/types';
-import { refineUntilClean, asksDoYouDeliver, supplierAsksOwed, appendSupplierAsks, fileAsksOwed, appendFileAsks, type DraftQualityContext, type FileContext } from './draft-quality';
+import { refineUntilClean, asksDoYouDeliver, supplierAsksOwed, appendSupplierAsks, fileAsksOwed, appendFileAsks, collapseRepeatedThanks, sentenceSpans, type DraftQualityContext, type FileContext } from './draft-quality';
 import { stripQuotedReply } from './quote';
 import { eventFacts } from './event-facts';
 import type { AdminGraphql } from '../shopify-admin';
@@ -323,6 +323,38 @@ export function openInboundTexts(messages: ReadonlyArray<Pick<MessageRow, 'direc
     .filter(Boolean);
 }
 
+const LIST_LINE = /^\s*(?:[-*•]|\d+[.)])\s/m;
+const OPENER_SENTENCE = /^(?:thank(?:s|\s+you)|many\s+thanks)\b[^.!?]{0,80}!$/i;
+
+/** Short paragraphs, the backstop to the prompt's instruction (design
+ * 2026-11-14, 7.4). A short thank-you opener ending in "!" that shares the
+ * first paragraph with more text stands on its own, as the owner edits it; a
+ * paragraph of more than three sentences is cut into runs of two (the last run
+ * may hold three). A paragraph with a list line, or with single line breaks of
+ * the model's own, is left exactly as written. Idempotent. */
+export function paragraphize(body: string): string {
+  const out: string[] = [];
+  body.trim().split(/\n[^\S\n]*\n\s*/).forEach((p, i) => {
+    if (!p) return;
+    if (LIST_LINE.test(p) || p.includes('\n')) { out.push(p); return; }
+    let spans = sentenceSpans(p);
+    if (i === 0 && spans.length > 1 && OPENER_SENTENCE.test(p.slice(spans[0].start, spans[0].end))) {
+      out.push(p.slice(spans[0].start, spans[0].end));
+      spans = spans.slice(1);
+    } else if (spans.length <= 3) {
+      out.push(p);
+      return;
+    }
+    const run = (a: number, b: number) => p.slice(spans[a].start, spans[b].end);
+    if (spans.length <= 3) { out.push(run(0, spans.length - 1)); return; }
+    for (let k = 0; k < spans.length; k += 2) {
+      if (spans.length - k === 3) { out.push(run(k, k + 2)); break; }
+      out.push(run(k, Math.min(k + 1, spans.length - 1)));
+    }
+  });
+  return out.join('\n\n');
+}
+
 /** Shared JSON validator for a drafter response (initial draft AND revision). */
 function validateDraft(v: unknown): DraftResult | null {
   const o = v as Record<string, unknown>;
@@ -442,12 +474,15 @@ export async function draftReply(
   );
   // A sign-off the model added anyway comes off first, or the questions would sit
   // under it where the footer's own strip can no longer see it.
-  let body = supplierOwes ? appendSupplierAsks(stripTrailingSignoff(refined.bodyText), supplierOwes) : refined.bodyText;
-  // Files (design 2026-11-14, rules C and D): the fixed sentence for a file that
-  // was mentioned but never arrived, or that arrived and was refused, when the
-  // revisions still left it out. Same sign-off rule as the supplier questions.
+  // Finishing order (design 2026-11-14, 7.5): sign-off off, owed supplier
+  // questions, owed file sentences (rules C and D: a file mentioned but never
+  // arrived, or arrived and refused, that the revisions still left out), then
+  // one thank-you at the top, short paragraphs, and the greeting last.
+  let body = stripTrailingSignoff(refined.bodyText);
+  if (supplierOwes) body = appendSupplierAsks(body, supplierOwes);
   const fileOwed = fileAsksOwed(input.files, latest);
-  if (fileOwed.missing || fileOwed.refused) body = appendFileAsks(stripTrailingSignoff(body), fileOwed);
+  if (fileOwed.missing || fileOwed.refused) body = appendFileAsks(body, fileOwed);
+  body = paragraphize(collapseRepeatedThanks(body));
 
   return { ...refined, bodyText: applySalutation(body, input.customerName, input.customerEmail) };
 }
