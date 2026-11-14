@@ -411,3 +411,12 @@ describe('sender rules in one ordered block', () => {
     expect(SHARED_SCAFFOLDING).toContain('a warehousing, fulfilment or logistics offer is a supplier, never a prove-first pitch');
   });
 });
+
+// Thread f835069a (2026-10-29): "how long until it ships?" had no fact to
+// answer from. The owner's own wording, and never a warehouse claim.
+describe('processing-time store fact (design 2026-11-14)', () => {
+  it('says orders are normally processed within 24 hours, and names no warehouse', () => {
+    expect(STORE_FACTS).toContain('Orders are normally processed within 24 hours; at busy times it can take a little longer.');
+    expect(STORE_FACTS).not.toMatch(/from our warehouse/i);
+  });
+});

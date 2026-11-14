@@ -9,6 +9,9 @@ export const STORE_FACTS =
   // and the reply time are both published on the store's own policy pages.
   'The direct way to reach the team is by email at contact@activepaw.co.uk, and we reply within one working day; the contact form on the website reaches the same team. Give that address when a customer asks how to reach or contact us. ' +
   'Orders are fulfilled through our supplier network. Never claim or imply Active Paw ships or dispatches from its own UK warehouse, and never name the dispatch country. ' +
+  // Thread f835069a (2026-10-29): "how long until it ships?" had no fact to
+  // answer from. The owner's own wording (design 2026-11-14).
+  'Orders are normally processed within 24 hours; at busy times it can take a little longer. ' +
   'Delivery time varies by item and destination; we email a tracking link when an order is dispatched. Do not state a specific delivery time or date unless it is provided to you as grounded facts. ' +
   'Never tell a customer we cannot ship to their country; if you do not have the exact rate, say we can ship there and offer to confirm the cost and timeframe. ' +
   // Measured at the live checkout 2026-09-21 (a China-held item, UK and US
