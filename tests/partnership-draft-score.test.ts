@@ -5,6 +5,7 @@ import { TenantStore } from '../src/tenant-store';
 import { maybePartnershipDraft, buildQualifyingEmail } from '../src/inbox/partnership';
 import { DEFAULT_INBOX } from '../src/inbox/types';
 import { DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, type TenantConfig } from '../src/types';
+import { Vault } from '../src/vault';
 
 // The scoring branch serves both funnel variants (2026-07-04): 'funnel_voucher'
 // is the live default (screens for a discount-code trial); 'funnel_link' is the
@@ -21,9 +22,9 @@ const factsJson = (o: Record<string, unknown>) => JSON.stringify({
   channelUrls: ['https://tiktok.com/@dogmum'], disqualifier: 'none', audienceRelevance: 'pet_uk', acceptsTerms: 'yes',
   engagement: 'plausible', evidence: 'concrete', experience: 'some', method: 'content', specificity: 'specific', ...o });
 
-async function seedAnswered(shop: string) {
+async function seedAnswered(shop: string, contactName = 'Kasim') {
   const s = new TenantStore(env.DB, shop);
-  await s.upsertContact({ email: 'kasim@x.com', name: 'Kasim', phone: null });
+  await s.upsertContact({ email: 'kasim@x.com', name: contactName, phone: null });
   const tid = await s.createThread({ contactEmail: 'kasim@x.com', subject: 'Partnership', subjectNorm: 'partnership', receivedAt: '2026-06-22T10:00:00Z', initialStatus: 'needs_reply' });
   await s.setThreadClassification(tid, { status: 'needs_reply', primaryCategory: 'affiliate', intentScore: 60, summary: null, classifiedAt: '2026-06-22T10:00:01Z' });
   // original pitch (inbound)
@@ -40,6 +41,45 @@ async function runFunnel(s: TenantStore, tid: string, fetchImpl: typeof fetch, m
   const got = (await s.getThreadWithMessages(tid))!;
   return maybePartnershipDraft({ ...env, OPENROUTER_API_KEY: 'k' } as any, s, CFG, got.thread, got, fetchImpl, mode);
 }
+
+// The screening LLM call and the Shopify Admin API the auto-issue path reaches
+// through adminForShop: no active promotions, and the code is created.
+function screenAndShopify(facts: string): typeof fetch {
+  return (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input instanceof Request ? input.url : input);
+    if (url.includes('/admin/api/')) {
+      const q = String((JSON.parse(String(init?.body ?? '{}')) as { query?: string }).query ?? '');
+      const data = q.includes('pawscoutActivePromos')
+        ? { automaticDiscountNodes: { nodes: [] }, codeDiscountNodes: { nodes: [] } }
+        : q.includes('pawscoutVoucherCreate')
+          ? { discountCodeBasicCreate: { codeDiscountNode: { id: 'gid://shopify/DiscountCodeNode/1' }, userErrors: [] } }
+          : {};
+      return new Response(JSON.stringify({ data }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    return new Response(JSON.stringify({ choices: [{ message: { content: facts } }], usage: { prompt_tokens: 5, completion_tokens: 5 } }), { status: 200 });
+  }) as unknown as typeof fetch;
+}
+
+// Final review 2026-11-14: the greeting name (design 8.3) is for the greeting
+// only. The partner record and the code are still built from the contact's
+// own name, as before the greeting change.
+describe('auto-issue registers the partner under the contact name, not the greeting name', () => {
+  it('a passing voucher screen with auto-issue on records "Kasim Ali" and still greets "Hi Kasim,"', async () => {
+    const { s, tid } = await seedAnswered('ai.myshopify.com', 'Kasim Ali');
+    const vault = await Vault.fromMasterKey(env.PAWSCOUT_MASTER_KEY);
+    const dekWrapped = await vault.newTenantDek();
+    await s.upsertTenant({ accessTokenEnc: await vault.seal(dekWrapped, 'shpat_test'), dekWrapped, scopes: 'write_discounts' });
+    const cfg: TenantConfig = { ...CFG, inbox: { ...DEFAULT_INBOX, autoIssueVoucher: true, autosend: true } };
+    const got = (await s.getThreadWithMessages(tid))!;
+    const r = await maybePartnershipDraft({ ...env, OPENROUTER_API_KEY: 'k' } as any, s, cfg, got.thread, got, screenAndShopify(factsJson({})), 'funnel_voucher');
+    expect(r!.send).toBe(true); // the code was minted, so its invite goes out
+    const vouchers = await s.listAffiliateVouchers();
+    expect(vouchers).toHaveLength(1);
+    expect(vouchers[0].name).toBe('Kasim Ali');
+    expect(vouchers[0].code).toContain('KASIMALI');
+    expect((await s.getPendingDraft(tid))!.body_text).toMatch(/^Hi Kasim,/);
+  });
+});
 
 describe('partnership scoring branch (funnel_link mode, preserved programme)', () => {
   it('clear pass → form-invite draft, applicant passed_to_form', async () => {

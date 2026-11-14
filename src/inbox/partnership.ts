@@ -1085,6 +1085,9 @@ export async function maybePartnershipDraft(
   // The greeting name (design 2026-11-14, 8.3): the From name unless it is
   // poor, then the name they sign with, only if it is in their own text.
   const name = greetingName(contact?.name, reading?.senderName, thread.contact_email, { senderText: inboundText, company: reading?.supplier?.company });
+  // The greeting name is for the greeting only: the partner record and the
+  // code an auto-issue mints keep the contact's own name, as before.
+  const recordName = contact?.name ?? null;
 
   // Owner rule 2026-09-04: never the same message twice on a thread. Every
   // deterministic funnel body goes through here: a repeat becomes the shorter
@@ -1292,7 +1295,7 @@ export async function maybePartnershipDraft(
               issueNote = 'auto-issue skipped: Shopify connection unavailable';
             } else {
               const r = await issueVoucher(store, admin, {
-                email: thread.contact_email, name,
+                email: thread.contact_email, name: recordName,
                 pctOff: TRIAL_PCT_OFF_DEFAULT, commissionPct: STANDARD_COMMISSION_PCT
               });
               if (r.ok) issued = r;
