@@ -4020,6 +4020,21 @@ export async function writeJobCheckpoint(db: D1Database, shop: string, key: stri
   ).bind(shop, key, payload, now.toISOString(), new Date(now.getTime() + ttlMs).toISOString()).run();
 }
 
+/** R2 prefixes a GDPR erasure still owes (migration 0048, design 2026-11-14,
+ *  5.8): one shop's, or the oldest 500 across every shop (the daily stage,
+ *  which also covers a shop whose tenant row is already gone). */
+export async function listOwedFileErasures(db: D1Database, shop?: string): Promise<{ shop: string; prefix: string }[]> {
+  const rs = shop
+    ? await db.prepare(`SELECT shop, prefix FROM inbox_file_erasures WHERE shop = ?1 ORDER BY created_at`).bind(shop).all<{ shop: string; prefix: string }>()
+    : await db.prepare(`SELECT shop, prefix FROM inbox_file_erasures ORDER BY created_at LIMIT 500`).all<{ shop: string; prefix: string }>();
+  return rs.results ?? [];
+}
+
+/** An owed erasure whose R2 objects are all gone. */
+export async function clearOwedFileErasure(db: D1Database, shop: string, prefix: string): Promise<void> {
+  await db.prepare(`DELETE FROM inbox_file_erasures WHERE shop = ?1 AND prefix = ?2`).bind(shop, prefix).run();
+}
+
 /** Enforce the 30-day retention promise on cached supplier data. */
 export async function purgeExpiredSearchCache(db: D1Database): Promise<number> {
   const r = await db.prepare(`DELETE FROM search_cache WHERE expires_at <= ?1`).bind(new Date().toISOString()).run();

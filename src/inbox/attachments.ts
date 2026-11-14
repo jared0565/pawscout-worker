@@ -8,7 +8,7 @@
 // part: keep it, drop it silently (signature logos, calendar invites), or
 // record why it was not kept so the console and the drafter stay truthful.
 import type { InboundAttachment } from './types';
-import { TenantStore } from '../tenant-store';
+import { TenantStore, listOwedFileErasures, clearOwedFileErasure } from '../tenant-store';
 import type { Env } from '../types';
 import { hmacHex, timingSafeEqual } from '../retention';
 
@@ -196,12 +196,9 @@ const ERASE_PAGE = 1000;     // R2 deletes at most 1000 keys per call
 const ERASE_MAX_PAGES = 200; // bound one run; the daily stage carries the rest
 
 export async function eraseOwedFiles(bucket: R2Bucket, db: D1Database, shop?: string): Promise<{ deleted: number; remaining: number }> {
-  const rs = shop
-    ? await db.prepare(`SELECT shop, prefix FROM inbox_file_erasures WHERE shop = ?1 ORDER BY created_at`).bind(shop).all<{ shop: string; prefix: string }>()
-    : await db.prepare(`SELECT shop, prefix FROM inbox_file_erasures ORDER BY created_at LIMIT 500`).all<{ shop: string; prefix: string }>();
   let deleted = 0;
   let remaining = 0;
-  for (const row of rs.results ?? []) {
+  for (const row of await listOwedFileErasures(db, shop)) {
     // Never delete outside the shop's own inbox prefix: an empty or foreign
     // prefix would otherwise list (and delete) the whole bucket.
     if (!row.prefix.startsWith(`inbox/${row.shop}/`)) {
@@ -219,7 +216,7 @@ export async function eraseOwedFiles(bucket: R2Bucket, db: D1Database, shop?: st
         deleted += keys.length;
       }
       if (done) {
-        await db.prepare(`DELETE FROM inbox_file_erasures WHERE shop = ?1 AND prefix = ?2`).bind(row.shop, row.prefix).run();
+        await clearOwedFileErasure(db, row.shop, row.prefix);
       } else {
         remaining++;
       }
