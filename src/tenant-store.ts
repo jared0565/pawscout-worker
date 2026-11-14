@@ -3,7 +3,17 @@ import type { LogisticsRoute } from './logistics';
 import { deriveModels } from './llm-migrate';
 import { validateModelMenuPayload } from './validate';
 import { DEFAULT_INBOX, type InboxConfig } from './inbox/types';
-import type { ContactRow, ThreadRow, MessageRow, ThreadStatus, DraftRow, DraftStatus, DraftMeta, InvoiceRow, InvoiceLineItem, InvoiceStatus, ApplicantRow, PartnershipStage, ScreenVerdict } from './inbox/types';
+import type { ContactRow, ThreadRow, MessageRow, ThreadStatus, DraftRow, DraftStatus, DraftMeta, InvoiceRow, InvoiceLineItem, InvoiceStatus, ApplicantRow, PartnershipStage, ScreenVerdict, AttachmentRow } from './inbox/types';
+
+/** What an inbound message insert takes (insertInboundMessage / insertInboundMessageIfNew). */
+export interface InboundMessageInput {
+  threadId: string; messageId: string | null; inReplyTo: string | null; references: string[];
+  from: string; to: string | null; subject: string | null; bodyText: string | null;
+  bodyHtml: string | null; headersJson: string | null; receivedAt: string;
+  /** The DMARC result for `from`; leave it out when `from` was not the
+   *  authenticated sender (a contact-form post). */
+  dmarc?: string | null;
+}
 import { mergeSupplier, SUPPLIER_STATUSES, type SupplierFacts, type SupplierRow, type SupplierStatus } from './inbox/supplier-register';
 import { isOtherAlertMarker } from './order-alert';
 
@@ -761,6 +771,17 @@ export class TenantStore {
     if (!e) return 0;
     const sub = `(SELECT id FROM inbox_threads WHERE shop = ?1 AND contact_email = ?2)`;
     const statements = [
+      // Inbound files (design 2026-11-14, 5.8): the R2 prefixes this erasure
+      // owes are recorded FIRST, in the same batch, while the threads still
+      // exist; eraseOwedFiles (webhook waitUntil, then the daily stage)
+      // finishes the R2 side. The webhook is never retried, so the record is
+      // what makes a failed R2 delete recoverable.
+      this.db.prepare(`INSERT OR IGNORE INTO inbox_file_erasures (shop, prefix, created_at)
+                       SELECT ?1, 'inbox/' || ?1 || '/' || id || '/', ?3 FROM inbox_threads WHERE shop = ?1 AND contact_email = ?2`)
+        .bind(this.shop, e, new Date().toISOString()),
+      this.db.prepare(`DELETE FROM inbox_attachments WHERE shop = ?1 AND thread_id IN ${sub}`).bind(this.shop, e),
+      // The supplier register holds the contact's name and email.
+      this.db.prepare(`DELETE FROM supplier_register WHERE shop = ?1 AND email = ?2`).bind(this.shop, e),
       this.db.prepare(`DELETE FROM inbox_thread_labels WHERE shop = ?1 AND thread_id IN ${sub}`).bind(this.shop, e),
       this.db.prepare(`DELETE FROM inbox_messages WHERE shop = ?1 AND thread_id IN ${sub}`).bind(this.shop, e),
       this.db.prepare(`DELETE FROM inbox_drafts WHERE shop = ?1 AND thread_id IN ${sub}`).bind(this.shop, e),
@@ -780,17 +801,25 @@ export class TenantStore {
   }
 
   /** GDPR customers/data-request: count inbox records we hold for one contact email. */
-  async inboxDataSummary(email: string): Promise<{ threads: number; messages: number; invoices: number }> {
+  async inboxDataSummary(email: string): Promise<{ threads: number; messages: number; invoices: number; attachments: number }> {
     const e = email.trim().toLowerCase();
     const t = await this.db.prepare(`SELECT COUNT(*) AS n FROM inbox_threads WHERE shop = ?1 AND contact_email = ?2`).bind(this.shop, e).first<{ n: number }>();
     const m = await this.db.prepare(`SELECT COUNT(*) AS n FROM inbox_messages WHERE shop = ?1 AND thread_id IN (SELECT id FROM inbox_threads WHERE shop = ?1 AND contact_email = ?2)`).bind(this.shop, e).first<{ n: number }>();
     const inv = await this.db.prepare(`SELECT COUNT(*) AS n FROM inbox_invoices WHERE shop = ?1 AND thread_id IN (SELECT id FROM inbox_threads WHERE shop = ?1 AND contact_email = ?2)`).bind(this.shop, e).first<{ n: number }>();
-    return { threads: t?.n ?? 0, messages: m?.n ?? 0, invoices: inv?.n ?? 0 };
+    const att = await this.db.prepare(`SELECT COUNT(*) AS n FROM inbox_attachments WHERE shop = ?1 AND thread_id IN (SELECT id FROM inbox_threads WHERE shop = ?1 AND contact_email = ?2)`).bind(this.shop, e).first<{ n: number }>();
+    return { threads: t?.n ?? 0, messages: m?.n ?? 0, invoices: inv?.n ?? 0, attachments: att?.n ?? 0 };
   }
 
   /** shop/redact: purge ALL data for this shop (sent ~48h after uninstall). */
   async redactShop(): Promise<void> {
     await this.db.batch([
+      // Every stored file of the shop is owed for R2 deletion (design
+      // 2026-11-14, 5.8); the daily file-erasures stage finishes it even
+      // though the tenant row below is gone.
+      this.db.prepare(`INSERT OR IGNORE INTO inbox_file_erasures (shop, prefix, created_at) VALUES (?1, ?2, ?3)`)
+        .bind(this.shop, `inbox/${this.shop}/`, new Date().toISOString()),
+      this.db.prepare(`DELETE FROM inbox_attachments WHERE shop = ?1`).bind(this.shop),
+      this.db.prepare(`DELETE FROM supplier_register WHERE shop = ?1`).bind(this.shop),
       this.db.prepare(`DELETE FROM orders WHERE shop = ?1`).bind(this.shop),
       this.db.prepare(`DELETE FROM order_events WHERE shop = ?1`).bind(this.shop),
       this.db.prepare(`DELETE FROM product_events WHERE shop = ?1`).bind(this.shop),
@@ -2274,15 +2303,16 @@ export class TenantStore {
   }
 
   /** Insert an inbound message; false if its Message-ID was already stored (dedup). */
-  async insertInboundMessageIfNew(m: {
-    threadId: string; messageId: string | null; inReplyTo: string | null; references: string[];
-    from: string; to: string | null; subject: string | null; bodyText: string | null;
-    bodyHtml: string | null; headersJson: string | null; receivedAt: string;
-    /** The DMARC result for `from`; leave it out when `from` was not the
-     *  authenticated sender (a contact-form post). */
-    dmarc?: string | null;
-  }): Promise<boolean> {
+  async insertInboundMessageIfNew(m: InboundMessageInput): Promise<boolean> {
+    return (await this.insertInboundMessage(m)) !== null;
+  }
+
+  /** Insert an inbound message and return its new row id, or null if its
+   *  Message-ID was already stored (dedup). Ingest needs the id to attach the
+   *  message's files to it (design 2026-11-14, 5.4). */
+  async insertInboundMessage(m: InboundMessageInput): Promise<string | null> {
     const now = new Date().toISOString();
+    const id = crypto.randomUUID();
     const r = await this.db
       .prepare(
         `INSERT INTO inbox_messages
@@ -2290,10 +2320,44 @@ export class TenantStore {
          VALUES (?1, ?2, ?3, 'inbound', ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
          ON CONFLICT(shop, message_id) DO NOTHING`
       )
-      .bind(this.shop, crypto.randomUUID(), m.threadId, m.messageId, m.inReplyTo,
+      .bind(this.shop, id, m.threadId, m.messageId, m.inReplyTo,
         m.references.join(' ') || null, m.from, m.to, m.subject, m.bodyText, m.bodyHtml, m.headersJson, m.receivedAt, now, m.dmarc ?? null)
       .run();
-    return (r.meta.changes ?? 0) > 0;
+    return (r.meta.changes ?? 0) > 0 ? id : null;
+  }
+
+  // --- Inbound files (migration 0048, design 2026-11-14) ---
+
+  async insertAttachment(r: Omit<AttachmentRow, 'shop' | 'created_at'>): Promise<void> {
+    await this.db
+      .prepare(`INSERT INTO inbox_attachments (shop, id, thread_id, message_id, filename, content_type, size_bytes, status, r2_key, created_at)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)`)
+      .bind(this.shop, r.id, r.thread_id, r.message_id, r.filename, r.content_type, r.size_bytes, r.status, r.r2_key, new Date().toISOString())
+      .run();
+  }
+
+  async listAttachmentsForThread(threadId: string): Promise<AttachmentRow[]> {
+    const rs = await this.db
+      .prepare(`SELECT * FROM inbox_attachments WHERE shop = ?1 AND thread_id = ?2 ORDER BY created_at, id`)
+      .bind(this.shop, threadId).all<AttachmentRow>();
+    return rs.results ?? [];
+  }
+
+  /** Every file record from one contact, across all of their threads. */
+  async listAttachmentsForContact(email: string): Promise<AttachmentRow[]> {
+    const rs = await this.db
+      .prepare(`SELECT a.* FROM inbox_attachments a
+                WHERE a.shop = ?1 AND a.thread_id IN (SELECT id FROM inbox_threads WHERE shop = ?1 AND contact_email = ?2)
+                ORDER BY a.created_at, a.id`)
+      .bind(this.shop, email.trim().toLowerCase()).all<AttachmentRow>();
+    return rs.results ?? [];
+  }
+
+  /** A stored file's record; null for a skipped part, another shop's id, or none. */
+  getStoredAttachment(id: string): Promise<AttachmentRow | null> {
+    return this.db
+      .prepare(`SELECT * FROM inbox_attachments WHERE shop = ?1 AND id = ?2 AND status = 'stored'`)
+      .bind(this.shop, id).first<AttachmentRow>();
   }
 
   async touchThread(threadId: string, lastMessageAt: string): Promise<void> {
@@ -2524,6 +2588,20 @@ export class TenantStore {
       .prepare(`UPDATE inbox_threads SET reading_json = ?3, read_at = ?4 WHERE shop = ?1 AND id = ?2`)
       .bind(this.shop, threadId, reading, new Date().toISOString())
       .run();
+  }
+
+  /** Our sent replies to one contact across ALL of their threads, newest first
+   *  (design 2026-11-14, 8.1): a supplier question asked on an earlier thread is
+   *  never asked again on the next one. */
+  async outboundBodiesForContact(email: string, limit = 20): Promise<string[]> {
+    const lim = Math.min(Math.max(Math.floor(limit), 1), 100);
+    const rs = await this.db.prepare(
+      `SELECT m.body_text FROM inbox_messages m
+       JOIN inbox_threads t ON t.shop = m.shop AND t.id = m.thread_id
+       WHERE m.shop = ?1 AND m.direction = 'outbound' AND t.contact_email = ?2
+       ORDER BY m.received_at DESC LIMIT ${lim}`
+    ).bind(this.shop, email.trim().toLowerCase()).all<{ body_text: string | null }>();
+    return (rs.results ?? []).map((r) => r.body_text ?? '').filter(Boolean);
   }
 
   getSupplier(email: string): Promise<SupplierRow | null> {
@@ -3954,6 +4032,21 @@ export async function writeJobCheckpoint(db: D1Database, shop: string, key: stri
     `INSERT INTO search_cache (shop, cache_key, payload, created_at, expires_at) VALUES (?1, ?2, ?3, ?4, ?5)
      ON CONFLICT(shop, cache_key) DO UPDATE SET payload = ?3, expires_at = ?5`
   ).bind(shop, key, payload, now.toISOString(), new Date(now.getTime() + ttlMs).toISOString()).run();
+}
+
+/** R2 prefixes a GDPR erasure still owes (migration 0048, design 2026-11-14,
+ *  5.8): one shop's, or the oldest 500 across every shop (the daily stage,
+ *  which also covers a shop whose tenant row is already gone). */
+export async function listOwedFileErasures(db: D1Database, shop?: string): Promise<{ shop: string; prefix: string }[]> {
+  const rs = shop
+    ? await db.prepare(`SELECT shop, prefix FROM inbox_file_erasures WHERE shop = ?1 ORDER BY created_at`).bind(shop).all<{ shop: string; prefix: string }>()
+    : await db.prepare(`SELECT shop, prefix FROM inbox_file_erasures ORDER BY created_at LIMIT 500`).all<{ shop: string; prefix: string }>();
+  return rs.results ?? [];
+}
+
+/** An owed erasure whose R2 objects are all gone. */
+export async function clearOwedFileErasure(db: D1Database, shop: string, prefix: string): Promise<void> {
+  await db.prepare(`DELETE FROM inbox_file_erasures WHERE shop = ?1 AND prefix = ?2`).bind(shop, prefix).run();
 }
 
 /** Enforce the 30-day retention promise on cached supplier data. */

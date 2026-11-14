@@ -2,7 +2,8 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
 import { TenantStore } from '../src/tenant-store';
-import { mergeSupplier, type SupplierFacts } from '../src/inbox/supplier-register';
+import { mergeSupplier, supplierFactsFor, type SupplierFacts, type SupplierRow } from '../src/inbox/supplier-register';
+import { supplierAsksOwed } from '../src/inbox/draft-quality';
 
 beforeEach(async () => { await applyD1Migrations(env.DB, env.TEST_MIGRATIONS); });
 const SHOP = 'a.myshopify.com';
@@ -12,6 +13,38 @@ const facts = (over: Partial<SupplierFacts> = {}): SupplierFacts => ({
   kind: 'goods', productLines: ['tofu cat litter'], shipsFrom: 'CN', nicheFit: 'on-niche', dropship: 'unknown', ...over
 });
 const meta = { email: 'sales@doukecatlitter.com', threadId: 't1', seenAt: '2026-09-24T16:11:15Z', inboundCount: 1 };
+
+describe('supplierFactsFor (design 2026-11-14, 8.1)', () => {
+  const row = (over: Partial<SupplierRow> = {}): SupplierRow => ({ shop: SHOP, ...mergeSupplier(null, facts(), meta), ...over });
+
+  it('the register fills a gap the reading leaves, so the link is not owed', () => {
+    const f = supplierFactsFor(facts({ website: null }), row({ website: 'https://foofee.example' }));
+    expect(f?.website).toBe('https://foofee.example');
+    expect(supplierAsksOwed(f, []).link).toBe(false);
+  });
+  it('store links from both are combined', () => {
+    expect(supplierFactsFor(facts({ storeLinks: ['a'] }), row({ store_links: JSON.stringify(['b']) }))?.storeLinks).toEqual(['a', 'b']);
+  });
+  it('a known dropshipping answer wins over unknown, from either side', () => {
+    expect(supplierFactsFor(facts({ dropship: 'unknown' }), row({ dropship: 'yes' }))?.dropship).toBe('yes');
+    expect(supplierFactsFor(facts({ dropship: 'no' }), row({ dropship: 'unknown' }))?.dropship).toBe('no');
+  });
+  it('kind and niche fit come from the reading, else the register', () => {
+    expect(supplierFactsFor(facts({ nicheFit: 'adjacent' }), row({ niche_fit: 'off-niche' }))?.nicheFit).toBe('adjacent');
+    const fromRow = supplierFactsFor(null, row({ niche_fit: 'off-niche', kind: 'packaging' }));
+    expect(fromRow?.nicheFit).toBe('off-niche');
+    expect(fromRow?.kind).toBe('packaging');
+  });
+  it('is null only when both are absent', () => {
+    expect(supplierFactsFor(null, null)).toBeNull();
+    expect(supplierFactsFor(undefined, undefined)).toBeNull();
+    expect(supplierFactsFor(facts(), null)?.kind).toBe('goods');
+  });
+  it('a question asked on another thread with the contact counts as asked', () => {
+    const contactOutbound = ['Thank you for informing us! Do you offer dropshipping, meaning sending single orders directly to our customers?'];
+    expect(supplierAsksOwed(supplierFactsFor(facts(), null), contactOutbound).dropship).toBe(false);
+  });
+});
 
 describe('mergeSupplier', () => {
   it('creates a new row with status new and the first thread', () => {

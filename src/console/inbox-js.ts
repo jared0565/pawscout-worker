@@ -282,10 +282,31 @@ async function openInboxThread(id){
   try{
     var r=await api('/inbox/thread',{id:id});
     if(!r.ok){ if(tl) tl.innerHTML='<div class="ibx-empty"><p class="msg no">'+esc(r.error||'Failed to load thread')+'</p></div>'; return; }
-    renderInboxThread(r.thread,r.messages||[],r.labels||[],r.draft||null,r.invoice||null,r.applicant||null,r.contact||null,r.partnerPool||'none',(r.partnerConsent===true||r.partnerConsent===false)?r.partnerConsent:null,r.events||[]);
+    renderInboxThread(r.thread,r.messages||[],r.labels||[],r.draft||null,r.invoice||null,r.applicant||null,r.contact||null,r.partnerPool||'none',(r.partnerConsent===true||r.partnerConsent===false)?r.partnerConsent:null,r.events||[],r.attachments||[]);
   }catch(e){ if(tl) tl.innerHTML='<div class="ibx-empty"><p class="msg no">'+esc(errText(e))+'</p></div>'; }
 }
-function renderInboxThread(thread,messages,labels,draft,invoice,applicant,contact,partnerPool,partnerConsent,events){
+// Inbound files (design 2026-11-14, 5.6): under each message, its files. A
+// stored one gets a Download link (signed by the server when the thread
+// loaded, opened in a new tab, always served as a download); one not kept
+// shows why. Only an https link is ever made clickable.
+var IBX_FILE_SKIP={skipped_type:'file type not accepted',skipped_size:'over 20 MB',skipped_count:'more than 10 files',store_failed:'could not be saved'};
+function ibxFileSize(n){ n=Number(n)||0; return n>=1048576?(Math.round(n/104857.6)/10)+' MB':Math.max(1,Math.round(n/1024))+' KB'; }
+function ibxFilesFor(mid,files){
+  var h='';
+  for(var i=0;i<(files||[]).length;i++){
+    var f=files[i];
+    if(!f||f.messageId!==mid) continue;
+    var name=esc(f.filename||'file');
+    if(f.status==='stored'){
+      var safe=(typeof f.url==='string'&&f.url.indexOf('https:')===0)?f.url:'';
+      h+='<div class="ibx-file">'+name+' ('+ibxFileSize(f.sizeBytes)+')'+(safe?' <a href="'+esc(safe)+'" target="_blank" rel="noopener noreferrer">Download ↗</a>':'')+'</div>';
+    }else{
+      h+='<div class="ibx-file muted">'+name+' <span>not kept: '+esc(IBX_FILE_SKIP[f.status]||'not kept')+'</span></div>';
+    }
+  }
+  return h?'<div class="ibx-files"><span class="muted">Files</span>'+h+'</div>':'';
+}
+function renderInboxThread(thread,messages,labels,draft,invoice,applicant,contact,partnerPool,partnerConsent,events,attachments){
   var head=el('ibx-convo-head'), tl=el('ibx-timeline');
   if(!head||!tl) return;
   inboxInvoiceItems=[];
@@ -320,6 +341,7 @@ function renderInboxThread(thread,messages,labels,draft,invoice,applicant,contac
     msgHtml+='<div class="ibx-bubble '+(isOut?'out':'in')+'">'
       +'<div class="ibx-bubble__hdr">'+dir+(ts?' · '+ts:'')+'</div>'
       +'<div class="ibx-bubble__body">'+esc(m.body_text||'(no body)')+'</div>'
+      +(isOut?'':ibxFilesFor(m.id,attachments))
       +'</div>';
   }
   // Template picker: swaps the pending draft for a canonical server-rendered

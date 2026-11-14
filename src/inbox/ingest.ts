@@ -3,12 +3,15 @@ import type { ParsedEmail, ThreadStatus } from './types';
 import { parseInbound, extractContactForm } from './mime';
 import { parseAuthResults, isAutomated, isHardSpam, normalizeSubject } from './gates';
 import { repeatVerdict, isRepeatOf, looksLikeCustomerMessage, PROTECTED_CATEGORIES } from './repeat';
+import { storeInboundAttachments } from './attachments';
 
 /** Store one parsed inbound email: resolve the real sender, match-or-create the
  * thread, insert the message (deduped), and set the thread's initial status from
  * the mechanical gates. Automated/spam threads are pre-classified so the LLM
- * sweep skips them. Returns the thread id and whether the message was a dup. */
-export async function ingestParsed(store: TenantStore, p: ParsedEmail): Promise<{ threadId: string; deduped: boolean }> {
+ * sweep skips them. Returns the thread id and whether the message was a dup.
+ * `opts.files` is the R2 bucket for the message's file parts (design
+ * 2026-11-14); without it, kept parts are recorded as store_failed. */
+export async function ingestParsed(store: TenantStore, p: ParsedEmail, opts: { files?: R2Bucket } = {}): Promise<{ threadId: string; deduped: boolean }> {
   // Resolve the true visitor (a Shopify form notification hides them behind a no-reply sender).
   const form = extractContactForm(p);
   const email = form?.email ?? p.from.email;
@@ -76,13 +79,17 @@ export async function ingestParsed(store: TenantStore, p: ParsedEmail): Promise<
     threadId = matchedThreadId;
   }
 
-  const inserted = await store.insertInboundMessageIfNew({
+  const messageRowId = await store.insertInboundMessage({
     threadId, messageId: p.messageId, inReplyTo: p.inReplyTo, references: p.references,
     from: email, to: p.to[0] ?? null, subject: p.subject, bodyText, bodyHtml: p.html,
     headersJson: JSON.stringify(p.headers).slice(0, 8000), receivedAt: p.date,
     // A form post's DMARC result is the relay's, not the typed address's.
     dmarc: form ? null : auth.dmarc
   });
+  const inserted = messageRowId !== null;
+  // Whether this thread ends as spam after the rules below; a spam thread keeps
+  // no files (design 5.2).
+  let endedSpam = spam;
 
   if (inserted) {
     await store.touchThread(threadId, p.date);
@@ -122,10 +129,12 @@ export async function ingestParsed(store: TenantStore, p: ParsedEmail): Promise<
       const copies = authedEarlier.filter((e) => isRepeatOf(bodyText, e.body_text)).length + 1;
       await store.blockContact(email, `repeat message: same text sent ${copies} times, blocked at ingest`);
       await markThreadSpam(store, threadId, 'Repeated the same message after our reply - sender blocked');
+      endedSpam = true;
     } else if (blocked && isExistingThread) {
       // A blocked sender writing on one of their OLD threads: that thread joins
       // the spam pile too, so it cannot sit in the queue asking for a reply.
       await markThreadSpam(store, threadId, 'Blocked sender');
+      endedSpam = true;
     } else if (isExistingThread && !automated && !spam) {
       // Multi-turn: an inbound on an active existing thread re-opens it for a fresh reply.
       // Guard: only if this message is genuinely new (inserted) - a duplicate redelivery
@@ -137,6 +146,21 @@ export async function ingestParsed(store: TenantStore, p: ParsedEmail): Promise<
         await store.supersedePendingDrafts(threadId);
         await store.reopenThread(threadId); // → needs_reply (classified_at kept; category persists)
       }
+    }
+  }
+
+  // The message's files (design 2026-11-14, 5.4): only for a newly stored
+  // message on a thread that did not end as spam or automated. An existing
+  // thread can already be either, so its final row decides. Nothing here may
+  // fail the email: storeInboundAttachments never throws, and a failed status
+  // read only skips the files.
+  if (messageRowId !== null && !endedSpam && !automated && (p.attachments?.length ?? 0) > 0) {
+    try {
+      const final = (await store.getThreadWithMessages(threadId))?.thread;
+      const keeps = !!final && final.status !== 'spam' && final.primary_category !== 'spam' && final.primary_category !== 'automated';
+      if (keeps) await storeInboundAttachments(opts.files, store, { threadId, messageId: messageRowId, attachments: p.attachments ?? [] });
+    } catch (e) {
+      console.warn(`inbox attachment step skipped for ${threadId}: ${(e as Error).message}`);
     }
   }
 
@@ -155,7 +179,7 @@ async function markThreadSpam(store: TenantStore, threadId: string, summary: str
 }
 
 /** Parse raw RFC822 bytes then ingest. The thin core the email() handler calls. */
-export async function processInbound(store: TenantStore, raw: ArrayBuffer | Uint8Array | string): Promise<{ threadId: string; deduped: boolean }> {
+export async function processInbound(store: TenantStore, raw: ArrayBuffer | Uint8Array | string, opts: { files?: R2Bucket } = {}): Promise<{ threadId: string; deduped: boolean }> {
   const parsed = await parseInbound(raw);
-  return ingestParsed(store, parsed);
+  return ingestParsed(store, parsed, opts);
 }

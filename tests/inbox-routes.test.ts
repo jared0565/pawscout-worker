@@ -112,6 +112,24 @@ describe('inbox routes', () => {
     expect(r.ok).toBe(true);
     expect(r.messages![0].body_text).toBe('hello');
   });
+  // Design 2026-11-14 (inbox attachments), 5.5: the thread view carries its
+  // files, with a signed link for the stored ones only.
+  it("getInboxThread lists the thread's files with a signed url for stored ones only", async () => {
+    const tid = await seed();
+    const store = new TenantStore(env.DB, SHOP);
+    const msgId = (await store.getThreadWithMessages(tid))!.messages[0].id;
+    const kept = crypto.randomUUID();
+    const refused = crypto.randomUUID();
+    await store.insertAttachment({ id: kept, thread_id: tid, message_id: msgId, filename: 'cat.pdf', content_type: 'application/pdf', size_bytes: 10, status: 'stored', r2_key: `inbox/${SHOP}/${tid}/${kept}` });
+    await store.insertAttachment({ id: refused, thread_id: tid, message_id: msgId, filename: 'p.xlsm', content_type: 'application/octet-stream', size_bytes: 10, status: 'skipped_type', r2_key: null });
+    const r = await getInboxThread(env.DB, SHOP, tid, { secret: 's3cret', baseUrl: 'https://x' });
+    const files = r.attachments!;
+    expect(files.map((f) => [f.filename, f.status, f.messageId, f.sizeBytes])).toEqual([['cat.pdf', 'stored', msgId, 10], ['p.xlsm', 'skipped_type', msgId, 10]]);
+    expect(files[0].url).toMatch(new RegExp(`^https://x/inbox-file/${kept}\\?shop=a\\.myshopify\\.com&exp=\\d+&sig=[0-9a-f]{64}$`));
+    expect(files[1].url).toBeNull();
+    // Without signing options (no secret) nothing is linked.
+    expect((await getInboxThread(env.DB, SHOP, tid)).attachments!.every((f) => f.url === null)).toBe(true);
+  });
   it('sets status and labels with validation', async () => {
     const tid = await seed();
     expect((await setInboxStatus(env.DB, SHOP, tid, 'closed')).ok).toBe(true);
@@ -350,10 +368,36 @@ describe('applyDraftTemplate', () => {
     expect(r.ok).toBe(true);
     const body = (r as { draft?: { body_text?: string } }).draft?.body_text ?? '';
     expect(body).toContain('Hi Jane,');
-    expect(body).toMatch(/thank you for sending/i);
+    expect(body).toMatch(/thank you for informing us!/i);
+    expect(body).toMatch(/welcome to email over your catalogue/i);
     expect(body).toMatch(/for reference/i);
     expect(body).not.toMatch(/declin|not a fit|in-house|affiliate|commission/i);
     expect(await s.getApplicantByThread(tid)).toBeNull(); // stage untouched
+  });
+
+  // Design 2026-11-14 (8.3): the picker greets with the saved reading's name
+  // when the From name is poor ("Cat Cages/HOMWOOD" used to give "Hi Cat,").
+  it('the template picker greets by the name the sender signs with when the From name is poor', async () => {
+    const { s, tid } = await seedWithConfig();
+    const email = (await s.getThreadWithMessages(tid))!.thread.contact_email;
+    await env.DB.prepare(`UPDATE inbox_contacts SET name = 'Cat Cages/HOMWOOD' WHERE shop = ?1 AND email = ?2`).bind(SHOP, email).run();
+    await env.DB.prepare(`UPDATE inbox_messages SET body_text = body_text || ' Best regards, Jennie' WHERE shop = ?1 AND thread_id = ?2 AND direction = 'inbound'`).bind(SHOP, tid).run();
+    await s.saveThreadReading(tid, JSON.stringify({ senderRole: 'goods-supplier', openAsks: [], offered: '', alreadyAnswered: [], replyNeeded: true, supplier: {}, productQuery: null, senderName: 'Jennie' }));
+    const r = await applyDraftTemplate(env.DB, SHOP, tid, 'supplier_ack');
+    const body = (r as { draft?: { body_text?: string } }).draft?.body_text ?? '';
+    expect(body.startsWith('Hi Jennie,')).toBe(true);
+  });
+
+  // Design 2026-11-14 (section 6, item 4): a supplier whose file we hold is
+  // never asked for a catalogue by the template either.
+  it('the supplier acknowledgement drops the catalogue sentence when a file from them is held', async () => {
+    const { s, tid } = await seedWithConfig();
+    const mid = (await s.getThreadWithMessages(tid))!.messages[0].id;
+    await s.insertAttachment({ id: 'f1', thread_id: tid, message_id: mid, filename: 'catalogue.pdf', content_type: 'application/pdf', size_bytes: 10, status: 'stored', r2_key: `inbox/${SHOP}/${tid}/f1` });
+    const r = await applyDraftTemplate(env.DB, SHOP, tid, 'supplier_ack');
+    const body = (r as { draft?: { body_text?: string } }).draft?.body_text ?? '';
+    expect(body).not.toMatch(/catalogue|price list/i);
+    expect(body).toMatch(/dropshipping/i);
   });
 
   it('refuses the retired service decline key', async () => {

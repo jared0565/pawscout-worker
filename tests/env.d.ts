@@ -28,6 +28,8 @@ declare global {
       DB: D1Database;
       PAWSCOUT_MASTER_KEY: string;
       TEST_MIGRATIONS: D1Migration[];
+      // Inbound email files (design 2026-11-14), bound from wrangler.toml.
+      INBOX_FILES: R2Bucket;
     }
   }
 }

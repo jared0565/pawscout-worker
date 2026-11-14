@@ -1,5 +1,6 @@
 import type { AffiliateMode, ScreenFacts, ScreenVerdict, ThreadRow, MessageRow } from './types';
-import { applySalutation, renderReplyHtml, applyFooter, draftReply, buildDraftTranscript, openInboundTexts } from './draft';
+import { applySalutation, renderReplyHtml, applyFooter, draftReply, buildDraftTranscript, openInboundTexts, greetingName } from './draft';
+import { threadFilesFor } from './attachments';
 import { stripQuotedReply } from './quote';
 import { chooseTouch, outboundBodies, repeatsPriorOutbound, type TouchKind } from './repeat';
 import type { CategoryAgent, Grounding } from './agents/types';
@@ -484,15 +485,20 @@ Active Paw Partnerships`;
 // decision 2026-09-27: the information they offer is welcome, and we ask for
 // their website or online store and whether they dropship, because the store
 // runs on dropshipping. Still no commitment. Signed by the Sourcing Team.
-const SUPPLIER_ACK_BODY =
-`Thank you for sending over your product information - we appreciate you thinking of Active Paw.
-
-You are welcome to email over your catalogue, price list or product listing. If you have a website or an Alibaba or other online store, please send us the link for our reference, and let us know whether you offer dropshipping, that is, sending single orders directly to our customers.
-
-We keep supplier details on file for reference.
+// Design 2026-11-14 (section 6, item 4): it opens with the owner's own supplier
+// line, and a supplier whose file we already hold is not invited to send a
+// catalogue again; the link and dropshipping question always stays.
+const SUPPLIER_ACK_OPENER = 'Thank you for informing us!';
+const SUPPLIER_ACK_INVITE = 'You are welcome to email over your catalogue, price list or product listing. ';
+const SUPPLIER_ACK_ASKS = 'If you have a website or an Alibaba or other online store, please send us the link for our reference, and let us know whether you offer dropshipping, that is, sending single orders directly to our customers.';
+const SUPPLIER_ACK_CLOSE = `We keep supplier details on file for reference.
 
 Best Regards,
 Active Paw Sourcing Team`;
+
+function supplierAckBody(filesHeld: boolean): string {
+  return `${SUPPLIER_ACK_OPENER}\n\n${filesHeld ? '' : SUPPLIER_ACK_INVITE}${SUPPLIER_ACK_ASKS}\n\n${SUPPLIER_ACK_CLOSE}`;
+}
 
 // For messages that probe our goals/strategy/performance rather than pitch a
 // service outright (e.g. "what's your main priority, traffic or revenue?") -
@@ -734,7 +740,9 @@ export function buildSignupInvite(
   return applySalutation(body, name);
 }
 export function buildServiceProveFirst(name: string | null): string { return applySalutation(SERVICE_PROVE_FIRST_BODY, name); }
-export function buildSupplierAck(name: string | null): string { return applySalutation(SUPPLIER_ACK_BODY, name); }
+export function buildSupplierAck(name: string | null, opts: { filesHeld?: boolean } = {}): string {
+  return applySalutation(supplierAckBody(opts.filesHeld === true), name);
+}
 export function buildAccessDecline(name: string | null): string { return applySalutation(ACCESS_DECLINE_BODY, name); }
 export function buildOperationsDecline(name: string | null): string { return applySalutation(OPERATIONS_DECLINE_BODY, name); }
 export function buildFormInvite(name: string | null): string { return applySalutation(FORM_INVITE_BODY, name); }
@@ -926,7 +934,7 @@ async function draftAcceptedPartnerReply(
     const draft = await draftReply(llm, store, cfg, {
       agent: partnerSupportAgent,
       grounding: { confident: true, facts, quotesFigure: false },
-      subject: thread.subject ?? '', conversation: buildDraftTranscript(got.messages),
+      subject: thread.subject ?? '', conversation: buildDraftTranscript(got.messages, await threadFilesFor(store, thread.id)),
       latestMessage: latestText, customerName: name, customerEmail: thread.contact_email,
     });
     if (draft) return applyFooter(draft.bodyText, 'partnership');
@@ -1073,8 +1081,13 @@ export async function maybePartnershipDraft(
       && !isPartnershipLane({ inboundToAddrs, declaredIntent, primaryCategory: thread.primary_category, inboundTexts: openInboundTexts(got.messages) })) return null;
 
   const contact = await store.getContactByEmail(thread.contact_email);
-  const name = contact?.name ?? null;
   const inboundText = got.messages.filter((m) => m.direction === 'inbound').map((m) => stripQuotedReply(m.body_text ?? '')).join('\n\n');
+  // The greeting name (design 2026-11-14, 8.3): the From name unless it is
+  // poor, then the name they sign with, only if it is in their own text.
+  const name = greetingName(contact?.name, reading?.senderName, thread.contact_email, { senderText: inboundText, company: reading?.supplier?.company });
+  // The greeting name is for the greeting only: the partner record and the
+  // code an auto-issue mints keep the contact's own name, as before.
+  const recordName = contact?.name ?? null;
 
   // Owner rule 2026-09-04: never the same message twice on a thread. Every
   // deterministic funnel body goes through here: a repeat becomes the shorter
@@ -1282,7 +1295,7 @@ export async function maybePartnershipDraft(
               issueNote = 'auto-issue skipped: Shopify connection unavailable';
             } else {
               const r = await issueVoucher(store, admin, {
-                email: thread.contact_email, name,
+                email: thread.contact_email, name: recordName,
                 pctOff: TRIAL_PCT_OFF_DEFAULT, commissionPct: STANDARD_COMMISSION_PCT
               });
               if (r.ok) issued = r;

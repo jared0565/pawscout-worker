@@ -49,6 +49,30 @@ const supplierReading = { senderRole: 'goods-supplier', openAsks: [], offered: '
   supplier: { company: 'Hebei Douke Pet Products', contactName: 'Sabrina Liu', website: null, storeLinks: [], kind: 'goods', productLines: ['tofu cat litter'], shipsFrom: 'CN', nicheFit: 'on-niche', dropship: 'unknown' } };
 
 describe('composeDraftForThread with the thread reader', () => {
+  it('both the reader and the drafter see which files arrived (design 2026-11-14, 5.7)', async () => {
+    const { s, tid } = await seed({ email: 'sales@doukecatlitter.com', name: 'Sabrina Liu', category: 'supplier', inbound: ['Please find our catalogue attached.'] });
+    const mid = (await s.getThreadWithMessages(tid))!.messages[0].id;
+    await s.insertAttachment({ id: 'a1', thread_id: tid, message_id: mid, filename: 'catalogue.pdf', content_type: 'application/pdf', size_bytes: 10, status: 'stored', r2_key: `inbox/${SHOP}/${tid}/a1` });
+    await s.insertAttachment({ id: 'a2', thread_id: tid, message_id: mid, filename: 'prices.xlsm', content_type: 'application/octet-stream', size_bytes: 10, status: 'skipped_type', r2_key: null });
+    const { fetchImpl: inner } = llm(supplierReading);
+    const bodies: { reader: boolean; body: string }[] = [];
+    const fetchImpl = (async (url: string, init: RequestInit) => {
+      if (String(url).includes('openrouter')) {
+        const body = String(init.body);
+        bodies.push({ reader: (JSON.parse(body).messages?.[0]?.content ?? '').startsWith(THREAD_READER_MARKER), body });
+      }
+      return inner(url, init);
+    }) as unknown as typeof fetch;
+    await composeDraftForThread(ENV, s, (await s.getConfig())!, (await s.getThreadWithMessages(tid))!.thread, fetchImpl);
+    const reader = bodies.find((b) => b.reader);
+    const drafter = bodies.find((b) => !b.reader);
+    for (const b of [reader, drafter]) {
+      expect(b?.body).toContain('[Files with this message: catalogue.pdf]');
+      expect(b?.body).toContain('[Files sent but not kept: prices.xlsm (file type not accepted)]');
+      expect(b?.body).toContain('lists the only files we hold from the sender');
+    }
+  });
+
   it('re-routes a supplier filed as other to the supplier lane, registers them, and drafts a Sourcing Team reply', async () => {
     const { s, tid } = await seed({ email: 'sales@doukecatlitter.com', name: 'Sabrina Liu', category: 'other', inbound: ['We are an OEM tofu cat litter factory. Would a catalogue be of interest?'] });
     const { fetchImpl } = llm(supplierReading);
@@ -100,6 +124,33 @@ describe('composeDraftForThread with the thread reader', () => {
     expect(JSON.parse(draft!.hold_reasons!)).toContain('supplier_commitment');
   });
 
+  // FOOFEE thread 2d6559b9 (design 2026-11-14, rule A): the reply thanked them
+  // for a catalogue we never held. The model keeps the claim through both
+  // revisions, so the draft is held, and the missing-file sentence is added.
+  it('a supplier draft that still claims a receipt is held with file_claim', async () => {
+    const { s, tid } = await seed({ email: 'info@foofee.com', name: 'Mia', category: 'supplier', inbound: ['Please find our catalogue attached.'] });
+    const foofee = 'Thank you for sending the FOOFEE catalogue and the details of your range. We have received the information.';
+    const { fetchImpl, calls } = llm(supplierReading, { customerAsks: [], bodyText: foofee, confidence: 95, quotesPriceOrOrder: false, commercialIntent: false });
+    await composeDraftForThread(ENV, s, (await s.getConfig())!, (await s.getThreadWithMessages(tid))!.thread, fetchImpl);
+    const draft = await s.getPendingDraft(tid);
+    expect(JSON.parse(draft!.hold_reasons!)).toContain('file_claim');
+    expect(draft!.body_text).toContain('Unfortunately the file you mentioned did not reach us. Could you send it again, or share a link to it?');
+    expect(calls.filter((c) => c === 'draft').length).toBe(3); // the reviser was asked first
+  });
+
+  it('a refused file gets the refused-file sentence, and a held file is never claimed falsely', async () => {
+    const { s, tid } = await seed({ email: 'info@bowls.com', name: 'Ann', category: 'supplier', inbound: ['Our prices are attached.'] });
+    const mid = (await s.getThreadWithMessages(tid))!.messages[0].id;
+    await s.insertAttachment({ id: 'r1', thread_id: tid, message_id: mid, filename: 'prices.xlsm', content_type: 'application/octet-stream', size_bytes: 10, status: 'skipped_type', r2_key: null });
+    const plain = 'Thank you for your message about your bowls range. We keep supplier details on file for reference.';
+    const { fetchImpl } = llm(supplierReading, { customerAsks: [], bodyText: plain, confidence: 95, quotesPriceOrOrder: false, commercialIntent: false });
+    await composeDraftForThread(ENV, s, (await s.getConfig())!, (await s.getThreadWithMessages(tid))!.thread, fetchImpl);
+    const draft = await s.getPendingDraft(tid);
+    expect(draft!.body_text).toContain('We were not able to accept the file you sent. Could you send it as a PDF, or share a link to it?');
+    expect(draft!.body_text).not.toContain('did not reach us'); // a record exists, so rule C stays quiet
+    expect(JSON.parse(draft!.hold_reasons ?? '[]')).not.toContain('file_claim');
+  });
+
   // Owner decision 2026-09-28 (the Douke preview asked for neither): a supplier
   // who gave no link and no dropshipping answer is asked both, even when the
   // model and both revisions keep leaving the questions out.
@@ -136,6 +187,44 @@ describe('composeDraftForThread with the thread reader', () => {
     const draft = await s.getPendingDraft(tid);
     expect(draft?.body_text).toContain('Do you offer dropshipping');
     expect(draft?.body_text).not.toMatch(/your website or your Alibaba/i);
+  });
+
+  // FOOFEE (design 2026-11-14, 8.1): the second thread from the same supplier
+  // re-asked for the link and the dropshipping answer that the first thread's
+  // reply had already asked for. The asks are owed once per supplier now.
+  it('a second thread from the same supplier is not asked again what the first reply asked', async () => {
+    const email = 'info@foofee.com';
+    const { s } = await seed({ email, name: 'Mia', category: 'supplier', inbound: ['We make pet bowls.'],
+      outboundAfterFirst: 'Thank you for informing us! Could you send us the link to your website or your Alibaba or other online store, for our reference? Do you offer dropshipping, meaning sending single orders directly to our customers?' });
+    const tid2 = await s.createThread({ contactEmail: email, subject: 'New range', subjectNorm: 'new range', receivedAt: '2026-10-01T10:00:00Z', initialStatus: 'new' });
+    await s.insertInboundMessageIfNew({ threadId: tid2, messageId: '<foofee2@x>', inReplyTo: null, references: [], from: email, to: 'contact@activepaw.co.uk', subject: 'New range', bodyText: 'Here is our new bowls range for 2027.', bodyHtml: null, headersJson: '{}', receivedAt: '2026-10-01T10:00:00Z' });
+    await s.setThreadClassification(tid2, { status: 'needs_reply', primaryCategory: 'supplier', intentScore: 10, summary: 's', classifiedAt: '2026-10-01T10:05:00Z' });
+    const plain = 'Thank you for informing us! We keep supplier details on file for reference.';
+    const { fetchImpl } = llm(supplierReading, { customerAsks: [], bodyText: plain, confidence: 95, quotesPriceOrOrder: false, commercialIntent: false });
+    await composeDraftForThread(ENV, s, (await s.getConfig())!, (await s.getThreadWithMessages(tid2))!.thread, fetchImpl);
+    const body = (await s.getPendingDraft(tid2))!.body_text;
+    expect(body).not.toMatch(/your website or your Alibaba/i);
+    expect(body).not.toMatch(/dropshipping/i);
+  });
+
+  // Design 2026-11-14 (8.2): the owner rules an off-niche supplier gets nothing
+  // about files and no questions, only a short note that their details are kept.
+  it('an off-niche supplier gets the short prompt, no owed questions and no file sentence', async () => {
+    const { s, tid } = await seed({ email: 'sales@solarpanels.cn', name: 'Wei', category: 'supplier', inbound: ['We make solar panels. Please find our catalogue attached.'] });
+    const offNiche = { ...supplierReading, supplier: { ...supplierReading.supplier, productLines: ['solar panels'], nicheFit: 'off-niche' } };
+    const { fetchImpl: inner } = llm(offNiche, { customerAsks: [], bodyText: 'Thank you for informing us! We have noted your details and keep them on file for reference.', confidence: 95, quotesPriceOrOrder: false, commercialIntent: false });
+    let drafterSystem = '';
+    const fetchImpl = (async (url: string, init: RequestInit) => {
+      if (String(url).includes('openrouter')) {
+        const sys = JSON.parse(String(init.body)).messages?.[0]?.content ?? '';
+        if (!sys.startsWith(THREAD_READER_MARKER)) drafterSystem = sys;
+      }
+      return inner(url, init);
+    }) as unknown as typeof fetch;
+    await composeDraftForThread(ENV, s, (await s.getConfig())!, (await s.getThreadWithMessages(tid))!.thread, fetchImpl);
+    const body = (await s.getPendingDraft(tid))!.body_text;
+    expect(drafterSystem).toContain('outside our range');
+    expect(body).not.toMatch(/your website or your Alibaba|dropshipping|did not reach us/i);
   });
 
   it('writes no draft for a bare thank-you after our reply, and parks the thread', async () => {

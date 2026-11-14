@@ -8,7 +8,9 @@ import { startSupplierBackfill, readBackfillCursor } from './supplier-backfill';
 import { SUPPLIER_STATUSES, type SupplierStatus } from './supplier-register';
 import { buildServiceProveFirst, buildSupplierAck, buildAccessDecline, buildOperationsDecline, buildCollaborationDecline, buildKeepToEmail, buildSignupInvite, detectRateAboveStandard, detectOffPlatformRequest, buildSecondTouch, buildPointerBack, type TouchTemplate } from './partnership';
 import { chooseTouch, outboundBodies, type TouchKind } from './repeat';
-import { renderReplyHtml, openInboundText } from './draft';
+import { renderReplyHtml, openInboundText, greetingName } from './draft';
+import { validateReading, type ThreadReading } from './thread-read';
+import { fileUrl, contactFilesFor } from './attachments';
 import { stripQuotedReply } from './quote';
 import { defaultFetch } from '../safe-fetch';
 
@@ -34,10 +36,17 @@ export async function listInboxThreads(db: D1Database, shop: string, status: str
   };
 }
 
-export async function getInboxThread(db: D1Database, shop: string, threadId: string) {
+/** `files` signs a download link for each stored file (design 2026-11-14, 5.5);
+ * without it (no secret) the files are listed with no link. */
+export async function getInboxThread(db: D1Database, shop: string, threadId: string, files?: { secret: string; baseUrl: string; nowSec?: number }) {
   const store = new TenantStore(db, shop);
   const got = await store.getThreadWithMessages(threadId);
   if (!got) return { ok: false as const, error: 'Thread not found' };
+  const nowSec = files?.nowSec ?? Math.floor(Date.now() / 1000);
+  const attachments = await Promise.all((await store.listAttachmentsForThread(threadId)).map(async (a) => ({
+    id: a.id, messageId: a.message_id, filename: a.filename, sizeBytes: a.size_bytes, status: a.status,
+    url: a.status === 'stored' && files?.secret && files.baseUrl ? await fileUrl(files.baseUrl, files.secret, shop, a.id, nowSec) : null,
+  })));
   const draft = await store.getPendingDraft(threadId);
   const invoice = await store.getOpenInvoiceForThread(threadId);
   const applicant = await store.getApplicantByThread(threadId);
@@ -47,7 +56,7 @@ export async function getInboxThread(db: D1Database, shop: string, threadId: str
   // Email engagement (2026-07-12): this thread's delivery/open/click events,
   // matched by the send-time thread_id tag - the rail's engagement block.
   const events = await store.listThreadEmailEvents(threadId);
-  return { ok: true as const, thread: got.thread, messages: got.messages, labels: got.labels, draft, invoice, applicant, contact, partnerPool, partnerConsent, events };
+  return { ok: true as const, thread: got.thread, messages: got.messages, labels: got.labels, draft, invoice, applicant, contact, partnerPool, partnerConsent, events, attachments };
 }
 
 /** Marketing opt-in flipped from the sender's own thread (2026-07-06): the
@@ -263,7 +272,14 @@ export async function applyDraftTemplate(db: D1Database, shop: string, threadId:
   const got = await store.getThreadWithMessages(threadId);
   if (!got) return { ok: false as const, error: 'Thread not found' };
   const contact = await store.getContactByEmail(got.thread.contact_email);
-  const name = contact?.name ?? null;
+  // The greeting name (design 2026-11-14, 8.3), from the thread's saved reading:
+  // the From name unless it is poor, then the name they sign with, only when it
+  // is in their own text. A missing or unreadable reading leaves the From name.
+  let saved: ThreadReading | null = null;
+  try { saved = got.thread.reading_json ? validateReading(JSON.parse(got.thread.reading_json)) : null; } catch { saved = null; }
+  const company = saved?.supplier?.company ?? (await store.getSupplier(got.thread.contact_email).catch(() => null))?.company ?? null;
+  const senderText = got.messages.filter((m) => m.direction === 'inbound').map((m) => stripQuotedReply(m.body_text ?? '')).join('\n\n');
+  const name = greetingName(contact?.name, saved?.senderName, got.thread.contact_email, { senderText, company });
 
   // An accepted partner (a live code, or queued for one) is never re-invited
   // from the picker: the invite would stage them 'passed_to_form' and the next
@@ -300,7 +316,11 @@ export async function applyDraftTemplate(db: D1Database, shop: string, threadId:
   else if (key === 'service_prove_first') body = buildServiceProveFirst(name);
   else if (key === 'operations_decline') body = buildOperationsDecline(name);
   else if (key === 'collaboration_decline') body = buildCollaborationDecline(name);
-  else if (key === 'supplier_ack') body = buildSupplierAck(name);
+  else if (key === 'supplier_ack') {
+    // A supplier whose file we already hold is not asked for a catalogue again.
+    const filesHeld = (await contactFilesFor(store, got.thread.contact_email)).some((f) => f.status === 'stored');
+    body = buildSupplierAck(name, { filesHeld });
+  }
   else if (key === 'access_decline') body = buildAccessDecline(name);
   else body = buildKeepToEmail(name);
 

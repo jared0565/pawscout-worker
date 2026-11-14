@@ -1,5 +1,6 @@
 import PostalMime from 'postal-mime';
-import type { ParsedEmail } from './types';
+import type { ParsedEmail, InboundAttachment } from './types';
+import { sanitizeFilename } from './attachments';
 
 // Shopify's contact-form notification sender + the address-shaped lines it carries.
 const SHOPIFY_SENDER = /@([\w-]+\.)*shopify(?:email)?\.com$/i;
@@ -29,8 +30,24 @@ function splitRefs(value: string | undefined): string[] {
  * malformed body - returns best-effort fields (empty text rather than reject). */
 export async function parseInbound(raw: ArrayBuffer | Uint8Array | string): Promise<ParsedEmail> {
   try {
-    const email = await PostalMime.parse(raw);
+    const email = await PostalMime.parse(raw, { attachmentEncoding: 'arraybuffer' });
     const headers = lowerHeaders(email.headers ?? []);
+    // File parts (spec 2026-11-14 inbox attachments, 5.1). Judged and stored
+    // later, at ingest; here they are only cut out of the MIME.
+    const attachments: InboundAttachment[] = (email.attachments ?? []).map((a, i) => {
+      const contentType = (a.mimeType ?? '').toLowerCase();
+      const content = a.content;
+      const bytes = typeof content === 'string' ? new TextEncoder().encode(content)
+        : content instanceof Uint8Array ? content : new Uint8Array(content);
+      return {
+        filename: sanitizeFilename(a.filename, contentType, i),
+        contentType,
+        disposition: a.disposition ?? null,
+        contentId: a.contentId ?? null,
+        related: !!a.related,
+        bytes,
+      };
+    });
     const fromAddr = email.from?.address ?? '';
     return {
       messageId: email.messageId ?? null,
@@ -42,7 +59,8 @@ export async function parseInbound(raw: ArrayBuffer | Uint8Array | string): Prom
       date: email.date ? new Date(email.date).toISOString() : new Date().toISOString(),
       text: (email.text ?? '').trim(),
       html: email.html ?? null,
-      headers
+      headers,
+      attachments
     };
   } catch (e) {
     console.warn(`inbound parse failed: ${(e as Error).message}`);
@@ -56,7 +74,8 @@ export async function parseInbound(raw: ArrayBuffer | Uint8Array | string): Prom
       date: new Date().toISOString(),
       text: '',
       html: null,
-      headers: {}
+      headers: {},
+      attachments: []
     };
   }
 }

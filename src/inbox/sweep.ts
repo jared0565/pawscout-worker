@@ -5,10 +5,11 @@ import { resolveChain } from '../llm-resolve';
 import { defaultFetch } from '../safe-fetch';
 import { parseAuthResults } from './gates';
 import { classifyEmail, decideDisposition } from './classify';
-import { draftReply, renderReplyHtml, applyFooter, stripTrailingSignoff, sanitizeOutbound, buildDraftTranscript, openInboundText } from './draft';
+import { draftReply, renderReplyHtml, applyFooter, stripTrailingSignoff, sanitizeOutbound, buildDraftTranscript, openInboundText, greetingName } from './draft';
+import { threadFilesFor, contactFilesFor } from './attachments';
 import { autoSendDecision, mentionsMoney, withExtraHolds } from './autosend';
 import { sendReply } from './send';
-import { maybePartnershipDraft, detectPartnershipAsk } from './partnership';
+import { maybePartnershipDraft, detectPartnershipAsk, AFFILIATE_APPLY_URL } from './partnership';
 import { maybeAlertOwner } from './alert';
 import { proposeInvoice } from './propose-invoice';
 import { adminForShop } from './invoice-routes';
@@ -22,11 +23,11 @@ import { repeatsPriorOutbound, outboundBodies } from './repeat';
 import { recallAnswers, ensureAnswerBackfill } from './answer-memory';
 import { agentFor } from './agents/registry';
 import { resolveAgents } from './agents/config';
-import type { AgentContext, Department, Grounding } from './agents/types';
+import type { AgentContext, CategoryAgent, Department, Grounding } from './agents/types';
 import type { ThreadRow, InvoiceLineItem, DraftMeta } from './types';
 import { CjClient, CjTokenManager, cjFetchFromEnv } from '../cj';
 import { readThread, isSupplierRole, type ThreadReading } from './thread-read';
-import { promisesSupplier } from './draft-quality';
+import { promisesSupplier, buildFileContext, fileHoldReasons } from './draft-quality';
 import { Vault } from '../vault';
 import { runSupplierBackfillStep } from './supplier-backfill';
 
@@ -156,7 +157,7 @@ async function reopenCheckOne(env: Env, store: TenantStore, cfg: TenantConfig, t
   if (!got) return;
   const llm = new LlmClient({ openrouter: env.OPENROUTER_API_KEY, openai: env.OPENAI_API_KEY }, fetchImpl);
   const reading = await readThread(llm, store, cfg, {
-    subject: thread.subject ?? '', transcript: buildDraftTranscript(got.messages), fromEmail: thread.contact_email
+    subject: thread.subject ?? '', transcript: buildDraftTranscript(got.messages, await threadFilesFor(store, thread.id)), fromEmail: thread.contact_email
   }).catch(() => null);
   if (!reading) return;
   await store.saveThreadReading(thread.id, JSON.stringify(reading));
@@ -352,6 +353,9 @@ export async function composeDraftForThread(
   const got = await store.getThreadWithMessages(thread.id);
   if (!got) return null;
   const llm = new LlmClient({ openrouter: env.OPENROUTER_API_KEY, openai: env.OPENAI_API_KEY }, fetchImpl);
+  // The thread's file rows: both the reader and the drafter see which files
+  // arrived and which were refused (design 2026-11-14, 5.7).
+  const files = await threadFilesFor(store, thread.id);
 
   // Thread reader first (owner design 2026-09-27). Never blocking: a failed
   // reading is null and everything below runs exactly as it did before. Only
@@ -360,7 +364,7 @@ export async function composeDraftForThread(
   let t = thread;
   const reading: ThreadReading | null = cfg.inbox.enabled
     ? await readThread(llm, store, cfg, {
-      subject: thread.subject ?? '', transcript: buildDraftTranscript(got.messages), fromEmail: thread.contact_email
+      subject: thread.subject ?? '', transcript: buildDraftTranscript(got.messages, files), fromEmail: thread.contact_email
     }).catch(() => null)
     : null;
   if (reading) {
@@ -469,7 +473,7 @@ export async function composeDraftForThread(
 
   // The DRAFTER instead sees the full two-sided flow (both directions, labeled),
   // so a multi-turn reply fits what has already been said. See buildDraftTranscript.
-  const transcript = buildDraftTranscript(got.messages);
+  const transcript = buildDraftTranscript(got.messages, files);
 
   // Approved-answers recall (2026-07-12): ground the drafter with vetted past
   // answers to similar questions. Failure degrades to no recall, never blocks.
@@ -478,10 +482,30 @@ export async function composeDraftForThread(
     recall = await recallAnswers(store, t.primary_category ?? null, latestInbound);
   } catch (e) { console.warn(`answer recall failed for ${t.id}: ${(e as Error).message}`); }
 
+  // What the file rows say arrived (design 2026-11-14, section 6): files held
+  // from this contact on any thread, and the refused files and any file record
+  // on the open inbound messages. The honest-file rules read this, never the text.
+  const fileCtx = buildFileContext(await contactFilesFor(store, t.contact_email), files, got.messages);
+
+  // Supplier lane (design 2026-11-14, 8.1): the register row, freshly merged
+  // above, and our replies on every thread with this supplier, so a question
+  // asked once is never asked again on their next thread. Either read failing
+  // degrades to the thread-only behaviour, never to a failed draft.
+  const supplierLane = agent.category === 'supplier';
+  const supplierRow = supplierLane ? await store.getSupplier(t.contact_email).catch(() => null) : null;
+  const contactOutbound = supplierLane ? await store.outboundBodiesForContact(t.contact_email).catch(() => undefined) : undefined;
+
+  // The greeting name (design 2026-11-14, 8.3): the From name unless it is
+  // poor ("Cat Cages/HOMWOOD", "Growvia"), then the name they sign with, only
+  // when it appears in their own text.
+  const greetAs = greetingName(contact?.name, reading?.senderName, t.contact_email, {
+    senderText: cleaned.join('\n\n'), company: reading?.supplier?.company ?? supplierRow?.company,
+  });
+
   const draft = await draftReply(llm, store, cfg, {
     agent, grounding, subject: t.subject ?? '', conversation: transcript, latestMessage: latestInbound,
-    customerName: contact?.name ?? null, customerEmail: t.contact_email, recall,
-    priorOutbound: outboundBodies(got.messages), admin, reading
+    customerName: greetAs, customerEmail: t.contact_email, recall,
+    priorOutbound: outboundBodies(got.messages), admin, reading, files: fileCtx, supplierRow, contactOutbound
   });
   if (!draft) return null; // degrade: retry next sweep
 
@@ -489,7 +513,7 @@ export async function composeDraftForThread(
   // The agent's P.S. rides only the FIRST reply of a thread (no outbound yet) so a
   // multi-turn conversation is not stamped with the same nudge on every message.
   const firstReply = !got.messages.some((m) => m.direction === 'outbound');
-  const composed = composeAgentDraft(draft, appendix, agent.department, firstReply ? agent.postscript ?? null : null);
+  const composed = composeAgentDraft(draft, appendix, signingDepartment(agent, draft.bodyText, reading), firstReply ? agent.postscript ?? null : null);
 
   // Auto-send gating: per-agent opt-in behind the global Auto switch, computed on the
   // LLM body ONLY (composed.quotesPriceOrder) so a trusted appendix figure does not
@@ -515,6 +539,9 @@ export async function composeDraftForThread(
   const held = withExtraHolds(decision, [
     ...(supplierHold ? ['supplier_commitment'] : []),
     ...(grounding.holdReason ? [grounding.holdReason] : []),
+    // A reply still claiming a file we never held, or (supplier lane) still
+    // asking for one they already sent, after the revisions (design section 6).
+    ...fileHoldReasons(draft.bodyText, fileCtx, agent.category === 'supplier'),
   ]);
   const holdReasons = held.holdReasons;
   const send = held.send;
@@ -549,6 +576,20 @@ async function draftOne(env: Env, store: TenantStore, cfg: TenantConfig, thread:
     const fresh = await store.getThreadWithMessages(thread.id);
     if (draftRow && fresh) await sendReply(env, store, cfg, fresh.thread, draftRow, undefined, fetchImpl);
   }
+}
+
+/** Which desk signs a reply (design 2026-11-14, 7.1). A partnership reply
+ * drafted in the general lane (the reading says marketer or creator, or the
+ * body carries the affiliate apply link, which covers a failed reading) is
+ * signed "Active Paw Partnerships"; a customer enquiry in that lane stays with
+ * Customer Support, and every other lane keeps its own desk. Lives here, not in
+ * draft.ts: partnership.ts imports draft.ts, so draft.ts must not import it. */
+export function signingDepartment(
+  agent: Pick<CategoryAgent, 'category' | 'department'>, body: string, reading: ThreadReading | null
+): Department {
+  if (agent.category !== 'other') return agent.department;
+  const partnerRole = reading?.senderRole === 'marketer' || reading?.senderRole === 'creator';
+  return partnerRole || body.includes(AFFILIATE_APPLY_URL) ? 'partnership' : agent.department;
 }
 
 /** Combine the LLM body with an optional TRUSTED appendix and the deterministic

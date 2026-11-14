@@ -146,7 +146,7 @@ describe('an affiliate mention always carries the apply link', () => {
   it('the supplier acknowledgement thanks them for the product information and commits to nothing', () => {
     const body = buildSupplierAck('Celia');
     expect(body.startsWith('Hi Celia,')).toBe(true);
-    expect(body).toMatch(/thank you for sending/i);
+    expect(body).toMatch(/thank you for informing us!/i);
     expect(body).toMatch(/product (?:information|listing|catalogue)/i);
     expect(body).toMatch(/welcome to email/i);                 // accepts the information (owner 2026-09-27)
     expect(body).toMatch(/website/i);
@@ -159,6 +159,19 @@ describe('an affiliate mention always carries the apply link', () => {
     expect(body).not.toMatch(/[\u2013\u2014]/);
     expect(body.endsWith('Best Regards,\nActive Paw Sourcing Team')).toBe(true);
     expect(promisesSupplier(body)).toBe(false);
+  });
+
+  // Design 2026-11-14 (section 6, item 4): the owner's supplier opener, and no
+  // invitation for a catalogue a supplier already sent.
+  it('the supplier acknowledgement opens with the owner\'s line and follows the files', () => {
+    const plain = buildSupplierAck('Jennie');
+    expect(plain.startsWith('Hi Jennie,\n\nThank you for informing us!')).toBe(true);
+    expect(plain).toContain('welcome to email over your catalogue');
+    const held = buildSupplierAck('Jennie', { filesHeld: true });
+    expect(held).not.toMatch(/catalogue|price list/i);
+    expect(held).toMatch(/dropshipping/i);
+    expect(held).toContain('on file for reference');
+    expect(promisesSupplier(held)).toBe(false);
   });
 });
 

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { hasFillerBookend, countWords, substanceWordCount, affirmsDelivery, statesDayRange, findDraftIssues, refineUntilClean, asksDoYouDeliver, claimsBusinessBiography, volunteersTradeDecline, owesBasketDelivery, promisesSupplier, supplierAsksOwed, asksSupplierLink, appendSupplierAsks } from '../src/inbox/draft-quality';
+import { hasFillerBookend, countWords, substanceWordCount, affirmsDelivery, statesDayRange, findDraftIssues, refineUntilClean, asksDoYouDeliver, claimsBusinessBiography, volunteersTradeDecline, owesBasketDelivery, promisesSupplier, supplierAsksOwed, asksSupplierLink, appendSupplierAsks, claimsFileReceived, invitesFiles, mentionsAttachment, fileAsksOwed, appendFileAsks, fileHoldReasons, FILE_MISSING_SENTENCE, FILE_REFUSED_SENTENCE, repeatsThanks, collapseRepeatedThanks } from '../src/inbox/draft-quality';
 import { SHARED_SCAFFOLDING } from '../src/inbox/agents/scaffolding';
 
 // The live fabrication this gate exists to catch (Azan's thread, 2026-07-05):
@@ -424,5 +424,160 @@ describe('supplier asks (owner decision 2026-09-28: the draft must ask what the 
     expect(appendSupplierAsks(ASKS_BOTH, { link: true, dropship: true })).toBe(ASKS_BOTH);
     expect(appendSupplierAsks(DOUKE_MISS, { link: false, dropship: false })).toBe(DOUKE_MISS);
     expect(promisesSupplier(both)).toBe(false);
+  });
+});
+
+describe('one thank-you at the top (design 2026-11-14, 7.3)', () => {
+  it('removes a second thank-you sentence at the top', () => {
+    const b = 'Thank you for informing us! Thank you for sharing details of your pet bowls range. Could you send your website link?';
+    expect(repeatsThanks(b)).toBe(true);
+    expect(collapseRepeatedThanks(b)).toBe('Thank you for informing us! Could you send your website link?');
+    expect(findDraftIssues(b).join(' ')).toContain('The reply thanks them twice at the start. Keep only the first thank-you and continue with the answer.');
+  });
+  it('leaves a single thank-you alone', () => {
+    expect(repeatsThanks('Thank you for your enquiry! Yes, we ship to Ireland.')).toBe(false);
+    expect(collapseRepeatedThanks('Thank you for your enquiry! Yes, we ship to Ireland.')).toBe('Thank you for your enquiry! Yes, we ship to Ireland.');
+  });
+  it('also catches the second thank-you opening the next paragraph', () => {
+    const b = 'Thank you for informing us!\n\nThanks for sharing your range. Could you send your website link?';
+    expect(repeatsThanks(b)).toBe(true);
+    expect(collapseRepeatedThanks(b)).toBe('Thank you for informing us!\n\nCould you send your website link?');
+  });
+  it('a thank-you later in the reply is not a repeat', () => {
+    const b = 'Thank you for your enquiry! Yes, we ship to Ireland. Thank you for your patience.';
+    expect(repeatsThanks(b)).toBe(false);
+  });
+  it('removes the repeat when it is the last sentence', () => {
+    expect(collapseRepeatedThanks('Thank you for informing us! Thanks again.')).toBe('Thank you for informing us!');
+  });
+});
+
+describe('honest replies about files (design 2026-11-14, section 6)', () => {
+  const NONE = { held: [], refused: [], openHasRecord: false };
+  // FOOFEE thread 2d6559b9: the reply thanked them for a catalogue we never held.
+  const FOOFEE = 'Thank you for sending the FOOFEE catalogue and the details of your range. We have received the information.';
+  // Thread de23fa70: the reply asked for a catalogue that had arrived.
+  const DE23 = 'You are welcome to email over your catalogue, price list or specifications.';
+
+  it('rule A: a receipt claim with nothing held is an issue and a file_claim hold', () => {
+    expect(claimsFileReceived(FOOFEE)).toBe(true);
+    expect(findDraftIssues(FOOFEE, { files: NONE }).join(' ')).toMatch(/claim that a file arrived/i);
+    expect(fileHoldReasons(FOOFEE, NONE, true)).toEqual(['file_claim']);
+    expect(fileHoldReasons(FOOFEE, NONE, false)).toEqual(['file_claim']); // every lane
+    expect(fileHoldReasons(FOOFEE, { held: ['FOOFEE.pdf'], refused: [], openHasRecord: true }, true)).toEqual([]);
+    expect(findDraftIssues(FOOFEE, { files: { held: ['FOOFEE.pdf'], refused: [], openHasRecord: true } })).toEqual([]);
+  });
+
+  it('rule A stays quiet on information in the email body', () => expect(claimsFileReceived('Thank you for the information in your email about your bowls.')).toBe(false));
+
+  it('rule A stays quiet on a negated, conditional or missing-file sentence', () => {
+    expect(claimsFileReceived('We have not received the catalogue you mentioned.')).toBe(false);
+    expect(claimsFileReceived('If you have got a catalogue, you are welcome to email it.')).toBe(false);
+    expect(claimsFileReceived(FILE_MISSING_SENTENCE)).toBe(false);
+    expect(claimsFileReceived(FILE_REFUSED_SENTENCE)).toBe(false);
+    expect(claimsFileReceived('Thanks for sharing your price list.')).toBe(true);
+  });
+
+  it('rule B: inviting a file we already hold is a file_reinvite hold, supplier lane only', () => {
+    expect(invitesFiles(DE23)).toBe(true);
+    const held = { held: ['cat.pdf'], refused: [], openHasRecord: true };
+    expect(fileHoldReasons(DE23, held, true)).toEqual(['file_reinvite']);
+    expect(fileHoldReasons(DE23, NONE, true)).toEqual([]);
+    expect(fileHoldReasons(DE23, held, false)).toEqual([]);
+    expect(findDraftIssues(DE23, { supplierLane: true, files: held }).join(' ')).toMatch(/already sent/i);
+    expect(invitesFiles('Please send us the link to your website.')).toBe(false);
+    expect(invitesFiles(FILE_MISSING_SENTENCE)).toBe(false);
+    expect(invitesFiles(FILE_REFUSED_SENTENCE)).toBe(false);
+  });
+
+  it('rule C: an attachment mentioned but not received is owed the missing-file sentence', () => {
+    for (const s of ['Please find attached our offer.', 'See the attachment for details.', 'I have enclosed our price list.', 'Attached is our catalogue.']) {
+      expect(mentionsAttachment(s)).toBe(true);
+    }
+    expect(mentionsAttachment('We are attached to quality.')).toBe(false);
+    expect(mentionsAttachment('I will send the catalogue.')).toBe(false);
+    const open = 'Please find our catalogue attached.';
+    expect(fileAsksOwed(NONE, open)).toEqual({ missing: true, refused: false });
+    expect(fileAsksOwed({ ...NONE, openHasRecord: true }, open).missing).toBe(false);
+    expect(fileAsksOwed({ ...NONE, held: ['old.pdf'] }, open).missing).toBe(false);
+    expect(fileAsksOwed({ ...NONE, offNiche: true }, open).missing).toBe(false);
+    expect(fileAsksOwed(undefined, open)).toEqual({ missing: false, refused: false });
+    expect(findDraftIssues('Thank you for your message about your bowls range.', { files: NONE, openText: open }).join(' ')).toMatch(/did not reach us/i);
+  });
+
+  // Final review 2026-11-14 (Important 1): the bare word "attachment" is not a
+  // mention of a file sent to us. A confidentiality footer and a product part
+  // ("comb attachment") made replies say a file did not reach us.
+  it('rule C stays quiet on a confidentiality footer and on a product attachment', () => {
+    for (const s of [
+      'This email and any attachments are confidential and intended solely for the addressee.',
+      'This message and any attached files are confidential. If you are not the intended recipient, please delete it.',
+      'Does the clipper come with a comb attachment?',
+      'Is the hose attachment included with the pet dryer?',
+    ]) expect(mentionsAttachment(s), s).toBe(false);
+    expect(fileAsksOwed(NONE, 'Hello, do you stock dog beds?\n\nThis email and any attachments are confidential.')).toEqual({ missing: false, refused: false });
+    // A real mention still counts, also beside a footer.
+    expect(mentionsAttachment('Please see the attached price list.\n\nThis email and any attachments are confidential.')).toBe(true);
+    for (const s of ["We've attached it here.", 'Kindly check the attachment.', 'The details are in the attachment.', 'Please see attached.']) {
+      expect(mentionsAttachment(s), s).toBe(true);
+    }
+  });
+
+  // Final review 2026-11-14 (Important 3): "on file" and "file a claim" name no
+  // document. "We keep supplier details on file" is the supplier lane's own
+  // sentence, and beside "received" it was held as a false file claim.
+  it('rule A stays quiet on "on file" and on "file a return"', () => {
+    for (const s of [
+      'We have received your details and keep them on file for reference.',
+      'Thank you for sharing your company details, which we keep on file for reference.',
+      'We have got your message and keep supplier details on file.',
+      'We have received your request to file a return.',
+    ]) expect(claimsFileReceived(s), s).toBe(false);
+    expect(fileHoldReasons('We have received your details and keep them on file for reference.', NONE, true)).toEqual([]);
+    // A real claim beside the idiom, or in the passive, still counts.
+    expect(claimsFileReceived('We have received your catalogue and keep it on file.')).toBe(true);
+    expect(claimsFileReceived('Your price list has been received.')).toBe(true);
+  });
+
+  it('rule D: a refused file is owed the refused-file sentence, except off-niche', () => {
+    const files = { held: [], refused: ['p.xlsm'], openHasRecord: true };
+    expect(fileAsksOwed(files, 'Prices attached.')).toEqual({ missing: false, refused: true });
+    expect(fileAsksOwed({ ...files, offNiche: true }, 'Prices attached.').refused).toBe(false);
+    expect(findDraftIssues('Thank you for your message about your bowls range.', { files, openText: 'Prices attached.' }).join(' ')).toMatch(/could not accept/i);
+  });
+
+  it('appendFileAsks appends each sentence once, as its own paragraph', () => {
+    const body = 'Thank you for your message about your bowls range.';
+    expect(appendFileAsks(body, { missing: true, refused: true })).toBe(`${body}\n\n${FILE_MISSING_SENTENCE}\n\n${FILE_REFUSED_SENTENCE}`);
+    expect(appendFileAsks(body, { missing: false, refused: false })).toBe(body);
+    const said = `${body} Unfortunately the file did not reach us, so please send it again. We were not able to accept the spreadsheet either.`;
+    expect(appendFileAsks(said, { missing: true, refused: true })).toBe(said);
+    const once = appendFileAsks(body, { missing: true, refused: false });
+    expect(appendFileAsks(once, { missing: true, refused: false })).toBe(once);
+  });
+
+  it('the no-promises reviser text never invites a catalogue we already hold (design section 6, item 3)', () => {
+    const promising = 'Thank you for your range. We will be in touch about an order.';
+    const held = findDraftIssues(promising, { supplierLane: true, files: { held: ['cat.pdf'], refused: [], openHasRecord: true } }).join(' ');
+    expect(held).toMatch(/promise/i);
+    expect(held).not.toMatch(/welcome to email/i);
+    const none = findDraftIssues(promising, { supplierLane: true, files: NONE }).join(' ');
+    expect(none).toMatch(/welcome to email/i);
+  });
+
+  it('off-niche suppliers: no asks, no catalogue invitation, no file sentences, 40 words (design 8.2)', () => {
+    expect(supplierAsksOwed({ website: null, storeLinks: [], kind: 'goods', dropship: 'unknown', nicheFit: 'off-niche' }, [])).toEqual({ link: false, dropship: false });
+    expect(supplierAsksOwed({ website: null, storeLinks: [], kind: 'goods', dropship: 'unknown', nicheFit: 'adjacent' }, [])).toEqual({ link: true, dropship: true });
+    const invite = 'Thank you for informing us! You are welcome to send us your catalogue.';
+    expect(findDraftIssues(invite, { supplierLane: true, offNiche: true }).join(' ')).toMatch(/do not invite a catalogue/i);
+    expect(findDraftIssues(invite, { supplierLane: true })).toEqual([]);
+    const words45 = Array.from({ length: 45 }, (_, i) => (i === 0 ? 'Noted' : 'word')).join(' ') + '.';
+    expect(findDraftIssues(words45, { maxWords: 40 }).join(' ')).toMatch(/too long/i);
+    expect(fileAsksOwed({ ...NONE, offNiche: true }, 'catalogue attached')).toEqual({ missing: false, refused: false });
+  });
+
+  it('the fixed sentences never echo a filename', () => {
+    expect(FILE_MISSING_SENTENCE).toBe('Unfortunately the file you mentioned did not reach us. Could you send it again, or share a link to it?');
+    expect(FILE_REFUSED_SENTENCE).toBe('We were not able to accept the file you sent. Could you send it as a PDF, or share a link to it?');
   });
 });

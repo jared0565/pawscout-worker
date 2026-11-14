@@ -35,6 +35,9 @@ export interface Env {
   // W-INBOX-1 safety-net forward: owner's verified Email Routing destination.
   // Unset = no forward (stop forwarding once capture is trusted).
   INBOX_FORWARD_TO?: string;
+  // Inbound email files (design 2026-11-14). Optional: with no binding,
+  // ingest records kept parts as store_failed and carries on.
+  INBOX_FILES?: R2Bucket;
   // Freight-grounded delivery replies (Task [7]): a representative CJ variant id
   // quoted as a proxy for "a typical small pet item" when a customer asks about
   // international shipping. UNSET = feature dormant (drafter keeps the safe hedge).

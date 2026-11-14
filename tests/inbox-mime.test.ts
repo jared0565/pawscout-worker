@@ -15,6 +15,61 @@ const RAW = [
   'Hi, do you ship the slow feeder to Ireland? Thanks, Jane'
 ].join('\r\n');
 
+// A supplier email carrying a PDF catalogue and an inline signature logo
+// (spec 2026-11-14 inbox attachments, 5.1).
+const PDF_BYTES = new TextEncoder().encode('%PDF-1.4\n%fake catalogue body for the parser test\n');
+const PNG_BYTES = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4]);
+const b64 = (u: Uint8Array) => btoa(String.fromCharCode(...u));
+const MULTIPART = [
+  'From: Jennie <jennie@nongshine.example>',
+  'To: contact@activepaw.co.uk',
+  'Subject: Our 2026 catalogue',
+  'Message-ID: <cat1@nongshine.example>',
+  'Date: Fri, 13 Nov 2026 09:12:00 +0000',
+  'MIME-Version: 1.0',
+  'Content-Type: multipart/mixed; boundary="b1"',
+  '',
+  '--b1',
+  'Content-Type: text/plain; charset=utf-8',
+  '',
+  'Please find our catalogue attached.',
+  '--b1',
+  'Content-Type: application/pdf; name="Catalogue-2026.pdf"',
+  'Content-Disposition: attachment; filename="Catalogue-2026.pdf"',
+  'Content-Transfer-Encoding: base64',
+  '',
+  b64(PDF_BYTES),
+  '--b1',
+  'Content-Type: image/png; name="logo.png"',
+  'Content-Disposition: inline; filename="logo.png"',
+  'Content-ID: <logo@x>',
+  'Content-Transfer-Encoding: base64',
+  '',
+  b64(PNG_BYTES),
+  '--b1--',
+  ''
+].join('\r\n');
+
+describe('parseInbound attachments', () => {
+  it('returns attachment parts with their bytes', async () => {
+    const p = await parseInbound(MULTIPART);
+    expect(p.text).toContain('catalogue attached');
+    expect(p.attachments?.map((a) => a.filename)).toEqual(['Catalogue-2026.pdf', 'logo.png']);
+    expect(p.attachments?.[0].bytes).toBeInstanceOf(Uint8Array);
+    expect(p.attachments?.[0].bytes.byteLength).toBe(PDF_BYTES.byteLength);
+    expect(p.attachments?.[0].contentType).toBe('application/pdf');
+    expect(p.attachments?.[0].disposition).toBe('attachment');
+    expect(p.attachments?.[1].contentId).toBe('<logo@x>');
+    expect(p.attachments?.[1].disposition).toBe('inline');
+  });
+
+  it('a parse failure returns attachments: []', async () =>
+    expect((await parseInbound(new ArrayBuffer(0))).attachments).toEqual([]));
+
+  it('a plain email has no attachments', async () =>
+    expect((await parseInbound(RAW)).attachments).toEqual([]));
+});
+
 describe('parseInbound', () => {
   it('extracts headers, addresses, refs and body', async () => {
     const p = await parseInbound(RAW);

@@ -11,6 +11,7 @@ import { checkModelSave, usageMix, MIX_WINDOW_DAYS, type SlotName } from './mode
 import { probeModel } from './model-probe';
 import { selectedStatus, type SlotStatus } from './model-watch';
 import { processInbound } from './inbox/ingest';
+import { serveInboxFile, eraseOwedFiles } from './inbox/attachments';
 import { runInboxClassifySweep } from './inbox/sweep';
 import { beginAuth } from './auth/install';
 import { handleCallback } from './auth/callback';
@@ -249,6 +250,12 @@ const handleUnsubscribe = async (c: Context<{ Bindings: Env }>) => {
 };
 app.get('/unsubscribe', handleUnsubscribe);
 app.post('/unsubscribe', handleUnsubscribe);
+
+// Inbound email files (design 2026-11-14, 5.5): a signed, short-lived,
+// download-only link the console opens in a new tab. Deliberately outside the
+// session auth below: the HMAC signature over shop, id and expiry is the
+// authority, and the record is looked up under the signed shop only.
+app.get('/inbox-file/:id', (c) => serveInboxFile(c.env, c.req.param('id'), c.req.query(), Math.floor(Date.now() / 1000)));
 
 // --- /api/* : session-token authed (embedded console) ---
 // Resolves the shop from the App Bridge session token and, on a managed install,
@@ -1856,7 +1863,7 @@ app.post('/api/inbox/thread', async (c) => {
   let body: { id?: string } = {};
   try { body = await c.req.json(); } catch { return c.json({ ok: false, error: 'Invalid JSON body' }, 400); }
   if (!body.id) return c.json({ ok: false, error: 'id required' }, 400);
-  return c.json(await getInboxThread(c.env.DB, s, body.id));
+  return c.json(await getInboxThread(c.env.DB, s, body.id, { secret: c.env.SHOPIFY_API_SECRET, baseUrl: c.env.SHOPIFY_APP_URL }));
 });
 app.post('/api/inbox/status', async (c) => {
   const s = await shopOf(c); if (typeof s !== 'string') return s;
@@ -2586,6 +2593,17 @@ async function gdprWebhook(c: Context<{ Bindings: Env }>, handle: (store: Tenant
   }
   return c.text('ok');
 }
+/** Finish the R2 side of an erasure after the response (design 2026-11-14,
+ * 5.8). The owed prefixes were recorded in the redact's own D1 batch, so a
+ * failure or timeout here is picked up by the daily file-erasures stage. */
+function finishFileErasure(c: Context<{ Bindings: Env }>, shop: string): void {
+  const bucket = c.env.INBOX_FILES;
+  if (!bucket) return;
+  const p = eraseOwedFiles(bucket, c.env.DB, shop)
+    .then((r) => console.log(`gdpr file erasure for ${shop}: ${r.deleted} file(s) deleted, ${r.remaining} prefix(es) left for the daily stage`))
+    .catch((e) => console.warn(`gdpr file erasure failed for ${shop}: ${e instanceof Error ? e.message : String(e)}`));
+  try { c.executionCtx.waitUntil(p); } catch { /* no execution context (tests): the promise still runs */ }
+}
 // What personal data we hold for a customer = the shipping address on their orders.
 app.post('/webhooks/customers-data-request', (c) =>
   gdprWebhook(c, async (store, p) => {
@@ -2594,7 +2612,7 @@ app.post('/webhooks/customers-data-request', (c) =>
     const email = ((p.customer as { email?: string } | undefined)?.email ?? '').toString();
     if (email) {
       const s = await store.inboxDataSummary(email);
-      console.log(`customers/data_request: shop also holds ${s.threads} inbox thread(s) / ${s.messages} message(s) for ${email} - operator to provide to the data subject`);
+      console.log(`customers/data_request: shop also holds ${s.threads} inbox thread(s) / ${s.messages} message(s) / ${s.attachments} file(s) for ${email} - operator to provide to the data subject`);
     }
   }));
 // Erase the PII we hold for the named orders.
@@ -2610,12 +2628,14 @@ app.post('/webhooks/customers-redact', (c) =>
     // hash, Task 1 built the optional param; this is the missing wire).
     const inboxRemoved = email ? await store.redactContact(email, await hashBuyerEmail(email, c.env.SHOPIFY_API_SECRET)) : 0;
     console.log(`customers/redact: erased ${n} order row(s) + ${inboxRemoved} inbox row(s)`);
+    if (email) finishFileErasure(c, store.shop);
   }));
 // Purge ALL data for the shop (~48h after uninstall).
 app.post('/webhooks/shop-redact', (c) =>
   gdprWebhook(c, async (store) => {
     await store.redactShop();
     console.log('shop/redact: shop data purged');
+    finishFileErasure(c, store.shop);
   }));
 
 // --- Email engagement events: Resend webhook (svix-signed) ---
@@ -2681,7 +2701,7 @@ export async function handleInboundEmail(message: ForwardableEmailMessage, env: 
     if (!shop) { console.warn('inbound email: no active shop configured'); return; }
     const store = new TenantStore(env.DB, shop);
     const raw = await new Response(message.raw).arrayBuffer();
-    const r = await processInbound(store, raw);
+    const r = await processInbound(store, raw, { files: env.INBOX_FILES });
     console.log(`inbound email stored: thread ${r.threadId}${r.deduped ? ' (dup)' : ''}`);
     // W-INBOX-1 rollback net: also forward a copy to the owner until capture is trusted.
     if (env.INBOX_FORWARD_TO) {

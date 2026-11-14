@@ -14,6 +14,7 @@
 
 import { repeatsPriorOutbound } from './repeat';
 import type { SupplierFacts } from './supplier-register';
+import type { AttachmentRow, MessageRow } from './types';
 
 /** Customer-service courtesy phrases. ALLOWED (the owner's voice is a warm, polite
  * wrapper), so they no longer fail the bar on their own. They carry no substance, so
@@ -159,6 +160,9 @@ export interface DraftQualityContext {
   buyingLane?: boolean;     // the thread sits on a lane that meets buyers (lead, wholesale, product question)
   supplierLane?: boolean;   // supplier lane: the reply must promise nothing (owner decision 2026-09-27)
   supplierOwes?: SupplierOwed; // supplier lane: the questions this reply must ask (owner decision 2026-09-28)
+  offNiche?: boolean;       // supplier lane: the register files the sender off-niche (design 2026-11-14, 8.2)
+  files?: FileContext;      // what the stored file rows say arrived (design 2026-11-14, section 6)
+  openText?: string;        // the open inbound text, for the missing-file and refused-file rules
 }
 
 /** The questions a supplier reply still owes: the link to their website or
@@ -182,10 +186,11 @@ export function asksDropship(text: string): boolean { return DROPSHIP_ASK.test(t
  * never repeats it. No reading means nothing is enforced (the prompt still asks).
  */
 export function supplierAsksOwed(
-  facts: Pick<SupplierFacts, 'website' | 'storeLinks' | 'kind' | 'dropship'> | null | undefined,
+  facts: (Pick<SupplierFacts, 'website' | 'storeLinks' | 'kind' | 'dropship'> & { nicheFit?: SupplierFacts['nicheFit'] }) | null | undefined,
   priorOutbound: ReadonlyArray<string | null> | undefined
 ): SupplierOwed {
-  if (!facts) return { link: false, dropship: false };
+  // An off-niche supplier is asked nothing (design 2026-11-14, 8.2).
+  if (!facts || facts.nicheFit === 'off-niche') return { link: false, dropship: false };
   const prior = (priorOutbound ?? []).filter((b): b is string => !!b);
   return {
     link: !facts.website && facts.storeLinks.length === 0 && !prior.some(asksSupplierLink),
@@ -200,6 +205,184 @@ export function appendSupplierAsks(bodyText: string, owed: SupplierOwed): string
   if (owed.link && !asksSupplierLink(bodyText)) add.push('Could you send us the link to your website or your Alibaba or other online store, for our reference?');
   if (owed.dropship && !asksDropship(bodyText)) add.push('Do you offer dropshipping, meaning sending single orders directly to our customers?');
   return add.length ? `${bodyText.trimEnd()}\n\n${add.join(' ')}` : bodyText;
+}
+
+// --- Sentences, and one thank-you at the top (design 2026-11-14, 7.3, 7.4) ----
+
+// A boundary is ".", "!" or "?" (optionally closed by a quote or bracket)
+// followed by whitespace and a capital letter or digit. A URL, an email address
+// or a decimal never has whitespace after its inner dots, so it is never cut;
+// the listed abbreviations are skipped explicitly.
+const SENTENCE_END = /[.!?]+["')\]]*(?=\s+["'(]?[A-Z0-9])/g;
+const ABBREV_ANY_CASE = /(?:^|[\s(])(?:e\.g|i\.e|approx|etc)\.$/i;
+const ABBREV_TITLE = /(?:^|[\s(])(?:Mrs|Mr|Ms|Dr|St|No)\.$/;
+
+/** Sentence spans in `text`, as [start, end) offsets into it, whitespace between
+ * them excluded. Pure; the paragraph backstop and the thank-you check share it. */
+export function sentenceSpans(text: string): { start: number; end: number }[] {
+  const spans: { start: number; end: number }[] = [];
+  let start = text.search(/\S/);
+  if (start < 0) return spans;
+  const re = new RegExp(SENTENCE_END.source, 'g');
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    if (m.index < start) continue;
+    const head = text.slice(start, m.index + 1);
+    if (text[m.index] === '.' && (ABBREV_ANY_CASE.test(head) || ABBREV_TITLE.test(head))) continue;
+    const end = m.index + m[0].length;
+    spans.push({ start, end });
+    const next = text.slice(end).search(/\S/);
+    if (next < 0) return spans;
+    start = end + next;
+  }
+  const tail = text.slice(start).trimEnd();
+  if (tail) spans.push({ start, end: start + tail.length });
+  return spans;
+}
+
+const LEAD_GREETING = /^\s*(?:hi|hello|hey|dear)\b[^\n]*\n+/i;
+const THANKS_START = /^(?:thank(?:s|\s+you)|many\s+thanks)\b/i;
+
+/** Where the second opening thank-you sits: from its start to the start of the
+ * sentence after it (or the end), skipping a leading greeting line. */
+function secondThanks(body: string): { start: number; end: number } | null {
+  const lead = LEAD_GREETING.exec(body)?.[0].length ?? 0;
+  const rest = body.slice(lead);
+  const spans = sentenceSpans(rest);
+  if (spans.length < 2) return null;
+  const first = rest.slice(spans[0].start, spans[0].end);
+  const second = rest.slice(spans[1].start, spans[1].end);
+  if (!THANKS_START.test(first) || !THANKS_START.test(second)) return null;
+  return { start: lead + spans[1].start, end: spans[2] ? lead + spans[2].start : body.length };
+}
+
+/** The reply opens with a thank-you and the very next sentence thanks them again. */
+export function repeatsThanks(body: string): boolean { return secondThanks(body) !== null; }
+
+/** Backstop when the reviser leaves it: the second thank-you sentence is removed
+ * (safer than rewriting it), whether it sits in the opener's paragraph or opens
+ * the next one. */
+export function collapseRepeatedThanks(body: string): string {
+  const r = secondThanks(body);
+  return r ? (body.slice(0, r.start) + body.slice(r.end)).trimEnd() : body;
+}
+
+// --- Honest replies about files (design 2026-11-14, section 6) ----------------
+// Replies claimed catalogues we never held (FOOFEE thread 2d6559b9) and asked
+// for one that had arrived (thread de23fa70). These rules decide from the
+// stored file rows, never from the transcript text, so a sender who forges a
+// file line in their own words cannot make a reply claim a file. They apply in
+// every lane: a complaint with "photo attached" counts as much as a catalogue.
+
+/** What the file rows say. `held`: stored files from this contact on any of
+ * their threads. `refused`: files on the open inbound messages refused for type
+ * or size, or that could not be saved. `openHasRecord`: the open inbound
+ * messages carry any file record at all. `offNiche`: an off-niche supplier gets
+ * nothing about files (owner ruling). */
+export interface FileContext { held: string[]; refused: string[]; openHasRecord: boolean; offNiche?: boolean; }
+
+/** The fixed sentences. They never echo a filename: the name is sender-controlled. */
+export const FILE_MISSING_SENTENCE = 'Unfortunately the file you mentioned did not reach us. Could you send it again, or share a link to it?';
+export const FILE_REFUSED_SENTENCE = 'We were not able to accept the file you sent. Could you send it as a PDF, or share a link to it?';
+
+const FILE_NOUN = String.raw`(?:catalogues?|catalogs?|price\s?lists?|brochures?|attachments?|attached\s+files?|files?|documents?|pdfs?|spreadsheets?|specifications?|spec\s+sheets?)`;
+const FILE_NOUN_RE = new RegExp(String.raw`\b${FILE_NOUN}\b`, 'i');
+const RECEIPT_RE = /\b(?:received|got|thank(?:s|\s+you)\s+for\s+(?:sending|sharing|attaching))\b/gi;
+// "If you have got a catalogue ..." and "Once received ..." are not receipts.
+const CONDITIONAL_RE = /\b(?:if|once|whenever|should|until)\b/i;
+const INVITE_RE = new RegExp(String.raw`\b(?:(?:welcome|free)\s+to|please)\s+(?:e-?mail|send|share)\b[^.!?\n]{0,40}?\b${FILE_NOUN}\b`, 'i');
+const ATTACH_NEAR_NOUN = new RegExp(
+  String.raw`\b(?:attached|enclosed)\b[^.!?\n]{0,40}?\b${FILE_NOUN}\b|\b${FILE_NOUN}\b[^.!?\n]{0,40}?\b(?:attached|enclosed)\b`, 'i');
+// The bare word "attachment" is not a mention (final review 2026-11-14): a
+// product part ("a comb attachment") is not a file sent to us. A phrase that
+// points at an attachment is.
+const ATTACH_PLAIN = /\bplease\s+find\s+(?:attached|enclosed)\b|\b(?:see|check|find|open|review)\s+(?:the\s+|our\s+|my\s+)?(?:attached|enclosed|attachments?)\b|\bin\s+the\s+attachments?\b|\bsee\s+the\s+file\b|\b(?:i|we)(?:['’]ve|\s+have)?\s+(?:attached|enclosed)\b|\battached\s+(?:is|are)\b/i;
+// A confidentiality footer ("this email and any attachments are confidential",
+// "if you are not the intended recipient") names no file sent to us.
+const DISCLAIMER = /\bany\s+(?:attachments?|attached|files?|documents?)\b|\bintended\s+recipient\b|\b(?:this|the)\s+(?:e-?mail|message)\b[^.!?\n]{0,80}\bconfidential\b/i;
+// "on file" and "file a claim" use the word without naming a document (final
+// review 2026-11-14): "we keep supplier details on file" is the supplier lane's
+// own sentence, and beside "received" it was held as a false file claim.
+const NOT_A_DOCUMENT = /\bon\s+(?:our\s+)?files?\b|\bfile\s+(?:a|an)\s+(?:claim|return|complaint|report|dispute|request)\b/gi;
+const SAYS_MISSING = /\b(?:did\s+not|didn['’]t|has\s+not|hasn['’]t|have\s+not|haven['’]t|never)\s+(?:reach(?:ed)?\s+us|arrived?|come\s+through|came\s+through)\b/i;
+const SAYS_REFUSED = /\b(?:not\s+able\s+to|unable\s+to|could\s+not|couldn['’]t|cannot|can['’]t)\s+(?:accept|open)\b/i;
+
+function sentencesOf(text: string): string[] {
+  return text.split(/(?<=[.!?])\s+|\n+/).filter(Boolean);
+}
+
+/** Rule A: the reply says we received, or thanks them for sending, a file. A
+ * negated ("we have not received") or conditional ("if you have got") sentence
+ * is not a claim, and "thank you for the information" names no file. */
+export function claimsFileReceived(text: string): boolean {
+  return sentencesOf(text).some((raw) => {
+    // Blanked to the same length, so offsets into `s` still line up.
+    const s = raw.replace(NOT_A_DOCUMENT, (m) => ' '.repeat(m.length));
+    if (!FILE_NOUN_RE.test(s)) return false;
+    for (const m of s.matchAll(RECEIPT_RE)) {
+      const at = m.index ?? 0;
+      if (CONDITIONAL_RE.test(s.slice(0, at)) || precededByNegation(s, at)) continue;
+      return true;
+    }
+    return false;
+  });
+}
+
+/** Rule B: the reply invites a catalogue, price list, specification or file. */
+export function invitesFiles(text: string): boolean { return INVITE_RE.test(text); }
+
+/** Rule C: the sender's open text says a file is attached ("please find
+ * attached", "see the attachment", "I have enclosed our price list"). "We are
+ * attached to quality", "a comb attachment" and a confidentiality footer name
+ * no file and do not count. */
+export function mentionsAttachment(text: string): boolean {
+  return sentencesOf(text).some((s) => !DISCLAIMER.test(s) && (ATTACH_PLAIN.test(s) || ATTACH_NEAR_NOUN.test(s)));
+}
+
+/** Which fixed file sentences a reply owes (rules C and D). */
+export function fileAsksOwed(files: FileContext | undefined, openText: string): { missing: boolean; refused: boolean } {
+  if (!files || files.offNiche) return { missing: false, refused: false };
+  return {
+    missing: files.held.length === 0 && !files.openHasRecord && mentionsAttachment(openText),
+    refused: files.refused.length > 0,
+  };
+}
+
+/** Deterministic backstop: each owed sentence the reply still lacks after the
+ * revisions, once, as its own paragraph. */
+export function appendFileAsks(body: string, owed: { missing: boolean; refused: boolean }): string {
+  const add: string[] = [];
+  if (owed.missing && !SAYS_MISSING.test(body)) add.push(FILE_MISSING_SENTENCE);
+  if (owed.refused && !SAYS_REFUSED.test(body)) add.push(FILE_REFUSED_SENTENCE);
+  return add.length ? `${body.trimEnd()}\n\n${add.join('\n\n')}` : body;
+}
+
+/** The holds a final draft still earns: `file_claim` (rule A, every lane) and
+ * `file_reinvite` (rule B, supplier lane only). */
+export function fileHoldReasons(body: string, files: FileContext | undefined, supplierLane: boolean): string[] {
+  if (!files) return [];
+  const out: string[] = [];
+  if (files.held.length === 0 && claimsFileReceived(body)) out.push('file_claim');
+  if (supplierLane && files.held.length > 0 && invitesFiles(body)) out.push('file_reinvite');
+  return out;
+}
+
+/** Build the file context from the rows (design section 6). The open inbound
+ * messages are the ones after our last reply, the same scope as openInboundTexts. */
+export function buildFileContext(
+  contactRows: ReadonlyArray<Pick<AttachmentRow, 'status' | 'filename'>>,
+  threadRows: ReadonlyArray<Pick<AttachmentRow, 'status' | 'filename' | 'message_id'>>,
+  messages: ReadonlyArray<Pick<MessageRow, 'id' | 'direction'>>
+): FileContext {
+  let lastOutbound = -1;
+  messages.forEach((m, i) => { if (m.direction === 'outbound') lastOutbound = i; });
+  const open = new Set(messages.slice(lastOutbound + 1).filter((m) => m.direction === 'inbound').map((m) => m.id));
+  const openRows = threadRows.filter((r) => open.has(r.message_id));
+  return {
+    held: contactRows.filter((r) => r.status === 'stored').map((r) => r.filename),
+    refused: openRows.filter((r) => r.status === 'skipped_type' || r.status === 'skipped_size' || r.status === 'store_failed').map((r) => r.filename),
+    openHasRecord: openRows.length > 0,
+  };
 }
 
 // Supplier replies promise nothing (owner decision 2026-09-27): no order, review,
@@ -314,6 +497,9 @@ export function findDraftIssues(bodyText: string, ctx: DraftQualityContext = {})
   if (ctx.buyingLane && ctx.customerText && owesBasketDelivery(bodyText, ctx.customerText)) {
     issues.push("The customer wants several items or several orders. Keep the reply as it is and add ONE sentence saying that the delivery cost depends on their destination and what is in the basket, and that the exact total for the whole order is shown at checkout before payment. Never quote a delivery figure, and never say the cost goes up with the quantity ordered.");
   }
+  if (repeatsThanks(bodyText)) {
+    issues.push('The reply thanks them twice at the start. Keep only the first thank-you and continue with the answer.');
+  }
   if (claimsBusinessBiography(bodyText)) {
     issues.push("This reply states facts about the business itself (how long it has been trading, its size, or its customer base). No such fact exists in the grounded store facts, so it is invented. Remove the claim entirely: say warmly that details about the business are something we keep private, and offer help with products or orders instead.");
   }
@@ -325,8 +511,37 @@ export function findDraftIssues(bodyText: string, ctx: DraftQualityContext = {})
       issues.push(`This supplier has not told us this yet and we have not asked. Keep the reply as it is and add a short question to ${asks.join(', and ')}. Ask nothing else and promise nothing.`);
     }
   }
+  if (ctx.supplierLane && ctx.offNiche && invitesFiles(bodyText)) {
+    issues.push('This supplier offers goods outside our range. Do not invite a catalogue or any file; say only that we have noted their details and keep them on file for reference.');
+  }
+  if (ctx.files) {
+    if (ctx.files.held.length === 0 && claimsFileReceived(bodyText)) {
+      issues.push('This reply says a file, catalogue or document from them arrived, but none reached us. Remove every claim that a file arrived; nothing did.');
+    }
+    if (ctx.supplierLane && ctx.files.held.length > 0 && invitesFiles(bodyText)) {
+      issues.push('This supplier has already sent us files. Do not ask for what they already sent; acknowledge the files by name, briefly.');
+    }
+    if (ctx.openText !== undefined) {
+      const owed = fileAsksOwed(ctx.files, ctx.openText);
+      if (owed.missing && !SAYS_MISSING.test(bodyText)) {
+        issues.push('They mention a file, but it did not reach us. Keep the reply as it is and add one sentence: the file did not reach us; ask them to send it again or share a link. Do not name the file.');
+      }
+      if (owed.refused && !SAYS_REFUSED.test(bodyText)) {
+        issues.push('They sent a file we could not accept. Keep the reply as it is and add one sentence: we could not accept that file; ask them to send it as a PDF or share a link. Do not name the file.');
+      }
+    }
+  }
   if (ctx.supplierLane && promisesSupplier(bodyText)) {
-    issues.push("This is a reply to a supplier and it promises or suggests something: an order, a review, a reply, a meeting, a call, samples, a partnership, the affiliate programme, or 'at this stage'. Remove every promise. Keep only: thanks for what they offered, that they are welcome to email their catalogue or product information, the request for their website or online store link, the question whether they offer dropshipping (goods and packaging only), and that we keep supplier details on file for reference.");
+    // The catalogue invitation follows the files (design 2026-11-14, section 6
+    // item 3): a supplier whose file we hold is never invited to send it again.
+    const filesPart = ctx.files?.held.length
+      ? 'a brief acknowledgement of the files they already sent (never ask for a catalogue)'
+      : 'that they are welcome to email their catalogue or product information';
+    // An off-niche supplier keeps only the short acknowledgement (design 8.2).
+    const keep = ctx.offNiche
+      ? 'the opening thank-you, and that we have noted their details and keep them on file for reference'
+      : `thanks for what they offered, ${filesPart}, any sentence saying a file did not reach us or could not be accepted, the request for their website or online store link, the question whether they offer dropshipping (goods and packaging only), and that we keep supplier details on file for reference`;
+    issues.push(`This is a reply to a supplier and it promises or suggests something: an order, a review, a reply, a meeting, a call, samples, a partnership, the affiliate programme, or 'at this stage'. Remove every promise. Keep only: ${keep}.`);
   }
   return issues;
 }

@@ -51,6 +51,16 @@ database_name = "pawscout"
 database_id = "85f80862-0b26-4515-82b6-3408124e3a59"
 migrations_dir = "migrations"
 
+# Inbound email files (design 2026-11-14): kept attachments, served only as
+# signed download-only links. Bindings are NOT inherited by named
+# environments, so staging names its own bucket below. Both buckets must exist
+# before a deploy that carries this binding (the deploy script does not check):
+#   npx wrangler r2 bucket create pawscout-inbox-files --location weur
+#   npx wrangler r2 bucket create pawscout-inbox-files-staging --location weur
+[[r2_buckets]]
+binding = "INBOX_FILES"
+bucket_name = "pawscout-inbox-files"
+
 [vars]
 # Which deployment this is, reported by /healthz (deploy-safety phase,
 # 2026-09-18). `vars` are NOT inherited by named environments, so staging sets
@@ -113,6 +123,10 @@ binding = "DB"
 database_name = "pawscout-staging"
 database_id = "5b45383a-a596-48e1-92f2-8817e3b1c54f"
 migrations_dir = "migrations"
+
+[[env.staging.r2_buckets]]
+binding = "INBOX_FILES"
+bucket_name = "pawscout-inbox-files-staging"
 
 # Staging has its OWN random SHOPIFY_API_SECRET and PAWSCOUT_MASTER_KEY
 # (wrangler secret put ... --env staging). No production key is ever copied

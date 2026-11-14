@@ -55,6 +55,26 @@ function union(a: string[], b: string[], cap: number): string[] {
   return out;
 }
 
+/** The facts the supplier asks are judged on (design 2026-11-14, 8.1): the
+ * thread's reading merged with the register row, so a link or a dropshipping
+ * answer given on an EARLIER thread still counts. Website: the reading's, else
+ * the register's. Store links: both. Dropshipping: a yes or no from either side
+ * beats unknown (the reading's wins a tie). Kind and niche fit: the reading's,
+ * else the register's. Null only when both are absent. Pure. */
+export function supplierFactsFor(
+  reading: SupplierFacts | null | undefined, row: SupplierRow | null | undefined
+): Pick<SupplierFacts, 'website' | 'storeLinks' | 'kind' | 'dropship' | 'nicheFit'> | null {
+  if (!reading && !row) return null;
+  const known = (d: Dropship | undefined): d is 'yes' | 'no' => d === 'yes' || d === 'no';
+  return {
+    website: reading?.website || row?.website || null,
+    storeLinks: union(reading?.storeLinks ?? [], parseList(row?.store_links), MAX_STORE_LINKS),
+    kind: reading?.kind ?? row!.kind,
+    dropship: known(reading?.dropship) ? reading!.dropship : known(row?.dropship) ? row!.dropship : 'unknown',
+    nicheFit: reading?.nicheFit ?? row!.niche_fit,
+  };
+}
+
 /** Merge a fresh reading into the stored row (or start one). */
 export function mergeSupplier(
   existing: SupplierRow | null,

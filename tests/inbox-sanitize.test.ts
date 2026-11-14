@@ -1,5 +1,23 @@
 import { describe, it, expect } from 'vitest';
-import { sanitizeOutbound, applySalutation, salutationName, applyFooter, stripTrailingSignoff } from '../src/inbox/draft';
+import { sanitizeOutbound, applySalutation, salutationName, applyFooter, stripTrailingSignoff, greetingName } from '../src/inbox/draft';
+
+describe('greetingName (design 2026-11-14, 8.3)', () => {
+  it.each([
+    ['Cat Cages/HOMWOOD', 'Jennie', 'jennie@nongshine.com', 'Best regards, Jennie', 'Jennie'],
+    ['sales', 'Sam Li', 'sales@custom-headwear.com', 'Thanks, Sam Li', 'Sam'],
+    ['Growvia', null, 'hello@growvia.example', 'We grow stores.', null],
+    ['Wendy2', 'Wendy', 'kiki@toppouch.cn', 'Regards, Wendy', 'Wendy'],
+    ['Jane Doe', 'Janet', 'jane@x.com', 'Thanks, Janet', 'Jane'],          // both good, differ: From wins
+    ['sales', 'Mary', 'sales@x.com', 'Please contact our manager.', null], // reader name not in the text: rejected
+  ])('%s / %s -> %s', (from, reader, email, text, want) =>
+    expect(greetingName(from, reader, email, { senderText: text })).toBe(want));
+  it('a From name equal to the company is poor', () =>
+    expect(greetingName('Foofee', 'Lily', 'sales@foofee.cn', { senderText: 'Lily', company: 'Foofee' })).toBe('Lily'));
+  it('the reader name must appear as a whole word, not inside another', () =>
+    expect(greetingName('sales', 'Ann', 'sales@x.com', { senderText: 'Thanks, Annabel' })).toBeNull());
+  it('a company match on the first word of the company counts too', () =>
+    expect(greetingName('Hebei', 'Sabrina', 'sales@douke.cn', { senderText: 'Sabrina Liu', company: 'Hebei Douke Pet Products' })).toBe('Sabrina'));
+});
 
 describe('salutationName (skip honorifics, never greet a title)', () => {
   it('skips a leading title and greets the next name token', () => {
