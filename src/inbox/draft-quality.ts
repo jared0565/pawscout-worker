@@ -290,7 +290,17 @@ const FILE_NOUN_RE = new RegExp(String.raw`\b${FILE_NOUN}\b`, 'i');
 const RECEIPT_RE = /\b(?:received|got|thank(?:s|\s+you)\s+for\s+(?:sending|sharing|attaching))\b/gi;
 // "If you have got a catalogue ..." and "Once received ..." are not receipts.
 const CONDITIONAL_RE = /\b(?:if|once|whenever|should|until)\b/i;
-const INVITE_RE = new RegExp(String.raw`\b(?:(?:welcome|free)\s+to|please)\s+(?:e-?mail|send|share)\b[^.!?\n]{0,40}?\b${FILE_NOUN}\b`, 'i');
+// Group 1 is what sits between the verb and the file noun ("it as a" in
+// "please send it as a PDF").
+const INVITE_SRC = String.raw`\b(?:(?:welcome|free)\s+to|please)\s+(?:e-?mail|send|share)\b([^.!?\n]{0,40}?)\b${FILE_NOUN}\b`;
+const INVITE_RE = new RegExp(INVITE_SRC, 'i');
+const INVITE_ALL = new RegExp(INVITE_SRC, 'gi');
+// The rule-D ask in a reviser's own words (live test 2026-11-14: "please send
+// it as a PDF" was held as file_reinvite): the invitation points back at the
+// file we refused ("it", "the product sheet", "a link to the file") and asks
+// for it as a PDF or a link. "Your catalogue" points at something new.
+const BACK_REFERENCE = /^\s*(?:us\s+)?(?:a\s+link\s+to\s+)?(?:it|them|that|this|the)\b/i;
+const OWED_FORM = /\bas\s+(?:a\s+)?pdfs?\b|\ba\s+link\b/i;
 const ATTACH_NEAR_NOUN = new RegExp(
   String.raw`\b(?:attached|enclosed)\b[^.!?\n]{0,40}?\b${FILE_NOUN}\b|\b${FILE_NOUN}\b[^.!?\n]{0,40}?\b(?:attached|enclosed)\b`, 'i');
 // The bare word "attachment" is not a mention (final review 2026-11-14): a
@@ -330,8 +340,20 @@ export function claimsFileReceived(text: string): boolean {
   });
 }
 
-/** Rule B: the reply invites a catalogue, price list, specification or file. */
-export function invitesFiles(text: string): boolean { return INVITE_RE.test(text); }
+/** Rule B: the reply invites a catalogue, price list, specification or file.
+ * With `refusedAskOwed` (a file was refused, so rule D owes "send it as a PDF,
+ * or share a link"), the ask for that refused file does not count. */
+export function invitesFiles(text: string, refusedAskOwed = false): boolean {
+  if (!refusedAskOwed) return INVITE_RE.test(text);
+  return sentencesOf(text).some((s) =>
+    [...s.matchAll(INVITE_ALL)].some((m) => !(BACK_REFERENCE.test(m[1]) && OWED_FORM.test(s.slice(m.index ?? 0)))));
+}
+
+/** Rule D owes the refused-file ask: a file was refused and the supplier is in
+ * our range (off-niche suppliers get no file sentences, design 8.2). */
+function refusedAskOwed(files: FileContext, offNiche?: boolean): boolean {
+  return files.refused.length > 0 && !files.offNiche && !offNiche;
+}
 
 /** Rule C: the sender's open text says a file is attached ("please find
  * attached", "see the attachment", "I have enclosed our price list"). "We are
@@ -365,7 +387,7 @@ export function fileHoldReasons(body: string, files: FileContext | undefined, su
   if (!files) return [];
   const out: string[] = [];
   if (files.held.length === 0 && claimsFileReceived(body)) out.push('file_claim');
-  if (supplierLane && files.held.length > 0 && invitesFiles(body)) out.push('file_reinvite');
+  if (supplierLane && files.held.length > 0 && invitesFiles(body, refusedAskOwed(files))) out.push('file_reinvite');
   return out;
 }
 
@@ -520,7 +542,7 @@ export function findDraftIssues(bodyText: string, ctx: DraftQualityContext = {})
     if (ctx.files.held.length === 0 && claimsFileReceived(bodyText)) {
       issues.push('This reply says a file, catalogue or document from them arrived, but none reached us. Remove every claim that a file arrived; nothing did.');
     }
-    if (ctx.supplierLane && ctx.files.held.length > 0 && invitesFiles(bodyText)) {
+    if (ctx.supplierLane && ctx.files.held.length > 0 && invitesFiles(bodyText, refusedAskOwed(ctx.files, ctx.offNiche))) {
       issues.push('This supplier has already sent us files. Do not ask for what they already sent; acknowledge the files by name, briefly.');
     }
     if (ctx.openText !== undefined) {
