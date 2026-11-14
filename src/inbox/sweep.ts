@@ -5,7 +5,7 @@ import { resolveChain } from '../llm-resolve';
 import { defaultFetch } from '../safe-fetch';
 import { parseAuthResults } from './gates';
 import { classifyEmail, decideDisposition } from './classify';
-import { draftReply, renderReplyHtml, applyFooter, stripTrailingSignoff, sanitizeOutbound, buildDraftTranscript, openInboundText } from './draft';
+import { draftReply, renderReplyHtml, applyFooter, stripTrailingSignoff, sanitizeOutbound, buildDraftTranscript, openInboundText, greetingName } from './draft';
 import { threadFilesFor, contactFilesFor } from './attachments';
 import { autoSendDecision, mentionsMoney, withExtraHolds } from './autosend';
 import { sendReply } from './send';
@@ -495,9 +495,16 @@ export async function composeDraftForThread(
   const supplierRow = supplierLane ? await store.getSupplier(t.contact_email).catch(() => null) : null;
   const contactOutbound = supplierLane ? await store.outboundBodiesForContact(t.contact_email).catch(() => undefined) : undefined;
 
+  // The greeting name (design 2026-11-14, 8.3): the From name unless it is
+  // poor ("Cat Cages/HOMWOOD", "Growvia"), then the name they sign with, only
+  // when it appears in their own text.
+  const greetAs = greetingName(contact?.name, reading?.senderName, t.contact_email, {
+    senderText: cleaned.join('\n\n'), company: reading?.supplier?.company ?? supplierRow?.company,
+  });
+
   const draft = await draftReply(llm, store, cfg, {
     agent, grounding, subject: t.subject ?? '', conversation: transcript, latestMessage: latestInbound,
-    customerName: contact?.name ?? null, customerEmail: t.contact_email, recall,
+    customerName: greetAs, customerEmail: t.contact_email, recall,
     priorOutbound: outboundBodies(got.messages), admin, reading, files: fileCtx, supplierRow, contactOutbound
   });
   if (!draft) return null; // degrade: retry next sweep

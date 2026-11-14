@@ -27,6 +27,29 @@ describe('safeLink', () => {
   });
 });
 
+describe('validateReading senderName (design 2026-11-14, 8.3)', () => {
+  it('keeps the name the sender signs with, capped at 60', () => {
+    expect(validateReading({ ...base, senderName: 'Jennie' })?.senderName).toBe('Jennie');
+    expect(validateReading({ ...base, senderName: 'J'.repeat(200) })?.senderName).toHaveLength(60);
+  });
+  it('anything else becomes null', () => {
+    expect(validateReading({ ...base, senderName: 42 })?.senderName).toBeNull();
+    expect(validateReading({ ...base, senderName: '   ' })?.senderName).toBeNull();
+    expect(validateReading(base)?.senderName).toBeNull();
+  });
+  it('the reader is asked for it and told never to guess', async () => {
+    let system = '';
+    const f = (async (_u: string, init: RequestInit) => {
+      system = JSON.parse(String(init.body)).messages?.[0]?.content ?? '';
+      return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(base) } }], usage: { cost: 0 } }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const store = new TenantStore(env.DB, 'a.myshopify.com');
+    await readThread(new LlmClient({ openrouter: 'k' }, f), store, { llm: DEFAULT_LLM, inbox: DEFAULT_INBOX } as any, { subject: 's', transcript: 'Customer: hi', fromEmail: 'a@b.com' });
+    expect(system).toContain('"senderName"');
+    expect(system).toMatch(/never guess/i);
+  });
+});
+
 describe('validateReading', () => {
   it('accepts a customer reading and drops a supplier block that does not belong', () => {
     const r = validateReading({ ...base, supplier: { company: 'X' } });

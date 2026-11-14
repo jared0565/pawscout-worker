@@ -8,7 +8,8 @@ import { startSupplierBackfill, readBackfillCursor } from './supplier-backfill';
 import { SUPPLIER_STATUSES, type SupplierStatus } from './supplier-register';
 import { buildServiceProveFirst, buildSupplierAck, buildAccessDecline, buildOperationsDecline, buildCollaborationDecline, buildKeepToEmail, buildSignupInvite, detectRateAboveStandard, detectOffPlatformRequest, buildSecondTouch, buildPointerBack, type TouchTemplate } from './partnership';
 import { chooseTouch, outboundBodies, type TouchKind } from './repeat';
-import { renderReplyHtml, openInboundText } from './draft';
+import { renderReplyHtml, openInboundText, greetingName } from './draft';
+import { validateReading, type ThreadReading } from './thread-read';
 import { fileUrl, contactFilesFor } from './attachments';
 import { stripQuotedReply } from './quote';
 import { defaultFetch } from '../safe-fetch';
@@ -271,7 +272,14 @@ export async function applyDraftTemplate(db: D1Database, shop: string, threadId:
   const got = await store.getThreadWithMessages(threadId);
   if (!got) return { ok: false as const, error: 'Thread not found' };
   const contact = await store.getContactByEmail(got.thread.contact_email);
-  const name = contact?.name ?? null;
+  // The greeting name (design 2026-11-14, 8.3), from the thread's saved reading:
+  // the From name unless it is poor, then the name they sign with, only when it
+  // is in their own text. A missing or unreadable reading leaves the From name.
+  let saved: ThreadReading | null = null;
+  try { saved = got.thread.reading_json ? validateReading(JSON.parse(got.thread.reading_json)) : null; } catch { saved = null; }
+  const company = saved?.supplier?.company ?? (await store.getSupplier(got.thread.contact_email).catch(() => null))?.company ?? null;
+  const senderText = got.messages.filter((m) => m.direction === 'inbound').map((m) => stripQuotedReply(m.body_text ?? '')).join('\n\n');
+  const name = greetingName(contact?.name, saved?.senderName, got.thread.contact_email, { senderText, company });
 
   // An accepted partner (a live code, or queued for one) is never re-invited
   // from the picker: the invite would stage them 'passed_to_form' and the next

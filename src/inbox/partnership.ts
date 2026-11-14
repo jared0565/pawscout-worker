@@ -1,5 +1,5 @@
 import type { AffiliateMode, ScreenFacts, ScreenVerdict, ThreadRow, MessageRow } from './types';
-import { applySalutation, renderReplyHtml, applyFooter, draftReply, buildDraftTranscript, openInboundTexts } from './draft';
+import { applySalutation, renderReplyHtml, applyFooter, draftReply, buildDraftTranscript, openInboundTexts, greetingName } from './draft';
 import { threadFilesFor } from './attachments';
 import { stripQuotedReply } from './quote';
 import { chooseTouch, outboundBodies, repeatsPriorOutbound, type TouchKind } from './repeat';
@@ -1081,8 +1081,10 @@ export async function maybePartnershipDraft(
       && !isPartnershipLane({ inboundToAddrs, declaredIntent, primaryCategory: thread.primary_category, inboundTexts: openInboundTexts(got.messages) })) return null;
 
   const contact = await store.getContactByEmail(thread.contact_email);
-  const name = contact?.name ?? null;
   const inboundText = got.messages.filter((m) => m.direction === 'inbound').map((m) => stripQuotedReply(m.body_text ?? '')).join('\n\n');
+  // The greeting name (design 2026-11-14, 8.3): the From name unless it is
+  // poor, then the name they sign with, only if it is in their own text.
+  const name = greetingName(contact?.name, reading?.senderName, thread.contact_email, { senderText: inboundText, company: reading?.supplier?.company });
 
   // Owner rule 2026-09-04: never the same message twice on a thread. Every
   // deterministic funnel body goes through here: a repeat becomes the shorter

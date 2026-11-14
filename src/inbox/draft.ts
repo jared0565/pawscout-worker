@@ -123,6 +123,34 @@ export function salutationName(rawName: string | null | undefined, email?: strin
   return chosen.charAt(0).toUpperCase() + chosen.slice(1).toLowerCase();
 }
 
+/** Which name the greeting uses (design 2026-11-14, 8.3), or null for "Hi
+ * there,". The From name wins unless it is POOR: no usable name, a "/", "|",
+ * "@" or digit in it ("Cat Cages/HOMWOOD", "Wendy2"), the email's domain label
+ * ("Growvia" at growvia...), or the company's name. Then the name the reader
+ * found the sender signing with is used, but only when it appears word for
+ * word in their own text, so a guessed name never reaches the wire. When both
+ * are good and differ, the From name wins (the lower risk). */
+export function greetingName(
+  fromName: string | null | undefined, readerName: string | null | undefined, email: string | null | undefined,
+  opts: { senderText: string; company?: string | null }
+): string | null {
+  const fromPick = salutationName(fromName, email);
+  const readerFirst = salutationName(readerName);
+  const readerPick = readerFirst && wholeWordIn(readerFirst, opts.senderText) ? readerFirst : null;
+  if (!fromPick) return readerPick;
+  const lower = fromPick.toLowerCase();
+  const domainLabel = (email ?? '').split('@')[1]?.split('.')[0]?.toLowerCase() ?? '';
+  const company = (opts.company ?? '').trim().toLowerCase();
+  const poor = /[/|@\d]/.test(fromName ?? '') || lower === domainLabel
+    || (!!company && (company === lower || company.split(/\s+/)[0] === lower));
+  return poor ? readerPick : fromPick;
+}
+
+function wholeWordIn(word: string, text: string): boolean {
+  const esc = word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(?<![\\p{L}\\p{N}])${esc}(?![\\p{L}\\p{N}])`, 'iu').test(text);
+}
+
 // A leading greeting the model may have added despite being told not to. Comma- OR
 // newline-terminated and length-bounded so it catches both "Hi Jane, thanks…" (inline)
 // and "Hello there,\n\n…" (own line) without eating a real sentence that opens with "Hi".

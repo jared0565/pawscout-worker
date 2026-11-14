@@ -375,6 +375,19 @@ describe('applyDraftTemplate', () => {
     expect(await s.getApplicantByThread(tid)).toBeNull(); // stage untouched
   });
 
+  // Design 2026-11-14 (8.3): the picker greets with the saved reading's name
+  // when the From name is poor ("Cat Cages/HOMWOOD" used to give "Hi Cat,").
+  it('the template picker greets by the name the sender signs with when the From name is poor', async () => {
+    const { s, tid } = await seedWithConfig();
+    const email = (await s.getThreadWithMessages(tid))!.thread.contact_email;
+    await env.DB.prepare(`UPDATE inbox_contacts SET name = 'Cat Cages/HOMWOOD' WHERE shop = ?1 AND email = ?2`).bind(SHOP, email).run();
+    await env.DB.prepare(`UPDATE inbox_messages SET body_text = body_text || ' Best regards, Jennie' WHERE shop = ?1 AND thread_id = ?2 AND direction = 'inbound'`).bind(SHOP, tid).run();
+    await s.saveThreadReading(tid, JSON.stringify({ senderRole: 'goods-supplier', openAsks: [], offered: '', alreadyAnswered: [], replyNeeded: true, supplier: {}, productQuery: null, senderName: 'Jennie' }));
+    const r = await applyDraftTemplate(env.DB, SHOP, tid, 'supplier_ack');
+    const body = (r as { draft?: { body_text?: string } }).draft?.body_text ?? '';
+    expect(body.startsWith('Hi Jennie,')).toBe(true);
+  });
+
   // Design 2026-11-14 (section 6, item 4): a supplier whose file we hold is
   // never asked for a catalogue by the template either.
   it('the supplier acknowledgement drops the catalogue sentence when a file from them is held', async () => {
