@@ -490,6 +490,36 @@ describe('honest replies about files (design 2026-11-14, section 6)', () => {
     expect(invitesFiles(FILE_REFUSED_SENTENCE)).toBe(false);
   });
 
+  it('rule B: the refused-file ask in the reviser\'s own words is not a re-invitation (live test 2026-11-14)', () => {
+    const files = { held: ['price-list.pdf'], refused: ['product-sheet.docm'], openHasRecord: true };
+    const open = 'Please find attached our trade price list and a product sheet.';
+    // The live 16:00 draft body, whole: held as file_reinvite for its second sentence.
+    const live = [
+      'Thank you for informing us!',
+      'We have your price list, price-list.pdf, on file for reference. We could not accept the product sheet, so please send it as a PDF or share a link instead.',
+      'We are not committing to stocking any of your chew toy or rope tug lines, and we have no minimum order figure to give you.',
+      'Could you please send the link to your website or your Alibaba or other online store, for our reference? Do you also offer dropshipping, meaning sending single orders directly to our customers?',
+      'We keep supplier details on file for reference, and nothing more.',
+    ].join('\n\n');
+    const asks = [
+      live,
+      'We could not accept the product sheet. Please send it again as a PDF.',
+      'The workbook could not be opened. Please share a link to the file instead.',
+      'We were unable to accept one file. Please send the product sheet as a PDF.',
+    ];
+    for (const body of asks) {
+      expect(fileHoldReasons(body, files, true)).toEqual([]);
+      expect(findDraftIssues(body, { supplierLane: true, files, openText: open }).join(' ')).not.toMatch(/already sent/i);
+    }
+    // Still a re-invitation: their catalogue (possessive), the de23 wording,
+    // any invitation when nothing was refused, and an off-niche supplier.
+    const reinvite = 'We could not accept the product sheet. Please send your catalogue as a PDF.';
+    expect(fileHoldReasons(reinvite, files, true)).toEqual(['file_reinvite']);
+    expect(fileHoldReasons(DE23, files, true)).toEqual(['file_reinvite']);
+    expect(fileHoldReasons('Please send it as a PDF.', { held: ['cat.pdf'], refused: [], openHasRecord: true }, true)).toEqual(['file_reinvite']);
+    expect(fileHoldReasons(live, { ...files, offNiche: true }, true)).toEqual(['file_reinvite']);
+  });
+
   it('rule C: an attachment mentioned but not received is owed the missing-file sentence', () => {
     for (const s of ['Please find attached our offer.', 'See the attachment for details.', 'I have enclosed our price list.', 'Attached is our catalogue.']) {
       expect(mentionsAttachment(s)).toBe(true);
