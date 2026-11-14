@@ -81,6 +81,12 @@ export interface InboundAttachment {
 /** What became of one file part (inbox_attachments.status, migration 0048). */
 export type AttachmentStatus = 'stored' | 'skipped_type' | 'skipped_size' | 'skipped_count' | 'store_failed';
 
+/** One inbox_attachments row. r2_key is set only when status is 'stored'. */
+export interface AttachmentRow {
+  shop: string; id: string; thread_id: string; message_id: string; filename: string;
+  content_type: string; size_bytes: number; status: AttachmentStatus; r2_key: string | null; created_at: string;
+}
+
 export interface Classification {
   isHuman: boolean;
   category: InboxLabel;

@@ -3,7 +3,17 @@ import type { LogisticsRoute } from './logistics';
 import { deriveModels } from './llm-migrate';
 import { validateModelMenuPayload } from './validate';
 import { DEFAULT_INBOX, type InboxConfig } from './inbox/types';
-import type { ContactRow, ThreadRow, MessageRow, ThreadStatus, DraftRow, DraftStatus, DraftMeta, InvoiceRow, InvoiceLineItem, InvoiceStatus, ApplicantRow, PartnershipStage, ScreenVerdict } from './inbox/types';
+import type { ContactRow, ThreadRow, MessageRow, ThreadStatus, DraftRow, DraftStatus, DraftMeta, InvoiceRow, InvoiceLineItem, InvoiceStatus, ApplicantRow, PartnershipStage, ScreenVerdict, AttachmentRow } from './inbox/types';
+
+/** What an inbound message insert takes (insertInboundMessage / insertInboundMessageIfNew). */
+export interface InboundMessageInput {
+  threadId: string; messageId: string | null; inReplyTo: string | null; references: string[];
+  from: string; to: string | null; subject: string | null; bodyText: string | null;
+  bodyHtml: string | null; headersJson: string | null; receivedAt: string;
+  /** The DMARC result for `from`; leave it out when `from` was not the
+   *  authenticated sender (a contact-form post). */
+  dmarc?: string | null;
+}
 import { mergeSupplier, SUPPLIER_STATUSES, type SupplierFacts, type SupplierRow, type SupplierStatus } from './inbox/supplier-register';
 import { isOtherAlertMarker } from './order-alert';
 
@@ -2274,15 +2284,16 @@ export class TenantStore {
   }
 
   /** Insert an inbound message; false if its Message-ID was already stored (dedup). */
-  async insertInboundMessageIfNew(m: {
-    threadId: string; messageId: string | null; inReplyTo: string | null; references: string[];
-    from: string; to: string | null; subject: string | null; bodyText: string | null;
-    bodyHtml: string | null; headersJson: string | null; receivedAt: string;
-    /** The DMARC result for `from`; leave it out when `from` was not the
-     *  authenticated sender (a contact-form post). */
-    dmarc?: string | null;
-  }): Promise<boolean> {
+  async insertInboundMessageIfNew(m: InboundMessageInput): Promise<boolean> {
+    return (await this.insertInboundMessage(m)) !== null;
+  }
+
+  /** Insert an inbound message and return its new row id, or null if its
+   *  Message-ID was already stored (dedup). Ingest needs the id to attach the
+   *  message's files to it (design 2026-11-14, 5.4). */
+  async insertInboundMessage(m: InboundMessageInput): Promise<string | null> {
     const now = new Date().toISOString();
+    const id = crypto.randomUUID();
     const r = await this.db
       .prepare(
         `INSERT INTO inbox_messages
@@ -2290,10 +2301,44 @@ export class TenantStore {
          VALUES (?1, ?2, ?3, 'inbound', ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
          ON CONFLICT(shop, message_id) DO NOTHING`
       )
-      .bind(this.shop, crypto.randomUUID(), m.threadId, m.messageId, m.inReplyTo,
+      .bind(this.shop, id, m.threadId, m.messageId, m.inReplyTo,
         m.references.join(' ') || null, m.from, m.to, m.subject, m.bodyText, m.bodyHtml, m.headersJson, m.receivedAt, now, m.dmarc ?? null)
       .run();
-    return (r.meta.changes ?? 0) > 0;
+    return (r.meta.changes ?? 0) > 0 ? id : null;
+  }
+
+  // --- Inbound files (migration 0048, design 2026-11-14) ---
+
+  async insertAttachment(r: Omit<AttachmentRow, 'shop' | 'created_at'>): Promise<void> {
+    await this.db
+      .prepare(`INSERT INTO inbox_attachments (shop, id, thread_id, message_id, filename, content_type, size_bytes, status, r2_key, created_at)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)`)
+      .bind(this.shop, r.id, r.thread_id, r.message_id, r.filename, r.content_type, r.size_bytes, r.status, r.r2_key, new Date().toISOString())
+      .run();
+  }
+
+  async listAttachmentsForThread(threadId: string): Promise<AttachmentRow[]> {
+    const rs = await this.db
+      .prepare(`SELECT * FROM inbox_attachments WHERE shop = ?1 AND thread_id = ?2 ORDER BY created_at, id`)
+      .bind(this.shop, threadId).all<AttachmentRow>();
+    return rs.results ?? [];
+  }
+
+  /** Every file record from one contact, across all of their threads. */
+  async listAttachmentsForContact(email: string): Promise<AttachmentRow[]> {
+    const rs = await this.db
+      .prepare(`SELECT a.* FROM inbox_attachments a
+                WHERE a.shop = ?1 AND a.thread_id IN (SELECT id FROM inbox_threads WHERE shop = ?1 AND contact_email = ?2)
+                ORDER BY a.created_at, a.id`)
+      .bind(this.shop, email.trim().toLowerCase()).all<AttachmentRow>();
+    return rs.results ?? [];
+  }
+
+  /** A stored file's record; null for a skipped part, another shop's id, or none. */
+  getStoredAttachment(id: string): Promise<AttachmentRow | null> {
+    return this.db
+      .prepare(`SELECT * FROM inbox_attachments WHERE shop = ?1 AND id = ?2 AND status = 'stored'`)
+      .bind(this.shop, id).first<AttachmentRow>();
   }
 
   async touchThread(threadId: string, lastMessageAt: string): Promise<void> {
