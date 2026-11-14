@@ -497,6 +497,15 @@ describe('honest replies about files (design 2026-11-14, section 6)', () => {
     expect(appendFileAsks(once, { missing: true, refused: false })).toBe(once);
   });
 
+  it('the no-promises reviser text never invites a catalogue we already hold (design section 6, item 3)', () => {
+    const promising = 'Thank you for your range. We will be in touch about an order.';
+    const held = findDraftIssues(promising, { supplierLane: true, files: { held: ['cat.pdf'], refused: [], openHasRecord: true } }).join(' ');
+    expect(held).toMatch(/promise/i);
+    expect(held).not.toMatch(/welcome to email/i);
+    const none = findDraftIssues(promising, { supplierLane: true, files: NONE }).join(' ');
+    expect(none).toMatch(/welcome to email/i);
+  });
+
   it('the fixed sentences never echo a filename', () => {
     expect(FILE_MISSING_SENTENCE).toBe('Unfortunately the file you mentioned did not reach us. Could you send it again, or share a link to it?');
     expect(FILE_REFUSED_SENTENCE).toBe('We were not able to accept the file you sent. Could you send it as a PDF, or share a link to it?');

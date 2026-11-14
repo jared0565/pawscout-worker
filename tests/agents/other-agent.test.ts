@@ -45,4 +45,12 @@ describe('otherAgent', () => {
     expect(p).toMatch(/welcome to email/i);
     expect(p).toMatch(/website or online store link/i);
   });
+
+  // Design 2026-11-14 (section 6, item 2): the same file condition as the supplier lane.
+  it('invites a goods supplier\'s catalogue only when no file arrived', () => {
+    const p = otherAgent.promptFragment({} as any);
+    const goods = p.slice(p.indexOf('GOODS SUPPLIERS'));
+    expect(goods).toContain('Files with this message');
+    expect(goods).toContain('Files sent but not kept');
+  });
 });

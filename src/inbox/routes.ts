@@ -9,7 +9,7 @@ import { SUPPLIER_STATUSES, type SupplierStatus } from './supplier-register';
 import { buildServiceProveFirst, buildSupplierAck, buildAccessDecline, buildOperationsDecline, buildCollaborationDecline, buildKeepToEmail, buildSignupInvite, detectRateAboveStandard, detectOffPlatformRequest, buildSecondTouch, buildPointerBack, type TouchTemplate } from './partnership';
 import { chooseTouch, outboundBodies, type TouchKind } from './repeat';
 import { renderReplyHtml, openInboundText } from './draft';
-import { fileUrl } from './attachments';
+import { fileUrl, contactFilesFor } from './attachments';
 import { stripQuotedReply } from './quote';
 import { defaultFetch } from '../safe-fetch';
 
@@ -308,7 +308,11 @@ export async function applyDraftTemplate(db: D1Database, shop: string, threadId:
   else if (key === 'service_prove_first') body = buildServiceProveFirst(name);
   else if (key === 'operations_decline') body = buildOperationsDecline(name);
   else if (key === 'collaboration_decline') body = buildCollaborationDecline(name);
-  else if (key === 'supplier_ack') body = buildSupplierAck(name);
+  else if (key === 'supplier_ack') {
+    // A supplier whose file we already hold is not asked for a catalogue again.
+    const filesHeld = (await contactFilesFor(store, got.thread.contact_email)).some((f) => f.status === 'stored');
+    body = buildSupplierAck(name, { filesHeld });
+  }
   else if (key === 'access_decline') body = buildAccessDecline(name);
   else body = buildKeepToEmail(name);
 

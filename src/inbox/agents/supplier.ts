@@ -14,8 +14,8 @@ import type { CategoryAgent, Grounding } from './types';
 export const SUPPLIER_PROMPT =
   'This sender offers to SUPPLY US goods, packaging or materials, or supply-chain services such as warehousing, fulfilment or logistics. They are a supplier, not a customer and not a partnership. ' +
   'Write a few short sentences that: (1) answer any direct question they asked, from the store facts only; ' +
-  '(2) thank them for the specific range or service they described, naming it from what they offered; ' +
-  '(3) say they are welcome to email over their catalogue, price list, specifications or product listing; ' +
+  '(2) mention the range or service they described in a few words (for example "your pet grooming tools"), not a list of every product, and without thanking them again, because the opening thank-you covers that; ' +
+  '(3) if the conversation shows a "Files with this message" line, acknowledge those files briefly by name and do not ask for a catalogue; if they mention a file but none arrived, or a "Files sent but not kept" line shows, follow that instead; otherwise say they are welcome to email over their catalogue, price list, specifications or product listing; ' +
   '(4) unless the thread reading says a website or store link is already given, ask for the link to their website or their Alibaba or other online store, for our reference; ' +
   '(5) unless the thread reading says a dropshipping answer is already given, and only for goods or packaging, ask whether they offer dropshipping, meaning sending single orders directly to our customers; ' +
   '(6) say we keep supplier details on file for reference, and nothing more. ' +

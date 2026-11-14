@@ -368,10 +368,23 @@ describe('applyDraftTemplate', () => {
     expect(r.ok).toBe(true);
     const body = (r as { draft?: { body_text?: string } }).draft?.body_text ?? '';
     expect(body).toContain('Hi Jane,');
-    expect(body).toMatch(/thank you for sending/i);
+    expect(body).toMatch(/thank you for informing us!/i);
+    expect(body).toMatch(/welcome to email over your catalogue/i);
     expect(body).toMatch(/for reference/i);
     expect(body).not.toMatch(/declin|not a fit|in-house|affiliate|commission/i);
     expect(await s.getApplicantByThread(tid)).toBeNull(); // stage untouched
+  });
+
+  // Design 2026-11-14 (section 6, item 4): a supplier whose file we hold is
+  // never asked for a catalogue by the template either.
+  it('the supplier acknowledgement drops the catalogue sentence when a file from them is held', async () => {
+    const { s, tid } = await seedWithConfig();
+    const mid = (await s.getThreadWithMessages(tid))!.messages[0].id;
+    await s.insertAttachment({ id: 'f1', thread_id: tid, message_id: mid, filename: 'catalogue.pdf', content_type: 'application/pdf', size_bytes: 10, status: 'stored', r2_key: `inbox/${SHOP}/${tid}/f1` });
+    const r = await applyDraftTemplate(env.DB, SHOP, tid, 'supplier_ack');
+    const body = (r as { draft?: { body_text?: string } }).draft?.body_text ?? '';
+    expect(body).not.toMatch(/catalogue|price list/i);
+    expect(body).toMatch(/dropshipping/i);
   });
 
   it('refuses the retired service decline key', async () => {

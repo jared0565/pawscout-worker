@@ -485,15 +485,20 @@ Active Paw Partnerships`;
 // decision 2026-09-27: the information they offer is welcome, and we ask for
 // their website or online store and whether they dropship, because the store
 // runs on dropshipping. Still no commitment. Signed by the Sourcing Team.
-const SUPPLIER_ACK_BODY =
-`Thank you for sending over your product information - we appreciate you thinking of Active Paw.
-
-You are welcome to email over your catalogue, price list or product listing. If you have a website or an Alibaba or other online store, please send us the link for our reference, and let us know whether you offer dropshipping, that is, sending single orders directly to our customers.
-
-We keep supplier details on file for reference.
+// Design 2026-11-14 (section 6, item 4): it opens with the owner's own supplier
+// line, and a supplier whose file we already hold is not invited to send a
+// catalogue again; the link and dropshipping question always stays.
+const SUPPLIER_ACK_OPENER = 'Thank you for informing us!';
+const SUPPLIER_ACK_INVITE = 'You are welcome to email over your catalogue, price list or product listing. ';
+const SUPPLIER_ACK_ASKS = 'If you have a website or an Alibaba or other online store, please send us the link for our reference, and let us know whether you offer dropshipping, that is, sending single orders directly to our customers.';
+const SUPPLIER_ACK_CLOSE = `We keep supplier details on file for reference.
 
 Best Regards,
 Active Paw Sourcing Team`;
+
+function supplierAckBody(filesHeld: boolean): string {
+  return `${SUPPLIER_ACK_OPENER}\n\n${filesHeld ? '' : SUPPLIER_ACK_INVITE}${SUPPLIER_ACK_ASKS}\n\n${SUPPLIER_ACK_CLOSE}`;
+}
 
 // For messages that probe our goals/strategy/performance rather than pitch a
 // service outright (e.g. "what's your main priority, traffic or revenue?") -
@@ -735,7 +740,9 @@ export function buildSignupInvite(
   return applySalutation(body, name);
 }
 export function buildServiceProveFirst(name: string | null): string { return applySalutation(SERVICE_PROVE_FIRST_BODY, name); }
-export function buildSupplierAck(name: string | null): string { return applySalutation(SUPPLIER_ACK_BODY, name); }
+export function buildSupplierAck(name: string | null, opts: { filesHeld?: boolean } = {}): string {
+  return applySalutation(supplierAckBody(opts.filesHeld === true), name);
+}
 export function buildAccessDecline(name: string | null): string { return applySalutation(ACCESS_DECLINE_BODY, name); }
 export function buildOperationsDecline(name: string | null): string { return applySalutation(OPERATIONS_DECLINE_BODY, name); }
 export function buildFormInvite(name: string | null): string { return applySalutation(FORM_INVITE_BODY, name); }

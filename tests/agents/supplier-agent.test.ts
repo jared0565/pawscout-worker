@@ -39,4 +39,19 @@ describe('supplier lane', () => {
     expect(SUPPLIER_PROMPT).not.toMatch(/[\u2013\u2014]/);
     expect(supplierAgent.promptFragment({ confident: true, facts: '', quotesFigure: false })).toBe(SUPPLIER_PROMPT);
   });
+
+  // Design 2026-11-14 (section 6 item 1, section 8.4): the catalogue invitation
+  // follows the files, and step (2) names their range without a second thank-you.
+  it('invites a catalogue only when no file arrived, and names the range in a few words', () => {
+    expect(SUPPLIER_PROMPT).toContain('Files with this message');
+    expect(SUPPLIER_PROMPT).toContain('Files sent but not kept');
+    expect(SUPPLIER_PROMPT).not.toContain('(3) say they are welcome to email over their catalogue');
+    const step2 = SUPPLIER_PROMPT.slice(SUPPLIER_PROMPT.indexOf('(2)'), SUPPLIER_PROMPT.indexOf('(3)'));
+    // The old step (2) told the model to "thank them for the specific range";
+    // what is left only says NOT to thank them again (the opener covers it).
+    expect(step2).not.toMatch(/\bthank them\b|\bthank you for\b/i);
+    expect(SUPPLIER_PROMPT).not.toContain('thank them for the specific range');
+    expect(step2).toContain('in a few words');
+    expect(step2).toContain('without thanking them again');
+  });
 });

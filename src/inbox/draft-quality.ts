@@ -451,7 +451,12 @@ export function findDraftIssues(bodyText: string, ctx: DraftQualityContext = {})
     }
   }
   if (ctx.supplierLane && promisesSupplier(bodyText)) {
-    issues.push("This is a reply to a supplier and it promises or suggests something: an order, a review, a reply, a meeting, a call, samples, a partnership, the affiliate programme, or 'at this stage'. Remove every promise. Keep only: thanks for what they offered, that they are welcome to email their catalogue or product information, the request for their website or online store link, the question whether they offer dropshipping (goods and packaging only), and that we keep supplier details on file for reference.");
+    // The catalogue invitation follows the files (design 2026-11-14, section 6
+    // item 3): a supplier whose file we hold is never invited to send it again.
+    const filesPart = ctx.files?.held.length
+      ? 'a brief acknowledgement of the files they already sent (never ask for a catalogue)'
+      : 'that they are welcome to email their catalogue or product information';
+    issues.push(`This is a reply to a supplier and it promises or suggests something: an order, a review, a reply, a meeting, a call, samples, a partnership, the affiliate programme, or 'at this stage'. Remove every promise. Keep only: thanks for what they offered, ${filesPart}, any sentence saying a file did not reach us or could not be accepted, the request for their website or online store link, the question whether they offer dropshipping (goods and packaging only), and that we keep supplier details on file for reference.`);
   }
   return issues;
 }
