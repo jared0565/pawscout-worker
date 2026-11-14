@@ -2590,6 +2590,20 @@ export class TenantStore {
       .run();
   }
 
+  /** Our sent replies to one contact across ALL of their threads, newest first
+   *  (design 2026-11-14, 8.1): a supplier question asked on an earlier thread is
+   *  never asked again on the next one. */
+  async outboundBodiesForContact(email: string, limit = 20): Promise<string[]> {
+    const lim = Math.min(Math.max(Math.floor(limit), 1), 100);
+    const rs = await this.db.prepare(
+      `SELECT m.body_text FROM inbox_messages m
+       JOIN inbox_threads t ON t.shop = m.shop AND t.id = m.thread_id
+       WHERE m.shop = ?1 AND m.direction = 'outbound' AND t.contact_email = ?2
+       ORDER BY m.received_at DESC LIMIT ${lim}`
+    ).bind(this.shop, email.trim().toLowerCase()).all<{ body_text: string | null }>();
+    return (rs.results ?? []).map((r) => r.body_text ?? '').filter(Boolean);
+  }
+
   getSupplier(email: string): Promise<SupplierRow | null> {
     return this.db.prepare(`SELECT * FROM supplier_register WHERE shop = ?1 AND email = ?2`).bind(this.shop, email.toLowerCase()).first<SupplierRow>();
   }

@@ -185,7 +185,7 @@ export function asksDropship(text: string): boolean { return DROPSHIP_ASK.test(t
  * never repeats it. No reading means nothing is enforced (the prompt still asks).
  */
 export function supplierAsksOwed(
-  facts: Pick<SupplierFacts, 'website' | 'storeLinks' | 'kind' | 'dropship'> | null | undefined,
+  facts: (Pick<SupplierFacts, 'website' | 'storeLinks' | 'kind' | 'dropship'> & { nicheFit?: SupplierFacts['nicheFit'] }) | null | undefined,
   priorOutbound: ReadonlyArray<string | null> | undefined
 ): SupplierOwed {
   if (!facts) return { link: false, dropship: false };

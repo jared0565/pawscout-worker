@@ -9,6 +9,24 @@ beforeEach(async () => { await applyD1Migrations(env.DB, env.TEST_MIGRATIONS); }
 const SHOP = 'a.myshopify.com';
 function s() { return new TenantStore(env.DB, SHOP); }
 
+describe('outboundBodiesForContact (design 2026-11-14, 8.1)', () => {
+  async function thread(store: TenantStore, email: string, n: number, reply: string) {
+    await store.upsertContact({ email, name: null, phone: null });
+    const tid = await store.createThread({ contactEmail: email, subject: `s${n}`, subjectNorm: `s${n}`, receivedAt: `2026-06-1${n}T10:00:00Z`, initialStatus: 'new' });
+    await store.insertOutboundMessage({ threadId: tid, messageId: `<o${n}-${email}@activepaw.co.uk>`, from: 'contact@activepaw.co.uk', to: email, subject: `Re: s${n}`, bodyText: reply, bodyHtml: '', sentAt: `2026-06-1${n}T12:00:00Z` });
+  }
+  it('returns our replies from every thread with the contact, newest first, and nobody else\'s', async () => {
+    const a = s();
+    const other = new TenantStore(env.DB, 'b.myshopify.com');
+    await thread(a, 'jane@x.com', 1, 'jane first');
+    await thread(a, 'jane@x.com', 2, 'jane second');
+    await thread(a, 'bob@x.com', 3, 'bob reply');
+    await thread(other, 'jane@x.com', 4, 'other shop');
+    expect(await a.outboundBodiesForContact('Jane@X.com')).toEqual(['jane second', 'jane first']);
+    expect(await a.outboundBodiesForContact('jane@x.com', 1)).toEqual(['jane second']);
+  });
+});
+
 describe('inbox store', () => {
   it('upserts a contact and counts messages', async () => {
     const store = s();

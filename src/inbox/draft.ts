@@ -11,6 +11,7 @@ import { stripQuotedReply } from './quote';
 import { eventFacts } from './event-facts';
 import type { AdminGraphql } from '../shopify-admin';
 import { readingPromptBlock, type ThreadReading } from './thread-read';
+import { supplierFactsFor, type SupplierRow } from './supplier-register';
 
 const DRAFT_MAX_WORDS = 110; // conciseness ceiling: a warm courtesy wrapper + a grounded answer
 // Lanes that meet buyers (owner rule 2026-09-21): the basket delivery sentence is asked of these only.
@@ -425,7 +426,7 @@ async function reviseDraft(
  * until it passes - the worker self-corrects in production, no dev tuning needed. */
 export async function draftReply(
   llm: LlmClient, store: TenantStore, cfg: TenantConfig,
-  input: { agent: CategoryAgent; grounding: Grounding; subject: string; conversation: string; latestMessage?: string; customerName?: string | null; customerEmail?: string | null; recall?: { question: string; answer: string }[]; priorOutbound?: ReadonlyArray<string | null>; admin?: AdminGraphql | null; reading?: ThreadReading | null; files?: FileContext }
+  input: { agent: CategoryAgent; grounding: Grounding; subject: string; conversation: string; latestMessage?: string; customerName?: string | null; customerEmail?: string | null; recall?: { question: string; answer: string }[]; priorOutbound?: ReadonlyArray<string | null>; admin?: AdminGraphql | null; reading?: ThreadReading | null; files?: FileContext; supplierRow?: SupplierRow | null; contactOutbound?: string[] }
 ): Promise<DraftResult | null> {
   if (!llm.available || !cfg.inbox.enabled) return null;
   const chain = resolveChain(cfg, 'text');
@@ -465,7 +466,12 @@ export async function draftReply(
   // a dropshipping answer is asked, once; the fixed questions are the backstop when
   // the revisions still leave them out.
   const supplierLane = agent.category === 'supplier';
-  const supplierOwes = supplierLane ? supplierAsksOwed(input.reading?.supplier, input.priorOutbound) : undefined;
+  // The asks are owed once per SUPPLIER (design 2026-11-14, 8.1): the reading is
+  // merged with the register row, and our replies on every thread with them count.
+  // The thread-level priorOutbound still drives the repeat check below.
+  const supplierOwes = supplierLane
+    ? supplierAsksOwed(supplierFactsFor(input.reading?.supplier, input.supplierRow), input.contactOutbound ?? input.priorOutbound)
+    : undefined;
   const qctx: DraftQualityContext = { maxWords: DRAFT_MAX_WORDS, askedDelivery: asksDoYouDeliver(latest), priorOutbound: input.priorOutbound, customerText: latest, buyingLane: BUYING_LANES.has(agent.category), supplierLane, supplierOwes, files: input.files, openText: latest };
   const refined = await refineUntilClean(
     result.value,

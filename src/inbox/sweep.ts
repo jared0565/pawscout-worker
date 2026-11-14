@@ -487,10 +487,18 @@ export async function composeDraftForThread(
   // on the open inbound messages. The honest-file rules read this, never the text.
   const fileCtx = buildFileContext(await contactFilesFor(store, t.contact_email), files, got.messages);
 
+  // Supplier lane (design 2026-11-14, 8.1): the register row, freshly merged
+  // above, and our replies on every thread with this supplier, so a question
+  // asked once is never asked again on their next thread. Either read failing
+  // degrades to the thread-only behaviour, never to a failed draft.
+  const supplierLane = agent.category === 'supplier';
+  const supplierRow = supplierLane ? await store.getSupplier(t.contact_email).catch(() => null) : null;
+  const contactOutbound = supplierLane ? await store.outboundBodiesForContact(t.contact_email).catch(() => undefined) : undefined;
+
   const draft = await draftReply(llm, store, cfg, {
     agent, grounding, subject: t.subject ?? '', conversation: transcript, latestMessage: latestInbound,
     customerName: contact?.name ?? null, customerEmail: t.contact_email, recall,
-    priorOutbound: outboundBodies(got.messages), admin, reading, files: fileCtx
+    priorOutbound: outboundBodies(got.messages), admin, reading, files: fileCtx, supplierRow, contactOutbound
   });
   if (!draft) return null; // degrade: retry next sweep
 

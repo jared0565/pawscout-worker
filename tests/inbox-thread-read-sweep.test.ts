@@ -189,6 +189,24 @@ describe('composeDraftForThread with the thread reader', () => {
     expect(draft?.body_text).not.toMatch(/your website or your Alibaba/i);
   });
 
+  // FOOFEE (design 2026-11-14, 8.1): the second thread from the same supplier
+  // re-asked for the link and the dropshipping answer that the first thread's
+  // reply had already asked for. The asks are owed once per supplier now.
+  it('a second thread from the same supplier is not asked again what the first reply asked', async () => {
+    const email = 'info@foofee.com';
+    const { s } = await seed({ email, name: 'Mia', category: 'supplier', inbound: ['We make pet bowls.'],
+      outboundAfterFirst: 'Thank you for informing us! Could you send us the link to your website or your Alibaba or other online store, for our reference? Do you offer dropshipping, meaning sending single orders directly to our customers?' });
+    const tid2 = await s.createThread({ contactEmail: email, subject: 'New range', subjectNorm: 'new range', receivedAt: '2026-10-01T10:00:00Z', initialStatus: 'new' });
+    await s.insertInboundMessageIfNew({ threadId: tid2, messageId: '<foofee2@x>', inReplyTo: null, references: [], from: email, to: 'contact@activepaw.co.uk', subject: 'New range', bodyText: 'Here is our new bowls range for 2027.', bodyHtml: null, headersJson: '{}', receivedAt: '2026-10-01T10:00:00Z' });
+    await s.setThreadClassification(tid2, { status: 'needs_reply', primaryCategory: 'supplier', intentScore: 10, summary: 's', classifiedAt: '2026-10-01T10:05:00Z' });
+    const plain = 'Thank you for informing us! We keep supplier details on file for reference.';
+    const { fetchImpl } = llm(supplierReading, { customerAsks: [], bodyText: plain, confidence: 95, quotesPriceOrOrder: false, commercialIntent: false });
+    await composeDraftForThread(ENV, s, (await s.getConfig())!, (await s.getThreadWithMessages(tid2))!.thread, fetchImpl);
+    const body = (await s.getPendingDraft(tid2))!.body_text;
+    expect(body).not.toMatch(/your website or your Alibaba/i);
+    expect(body).not.toMatch(/dropshipping/i);
+  });
+
   it('writes no draft for a bare thank-you after our reply, and parks the thread', async () => {
     const { s, tid } = await seed({ email: 'a@x.com', name: 'Ayatullah', category: 'other', inbound: ['Would you be open to ideas?', 'Thank you for your response.'], outboundAfterFirst: 'Yes, this is Active Paw.' });
     const { fetchImpl, calls } = llm({ senderRole: 'marketer', openAsks: [], offered: '', alreadyAnswered: ['Yes, this is Active Paw'], replyNeeded: false });
