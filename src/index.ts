@@ -11,6 +11,7 @@ import { checkModelSave, usageMix, MIX_WINDOW_DAYS, type SlotName } from './mode
 import { probeModel } from './model-probe';
 import { selectedStatus, type SlotStatus } from './model-watch';
 import { processInbound } from './inbox/ingest';
+import { serveInboxFile } from './inbox/attachments';
 import { runInboxClassifySweep } from './inbox/sweep';
 import { beginAuth } from './auth/install';
 import { handleCallback } from './auth/callback';
@@ -249,6 +250,12 @@ const handleUnsubscribe = async (c: Context<{ Bindings: Env }>) => {
 };
 app.get('/unsubscribe', handleUnsubscribe);
 app.post('/unsubscribe', handleUnsubscribe);
+
+// Inbound email files (design 2026-11-14, 5.5): a signed, short-lived,
+// download-only link the console opens in a new tab. Deliberately outside the
+// session auth below: the HMAC signature over shop, id and expiry is the
+// authority, and the record is looked up under the signed shop only.
+app.get('/inbox-file/:id', (c) => serveInboxFile(c.env, c.req.param('id'), c.req.query(), Math.floor(Date.now() / 1000)));
 
 // --- /api/* : session-token authed (embedded console) ---
 // Resolves the shop from the App Bridge session token and, on a managed install,
@@ -1856,7 +1863,7 @@ app.post('/api/inbox/thread', async (c) => {
   let body: { id?: string } = {};
   try { body = await c.req.json(); } catch { return c.json({ ok: false, error: 'Invalid JSON body' }, 400); }
   if (!body.id) return c.json({ ok: false, error: 'id required' }, 400);
-  return c.json(await getInboxThread(c.env.DB, s, body.id));
+  return c.json(await getInboxThread(c.env.DB, s, body.id, { secret: c.env.SHOPIFY_API_SECRET, baseUrl: c.env.SHOPIFY_APP_URL }));
 });
 app.post('/api/inbox/status', async (c) => {
   const s = await shopOf(c); if (typeof s !== 'string') return s;

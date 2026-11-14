@@ -9,6 +9,7 @@ import { SUPPLIER_STATUSES, type SupplierStatus } from './supplier-register';
 import { buildServiceProveFirst, buildSupplierAck, buildAccessDecline, buildOperationsDecline, buildCollaborationDecline, buildKeepToEmail, buildSignupInvite, detectRateAboveStandard, detectOffPlatformRequest, buildSecondTouch, buildPointerBack, type TouchTemplate } from './partnership';
 import { chooseTouch, outboundBodies, type TouchKind } from './repeat';
 import { renderReplyHtml, openInboundText } from './draft';
+import { fileUrl } from './attachments';
 import { stripQuotedReply } from './quote';
 import { defaultFetch } from '../safe-fetch';
 
@@ -34,10 +35,17 @@ export async function listInboxThreads(db: D1Database, shop: string, status: str
   };
 }
 
-export async function getInboxThread(db: D1Database, shop: string, threadId: string) {
+/** `files` signs a download link for each stored file (design 2026-11-14, 5.5);
+ * without it (no secret) the files are listed with no link. */
+export async function getInboxThread(db: D1Database, shop: string, threadId: string, files?: { secret: string; baseUrl: string; nowSec?: number }) {
   const store = new TenantStore(db, shop);
   const got = await store.getThreadWithMessages(threadId);
   if (!got) return { ok: false as const, error: 'Thread not found' };
+  const nowSec = files?.nowSec ?? Math.floor(Date.now() / 1000);
+  const attachments = await Promise.all((await store.listAttachmentsForThread(threadId)).map(async (a) => ({
+    id: a.id, messageId: a.message_id, filename: a.filename, sizeBytes: a.size_bytes, status: a.status,
+    url: a.status === 'stored' && files?.secret && files.baseUrl ? await fileUrl(files.baseUrl, files.secret, shop, a.id, nowSec) : null,
+  })));
   const draft = await store.getPendingDraft(threadId);
   const invoice = await store.getOpenInvoiceForThread(threadId);
   const applicant = await store.getApplicantByThread(threadId);
@@ -47,7 +55,7 @@ export async function getInboxThread(db: D1Database, shop: string, threadId: str
   // Email engagement (2026-07-12): this thread's delivery/open/click events,
   // matched by the send-time thread_id tag - the rail's engagement block.
   const events = await store.listThreadEmailEvents(threadId);
-  return { ok: true as const, thread: got.thread, messages: got.messages, labels: got.labels, draft, invoice, applicant, contact, partnerPool, partnerConsent, events };
+  return { ok: true as const, thread: got.thread, messages: got.messages, labels: got.labels, draft, invoice, applicant, contact, partnerPool, partnerConsent, events, attachments };
 }
 
 /** Marketing opt-in flipped from the sender's own thread (2026-07-06): the

@@ -112,6 +112,24 @@ describe('inbox routes', () => {
     expect(r.ok).toBe(true);
     expect(r.messages![0].body_text).toBe('hello');
   });
+  // Design 2026-11-14 (inbox attachments), 5.5: the thread view carries its
+  // files, with a signed link for the stored ones only.
+  it("getInboxThread lists the thread's files with a signed url for stored ones only", async () => {
+    const tid = await seed();
+    const store = new TenantStore(env.DB, SHOP);
+    const msgId = (await store.getThreadWithMessages(tid))!.messages[0].id;
+    const kept = crypto.randomUUID();
+    const refused = crypto.randomUUID();
+    await store.insertAttachment({ id: kept, thread_id: tid, message_id: msgId, filename: 'cat.pdf', content_type: 'application/pdf', size_bytes: 10, status: 'stored', r2_key: `inbox/${SHOP}/${tid}/${kept}` });
+    await store.insertAttachment({ id: refused, thread_id: tid, message_id: msgId, filename: 'p.xlsm', content_type: 'application/octet-stream', size_bytes: 10, status: 'skipped_type', r2_key: null });
+    const r = await getInboxThread(env.DB, SHOP, tid, { secret: 's3cret', baseUrl: 'https://x' });
+    const files = r.attachments!;
+    expect(files.map((f) => [f.filename, f.status, f.messageId, f.sizeBytes])).toEqual([['cat.pdf', 'stored', msgId, 10], ['p.xlsm', 'skipped_type', msgId, 10]]);
+    expect(files[0].url).toMatch(new RegExp(`^https://x/inbox-file/${kept}\\?shop=a\\.myshopify\\.com&exp=\\d+&sig=[0-9a-f]{64}$`));
+    expect(files[1].url).toBeNull();
+    // Without signing options (no secret) nothing is linked.
+    expect((await getInboxThread(env.DB, SHOP, tid)).attachments!.every((f) => f.url === null)).toBe(true);
+  });
   it('sets status and labels with validation', async () => {
     const tid = await seed();
     expect((await setInboxStatus(env.DB, SHOP, tid, 'closed')).ok).toBe(true);

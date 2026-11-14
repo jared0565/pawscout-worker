@@ -8,7 +8,9 @@
 // part: keep it, drop it silently (signature logos, calendar invites), or
 // record why it was not kept so the console and the drafter stay truthful.
 import type { InboundAttachment } from './types';
-import type { TenantStore } from '../tenant-store';
+import { TenantStore } from '../tenant-store';
+import type { Env } from '../types';
+import { hmacHex, timingSafeEqual } from '../retention';
 
 export const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 export const MAX_KEPT_PER_MESSAGE = 10;
@@ -116,4 +118,69 @@ export async function storeInboundAttachments(
   } catch (e) {
     console.warn(`inbox attachment store failed: ${(e as Error).message}`);
   }
+}
+
+// --- Download links (design 5.5) ---------------------------------------------
+// The console runs inside the Shopify admin iframe and every /api route is a
+// session-authed POST, so a file is opened as a plain top-level link instead.
+// The link is signed when the thread loads (not on click: a fetch-then-open
+// loses the click's user gesture and the browser blocks the new tab), lasts
+// 30 minutes, and always downloads: the sender's declared type is never used
+// to serve, so an HTML or SVG "catalogue" can never render on this origin.
+
+export const FILE_LINK_TTL_SECONDS = 1800;
+const SHOP_DOMAIN = /^[a-z0-9][a-z0-9-]*\.myshopify\.com$/;
+
+/** The signed string. The prefix keeps it from ever matching another token. */
+export function fileLinkMessage(shop: string, id: string, exp: number): string {
+  return `inbox-file:v1|${shop}|${id}|${exp}`;
+}
+
+export async function fileUrl(baseUrl: string, secret: string, shop: string, id: string, nowSec: number): Promise<string> {
+  const exp = nowSec + FILE_LINK_TTL_SECONDS;
+  const sig = await hmacHex(fileLinkMessage(shop, id, exp), secret);
+  return `${baseUrl.replace(/\/+$/, '')}/inbox-file/${encodeURIComponent(id)}?shop=${encodeURIComponent(shop)}&exp=${exp}&sig=${sig}`;
+}
+
+export async function verifyFileLink(secret: string, shop: string, id: string, exp: string, sig: string, nowSec: number): Promise<'ok' | 'expired' | 'bad'> {
+  if (!secret || !shop || !id || !/^\d{1,12}$/.test(exp) || !/^[0-9a-f]{64}$/.test(sig)) return 'bad';
+  const want = await hmacHex(fileLinkMessage(shop, id, Number(exp)), secret);
+  if (!timingSafeEqual(want, sig)) return 'bad';
+  return Number(exp) < nowSec ? 'expired' : 'ok';
+}
+
+/** RFC 6266 / 5987: an ASCII fallback (every non-ASCII character, quote and
+ * backslash becomes "_") plus the exact name percent-encoded as UTF-8. */
+export function contentDispositionFor(filename: string): string {
+  const ascii = filename.replace(/[^\x20-\x7e]|["\\]/g, '_');
+  const encoded = encodeURIComponent(filename).replace(/['()*!]/g, (c) => '%' + c.charCodeAt(0).toString(16).toUpperCase());
+  return `attachment; filename="${ascii}"; filename*=UTF-8''${encoded}`;
+}
+
+const plain = (body: string, status: number) =>
+  new Response(body, { status, headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' } });
+
+/** GET /inbox-file/:id. Outside session auth by design: the signature is the
+ * authority, and the record is looked up under the signed shop only. */
+export async function serveInboxFile(env: Env, id: string, q: { shop?: string; exp?: string; sig?: string }, nowSec: number): Promise<Response> {
+  const shop = q.shop ?? '';
+  if (!SHOP_DOMAIN.test(shop)) return plain('forbidden', 403);
+  const verdict = await verifyFileLink(env.SHOPIFY_API_SECRET, shop, id, q.exp ?? '', q.sig ?? '', nowSec);
+  if (verdict === 'bad') return plain('forbidden', 403);
+  if (verdict === 'expired') return plain('This link has expired. Open the thread in PawScout again for a fresh link.', 410);
+  const row = await new TenantStore(env.DB, shop).getStoredAttachment(id);
+  if (!row?.r2_key || !env.INBOX_FILES) return plain('not found', 404);
+  const obj = await env.INBOX_FILES.get(row.r2_key);
+  if (!obj) return plain('not found', 404);
+  return new Response(obj.body, {
+    status: 200,
+    headers: {
+      'content-type': 'application/octet-stream',
+      'content-disposition': contentDispositionFor(row.filename),
+      'x-content-type-options': 'nosniff',
+      'content-security-policy': "default-src 'none'; sandbox",
+      'cache-control': 'private, no-store',
+      'referrer-policy': 'no-referrer',
+    },
+  });
 }
