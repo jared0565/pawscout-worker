@@ -18,7 +18,7 @@ WHO WE ARE
 
 Active Paw is a UK-based online pet supplies store.
 Email: contact@activepaw.co.uk
-Trading address: Active Paw, Office 19589, 182-184 High Street North, East Ham, London, E6 2JA
+Trading address: Active Paw, 182-184 High Street North, East Ham, London, E6 2JA
 
 YOUR ORDER AND WHEN A CONTRACT FORMS
 

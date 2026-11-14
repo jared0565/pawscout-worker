@@ -18,7 +18,6 @@ This website, activepaw.co.uk, is operated by Active Paw, a sole trader business
 
 Trading address:
 Active Paw
-Office 19589
 182-184 High Street North
 East Ham
 London
