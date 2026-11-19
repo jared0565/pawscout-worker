@@ -23,7 +23,7 @@ without an owner alert.
 **Spec:** `docs/superpowers/specs/2026-11-19-inbox-reply-end-state-design.md`, approved by
 the owner 2026-11-19. Code read at `945d88c`.
 
-**Two plan-time decisions the spec allowed** (both reported to the owner):
+**Plan-time decisions** (all reported to the owner; the third needs their OK):
 1. **The staging replay (spec 1a) is replaced by its own fallback: a deterministic guard that
    always ships.**
    - Staging has no inbound route (it was deleted 2026-11-15) and runs no sweep, so the replay
@@ -33,6 +33,15 @@ the owner 2026-11-19. Code read at `945d88c`.
      than 4 images or 5 links.
 2. **One migration, `0049`,** adds a once-per-thread alert stamp. `maybeAlertOwner` does not
    deduplicate, and nothing else can record "alerted".
+3. **The "Hi De" fix is narrower than approved.**
+   - The spec said a From first word of "one or two letters, or a name particle" is poor.
+   - The plan uses name particles only (de, da, van, von, ...), because Jo, Ed and Al are real
+     first names that would otherwise become "Hi there".
+4. **A message that carries a file is never "no new words"**, even with an empty body: a
+   customer's photo-only reply, or a supplier's catalogue-only reply.
+   - Every row in `inbox_attachments` is a file the sender chose to send.
+   - Signature logos and calendar parts are dropped at ingest without a row
+     (`src/inbox/attachments.ts:8`), so a bump with only a logo is still a bump.
 
 **Branch:** keep working on `design/inbox-reply-end-state`, which already holds the spec and
 this plan. One PR for all of it.
@@ -70,6 +79,9 @@ this plan. One PR for all of it.
 
 ## Review Focus
 
+0. **A reply that is only a file** (a photo of damage, a catalogue PDF, or a refused file),
+   with no words, must get a draft. Silencing it would undo the 2026-11-14 attachments work.
+   Tests in Tasks 4 and 6.
 1. **A text part that is whitespace or zero-width only, beside a real HTML part,** must use
    the HTML. Test in Task 2.
 2. **An Outlook-style HTML quote** (`From:` ... `Sent:` lines) must still be stripped, so that
@@ -290,7 +302,8 @@ Expected: PASS, and lint clean.
   (`src/inbox/gates.ts`), and `MessageRow` (`src/inbox/types.ts`).
 - Produces:
   - `hasNoNewWords(ownText: string): boolean`
-  - `openBatchHasNoNewWords(messages: ReadonlyArray<Pick<MessageRow, 'direction' | 'body_text'>>, subject: string | null): boolean`
+  - `openBatchHasNoNewWords(messages: ReadonlyArray<Pick<MessageRow, 'id' | 'direction' | 'body_text'>>, subject: string | null, fileMessageIds?: ReadonlySet<string>): boolean`.
+    An open inbound whose `id` is in `fileMessageIds` counts as content.
 
 - [ ] **Step 1: Write the failing tests** in `tests/inbox-contentless.test.ts`:
 
@@ -306,14 +319,20 @@ describe('hasNoNewWords', () => {
 });
 
 describe('openBatchHasNoNewWords', () => {
-  const inb = (t: string) => ({ direction: 'inbound', body_text: t });
-  const out = (t: string) => ({ direction: 'outbound', body_text: t });
+  let n = 0;
+  const inb = (t: string) => ({ id: `m${n++}`, direction: 'inbound', body_text: t });
+  const out = (t: string) => ({ id: `m${n++}`, direction: 'outbound', body_text: t });
   const quoted = 'On Fri, Sep 25, 2026, 12:34 PM Active Paw <sales@activepaw.co.uk> wrote:\n> Hi Sam,\n> Thanks for writing.';
   it('a bump that only quotes our reply', () => expect(openBatchHasNoNewWords([inb('Do you ship to Ireland?'), out('Yes, we do.'), inb(`Hi active paw\n\n${quoted}`)], 'Shipping')).toBe(true));
   it('content anywhere in the open batch counts', () => expect(openBatchHasNoNewWords([inb('Hi'), out('Hello!'), inb('Hi'), inb('Can I order 3?')], 'Hello')).toBe(false));
   it('nothing open (our reply is last) is not a bump', () => expect(openBatchHasNoNewWords([inb('Hi'), out('Hello!')], 'Hello')).toBe(false));
   it('never replied: the subject counts as content', () => expect(openBatchHasNoNewWords([inb('')], 'Do you ship to Ireland?')).toBe(false));
   it('never replied: an empty body and a filler subject', () => expect(openBatchHasNoNewWords([inb('Hi')], 'Re: Hello')).toBe(true));
+  it('a file-only reply is content', () => {
+    const photo = inb('');
+    expect(openBatchHasNoNewWords([inb('My bowl arrived cracked'), out('Please send a photo.'), photo], 'Damaged', new Set([photo.id]))).toBe(false);
+  });
+  it('a bump with no recorded file is still a bump', () => expect(openBatchHasNoNewWords([inb('Hi'), out('Hello!'), inb('Hi')], 'Hello', new Set())).toBe(true));
 });
 ```
 
@@ -333,6 +352,7 @@ Expected: FAIL. The module does not exist.
 - **`openBatchHasNoNewWords`:**
   - `open` = the inbound messages after the last outbound. If there are none, return
     `false`.
+  - If any open message's `id` is in `fileMessageIds`, return `false`.
   - If any `stripQuotedReply(body_text)` has new words, return `false`.
   - If an outbound exists, return `true`.
   - Otherwise return `hasNoNewWords(normalizeSubject(subject ?? ''))`.
@@ -436,6 +456,12 @@ Expected: PASS.
     - the subject is `Hi` and the inbound is `['?']`;
     - the result is `{ noReply: true }`;
     - status `awaiting_customer`, and the labels contain `no-content`.
+  - `it('a photo-only reply after our reply is answered')`:
+    - inbound `['My bowl arrived cracked', '']`, with an outbound after the first;
+    - add `insertAttachment` with status `stored` on the second message;
+    - the result has a `draftId`.
+  - `it('a reply that is only a refused file is answered')`: the same, with status
+    `skipped_type`; the result has a `draftId`.
   - Add an optional `subject` field to `seed`, defaulting to `'Hello'`.
 
 - [ ] **Step 3: Run the tests to verify they fail**
@@ -445,7 +471,10 @@ Expected: the new tests FAIL. Drafts are made today.
 
 - [ ] **Step 4: Implement**
   - **In `composeDraftForThread`:**
-    - compute `const contentless = !opts.force && openBatchHasNoNewWords(got.messages, thread.subject);`;
+    - compute
+      `const contentless = !opts.force && openBatchHasNoNewWords(got.messages, thread.subject, new Set(files.map((f) => f.message_id)));`.
+      `files` is the existing `threadFilesFor` result at `sweep.ts:358`, and every row counts
+      whatever its status;
     - pass `{ force: opts.force, contentless }` to `maybePartnershipDraft`;
     - return its result when it is non-null, both `draftId` and `noReply`;
     - after it returns `null`, if `contentless`:
@@ -783,6 +812,13 @@ Expected: rc=0 everywhere. Read the test summary line from the file, not from a 
     two plan-time decisions, and ends with
     `🤖 Generated with [Claude Code](https://claude.com/claude-code)`.
   - The merge is the owner's call, with `--no-ff`.
+
+- [ ] **Step 3b: Read `docs/RUNBOOK-DEPLOY.md`** before any deploy (project rule).
+  - Then run `npm run deploy -- --env production --dry-run`, which only reads, to see what
+    production would refuse.
+  - This build carries migration `0049`. Production refuses it until staging has applied it,
+    and the guarded production deploy runs the rehearsal export, which blocks the database for
+    a few seconds. Keep it off the cron marks.
 
 - [ ] **Step 4: Deploy to staging** with `npm run deploy -- --env staging`. It applies
   `0049` to the staging database. Expected: the script reports success.
