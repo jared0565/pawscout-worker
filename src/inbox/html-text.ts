@@ -34,6 +34,7 @@ function dropElements(s: string, tag: string): string {
   let i = 0;
   let from = 0;
   let closeMissing = false;
+  let lastClose = -1; // the last close tag found; reused while it lies ahead
   for (;;) {
     const a = lower.indexOf(open, from);
     if (a < 0) break;
@@ -41,9 +42,15 @@ function dropElements(s: string, tag: string): string {
     if (next && !/[\s>/]/.test(next)) { from = a + open.length; continue; } // <header is not <head
     const openEnd = lower.indexOf('>', a);
     if (openEnd < 0) break;
-    const b = closeMissing ? -1 : lower.indexOf(close, openEnd);
-    if (b < 0) closeMissing = true;
+    let b = -1;
+    if (!closeMissing) {
+      b = lastClose >= openEnd ? lastClose : lower.indexOf(close, openEnd);
+      if (b < 0) closeMissing = true;
+      else lastClose = b;
+    }
     const closeEnd = b < 0 ? -1 : lower.indexOf('>', b);
+    // A close tag with no ">" after it is not a close, and none can follow.
+    if (b >= 0 && closeEnd < 0) closeMissing = true;
     out += s.slice(i, a) + ' ';
     i = closeEnd < 0 ? openEnd + 1 : closeEnd + 1;
     from = i;
@@ -67,17 +74,23 @@ function dropComments(s: string): string {
   return out + s.slice(i);
 }
 
+// The quote depth SHOWN is capped, so deep nesting cannot amplify the output
+// (second security review 2026-11-19); the quote stripper needs only one "> ".
+const MAX_QUOTE_MARKERS = 8;
+
 /** One linear pass: track blockquote depth, and prefix each line of text at
- * depth d with d "> " markers, so a nested quote reads "> > ". */
+ * depth d with min(d, 8) "> " markers, so a nested quote reads "> > ". Stops
+ * building once the output is twice the input cap: the caller keeps far less. */
 function markQuotes(s: string): string {
   let depth = 0;
   let out = '';
   for (const part of s.split(BLOCKQUOTE_TAG)) {
+    if (out.length > 2 * HTML_INPUT_MAX_CHARS) break;
     if (BLOCKQUOTE_TAG.test(part)) {
       depth = part[1] === '/' ? Math.max(0, depth - 1) : depth + 1;
       out += '\n';
     } else if (depth > 0) {
-      const marker = '> '.repeat(depth);
+      const marker = '> '.repeat(Math.min(depth, MAX_QUOTE_MARKERS));
       out += part.split('\n').map((line) => (line.trim() ? marker + line : line)).join('\n');
     } else {
       out += part;

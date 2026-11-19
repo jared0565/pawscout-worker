@@ -49,6 +49,20 @@ describe('htmlToEmailText', () => {
     htmlToEmailText(html);
     expect(Date.now() - t0).toBeLessThan(1000);
   });
+  // Second security review 2026-11-19: quote markers must not amplify the
+  // output, and a close tag with no ">" must not restart the search per open.
+  it('stays fast and bounded on deep nesting with many lines', () => {
+    const t0 = Date.now();
+    const out = htmlToEmailText('<blockquote>'.repeat(5000) + 'x<br>'.repeat(20000) + '</blockquote>'.repeat(5000));
+    expect(Date.now() - t0).toBeLessThan(1000);
+    expect(out.length).toBeLessThanOrEqual(20000);
+    expect(out.split('\n')[0]).toBe('> > > > > > > > x'); // the depth shown is capped at 8
+  });
+  it('stays fast on opens with a close tag that never ends', () => {
+    const t0 = Date.now();
+    htmlToEmailText('<head>'.repeat(30000) + '</head');
+    expect(Date.now() - t0).toBeLessThan(1000);
+  });
   it('an unclosed <head> drops only the tag, not the message', () => {
     expect(htmlToEmailText('<head><p>Do you ship to Ireland?</p>')).toBe('Do you ship to Ireland?');
   });
