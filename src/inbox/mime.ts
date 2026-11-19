@@ -85,7 +85,7 @@ export async function parseInbound(raw: ArrayBuffer | Uint8Array | string): Prom
     const fromAddr = email.from?.address ?? '';
     // Formatted-only email (design 2026-11-19, 1a): no usable plain part
     // (absent, blank, or only zero-width characters) means the HTML is read.
-    const plainUsable = (email.text ?? '').replace(/[​-‍﻿]/g, '').trim() !== '';
+    const plainUsable = (email.text ?? '').replace(/[\u200b-\u200d\ufeff]/g, '').trim() !== '';
     const textFromHtml = !plainUsable && !!email.html;
     return {
       messageId: email.messageId ?? null,

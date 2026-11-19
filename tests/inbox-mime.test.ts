@@ -238,7 +238,7 @@ describe('parseInbound: formatted-only email', () => {
   });
   it('a text part that is only whitespace or zero-width uses the HTML part', async () => {
     const raw = [...head, 'Content-Type: multipart/alternative; boundary="alt"', '',
-      '--alt', 'Content-Type: text/plain; charset=utf-8', '', '​ ', '',
+      '--alt', 'Content-Type: text/plain; charset=utf-8', '', '\u200b ', '',
       '--alt', 'Content-Type: text/html; charset=utf-8', '', '<p>Do you ship to Ireland?</p>',
       '--alt--', ''].join('\r\n');
     const p = await parseInbound(raw);
