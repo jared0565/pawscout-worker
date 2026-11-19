@@ -130,6 +130,16 @@ Build order: Part 1 first, because Part 2 decides on what people actually wrote.
   would defeat quote stripping.
 - Cap the derived text at the same length the plain text path allows. If it has none, cap it
   at a sensible limit and say what was chosen.
+- **Risk, and a gate before production.** Of the 56, 41 were filed by the AI classifier, not
+  by an ingest gate. Many of its summaries read "Empty email...", so it saw a blank.
+  - 19 are TikTok Shop marketing mails. None of the stored headers carries List-Unsubscribe,
+    Precedence or Auto-Submitted, so the classifier is the only thing keeping them out of the
+    reply queue.
+  - Once 1a gives the classifier real text, such a mail could land in `needs_reply` and get a
+    draft. That is anti-goal 1 in reverse.
+  - The builder replays three synthetic mails shaped like them through the classifier on
+    staging. If any lands in `needs_reply`, a deterministic guard ships with this build: for
+    example, a marketing-sender rule at ingest, tested.
 
 **1b. Old formatted-only rows, display only.** `getInboxThread` (`src/inbox/routes.ts`) shows
 the converted HTML text when `body_text` is empty, so the 56 old messages are readable in the
@@ -207,9 +217,9 @@ was approved in the conversation:
 Hi <name>,
 
 Thank you for your messages, and for the time you have put into
-your proposal. We have read everything you sent. It is not
-something we will take forward this time, but we may consider it
-in the future. In the meantime, the code trial stays open to you
+your proposal. We have read your messages. It is not something
+we will take forward this time, but we may consider it in the
+future. In the meantime, the code trial stays open to you
 whenever you would like to try it: <AFFILIATE_APPLY_URL>
 
 No reply is needed, and we wish you every success.
@@ -218,22 +228,38 @@ Best Regards,
 Active Paw Partnerships
 ```
 
+- **One change from the wording shown in the conversation:** "We have read everything you
+  sent" became "We have read your messages".
+  - Zimar's "report" was two Google Drive links and an attachment that arrived before
+    attachments were kept. We opened none of them.
+  - Under the governing rule (only real and defensible), we cannot claim to have read them.
 - HITL, with an owner alert like today's ("...the friendly final answer is ready for your
   review").
 - It is never sent twice on a thread: when it would repeat, the thread is quiet (2d) instead.
 - Its `SECOND_TOUCH` entry is no longer reachable from the funnel.
 
 **2d. Quiet after the final answer.**
-- The final answer counts as given when the applicant is `declined` AND an outbound was sent
-  on the thread after the applicant row last changed (`affiliate_applicants.updated_at`).
+- **How we know the final answer went out.** Record the template key on the draft (the
+  existing `DraftMeta`, which already carries `stageOnSend`). The final answer counts as given
+  when a draft on the thread with that key has status `sent`.
+  - This is edit-proof: the owner's edits to the text do not matter.
+  - It has no timing race. The console path writes the stage on send (`routes.ts:348`), so a
+    timestamp comparison against `affiliate_applicants.updated_at` could see a sent final as
+    older than the decline and draft it a second time.
+  - Declines sent before this build carry no key. For those, the fallback is: stage
+    `declined` and any outbound on the thread after `updated_at`. The builder documents that
+    this fallback is for history only.
 - A declined applicant whose decline draft was discarded unsent therefore gets the final
   answer drafted again, not silence.
-- Once it is given, every later message returns no draft (`{ noReply: true }`) with thread
-  status `awaiting_customer`, with one exception: when the reader says `customer` (an order
-  or product question), the funnel returns `null` and the generic drafter answers in the
-  thread's lane.
-- This replaces today's fall-through for declined applicants (line 1340). It also covers
-  `decline_all` and screen-score declines: their decline is the final answer.
+- **What happens once it is given** depends on who is writing:
+  - **Seller thread** (2b): every later message gets no draft (`{ noReply: true }`) and thread
+    status `awaiting_customer`, silently. This is the owner's "then quiet".
+  - **Not a seller** (a creator declined on screen score at line 1276, or by `decline_all`): no
+    draft, plus one owner alert per thread, as in 2a. They are never silenced without the
+    owner knowing.
+  - **Either kind**, when the reader says `customer` (an order or product question): the
+    funnel returns `null`, and the generic drafter answers in the thread's lane.
+- This replaces today's fall-through for declined applicants (line 1340).
 - `maybePartnershipDraft`'s return type gains `{ noReply: true }`, which
   `composeDraftForThread` already returns to its callers.
 
@@ -285,7 +311,11 @@ Active Paw Partnerships
   - after the final answer is sent, a later message gets no draft, and a customer-role
     reading falls through;
   - a non-seller at the third step gets no draft and one alert;
+  - a creator declined on screen score who writes again gets no draft and one alert, and a
+    second message from them raises no second alert;
   - a discarded unsent decline is drafted again;
+  - a sent final answer (keyed draft) is never drafted a second time, even when the stage
+    write lands after the outbound row;
   - the De Zimar shape end to end: the bump on 11-19 gets the final answer.
 - **Console:** the third application of a template is refused, and `collaboration_decline`
   renders in full when it has never been sent.
@@ -321,7 +351,10 @@ Active Paw Partnerships
 - **A thread reopens after the final answer only when the reader says `customer`.** "Yes or
   no?" from a scripted seller never reopens it.
 - **Real applicants and suppliers at the third step get no draft, plus one alert to you.**
-  They are not silenced without your knowing.
+  So do creators we declined on score or by "decline all" who write again. Only sellers go
+  silently quiet.
+- **Your approved line "We have read everything you sent" became "We have read your
+  messages".** We never opened Zimar's Drive links or the attached report.
 - **The 56 old formatted-only messages become readable in the inbox,** but are not re-sorted
   or answered.
 - **"Are you there?" still counts as a real message.** Only greetings, the store name and
