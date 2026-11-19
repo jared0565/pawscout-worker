@@ -1,6 +1,7 @@
 # Inbox: read every message, and end a conversation cleanly
 
-Date: 2026-11-19. Status: awaiting owner approval. Code read at `945d88c`.
+Date: 2026-11-19. Status: approved by the owner 2026-11-19 ("go"). Code read at `945d88c`.
+Plan: `docs/superpowers/plans/2026-11-19-inbox-reply-end-state.md`.
 Source: the inbox audit of 2026-11-19 (production D1 export, read only), and the owner's
 answers that followed it. Every number below was measured on that export unless it says
 otherwise.
