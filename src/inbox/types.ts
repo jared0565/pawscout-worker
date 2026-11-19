@@ -61,6 +61,9 @@ export interface ParsedEmail {
   date: string;             // ISO 8601
   text: string;
   html: string | null;
+  /** True when `text` was derived from the HTML part because the email had no
+   * usable plain text part (design 2026-11-19, 1a). */
+  textFromHtml?: boolean;
   headers: Record<string, string>;
   /** MIME parts carrying a file (spec 2026-11-14 inbox attachments, 5.1).
    * Optional so a ParsedEmail built by hand (tests, form relays) needs none. */

@@ -1,6 +1,7 @@
 import PostalMime from 'postal-mime';
 import type { ParsedEmail, InboundAttachment } from './types';
 import { sanitizeFilename } from './attachments';
+import { htmlToEmailText } from './html-text';
 
 // Shopify's contact-form notification sender + the address-shaped lines it carries.
 const SHOPIFY_SENDER = /@([\w-]+\.)*shopify(?:email)?\.com$/i;
@@ -82,6 +83,10 @@ export async function parseInbound(raw: ArrayBuffer | Uint8Array | string): Prom
       };
     });
     const fromAddr = email.from?.address ?? '';
+    // Formatted-only email (design 2026-11-19, 1a): no usable plain part
+    // (absent, blank, or only zero-width characters) means the HTML is read.
+    const plainUsable = (email.text ?? '').replace(/[​-‍﻿]/g, '').trim() !== '';
+    const textFromHtml = !plainUsable && !!email.html;
     return {
       messageId: email.messageId ?? null,
       inReplyTo: email.inReplyTo ?? headers['in-reply-to'] ?? null,
@@ -90,8 +95,9 @@ export async function parseInbound(raw: ArrayBuffer | Uint8Array | string): Prom
       to: (email.to ?? []).map((a) => (a.address ?? '').toLowerCase()).filter(Boolean),
       subject: email.subject ?? '',
       date: email.date ? new Date(email.date).toISOString() : new Date().toISOString(),
-      text: (email.text ?? '').trim(),
+      text: textFromHtml ? htmlToEmailText(email.html!) : (email.text ?? '').trim(),
       html: email.html ?? null,
+      ...(textFromHtml ? { textFromHtml: true } : {}),
       headers,
       attachments
     };

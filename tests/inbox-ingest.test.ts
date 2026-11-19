@@ -595,3 +595,23 @@ describe('inbound files (ingest)', () => {
     expect(rows.map((x) => [x.filename, x.status])).toEqual([['price-list.pdf', 'stored']]);
   });
 });
+
+// Formatted-only email (design 2026-11-19, 1a and its newsletter guard).
+describe('formatted-only email at ingest', () => {
+  const head = (id: string) => ['From: Olive <olive@platform.example>', 'To: contact@activepaw.co.uk', 'Subject: Grow your sales', `Message-ID: <${id}@platform.example>`, 'Date: Wed, 18 Nov 2026 10:00:00 +0000', 'MIME-Version: 1.0', 'Content-Type: text/html; charset=utf-8', ''];
+  it('an HTML-only newsletter-shaped email is automated at ingest', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const html = '<p>Start selling today</p>' + '<a href="https://x.example/a"><img src="https://x.example/i.png"></a>'.repeat(8);
+    const r = await processInbound(store, [...head('news1'), html].join('\r\n'));
+    const got = (await store.getThreadWithMessages(r.threadId))!;
+    expect(got.thread.status).toBe('closed');
+    expect(got.thread.primary_category).toBe('automated');
+  });
+  it('an HTML-only personal email is stored with its text and enters the queue', async () => {
+    const store = new TenantStore(env.DB, SHOP);
+    const r = await processInbound(store, [...head('p1'), '<p>Do you have the slow feeder in stock?</p>'].join('\r\n'));
+    const got = (await store.getThreadWithMessages(r.threadId))!;
+    expect(got.thread.status).toBe('new');
+    expect(got.messages[0].body_text).toBe('Do you have the slow feeder in stock?');
+  });
+});
