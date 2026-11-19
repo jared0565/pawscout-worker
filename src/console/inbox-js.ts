@@ -340,7 +340,7 @@ function renderInboxThread(thread,messages,labels,draft,invoice,applicant,contac
     var ts=m.received_at?esc(m.received_at.slice(0,16).replace('T',' ')):'';
     msgHtml+='<div class="ibx-bubble '+(isOut?'out':'in')+'">'
       +'<div class="ibx-bubble__hdr">'+dir+(ts?' · '+ts:'')+'</div>'
-      +'<div class="ibx-bubble__body">'+esc(m.body_text||'(no body)')+'</div>'
+      +'<div class="ibx-bubble__body">'+esc(m.body_text||'(empty message)')+'</div>'
       +(isOut?'':ibxFilesFor(m.id,attachments))
       +'</div>';
   }

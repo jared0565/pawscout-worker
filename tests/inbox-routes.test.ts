@@ -112,6 +112,17 @@ describe('inbox routes', () => {
     expect(r.ok).toBe(true);
     expect(r.messages![0].body_text).toBe('hello');
   });
+  // Design 2026-11-19, 1b: 56 stored formatted-only messages showed "(no body)".
+  it('shows the text of a stored formatted-only message without changing the row', async () => {
+    const tid = await seed();
+    const store = new TenantStore(env.DB, SHOP);
+    await store.insertInboundMessageIfNew({ threadId: tid, messageId: '<html-only@x>', inReplyTo: null, references: [], from: 'jane@x.com', to: 'support@activepaw.co.uk', subject: 'Stock', bodyText: '', bodyHtml: '<p>Do you have this in stock?</p>', headersJson: '{}', receivedAt: '2026-06-24T10:00:00Z' });
+    const r = await getInboxThread(env.DB, SHOP, tid);
+    const shown = r.messages!.find((m) => m.message_id === '<html-only@x>');
+    expect(shown?.body_text).toBe('Do you have this in stock?');
+    const stored = (await store.getThreadWithMessages(tid))!.messages.find((m) => m.message_id === '<html-only@x>');
+    expect(stored?.body_text).toBe('');
+  });
   // Design 2026-11-14 (inbox attachments), 5.5: the thread view carries its
   // files, with a signed link for the stored ones only.
   it("getInboxThread lists the thread's files with a signed url for stored ones only", async () => {

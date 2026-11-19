@@ -12,6 +12,7 @@ import { renderReplyHtml, openInboundText, greetingName } from './draft';
 import { validateReading, type ThreadReading } from './thread-read';
 import { fileUrl, contactFilesFor } from './attachments';
 import { stripQuotedReply } from './quote';
+import { htmlToEmailText } from './html-text';
 import { defaultFetch } from '../safe-fetch';
 
 export async function listInboxThreads(db: D1Database, shop: string, status: string | null) {
@@ -56,7 +57,10 @@ export async function getInboxThread(db: D1Database, shop: string, threadId: str
   // Email engagement (2026-07-12): this thread's delivery/open/click events,
   // matched by the send-time thread_id tag - the rail's engagement block.
   const events = await store.listThreadEmailEvents(threadId);
-  return { ok: true as const, thread: got.thread, messages: got.messages, labels: got.labels, draft, invoice, applicant, contact, partnerPool, partnerConsent, events, attachments };
+  // Display only (design 2026-11-19, 1b): a formatted-only message stored
+  // before ingest read HTML shows its text; the stored row is unchanged.
+  const messages = got.messages.map((m) => (m.body_text ?? '').trim() || !m.body_html ? m : { ...m, body_text: htmlToEmailText(m.body_html) });
+  return { ok: true as const, thread: got.thread, messages, labels: got.labels, draft, invoice, applicant, contact, partnerPool, partnerConsent, events, attachments };
 }
 
 /** Marketing opt-in flipped from the sender's own thread (2026-07-06): the
