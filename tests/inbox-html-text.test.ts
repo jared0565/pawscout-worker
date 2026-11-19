@@ -28,6 +28,33 @@ describe('htmlToEmailText', () => {
   it('caps the text at maxChars', () => {
     expect(htmlToEmailText(`<p>${'a'.repeat(50)}</p>`, 10)).toHaveLength(10);
   });
+  it('nests quote markers for a quote inside a quote', () => {
+    expect(htmlToEmailText('<blockquote>outer<blockquote>inner</blockquote></blockquote>')).toBe('> outer\n> > inner');
+  });
+  // Security review 2026-11-19: inbound HTML is attacker-controlled, so the
+  // conversion must stay linear. 20,000 nested quotes took minutes before.
+  it('stays fast on thousands of nested blockquotes', () => {
+    const n = 20000;
+    const t0 = Date.now();
+    htmlToEmailText('<blockquote>'.repeat(n) + 'x' + '</blockquote>'.repeat(n));
+    expect(Date.now() - t0).toBeLessThan(1000);
+  });
+  it.each([
+    ['unclosed "<"', '<'.repeat(150000)],
+    ['unclosed <head', '<head '.repeat(30000)],
+    ['unclosed <style', '<style '.repeat(30000)],
+    ['unclosed comments', '<!-- '.repeat(40000)],
+  ])('stays fast on %s', (_, html) => {
+    const t0 = Date.now();
+    htmlToEmailText(html);
+    expect(Date.now() - t0).toBeLessThan(1000);
+  });
+  it('an unclosed <head> drops only the tag, not the message', () => {
+    expect(htmlToEmailText('<head><p>Do you ship to Ireland?</p>')).toBe('Do you ship to Ireland?');
+  });
+  it('a <header> element is not mistaken for <head>', () => {
+    expect(htmlToEmailText('<header>Hello</header><p>Do you ship to Ireland?</p>')).toBe('HelloDo you ship to Ireland?');
+  });
 });
 
 describe('isNewsletterShaped', () => {
