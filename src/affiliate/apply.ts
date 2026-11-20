@@ -29,8 +29,8 @@ import {
 } from '../inbox/partnership';
 import { hmacHex } from '../retention';
 import {
-  validEmailSyntax, isDisposableDomain, isMainstreamEmailDomain, channelHostAllowed, channelKey, channelLookupHosts,
-  honeypotOk, signTimestamp, verifyTimestamp, validateFields, APPLY_FIELD_LIMITS,
+  validEmailSyntax, isDisposableDomain, isMainstreamEmailDomain, channelHostAllowed, channelKey, channelLookupHosts, normalizeChannelUrl,
+  honeypotOk, signTimestamp, verifyTimestamp, validateFields, APPLY_FIELD_LIMITS, MIN_SUBMIT_MS, TIMESTAMP_MAX_AGE_MS,
   type ApplicationFieldsInput, type ApplyFieldKey
 } from './gates';
 import { LIQUID_STYLE, liquidHero } from './pages';
@@ -75,7 +75,9 @@ export interface ApplyFields {
   audience?: string;
   plan?: string;
   terms?: string;   // 'on' when the checkbox is checked, absent otherwise
-  website?: string; // honeypot - must stay empty
+  /** Honeypot - must stay empty. Named so no autofill or password manager
+   *  recognises it (it was `website`, a field some fill from a contact card). */
+  apaff_hp?: string;
   ts?: string;       // signed form-render timestamp (gates.ts signTimestamp)
   'cf-turnstile-response'?: string; // injected by the Turnstile widget
 }
@@ -114,6 +116,12 @@ export function applyFieldError(field: ApplyFieldKey): string {
 }
 
 const fieldError = (field: ApplyFieldKey, error: string): ApplyResult => ({ status: 200, body: { ok: false, error, field } });
+
+/** One wording for a malformed address, from the server and from the page's
+ *  own check before submit. */
+const EMAIL_FORMAT_ERROR = 'Please enter a valid email address.';
+/** A link creators can type as it is (normalizeChannelUrl adds the https://). */
+const CHANNEL_EXAMPLE = 'instagram.com/yourname';
 
 // --- Small crypto/network helpers -------------------------------------------
 
@@ -279,9 +287,16 @@ export async function handleAffiliateApply(deps: ApplyDeps): Promise<ApplyResult
   }
 
   // 2. Honeypot + signed min-time-to-submit. Both failure modes are SILENT -
-  //    the bot sees the exact same body a real success would return.
+  //    the bot sees the exact same body a real success would return. Each is
+  //    logged with its reason and nothing personal: if autofill or a page
+  //    left open too long ever drops a real applicant, it shows up in Workers
+  //    Logs instead of nowhere (theme agent audit, 2026-11-20).
   const formRenderedAtMs = await verifyTimestamp(fields.ts ?? '', env.SHOPIFY_API_SECRET, nowMs);
-  if (formRenderedAtMs === null || !honeypotOk({ honeypot: fields.website, formRenderedAtMs }, nowMs)) {
+  if (formRenderedAtMs === null || !honeypotOk({ honeypot: fields.apaff_hp, formRenderedAtMs }, nowMs)) {
+    const why = formRenderedAtMs === null
+      ? 'form timestamp missing, tampered or over its lifetime'
+      : (fields.apaff_hp ?? '').trim() ? 'hidden field filled' : `too fast (under ${MIN_SUBMIT_MS}ms)`;
+    console.warn(`[affiliate-apply] silent reject: ${why}`);
     return GENERIC_OK;
   }
 
@@ -296,14 +311,15 @@ export async function handleAffiliateApply(deps: ApplyDeps): Promise<ApplyResult
 
   const name = fields.name!.trim();
   const email = fields.email!.trim().toLowerCase();
-  const channelInput = fields.channel_url!.trim();
+  // What creators type ("instagram.com/name") gets its https:// here.
+  const channelInput = normalizeChannelUrl(fields.channel_url!);
 
   // 4. Email gates: syntax, disposable-domain blocklist, MX (fail-open).
-  if (!validEmailSyntax(email)) return fieldError('email', 'Please enter a valid email address.');
+  if (!validEmailSyntax(email)) return fieldError('email', EMAIL_FORMAT_ERROR);
   const emailDomain = email.split('@')[1] ?? '';
   if (isDisposableDomain(emailDomain)) return fieldError('email', 'Please use a permanent email address.');
   const mx = await mxExists(emailDomain, fetchImpl);
-  if (!mx.exists && !mx.failOpen) return fieldError('email', 'Please enter a valid email address.');
+  if (!mx.exists && !mx.failOpen) return fieldError('email', EMAIL_FORMAT_ERROR);
   const dohFailOpen = mx.failOpen;
 
   // 5. Channel URL FORMAT gate only: http(s)+parseable, not coupon/deal/
@@ -311,10 +327,10 @@ export async function handleAffiliateApply(deps: ApplyDeps): Promise<ApplyResult
   //    someone else" check is deliberately NOT run here - see step 8.
   const ch = channelHostAllowed(channelInput);
   if (ch.reason === 'platform_root') {
-    return fieldError('channel_url', 'Please enter the link to your own channel or profile, for example https://instagram.com/yourname.');
+    return fieldError('channel_url', `Please enter the link to your own channel or profile, for example ${CHANNEL_EXAMPLE}.`);
   }
   const channel = channelKey(channelInput);
-  if (!ch.ok || !ch.host || !channel) return fieldError('channel_url', 'Please enter a valid channel URL.');
+  if (!ch.ok || !ch.host || !channel) return fieldError('channel_url', `Please enter your channel URL, for example ${CHANNEL_EXAMPLE}.`);
   // Stored parsed (lower-case host, punycode, escapes resolved by the URL
   // parser), so a later lookup's host prefilter always finds it.
   const channelUrlRaw = new URL(channelInput).href;
@@ -422,6 +438,8 @@ export interface RenderApplyOpts {
 }
 
 const APPLY_DONE_TITLE = 'Check your email to finish applying';
+/** The tab's name for the open form (the theme names app pages after the shop). */
+const APPLY_PAGE_TITLE = 'Apply to the Partner Program - Active Paw';
 
 /** What to do after a submit, shown twice: in the success dialog and in the
  *  note left where the form was (theme agent, 2026-11-20, owner's request).
@@ -456,16 +474,23 @@ ${liquidHero('Active Paw Partner Program', 'Applications open soon', 'Applicatio
   const tsToken = await signTimestamp(nowMs, env.SHOPIFY_API_SECRET);
   const siteKey = env.TURNSTILE_SITE_KEY ?? '';
   const L = APPLY_FIELD_LIMITS;
+  const addr = escHtml(PARTNERSHIP_ADDRESS);
   const previewBanner = !sc.enabled && opts.preview
     ? `<p class="apaff-preview">Preview - applications are not open to the public yet; submitting is disabled.</p>\n`
     : '';
+  // Each field carries the server's own message (applyFieldError) for the
+  // page's check before submit, so the two can never word it differently,
+  // and has an empty slot after it where that message, or the server's, is
+  // shown (theme agent audit 2026-11-20: errors only coloured the border).
+  const errorOf = (k: ApplyFieldKey) => `data-error="${escHtml(applyFieldError(k))}"`;
+  const slot = (id: string) => `<p class="apaff-field-error" id="${id}-error" hidden></p>`;
   // Fix 5 (2026-07-13 final review): the POST route's contract is (and stays)
   // c.json({ok,...}) - required by the App Proxy / any future non-browser
   // caller - but a plain <form method="post"> with no JS navigated a real
   // applicant's browser straight to that raw JSON after submitting. This
-  // inline script intercepts the submit and renders the SAME body.message /
-  // body.error into #applyResult instead; the <noscript> fallback documents
-  // what still happens (a working, if unstyled, JSON response) if JS is off.
+  // inline script intercepts the submit instead. Without JS the form cannot
+  // work at all (no Turnstile widget, so no token, and step 1 refuses), so
+  // the <noscript> says so and hides the form.
   // Plain string concatenation, no backticks/${} inside the emitted script -
   // this whole function body is itself a TS template literal (see
   // docs/superpowers's console-page-template-literal-gotcha note / this
@@ -474,43 +499,52 @@ ${liquidHero('Active Paw Partner Program', 'Applications open soon', 'Applicatio
 <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
 <div class="apaff">
 ${previewBanner}${liquidHero(
-    'Active Paw Partner Program',
-    'Earn with Active Paw',
+    '',
+    'Join the Active Paw Partner Program',
     'Recommend pet products you love and earn commission on every tracked order from your audience.',
     `<ul class="apaff-chips">
     <li>Earn ${escHtml(String(STANDARD_COMMISSION_PCT))}%, rising to ${escHtml(String(TIER_MAX_PCT))}% for performers</li>
     <li>${escHtml(String(TRIAL_PCT_OFF_DEFAULT))}% off for your audience</li>
     <li>Open to creators of any size</li>
-  </ul>`
+  </ul>
+  <p class="apaff-hero-cta"><a class="button button-primary" href="#apply">Apply now</a></p>`
   )}
-<ol class="apaff-steps">
-  <li><h3>Apply in two minutes</h3><p>Tell us about your channel and how you would promote Active Paw.</p></li>
-  <li><h3>Verify your email</h3><p>Click the link we send you. We review every application automatically, then by email.</p></li>
-  <li><h3>Get your code</h3><p>Approved partners receive a discount code for their audience and a live results dashboard.</p></li>
-</ol>
-<section class="apaff-card">
-<h2>Apply now</h2>
+<div class="apaff-layout">
+<section class="apaff-card apaff-apply" id="apply" aria-labelledby="apaff-apply-title">
+<h2 id="apaff-apply-title">Apply now</h2>
+<p class="apaff-req">All fields are required.</p>
+<noscript><style>#applyForm { display: none; }</style><p class="apaff-noscript">JavaScript is needed to apply, because the security check uses it. Please turn it on and reload this page.</p></noscript>
 <div id="applyResult" class="apaff-result" role="status" aria-live="polite"></div>
+<p id="apaff-error-summary" class="apaff-result error" hidden></p>
 <div id="apaff-done-note" class="apaff-done-note" tabindex="-1" hidden>
 <h3>${APPLY_DONE_TITLE}</h3>
 ${applyDoneMessageHtml()}
 </div>
 <form method="post" id="applyForm" class="apaff-form">
-  <div class="apaff-field"><label for="apaff-name">Your name</label><input id="apaff-name" type="text" name="name" maxlength="${L.name.max}" required></div>
-  <div class="apaff-field"><label for="apaff-email">Email address</label><input id="apaff-email" type="email" name="email" maxlength="${L.email.max}" required></div>
-  <div class="apaff-field"><label for="apaff-channel">Channel URL (blog, YouTube, Instagram, etc.)</label><input id="apaff-channel" type="url" name="channel_url" maxlength="${L.channel_url.max}" required></div>
-  <div class="apaff-field"><label for="apaff-audience">Tell us about your audience</label><p class="apaff-hint" id="apaff-audience-hint">At least ${L.audience.min} characters.</p><textarea id="apaff-audience" name="audience" minlength="${L.audience.min}" maxlength="${L.audience.max}" required aria-describedby="apaff-audience-hint"></textarea></div>
-  <div class="apaff-field"><label for="apaff-plan">How would you promote Active Paw?</label><p class="apaff-hint" id="apaff-plan-hint">At least ${L.plan.min} characters.</p><textarea id="apaff-plan" name="plan" minlength="${L.plan.min}" maxlength="${L.plan.max}" required aria-describedby="apaff-plan-hint"></textarea></div>
-  <label class="apaff-agree"><input type="checkbox" id="apaff-terms" name="terms" required> <span>I agree to the <a href="/apps/pawscout/affiliate/terms" target="_blank" rel="noopener">Active Paw Partner Program terms</a>.</span></label>
+  <div class="apaff-field"><label for="apaff-name">Your name</label><input id="apaff-name" type="text" name="name" maxlength="${L.name.max}" required autocomplete="name" ${errorOf('name')}>${slot('apaff-name')}</div>
+  <div class="apaff-field"><label for="apaff-email">Email address</label><input id="apaff-email" type="email" name="email" maxlength="${L.email.max}" required autocomplete="email" spellcheck="false" autocapitalize="off" ${errorOf('email')} data-error-format="${escHtml(EMAIL_FORMAT_ERROR)}">${slot('apaff-email')}</div>
+  <div class="apaff-field"><label for="apaff-channel">Channel URL (blog, YouTube, Instagram, etc.)</label><p class="apaff-hint" id="apaff-channel-hint">For example ${CHANNEL_EXAMPLE}, your YouTube channel or your blog's address.</p><input id="apaff-channel" type="text" inputmode="url" name="channel_url" maxlength="${L.channel_url.max}" required autocomplete="url" spellcheck="false" autocapitalize="off" aria-describedby="apaff-channel-hint" ${errorOf('channel_url')}>${slot('apaff-channel')}</div>
+  <div class="apaff-field"><label for="apaff-audience">Tell us about your audience</label><p class="apaff-hint" id="apaff-audience-hint">At least ${L.audience.min} characters.</p><textarea id="apaff-audience" name="audience" minlength="${L.audience.min}" maxlength="${L.audience.max}" required aria-describedby="apaff-audience-hint" ${errorOf('audience')}></textarea>${slot('apaff-audience')}</div>
+  <div class="apaff-field"><label for="apaff-plan">How would you promote Active Paw?</label><p class="apaff-hint" id="apaff-plan-hint">At least ${L.plan.min} characters.</p><textarea id="apaff-plan" name="plan" minlength="${L.plan.min}" maxlength="${L.plan.max}" required aria-describedby="apaff-plan-hint" ${errorOf('plan')}></textarea>${slot('apaff-plan')}</div>
+  <div class="apaff-field"><label class="apaff-agree"><input type="checkbox" id="apaff-terms" name="terms" required ${errorOf('terms')}> <span>I agree to the <a href="/apps/pawscout/affiliate/terms" target="_blank" rel="noopener">Active Paw Partner Program terms<span class="apaff-sr-only"> (opens in a new tab)</span></a>.</span></label>${slot('apaff-terms')}</div>
   <div style="position:absolute;left:-9999px" aria-hidden="true">
-    <label>Leave this field blank<input type="text" name="website" tabindex="-1" autocomplete="off"></label>
+    <label>Leave this field blank<input type="text" name="apaff_hp" tabindex="-1" autocomplete="off" data-1p-ignore data-lpignore="true" data-bwignore data-form-type="other"></label>
   </div>
   <input type="hidden" name="ts" value="${escHtml(tsToken)}">
   <div class="cf-turnstile" id="apaff-turnstile" data-sitekey="${escHtml(siteKey)}"></div>
   <p><button type="submit" class="button button-primary">Apply</button></p>
 </form>
 </section>
-<p class="apaff-foot">Questions? Email ${escHtml(PARTNERSHIP_ADDRESS)}.</p>
+<section class="apaff-how" aria-labelledby="apaff-how-title">
+<h2 id="apaff-how-title">How it works</h2>
+<ol class="apaff-steps">
+  <li><h3>Apply in two minutes</h3><p>Tell us about your channel and how you would promote Active Paw.</p></li>
+  <li><h3>Verify your email</h3><p>Click the link in the email we send you. We then check your channel and answers, and our team reviews some applications too. Either way, we email you the outcome.</p></li>
+  <li><h3>Get your code</h3><p>Approved partners receive a discount code for their audience and a live results dashboard.</p></li>
+</ol>
+</section>
+</div>
+<p class="apaff-foot">Questions? Email <a href="mailto:${addr}">${addr}</a>.</p>
 <dialog id="apaff-done" class="apaff-dialog" aria-labelledby="apaff-done-title" aria-describedby="apaff-done-msg">
 <h2 id="apaff-done-title" tabindex="-1">${APPLY_DONE_TITLE}</h2>
 <div id="apaff-done-msg">
@@ -519,38 +553,96 @@ ${applyDoneMessageHtml()}
 <p class="apaff-dialog-actions"><button type="button" class="apaff-dialog-close">Got it</button></p>
 </dialog>
 </div>
-<noscript><p>JavaScript is required to see a confirmation message here - your application is still received and processed normally either way.</p></noscript>
 <script>
 (function(){
   var form = document.getElementById('applyForm');
   var result = document.getElementById('applyResult');
+  var summary = document.getElementById('apaff-error-summary');
   if (!form || !result) { return; }
+  // The theme names every app page after the shop; this one says what it is.
+  document.title = '${APPLY_PAGE_TITLE}';
+  // The page checks the fields itself, in the server's words, so the
+  // browser's own bubbles never show.
+  form.setAttribute('novalidate', '');
+  // The form's signed timestamp is good for a fixed time, and past it the
+  // server drops the submit silently behind a success, so a page left open
+  // that long asks for a reload instead (10 minutes early).
+  var LOADED_AT = Date.now();
+  var STALE_AFTER_MS = ${TIMESTAMP_MAX_AGE_MS - 10 * 60 * 1000};
   // Every field the server can name in body.field, by element id.
   var FIELD_IDS = { name: 'apaff-name', email: 'apaff-email', channel_url: 'apaff-channel', audience: 'apaff-audience', plan: 'apaff-plan', terms: 'apaff-terms' };
   var busy = false;
-  function show(text, ok) {
+  // An error that is not about one field: the live region announces it.
+  function show(text) {
     result.textContent = text;
-    result.className = ok ? 'apaff-result ok' : 'apaff-result error';
+    result.className = 'apaff-result error';
+  }
+  function slotOf(el) {
+    return document.getElementById(el.id + '-error');
   }
   function clearInvalid() {
+    result.textContent = '';
+    result.className = 'apaff-result';
+    if (summary) { summary.textContent = ''; summary.hidden = true; }
     Object.keys(FIELD_IDS).forEach(function(key){
       var el = document.getElementById(FIELD_IDS[key]);
       if (!el) { return; }
       el.removeAttribute('aria-invalid');
-      var ids = (el.getAttribute('aria-describedby') || '').split(' ').filter(function(id){ return id && id !== 'applyResult'; });
+      var s = slotOf(el);
+      if (s) { s.textContent = ''; s.hidden = true; }
+      var ids = (el.getAttribute('aria-describedby') || '').split(' ').filter(function(id){ return id && id !== el.id + '-error'; });
       if (ids.length) { el.setAttribute('aria-describedby', ids.join(' ')); } else { el.removeAttribute('aria-describedby'); }
     });
   }
-  // The message is already in #applyResult, so focusing the field reads it out
-  // through aria-describedby.
-  function markInvalid(key) {
-    if (!key || !Object.prototype.hasOwnProperty.call(FIELD_IDS, key)) { return; }
-    var el = document.getElementById(FIELD_IDS[key]);
-    if (!el) { return; }
-    el.setAttribute('aria-invalid', 'true');
-    var described = el.getAttribute('aria-describedby');
-    el.setAttribute('aria-describedby', described ? described + ' applyResult' : 'applyResult');
-    el.focus();
+  // A field error shows under its field and, as plain text, at the top. It
+  // is read out once: focus moves to the first field, which its own error
+  // describes, and the live region stays quiet.
+  function markInvalid(errors) {
+    var first = null;
+    var marked = 0;
+    errors.forEach(function(e){
+      if (!e.key || !Object.prototype.hasOwnProperty.call(FIELD_IDS, e.key)) { return; }
+      var el = document.getElementById(FIELD_IDS[e.key]);
+      if (!el) { return; }
+      el.setAttribute('aria-invalid', 'true');
+      var s = slotOf(el);
+      if (s) {
+        s.textContent = e.message;
+        s.hidden = false;
+        var described = el.getAttribute('aria-describedby');
+        el.setAttribute('aria-describedby', described ? described + ' ' + s.id : s.id);
+      }
+      marked += 1;
+      if (!first) { first = el; }
+    });
+    if (!first) { return false; }
+    if (summary) {
+      summary.textContent = marked === 1 ? errors[0].message : 'Please fix the ' + marked + ' fields marked below.';
+      summary.hidden = false;
+    }
+    first.focus();
+    return true;
+  }
+  // The server's rules (validateFields, then the address's shape), checked
+  // before anything is sent, so a missing answer never spends a human check.
+  function checkFields() {
+    var errors = [];
+    Object.keys(FIELD_IDS).forEach(function(key){
+      var el = document.getElementById(FIELD_IDS[key]);
+      if (!el) { return; }
+      var bad = '';
+      if (el.type === 'checkbox') {
+        if (!el.checked) { bad = el.getAttribute('data-error'); }
+      } else {
+        var n = el.value.trim().length;
+        var min = Number(el.getAttribute('minlength') || 1);
+        var max = Number(el.getAttribute('maxlength') || 100000);
+        if (n < min || n > max) { bad = el.getAttribute('data-error'); }
+        else if (el.type === 'email' && el.validity && el.validity.typeMismatch) { bad = el.getAttribute('data-error-format'); }
+      }
+      if (bad) { errors.push({ key: key, message: bad }); }
+    });
+    return errors;
   }
   // A human-check token is single use and the server spends it first, so every
   // failed submit gets a fresh one, and an empty one is never posted.
@@ -598,8 +690,13 @@ ${applyDoneMessageHtml()}
     evt.preventDefault();
     if (busy) { return; }
     clearInvalid();
+    if (Date.now() - LOADED_AT > STALE_AFTER_MS) {
+      show('This page has been open too long to send. Please copy your answers, reload this page and apply again.');
+      return;
+    }
+    if (markInvalid(checkFields())) { return; }
     if (!humanToken()) {
-      show('Please wait for the security check above the Apply button to finish, then press Apply again.', false);
+      show('Please wait for the security check above the Apply button to finish, then press Apply again.');
       return;
     }
     busy = true;
@@ -609,12 +706,12 @@ ${applyDoneMessageHtml()}
     }).then(function(body){
       busy = false;
       if (body && body.ok) { showDone(); return; }
-      show((body && body.error) || 'Something went wrong. Please try again.', false);
       resetHumanCheck();
-      markInvalid(body && body.field);
+      if (body && body.field && markInvalid([{ key: body.field, message: body.error || '' }])) { return; }
+      show((body && body.error) || 'Something went wrong. Please try again.');
     }).catch(function(){
       busy = false;
-      show('Something went wrong. Please try again.', false);
+      show('Something went wrong. Please try again.');
       resetHumanCheck();
     });
   });
