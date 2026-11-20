@@ -541,3 +541,17 @@ describe('the De Zimar shape', () => {
     expect(await s.getPendingDraft(tid)).toBeNull();
   });
 });
+
+// Final review, Important 3: when the thread's file list cannot be read, the
+// contentless gate cannot know whether the reply carried a file, so it fails
+// open and drafts (in doubt, we draft).
+describe('the contentless gate fails open', () => {
+  it('a file list that cannot be read never silences a reply', async () => {
+    const reading = { senderRole: 'customer', openAsks: ['q'], offered: '', alreadyAnswered: [], replyNeeded: true, supplier: null, productQuery: null, senderName: null };
+    const { tid } = await seed({ email: 'ana@example.com', name: 'Ana', category: 'other', inbound: ['My bowl arrived cracked', ''], outboundAfterFirst: 'Sorry to hear that. Please send a photo.' });
+    class FilesDown extends TenantStore { async listAttachmentsForThread(): Promise<never> { throw new Error('D1 unavailable'); } }
+    const s = new FilesDown(env.DB, SHOP);
+    const r = await composeDraftForThread(ENV, s, (await s.getConfig())!, (await s.getThreadWithMessages(tid))!.thread, llm(reading).fetchImpl);
+    expect(r && 'draftId' in r).toBe(true);
+  });
+});

@@ -152,11 +152,18 @@ export async function storeInboundAttachments(
 /** The thread's file rows for the transcript (design 5.7). Never throws: a
  * failed read means the drafter sees no file lines, never a failed draft. */
 export async function threadFilesFor(store: Pick<TenantStore, 'listAttachmentsForThread'>, threadId: string): Promise<AttachmentRow[]> {
+  return (await threadFilesOrNull(store, threadId)) ?? [];
+}
+
+/** As threadFilesFor, but null when the read failed, so a caller that must
+ * not read "no files" into a failure (the contentless gate) can tell them
+ * apart. Never throws. */
+export async function threadFilesOrNull(store: Pick<TenantStore, 'listAttachmentsForThread'>, threadId: string): Promise<AttachmentRow[] | null> {
   try {
     return await store.listAttachmentsForThread(threadId);
   } catch (e) {
     console.warn(`inbox attachment list failed for ${threadId}: ${(e as Error).message}`);
-    return [];
+    return null;
   }
 }
 

@@ -6,7 +6,7 @@ import { defaultFetch } from '../safe-fetch';
 import { parseAuthResults } from './gates';
 import { classifyEmail, decideDisposition } from './classify';
 import { draftReply, renderReplyHtml, applyFooter, stripTrailingSignoff, sanitizeOutbound, buildDraftTranscript, openInboundText, greetingName } from './draft';
-import { threadFilesFor, contactFilesFor } from './attachments';
+import { threadFilesFor, threadFilesOrNull, contactFilesFor } from './attachments';
 import { autoSendDecision, mentionsMoney, withExtraHolds } from './autosend';
 import { sendReply } from './send';
 import { maybePartnershipDraft, detectPartnershipAsk, AFFILIATE_APPLY_URL } from './partnership';
@@ -356,7 +356,8 @@ export async function composeDraftForThread(
   const llm = new LlmClient({ openrouter: env.OPENROUTER_API_KEY, openai: env.OPENAI_API_KEY }, fetchImpl);
   // The thread's file rows: both the reader and the drafter see which files
   // arrived and which were refused (design 2026-11-14, 5.7).
-  const files = await threadFilesFor(store, thread.id);
+  const filesRead = await threadFilesOrNull(store, thread.id);
+  const files = filesRead ?? [];
 
   // Thread reader first (owner design 2026-09-27). Never blocking: a failed
   // reading is null and everything below runs exactly as it did before. Only
@@ -404,7 +405,10 @@ export async function composeDraftForThread(
   // above the quote, or only a greeting, the store name or punctuation. A
   // message carrying a file is always content (every attachment row is a file
   // the sender chose to send; signature logos are dropped without a row).
-  const contentless = !opts.force && openBatchHasNoNewWords(got.messages, thread.subject, new Set(files.map((f) => f.message_id)));
+  // A file list that could not be read fails open: we cannot tell a file-only
+  // reply from a bump, so we draft (final review, 2026-11-20).
+  const contentless = !opts.force && filesRead !== null
+    && openBatchHasNoNewWords(got.messages, thread.subject, new Set(filesRead.map((f) => f.message_id)));
 
   // Partnership/affiliate funnel intercept - supersedes the generic drafter for lane threads.
   const partnership = await maybePartnershipDraft(env, store, cfg, t, got, fetchImpl, undefined, reading, { force: opts.force, contentless });
