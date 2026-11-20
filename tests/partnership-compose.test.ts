@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   buildQualifyingEmail, buildPartnershipDecline, buildFormInvite, buildVoucherInvite, buildHoldingAck,
-  buildServiceProveFirst, buildSupplierAck, buildAccessDecline, buildSignupInvite, buildOperationsDecline, buildKeepToEmail, buildSecondTouch, buildPointerBack,
+  buildServiceProveFirst, buildSupplierAck, buildAccessDecline, buildSignupInvite, buildOperationsDecline, buildKeepToEmail, buildSecondTouch,
   buildCollaborationDecline, detectAlternativeCollaboration, detectAccessRequest, countProgrammeIntroductions,
   TOUCH_TEMPLATES, QUALIFYING_MARKER, AFFILIATE_APPLY_URL, PARTNERSHIP_STANCE, STANDARD_COMMISSION_PCT, TIER_REVIEW_ORDERS, TIER_MAX_PCT
 } from '../src/inbox/partnership';
@@ -177,8 +177,8 @@ describe('an affiliate mention always carries the apply link', () => {
 
 // Owner rule 2026-09-04: a thread never gets the same message twice; when a
 // point has to be made again it is made SHORTER. Every deterministic body has a
-// concise second touch and a one-line pointer back to the earlier reply.
-describe('second-touch and pointer variants', () => {
+// concise second touch (design 2026-11-19 retired the one-line pointer).
+describe('second-touch variants', () => {
   const firstOf: Record<string, string> = {
     signup_invite: buildSignupInvite('Jo'), qualifying: buildQualifyingEmail('Jo', 'voucher'),
     voucher_invite: buildVoucherInvite('Jo'), form_invite: buildFormInvite('Jo'),
@@ -186,29 +186,22 @@ describe('second-touch and pointer variants', () => {
     operations_decline: buildOperationsDecline('Jo'), keep_to_email: buildKeepToEmail('Jo'), holding_ack: buildHoldingAck('Jo'),
     collaboration_decline: buildCollaborationDecline('Jo'), supplier_ack: buildSupplierAck('Jo'), access_decline: buildAccessDecline('Jo'),
   };
-  it('every template has a second touch shorter than the first, and a pointer shorter still', () => {
+  it('every template has a second touch shorter than the first', () => {
     expect(TOUCH_TEMPLATES.length).toBe(Object.keys(firstOf).length);
     for (const key of TOUCH_TEMPLATES) {
       const first = firstOf[key];
       const second = buildSecondTouch(key, 'Jo');
-      const pointer = buildPointerBack(key, 'Jo');
       expect(first, key).toBeTruthy();
       expect(second.startsWith('Hi Jo,'), key).toBe(true);
-      expect(pointer.startsWith('Hi Jo,'), key).toBe(true);
       expect(countWords(second), key).toBeLessThan(countWords(first));
-      expect(countWords(pointer), key).toBeLessThan(countWords(second));
-      expect(pointer, key).toMatch(/earlier/i);
       expect(second, key).toMatch(/\nActive Paw/); // signed
     }
     expect(buildSecondTouch('supplier_ack', 'Jo')).toContain('Active Paw Sourcing Team');
-    expect(buildPointerBack('supplier_ack', 'Jo')).toContain('Active Paw Sourcing Team');
     expect(buildSecondTouch('supplier_ack', 'Jo')).not.toMatch(/nothing you need to do/i);
-    expect(buildPointerBack('supplier_ack', 'Jo')).not.toMatch(/nothing more is needed/i);
   });
-  it('link-bearing templates keep the apply link in both shorter forms', () => {
+  it('link-bearing templates keep the apply link in their shorter form', () => {
     for (const key of ['signup_invite', 'service_prove_first', 'form_invite', 'collaboration_decline', 'access_decline'] as const) {
       expect(buildSecondTouch(key, 'Jo'), key).toContain(AFFILIATE_APPLY_URL);
-      expect(buildPointerBack(key, 'Jo'), key).toContain(AFFILIATE_APPLY_URL);
     }
   });
   // 2026-09-17: the shorter prove-first touch tells the same filter story.

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { normalizeForRepeat, isRepeatOf, repeatVerdict, repeatsPriorOutbound, outboundBodies, chooseTouch, looksLikeCustomerMessage } from '../src/inbox/repeat';
+import { normalizeForRepeat, isRepeatOf, repeatVerdict, repeatsPriorOutbound, outboundBodies, looksLikeCustomerMessage } from '../src/inbox/repeat';
 
 // Owner rule 2026-09-04: "if they keep sending the same message, consider them
 // as spam and block their succeeding messages". These tests pin what "the same
@@ -86,12 +86,11 @@ describe('repeatVerdict', () => {
 // Owner rule 2026-09-04, second half: "We never send the same message multiple
 // times. If you need to send the same message at least make it shorter and more
 // concise the second time." The guard below compares a candidate draft with the
-// thread's earlier OUTBOUND messages and picks the touch: full body, then the
-// shorter second touch, then a one-line pointer back to the earlier reply.
+// thread's earlier OUTBOUND messages: full body, then the shorter second touch,
+// then nothing more (design 2026-11-19 retired the one-line pointer).
 describe('no-repeat guard against prior outbound', () => {
   const FULL = 'Hi Jo,\n\nThank you for your interest in partnering with Active Paw. Our affiliate programme is the only partnership we run at the moment, and it is open to anyone. Applications go through our partner page, and it only takes a few minutes.\n\nBest Regards,\nActive Paw Partnerships';
   const SHORT = 'Hi Jo,\n\nThanks for coming back to us. Nothing has changed on our side: the application form is the next step and takes a few minutes.\n\nBest Regards,\nActive Paw Partnerships';
-  const POINTER = 'Hi Jo,\n\nOur earlier reply on this thread still stands, and the application form there remains the next step.\n\nBest Regards,\nActive Paw Partnerships';
 
   it('repeatsPriorOutbound is true only when the candidate repeats one of the earlier sends', () => {
     expect(repeatsPriorOutbound(FULL, [FULL])).toBe(true);
@@ -107,15 +106,6 @@ describe('no-repeat guard against prior outbound', () => {
       { direction: 'outbound', body_text: null },
     ];
     expect(outboundBodies(msgs)).toEqual(['our first reply', null]);
-  });
-
-  it('chooseTouch: full body when nothing repeats, second touch once the full body was sent, pointer once both were', () => {
-    const bodies = { first: FULL, second: SHORT, pointer: POINTER };
-    expect(chooseTouch([], bodies)).toEqual({ body: FULL, touch: 'first' });
-    expect(chooseTouch([FULL], bodies)).toEqual({ body: SHORT, touch: 'second' });
-    expect(chooseTouch([FULL, SHORT], bodies)).toEqual({ body: POINTER, touch: 'pointer' });
-    // The pointer is the terminal touch (owner's choice): it is drafted again rather than nothing.
-    expect(chooseTouch([FULL, SHORT, POINTER], bodies).touch).toBe('pointer');
   });
 });
 

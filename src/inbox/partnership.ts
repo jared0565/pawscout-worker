@@ -779,12 +779,13 @@ export function countProgrammeIntroductions(
   }).length;
 }
 
-// --- Second touch and pointer (owner rule 2026-09-04) -----------------------
+// --- Second touch (owner rule 2026-09-04) ----------------------------------
 // "We never send the same message multiple times. If you need to send the same
 // message at least make it shorter and more concise the second time." Every
-// deterministic body above has a concise second touch and a one-line pointer
-// back to the earlier reply. chooseTouch (repeat.ts) picks between them from the
-// thread's outbound history; the guard runs in the funnel and the template route.
+// deterministic body above has a concise second touch; the funnel (insertTouched)
+// and the template route pick from the thread's outbound history. Design
+// 2026-11-19 (decision A): there is no third touch. The one-line pointer that
+// followed it repeated forever and is retired.
 export const TOUCH_TEMPLATES = [
   'signup_invite', 'qualifying', 'voucher_invite', 'form_invite', 'partnership_decline',
   'service_prove_first', 'operations_decline', 'keep_to_email', 'holding_ack', 'collaboration_decline',
@@ -860,31 +861,8 @@ No reply is needed.
 ${SIGNOFF_PARTNERSHIPS}`,
 };
 
-// One sentence each, pointing back to the earlier reply (the owner's choice for a
-// third touch: a pointer rather than silence, still pending their approval).
-const POINTER_BACK: Record<TouchTemplate, string> = {
-  signup_invite: `Our earlier reply on this thread still stands, and the application form there remains the next step: ${AFFILIATE_APPLY_URL}`,
-  qualifying: `Our earlier email with the screening questions still stands; reply with your answers whenever you are ready.`,
-  voucher_invite: `Our earlier reply still stands: your trial code will come to you here, with its terms, as soon as it is ready.`,
-  form_invite: `Our earlier reply still stands, and the partner application there remains the next step: ${AFFILIATE_APPLY_URL}`,
-  partnership_decline: `Our earlier reply on this thread still stands, and there is nothing we can add to it.`,
-  service_prove_first: `Our earlier reply on this thread still stands: every partnership starts with a tracked discount code, and the partner page there is the way in: ${AFFILIATE_APPLY_URL}`,
-  operations_decline: `Our earlier reply on this thread still stands, and there is nothing we are able to add to it.`,
-  keep_to_email: `As in our earlier reply, we keep our conversations on email, so please carry on here whenever you are ready.`,
-  holding_ack: `Our earlier note still stands: your application is in review, and we will write as soon as it is decided.`,
-  collaboration_decline: `Our earlier reply on this thread still stands: we do not skip the trial for anyone, and the code trial stays open to you: ${AFFILIATE_APPLY_URL}`,
-  supplier_ack: `As in our earlier reply, your details are on file for reference, and your website link and whether you offer dropshipping are welcome whenever convenient.`,
-  access_decline: `Our earlier reply on this thread still stands: no store access of any kind, and the code trial stays open to you: ${AFFILIATE_APPLY_URL}`,
-};
-
 export function buildSecondTouch(key: TouchTemplate, name: string | null): string {
   return applySalutation(SECOND_TOUCH[key], name);
-}
-export function buildPointerBack(key: TouchTemplate, name: string | null): string {
-  const signoff = key === 'supplier_ack' ? SIGNOFF_SOURCING : key === 'keep_to_email' ? SIGNOFF_STORE : SIGNOFF_PARTNERSHIPS;
-  return applySalutation(`${POINTER_BACK[key]}
-
-${signoff}`, name);
 }
 
 // --- Accepted-partner support reply (2026-07-14) ----------------------------
