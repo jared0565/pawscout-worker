@@ -527,6 +527,19 @@ describe('quiet after the final answer, and the end of the ladder', () => {
     expect(await s.getPendingDraft(tid)).toBeNull();
     expect(sp.alerts()).toBe(1);
   });
+  // Spec anti-goal 1: a real customer question is never silenced by a funnel
+  // rule. The affiliate agent answers what they asked first (HITL).
+  it('a customer question at the end of the ladder goes to the generic drafter', async () => {
+    const sp = spy();
+    const { s, tid } = await seedFirstTouch('q7c.myshopify.com');
+    await s.upsertApplicant({ threadId: tid, contactEmail: 'kasim@x.com', stage: 'escalated' });
+    await out(s, tid, 'h1', buildHoldingAck('Kasim'), '2026-06-23T10:00:00Z');
+    await inb(s, tid, 'g1', 'Any news on my application?', '2026-06-24T10:00:00Z');
+    await out(s, tid, 'h2', buildSecondTouch('holding_ack', 'Kasim'), '2026-06-25T10:00:00Z');
+    await inb(s, tid, 'g2', 'Separately, my order #4821 has not arrived yet. Can you check it?', '2026-06-26T10:00:00Z');
+    expect(await run(s, tid, reading('customer'), sp.fetchImpl)).toBeNull();
+    expect(sp.alerts()).toBe(0);
+  });
   it('a failed reading at the end of the ladder is treated as a non-seller', async () => {
     const sp = spy();
     const { s, tid } = await sellerTwoIntros('q8.myshopify.com', 'When will I hear back?');

@@ -1189,10 +1189,12 @@ export async function maybePartnershipDraft(
   }
 
   // Both touches of a template have gone out (design 2026-11-19, 2e). The
-  // owner's Regenerate goes to the generic drafter; a seller gets the one
-  // final answer; anyone else gets no third touch, and the owner is told once.
+  // owner's Regenerate and a customer question (spec anti-goal 1: never
+  // silenced by a funnel rule; the affiliate agent answers what was asked
+  // first) go to the generic drafter; a seller gets the one final answer;
+  // anyone else gets no third touch, and the owner is told once.
   async function onExhausted(): Promise<PartnershipResult> {
-    if (opts.force) return null;
+    if (opts.force || reading?.senderRole === 'customer') return null;
     if (isSellerThread(reading, latestNewText)) return draftFinalAnswer(SELLER_FINAL_ALERT);
     return handReplyOnce('Both replies on this point have gone out; reply by hand if anything is needed.');
   }

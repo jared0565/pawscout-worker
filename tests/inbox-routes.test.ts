@@ -4,7 +4,8 @@ import { env, applyD1Migrations } from 'cloudflare:test';
 import { SignJWT } from 'jose';
 import { TenantStore } from '../src/tenant-store';
 import { listInboxThreads, getInboxThread, setInboxStatus, setInboxLabels, regenerateDraft, applyDraftTemplate, unblockSender, unblockSenderByEmail, listBlockedSenders, DRAFT_TEMPLATES } from '../src/inbox/routes';
-import { AFFILIATE_APPLY_URL, buildSignupInvite, buildSecondTouch } from '../src/inbox/partnership';
+import { AFFILIATE_APPLY_URL, buildSignupInvite, buildSecondTouch, maybePartnershipDraft } from '../src/inbox/partnership';
+import type { ThreadReading } from '../src/inbox/thread-read';
 import { countWords } from '../src/inbox/draft-quality';
 import { DEFAULT_INBOX } from '../src/inbox/types';
 import { ACTIVE_PAW_COLLECTION_MAP, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, type Env } from '../src/types';
@@ -344,6 +345,26 @@ describe('applyDraftTemplate', () => {
     expect(await s.getApplicantByThread(tid)).toBeNull();
     expect((await sendPending(s, tid)).ok).toBe(true);
     expect((await s.getApplicantByThread(tid))?.stage).toBe('declined');
+  });
+
+  // Design 2026-11-19, 2d: a console-sent decline from before the template key
+  // existed still counts as the final answer, through the stage-then-send
+  // order in send.ts (the outbound is never earlier than the stage stamp).
+  it('a console-sent decline without a template key still counts: the seller is quiet after it', async () => {
+    const { s, tid } = await seedWithConfig();
+    expect((await applyDraftTemplate(env.DB, SHOP, tid, 'collaboration_decline')).ok).toBe(true);
+    await env.DB.prepare(`UPDATE inbox_drafts SET meta_json = json_remove(meta_json, '$.template') WHERE shop = ?1 AND thread_id = ?2`).bind(SHOP, tid).run();
+    expect((await sendPending(s, tid)).ok).toBe(true);
+    // History is the OLD wording, so the final answer's repeat guard cannot
+    // match it: only the stage-time fallback can say the decline went out.
+    await env.DB.prepare(`UPDATE inbox_messages SET body_text = ?3 WHERE shop = ?1 AND thread_id = ?2 AND direction = 'outbound'`)
+      .bind(SHOP, tid, `Hi Jane,\n\nWe have to be straight with you, so we do not keep you waiting: we do not skip the trial for anyone. The code trial stays open to you at any time: ${AFFILIATE_APPLY_URL}\n\nBest Regards,\nActive Paw Partnerships`).run();
+    await s.insertInboundMessageIfNew({ threadId: tid, messageId: '<after-decline@x>', inReplyTo: null, references: [], from: 'jane@x.com', to: 'sales@activepaw.co.uk', subject: 'Re: Hi', bodyText: 'So is it a yes or a no?', bodyHtml: null, headersJson: '{}', receivedAt: new Date(Date.now() + 60_000).toISOString() });
+    const got = (await s.getThreadWithMessages(tid))!;
+    const marketer: ThreadReading = { senderRole: 'marketer', openAsks: ['yes or no'], offered: 'growth services', alreadyAnswered: [], replyNeeded: true, supplier: null, productQuery: null, senderName: null };
+    const r = await maybePartnershipDraft({ ...env } as any, s, (await s.getConfig())!, got.thread, got, (async () => new Response('{}')) as unknown as typeof fetch, undefined, marketer);
+    expect(r).toEqual({ noReply: true });
+    expect(await s.getPendingDraft(tid)).toBeNull();
   });
 
   it('refuses the four superseded funnel templates', async () => {
