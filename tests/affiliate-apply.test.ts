@@ -6,7 +6,7 @@ import {
   DEFAULT_GATES, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, DEFAULT_INBOX,
   DEFAULT_SELF_SERVE, type TenantConfig, type Env
 } from '../src/types';
-import { signTimestamp, MIN_SUBMIT_MS } from '../src/affiliate/gates';
+import { signTimestamp, MIN_SUBMIT_MS, APPLY_FIELD_LIMITS } from '../src/affiliate/gates';
 import { handleAffiliateApply, renderApplyForm, renderTermsPage, mxExists, verifyTurnstile, GENERIC_APPLY_MESSAGE, RESEND_COOLDOWN_MS, type ApplyFields } from '../src/affiliate/apply';
 import { app } from '../src/index';
 import { signAppProxy } from '../src/proxy/verify';
@@ -769,5 +769,126 @@ describe('HTTP level: /proxy/affiliate/apply - fault isolation', () => {
     // Confirms the throw actually happened INSIDE handleAffiliateApply (not
     // that some earlier gate silently short-circuited for an unrelated reason).
     expect(poolSpy).toHaveBeenCalled();
+  });
+});
+
+// Theme agent report, relayed by the owner 2026-11-20: a filled form came back
+// "Please check the plan field." - an internal key no label shows - for a
+// 9-character answer to "How would you promote Active Paw?". Every error a
+// field can cause now names the question as the applicant sees it, says what
+// is needed, and tells the page which field to mark and focus.
+describe('handleAffiliateApply: field errors the applicant can act on', () => {
+  const run = async (overrides: Partial<ApplyFields>, fetchImpl: typeof fetch = fakeFetch()) =>
+    handleAffiliateApply({ store: store(), cfg: ENABLED_CFG, env: baseEnv(), fields: await validFields(overrides), ip: '1.1.1.1', nowMs: NOW, fetchImpl });
+
+  it('names the promote question and its minimum for the owner\'s 9-character answer', async () => {
+    const r = await run({ audience: 'dog owners', plan: 'blog link' });
+    expect(r.body.ok).toBe(false);
+    expect(r.body.field).toBe('plan');
+    expect(r.body.error).toMatch(/promote Active Paw/);
+    expect(r.body.error).toContain(String(APPLY_FIELD_LIMITS.plan.min) + ' ');
+    expect(await store().applicationByEmail('jane@example.com')).toBeNull();
+  });
+
+  const INVALID: Array<[string, Partial<ApplyFields>, RegExp]> = [
+    ['name', { name: '' }, /your name/],
+    ['email', { email: '' }, /email address/],
+    ['channel_url', { channel_url: '' }, /channel URL/],
+    ['audience', { audience: 'short' }, /your audience/],
+    ['plan', { plan: 'short' }, /promote Active Paw/],
+    ['terms', { terms: undefined }, /Partner Program terms/]
+  ];
+  for (const [field, overrides, says] of INVALID) {
+    it('a bad ' + field + ' gets a message in the form\'s words, never the internal key', async () => {
+      const r = await run(overrides);
+      expect(r.body).toMatchObject({ ok: false, field });
+      expect(r.body.error).toMatch(says);
+      expect(r.body.error).not.toMatch(/check the \w+ field/);
+      expect(r.body.error).not.toContain('_');
+    });
+  }
+
+  it('a free-text message is true for too long as well as too short', async () => {
+    const tooLong = await run({ plan: 'a'.repeat(APPLY_FIELD_LIMITS.plan.max + 1) });
+    expect(tooLong.body.field).toBe('plan');
+    expect(tooLong.body.error).toContain(String(APPLY_FIELD_LIMITS.plan.max));
+  });
+
+  it('the email gates point at the email field', async () => {
+    expect((await run({ email: 'not-an-email' })).body).toMatchObject({ ok: false, field: 'email' });
+    expect((await run({ email: 'bob@mailinator.com' })).body).toMatchObject({ ok: false, field: 'email' });
+    expect((await run({ email: 'nomx@example.com' }, fakeFetch({ mxOk: false }))).body).toMatchObject({ ok: false, field: 'email' });
+  });
+
+  it('the channel gates point at the channel field', async () => {
+    expect((await run({ channel_url: 'not a url' })).body).toMatchObject({ ok: false, field: 'channel_url' });
+    const channel = 'https://someone-elses-blog.example/reviews';
+    const s = store();
+    const first = await handleAffiliateApply({
+      store: s, cfg: ENABLED_CFG, env: baseEnv(), ip: '2.2.2.2', nowMs: NOW,
+      fields: await validFields({ email: 'owner-of-channel@example.com', channel_url: channel }), fetchImpl: fakeFetch()
+    });
+    expect(first.body.ok).toBe(true);
+    const linked = await run({ email: 'someone-else@example.com', channel_url: channel });
+    expect(linked.body).toMatchObject({ ok: false, field: 'channel_url' });
+    expect(linked.body.error).toContain('already linked');
+  });
+
+  it('a failed human check names no field (nothing on the form to fix)', async () => {
+    const r = await run({}, fakeFetch({ turnstileOk: false }));
+    expect(r.body.ok).toBe(false);
+    expect(r.body.field).toBeUndefined();
+  });
+});
+
+describe('renderApplyForm: the browser states and enforces the server\'s rules', () => {
+  const tagOf = (html: string, id: string): string => {
+    const m = html.match(new RegExp('<(?:input|textarea)[^>]*id="' + id + '"[^>]*>'));
+    expect(m, 'no field with id ' + id).toBeTruthy();
+    return m![0];
+  };
+  const FREE_TEXT: Array<[string, 'audience' | 'plan']> = [['apaff-audience', 'audience'], ['apaff-plan', 'plan']];
+
+  for (const [id, key] of FREE_TEXT) {
+    it(id + ' carries the server\'s minimum and maximum and a hint tied to it', async () => {
+      const html = await renderApplyForm(ENABLED_CFG, baseEnv(), NOW);
+      const tag = tagOf(html, id);
+      expect(tag).toContain('minlength="' + APPLY_FIELD_LIMITS[key].min + '"');
+      expect(tag).toContain('maxlength="' + APPLY_FIELD_LIMITS[key].max + '"');
+      const hintId = tag.match(/aria-describedby="([^"]+)"/)?.[1];
+      expect(hintId).toBeTruthy();
+      const hint = html.match(new RegExp('id="' + hintId + '"[^>]*>([^<]*)<'));
+      expect(hint?.[1]).toContain('At least ' + APPLY_FIELD_LIMITS[key].min + ' characters');
+    });
+  }
+
+  it('the single-line fields carry the server\'s maximums', async () => {
+    const html = await renderApplyForm(ENABLED_CFG, baseEnv(), NOW);
+    expect(tagOf(html, 'apaff-name')).toContain('maxlength="' + APPLY_FIELD_LIMITS.name.max + '"');
+    expect(tagOf(html, 'apaff-email')).toContain('maxlength="' + APPLY_FIELD_LIMITS.email.max + '"');
+    expect(tagOf(html, 'apaff-channel')).toContain('maxlength="' + APPLY_FIELD_LIMITS.channel_url.max + '"');
+  });
+
+  it('every field the server can name has an element the page can focus', async () => {
+    const html = await renderApplyForm(ENABLED_CFG, baseEnv(), NOW);
+    const script = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+    for (const field of [...Object.keys(APPLY_FIELD_LIMITS), 'terms']) {
+      const id = script.match(new RegExp(field + ": '([a-z-]+)'"))?.[1];
+      expect(id, 'the script maps no id for ' + field).toBeTruthy();
+      tagOf(html, id!);
+    }
+  });
+
+  it('after a failed submit the script marks and focuses the field and resets the human check', async () => {
+    const html = await renderApplyForm(ENABLED_CFG, baseEnv(), NOW);
+    expect(html).toContain('id="apaff-turnstile"');
+    const script = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+    expect(script).toContain("turnstile.reset('#apaff-turnstile')");
+    expect(script).toContain('body.field');
+    expect(script).toContain("'aria-invalid'");
+    expect(script).toContain('applyResult');
+    expect(script).toContain('.focus()');
+    // A spent token is never posted: the script waits for the widget's fresh one.
+    expect(script).toContain('cf-turnstile-response');
   });
 });

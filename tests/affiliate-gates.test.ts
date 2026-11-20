@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import {
   validEmailSyntax, isDisposableDomain, isMainstreamEmailDomain, isCouponHost, channelHostAllowed,
-  honeypotOk, signTimestamp, verifyTimestamp, validateFields, MIN_SUBMIT_MS, TIMESTAMP_MAX_AGE_MS
+  honeypotOk, signTimestamp, verifyTimestamp, validateFields, MIN_SUBMIT_MS, TIMESTAMP_MAX_AGE_MS,
+  APPLY_FIELD_LIMITS
 } from '../src/affiliate/gates';
 
 const SECRET = 'test-shopify-secret';
@@ -178,5 +179,35 @@ describe('validateFields', () => {
   it('rejects when terms are not accepted', () => {
     expect(validateFields({ ...VALID, termsAccepted: false })).toEqual({ ok: false, reason: 'terms' });
     expect(validateFields({ ...VALID, termsAccepted: undefined })).toEqual({ ok: false, reason: 'terms' });
+  });
+
+  // The owner's own attempt (2026-11-20): "dog owners" (10) passed the audience
+  // check, "blog link" (9) failed the plan check. Both questions ask for 10.
+  it('takes the owner\'s 10-character audience and refuses their 9-character plan', () => {
+    expect(validateFields({ ...VALID, audience: 'dog owners', plan: 'blog link' })).toEqual({ ok: false, reason: 'plan' });
+    expect(validateFields({ ...VALID, audience: 'dog owners', plan: 'blog links' })).toEqual({ ok: true });
+  });
+
+  it('counts a length after trimming, so padding never reaches the minimum', () => {
+    expect(validateFields({ ...VALID, plan: '  blog link  ' })).toEqual({ ok: false, reason: 'plan' });
+  });
+
+  // The form's minlength/maxlength and the error messages read the same table,
+  // so the validator must enforce exactly what the table says, at both edges.
+  const KEY_OF = { name: 'name', email: 'email', channel_url: 'channelUrl', audience: 'audience', plan: 'plan' } as const;
+  for (const field of Object.keys(APPLY_FIELD_LIMITS) as Array<keyof typeof APPLY_FIELD_LIMITS>) {
+    it('enforces the shared limits for ' + field + ' at both edges', () => {
+      const { min, max } = APPLY_FIELD_LIMITS[field];
+      const at = (n: number) => validateFields({ ...VALID, [KEY_OF[field]]: 'a'.repeat(n) });
+      expect(at(min)).toEqual({ ok: true });
+      expect(at(max)).toEqual({ ok: true });
+      expect(at(min - 1)).toEqual({ ok: false, reason: field });
+      expect(at(max + 1)).toEqual({ ok: false, reason: field });
+    });
+  }
+
+  it('asks the two free-text questions for at least 10 characters', () => {
+    expect(APPLY_FIELD_LIMITS.audience.min).toBe(10);
+    expect(APPLY_FIELD_LIMITS.plan.min).toBe(10);
   });
 });

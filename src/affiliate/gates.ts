@@ -167,21 +167,37 @@ export async function verifyTimestamp(
 export interface ApplicationFieldsInput {
   name?: string; email?: string; channelUrl?: string; audience?: string; plan?: string; termsAccepted?: boolean;
 }
-export interface FieldValidation { ok: boolean; reason?: string }
+/** Field names as the apply form posts them (and as `field` names them in an
+ *  error body), so the page can mark the one that failed. */
+export type ApplyFieldKey = 'name' | 'email' | 'channel_url' | 'audience' | 'plan' | 'terms';
+
+/** The one length table for the apply form, counted after trimming. The
+ *  validator, its error messages, and the form's minlength/maxlength and hints
+ *  all read it, so the browser and the server cannot disagree (theme agent
+ *  report 2026-11-20: a 9-character answer failed an unstated minimum). */
+export const APPLY_FIELD_LIMITS = {
+  name: { min: 1, max: 120 },
+  email: { min: 1, max: 254 },
+  channel_url: { min: 1, max: 500 },
+  audience: { min: 10, max: 2000 },
+  plan: { min: 10, max: 2000 }
+} as const;
+
+export type FieldValidation = { ok: true } | { ok: false; reason: ApplyFieldKey };
 
 /** All fields required, length-capped. Does not re-check email syntax or
  *  channel URL parseability - those have their own dedicated gates below. */
 export function validateFields(f: ApplicationFieldsInput): FieldValidation {
-  const name = (f.name ?? '').trim();
-  const email = (f.email ?? '').trim();
-  const channelUrl = (f.channelUrl ?? '').trim();
-  const audience = (f.audience ?? '').trim();
-  const plan = (f.plan ?? '').trim();
-  if (!name || name.length > 120) return { ok: false, reason: 'name' };
-  if (!email || email.length > 254) return { ok: false, reason: 'email' };
-  if (!channelUrl || channelUrl.length > 500) return { ok: false, reason: 'channel_url' };
-  if (audience.length < 10 || audience.length > 2000) return { ok: false, reason: 'audience' };
-  if (plan.length < 10 || plan.length > 2000) return { ok: false, reason: 'plan' };
+  const L = APPLY_FIELD_LIMITS;
+  const fits = (v: string | undefined, lim: { min: number; max: number }) => {
+    const n = (v ?? '').trim().length;
+    return n >= lim.min && n <= lim.max;
+  };
+  if (!fits(f.name, L.name)) return { ok: false, reason: 'name' };
+  if (!fits(f.email, L.email)) return { ok: false, reason: 'email' };
+  if (!fits(f.channelUrl, L.channel_url)) return { ok: false, reason: 'channel_url' };
+  if (!fits(f.audience, L.audience)) return { ok: false, reason: 'audience' };
+  if (!fits(f.plan, L.plan)) return { ok: false, reason: 'plan' };
   if (f.termsAccepted !== true) return { ok: false, reason: 'terms' };
   return { ok: true };
 }
