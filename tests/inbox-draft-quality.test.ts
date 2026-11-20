@@ -302,8 +302,6 @@ describe('promisesSupplier (supplier lane, owner decision 2026-09-27)', () => {
     "We'd be happy to arrange a call.",
     'Happy to schedule a quick meeting.',
     "Let's continue on WhatsApp.",
-    'We are not ordering at this stage.',
-    'Nothing is needed for now.',
     'Apply at https://activepaw.co.uk/apps/pawscout/affiliate/apply',
     'Our affiliate programme pays 2% commission.',
   ])('flags %s', (t) => { expect(promisesSupplier(t)).toBe(true); });
@@ -344,9 +342,36 @@ describe('promisesSupplier (supplier lane, owner decision 2026-09-27)', () => {
     'We cannot jump on a call right now.',
   ])('a correct refusal stays clean (negation guard) %s', (t) => { expect(promisesSupplier(t)).toBe(false); });
 
+  // Owner 2026-11-20: a "no" worded as not for now is the house tone, not a
+  // promise. These are the owner's own edits since 2026-11-14 and the old
+  // "at this stage"/"for now" cases, which the retired pattern used to flag.
   it.each([
-    // Unguarded "at this stage" pattern: still flags despite a nearby "not".
+    'We are not ordering at this stage.',
+    'Nothing is needed for now.',
     'We will not be placing orders at this stage.',
+    'We are not naming particular styles for now.',
+    'On custom bags, we are not arranging custom manufacturing or quotations, at the moment.',
+    'We do not have a set order volume to share for dropshipping at present, so there is no figure to confirm here.',
+    'It is not something we are taking forward this time.',
+    'We keep supplier contact on email and are not arranging samples or calls at the moment.',
+  ])('a not-for-now refusal stays clean %s', (t) => { expect(promisesSupplier(t)).toBe(false); });
+
+  // A for-now word never hides a real promise beside it.
+  it.each([
+    'For now, we will review your catalogue.',
+    'We will be in touch for now.',
+    "We'll consider placing an order at the moment.",
+    'Please send us some samples for now.',
+    'At present we are open to a partnership.',
+  ])('a promise next to a for-now word still flags %s', (t) => { expect(promisesSupplier(t)).toBe(true); });
+
+  it('the reviser no longer tells the model to strip a for-now word', () => {
+    const issue = findDraftIssues('Thank you for your catalogue. We will be in touch soon about an order.', { supplierLane: true }).join(' ');
+    expect(issue).toMatch(/promise/i);
+    expect(issue).not.toMatch(/at this stage|for now/i);
+  });
+
+  it.each([
     // Unguarded partnership pattern: still flags regardless of negation.
     'Thank you for your partnership proposal.',
     // The negation in the first clause ("cannot") must not bleed across the

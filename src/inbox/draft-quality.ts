@@ -410,14 +410,16 @@ export function buildFileContext(
 }
 
 // Supplier replies promise nothing (owner decision 2026-09-27): no order, review,
-// reply, meeting, call, samples, partnership, trial or "at this stage". Asking
-// for their link or whether they dropship is information gathering, not a
-// promise, so neither is matched here.
+// reply, meeting, call, samples, partnership or trial. Asking for their link or
+// whether they dropship is information gathering, not a promise, so neither is
+// matched here. A "no" worded as not for now ("at this stage", "for now", "not
+// this time") is the house tone, not a promise (owner 2026-11-20), so that
+// pattern is retired; a real promise beside it still flags on its own verb.
 //
-// `guarded: false` marks the three patterns the controller ruled must flag
-// unconditionally regardless of a nearby negation: the partnership pattern, the
-// "at this stage"/"for now" pattern, and the affiliate/discount-code/commission
-// pattern. Every other pattern is `guarded: true` and gets the negation check
+// `guarded: false` marks the two patterns the controller ruled must flag
+// unconditionally regardless of a nearby negation: the partnership pattern and
+// the affiliate/discount-code/commission pattern. Every other pattern is
+// `guarded: true` and gets the negation check
 // below (fix round 2, 2026-09-27): a correct refusal ("There is no need to send
 // samples.") must not be flagged as a promise.
 const SUPPLIER_PROMISE_RULES: { re: RegExp; guarded: boolean }[] = [
@@ -427,7 +429,6 @@ const SUPPLIER_PROMISE_RULES: { re: RegExp; guarded: boolean }[] = [
   { re: /\b(?:happy|glad|pleased)\s+to\s+(?:arrange|schedule|set\s+up|have|join|hop\s+on|jump\s+on|catch\s+up)\b/i, guarded: true },
   { re: /\bsend\s+(?:us\s+)?(?:a\s+|some\s+|your\s+)?samples?\b/i, guarded: true },
   { re: /\b(?:let(?:['’]s|\s+us)|we(?:['’]ll| will)|happy\s+to|glad\s+to)\b[^.]*\bwhatsapp\b/i, guarded: true },
-  { re: /\bat\s+this\s+stage\b|\bfor\s+now\b/i, guarded: false },
   { re: /apps\/pawscout\/affiliate|\baffiliate\b|\bdiscount\s+code\b|\bcommission\b/i, guarded: false },
   { re: /\b(?:jump|hop)\s+on\s+a\s+(?:quick\s+)?(?:call|chat)\b/i, guarded: true },
   { re: /\bset\s+up\s+a\s+(?:quick\s+)?(?:call|meeting|chat|trial)\b/i, guarded: true },
@@ -536,7 +537,7 @@ export function findDraftIssues(bodyText: string, ctx: DraftQualityContext = {})
     }
   }
   if (ctx.supplierLane && ctx.offNiche && invitesFiles(bodyText)) {
-    issues.push('This supplier offers goods outside our range. Do not invite a catalogue or any file; say only that we have noted their details and keep them on file for reference.');
+    issues.push('This supplier offers goods outside our range. Do not invite a catalogue or any file; say only that we have noted their details and keep them on file for future reference.');
   }
   if (ctx.files) {
     if (ctx.files.held.length === 0 && claimsFileReceived(bodyText)) {
@@ -563,9 +564,9 @@ export function findDraftIssues(bodyText: string, ctx: DraftQualityContext = {})
       : 'that they are welcome to email their catalogue or product information';
     // An off-niche supplier keeps only the short acknowledgement (design 8.2).
     const keep = ctx.offNiche
-      ? 'the opening thank-you, and that we have noted their details and keep them on file for reference'
-      : `thanks for what they offered, ${filesPart}, any sentence saying a file did not reach us or could not be accepted, the request for their website or online store link, the question whether they offer dropshipping (goods and packaging only), and that we keep supplier details on file for reference`;
-    issues.push(`This is a reply to a supplier and it promises or suggests something: an order, a review, a reply, a meeting, a call, samples, a partnership, the affiliate programme, or 'at this stage'. Remove every promise. Keep only: ${keep}.`);
+      ? 'the opening thank-you, and that we have noted their details and keep them on file for future reference'
+      : `thanks for what they offered, ${filesPart}, any sentence saying a file did not reach us or could not be accepted, the request for their website or online store link, the question whether they offer dropshipping (goods and packaging only), and that we keep supplier details on file for future reference`;
+    issues.push(`This is a reply to a supplier and it promises or suggests something: an order, a review, a reply, a meeting, a call, samples, a partnership or the affiliate programme. Remove every promise, but keep a no worded as not this time or at the moment. Keep only: ${keep}.`);
   }
   return issues;
 }

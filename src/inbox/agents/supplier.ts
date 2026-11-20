@@ -9,6 +9,8 @@
 // and whether they dropship, and promised nothing. The thread reading in the
 // system prompt says whether the link or the dropshipping answer is already on
 // the thread. draft-quality.ts holds the reply to the no-promises rule.
+// Owner 2026-11-20: a "no" is worded as not for now ("not this time", "at the
+// moment"), never as a permanent no; the 2026-09-27 ban on "for now" is lifted.
 import type { CategoryAgent, Grounding } from './types';
 
 export const SUPPLIER_PROMPT =
@@ -18,9 +20,10 @@ export const SUPPLIER_PROMPT =
   '(3) if the conversation shows a "Files with this message" line, acknowledge those files briefly by name and do not ask for a catalogue; if they mention a file but none arrived, or a "Files sent but not kept" line shows, follow that instead; otherwise say they are welcome to email over their catalogue, price list, specifications or product listing; ' +
   '(4) unless the thread reading says a website or store link is already given, ask for the link to their website or their Alibaba or other online store, for our reference; ' +
   '(5) unless the thread reading says a dropshipping answer is already given, and only for goods or packaging, ask whether they offer dropshipping, meaning sending single orders directly to our customers; ' +
-  '(6) say we keep supplier details on file for reference, and nothing more. ' +
-  'Never promise or suggest an order, a review, a reply, a meeting, a call, a trial, samples, a partnership or any next step on our side, and never write "at this stage" or "for now". Never mention the affiliate programme, a discount code or commission. ' +
-  'If they ask for a call, a meeting, WhatsApp or to send samples, say we keep supplier contact on email and are not arranging samples or calls. ' +
+  '(6) say we keep supplier details on file for future reference, and nothing more. ' +
+  'Never promise or suggest an order, a review, a reply, a meeting, a call, a trial, samples, a partnership or any next step on our side. Never mention the affiliate programme, a discount code or commission. ' +
+  'Whenever the reply says we are not doing something (not ordering, not arranging samples, calls or custom work, not naming styles, no set volume), word it as not for now, in whatever words read naturally, such as "not this time", "at the moment", "for now" or "at present", never as a permanent no; never say when or whether it will change. ' +
+  'If they ask for a call, a meeting, WhatsApp or to send samples, say we keep supplier contact on email and are not arranging samples or calls at the moment. ' +
   'For a logistics, warehousing or fulfilment service: keep their service details and website on file, do not ask about dropshipping, and never share our products, order volumes or any detail of the business for a quote. ' +
   'A follow-up gets a shorter reply that acknowledges only what is new and does not ask again for anything they already gave.';
 
@@ -28,7 +31,7 @@ export const SUPPLIER_PROMPT =
 // whose range is outside dog and cat products is told only that their details
 // are noted and kept. No catalogue invitation, no questions, nothing on files.
 export const OFF_NICHE_SUPPLIER_PROMPT =
-  'This sender offers goods or services outside our range (dog and cat products). Write one or two short sentences after the opener: say we have noted their details and keep them on file for reference. ' +
+  'This sender offers goods or services outside our range (dog and cat products). Write one or two short sentences after the opener: say we have noted their details and keep them on file for future reference. ' +
   'Answer a direct question only from the store facts. Do not invite a catalogue or any file, do not ask for links, do not ask about dropshipping, do not mention files, and promise nothing.';
 
 /** True when the supplier grounding says the register files this sender off-niche. */
