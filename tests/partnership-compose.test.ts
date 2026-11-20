@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   buildQualifyingEmail, buildPartnershipDecline, buildFormInvite, buildVoucherInvite, buildHoldingAck,
-  buildServiceProveFirst, buildSupplierAck, buildAccessDecline, buildSignupInvite, buildOperationsDecline, buildKeepToEmail, buildSecondTouch, buildPointerBack,
+  buildServiceProveFirst, buildSupplierAck, buildAccessDecline, buildSignupInvite, buildOperationsDecline, buildKeepToEmail, buildSecondTouch,
   buildCollaborationDecline, detectAlternativeCollaboration, detectAccessRequest, countProgrammeIntroductions,
   TOUCH_TEMPLATES, QUALIFYING_MARKER, AFFILIATE_APPLY_URL, PARTNERSHIP_STANCE, STANDARD_COMMISSION_PCT, TIER_REVIEW_ORDERS, TIER_MAX_PCT
 } from '../src/inbox/partnership';
@@ -177,8 +177,8 @@ describe('an affiliate mention always carries the apply link', () => {
 
 // Owner rule 2026-09-04: a thread never gets the same message twice; when a
 // point has to be made again it is made SHORTER. Every deterministic body has a
-// concise second touch and a one-line pointer back to the earlier reply.
-describe('second-touch and pointer variants', () => {
+// concise second touch (design 2026-11-19 retired the one-line pointer).
+describe('second-touch variants', () => {
   const firstOf: Record<string, string> = {
     signup_invite: buildSignupInvite('Jo'), qualifying: buildQualifyingEmail('Jo', 'voucher'),
     voucher_invite: buildVoucherInvite('Jo'), form_invite: buildFormInvite('Jo'),
@@ -186,29 +186,22 @@ describe('second-touch and pointer variants', () => {
     operations_decline: buildOperationsDecline('Jo'), keep_to_email: buildKeepToEmail('Jo'), holding_ack: buildHoldingAck('Jo'),
     collaboration_decline: buildCollaborationDecline('Jo'), supplier_ack: buildSupplierAck('Jo'), access_decline: buildAccessDecline('Jo'),
   };
-  it('every template has a second touch shorter than the first, and a pointer shorter still', () => {
+  it('every template has a second touch shorter than the first', () => {
     expect(TOUCH_TEMPLATES.length).toBe(Object.keys(firstOf).length);
     for (const key of TOUCH_TEMPLATES) {
       const first = firstOf[key];
       const second = buildSecondTouch(key, 'Jo');
-      const pointer = buildPointerBack(key, 'Jo');
       expect(first, key).toBeTruthy();
       expect(second.startsWith('Hi Jo,'), key).toBe(true);
-      expect(pointer.startsWith('Hi Jo,'), key).toBe(true);
       expect(countWords(second), key).toBeLessThan(countWords(first));
-      expect(countWords(pointer), key).toBeLessThan(countWords(second));
-      expect(pointer, key).toMatch(/earlier/i);
       expect(second, key).toMatch(/\nActive Paw/); // signed
     }
     expect(buildSecondTouch('supplier_ack', 'Jo')).toContain('Active Paw Sourcing Team');
-    expect(buildPointerBack('supplier_ack', 'Jo')).toContain('Active Paw Sourcing Team');
     expect(buildSecondTouch('supplier_ack', 'Jo')).not.toMatch(/nothing you need to do/i);
-    expect(buildPointerBack('supplier_ack', 'Jo')).not.toMatch(/nothing more is needed/i);
   });
-  it('link-bearing templates keep the apply link in both shorter forms', () => {
+  it('link-bearing templates keep the apply link in their shorter form', () => {
     for (const key of ['signup_invite', 'service_prove_first', 'form_invite', 'collaboration_decline', 'access_decline'] as const) {
       expect(buildSecondTouch(key, 'Jo'), key).toContain(AFFILIATE_APPLY_URL);
-      expect(buildPointerBack(key, 'Jo'), key).toContain(AFFILIATE_APPLY_URL);
     }
   });
   // 2026-09-17: the shorter prove-first touch tells the same filter story.
@@ -237,14 +230,15 @@ describe('second-touch and pointer variants', () => {
 // 2026-09-17: it is final on SKIPPING THE TRIAL, in the prove-first framing:
 // delivered results through a tracked code are the only basis we decide on.
 describe('friendly collaboration decline (programme introduced twice, they insist on another arrangement)', () => {
-  it('declines skipping the trial plainly, keeps the code trial open with the link, needs no reply', () => {
+  // Owner 2026-11-19: "not this time, we might consider it in the future";
+  // a straight no "sounds not friendly at all". Design 2026-11-19, 2c.
+  it('says not this time in the owner tone, keeps the code trial open with the link, needs no reply', () => {
     const body = buildCollaborationDecline('Paul');
     expect(body.startsWith('Hi Paul,')).toBe(true);
-    expect(body).toMatch(/appreciate/i);
-    expect(body).toMatch(/do not skip the trial for anyone/i);
-    expect(body).toMatch(/tracked code/i);
-    expect(body).toMatch(/hands-on, consulting or results-based/i);
-    expect(body).toMatch(/settled position/i);
+    expect(body).toMatch(/thank you for your messages/i);
+    expect(body).toMatch(/We have read your messages\./);
+    expect(body).toContain('It is not something we will take forward this time, but we may consider it in the future.');
+    expect(body).not.toMatch(/our answer is no|do not skip the trial|everything you sent/i);
     expect(body).toContain(AFFILIATE_APPLY_URL);
     expect(body).toMatch(/stays open to you/i);
     expect(body).toMatch(/no reply is needed/i);
@@ -264,7 +258,10 @@ describe('friendly collaboration decline (programme introduced twice, they insis
     expect(detectAlternativeCollaboration('Rather than a referral arrangement, I would propose a monthly consulting retainer.')).toBe(true);
     expect(detectAlternativeCollaboration('I would prefer a different kind of partnership where I manage your ads for a share of the profit.')).toBe(true);
     expect(detectAlternativeCollaboration('Instead of the affiliate route, could we look at a performance-based partnership?')).toBe(true);
+    // Design 2026-11-19 (the De Zimar audit): "not looking FOR affiliate" was missed.
+    expect(detectAlternativeCollaboration('Hello, as I said before, I am not looking for affiliate opportunities.')).toBe(true);
     for (const plain of [
+      'Thanks, I filled in the form today.',
       'Thanks, I have submitted the application form.',
       'What commission do you offer?',
       'I understand, thanks for the reply.',

@@ -2,7 +2,7 @@ import type { AffiliateMode, ScreenFacts, ScreenVerdict, ThreadRow, MessageRow }
 import { applySalutation, renderReplyHtml, applyFooter, draftReply, buildDraftTranscript, openInboundTexts, greetingName } from './draft';
 import { threadFilesFor } from './attachments';
 import { stripQuotedReply } from './quote';
-import { chooseTouch, outboundBodies, repeatsPriorOutbound, type TouchKind } from './repeat';
+import { outboundBodies, repeatsPriorOutbound } from './repeat';
 import type { CategoryAgent, Grounding } from './agents/types';
 import type { TenantStore } from '../tenant-store';
 import { COMMISSION_CLEARANCE_DAYS, type Env, type TenantConfig } from '../types';
@@ -253,7 +253,8 @@ export function detectServicePitch(text: string): boolean {
 export function detectAlternativeCollaboration(text: string): boolean {
   const t = text.toLowerCase();
   const refusesProgramme =
-    /\bnot\s+(?:looking|interested|keen|wanting|willing|able)\s+(?:to|in)\s+(?:\w+\s+){0,4}?(?:referral|affiliate)/.test(t)
+    // "for" (design 2026-11-19): "not looking for affiliate opportunities".
+    /\bnot\s+(?:looking|interested|keen|wanting|willing|able)\s+(?:to|in|for)\s+(?:\w+\s+){0,4}?(?:referral|affiliate)/.test(t)
     || /\b(?:rather than|instead of|beyond|more than)\s+(?:\w+\s+){0,3}?(?:referral|affiliate)/.test(t)
     || /\b(?:different|another|alternative|other)\s+(?:kind|type|form|sort)\s+of\s+(?:partnership|collaboration|arrangement|deal)\b/.test(t);
   const otherArrangement =
@@ -667,14 +668,16 @@ Active Paw`;
 // reason is no longer "strategy stays in-house" but the filter itself: with
 // the number of offers we receive, delivered results through a tracked code
 // are the only basis we decide on, so no arrangement is agreed ahead of that.
+// 2026-11-19 (owner, after the De Zimar audit): this is the ONE final answer a
+// seller gets, then quiet. The owner's tone: "something like not this time, we
+// might consider it in the future ... saying straight no, sounds not friendly
+// at all." It says "We have read your messages", never "everything you sent":
+// links and attachments a seller points at are not opened. The code trial
+// keeps its link (prove-first). Approved wording, design 2026-11-19, 2c.
 const COLLABORATION_DECLINE_BODY =
-`Thank you for coming back to us, and for being so clear about the kind of partnership you have in mind. We appreciate the thought you have put into it.
+`Thank you for your messages, and for the time you have put into your proposal. We have read your messages. It is not something we will take forward this time, but we may consider it in the future. In the meantime, the code trial stays open to you whenever you would like to try it: ${AFFILIATE_APPLY_URL}
 
-We have to be straight with you, so we do not keep you waiting: we do not skip the trial for anyone. With the number of offers we receive, delivered results through a tracked code are the only basis we use to decide who we work with, so we do not take on hands-on, consulting or results-based arrangements ahead of that. That is a settled position rather than a reflection on your proposal.
-
-The code trial stays open to you at any time: ${AFFILIATE_APPLY_URL}
-
-Thank you again for your interest in Active Paw. No reply is needed, and we wish you every success with your work.
+No reply is needed, and we wish you every success.
 
 Best Regards,
 Active Paw Partnerships`;
@@ -755,6 +758,18 @@ export function buildCollaborationDecline(name: string | null): string { return 
  * screening questions (QUALIFYING_MARKER) or the apply link. Inbound echoes of
  * the link never count. Drives the "introduced a couple of times" half of the
  * owner's 2026-09-04 rule. */
+/** The templates whose SENT draft is a final answer on the thread (design
+ * 2026-11-19, 2d): the seller final answer, and the programme decline
+ * (decline_all and screen-score declines). */
+export const FINAL_TEMPLATES = ['collaboration_decline', 'partnership_decline'] as const;
+
+/** A seller thread (design 2026-11-19, 2b): the thread reader says marketer,
+ * or the latest words insist on another arrangement or ask for store access.
+ * A bump alone never makes a thread a seller thread. */
+export function isSellerThread(reading: ThreadReading | null | undefined, latestNewText: string): boolean {
+  return reading?.senderRole === 'marketer' || detectAlternativeCollaboration(latestNewText) || detectAccessRequest(latestNewText);
+}
+
 export function countProgrammeIntroductions(
   messages: ReadonlyArray<{ direction: string; body_text: string | null }>
 ): number {
@@ -765,12 +780,13 @@ export function countProgrammeIntroductions(
   }).length;
 }
 
-// --- Second touch and pointer (owner rule 2026-09-04) -----------------------
+// --- Second touch (owner rule 2026-09-04) ----------------------------------
 // "We never send the same message multiple times. If you need to send the same
 // message at least make it shorter and more concise the second time." Every
-// deterministic body above has a concise second touch and a one-line pointer
-// back to the earlier reply. chooseTouch (repeat.ts) picks between them from the
-// thread's outbound history; the guard runs in the funnel and the template route.
+// deterministic body above has a concise second touch; the funnel (insertTouched)
+// and the template route pick from the thread's outbound history. Design
+// 2026-11-19 (decision A): there is no third touch. The one-line pointer that
+// followed it repeated forever and is retired.
 export const TOUCH_TEMPLATES = [
   'signup_invite', 'qualifying', 'voucher_invite', 'form_invite', 'partnership_decline',
   'service_prove_first', 'operations_decline', 'keep_to_email', 'holding_ack', 'collaboration_decline',
@@ -846,31 +862,8 @@ No reply is needed.
 ${SIGNOFF_PARTNERSHIPS}`,
 };
 
-// One sentence each, pointing back to the earlier reply (the owner's choice for a
-// third touch: a pointer rather than silence, still pending their approval).
-const POINTER_BACK: Record<TouchTemplate, string> = {
-  signup_invite: `Our earlier reply on this thread still stands, and the application form there remains the next step: ${AFFILIATE_APPLY_URL}`,
-  qualifying: `Our earlier email with the screening questions still stands; reply with your answers whenever you are ready.`,
-  voucher_invite: `Our earlier reply still stands: your trial code will come to you here, with its terms, as soon as it is ready.`,
-  form_invite: `Our earlier reply still stands, and the partner application there remains the next step: ${AFFILIATE_APPLY_URL}`,
-  partnership_decline: `Our earlier reply on this thread still stands, and there is nothing we can add to it.`,
-  service_prove_first: `Our earlier reply on this thread still stands: every partnership starts with a tracked discount code, and the partner page there is the way in: ${AFFILIATE_APPLY_URL}`,
-  operations_decline: `Our earlier reply on this thread still stands, and there is nothing we are able to add to it.`,
-  keep_to_email: `As in our earlier reply, we keep our conversations on email, so please carry on here whenever you are ready.`,
-  holding_ack: `Our earlier note still stands: your application is in review, and we will write as soon as it is decided.`,
-  collaboration_decline: `Our earlier reply on this thread still stands: we do not skip the trial for anyone, and the code trial stays open to you: ${AFFILIATE_APPLY_URL}`,
-  supplier_ack: `As in our earlier reply, your details are on file for reference, and your website link and whether you offer dropshipping are welcome whenever convenient.`,
-  access_decline: `Our earlier reply on this thread still stands: no store access of any kind, and the code trial stays open to you: ${AFFILIATE_APPLY_URL}`,
-};
-
 export function buildSecondTouch(key: TouchTemplate, name: string | null): string {
   return applySalutation(SECOND_TOUCH[key], name);
-}
-export function buildPointerBack(key: TouchTemplate, name: string | null): string {
-  const signoff = key === 'supplier_ack' ? SIGNOFF_SOURCING : key === 'keep_to_email' ? SIGNOFF_STORE : SIGNOFF_PARTNERSHIPS;
-  return applySalutation(`${POINTER_BACK[key]}
-
-${signoff}`, name);
 }
 
 // --- Accepted-partner support reply (2026-07-14) ----------------------------
@@ -1027,13 +1020,20 @@ export async function extractScreenFacts(
 /** Partnership-funnel intercept. Returns a draft result when it handles the thread,
  * or null when the thread is NOT a partnership lane (caller runs the generic drafter).
  * Mode comes from cfg.inbox.affiliateMode; the param is a test override only. */
+/** What the funnel decided: a draft, deliberately no reply (design
+ * 2026-11-19, quiet), or null to hand the thread to the generic drafter. */
+export type PartnershipResult = { draftId: string; send: boolean } | { noReply: true } | null;
+
 export async function maybePartnershipDraft(
   env: Env, store: TenantStore, cfg: TenantConfig, thread: ThreadRow,
   got: { thread: ThreadRow; messages: MessageRow[]; labels: string[] },
   _fetchImpl: typeof fetch,
   modeOverride?: AffiliateMode,
-  reading?: ThreadReading | null
-): Promise<{ draftId: string; send: boolean } | null> {
+  reading?: ThreadReading | null,
+  // force: the owner asked for a draft (Regenerate, Draft anyway).
+  // contentless: the open messages add no new words (src/inbox/contentless.ts).
+  opts: { force?: boolean; contentless?: boolean } = {}
+): Promise<PartnershipResult> {
   const mode: AffiliateMode = modeOverride ?? cfg.inbox.affiliateMode ?? 'funnel_voucher';
   const variant: FunnelVariant = mode === 'funnel_link' ? 'link' : 'voucher';
   const inboundToAddrs = got.messages.filter((m) => m.direction === 'inbound').map((m) => m.to_addr ?? '');
@@ -1077,6 +1077,9 @@ export async function maybePartnershipDraft(
   // message wherever it lands (a customer never asks for collaborator or
   // staff access), so it opens the lane like a pitch does.
   const accessRequestNow = detectAccessRequest(latestNewText);
+  // A bump never earns a fresh introduction (design 2026-11-19, 1d): with no
+  // applicant, composeDraftForThread's contentless gate decides.
+  if (!applicant && opts.contentless) return null;
   if (!applicant && !servicePitch && !volumePitchNow && !accessRequestNow
       && !isPartnershipLane({ inboundToAddrs, declaredIntent, primaryCategory: thread.primary_category, inboundTexts: openInboundTexts(got.messages) })) return null;
 
@@ -1091,38 +1094,129 @@ export async function maybePartnershipDraft(
 
   // Owner rule 2026-09-04: never the same message twice on a thread. Every
   // deterministic funnel body goes through here: a repeat becomes the shorter
-  // second touch (then the one-line pointer), is flagged 'repeat_touch', and is
-  // always HITL, because a conversation that has looped deserves a human look.
+  // second touch, is flagged 'repeat_touch', and is always HITL, because a
+  // conversation that has looped deserves a human look. Design 2026-11-19
+  // (decision A): the ladder ends there. Once both touches have gone out the
+  // result is `exhausted` and the caller hands it to onExhausted (the seller
+  // final answer, or quiet with one "reply by hand" alert); the one-line
+  // pointer that used to repeat forever is gone.
   const prior = outboundBodies(got.messages);
   async function insertTouched(
-    key: TouchTemplate, first: string, opts: { holdReasons?: string[]; model?: string; startAtSecond?: boolean } = {}
-  ): Promise<{ draftId: string; touch: TouchKind }> {
-    const second = buildSecondTouch(key, name);
-    const pointer = buildPointerBack(key, name);
+    key: TouchTemplate, first: string, touchOpts: { holdReasons?: string[]; model?: string; startAtSecond?: boolean } = {}
+  ): Promise<{ draftId: string; touch: 'first' | 'second' } | { exhausted: true }> {
+    const second = { body: buildSecondTouch(key, name), touch: 'second' as const };
     // startAtSecond: the point was made already by construction (the sender is
     // answering it), so the ladder starts at the shorter touch. Similarity alone
     // cannot be trusted here: a first body with an extra paragraph appended
     // scores under the repeat threshold and would go out in full again.
-    const chosen = opts.startAtSecond
-      ? chooseTouch(prior, { first: second, second: pointer, pointer })
-      : chooseTouch(prior, { first, second, pointer });
-    const t: { body: string; touch: TouchKind } = opts.startAtSecond
-      ? { body: chosen.body, touch: chosen.body === pointer ? 'pointer' : 'second' }
-      : chosen;
-    const holdReasons = [...(opts.holdReasons ?? []), ...(t.touch === 'first' ? [] : ['repeat_touch'])];
+    const ladder = touchOpts.startAtSecond ? [second] : [{ body: first, touch: 'first' as const }, second];
+    const t = ladder.find((c) => !repeatsPriorOutbound(c.body, prior));
+    if (!t) return { exhausted: true };
+    const holdReasons = [...(touchOpts.holdReasons ?? []), ...(t.touch === 'first' ? [] : ['repeat_touch'])];
     const draftId = await store.insertDraft({
       threadId: thread.id, bodyText: t.body, bodyHtml: renderReplyHtml(t.body),
-      confidence: null, quotesPriceOrder: false, holdReasons, model: opts.model ?? 'partnership-screen', status: 'pending',
+      confidence: null, quotesPriceOrder: false, holdReasons, model: touchOpts.model ?? 'partnership-screen', status: 'pending',
+      meta: { template: key },
     });
     return { draftId, touch: t.touch };
   }
 
+  // Quiet (design 2026-11-19): no draft, and the thread waits on them.
+  // awaiting_customer, never closed: ingest reopens only awaiting_customer and
+  // needs_reply threads, so their next real message is still seen.
+  async function quiet(): Promise<{ noReply: true }> {
+    await store.setThreadStatus(thread.id, 'awaiting_customer');
+    return { noReply: true };
+  }
+
+  // The ONE friendly final answer to a seller (design 2026-11-19, 2b/2c): only
+  // ever in full, never as a shorter touch, and never once its text has gone
+  // out on the thread (then quiet). HITL with an owner alert; the applicant is
+  // declined, which hands every later message to the declined branch.
+  async function draftFinalAnswer(alert: string): Promise<PartnershipResult> {
+    const body = buildCollaborationDecline(name);
+    if (repeatsPriorOutbound(body, prior)) return quiet();
+    const draftId = await store.insertDraft({
+      threadId: thread.id, bodyText: body, bodyHtml: renderReplyHtml(body),
+      confidence: null, quotesPriceOrder: false, holdReasons: [], model: 'partnership-screen', status: 'pending',
+      meta: { template: 'collaboration_decline' },
+    });
+    await store.setApplicantStage(thread.id, 'declined', null);
+    await maybeAlertOwner(env, cfg, thread.shop, thread, alert, 'affiliate', _fetchImpl);
+    return { draftId, send: false };
+  }
+  const SELLER_FINAL_ALERT = 'A seller kept writing after two introductions - the friendly final answer is ready for your review.';
+
+  // Design 2026-11-19, 2a/2d: has the final answer (the seller final answer or
+  // the programme decline) gone out on this thread? A SENT draft keyed as one
+  // is edit-proof. The second half is for declines sent before this build,
+  // which carry no template key: any reply of ours after the applicant was
+  // declined counts (the stage is stamped when the decline is DRAFTED, so the
+  // sent decline is later than updated_at).
+  async function finalAnswerGiven(): Promise<boolean> {
+    if (!applicant) return false;
+    if (await store.hasSentTemplateDraft(thread.id, FINAL_TEMPLATES)) return true;
+    return got.messages.some((m) => m.direction === 'outbound' && m.received_at >= applicant.updated_at);
+  }
+
+  // Quiet, with one "reply by hand" owner alert per thread (migration 0049):
+  // a person may still want to say something, but the funnel has nothing left
+  // to say that it has not said.
+  async function handReplyOnce(summary: string): Promise<{ noReply: true }> {
+    if (await store.claimHandReplyAlert(thread.id)) await maybeAlertOwner(env, cfg, thread.shop, thread, summary, 'affiliate', _fetchImpl);
+    return quiet();
+  }
+
+  // Both touches of a template have gone out (design 2026-11-19, 2e). The
+  // owner's Regenerate and a customer question (spec anti-goal 1: never
+  // silenced by a funnel rule; the affiliate agent answers what was asked
+  // first) go to the generic drafter; a seller gets the one final answer;
+  // anyone else gets no third touch, and the owner is told once.
+  async function onExhausted(): Promise<PartnershipResult> {
+    if (opts.force || reading?.senderRole === 'customer') return null;
+    if (isSellerThread(reading, latestNewText)) return draftFinalAnswer(SELLER_FINAL_ALERT);
+    return handReplyOnce('Both replies on this point have gone out; reply by hand if anything is needed.');
+  }
+
+  // A declined applicant (design 2026-11-19, 2a). This used to fall through to
+  // the generic drafter, which answered a seller's every bump. A customer
+  // question (the reader says customer) and the owner's Regenerate still go
+  // there. Once the final answer has gone out: a seller gets nothing, anyone
+  // else gets nothing and one "reply by hand" alert. While it has not (the
+  // decline draft was discarded or superseded unsent), it is drafted again.
+  if (applicant?.stage === 'declined') {
+    if (opts.force || reading?.senderRole === 'customer') return null;
+    const seller = isSellerThread(reading, latestNewText);
+    if (await finalAnswerGiven()) {
+      return seller ? quiet() : handReplyOnce('A declined applicant wrote again; reply by hand if anything is needed.');
+    }
+    if (seller) return draftFinalAnswer(SELLER_FINAL_ALERT);
+    const body = buildPartnershipDecline(name);
+    if (repeatsPriorOutbound(body, prior)) return handReplyOnce('A declined applicant wrote again; reply by hand if anything is needed.');
+    const draftId = await store.insertDraft({
+      threadId: thread.id, bodyText: body, bodyHtml: renderReplyHtml(body),
+      confidence: null, quotesPriceOrder: false, holdReasons: [], model: 'partnership-screen', status: 'pending',
+      meta: { template: 'partnership_decline' },
+    });
+    return { draftId, send: false };
+  }
+
+  // Computed once: the in-flight block below reads it too.
+  const pool = applicant && (applicant.stage === 'passed_to_form' || applicant.stage === 'escalated')
+    ? await store.partnerPoolState(thread.contact_email)
+    : null;
+  // An in-flight applicant's bump (design 2026-11-19, 1d): no draft and the
+  // thread waits, unless it is the moment for the seller final answer. Placed
+  // before decline_all so a bump never drafts there either.
+  const sellerFinalDue = pool !== null && pool !== 'live'
+    && countProgrammeIntroductions(got.messages) >= 2 && isSellerThread(reading, latestNewText);
+  if (applicant && opts.contentless && !sellerFinalDue) return quiet();
+
   // decline_all (2026-07-03 policy, now a Settings toggle): decline ALL partnership
   // approaches politely. Applies at every stage (first touch AND in-flight
   // applicants) so no path can still qualify or invite. The applicant record is
-  // marked declined. A reply that arrives AFTER we declined falls through to the
-  // generic drafter, whose affiliate agent also declines but responds to what they
-  // actually said (no template ping-pong).
+  // marked declined; a reply that arrives AFTER we declined is the declined
+  // branch's (above), so the decline is never sent twice.
   //
   // Auto-send (owner validated the template in HITL, 2026-07-03): the decline is a
   // fixed owner-authored template - no LLM body, no prices, no grounding - so the
@@ -1130,12 +1224,13 @@ export async function maybePartnershipDraft(
   // switch AND the affiliate agent's own toggle are both on, capped by the same
   // per-sender daily rate limit as LLM drafts (bounds auto-responder ping-pong).
   if (mode === 'decline_all') {
-    if (applicant?.stage === 'declined') return null;
     const holdReasons: string[] = [];
     if (!(cfg.inbox.autosend && resolveAgents(cfg.inbox).affiliate.autosend)) holdReasons.push('autosend_off');
     const sinceIso = new Date(Date.now() - 86400_000).toISOString();
     if ((await store.recentAutoSendCount(thread.contact_email, sinceIso)) >= AUTO_RATELIMIT_PER_SENDER_DAY) holdReasons.push('rate_limited');
-    const { draftId, touch } = await insertTouched('partnership_decline', buildPartnershipDecline(name), { holdReasons });
+    const r = await insertTouched('partnership_decline', buildPartnershipDecline(name), { holdReasons });
+    if ('exhausted' in r) return onExhausted();
+    const { draftId, touch } = r;
     if (!applicant) await store.upsertApplicant({ threadId: thread.id, contactEmail: thread.contact_email, stage: 'declined' });
     else await store.setApplicantStage(thread.id, 'declined', null);
     return { draftId, send: holdReasons.length === 0 && touch === 'first' };
@@ -1146,12 +1241,16 @@ export async function maybePartnershipDraft(
   // call gets a neutral keep-to-email reply, NOT the content-blind holding ack (or,
   // at screen_sent, a channel-switch request mis-fed to the scorer as if it were
   // answers). We keep partnership conversations on email for a clear record. One
-  // check here covers every in-flight stage; a declined applicant falls through to
-  // the generic drafter as before, and a first-touch pitch (no applicant) still
+  // check here covers every in-flight stage; a declined applicant is the
+  // declined branch's (above), and a first-touch pitch (no applicant) still
   // hits the funnel. Detector is switch-REQUEST phrasing only, so a partner who
   // merely lists their WhatsApp alongside real answers is still scored normally.
-  if (applicant && applicant.stage !== 'declined' && offPlatformNow) {
-    const { draftId } = await insertTouched('keep_to_email', buildKeepToEmail(name));
+  if (applicant && offPlatformNow) {
+    const touched = await insertTouched('keep_to_email', buildKeepToEmail(name));
+
+    if ('exhausted' in touched) return onExhausted();
+
+    const { draftId } = touched;
     return { draftId, send: false };
   }
 
@@ -1164,15 +1263,15 @@ export async function maybePartnershipDraft(
   // (prove-first, access decline, still asking) lands on the friendly final
   // decline and the applicant is declined. Stage otherwise unchanged: the
   // trial needs no access and stays open to them. Always HITL.
-  if (applicant && applicant.stage !== 'declined' && accessRequestNow) {
+  if (applicant && accessRequestNow) {
     if (countProgrammeIntroductions(got.messages) >= 2) {
-      const { draftId } = await insertTouched('collaboration_decline', buildCollaborationDecline(name));
-      await store.setApplicantStage(thread.id, 'declined', null);
-      await maybeAlertOwner(env, cfg, thread.shop, thread,
-        'An applicant still asks for store access after two introductions - the friendly final decline is ready for your review.', 'affiliate', _fetchImpl);
-      return { draftId, send: false };
+      return draftFinalAnswer('An applicant still asks for store access after two introductions - the friendly final decline is ready for your review.');
     }
-    const { draftId } = await insertTouched('access_decline', buildAccessDecline(name));
+    const touched = await insertTouched('access_decline', buildAccessDecline(name));
+
+    if ('exhausted' in touched) return onExhausted();
+
+    const { draftId } = touched;
     await maybeAlertOwner(env, cfg, thread.shop, thread,
       'An applicant asked for store access - the access decline is ready for your review. Never approve the request in Shopify.', 'affiliate', _fetchImpl);
     return { draftId, send: false };
@@ -1190,7 +1289,11 @@ export async function maybePartnershipDraft(
   // on any creator signal - when in doubt, the funnel. First touch only.
   // Always HITL: the owner validates this template on live traffic first.
   if (!applicant && (servicePitch || readerMarketer)) {
-    const { draftId } = await insertTouched('service_prove_first', buildServiceProveFirst(name));
+    const touched = await insertTouched('service_prove_first', buildServiceProveFirst(name));
+
+    if ('exhausted' in touched) return onExhausted();
+
+    const { draftId } = touched;
     await store.upsertApplicant({ threadId: thread.id, contactEmail: thread.contact_email, stage: 'passed_to_form' });
     return { draftId, send: false };
   }
@@ -1200,7 +1303,11 @@ export async function maybePartnershipDraft(
   // carries the access boundary): the access decline, staged like an invited
   // applicant because it points them at the trial. HITL.
   if (!applicant && accessRequestNow) {
-    const { draftId } = await insertTouched('access_decline', buildAccessDecline(name));
+    const touched = await insertTouched('access_decline', buildAccessDecline(name));
+
+    if ('exhausted' in touched) return onExhausted();
+
+    const { draftId } = touched;
     await store.upsertApplicant({ threadId: thread.id, contactEmail: thread.contact_email, stage: 'passed_to_form' });
     await maybeAlertOwner(env, cfg, thread.shop, thread,
       'A sender asked for store access - the access decline is ready for your review. Never approve the request in Shopify.', 'affiliate', _fetchImpl);
@@ -1222,9 +1329,11 @@ export async function maybePartnershipDraft(
   // screening); funnel modes send the email screening questions as before.
   if (!applicant) {
     const signup = mode === 'signup_page';
-    const { draftId } = signup
+    const touched = signup
       ? await insertTouched('signup_invite', buildSignupInvite(name, { rateAbove, offPlatform: offPlatformNow }))
       : await insertTouched('qualifying', buildQualifyingEmail(name, variant, { volumePitch }));
+    if ('exhausted' in touched) return onExhausted();
+    const { draftId } = touched;
     await store.upsertApplicant({ threadId: thread.id, contactEmail: thread.contact_email, stage: signup ? 'passed_to_form' : 'screen_sent' });
     return { draftId, send: false };
   }
@@ -1249,11 +1358,19 @@ export async function maybePartnershipDraft(
       // invite instead and move the stage, or the next reply would land back
       // here and re-send it forever (no QUALIFYING_MARKER ever appears).
       if (mode === 'signup_page') {
-        const { draftId } = await insertTouched('signup_invite', buildSignupInvite(name, { rateAbove, offPlatform: offPlatformNow }));
+        const touched = await insertTouched('signup_invite', buildSignupInvite(name, { rateAbove, offPlatform: offPlatformNow }));
+
+        if ('exhausted' in touched) return onExhausted();
+
+        const { draftId } = touched;
         await store.setApplicantStage(thread.id, 'passed_to_form', null);
         return { draftId, send: false };
       }
-      const { draftId } = await insertTouched('qualifying', buildQualifyingEmail(name, variant, { volumePitch }));
+      const touched = await insertTouched('qualifying', buildQualifyingEmail(name, variant, { volumePitch }));
+
+      if ('exhausted' in touched) return onExhausted();
+
+      const { draftId } = touched;
       return { draftId, send: false };
     }
     const conversation = got.messages.filter((m) => m.direction === 'inbound').map((m) => m.body_text ?? '').join('\n\n---\n\n');
@@ -1333,24 +1450,24 @@ export async function maybePartnershipDraft(
         await maybeAlertOwner(env, cfg, thread.shop, thread, `Partnership applicant needs your review (score ${verdict.score}/12).`, 'affiliate', _fetchImpl);
       }
     }
-    const { draftId, touch } = await insertTouched(key, body);
+    const touched = await insertTouched(key, body);
+    if ('exhausted' in touched) return onExhausted();
+    const { draftId, touch } = touched;
     return { draftId, send: send && touch === 'first' };
   }
 
-  // Later stages: 'declined' falls through to the generic drafter (the affiliate
-  // agent's warm decline matches that state, and it answers what they actually
-  // said). But an applicant we PASSED or ESCALATED must never fall through - in
-  // funnel mode the generic affiliate agent would decline someone we just
-  // accepted. Two sub-cases, distinguished by whether we have GENUINELY accepted
-  // them (a live voucher exists), NOT by the stage:
+  // Later stages ('declined' is handled by the declined branch above). An
+  // applicant we PASSED or ESCALATED must never fall through - in funnel mode
+  // the generic affiliate agent would decline someone we just accepted. Two
+  // sub-cases, distinguished by whether we have GENUINELY accepted them (a live
+  // voucher exists), NOT by the stage:
   if (applicant.stage === 'passed_to_form' || applicant.stage === 'escalated') {
     // Genuinely accepted + onboarded (partnerPoolState 'live' = a voucher row is
     // status='live' with ends_at in the future; true even for a code deferred
     // behind a promo). Their "thank you for the great news!" deserves a
     // context-aware acknowledgement, not the stale "still reviewing the fit"
     // holding ack. draftAcceptedPartnerReply grounds on the real thread + their
-    // own code and never declines. HITL.
-    const pool = await store.partnerPoolState(thread.contact_email);
+    // own code and never declines. HITL. (`pool` is computed once, above.)
     if (pool === 'live') {
       const body = await draftAcceptedPartnerReply(env, store, cfg, thread, got, name, latestNewText, _fetchImpl);
       // LLM body: no template variant to fall back to, so a repeat of an earlier
@@ -1364,24 +1481,25 @@ export async function maybePartnershipDraft(
         'An approved partner replied - a context-aware draft is ready for your review.', 'affiliate', _fetchImpl);
       return { draftId, send: false };
     }
+    // Design 2026-11-19, 2b (the De Zimar audit): a SELLER who keeps writing
+    // after two introductions gets the one friendly final answer. A seller is
+    // what the thread reader says (marketer) or what the detectors find in
+    // their latest words, so a scripted vendor whose phrasing the regexes miss
+    // ("not looking for affiliate") is still answered once and then left.
+    if (countProgrammeIntroductions(got.messages) >= 2 && isSellerThread(reading, latestNewText)) {
+      return draftFinalAnswer(SELLER_FINAL_ALERT);
+    }
     // Owner rule 2026-09-04 (Paul's thread): an applicant who answers the
-    // programme by INSISTING on a different arrangement is not a screened
-    // applicant checking in, so the holding ack ("reviewing the fit") would tell
-    // them nobody read their reply. Introduced twice and still insisting: the
-    // friendly decline, final on the other arrangement, applicant declined
-    // (later replies fall through to the generic drafter like every declined
-    // thread). Introduced once: the shorter programme reminder, i.e. the
-    // earlier "tell them about the only programme" rule, stage unchanged.
-    // Both HITL.
+    // programme by INSISTING on a different arrangement, introduced once: the
+    // shorter programme reminder, i.e. the earlier "tell them about the only
+    // programme" rule, stage unchanged. HITL. (Introduced twice is the seller
+    // final answer above.)
     if (detectAlternativeCollaboration(latestNewText)) {
-      if (countProgrammeIntroductions(got.messages) >= 2) {
-        const { draftId } = await insertTouched('collaboration_decline', buildCollaborationDecline(name));
-        await store.setApplicantStage(thread.id, 'declined', null);
-        await maybeAlertOwner(env, cfg, thread.shop, thread,
-          'An invited applicant still wants a different arrangement after two introductions - a friendly decline is ready for your review.', 'affiliate', _fetchImpl);
-        return { draftId, send: false };
-      }
-      const { draftId } = await insertTouched('signup_invite', buildSignupInvite(name, { rateAbove, offPlatform: offPlatformNow }), { startAtSecond: true });
+      const touched = await insertTouched('signup_invite', buildSignupInvite(name, { rateAbove, offPlatform: offPlatformNow }), { startAtSecond: true });
+
+      if ('exhausted' in touched) return onExhausted();
+
+      const { draftId } = touched;
       await maybeAlertOwner(env, cfg, thread.shop, thread,
         'An invited applicant wants a different arrangement - the shorter programme reminder is ready for your review.', 'affiliate', _fetchImpl);
       return { draftId, send: false };
@@ -1402,7 +1520,11 @@ export async function maybePartnershipDraft(
     const pointedAtForm = got.messages.some((m) => m.direction === 'outbound' && (m.body_text ?? '').includes(AFFILIATE_APPLY_URL));
     const askedByEmail = got.messages.some((m) => m.direction === 'outbound' && (m.body_text ?? '').includes(QUALIFYING_MARKER));
     if (applicant.stage === 'passed_to_form' && pool === 'none' && pointedAtForm && !askedByEmail) {
-      const { draftId } = await insertTouched('signup_invite', buildSignupInvite(name, { rateAbove, offPlatform: offPlatformNow }), { startAtSecond: true });
+      const touched = await insertTouched('signup_invite', buildSignupInvite(name, { rateAbove, offPlatform: offPlatformNow }), { startAtSecond: true });
+
+      if ('exhausted' in touched) return onExhausted();
+
+      const { draftId } = touched;
       await maybeAlertOwner(env, cfg, thread.shop, thread,
         'An invited applicant replied before using the application form - the shorter form reminder is ready for your review.', 'affiliate', _fetchImpl);
       return { draftId, send: false };
@@ -1411,7 +1533,11 @@ export async function maybePartnershipDraft(
     // with the form submitted (queued) or screened by email, awaiting the owner
     // to issue the code in Partners. For them the holding ack IS accurate, so it
     // is unchanged. Deterministic + owner alert.
-    const { draftId } = await insertTouched('holding_ack', buildHoldingAck(name));
+    const touched = await insertTouched('holding_ack', buildHoldingAck(name));
+
+    if ('exhausted' in touched) return onExhausted();
+
+    const { draftId } = touched;
     await maybeAlertOwner(env, cfg, thread.shop, thread,
       variant === 'voucher'
         ? 'A screened partnership applicant replied - review the thread and issue their code in the Partners view if you have not yet.'

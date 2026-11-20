@@ -141,8 +141,11 @@ export function greetingName(
   const lower = fromPick.toLowerCase();
   const domainLabel = (email ?? '').split('@')[1]?.split('.')[0]?.toLowerCase() ?? '';
   const company = (opts.company ?? '').trim().toLowerCase();
+  // A name particle is not a first name (design 2026-11-19: "DE SOUZA" gave
+  // "Hi De"). Only particles: a short first name such as Jo, Ed or Al is real.
   const poor = /[/|@\d]/.test(fromName ?? '') || lower === domainLabel
-    || (!!company && (company === lower || company.split(/\s+/)[0] === lower));
+    || (!!company && (company === lower || company.split(/\s+/)[0] === lower))
+    || /^(?:de|da|di|du|del|della|der|van|von|la|le|dos|das)$/i.test(fromPick);
   return poor ? readerPick : fromPick;
 }
 

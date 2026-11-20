@@ -94,20 +94,10 @@ export function repeatsPriorOutbound(candidate: string | null | undefined, prior
   return prior.some((p) => isRepeatOf(candidate, p));
 }
 
-export type TouchKind = 'first' | 'second' | 'pointer';
-
-/** Picks the full body while it is new to the thread, the concise second touch
- * once the full body has gone out, and the one-line pointer back to the earlier
- * reply once both have. The pointer is the terminal touch (owner's choice): it is
- * drafted again rather than leaving the thread without a reply. */
-export function chooseTouch(
-  prior: ReadonlyArray<string | null>,
-  bodies: { first: string; second: string; pointer: string }
-): { body: string; touch: TouchKind } {
-  if (!repeatsPriorOutbound(bodies.first, prior)) return { body: bodies.first, touch: 'first' };
-  if (!repeatsPriorOutbound(bodies.second, prior)) return { body: bodies.second, touch: 'second' };
-  return { body: bodies.pointer, touch: 'pointer' };
-}
+/** Which touch of a template a draft is: the full body, or its concise second
+ * touch. Design 2026-11-19 (decision A): there is no third touch; the one-line
+ * pointer that repeated forever is retired, and chooseTouch went with it. */
+export type TouchKind = 'first' | 'second';
 
 // --- Deterministic customer signal for the block rule (aramid 114e2e7b) ------
 // The sweep's classification may not exist yet when a 3rd copy lands, so the

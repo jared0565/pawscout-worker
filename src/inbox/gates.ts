@@ -1,3 +1,4 @@
+import { isNewsletterShaped } from './html-text';
 import type { ParsedEmail } from './types';
 
 export interface AuthResults {
@@ -26,6 +27,11 @@ export function isAutomated(p: ParsedEmail): boolean {
   if (/\b(bulk|list|junk)\b/i.test(h['precedence'] ?? '')) return true;
   if (h['list-unsubscribe'] || h['list-id']) return true;
   if (/no[-_.]?reply|do[-_.]?not[-_.]?reply|mailer-daemon|postmaster|bounce/i.test(p.from.email)) return true;
+  // A formatted-only platform newsletter carries no list headers (the 19
+  // TikTok Shop mails on the 2026-11-19 export had none). Once its HTML is
+  // read, the classifier could take it for a person, so its shape decides
+  // (design 2026-11-19, 1a). Only formatted-only mail is judged this way.
+  if (p.textFromHtml && p.html && isNewsletterShaped(p.html)) return true;
   return false;
 }
 

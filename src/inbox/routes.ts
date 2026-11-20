@@ -6,12 +6,13 @@ import { sendReply } from './send';
 import { composeDraftForThread } from './sweep';
 import { startSupplierBackfill, readBackfillCursor } from './supplier-backfill';
 import { SUPPLIER_STATUSES, type SupplierStatus } from './supplier-register';
-import { buildServiceProveFirst, buildSupplierAck, buildAccessDecline, buildOperationsDecline, buildCollaborationDecline, buildKeepToEmail, buildSignupInvite, detectRateAboveStandard, detectOffPlatformRequest, buildSecondTouch, buildPointerBack, type TouchTemplate } from './partnership';
-import { chooseTouch, outboundBodies, type TouchKind } from './repeat';
+import { buildServiceProveFirst, buildSupplierAck, buildAccessDecline, buildOperationsDecline, buildCollaborationDecline, buildKeepToEmail, buildSignupInvite, detectRateAboveStandard, detectOffPlatformRequest, buildSecondTouch, type TouchTemplate } from './partnership';
+import { outboundBodies, repeatsPriorOutbound, type TouchKind } from './repeat';
 import { renderReplyHtml, openInboundText, greetingName } from './draft';
 import { validateReading, type ThreadReading } from './thread-read';
 import { fileUrl, contactFilesFor } from './attachments';
 import { stripQuotedReply } from './quote';
+import { htmlToEmailText } from './html-text';
 import { defaultFetch } from '../safe-fetch';
 
 export async function listInboxThreads(db: D1Database, shop: string, status: string | null) {
@@ -56,7 +57,10 @@ export async function getInboxThread(db: D1Database, shop: string, threadId: str
   // Email engagement (2026-07-12): this thread's delivery/open/click events,
   // matched by the send-time thread_id tag - the rail's engagement block.
   const events = await store.listThreadEmailEvents(threadId);
-  return { ok: true as const, thread: got.thread, messages: got.messages, labels: got.labels, draft, invoice, applicant, contact, partnerPool, partnerConsent, events, attachments };
+  // Display only (design 2026-11-19, 1b): a formatted-only message stored
+  // before ingest read HTML shows its text; the stored row is unchanged.
+  const messages = got.messages.map((m) => (m.body_text ?? '').trim() || !m.body_html ? m : { ...m, body_text: htmlToEmailText(m.body_html) });
+  return { ok: true as const, thread: got.thread, messages, labels: got.labels, draft, invoice, applicant, contact, partnerPool, partnerConsent, events, attachments };
 }
 
 /** Marketing opt-in flipped from the sender's own thread (2026-07-06): the
@@ -307,7 +311,7 @@ export async function applyDraftTemplate(db: D1Database, shop: string, threadId:
   const offPlatform = detectOffPlatformRequest(openInboundText(got.messages));
 
   // The follow-up is the introduction's own shorter second touch promoted to a
-  // picker entry; its next touch is therefore the one-line pointer.
+  // picker entry, so once it has gone out there is no further touch.
   const followup = key === 'signup_followup';
   const touchKey: TouchTemplate = followup ? 'signup_invite' : (key as TouchTemplate);
   let body: string;
@@ -325,13 +329,25 @@ export async function applyDraftTemplate(db: D1Database, shop: string, threadId:
   else body = buildKeepToEmail(name);
 
   // Owner rule 2026-09-04: never the same message twice on a thread. A template
-  // already sent here renders as its shorter second touch, then as the one-line
-  // pointer back to the earlier reply; either is flagged so the owner sees why.
-  const pointer = buildPointerBack(touchKey, name);
-  const touched = chooseTouch(outboundBodies(got.messages), {
-    first: body, second: followup ? pointer : buildSecondTouch(touchKey, name), pointer,
-  });
-  const touch: TouchKind = touched.body === pointer ? 'pointer' : touched.touch;
+  // already sent here renders as its shorter second touch, flagged so the owner
+  // sees why. Design 2026-11-19 (decision A): the ladder ends there, with the
+  // same explicit ladder as the funnel's insertTouched. The final answer is
+  // only ever offered in full, once: after it has gone out (its text, or a sent
+  // draft keyed as it, whatever the owner edited) the picker refuses it.
+  const prior = outboundBodies(got.messages);
+  const isFinal = key === 'collaboration_decline';
+  // The follow-up's body IS the second touch, but the first time the picker
+  // sends it is not a repeat, so it carries no repeat hold (as before).
+  const ladder: Array<{ body: string; touch: TouchKind }> = isFinal || followup ? [{ body, touch: 'first' }]
+    : [{ body, touch: 'first' }, { body: buildSecondTouch(touchKey, name), touch: 'second' }];
+  const finalGone = isFinal && await store.hasSentTemplateDraft(threadId, ['collaboration_decline']);
+  const touched = finalGone ? undefined : ladder.find((c) => !repeatsPriorOutbound(c.body, prior));
+  if (!touched) {
+    return { ok: false as const, error: isFinal
+      ? 'The final answer has already gone out on this thread. Write the next one by hand.'
+      : 'This reply has already gone out twice on this thread. Write the next one by hand.' };
+  }
+  const touch = touched.touch;
 
   // signup_invite stages 'passed_to_form', exactly as the funnel's own
   // signup_page first-touch branch does - the FORM now does the screening. Left
@@ -354,7 +370,7 @@ export async function applyDraftTemplate(db: D1Database, shop: string, threadId:
   await store.insertDraft({
     threadId, bodyText: touched.body, bodyHtml: renderReplyHtml(touched.body),
     confidence: null, quotesPriceOrder: false, holdReasons: touch === 'first' ? [] : ['repeat_touch'], model: 'template', status: 'pending',
-    meta: stageOnSend ? { stageOnSend } : undefined
+    meta: { template: touchKey, ...(stageOnSend ? { stageOnSend } : {}) }
   });
   if (got.thread.status === 'closed') await store.setThreadStatus(threadId, 'needs_reply');
   return { ok: true as const, touch, draft: await store.getPendingDraft(threadId) };

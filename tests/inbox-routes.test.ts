@@ -4,9 +4,10 @@ import { env, applyD1Migrations } from 'cloudflare:test';
 import { SignJWT } from 'jose';
 import { TenantStore } from '../src/tenant-store';
 import { listInboxThreads, getInboxThread, setInboxStatus, setInboxLabels, regenerateDraft, applyDraftTemplate, unblockSender, unblockSenderByEmail, listBlockedSenders, DRAFT_TEMPLATES } from '../src/inbox/routes';
-import { AFFILIATE_APPLY_URL, buildSignupInvite, buildSecondTouch } from '../src/inbox/partnership';
+import { AFFILIATE_APPLY_URL, buildSignupInvite, buildSecondTouch, maybePartnershipDraft, buildCollaborationDecline, buildServiceProveFirst } from '../src/inbox/partnership';
+import type { ThreadReading } from '../src/inbox/thread-read';
 import { countWords } from '../src/inbox/draft-quality';
-import { DEFAULT_INBOX } from '../src/inbox/types';
+import { DEFAULT_INBOX, parseDraftMeta } from '../src/inbox/types';
 import { ACTIVE_PAW_COLLECTION_MAP, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, type Env } from '../src/types';
 import { app } from '../src/index';
 import { sendReply } from '../src/inbox/send';
@@ -111,6 +112,17 @@ describe('inbox routes', () => {
     const r = await getInboxThread(env.DB, SHOP, tid);
     expect(r.ok).toBe(true);
     expect(r.messages![0].body_text).toBe('hello');
+  });
+  // Design 2026-11-19, 1b: 56 stored formatted-only messages showed "(no body)".
+  it('shows the text of a stored formatted-only message without changing the row', async () => {
+    const tid = await seed();
+    const store = new TenantStore(env.DB, SHOP);
+    await store.insertInboundMessageIfNew({ threadId: tid, messageId: '<html-only@x>', inReplyTo: null, references: [], from: 'jane@x.com', to: 'support@activepaw.co.uk', subject: 'Stock', bodyText: '', bodyHtml: '<p>Do you have this in stock?</p>', headersJson: '{}', receivedAt: '2026-06-24T10:00:00Z' });
+    const r = await getInboxThread(env.DB, SHOP, tid);
+    const shown = r.messages!.find((m) => m.message_id === '<html-only@x>');
+    expect(shown?.body_text).toBe('Do you have this in stock?');
+    const stored = (await store.getThreadWithMessages(tid))!.messages.find((m) => m.message_id === '<html-only@x>');
+    expect(stored?.body_text).toBe('');
   });
   // Design 2026-11-14 (inbox attachments), 5.5: the thread view carries its
   // files, with a signed link for the stored ones only.
@@ -327,12 +339,32 @@ describe('applyDraftTemplate', () => {
     expect((r as { touch?: string }).touch).toBe('first');
     const body = (await s.getPendingDraft(tid))!.body_text;
     expect(body.startsWith('Hi Jane,')).toBe(true);
-    expect(body).toMatch(/do not skip the trial for anyone/i);
+    expect(body).toMatch(/not something we will take forward this time, but we may consider it in the future/i);
     expect(body).toContain(AFFILIATE_APPLY_URL);
     expect(body).toMatch(/no reply is needed/i);
     expect(await s.getApplicantByThread(tid)).toBeNull();
     expect((await sendPending(s, tid)).ok).toBe(true);
     expect((await s.getApplicantByThread(tid))?.stage).toBe('declined');
+  });
+
+  // Design 2026-11-19, 2d: a console-sent decline from before the template key
+  // existed still counts as the final answer, through the stage-then-send
+  // order in send.ts (the outbound is never earlier than the stage stamp).
+  it('a console-sent decline without a template key still counts: the seller is quiet after it', async () => {
+    const { s, tid } = await seedWithConfig();
+    expect((await applyDraftTemplate(env.DB, SHOP, tid, 'collaboration_decline')).ok).toBe(true);
+    await env.DB.prepare(`UPDATE inbox_drafts SET meta_json = json_remove(meta_json, '$.template') WHERE shop = ?1 AND thread_id = ?2`).bind(SHOP, tid).run();
+    expect((await sendPending(s, tid)).ok).toBe(true);
+    // History is the OLD wording, so the final answer's repeat guard cannot
+    // match it: only the stage-time fallback can say the decline went out.
+    await env.DB.prepare(`UPDATE inbox_messages SET body_text = ?3 WHERE shop = ?1 AND thread_id = ?2 AND direction = 'outbound'`)
+      .bind(SHOP, tid, `Hi Jane,\n\nWe have to be straight with you, so we do not keep you waiting: we do not skip the trial for anyone. The code trial stays open to you at any time: ${AFFILIATE_APPLY_URL}\n\nBest Regards,\nActive Paw Partnerships`).run();
+    await s.insertInboundMessageIfNew({ threadId: tid, messageId: '<after-decline@x>', inReplyTo: null, references: [], from: 'jane@x.com', to: 'sales@activepaw.co.uk', subject: 'Re: Hi', bodyText: 'So is it a yes or a no?', bodyHtml: null, headersJson: '{}', receivedAt: new Date(Date.now() + 60_000).toISOString() });
+    const got = (await s.getThreadWithMessages(tid))!;
+    const marketer: ThreadReading = { senderRole: 'marketer', openAsks: ['yes or no'], offered: 'growth services', alreadyAnswered: [], replyNeeded: true, supplier: null, productQuery: null, senderName: null };
+    const r = await maybePartnershipDraft({ ...env } as any, s, (await s.getConfig())!, got.thread, got, (async () => new Response('{}')) as unknown as typeof fetch, undefined, marketer);
+    expect(r).toEqual({ noReply: true });
+    expect(await s.getPendingDraft(tid)).toBeNull();
   });
 
   it('refuses the four superseded funnel templates', async () => {
@@ -439,16 +471,14 @@ describe('applyDraftTemplate', () => {
     expect((await s.getApplicantByThread(tid))?.stage).toBe('passed_to_form');
   });
 
-  it('a follow-up already sent on the thread becomes the one-line pointer', async () => {
+  // Design 2026-11-19 (decision A): the one-line pointer is retired; a reply
+  // that has already gone out is refused, never turned into a pointer.
+  it('a follow-up already sent on the thread is refused', async () => {
     const { s, tid } = await seedWithConfig();
     await s.insertOutboundMessage({ threadId: tid, messageId: '<f1@activepaw>', from: 'contact@activepaw.co.uk', to: 'jane@x.com', subject: 'Re: Hi', bodyText: buildSecondTouch('signup_invite', 'Jane'), bodyHtml: '<p>x</p>', sentAt: '2026-06-19T10:00:00Z' });
     const r = await applyDraftTemplate(env.DB, SHOP, tid, 'signup_followup');
-    expect(r.ok).toBe(true);
-    expect((r as { touch?: string }).touch).toBe('pointer');
-    const body = (await s.getPendingDraft(tid))!.body_text;
-    expect(body).toMatch(/earlier reply/i);
-    expect(body).toContain(AFFILIATE_APPLY_URL);
-    expect(JSON.parse((await s.getPendingDraft(tid))!.hold_reasons ?? '[]')).toContain('repeat_touch');
+    expect(r).toEqual({ ok: false, error: 'This reply has already gone out twice on this thread. Write the next one by hand.' });
+    expect(await s.getPendingDraft(tid)).toBeNull();
   });
 
   it('the keep-to-email template stays on email without declining, and leaves the funnel untouched', async () => {
@@ -767,9 +797,10 @@ describe('unblockSender', () => {
 
 // Owner rule 2026-09-04: a thread never gets the same message twice. A template
 // that was already sent on the thread renders as its shorter second touch; once
-// that has gone out too, as a one-line pointer back to the earlier reply.
+// that has gone out too, the picker refuses it (design 2026-11-19: the
+// one-line pointer that used to follow is retired).
 describe('applyDraftTemplate never repeats a sent message', () => {
-  it('renders the second touch after the full template was sent, then the pointer', async () => {
+  it('renders the second touch after the full template was sent, then refuses a third', async () => {
     const { s, tid } = await seedWithConfig();
     const first = buildSignupInvite('Jane');
     await s.insertOutboundMessage({ threadId: tid, messageId: '<o1@activepaw>', from: 'contact@activepaw.co.uk', to: 'jane@x.com', subject: 'Re: Hi', bodyText: first, bodyHtml: '<p>x</p>', sentAt: '2026-06-19T10:00:00Z' });
@@ -784,11 +815,51 @@ describe('applyDraftTemplate never repeats a sent message', () => {
     expect(JSON.parse((await s.getPendingDraft(tid))!.hold_reasons ?? '[]')).toContain('repeat_touch');
 
     await s.insertOutboundMessage({ threadId: tid, messageId: '<o2@activepaw>', from: 'contact@activepaw.co.uk', to: 'jane@x.com', subject: 'Re: Hi', bodyText: second, bodyHtml: '<p>x</p>', sentAt: '2026-06-20T10:00:00Z' });
+    await s.supersedePendingDrafts(tid);
     const r3 = await applyDraftTemplate(env.DB, SHOP, tid, 'signup_invite');
-    expect((r3 as { touch?: string }).touch).toBe('pointer');
-    const pointer = (r3 as { draft?: { body_text: string } }).draft!.body_text;
-    expect(pointer).toMatch(/earlier reply/i);
-    expect(countWords(pointer)).toBeLessThan(countWords(second));
+    expect(r3).toEqual({ ok: false, error: 'This reply has already gone out twice on this thread. Write the next one by hand.' });
+    expect(await s.getPendingDraft(tid)).toBeNull();
+  });
+
+  it('a template already sent twice is refused, not turned into a pointer', async () => {
+    const { s, tid } = await seedWithConfig();
+    await s.insertOutboundMessage({ threadId: tid, messageId: '<p1@activepaw>', from: 'sales@activepaw.co.uk', to: 'jane@x.com', subject: 'Re: Hi', bodyText: buildServiceProveFirst('Jane'), bodyHtml: '<p>x</p>', sentAt: '2026-06-19T10:00:00Z' });
+    await s.insertOutboundMessage({ threadId: tid, messageId: '<p2@activepaw>', from: 'sales@activepaw.co.uk', to: 'jane@x.com', subject: 'Re: Hi', bodyText: buildSecondTouch('service_prove_first', 'Jane'), bodyHtml: '<p>x</p>', sentAt: '2026-06-20T10:00:00Z' });
+    const r = await applyDraftTemplate(env.DB, SHOP, tid, 'service_prove_first');
+    expect(r).toEqual({ ok: false, error: 'This reply has already gone out twice on this thread. Write the next one by hand.' });
+    expect(await s.getPendingDraft(tid)).toBeNull();
+  });
+
+  it('the final answer is offered in full, and never a second time', async () => {
+    const { s, tid } = await seedWithConfig();
+    const r1 = await applyDraftTemplate(env.DB, SHOP, tid, 'collaboration_decline');
+    expect((r1 as { touch?: string }).touch).toBe('first');
+    expect((await s.getPendingDraft(tid))!.body_text).toBe(buildCollaborationDecline('Jane'));
+    expect((await sendPending(s, tid)).ok).toBe(true);
+    const r2 = await applyDraftTemplate(env.DB, SHOP, tid, 'collaboration_decline');
+    expect(r2).toEqual({ ok: false, error: 'The final answer has already gone out on this thread. Write the next one by hand.' });
+    expect(await s.getPendingDraft(tid)).toBeNull();
+  });
+
+  it('a final answer the owner edited before sending is still never offered again', async () => {
+    const { s, tid } = await seedWithConfig();
+    expect((await applyDraftTemplate(env.DB, SHOP, tid, 'collaboration_decline')).ok).toBe(true);
+    const cfg = (await s.getConfig())!;
+    const draft = (await s.getPendingDraft(tid))!;
+    const thread = (await s.getThreadWithMessages(tid))!.thread;
+    const ok = (async () => new Response(JSON.stringify({ id: 'em_e' }), { status: 200 })) as unknown as typeof fetch;
+    const edited = 'Hi Jane,\n\nThanks for writing. This is not for us right now, but we wish you well.\n\nBest Regards,\nActive Paw Partnerships';
+    expect((await sendReply({ ...env, RESEND_API_KEY: 'rk' } as never, s, cfg, thread, draft, edited, ok)).ok).toBe(true);
+    const r = await applyDraftTemplate(env.DB, SHOP, tid, 'collaboration_decline');
+    expect(r).toEqual({ ok: false, error: 'The final answer has already gone out on this thread. Write the next one by hand.' });
+  });
+
+  it('a picked template records its key', async () => {
+    const { s, tid } = await seedWithConfig();
+    expect((await applyDraftTemplate(env.DB, SHOP, tid, 'service_prove_first')).ok).toBe(true);
+    const meta = parseDraftMeta((await s.getPendingDraft(tid))!.meta_json);
+    expect(meta.template).toBe('service_prove_first');
+    expect(meta.stageOnSend).toEqual({ stage: 'passed_to_form', mode: 'set' });
   });
 
   it('a template never sent on the thread renders in full, with no repeat hold', async () => {

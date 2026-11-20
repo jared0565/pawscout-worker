@@ -225,3 +225,29 @@ describe('extractContactForm', () => {
     expect(extractContactForm(p as any)!.reason).toBeNull();
   });
 });
+
+// Formatted-only email (design 2026-11-19, 1a): 56 inbound messages had an
+// HTML part and no plain text part, so nothing downstream ever read them.
+describe('parseInbound: formatted-only email', () => {
+  const head = ['From: Ana <ana@example.com>', 'To: contact@activepaw.co.uk', 'Subject: Question', 'Message-ID: <h1@example.com>', 'Date: Wed, 18 Nov 2026 10:00:00 +0000', 'MIME-Version: 1.0'];
+  it('an HTML-only email gets its text from the HTML', async () => {
+    const raw = [...head, 'Content-Type: text/html; charset=utf-8', '', '<p>Hi,<br>Do you ship the slow feeder to Ireland?</p>'].join('\r\n');
+    const p = await parseInbound(raw);
+    expect(p.text).toBe('Hi,\nDo you ship the slow feeder to Ireland?');
+    expect(p.textFromHtml).toBe(true);
+  });
+  it('a text part that is only whitespace or zero-width uses the HTML part', async () => {
+    const raw = [...head, 'Content-Type: multipart/alternative; boundary="alt"', '',
+      '--alt', 'Content-Type: text/plain; charset=utf-8', '', '\u200b ', '',
+      '--alt', 'Content-Type: text/html; charset=utf-8', '', '<p>Do you ship to Ireland?</p>',
+      '--alt--', ''].join('\r\n');
+    const p = await parseInbound(raw);
+    expect(p.text).toBe('Do you ship to Ireland?');
+    expect(p.textFromHtml).toBe(true);
+  });
+  it('a real plain part still wins', async () => {
+    const p = await parseInbound(RAW);
+    expect(p.text).toBe('Hi, do you ship the slow feeder to Ireland? Thanks, Jane');
+    expect(p.textFromHtml).toBeFalsy();
+  });
+});

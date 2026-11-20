@@ -6,7 +6,7 @@ import { defaultFetch } from '../safe-fetch';
 import { parseAuthResults } from './gates';
 import { classifyEmail, decideDisposition } from './classify';
 import { draftReply, renderReplyHtml, applyFooter, stripTrailingSignoff, sanitizeOutbound, buildDraftTranscript, openInboundText, greetingName } from './draft';
-import { threadFilesFor, contactFilesFor } from './attachments';
+import { threadFilesFor, threadFilesOrNull, contactFilesFor } from './attachments';
 import { autoSendDecision, mentionsMoney, withExtraHolds } from './autosend';
 import { sendReply } from './send';
 import { maybePartnershipDraft, detectPartnershipAsk, AFFILIATE_APPLY_URL } from './partnership';
@@ -28,6 +28,7 @@ import type { ThreadRow, InvoiceLineItem, DraftMeta } from './types';
 import { CjClient, CjTokenManager, cjFetchFromEnv } from '../cj';
 import { readThread, isSupplierRole, type ThreadReading } from './thread-read';
 import { promisesSupplier, buildFileContext, fileHoldReasons } from './draft-quality';
+import { openBatchHasNoNewWords } from './contentless';
 import { Vault } from '../vault';
 import { runSupplierBackfillStep } from './supplier-backfill';
 
@@ -355,7 +356,8 @@ export async function composeDraftForThread(
   const llm = new LlmClient({ openrouter: env.OPENROUTER_API_KEY, openai: env.OPENAI_API_KEY }, fetchImpl);
   // The thread's file rows: both the reader and the drafter see which files
   // arrived and which were refused (design 2026-11-14, 5.7).
-  const files = await threadFilesFor(store, thread.id);
+  const filesRead = await threadFilesOrNull(store, thread.id);
+  const files = filesRead ?? [];
 
   // Thread reader first (owner design 2026-09-27). Never blocking: a failed
   // reading is null and everything below runs exactly as it did before. Only
@@ -399,9 +401,28 @@ export async function composeDraftForThread(
     }
   }
 
+  // A reply that adds no new words (design 2026-11-19, 1c/1d): nothing new
+  // above the quote, or only a greeting, the store name or punctuation. A
+  // message carrying a file is always content (every attachment row is a file
+  // the sender chose to send; signature logos are dropped without a row).
+  // A file list that could not be read fails open: we cannot tell a file-only
+  // reply from a bump, so we draft (final review, 2026-11-20).
+  const contentless = !opts.force && filesRead !== null
+    && openBatchHasNoNewWords(got.messages, thread.subject, new Set(filesRead.map((f) => f.message_id)));
+
   // Partnership/affiliate funnel intercept - supersedes the generic drafter for lane threads.
-  const partnership = await maybePartnershipDraft(env, store, cfg, t, got, fetchImpl, undefined, reading);
+  const partnership = await maybePartnershipDraft(env, store, cfg, t, got, fetchImpl, undefined, reading, { force: opts.force, contentless });
   if (partnership) return partnership;
+
+  // Once we have answered, a reply that adds nothing gets no draft and the
+  // thread waits on them (awaiting_customer, which ingest reopens on their next
+  // message; never 'closed', which it does not). A first message with no words
+  // in its body or subject is marked as empty for the owner.
+  if (contentless) {
+    await store.setThreadStatus(thread.id, 'awaiting_customer');
+    if (!got.messages.some((m) => m.direction === 'outbound')) await store.addThreadLabel(thread.id, 'no-content');
+    return { noReply: true };
+  }
 
   const inbound = got.messages.filter((m) => m.direction === 'inbound');
   // Strip each inbound's quoted reply chain so we ground on the customer's NEW text only.
