@@ -258,7 +258,10 @@ describe('friendly collaboration decline (programme introduced twice, they insis
     expect(detectAlternativeCollaboration('Rather than a referral arrangement, I would propose a monthly consulting retainer.')).toBe(true);
     expect(detectAlternativeCollaboration('I would prefer a different kind of partnership where I manage your ads for a share of the profit.')).toBe(true);
     expect(detectAlternativeCollaboration('Instead of the affiliate route, could we look at a performance-based partnership?')).toBe(true);
+    // Design 2026-11-19 (the De Zimar audit): "not looking FOR affiliate" was missed.
+    expect(detectAlternativeCollaboration('Hello, as I said before, I am not looking for affiliate opportunities.')).toBe(true);
     for (const plain of [
+      'Thanks, I filled in the form today.',
       'Thanks, I have submitted the application form.',
       'What commission do you offer?',
       'I understand, thanks for the reply.',

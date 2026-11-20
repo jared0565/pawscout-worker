@@ -9,6 +9,10 @@ describe('greetingName (design 2026-11-14, 8.3)', () => {
     ['Wendy2', 'Wendy', 'kiki@toppouch.cn', 'Regards, Wendy', 'Wendy'],
     ['Jane Doe', 'Janet', 'jane@x.com', 'Thanks, Janet', 'Jane'],          // both good, differ: From wins
     ['sales', 'Mary', 'sales@x.com', 'Please contact our manager.', null], // reader name not in the text: rejected
+    // Design 2026-11-19 ("Hi De"): a name particle is not a first name.
+    ['DE SOUZA', 'Marta', 'ms@example.com', 'Best regards, Marta', 'Marta'],
+    // A short first name is real: only particles count as poor.
+    ['Jo Smith', null, 'jo@example.com', 'Thanks, Jo', 'Jo'],
   ])('%s / %s -> %s', (from, reader, email, text, want) =>
     expect(greetingName(from, reader, email, { senderText: text })).toBe(want));
   it('a From name equal to the company is poor', () =>

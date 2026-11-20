@@ -253,7 +253,8 @@ export function detectServicePitch(text: string): boolean {
 export function detectAlternativeCollaboration(text: string): boolean {
   const t = text.toLowerCase();
   const refusesProgramme =
-    /\bnot\s+(?:looking|interested|keen|wanting|willing|able)\s+(?:to|in)\s+(?:\w+\s+){0,4}?(?:referral|affiliate)/.test(t)
+    // "for" (design 2026-11-19): "not looking for affiliate opportunities".
+    /\bnot\s+(?:looking|interested|keen|wanting|willing|able)\s+(?:to|in|for)\s+(?:\w+\s+){0,4}?(?:referral|affiliate)/.test(t)
     || /\b(?:rather than|instead of|beyond|more than)\s+(?:\w+\s+){0,3}?(?:referral|affiliate)/.test(t)
     || /\b(?:different|another|alternative|other)\s+(?:kind|type|form|sort)\s+of\s+(?:partnership|collaboration|arrangement|deal)\b/.test(t);
   const otherArrangement =
