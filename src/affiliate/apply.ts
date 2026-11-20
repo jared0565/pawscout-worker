@@ -29,7 +29,7 @@ import {
 } from '../inbox/partnership';
 import { hmacHex } from '../retention';
 import {
-  validEmailSyntax, isDisposableDomain, isMainstreamEmailDomain, channelHostAllowed, channelKey,
+  validEmailSyntax, isDisposableDomain, isMainstreamEmailDomain, channelHostAllowed, channelKey, channelLookupHosts,
   honeypotOk, signTimestamp, verifyTimestamp, validateFields, APPLY_FIELD_LIMITS,
   type ApplicationFieldsInput, type ApplyFieldKey
 } from './gates';
@@ -296,7 +296,7 @@ export async function handleAffiliateApply(deps: ApplyDeps): Promise<ApplyResult
 
   const name = fields.name!.trim();
   const email = fields.email!.trim().toLowerCase();
-  const channelUrlRaw = fields.channel_url!.trim();
+  const channelInput = fields.channel_url!.trim();
 
   // 4. Email gates: syntax, disposable-domain blocklist, MX (fail-open).
   if (!validEmailSyntax(email)) return fieldError('email', 'Please enter a valid email address.');
@@ -309,12 +309,15 @@ export async function handleAffiliateApply(deps: ApplyDeps): Promise<ApplyResult
   // 5. Channel URL FORMAT gate only: http(s)+parseable, not coupon/deal/
   //    cashback, not an activepaw domain. The DB "already registered to
   //    someone else" check is deliberately NOT run here - see step 8.
-  const ch = channelHostAllowed(channelUrlRaw);
+  const ch = channelHostAllowed(channelInput);
   if (ch.reason === 'platform_root') {
     return fieldError('channel_url', 'Please enter the link to your own channel or profile, for example https://instagram.com/yourname.');
   }
-  const channel = channelKey(channelUrlRaw);
+  const channel = channelKey(channelInput);
   if (!ch.ok || !ch.host || !channel) return fieldError('channel_url', 'Please enter a valid channel URL.');
+  // Stored parsed (lower-case host, punycode, escapes resolved by the URL
+  // parser), so a later lookup's host prefilter always finds it.
+  const channelUrlRaw = new URL(channelInput).href;
 
   // Minor fix (2026-07-13 final review): keyed HMAC, not a bare SHA-256 - a
   // raw hash of an IP is brute-forceable offline (the whole IPv4 space is
@@ -379,7 +382,9 @@ export async function handleAffiliateApply(deps: ApplyDeps): Promise<ApplyResult
   //    an enumeration oracle - see tenant-store.ts's channelUrlsContaining doc).
   //    Same channel = same channelKey: the account on a shared platform, the
   //    host elsewhere, never a substring of either.
-  const candidates = await store.channelUrlsContaining(channel, email);
+  //    The prefilter is the platform's hosts, never the account, so it can
+  //    never be narrower than the key comparison.
+  const candidates = (await Promise.all(channelLookupHosts(channel).map((h) => store.channelUrlsContaining(h, email)))).flat();
   if (candidates.some((u) => channelKey(u) === channel)) {
     return fieldError('channel_url', 'This channel is already linked to another application.');
   }

@@ -92,11 +92,11 @@ export function channelHostAllowed(url: string): ChannelHostCheck {
   let u: URL;
   try { u = new URL((url ?? '').trim()); } catch { return { ok: false, host: null, reason: 'unparseable' }; }
   if (u.protocol !== 'http:' && u.protocol !== 'https:') return { ok: false, host: null, reason: 'bad_protocol' };
-  const host = u.hostname.toLowerCase();
+  const host = u.hostname.toLowerCase().replace(/\.+$/, '');
   if (!host) return { ok: false, host: null, reason: 'no_host' };
   if (isCouponHost(host)) return { ok: false, host, reason: 'coupon_host' };
   if (isActivePawHost(host)) return { ok: false, host, reason: 'activepaw_domain' };
-  if (isSharedPlatform(bareHost(host)) && !platformAccount(u)) return { ok: false, host, reason: 'platform_root' };
+  if (platformOf(bareHost(host)) && !platformAccount(u)) return { ok: false, host, reason: 'platform_root' };
   return { ok: true, host };
 }
 
@@ -106,13 +106,23 @@ export function channelHostAllowed(url: string): ChannelHostCheck {
 // Production, 2026-11-20: matching on the host alone let one facebook.com
 // application refuse every later Facebook creator as "already linked". A
 // host not listed here is treated as a site of its own, so its host is the
-// channel (alice.substack.com and bob.substack.com differ by host already).
+// channel. Any subdomain of a listed host is that platform (de-de.facebook.com,
+// uk.pinterest.com, music.youtube.com), except on the platforms below whose
+// subdomains are sites people own (alice.substack.com).
 export const SHARED_PLATFORM_HOSTS: ReadonlySet<string> = new Set([
-  'instagram.com', 'facebook.com', 'fb.com', 'youtube.com', 'tiktok.com', 'x.com', 'twitter.com',
-  'threads.net', 'threads.com', 'pinterest.com', 'pinterest.co.uk', 'uk.pinterest.com', 'twitch.tv',
-  'snapchat.com', 'linkedin.com', 'reddit.com', 'medium.com', 'linktr.ee', 'etsy.com', 'tumblr.com',
-  'bsky.app', 'patreon.com', 'kick.com', 'vimeo.com', 'substack.com'
+  'instagram.com', 'facebook.com', 'youtube.com', 'youtu.be', 'tiktok.com', 'x.com', 'threads.net',
+  'pinterest.com', 'pinterest.co.uk', 'twitch.tv', 'snapchat.com', 'linkedin.com', 'reddit.com',
+  'medium.com', 'linktr.ee', 'etsy.com', 'tumblr.com', 'bsky.app', 'patreon.com', 'kick.com',
+  'vimeo.com', 'substack.com'
 ]);
+
+/** Other names for the same account namespace, keyed to the canonical host. */
+const PLATFORM_ALIASES: Readonly<Record<string, string>> = {
+  'twitter.com': 'x.com', 'fb.com': 'facebook.com', 'threads.com': 'threads.net'
+};
+
+/** Platforms whose subdomains are their users' own sites, not the platform. */
+const USER_SUBDOMAIN_PLATFORMS: ReadonlySet<string> = new Set(['substack.com', 'medium.com', 'tumblr.com']);
 
 // A first path segment that is a section, not an account, so the account
 // is the segment after it (youtube.com/channel/ID, facebook.com/groups/name).
@@ -120,18 +130,37 @@ const SECTION_SEGMENTS: ReadonlySet<string> = new Set([
   'c', 'channel', 'user', 'u', 'r', 'in', 'company', 'groups', 'shop', 'people', 'pages', 'pg', 'profile'
 ]);
 
-/** The host as a person reads it: lower case, without www./m./mobile. */
+/** The host as a person reads it: lower case, no trailing dot, without
+ *  www./m./mobile. */
 function bareHost(host: string): string {
-  return host.toLowerCase().replace(/^(?:www|m|mobile)\./, '');
+  return host.toLowerCase().replace(/\.+$/, '').replace(/^(?:www|m|mobile)\./, '');
 }
 
-function isSharedPlatform(bare: string): boolean {
-  return SHARED_PLATFORM_HOSTS.has(bare);
+/** The canonical platform a bare host belongs to, or null for a site of its own. */
+function platformOf(bare: string): string | null {
+  for (const [alias, canonical] of Object.entries(PLATFORM_ALIASES)) {
+    if (bare === alias || bare.endsWith(`.${alias}`)) return canonical;
+  }
+  for (const p of SHARED_PLATFORM_HOSTS) {
+    if (bare === p) return p;
+    if (bare.endsWith(`.${p}`)) return USER_SUBDOMAIN_PLATFORMS.has(p) ? null : p;
+  }
+  return null;
+}
+
+/** Every host a stored link to `platform` may carry, for the lookup's
+ *  substring prefilter: the platform and its aliases. */
+function platformHosts(platform: string): string[] {
+  return [platform, ...Object.keys(PLATFORM_ALIASES).filter((a) => PLATFORM_ALIASES[a] === platform)];
+}
+
+function decodeSegment(s: string): string {
+  try { return decodeURIComponent(s); } catch { return s; }
 }
 
 /** The account a shared-platform link names, lower case ('' when none). */
 function platformAccount(u: URL): string {
-  const segs = u.pathname.split('/').filter(Boolean).map((s) => s.toLowerCase());
+  const segs = u.pathname.split('/').filter(Boolean).map((s) => decodeSegment(s).toLowerCase());
   if (segs.length === 0) return '';
   if (segs[0] === 'profile.php') {
     const id = u.searchParams.get('id');
@@ -152,9 +181,19 @@ export function channelKey(url: string): string | null {
   if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
   const host = bareHost(u.hostname);
   if (!host) return null;
-  if (!isSharedPlatform(host)) return host;
+  const platform = platformOf(host);
+  if (!platform) return host;
   const account = platformAccount(u);
-  return account ? `${host}/${account}` : null;
+  return account ? `${platform}/${account}` : null;
+}
+
+/** Substrings that every stored link to the channel `key` contains (lower
+ *  cased), for a prefilter that can never be narrower than the key itself:
+ *  hosts only, never the account, since a stored path may be spelled
+ *  differently (%61lice) from the decoded key. */
+export function channelLookupHosts(key: string): string[] {
+  const slash = key.indexOf('/');
+  return slash < 0 ? [key] : platformHosts(key.slice(0, slash));
 }
 
 // --- Honeypot + min time-to-submit ---------------------------------------

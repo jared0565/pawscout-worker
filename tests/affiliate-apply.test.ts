@@ -252,6 +252,19 @@ describe('handleAffiliateApply: one channel is one account, not one platform', (
     expect(again.body.error).toContain('already linked');
   });
 
+  it('finds the account however the stored link was spelled (the lookup is never narrower than the key)', async () => {
+    const s = store();
+    await s.insertApplication({ email: 'first@example.com', channelUrl: 'https://twitter.com/%41lice', stage: 'submitted' });
+    const r = await apply(s, 'second@example.com', 'https://x.com/alice', '1.1.1.1');
+    expect(r.body).toMatchObject({ ok: false, field: 'channel_url' });
+  });
+
+  it('stores the parsed form of the link', async () => {
+    const s = store();
+    expect((await apply(s, 'jane@example.com', 'https://WWW.Example.com/Reviews', '1.1.1.1')).body.ok).toBe(true);
+    expect((await s.applicationByEmail('jane@example.com'))?.channel_url).toBe('https://www.example.com/Reviews');
+  });
+
   it('an account whose name contains another one is a different channel', async () => {
     const s = store();
     expect((await apply(s, 'al@example.com', 'https://instagram.com/al', '1.1.1.1')).body.ok).toBe(true);
