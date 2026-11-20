@@ -305,7 +305,7 @@ describe('access requests', () => {
     const r = await maybePartnershipDraft({ ...env } as any, s, CFG, got.thread, got, noFetch);
     expect(r).not.toBeNull();
     const draft = await s.getPendingDraft(tid);
-    expect(draft!.body_text).toMatch(/do not skip the trial for anyone/i);
+    expect(draft!.body_text).toMatch(/not something we will take forward this time, but we may consider it in the future/i);
     expect((await s.getApplicantByThread(tid))!.stage).toBe('declined');
   });
 

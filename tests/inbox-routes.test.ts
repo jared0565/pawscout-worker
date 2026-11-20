@@ -338,7 +338,7 @@ describe('applyDraftTemplate', () => {
     expect((r as { touch?: string }).touch).toBe('first');
     const body = (await s.getPendingDraft(tid))!.body_text;
     expect(body.startsWith('Hi Jane,')).toBe(true);
-    expect(body).toMatch(/do not skip the trial for anyone/i);
+    expect(body).toMatch(/not something we will take forward this time, but we may consider it in the future/i);
     expect(body).toContain(AFFILIATE_APPLY_URL);
     expect(body).toMatch(/no reply is needed/i);
     expect(await s.getApplicantByThread(tid)).toBeNull();

@@ -667,14 +667,16 @@ Active Paw`;
 // reason is no longer "strategy stays in-house" but the filter itself: with
 // the number of offers we receive, delivered results through a tracked code
 // are the only basis we decide on, so no arrangement is agreed ahead of that.
+// 2026-11-19 (owner, after the De Zimar audit): this is the ONE final answer a
+// seller gets, then quiet. The owner's tone: "something like not this time, we
+// might consider it in the future ... saying straight no, sounds not friendly
+// at all." It says "We have read your messages", never "everything you sent":
+// links and attachments a seller points at are not opened. The code trial
+// keeps its link (prove-first). Approved wording, design 2026-11-19, 2c.
 const COLLABORATION_DECLINE_BODY =
-`Thank you for coming back to us, and for being so clear about the kind of partnership you have in mind. We appreciate the thought you have put into it.
+`Thank you for your messages, and for the time you have put into your proposal. We have read your messages. It is not something we will take forward this time, but we may consider it in the future. In the meantime, the code trial stays open to you whenever you would like to try it: ${AFFILIATE_APPLY_URL}
 
-We have to be straight with you, so we do not keep you waiting: we do not skip the trial for anyone. With the number of offers we receive, delivered results through a tracked code are the only basis we use to decide who we work with, so we do not take on hands-on, consulting or results-based arrangements ahead of that. That is a settled position rather than a reflection on your proposal.
-
-The code trial stays open to you at any time: ${AFFILIATE_APPLY_URL}
-
-Thank you again for your interest in Active Paw. No reply is needed, and we wish you every success with your work.
+No reply is needed, and we wish you every success.
 
 Best Regards,
 Active Paw Partnerships`;
@@ -755,6 +757,18 @@ export function buildCollaborationDecline(name: string | null): string { return 
  * screening questions (QUALIFYING_MARKER) or the apply link. Inbound echoes of
  * the link never count. Drives the "introduced a couple of times" half of the
  * owner's 2026-09-04 rule. */
+/** The templates whose SENT draft is a final answer on the thread (design
+ * 2026-11-19, 2d): the seller final answer, and the programme decline
+ * (decline_all and screen-score declines). */
+export const FINAL_TEMPLATES = ['collaboration_decline', 'partnership_decline'] as const;
+
+/** A seller thread (design 2026-11-19, 2b): the thread reader says marketer,
+ * or the latest words insist on another arrangement or ask for store access.
+ * A bump alone never makes a thread a seller thread. */
+export function isSellerThread(reading: ThreadReading | null | undefined, latestNewText: string): boolean {
+  return reading?.senderRole === 'marketer' || detectAlternativeCollaboration(latestNewText) || detectAccessRequest(latestNewText);
+}
+
 export function countProgrammeIntroductions(
   messages: ReadonlyArray<{ direction: string; body_text: string | null }>
 ): number {
@@ -1123,8 +1137,34 @@ export async function maybePartnershipDraft(
     const draftId = await store.insertDraft({
       threadId: thread.id, bodyText: t.body, bodyHtml: renderReplyHtml(t.body),
       confidence: null, quotesPriceOrder: false, holdReasons, model: opts.model ?? 'partnership-screen', status: 'pending',
+      meta: { template: key },
     });
     return { draftId, touch: t.touch };
+  }
+
+  // Quiet (design 2026-11-19): no draft, and the thread waits on them.
+  // awaiting_customer, never closed: ingest reopens only awaiting_customer and
+  // needs_reply threads, so their next real message is still seen.
+  async function quiet(): Promise<{ noReply: true }> {
+    await store.setThreadStatus(thread.id, 'awaiting_customer');
+    return { noReply: true };
+  }
+
+  // The ONE friendly final answer to a seller (design 2026-11-19, 2b/2c): only
+  // ever in full, never as a shorter touch, and never once its text has gone
+  // out on the thread (then quiet). HITL with an owner alert; the applicant is
+  // declined, which hands every later message to the declined branch.
+  async function draftFinalAnswer(alert: string): Promise<PartnershipResult> {
+    const body = buildCollaborationDecline(name);
+    if (repeatsPriorOutbound(body, prior)) return quiet();
+    const draftId = await store.insertDraft({
+      threadId: thread.id, bodyText: body, bodyHtml: renderReplyHtml(body),
+      confidence: null, quotesPriceOrder: false, holdReasons: [], model: 'partnership-screen', status: 'pending',
+      meta: { template: 'collaboration_decline' },
+    });
+    await store.setApplicantStage(thread.id, 'declined', null);
+    await maybeAlertOwner(env, cfg, thread.shop, thread, alert, 'affiliate', _fetchImpl);
+    return { draftId, send: false };
   }
 
   // decline_all (2026-07-03 policy, now a Settings toggle): decline ALL partnership
@@ -1176,11 +1216,7 @@ export async function maybePartnershipDraft(
   // trial needs no access and stays open to them. Always HITL.
   if (applicant && applicant.stage !== 'declined' && accessRequestNow) {
     if (countProgrammeIntroductions(got.messages) >= 2) {
-      const { draftId } = await insertTouched('collaboration_decline', buildCollaborationDecline(name));
-      await store.setApplicantStage(thread.id, 'declined', null);
-      await maybeAlertOwner(env, cfg, thread.shop, thread,
-        'An applicant still asks for store access after two introductions - the friendly final decline is ready for your review.', 'affiliate', _fetchImpl);
-      return { draftId, send: false };
+      return draftFinalAnswer('An applicant still asks for store access after two introductions - the friendly final decline is ready for your review.');
     }
     const { draftId } = await insertTouched('access_decline', buildAccessDecline(name));
     await maybeAlertOwner(env, cfg, thread.shop, thread,
@@ -1374,23 +1410,20 @@ export async function maybePartnershipDraft(
         'An approved partner replied - a context-aware draft is ready for your review.', 'affiliate', _fetchImpl);
       return { draftId, send: false };
     }
+    // Design 2026-11-19, 2b (the De Zimar audit): a SELLER who keeps writing
+    // after two introductions gets the one friendly final answer. A seller is
+    // what the thread reader says (marketer) or what the detectors find in
+    // their latest words, so a scripted vendor whose phrasing the regexes miss
+    // ("not looking for affiliate") is still answered once and then left.
+    if (countProgrammeIntroductions(got.messages) >= 2 && isSellerThread(reading, latestNewText)) {
+      return draftFinalAnswer('A seller kept writing after two introductions - the friendly final answer is ready for your review.');
+    }
     // Owner rule 2026-09-04 (Paul's thread): an applicant who answers the
-    // programme by INSISTING on a different arrangement is not a screened
-    // applicant checking in, so the holding ack ("reviewing the fit") would tell
-    // them nobody read their reply. Introduced twice and still insisting: the
-    // friendly decline, final on the other arrangement, applicant declined
-    // (later replies fall through to the generic drafter like every declined
-    // thread). Introduced once: the shorter programme reminder, i.e. the
-    // earlier "tell them about the only programme" rule, stage unchanged.
-    // Both HITL.
+    // programme by INSISTING on a different arrangement, introduced once: the
+    // shorter programme reminder, i.e. the earlier "tell them about the only
+    // programme" rule, stage unchanged. HITL. (Introduced twice is the seller
+    // final answer above.)
     if (detectAlternativeCollaboration(latestNewText)) {
-      if (countProgrammeIntroductions(got.messages) >= 2) {
-        const { draftId } = await insertTouched('collaboration_decline', buildCollaborationDecline(name));
-        await store.setApplicantStage(thread.id, 'declined', null);
-        await maybeAlertOwner(env, cfg, thread.shop, thread,
-          'An invited applicant still wants a different arrangement after two introductions - a friendly decline is ready for your review.', 'affiliate', _fetchImpl);
-        return { draftId, send: false };
-      }
       const { draftId } = await insertTouched('signup_invite', buildSignupInvite(name, { rateAbove, offPlatform: offPlatformNow }), { startAtSecond: true });
       await maybeAlertOwner(env, cfg, thread.shop, thread,
         'An invited applicant wants a different arrangement - the shorter programme reminder is ready for your review.', 'affiliate', _fetchImpl);

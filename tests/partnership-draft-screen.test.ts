@@ -3,9 +3,10 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
 import { TenantStore } from '../src/tenant-store';
 import { composeDraftForThread } from '../src/inbox/sweep';
-import { maybePartnershipDraft, AFFILIATE_APPLY_URL, buildHoldingAck, buildQualifyingEmail, buildSignupInvite, buildSecondTouch } from '../src/inbox/partnership';
+import { maybePartnershipDraft, AFFILIATE_APPLY_URL, buildHoldingAck, buildQualifyingEmail, buildSignupInvite, buildSecondTouch, buildCollaborationDecline } from '../src/inbox/partnership';
+import type { ThreadReading } from '../src/inbox/thread-read';
 import { countWords } from '../src/inbox/draft-quality';
-import { DEFAULT_INBOX } from '../src/inbox/types';
+import { DEFAULT_INBOX, parseDraftMeta } from '../src/inbox/types';
 import { DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, type TenantConfig } from '../src/types';
 
 beforeEach(async () => { await applyD1Migrations(env.DB, env.TEST_MIGRATIONS); });
@@ -309,7 +310,7 @@ describe('an invited applicant who insists on another form of collaboration', ()
     expect(r).not.toBeNull();
     expect((r as { send: boolean }).send).toBe(false);
     const draft = await s.getPendingDraft(tid);
-    expect(draft!.body_text).toMatch(/do not skip the trial for anyone/i);
+    expect(draft!.body_text).toBe(buildCollaborationDecline('Kasim'));
     expect(draft!.body_text).toContain(AFFILIATE_APPLY_URL);
     expect(draft!.body_text).not.toMatch(/reviewing the fit|taking a look/i);
     expect(JSON.parse(draft!.hold_reasons ?? '[]')).toEqual([]);
@@ -336,7 +337,71 @@ describe('an invited applicant who insists on another form of collaboration', ()
     expect(r).not.toBeNull();
     const draft = await s.getPendingDraft(tid);
     expect(draft!.body_text).toMatch(/reviewing|taking a look/i);
-    expect(draft!.body_text).not.toMatch(/do not skip the trial for anyone/i);
+    expect(draft!.body_text).not.toBe(buildCollaborationDecline('Kasim'));
     expect((await s.getApplicantByThread(tid))!.stage).toBe('passed_to_form');
+  });
+});
+
+// Design 2026-11-19, 2b/2c: a seller (the reader says marketer) who keeps
+// writing after two introductions gets ONE friendly final answer in the
+// owner's tone ("not this time, we may consider it in the future"), then quiet.
+describe('the seller final answer', () => {
+  const SIGNUP_CFG: TenantConfig = { ...CFG, inbox: { ...DEFAULT_INBOX, affiliateMode: 'signup_page' } };
+  const reading = (senderRole: ThreadReading['senderRole']): ThreadReading => ({ senderRole, openAsks: ['yes or no'], offered: 'store growth', alreadyAnswered: [], replyNeeded: true, supplier: null, productQuery: null, senderName: null });
+
+  async function seedSeller(shop: string, introductions: 1 | 2, reply: string) {
+    const { s, tid } = await seedFirstTouch(shop);
+    await s.upsertApplicant({ threadId: tid, contactEmail: 'kasim@x.com', stage: 'passed_to_form' });
+    if (introductions === 2) {
+      await s.insertOutboundMessage({ threadId: tid, messageId: `<f1@${shop}>`, from: 'sales@activepaw.co.uk', to: 'kasim@x.com', subject: 'Re: Partnership', bodyText: buildSignupInvite('Kasim'), bodyHtml: '<p>x</p>', sentAt: '2026-06-23T10:00:00Z' });
+      await s.insertInboundMessageIfNew({ threadId: tid, messageId: `<g1@${shop}>`, inReplyTo: null, references: [], from: 'kasim@x.com', to: 'sales@activepaw.co.uk', subject: 'Re: Partnership', bodyText: 'I am an e-commerce growth expert, not an affiliate.', bodyHtml: null, headersJson: '{}', receivedAt: '2026-06-24T10:00:00Z' });
+    }
+    await s.insertOutboundMessage({ threadId: tid, messageId: `<f2@${shop}>`, from: 'sales@activepaw.co.uk', to: 'kasim@x.com', subject: 'Re: Partnership', bodyText: buildSecondTouch('signup_invite', 'Kasim'), bodyHtml: '<p>x</p>', sentAt: '2026-06-25T10:00:00Z' });
+    await s.insertInboundMessageIfNew({ threadId: tid, messageId: `<g2@${shop}>`, inReplyTo: null, references: [], from: 'kasim@x.com', to: 'sales@activepaw.co.uk', subject: 'Re: Partnership', bodyText: reply, bodyHtml: null, headersJson: '{}', receivedAt: '2026-06-26T10:00:00Z' });
+    return { s, tid };
+  }
+  const run = async (s: TenantStore, tid: string, r: ThreadReading | null) => {
+    const got = (await s.getThreadWithMessages(tid))!;
+    return maybePartnershipDraft({ ...env } as any, s, SIGNUP_CFG, got.thread, got, noFetch, undefined, r);
+  };
+
+  it('a seller with two introductions gets the final answer, once, in the owner tone', async () => {
+    const { s, tid } = await seedSeller('sf1.myshopify.com', 2, 'Did you check the analysis report I sent? A yes or no is fine.');
+    const r = await run(s, tid, reading('marketer'));
+    expect((r as { send: boolean }).send).toBe(false);
+    const draft = (await s.getPendingDraft(tid))!;
+    expect(draft.body_text).toBe(buildCollaborationDecline('Kasim'));
+    expect(draft.body_text).toContain('It is not something we will take forward this time, but we may consider it in the future.');
+    expect(draft.body_text).toContain(AFFILIATE_APPLY_URL);
+    expect(draft.body_text).not.toMatch(/our answer is no|we do not skip the trial/i);
+    expect(parseDraftMeta(draft.meta_json).template).toBe('collaboration_decline');
+    expect((await s.getApplicantByThread(tid))!.stage).toBe('declined');
+  });
+  it('with one introduction a seller still gets the shorter reminder', async () => {
+    const { s, tid } = await seedSeller('sf2.myshopify.com', 1, 'Did you check the analysis report I sent?');
+    await run(s, tid, reading('marketer'));
+    expect((await s.getPendingDraft(tid))!.body_text).not.toBe(buildCollaborationDecline('Kasim'));
+    expect((await s.getApplicantByThread(tid))!.stage).toBe('passed_to_form');
+  });
+  it('a creator with two introductions is not sent the final answer', async () => {
+    const { s, tid } = await seedSeller('sf3.myshopify.com', 2, 'When will my discount code be ready?');
+    await run(s, tid, reading('creator'));
+    const draft = await s.getPendingDraft(tid);
+    expect(draft?.body_text ?? '').not.toBe(buildCollaborationDecline('Kasim'));
+    expect((await s.getApplicantByThread(tid))!.stage).toBe('passed_to_form');
+  });
+  it('an access request after two introductions gets the final answer', async () => {
+    const { s, tid } = await seedSeller('sf4.myshopify.com', 2, 'Please add me as a collaborator on your store so I can start.');
+    await run(s, tid, null);
+    expect((await s.getPendingDraft(tid))!.body_text).toBe(buildCollaborationDecline('Kasim'));
+    expect((await s.getApplicantByThread(tid))!.stage).toBe('declined');
+  });
+  it('the final answer is never drafted again once its text has gone out', async () => {
+    const { s, tid } = await seedSeller('sf5.myshopify.com', 2, 'Did you check the analysis report I sent?');
+    await s.insertOutboundMessage({ threadId: tid, messageId: '<fin@sf5>', from: 'sales@activepaw.co.uk', to: 'kasim@x.com', subject: 'Re: Partnership', bodyText: buildCollaborationDecline('Kasim'), bodyHtml: '<p>x</p>', sentAt: '2026-06-27T10:00:00Z' });
+    await s.insertInboundMessageIfNew({ threadId: tid, messageId: '<g3@sf5>', inReplyTo: null, references: [], from: 'kasim@x.com', to: 'sales@activepaw.co.uk', subject: 'Re: Partnership', bodyText: 'So is it a yes?', bodyHtml: null, headersJson: '{}', receivedAt: '2026-06-28T10:00:00Z' });
+    const r = await run(s, tid, reading('marketer'));
+    expect(r).toEqual({ noReply: true });
+    expect(await s.getPendingDraft(tid)).toBeNull();
   });
 });

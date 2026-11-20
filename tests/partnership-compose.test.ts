@@ -237,14 +237,15 @@ describe('second-touch and pointer variants', () => {
 // 2026-09-17: it is final on SKIPPING THE TRIAL, in the prove-first framing:
 // delivered results through a tracked code are the only basis we decide on.
 describe('friendly collaboration decline (programme introduced twice, they insist on another arrangement)', () => {
-  it('declines skipping the trial plainly, keeps the code trial open with the link, needs no reply', () => {
+  // Owner 2026-11-19: "not this time, we might consider it in the future";
+  // a straight no "sounds not friendly at all". Design 2026-11-19, 2c.
+  it('says not this time in the owner tone, keeps the code trial open with the link, needs no reply', () => {
     const body = buildCollaborationDecline('Paul');
     expect(body.startsWith('Hi Paul,')).toBe(true);
-    expect(body).toMatch(/appreciate/i);
-    expect(body).toMatch(/do not skip the trial for anyone/i);
-    expect(body).toMatch(/tracked code/i);
-    expect(body).toMatch(/hands-on, consulting or results-based/i);
-    expect(body).toMatch(/settled position/i);
+    expect(body).toMatch(/thank you for your messages/i);
+    expect(body).toMatch(/We have read your messages\./);
+    expect(body).toContain('It is not something we will take forward this time, but we may consider it in the future.');
+    expect(body).not.toMatch(/our answer is no|do not skip the trial|everything you sent/i);
     expect(body).toContain(AFFILIATE_APPLY_URL);
     expect(body).toMatch(/stays open to you/i);
     expect(body).toMatch(/no reply is needed/i);
