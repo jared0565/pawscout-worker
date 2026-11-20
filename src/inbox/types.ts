@@ -128,6 +128,10 @@ export interface DraftMeta {
    *  785e4f91). 'set' always writes it; 'if-none' only for a thread with no
    *  applicant whose contact is not already a partner. */
   stageOnSend?: { stage: 'passed_to_form' | 'declined'; mode: 'set' | 'if-none' };
+  /** The funnel or console template key that produced the draft (design
+   *  2026-11-19, 2d): a SENT draft keyed as a final answer is how the funnel
+   *  knows the final answer went out, whatever the owner edited in its text. */
+  template?: string;
 }
 
 export function parseDraftMeta(json: string | null | undefined): DraftMeta {
@@ -164,6 +168,7 @@ export interface ThreadRow {
   declared_intent: string | null;  // Phase 2: contact-form Reason dropdown (reinforces classifier)
   reading_json: string | null;     // latest thread reading (src/inbox/thread-read.ts), JSON
   read_at: string | null;          // when that reading was taken
+  hand_reply_alert_at?: string | null; // once-per-thread "reply by hand" alert (migration 0049)
 }
 export interface MessageRow {
   shop: string; id: string; thread_id: string; direction: 'inbound' | 'outbound';

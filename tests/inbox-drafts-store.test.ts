@@ -73,3 +73,25 @@ describe('inbox drafts store', () => {
     expect(await s.getDraft(did)).toBeNull();
   });
 });
+
+// Design 2026-11-19, 2d and 2a: the final answer is known by its template key
+// on a SENT draft, and the "reply by hand" alert fires once per thread.
+describe('reply end-state store support', () => {
+  it('hasSentTemplateDraft finds a sent draft by its template key, never a pending one', async () => {
+    const s = new TenantStore(env.DB, SHOP);
+    const tid = await thread(s);
+    const id = await s.insertDraft({ threadId: tid, bodyText: 'Final', bodyHtml: '<p>Final</p>', confidence: null, quotesPriceOrder: false, holdReasons: [], model: 'partnership-screen', status: 'pending', meta: { template: 'collaboration_decline' } });
+    expect(await s.hasSentTemplateDraft(tid, ['collaboration_decline'])).toBe(false);
+    await s.setDraftStatus(id, 'sent', { sentMessageId: '<x@activepaw.co.uk>', sentAt: '2026-11-19T10:00:00Z' });
+    expect(await s.hasSentTemplateDraft(tid, ['collaboration_decline'])).toBe(true);
+    expect(await s.hasSentTemplateDraft(tid, ['partnership_decline'])).toBe(false);
+  });
+  it('claimHandReplyAlert is true once per thread', async () => {
+    const s = new TenantStore(env.DB, SHOP);
+    const a = await thread(s, 'a@x.com');
+    const b = await thread(s, 'b@x.com');
+    expect(await s.claimHandReplyAlert(a)).toBe(true);
+    expect(await s.claimHandReplyAlert(a)).toBe(false);
+    expect(await s.claimHandReplyAlert(b)).toBe(true);
+  });
+});

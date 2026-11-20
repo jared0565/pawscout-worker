@@ -2407,6 +2407,29 @@ export class TenantStore {
       .run();
   }
 
+  /** Design 2026-11-19, 2a: stamp the once-per-thread "reply by hand" alert.
+   *  True only for the call that set it, so the caller alerts exactly once. */
+  async claimHandReplyAlert(threadId: string): Promise<boolean> {
+    const r = await this.db
+      .prepare(`UPDATE inbox_threads SET hand_reply_alert_at = ?3 WHERE shop = ?1 AND id = ?2 AND hand_reply_alert_at IS NULL`)
+      .bind(this.shop, threadId, new Date().toISOString())
+      .run();
+    return (r.meta?.changes ?? 0) === 1;
+  }
+
+  /** Design 2026-11-19, 2d: whether a draft produced by one of `templates`
+   *  (DraftMeta.template) was actually sent on the thread. */
+  async hasSentTemplateDraft(threadId: string, templates: readonly string[]): Promise<boolean> {
+    if (!templates.length) return false;
+    const marks = templates.map((_, i) => `?${i + 3}`).join(', ');
+    const row = await this.db
+      .prepare(`SELECT 1 AS hit FROM inbox_drafts WHERE shop = ?1 AND thread_id = ?2 AND status IN ('sent', 'auto_sent')
+                AND json_extract(meta_json, '$.template') IN (${marks}) LIMIT 1`)
+      .bind(this.shop, threadId, ...templates)
+      .first<{ hit: number }>();
+    return !!row;
+  }
+
   /**
    * Add ONE label to a thread, non-destructively (keeps any existing labels). Used
    * on send to auto-tag the thread by its classifier category so the merchant never
