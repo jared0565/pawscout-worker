@@ -51,9 +51,11 @@ export const LIQUID_STYLE = `<style>
   .apaff-card p + p { margin-top: 10px; }
   .apaff-field label { display: block; font-weight: 700; font-size: 14px; margin: 0 0 6px; }
   .apaff-field { margin: 0 0 16px; }
+  .apaff-field .apaff-hint { margin: -2px 0 6px; color: var(--muted, #5d6670); font-size: 13px; }
   .apaff-form input[type="text"], .apaff-form input[type="email"], .apaff-form input[type="url"], .apaff-form textarea { width: 100%; border: 1px solid var(--line, #ded8cf); border-radius: 8px; padding: 12px 14px; font: inherit; color: inherit; background: #fff; }
   .apaff-form textarea { min-height: 110px; resize: vertical; }
   .apaff-form input:focus, .apaff-form textarea:focus { outline: 2px solid var(--accent, #f05a28); outline-offset: 0; border-color: var(--accent, #f05a28); }
+  .apaff-form input[aria-invalid="true"], .apaff-form textarea[aria-invalid="true"] { border-color: var(--accent-dark, #ba3d1a); }
   .apaff-agree { display: flex; gap: 10px; align-items: baseline; font-size: 14px; margin: 0 0 16px; }
   .apaff-agree input { width: auto; }
   .apaff-agree a { color: var(--accent-dark, #ba3d1a); text-decoration: underline; font-weight: 700; }
