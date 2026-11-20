@@ -516,14 +516,14 @@ describe('renderApplyForm', () => {
     expect(html).toContain('id="applyResult"');
     expect(html).toContain('<noscript>');
     // The interceptor: prevents the default navigation, POSTs via fetch, and
-    // reads body.ok / body.message / body.error - never lets the browser
+    // reads body.ok / body.error (success has its own dialog) - never lets the browser
     // navigate to the raw JSON response.
     const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).filter((s) => s.trim());
     expect(scripts.length).toBeGreaterThan(0);
     const body = scripts.join('\n');
     expect(body).toContain('preventDefault');
     expect(body).toContain("addEventListener('submit'");
-    expect(body).toContain('body.message');
+    expect(body).toContain('body.ok');
     expect(body).toContain('body.error');
     // No backticks/${} in the emitted script (this repo's console/browser-JS
     // convention - see src/console/page.ts) - plain string concatenation only.
@@ -897,17 +897,17 @@ describe('renderApplyForm: the browser states and enforces the server\'s rules',
 // #ded8cf, 1.42:1 on the white card, under WCAG 1.4.11's 3:1, and it is the
 // only thing showing where each field is. The form must pass with NO theme
 // tokens, so the fallback colour itself is what is measured here.
-describe('renderApplyForm: field edges are visible without the theme', () => {
-  const luminance = (hex: string): number => {
-    const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255)
-      .map((v) => (v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4)));
-    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
-  };
-  const contrast = (a: string, b: string): number => {
-    const [x, y] = [luminance(a), luminance(b)];
-    return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
-  };
+const luminance = (hex: string): number => {
+  const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255)
+    .map((v) => (v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4)));
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+};
+const contrast = (a: string, b: string): number => {
+  const [x, y] = [luminance(a), luminance(b)];
+  return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
+};
 
+describe('renderApplyForm: field edges are visible without the theme', () => {
   it('every text field and textarea border is at least 3:1 against the card, from its fallback alone', async () => {
     const html = await renderApplyForm(ENABLED_CFG, baseEnv(), NOW);
     const fieldRule = html.match(/\.apaff-form textarea \{[^}]*width: 100%[^}]*\}/)?.[0];
@@ -921,4 +921,154 @@ describe('renderApplyForm: field edges are visible without the theme', () => {
     // The same rule names every text input type the form uses.
     for (const t of ['text', 'email', 'url']) expect(html).toContain('.apaff-form input[type="' + t + '"]');
   });
+});
+
+// Theme agent, 2026-11-20 (owner's request): after a successful application,
+// say what to do next in a modal (verify the email, check spam or junk) and
+// keep the same instructions on the page once it closes. The POST body stays
+// the uniform {ok:true} (no enumeration), so the page cannot know which email,
+// if any, went out: the copy gives instructions and never claims a send.
+describe('renderApplyForm: a successful submit says what to do next, in a dialog and on the page', () => {
+  const dialogOf = (html: string): string => {
+    const m = html.match(/<dialog[\s\S]*?<\/dialog>/);
+    expect(m, 'no <dialog> in the fragment').toBeTruthy();
+    return m![0];
+  };
+  const noteOf = (html: string): string => {
+    const m = html.match(/<div[^>]*id="apaff-done-note"[^>]*>[\s\S]*?<\/div>/);
+    expect(m, 'no persistent note in the fragment').toBeTruthy();
+    return m![0];
+  };
+  const textOf = (markup: string): string => markup.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  const scriptOf = (html: string): string => [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+  const ruleOf = (html: string, selector: string): string => {
+    const esc = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const m = html.match(new RegExp('(?:^|\\n)\\s*' + esc + ' \\{([^}]*)\\}'));
+    expect(m, 'no CSS rule for ' + selector).toBeTruthy();
+    return m![1];
+  };
+  const SPAM = "Can't find it? Check your spam or junk folder. It can take a few minutes to arrive.";
+  const FALLBACK_ADDRESS = 'sales@activepaw.co.uk';
+
+  it('both name the sender and the link lifetime that the verify email itself uses', async () => {
+    const sent: Array<{ from: string; text: string }> = [];
+    const base = fakeFetch();
+    const capture = (async (url: RequestInfo | URL, init?: RequestInit) => {
+      if (String(url).includes('api.resend.com')) {
+        const b = JSON.parse(String(init?.body)) as { from: string; text: string };
+        sent.push({ from: b.from, text: b.text });
+      }
+      return base(url, init);
+    }) as unknown as typeof fetch;
+    const r = await handleAffiliateApply({ store: store(), cfg: ENABLED_CFG, env: baseEnv(), fields: await validFields(), ip: '1.1.1.1', nowMs: NOW, fetchImpl: capture });
+    expect(r.body.ok).toBe(true);
+    expect(sent).toHaveLength(1);
+    const hours = sent[0].text.match(/within (\d+) hours/)?.[1];
+    expect(hours, 'the verify email states a lifetime').toBeTruthy();
+    const sender = sent[0].from.match(/^(.*?)\s*<([^>]+)>$/);
+    expect(sender, 'the verify email has a named sender').toBeTruthy();
+    const html = await renderApplyForm(ENABLED_CFG, baseEnv(), NOW);
+    for (const block of [dialogOf(html), noteOf(html)]) {
+      const text = textOf(block);
+      expect(text).toContain('within ' + hours + ' hours');
+      expect(text).toContain(sender![1] + ' (' + sender![2] + ')');
+    }
+  });
+
+  it('both give the spam advice and where to write, and neither claims a send the response cannot confirm', async () => {
+    const html = await renderApplyForm(ENABLED_CFG, baseEnv(), NOW);
+    for (const block of [dialogOf(html), noteOf(html)]) {
+      const text = textOf(block);
+      expect(text).toContain(SPAM);
+      expect(text).toContain('If nothing arrives, or the address above is wrong, email ' + FALLBACK_ADDRESS);
+      expect(block).toContain('href="mailto:' + FALLBACK_ADDRESS + '"');
+      expect(text).not.toMatch(/\bwe('ve| have)? sent\b|\bwas sent\b/i);
+      // The applicant's own address goes in here, by script, as text.
+      expect(block.match(/class="apaff-done-email"/g)).toHaveLength(1);
+    }
+  });
+
+  it('the dialog is native, named by its heading, described by its message, with one Got it button', async () => {
+    const html = await renderApplyForm(ENABLED_CFG, baseEnv(), NOW);
+    const d = dialogOf(html);
+    const open = d.match(/^<dialog[^>]*>/)![0];
+    expect(open).toContain('id="apaff-done"');
+    expect(open).toContain('aria-labelledby="apaff-done-title"');
+    expect(open).toContain('aria-describedby="apaff-done-msg"');
+    expect(open).not.toMatch(/\sopen[\s>=]/);
+    expect(d).toContain('<h2 id="apaff-done-title" tabindex="-1">Check your email to finish applying</h2>');
+    expect(d).toContain('id="apaff-done-msg"');
+    const buttons = d.match(/<button[^>]*>[^<]*<\/button>/g) ?? [];
+    expect(buttons).toHaveLength(1);
+    expect(buttons[0]).toContain('type="button"');
+    expect(textOf(buttons[0]!)).toBe('Got it');
+    // Outside the form, which is hidden on success.
+    expect(html.indexOf('<dialog')).toBeGreaterThan(html.indexOf('</form>'));
+  });
+
+  it('the note sits where the form was, hidden until success, focusable by script, with the same message', async () => {
+    const html = await renderApplyForm(ENABLED_CFG, baseEnv(), NOW);
+    const note = noteOf(html);
+    const open = note.match(/^<div[^>]*>/)![0];
+    expect(open).toMatch(/\shidden[\s>]/);
+    expect(open).toContain('tabindex="-1"');
+    const at = html.indexOf('id="apaff-done-note"');
+    expect(at).toBeGreaterThan(html.indexOf('id="applyResult"'));
+    expect(at).toBeLessThan(html.indexOf('<form'));
+    expect(textOf(note)).toContain('Check your email to finish applying');
+    const msg = d2msg(dialogOf(html));
+    expect(textOf(note)).toContain(textOf(msg));
+  });
+
+  it('the script opens the dialog only on success, fills the address as text, and hands focus to the note on close', async () => {
+    const script = scriptOf(await renderApplyForm(ENABLED_CFG, baseEnv(), NOW));
+    expect(script).toContain('showModal()');
+    expect(script).toMatch(/typeof \w+\.showModal/);
+    expect(script).toContain("getElementById('apaff-done')");
+    expect(script).toContain("getElementById('apaff-done-title')");
+    expect(script).toContain("getElementById('apaff-done-note')");
+    expect(script).toContain("'.apaff-done-email'");
+    expect(script).toContain('.textContent = ');
+    expect(script).toContain("addEventListener('close'");
+    expect(script).not.toContain('innerHTML');
+    // No timer anywhere: the dialog never dismisses itself.
+    expect(script).not.toMatch(/setTimeout|setInterval/);
+    // Success no longer writes into the live region, which would be announced over the dialog.
+    expect(script).not.toContain('body.message');
+  });
+
+  it('text, button and focus ring pass contrast from their fallbacks alone, and the dialog never shows itself', async () => {
+    const html = await renderApplyForm(ENABLED_CFG, baseEnv(), NOW);
+    const dlg = ruleOf(html, '.apaff-dialog');
+    // A display value here would override the browser's dialog:not([open]) { display: none }.
+    expect(dlg).not.toMatch(/display:/);
+    expect(dlg).toContain('overflow-y: auto');
+    expect(dlg).toMatch(/max-height: calc\(100dvh/);
+    const bg = dlg.match(/background: var\(--panel, (#[0-9a-f]{6})\)/)?.[1];
+    const ink = dlg.match(/(?:^|;\s*)color: var\(--ink, (#[0-9a-f]{6})\)/)?.[1];
+    expect(bg).toBe('#ffffff');
+    expect(contrast(ink!, bg!)).toBeGreaterThanOrEqual(4.5);
+    const btn = ruleOf(html, '.apaff-dialog-close');
+    const btnBg = btn.match(/background: var\(--accent, (#[0-9a-f]{6})\)/)?.[1];
+    const btnFg = btn.match(/(?:^|;\s*)color: (#[0-9a-f]{6})/)?.[1];
+    expect(contrast(btnFg!, btnBg!)).toBeGreaterThanOrEqual(4.5);
+    expect(contrast(btnBg!, bg!)).toBeGreaterThanOrEqual(3);
+    const ring = ruleOf(html, '.apaff-dialog-close:focus-visible').match(/outline: \d+px solid var\(--ink, (#[0-9a-f]{6})\)/)?.[1];
+    expect(contrast(ring!, bg!)).toBeGreaterThanOrEqual(3);
+    const link = ruleOf(html, '.apaff-dialog a, .apaff-done-note a').match(/color: var\(--accent-dark, (#[0-9a-f]{6})\)/)?.[1];
+    expect(contrast(link!, bg!)).toBeGreaterThanOrEqual(4.5);
+    // A long address wraps instead of scrolling the page sideways at 320px.
+    expect(ruleOf(html, '.apaff-done-email')).toContain('overflow-wrap: anywhere');
+    // Motion only for people who have not asked for less.
+    const css = html.match(/<style>[\s\S]*?<\/style>/)![0];
+    const animated = css.split('\n').filter((l) => l.includes('animation:'));
+    expect(animated.length).toBeGreaterThan(0);
+    for (const l of animated) expect(l.trim().startsWith('@media (prefers-reduced-motion: no-preference)')).toBe(true);
+  });
+
+  const d2msg = (dialog: string): string => {
+    const m = dialog.match(/<div id="apaff-done-msg">[\s\S]*?<\/div>/);
+    expect(m, 'no message block in the dialog').toBeTruthy();
+    return m![0];
+  };
 });

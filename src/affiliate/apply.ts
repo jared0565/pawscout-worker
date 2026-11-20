@@ -49,6 +49,11 @@ const DOMAIN_DAILY_CAP_MAINSTREAM = 500;
 export const RESEND_COOLDOWN_MS = 5 * 60 * 1000;
 const VERIFY_TOKEN_TTL_MS = 48 * 60 * 60 * 1000; // 48h, per the design spec's Stage 1
 const LOGIN_TOKEN_TTL_MS = 48 * 60 * 60 * 1000;
+/** The verify link's lifetime as the applicant reads it, in the email and on
+ *  the page after a submit: one value, so the two can never disagree. */
+const VERIFY_LINK_HOURS = VERIFY_TOKEN_TTL_MS / (60 * 60 * 1000);
+/** "Active Paw Partnerships", the display name every applicant email is sent under. */
+const PARTNERSHIP_SENDER_NAME = PARTNERSHIP_FROM.replace(/\s*<[^>]*>\s*$/, '');
 
 const NON_TERMINAL_RESEND_STAGES: ReadonlySet<string> = new Set([
   AFFILIATE_STAGE_SUBMITTED, AFFILIATE_STAGE_VERIFIED, AFFILIATE_STAGE_JUDGING, AFFILIATE_STAGE_APPROVED_PENDING_ISSUE
@@ -171,8 +176,8 @@ function escHtml(s: string): string {
 function buildVerifyEmail(name: string, url: string): { subject: string; html: string; text: string } {
   const greeting = name ? `Hi ${name},` : 'Hi there,';
   const subject = 'Verify your email to continue your Active Paw Partner application';
-  const text = `${greeting}\n\nThanks for applying to the Active Paw Partner Program. Click the link below within 48 hours to verify your email and continue your application.\n\n${url}\n\nIf you did not request this, you can safely ignore this email.\n\n- Active Paw Partnerships`;
-  const html = `<p>${escHtml(greeting)}</p><p>Thanks for applying to the Active Paw Partner Program. Click below within 48 hours to verify your email and continue your application.</p><p><a href="${url}">Verify your email</a></p><p>If you did not request this, you can safely ignore this email.</p><p>- Active Paw Partnerships</p>`;
+  const text = `${greeting}\n\nThanks for applying to the Active Paw Partner Program. Click the link below within ${VERIFY_LINK_HOURS} hours to verify your email and continue your application.\n\n${url}\n\nIf you did not request this, you can safely ignore this email.\n\n- Active Paw Partnerships`;
+  const html = `<p>${escHtml(greeting)}</p><p>Thanks for applying to the Active Paw Partner Program. Click below within ${VERIFY_LINK_HOURS} hours to verify your email and continue your application.</p><p><a href="${url}">Verify your email</a></p><p>If you did not request this, you can safely ignore this email.</p><p>- Active Paw Partnerships</p>`;
   return { subject, html, text };
 }
 
@@ -404,6 +409,27 @@ export interface RenderApplyOpts {
   preview?: boolean;
 }
 
+const APPLY_DONE_TITLE = 'Check your email to finish applying';
+
+/** What to do after a submit, shown twice: in the success dialog and in the
+ *  note left where the form was (theme agent, 2026-11-20, owner's request).
+ *  The POST answers every case with the same {ok:true} so it is never an
+ *  enumeration oracle, which means the page cannot know which email, if any,
+ *  went out: a new applicant gets a verify link, a live partner a login link
+ *  (also 48h), an owner-queue, former-partner or rate-limited one nothing.
+ *  So the copy gives instructions and never says "we've sent", and the sales@
+ *  line covers every case where nothing arrives. (Applying again with a
+ *  corrected address is NOT offered: the first application already holds the
+ *  channel, so step 8 would answer "already linked".) Static HTML only; the
+ *  script fills the .apaff-done-email span with the typed address, as text. */
+function applyDoneMessageHtml(): string {
+  const addr = escHtml(PARTNERSHIP_ADDRESS);
+  return `<p>Look for an email to <span class="apaff-done-email"></span> from ${escHtml(PARTNERSHIP_SENDER_NAME)} (${addr}).</p>
+<p>Click the link in it within ${VERIFY_LINK_HOURS} hours. We can't review your application until you do.</p>
+<p>Can't find it? Check your spam or junk folder. It can take a few minutes to arrive.</p>
+<p>If nothing arrives, or the address above is wrong, email <a href="mailto:${addr}">${addr}</a>.</p>`;
+}
+
 /** BODY FRAGMENT (no doctype/head/body): served as `application/liquid` so
  *  Shopify renders it inside the live theme layout - see pages.ts's module
  *  doc for the brand/Liquid-safety contract. */
@@ -453,6 +479,10 @@ ${previewBanner}${liquidHero(
 <section class="apaff-card">
 <h2>Apply now</h2>
 <div id="applyResult" class="apaff-result" role="status" aria-live="polite"></div>
+<div id="apaff-done-note" class="apaff-done-note" tabindex="-1" hidden>
+<h3>${APPLY_DONE_TITLE}</h3>
+${applyDoneMessageHtml()}
+</div>
 <form method="post" id="applyForm" class="apaff-form">
   <div class="apaff-field"><label for="apaff-name">Your name</label><input id="apaff-name" type="text" name="name" maxlength="${L.name.max}" required></div>
   <div class="apaff-field"><label for="apaff-email">Email address</label><input id="apaff-email" type="email" name="email" maxlength="${L.email.max}" required></div>
@@ -469,6 +499,13 @@ ${previewBanner}${liquidHero(
 </form>
 </section>
 <p class="apaff-foot">Questions? Email ${escHtml(PARTNERSHIP_ADDRESS)}.</p>
+<dialog id="apaff-done" class="apaff-dialog" aria-labelledby="apaff-done-title" aria-describedby="apaff-done-msg">
+<h2 id="apaff-done-title" tabindex="-1">${APPLY_DONE_TITLE}</h2>
+<div id="apaff-done-msg">
+${applyDoneMessageHtml()}
+</div>
+<p class="apaff-dialog-actions"><button type="button" class="apaff-dialog-close">Got it</button></p>
+</dialog>
 </div>
 <noscript><p>JavaScript is required to see a confirmation message here - your application is still received and processed normally either way.</p></noscript>
 <script>
@@ -512,6 +549,39 @@ ${previewBanner}${liquidHero(
   function resetHumanCheck() {
     try { if (window.turnstile) { window.turnstile.reset('#apaff-turnstile'); } } catch (e) { }
   }
+  // Success: the next steps in a modal dialog, and the same text in a note
+  // where the form was, which takes focus once the dialog closes (Got it or
+  // Escape both arrive as the close event). Nothing closes it on a timer. The
+  // live region stays empty so it is not announced over the dialog.
+  var done = document.getElementById('apaff-done');
+  var note = document.getElementById('apaff-done-note');
+  function focusNote() {
+    if (note) { note.focus(); }
+  }
+  if (done) {
+    done.addEventListener('close', focusNote);
+    var gotIt = done.querySelector('.apaff-dialog-close');
+    if (gotIt) { gotIt.addEventListener('click', function(){ done.close(); }); }
+  }
+  function showDone() {
+    var emailInput = form.querySelector('input[name="email"]');
+    var typed = emailInput ? emailInput.value.trim() : '';
+    // The applicant's own input: only ever set as text.
+    Array.prototype.forEach.call(document.querySelectorAll('.apaff-done-email'), function(el){ el.textContent = typed; });
+    form.style.display = 'none';
+    result.textContent = '';
+    result.className = 'apaff-result';
+    if (note) { note.hidden = false; }
+    if (done && typeof done.showModal === 'function') {
+      try {
+        done.showModal();
+        var title = document.getElementById('apaff-done-title');
+        if (title) { title.focus(); }
+        return;
+      } catch (e) { }
+    }
+    focusNote();
+  }
   form.addEventListener('submit', function(evt){
     evt.preventDefault();
     if (busy) { return; }
@@ -526,10 +596,8 @@ ${previewBanner}${liquidHero(
       return r.json();
     }).then(function(body){
       busy = false;
-      var ok = !!(body && body.ok);
-      var text = ok ? (body.message || 'Thanks - check your email for next steps.') : (body && body.error) || 'Something went wrong. Please try again.';
-      show(text, ok);
-      if (ok) { form.style.display = 'none'; return; }
+      if (body && body.ok) { showDone(); return; }
+      show((body && body.error) || 'Something went wrong. Please try again.', false);
       resetHumanCheck();
       markInvalid(body && body.field);
     }).catch(function(){
