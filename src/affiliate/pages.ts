@@ -22,12 +22,12 @@
 //
 // 2) WORKER-DOMAIN PAGES (verify + portal on pawscout.activepaw.co.uk) have
 //    no theme available, so `workerShell()` renders a standalone document
-//    with the palette HARDCODED (ink #101820, surface #f7f4ef, line #ded8cf,
-//    muted #5d6670, body #fffdf9). Its accent is still the theme's OLD
-//    #f05a28 (/ #ba3d1a): the live theme moved to --accent #D24000 and
-//    --accent-dark #b33700, which the Liquid fallbacks above now use, and
-//    white text on #f05a28 is about 3.2:1, under 4.5:1. Not changed yet.
-//    If the store is ever re-skinned these utility pages need a matching
+//    with the palette HARDCODED (ink #101820, accent #d24000, accent-dark
+//    #b33700, surface #f7f4ef, line #ded8cf, muted #5d6670, body #fffdf9),
+//    the live theme's values and the Liquid fallbacks' (tests/affiliate-
+//    pages.test.ts holds the two together). The accent was the theme's OLD
+//    #f05a28 until 2026-11-20: white on it measured 3.39:1, under 4.5:1. If
+//    the store is ever re-skinned these utility pages need a matching
 //    update; acceptable for email-link and dashboard pages.
 
 // --- 1) Liquid-fragment styles (apply + terms) -------------------------------
@@ -124,19 +124,19 @@ const WORKER_STYLE = `<style>
   a { color: inherit; }
   .apw-top { background: rgba(255, 253, 249, 0.97); border-bottom: 1px solid #ded8cf; padding: 14px clamp(18px, 4vw, 56px); }
   .apw-brand { display: inline-flex; align-items: center; gap: 10px; font-weight: 800; font-size: 20px; text-decoration: none; }
-  .apw-brand-mark { display: inline-grid; place-items: center; width: 34px; height: 34px; border-radius: 50%; background: #f05a28; color: #fff; font-size: 17px; }
+  .apw-brand-mark { display: inline-grid; place-items: center; width: 34px; height: 34px; border-radius: 50%; background: #d24000; color: #fff; font-size: 17px; }
   .apw-main { flex: 1; width: 100%; max-width: 760px; margin: 0 auto; padding: clamp(24px, 5vw, 48px) 20px; }
   .apw-card { background: #ffffff; border: 1px solid #ded8cf; border-radius: 16px; padding: clamp(24px, 4vw, 40px); }
   .apw-card h1 { margin: 0 0 12px; font-size: clamp(22px, 3.5vw, 30px); line-height: 1.15; }
   .apw-card p { margin: 0 0 12px; }
   .apw-card p:last-child { margin-bottom: 0; }
   .apw-muted { color: #5d6670; }
-  .apw-kicker { display: inline-block; letter-spacing: 0.14em; text-transform: uppercase; font-size: 11.5px; font-weight: 800; color: #ba3d1a; margin-bottom: 10px; }
+  .apw-kicker { display: inline-block; letter-spacing: 0.14em; text-transform: uppercase; font-size: 11.5px; font-weight: 800; color: #b33700; margin-bottom: 10px; }
   .apw-input { width: 100%; border: 1px solid #ded8cf; border-radius: 8px; padding: 12px 14px; font: inherit; color: inherit; background: #fff; margin: 6px 0 16px; }
-  .apw-input:focus { outline: 2px solid #f05a28; outline-offset: 0; border-color: #f05a28; }
+  .apw-input:focus { outline: 2px solid #d24000; outline-offset: 0; border-color: #d24000; }
   .apw-label { font-weight: 700; font-size: 14px; }
-  .apw-button { display: inline-flex; align-items: center; justify-content: center; min-height: 48px; border: 1px solid transparent; border-radius: 8px; padding: 13px 22px; font: inherit; font-weight: 800; background: #f05a28; color: #fff; cursor: pointer; }
-  .apw-button:hover { background: #ba3d1a; }
+  .apw-button { display: inline-flex; align-items: center; justify-content: center; min-height: 48px; border: 1px solid transparent; border-radius: 8px; padding: 13px 22px; font: inherit; font-weight: 800; background: #d24000; color: #fff; cursor: pointer; }
+  .apw-button:hover { background: #b33700; }
   .apw-table { width: 100%; border-collapse: collapse; margin: 6px 0 18px; font-size: 14.5px; }
   .apw-table th { text-align: left; font-size: 12.5px; letter-spacing: 0.06em; text-transform: uppercase; color: #5d6670; border-bottom: 2px solid #ded8cf; padding: 8px 10px; }
   .apw-table td { border-bottom: 1px solid #ded8cf; padding: 10px; }
@@ -145,7 +145,7 @@ const WORKER_STYLE = `<style>
   .apw-stat b { display: block; font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; color: #5d6670; margin-bottom: 4px; }
   .apw-stat span { font-size: 19px; font-weight: 800; }
   .apw-foot { text-align: center; color: #5d6670; font-size: 13px; padding: 22px 20px 30px; }
-  .apw-foot a { color: #ba3d1a; }
+  .apw-foot a { color: #b33700; }
 </style>`;
 
 /** Standalone branded document for worker-domain pages. `inner` is authored
