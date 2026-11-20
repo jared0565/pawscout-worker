@@ -72,7 +72,7 @@ describe('auto-issue registers the partner under the contact name, not the greet
     const cfg: TenantConfig = { ...CFG, inbox: { ...DEFAULT_INBOX, autoIssueVoucher: true, autosend: true } };
     const got = (await s.getThreadWithMessages(tid))!;
     const r = await maybePartnershipDraft({ ...env, OPENROUTER_API_KEY: 'k' } as any, s, cfg, got.thread, got, screenAndShopify(factsJson({})), 'funnel_voucher');
-    expect(r!.send).toBe(true); // the code was minted, so its invite goes out
+    expect((r as { send: boolean }).send).toBe(true); // the code was minted, so its invite goes out
     const vouchers = await s.listAffiliateVouchers();
     expect(vouchers).toHaveLength(1);
     expect(vouchers[0].name).toBe('Kasim Ali');
@@ -85,7 +85,7 @@ describe('partnership scoring branch (funnel_link mode, preserved programme)', (
   it('clear pass → form-invite draft, applicant passed_to_form', async () => {
     const { s, tid } = await seedAnswered('a.myshopify.com');
     const r = await runFunnel(s, tid, llmReturning(factsJson({})));
-    expect(r!.send).toBe(false);
+    expect((r as { send: boolean }).send).toBe(false);
     expect((await s.getPendingDraft(tid))!.body_text).toMatch(/partner application/i);
     const app = await s.getApplicantByThread(tid);
     expect(app!.stage).toBe('passed_to_form');
@@ -97,7 +97,7 @@ describe('partnership scoring branch (funnel_link mode, preserved programme)', (
     const r = await runFunnel(s, tid, llmReturning(factsJson({ channelUrls: [] })));
     expect((await s.getPendingDraft(tid))!.body_text).toMatch(/not a fit for our affiliate programme/i);
     expect((await s.getApplicantByThread(tid))!.stage).toBe('declined');
-    expect(r!.send).toBe(false);
+    expect((r as { send: boolean }).send).toBe(false);
   });
 
   it('extraction failure → escalate (holding ack), applicant escalated', async () => {
@@ -105,7 +105,7 @@ describe('partnership scoring branch (funnel_link mode, preserved programme)', (
     const r = await runFunnel(s, tid, llmReturning('not json'));
     expect((await s.getPendingDraft(tid))!.body_text).toMatch(/reviewing|taking a look/i);
     expect((await s.getApplicantByThread(tid))!.stage).toBe('escalated');
-    expect(r!.send).toBe(false);
+    expect((r as { send: boolean }).send).toBe(false);
   });
 
   // Premature-scoring race: applicant is at screen_sent but the qualifying email was
@@ -121,7 +121,7 @@ describe('partnership scoring branch (funnel_link mode, preserved programme)', (
     await s.insertInboundMessageIfNew({ threadId: tid, messageId: '<race2@x>', inReplyTo: null, references: [], from: 'kasim@x.com', to: 'sales@activepaw.co.uk', subject: 'Partnership', bodyText: 'are you there?', bodyHtml: null, headersJson: '{}', receivedAt: '2026-06-22T10:05:00Z' });
 
     const r = await runFunnel(s, tid, llmReturning(factsJson({ channelUrls: [] })));
-    expect(r!.send).toBe(false);
+    expect((r as { send: boolean }).send).toBe(false);
     const draft = await s.getPendingDraft(tid);
     expect(draft!.body_text).toMatch(/where would you promote/i); // re-issued questions
     expect(draft!.body_text).not.toMatch(/not a fit for our affiliate programme/i); // NOT a decline
@@ -133,7 +133,7 @@ describe('partnership scoring branch (funnel_voucher mode, live default)', () =>
   it('clear pass → VOUCHER invite draft (trial code, not the partner application), owner alerted to Partners', async () => {
     const { s, tid } = await seedAnswered('va.myshopify.com');
     const r = await runFunnel(s, tid, llmReturning(factsJson({})), 'funnel_voucher');
-    expect(r!.send).toBe(false);
+    expect((r as { send: boolean }).send).toBe(false);
     const draft = await s.getPendingDraft(tid);
     expect(draft!.body_text).toContain('trial discount code');
     expect(draft!.body_text).not.toMatch(/partner application/i);
@@ -196,7 +196,7 @@ describe('accepted-partner replies (live voucher) get a context-aware draft, not
   it('live partner + thank-you -> context-aware LLM draft (not the holding ack), send:false, model partner-support', async () => {
     const { s, tid } = await seedAcceptedPartner('acc.myshopify.com');
     const r = await runFunnel(s, tid, llmReturning(draftJson), 'funnel_voucher');
-    expect(r!.send).toBe(false);
+    expect((r as { send: boolean }).send).toBe(false);
     const d = (await s.getPendingDraft(tid))!;
     expect(d.model).toBe('partner-support');
     expect(d.body_text).toMatch(/on board/i);            // the LLM's own words reached the draft
@@ -237,7 +237,7 @@ describe('decline_all toggle (config-driven) intercepts in-flight applicants too
     // no override: the mode comes from cfg.inbox.affiliateMode
     const cfg: TenantConfig = { ...CFG, inbox: { ...DEFAULT_INBOX, affiliateMode: 'decline_all' } };
     const r = await maybePartnershipDraft({ ...env, OPENROUTER_API_KEY: 'k' } as any, s, cfg, got.thread, got, llmReturning(factsJson({})));
-    expect(r!.send).toBe(false);
+    expect((r as { send: boolean }).send).toBe(false);
     expect((await s.getPendingDraft(tid))!.body_text).toMatch(/not a fit for our affiliate programme/i);
     expect((await s.getApplicantByThread(tid))!.stage).toBe('declined');
   });

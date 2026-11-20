@@ -82,7 +82,7 @@ describe('partnership first-touch, LIVE default (funnel_voucher, owner policy 20
     const got = (await s.getThreadWithMessages(tid))!;
     const r = await maybePartnershipDraft({ ...env } as any, s, CFG, got.thread, got, noFetch);
     expect(r).not.toBeNull(); // must NOT fall through to the generic decline agent
-    expect(r!.send).toBe(false);
+    expect((r as { send: boolean }).send).toBe(false);
     const draft = await s.getPendingDraft(tid);
     expect(draft!.body_text).toMatch(/reviewing|taking a look/i);
     expect(draft!.body_text).not.toMatch(/not a fit for our affiliate programme/i);
@@ -119,7 +119,7 @@ describe('partnership first-touch, signup_page mode (owner policy 2026-07-18: se
     const got = (await s.getThreadWithMessages(tid))!;
     const r = await maybePartnershipDraft({ ...env } as any, s, SIGNUP_CFG, got.thread, got, noFetch);
     expect(r).not.toBeNull();
-    expect(r!.send).toBe(false);
+    expect((r as { send: boolean }).send).toBe(false);
     const draft = await s.getPendingDraft(tid);
     expect(draft!.body_text).toContain(AFFILIATE_APPLY_URL);
     expect(draft!.body_text).not.toMatch(/where would you promote/i);
@@ -220,7 +220,7 @@ describe('partnership first-touch, funnel_link mode (link programme preserved ve
     const got = (await s.getThreadWithMessages(tid))!;
     const r = await maybePartnershipDraft({ ...env } as any, s, CFG, got.thread, got, noFetch, 'funnel_link');
     expect(r).not.toBeNull();
-    expect(r!.send).toBe(false);
+    expect((r as { send: boolean }).send).toBe(false);
     const draft = await s.getPendingDraft(tid);
     expect(draft!.body_text).toMatch(/where would you promote/i);
     expect(draft!.body_text).toContain('tracked with your own link'); // the original link terms, unchanged
@@ -270,7 +270,7 @@ describe('funnel never repeats a sent message', () => {
     const got = (await s.getThreadWithMessages(tid))!;
     const r = await maybePartnershipDraft({ ...env } as any, s, CFG, got.thread, got, noFetch);
     expect(r).not.toBeNull();
-    expect(r!.send).toBe(false);
+    expect((r as { send: boolean }).send).toBe(false);
     const draft = await s.getPendingDraft(tid);
     expect(draft!.body_text).not.toBe(first);
     expect(countWords(draft!.body_text)).toBeLessThan(countWords(first));
@@ -307,7 +307,7 @@ describe('an invited applicant who insists on another form of collaboration', ()
     const got = (await s.getThreadWithMessages(tid))!;
     const r = await maybePartnershipDraft({ ...env } as any, s, SIGNUP_CFG, got.thread, got, noFetch);
     expect(r).not.toBeNull();
-    expect(r!.send).toBe(false);
+    expect((r as { send: boolean }).send).toBe(false);
     const draft = await s.getPendingDraft(tid);
     expect(draft!.body_text).toMatch(/do not skip the trial for anyone/i);
     expect(draft!.body_text).toContain(AFFILIATE_APPLY_URL);
@@ -321,7 +321,7 @@ describe('an invited applicant who insists on another form of collaboration', ()
     const got = (await s.getThreadWithMessages(tid))!;
     const r = await maybePartnershipDraft({ ...env } as any, s, SIGNUP_CFG, got.thread, got, noFetch);
     expect(r).not.toBeNull();
-    expect(r!.send).toBe(false);
+    expect((r as { send: boolean }).send).toBe(false);
     const draft = await s.getPendingDraft(tid);
     expect(draft!.body_text).toBe(buildSecondTouch('signup_invite', 'Kasim'));
     expect(draft!.body_text).not.toMatch(/reviewing the fit|taking a look/i);

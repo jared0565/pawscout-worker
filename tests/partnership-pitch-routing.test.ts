@@ -166,7 +166,7 @@ describe('maybePartnershipDraft pitch routing (live default funnel_voucher)', ()
     const got = (await s.getThreadWithMessages(tid))!;
     const r = await maybePartnershipDraft({ ...env } as any, s, CFG, got.thread, got, noFetch);
     expect(r).not.toBeNull();
-    expect(r!.send).toBe(false); // qualifying emails are ALWAYS HITL
+    expect((r as { send: boolean }).send).toBe(false); // qualifying emails are ALWAYS HITL
     const draft = await s.getPendingDraft(tid);
     expect(draft!.body_text).toMatch(/where would you promote/i);
     expect(draft!.body_text).toContain(`${TIER_REVIEW_ORDERS} tracked orders`);
@@ -194,7 +194,7 @@ describe('maybePartnershipDraft pitch routing (live default funnel_voucher)', ()
     const got = (await s.getThreadWithMessages(tid))!;
     const r = await maybePartnershipDraft({ ...env } as any, s, CFG, got.thread, got, noFetch);
     expect(r).not.toBeNull();
-    expect(r!.send).toBe(false); // HITL
+    expect((r as { send: boolean }).send).toBe(false); // HITL
     const draft = await s.getPendingDraft(tid);
     expect(draft!.body_text).toMatch(/who can actually deliver/i);
     expect(draft!.body_text).toContain(AFFILIATE_APPLY_URL);
@@ -245,7 +245,7 @@ describe('prove-first follow-ups', () => {
     const got = (await s.getThreadWithMessages(tid))!;
     const r = await maybePartnershipDraft({ ...env } as any, s, CFG, got.thread, got, noFetch);
     expect(r).not.toBeNull();
-    expect(r!.send).toBe(false);
+    expect((r as { send: boolean }).send).toBe(false);
     const draft = await s.getPendingDraft(tid);
     expect(draft!.body_text).toContain(AFFILIATE_APPLY_URL);
     expect(draft!.body_text).toMatch(/next step is the application form/i);
@@ -288,7 +288,7 @@ describe('access requests', () => {
     const got = (await s.getThreadWithMessages(tid))!;
     const r = await maybePartnershipDraft({ ...env } as any, s, CFG, got.thread, got, noFetch);
     expect(r).not.toBeNull();
-    expect(r!.send).toBe(false);
+    expect((r as { send: boolean }).send).toBe(false);
     const draft = await s.getPendingDraft(tid);
     expect(draft!.body_text).toMatch(/do not give store, admin, collaborator or staff access/i);
     expect(draft!.body_text).toContain(AFFILIATE_APPLY_URL);
@@ -314,7 +314,7 @@ describe('access requests', () => {
     const got = (await s.getThreadWithMessages(tid))!;
     const r = await maybePartnershipDraft({ ...env } as any, s, CFG, got.thread, got, noFetch);
     expect(r).not.toBeNull();
-    expect(r!.send).toBe(false);
+    expect((r as { send: boolean }).send).toBe(false);
     const draft = await s.getPendingDraft(tid);
     expect(draft!.body_text).toMatch(/do not give store, admin, collaborator or staff access/i);
     expect(draft!.body_text).toContain(AFFILIATE_APPLY_URL);
@@ -360,7 +360,7 @@ describe('pitch on-ramp (contact@ + category other, after a bait opener)', () =>
     const got = (await s.getThreadWithMessages(tid))!;
     const r = await maybePartnershipDraft({ ...env } as any, s, CFG, got.thread, got, noFetch);
     expect(r).not.toBeNull(); // category 'other' + contact@ no longer hides the pitch
-    expect(r!.send).toBe(false);
+    expect((r as { send: boolean }).send).toBe(false);
     const draft = await s.getPendingDraft(tid);
     expect(draft!.body_text).toMatch(/where would you promote/i);
     expect(draft!.body_text).toContain(`${TIER_REVIEW_ORDERS} tracked orders`);
@@ -372,7 +372,7 @@ describe('pitch on-ramp (contact@ + category other, after a bait opener)', () =>
     const got = (await s.getThreadWithMessages(tid))!;
     const r = await maybePartnershipDraft({ ...env } as any, s, CFG, got.thread, got, noFetch);
     expect(r).not.toBeNull();
-    expect(r!.send).toBe(false); // HITL
+    expect((r as { send: boolean }).send).toBe(false); // HITL
     const draft = await s.getPendingDraft(tid);
     expect(draft!.body_text).toMatch(/who can actually deliver/i);
     expect(draft!.body_text).not.toMatch(/in-house/i);
@@ -410,7 +410,7 @@ describe('pitch on-ramp (contact@ + category other, after a bait opener)', () =>
     const got = (await s.getThreadWithMessages(tid))!;
     const r = await maybePartnershipDraft({ ...env } as any, s, CFG, got.thread, got, noFetch);
     expect(r).not.toBeNull();
-    expect(r!.send).toBe(false); // HITL - the owner reviews before it goes out
+    expect((r as { send: boolean }).send).toBe(false); // HITL - the owner reviews before it goes out
     const draft = await s.getPendingDraft(tid);
     expect(draft!.body_text).toMatch(/keep all of our conversations here on email/i);
     expect(draft!.body_text).not.toMatch(/reviewing|taking a look/i); // NOT the content-blind holding ack
@@ -439,7 +439,7 @@ describe('Ishola-shape pitch (bait opener answered, then a 3%-for-orders pitch)'
     const got = (await s.getThreadWithMessages(tid))!;
     const r = await maybePartnershipDraft({ ...env } as any, s, CFG, got.thread, got, noFetch);
     expect(r).not.toBeNull();
-    expect(r!.send).toBe(false);
+    expect((r as { send: boolean }).send).toBe(false);
     const draft = await s.getPendingDraft(tid);
     expect(draft!.body_text).toMatch(/where would you promote/i);
     expect(draft!.body_text).toContain(`${TIER_REVIEW_ORDERS} tracked orders`);
@@ -454,7 +454,7 @@ describe('Ishola-shape pitch (bait opener answered, then a 3%-for-orders pitch)'
     // The qualifying draft is superseded (regenerate / a follow-up ingest) before
     // anyone approves it: the thread has an outbound (the opener answer) but the
     // questions were never actually sent.
-    await s.setDraftStatus(first!.draftId, 'discarded');
+    await s.setDraftStatus((first as { draftId: string }).draftId, 'discarded');
     got = (await s.getThreadWithMessages(tid))!;
     const second = await maybePartnershipDraft({ ...env } as any, s, CFG, got.thread, got, noFetch);
     expect(second).not.toBeNull();
@@ -512,7 +512,7 @@ describe('Yusuf-shape pitch (risk-free framing, no volume promise, cold at conta
     const got = (await s.getThreadWithMessages(tid))!;
     const r = await maybePartnershipDraft({ ...env } as any, s, CFG, got.thread, got, noFetch, 'signup_page');
     expect(r).not.toBeNull();            // no longer falls through to the generic drafter
-    expect(r!.send).toBe(false);         // HITL
+    expect((r as { send: boolean }).send).toBe(false);         // HITL
     const draft = await s.getPendingDraft(tid);
     expect(draft!.body_text).toContain(AFFILIATE_APPLY_URL);
     expect(draft!.body_text).toMatch(/we do not negotiate commission against promised orders or sales/i);
@@ -712,7 +712,7 @@ describe('classifier category alone does not open the funnel', () => {
     const got = (await s.getThreadWithMessages(tid))!;
     const r = await maybePartnershipDraft({ ...env } as any, s, { ...CFG, inbox: { ...CFG.inbox, affiliateMode: 'signup_page' } }, got.thread, got, noFetch);
     expect(r).not.toBeNull();
-    const d = await s.getDraft(r!.draftId);
+    const d = await s.getDraft((r as { draftId: string }).draftId);
     expect(d?.body_text).toContain(AFFILIATE_APPLY_URL);
     expect((await s.getApplicantByThread(tid))?.stage).toBe('passed_to_form');
   });

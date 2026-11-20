@@ -11,14 +11,15 @@ beforeEach(async () => { await applyD1Migrations(env.DB, env.TEST_MIGRATIONS); }
 const SHOP = 'a.myshopify.com';
 const ENV = { ...env, OPENROUTER_API_KEY: 'k' } as any;
 
-async function seed(opts: { email: string; name: string; category: string; inbound: string[]; outboundAfterFirst?: string; status?: string }) {
+async function seed(opts: { email: string; name: string; category: string; inbound: string[]; outboundAfterFirst?: string; status?: string; subject?: string }) {
   const s = new TenantStore(env.DB, SHOP);
   await s.upsertTenant({ accessTokenEnc: 'tok', dekWrapped: 'd', scopes: 's' });
   await s.seedConfig({ collectionMap: ACTIVE_PAW_COLLECTION_MAP, gates: { popularityFloor: 1, priceMin: 1, priceMax: 9, relevance: 'title' },
     pricing: DEFAULT_PRICING, floors: DEFAULT_FLOORS, llm: DEFAULT_LLM, addons: DEFAULT_ADDONS, fulfil: DEFAULT_FULFIL, inbox: { ...DEFAULT_INBOX }, target: 12 });
   await s.saveInbox({ ...DEFAULT_INBOX });
   await s.upsertContact({ email: opts.email, name: opts.name, phone: null });
-  const tid = await s.createThread({ contactEmail: opts.email, subject: 'Hello', subjectNorm: 'hello', receivedAt: '2026-09-20T10:00:00Z', initialStatus: 'new' });
+  const subject = opts.subject ?? 'Hello';
+  const tid = await s.createThread({ contactEmail: opts.email, subject, subjectNorm: subject.toLowerCase(), receivedAt: '2026-09-20T10:00:00Z', initialStatus: 'new' });
   let i = 0;
   for (const body of opts.inbound) {
     await s.insertInboundMessageIfNew({ threadId: tid, messageId: `<m${i}@x>`, inReplyTo: null, references: [], from: opts.email, to: 'contact@activepaw.co.uk', subject: 'Hello', bodyText: body, bodyHtml: null, headersJson: '{}', receivedAt: `2026-09-2${i}T10:00:00Z` });
@@ -443,5 +444,55 @@ describe('closed threads (owner decision 2026-09-27)', () => {
     const candidates = await s.closedReopenCandidates(1);
     expect(candidates.length).toBe(1);
     expect(candidates[0].id).toBe(newTid);
+  });
+});
+
+// Design 2026-11-19, 1d: a reply that adds no new words gets no draft once we
+// have answered. The reading says a reply is needed, so the reader's own gate
+// is not what stops these drafts.
+describe('replies that add no new words', () => {
+  const customerReading = { senderRole: 'customer', openAsks: ['q'], offered: '', alreadyAnswered: [], replyNeeded: true, supplier: null, productQuery: null, senderName: null };
+  const compose = async (s: TenantStore, tid: string, fetchImpl: typeof fetch, force = false) =>
+    composeDraftForThread(ENV, s, (await s.getConfig())!, (await s.getThreadWithMessages(tid))!.thread, fetchImpl, { force });
+
+  it('a bump after our reply gets no draft and waits', async () => {
+    const { s, tid } = await seed({ email: 'ana@example.com', name: 'Ana', category: 'other', inbound: ['Do you ship to Ireland?', 'Hi active paw'], outboundAfterFirst: 'Yes, we deliver to Ireland.' });
+    const r = await compose(s, tid, llm(customerReading).fetchImpl);
+    expect(r).toEqual({ noReply: true });
+    expect((await s.getThreadWithMessages(tid))!.thread.status).toBe('awaiting_customer');
+    expect(await s.getPendingDraft(tid)).toBeNull();
+  });
+  it('Regenerate (force) still drafts a bump', async () => {
+    const { s, tid } = await seed({ email: 'ana@example.com', name: 'Ana', category: 'other', inbound: ['Do you ship to Ireland?', 'Hi active paw'], outboundAfterFirst: 'Yes, we deliver to Ireland.' });
+    const r = await compose(s, tid, llm(customerReading).fetchImpl, true);
+    expect(r && 'draftId' in r).toBe(true);
+  });
+  it('a photo-only reply after our reply is answered', async () => {
+    const { s, tid } = await seed({ email: 'ana@example.com', name: 'Ana', category: 'other', inbound: ['My bowl arrived cracked', ''], outboundAfterFirst: 'Sorry to hear that. Please send a photo.' });
+    const msgs = (await s.getThreadWithMessages(tid))!.messages;
+    const photoMsg = msgs[msgs.length - 1];
+    await s.insertAttachment({ id: 'ph1', thread_id: tid, message_id: photoMsg.id, filename: 'bowl.jpg', content_type: 'image/jpeg', size_bytes: 10, status: 'stored', r2_key: `inbox/${SHOP}/${tid}/ph1` });
+    const r = await compose(s, tid, llm(customerReading).fetchImpl);
+    expect(r && 'draftId' in r).toBe(true);
+  });
+  it('a reply that is only a refused file is answered', async () => {
+    const { s, tid } = await seed({ email: 'ana@example.com', name: 'Ana', category: 'other', inbound: ['My bowl arrived cracked', ''], outboundAfterFirst: 'Sorry to hear that. Please send a photo.' });
+    const msgs = (await s.getThreadWithMessages(tid))!.messages;
+    await s.insertAttachment({ id: 'ph2', thread_id: tid, message_id: msgs[msgs.length - 1].id, filename: 'bowl.heic', content_type: 'image/heic', size_bytes: 10, status: 'skipped_type', r2_key: null });
+    const r = await compose(s, tid, llm(customerReading).fetchImpl);
+    expect(r && 'draftId' in r).toBe(true);
+  });
+  it('an empty first message with a real subject is answered', async () => {
+    const { s, tid } = await seed({ email: 'ana@example.com', name: 'Ana', category: 'other', inbound: [''], subject: 'Do you ship to Ireland?' });
+    const r = await compose(s, tid, llm(customerReading).fetchImpl);
+    expect(r && 'draftId' in r).toBe(true);
+  });
+  it('an empty first message with an empty subject gets no draft and the no-content label', async () => {
+    const { s, tid } = await seed({ email: 'ana@example.com', name: 'Ana', category: 'other', inbound: ['?'], subject: 'Hi' });
+    const r = await compose(s, tid, llm(customerReading).fetchImpl);
+    expect(r).toEqual({ noReply: true });
+    const got = (await s.getThreadWithMessages(tid))!;
+    expect(got.thread.status).toBe('awaiting_customer');
+    expect(got.labels).toContain('no-content');
   });
 });

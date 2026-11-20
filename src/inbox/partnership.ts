@@ -1027,13 +1027,20 @@ export async function extractScreenFacts(
 /** Partnership-funnel intercept. Returns a draft result when it handles the thread,
  * or null when the thread is NOT a partnership lane (caller runs the generic drafter).
  * Mode comes from cfg.inbox.affiliateMode; the param is a test override only. */
+/** What the funnel decided: a draft, deliberately no reply (design
+ * 2026-11-19, quiet), or null to hand the thread to the generic drafter. */
+export type PartnershipResult = { draftId: string; send: boolean } | { noReply: true } | null;
+
 export async function maybePartnershipDraft(
   env: Env, store: TenantStore, cfg: TenantConfig, thread: ThreadRow,
   got: { thread: ThreadRow; messages: MessageRow[]; labels: string[] },
   _fetchImpl: typeof fetch,
   modeOverride?: AffiliateMode,
-  reading?: ThreadReading | null
-): Promise<{ draftId: string; send: boolean } | null> {
+  reading?: ThreadReading | null,
+  // force: the owner asked for a draft (Regenerate, Draft anyway).
+  // contentless: the open messages add no new words (src/inbox/contentless.ts).
+  opts: { force?: boolean; contentless?: boolean } = {}
+): Promise<PartnershipResult> {
   const mode: AffiliateMode = modeOverride ?? cfg.inbox.affiliateMode ?? 'funnel_voucher';
   const variant: FunnelVariant = mode === 'funnel_link' ? 'link' : 'voucher';
   const inboundToAddrs = got.messages.filter((m) => m.direction === 'inbound').map((m) => m.to_addr ?? '');
@@ -1077,6 +1084,9 @@ export async function maybePartnershipDraft(
   // message wherever it lands (a customer never asks for collaborator or
   // staff access), so it opens the lane like a pitch does.
   const accessRequestNow = detectAccessRequest(latestNewText);
+  // A bump never earns a fresh introduction (design 2026-11-19, 1d): with no
+  // applicant, composeDraftForThread's contentless gate decides.
+  if (!applicant && opts.contentless) return null;
   if (!applicant && !servicePitch && !volumePitchNow && !accessRequestNow
       && !isPartnershipLane({ inboundToAddrs, declaredIntent, primaryCategory: thread.primary_category, inboundTexts: openInboundTexts(got.messages) })) return null;
 

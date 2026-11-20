@@ -28,6 +28,7 @@ import type { ThreadRow, InvoiceLineItem, DraftMeta } from './types';
 import { CjClient, CjTokenManager, cjFetchFromEnv } from '../cj';
 import { readThread, isSupplierRole, type ThreadReading } from './thread-read';
 import { promisesSupplier, buildFileContext, fileHoldReasons } from './draft-quality';
+import { openBatchHasNoNewWords } from './contentless';
 import { Vault } from '../vault';
 import { runSupplierBackfillStep } from './supplier-backfill';
 
@@ -399,9 +400,25 @@ export async function composeDraftForThread(
     }
   }
 
+  // A reply that adds no new words (design 2026-11-19, 1c/1d): nothing new
+  // above the quote, or only a greeting, the store name or punctuation. A
+  // message carrying a file is always content (every attachment row is a file
+  // the sender chose to send; signature logos are dropped without a row).
+  const contentless = !opts.force && openBatchHasNoNewWords(got.messages, thread.subject, new Set(files.map((f) => f.message_id)));
+
   // Partnership/affiliate funnel intercept - supersedes the generic drafter for lane threads.
-  const partnership = await maybePartnershipDraft(env, store, cfg, t, got, fetchImpl, undefined, reading);
+  const partnership = await maybePartnershipDraft(env, store, cfg, t, got, fetchImpl, undefined, reading, { force: opts.force, contentless });
   if (partnership) return partnership;
+
+  // Once we have answered, a reply that adds nothing gets no draft and the
+  // thread waits on them (awaiting_customer, which ingest reopens on their next
+  // message; never 'closed', which it does not). A first message with no words
+  // in its body or subject is marked as empty for the owner.
+  if (contentless) {
+    await store.setThreadStatus(thread.id, 'awaiting_customer');
+    if (!got.messages.some((m) => m.direction === 'outbound')) await store.addThreadLabel(thread.id, 'no-content');
+    return { noReply: true };
+  }
 
   const inbound = got.messages.filter((m) => m.direction === 'inbound');
   // Strip each inbound's quoted reply chain so we ground on the customer's NEW text only.
