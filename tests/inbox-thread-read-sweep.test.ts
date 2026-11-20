@@ -5,6 +5,7 @@ import { TenantStore } from '../src/tenant-store';
 import { composeDraftForThread, runInboxClassifySweep } from '../src/inbox/sweep';
 import { THREAD_READER_MARKER } from '../src/inbox/thread-read';
 import { DEFAULT_INBOX } from '../src/inbox/types';
+import { AFFILIATE_APPLY_URL, buildSignupInvite, buildSecondTouch, buildCollaborationDecline } from '../src/inbox/partnership';
 import { ACTIVE_PAW_COLLECTION_MAP, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL } from '../src/types';
 
 beforeEach(async () => { await applyD1Migrations(env.DB, env.TEST_MIGRATIONS); });
@@ -494,5 +495,49 @@ describe('replies that add no new words', () => {
     const got = (await s.getThreadWithMessages(tid))!;
     expect(got.thread.status).toBe('awaiting_customer');
     expect(got.labels).toContain('no-content');
+  });
+});
+
+// Design 2026-11-19 (the De Zimar audit): a scripted seller who kept bumping
+// was sent the same "still stands" pointer again and again. Now the bump gets
+// the one friendly final answer, and after it has gone out, quiet.
+describe('the De Zimar shape', () => {
+  it('the De Zimar shape: a seller bump gets the final answer, then quiet', async () => {
+    const marketer = { senderRole: 'marketer', openAsks: ['yes or no'], offered: 'store growth services', alreadyAnswered: [], replyNeeded: true, supplier: null, productQuery: null, senderName: null };
+    const { s, tid } = await seed({ email: 'zara@example.com', name: 'Zara', category: 'affiliate', inbound: ['I can grow your store sales with my e-commerce services.'] });
+    await s.upsertApplicant({ threadId: tid, contactEmail: 'zara@example.com', stage: 'passed_to_form' });
+    const turns: Array<[string, string]> = [
+      [buildSignupInvite('Zara'), 'I am not looking for affiliate work, I offer growth services.'],
+      [buildSecondTouch('signup_invite', 'Zara'), 'Did you see my report?'],
+      [`Hi Zara,\n\nOur earlier reply still stands: ${AFFILIATE_APPLY_URL}\n\nBest Regards,\nActive Paw Partnerships`, 'Please reply yes or no.'],
+      [`Hi Zara,\n\nAs before, the code trial is here: ${AFFILIATE_APPLY_URL}\n\nBest Regards,\nActive Paw Partnerships`,
+        `Hi active paw\n\nOn Mon, Nov 16, 2026 at 10:00 AM Active Paw <sales@activepaw.co.uk> wrote:\n> Hi Zara,\n> As before, the code trial is here.`],
+    ];
+    let day = 1;
+    for (const [ours, theirs] of turns) {
+      await s.insertOutboundMessage({ threadId: tid, messageId: `<z${day}@activepaw.co.uk>`, from: 'sales@activepaw.co.uk', to: 'zara@example.com', subject: 'Re: Hello', bodyText: ours, bodyHtml: '', sentAt: `2026-10-0${day}T10:00:00Z` });
+      await s.insertInboundMessageIfNew({ threadId: tid, messageId: `<zr${day}@example.com>`, inReplyTo: null, references: [], from: 'zara@example.com', to: 'sales@activepaw.co.uk', subject: 'Re: Hello', bodyText: theirs, bodyHtml: null, headersJson: '{}', receivedAt: `2026-10-0${day}T12:00:00Z` });
+      day++;
+    }
+    const cfg = (await s.getConfig())!;
+    const thread = async () => (await s.getThreadWithMessages(tid))!.thread;
+    const r1 = await composeDraftForThread(ENV, s, cfg, await thread(), llm(marketer).fetchImpl);
+    const final = (await s.getPendingDraft(tid))!;
+    expect(r1 && 'draftId' in r1).toBe(true);
+    expect(final.body_text).toBe(buildCollaborationDecline('Zara'));
+
+    await s.setDraftStatus(final.id, 'sent', { sentMessageId: '<zfin@activepaw.co.uk>', sentAt: '2026-10-08T10:00:00Z' });
+    await s.insertOutboundMessage({ threadId: tid, messageId: '<zfin@activepaw.co.uk>', from: 'sales@activepaw.co.uk', to: 'zara@example.com', subject: 'Re: Hello', bodyText: final.body_text, bodyHtml: '', sentAt: '2026-10-08T10:00:00Z' });
+    await s.insertInboundMessageIfNew({ threadId: tid, messageId: '<zr9@example.com>', inReplyTo: null, references: [], from: 'zara@example.com', to: 'sales@activepaw.co.uk', subject: 'Re: Hello', bodyText: 'Hi', bodyHtml: null, headersJson: '{}', receivedAt: '2026-10-09T10:00:00Z' });
+    const r2 = await composeDraftForThread(ENV, s, cfg, await thread(), llm(marketer).fetchImpl);
+    expect(r2).toEqual({ noReply: true });
+    expect(await s.getPendingDraft(tid)).toBeNull();
+
+    // A message with words after the final answer: still quiet for a seller
+    // (the declined branch), never the generic drafter.
+    await s.insertInboundMessageIfNew({ threadId: tid, messageId: '<zr10@example.com>', inReplyTo: null, references: [], from: 'zara@example.com', to: 'sales@activepaw.co.uk', subject: 'Re: Hello', bodyText: 'So is it a yes or a no? I need an answer today.', bodyHtml: null, headersJson: '{}', receivedAt: '2026-10-10T10:00:00Z' });
+    const r3 = await composeDraftForThread(ENV, s, cfg, await thread(), llm(marketer).fetchImpl);
+    expect(r3).toEqual({ noReply: true });
+    expect(await s.getPendingDraft(tid)).toBeNull();
   });
 });

@@ -16,7 +16,7 @@ import { TenantStore } from '../src/tenant-store';
 import {
   detectVolumePitch, detectServicePitch, detectOffPlatformRequest, buildQualifyingEmail, buildSignupInvite,
   maybePartnershipDraft, QUALIFYING_MARKER, AFFILIATE_APPLY_URL, PARTNERSHIP_STANCE, buildAcceptedPartnerAck, buildServiceProveFirst, buildAccessDecline,
-  STANDARD_COMMISSION_PCT, TIER_REVIEW_ORDERS, TIER_MAX_PCT, detectRateAboveStandard
+  STANDARD_COMMISSION_PCT, TIER_REVIEW_ORDERS, TIER_MAX_PCT, detectRateAboveStandard, buildCollaborationDecline
 } from '../src/inbox/partnership';
 import { otherAgent } from '../src/inbox/agents/other';
 import { affiliateAgent } from '../src/inbox/agents/affiliate';
@@ -24,6 +24,7 @@ import { leadAgent } from '../src/inbox/agents/lead';
 import { wholesaleAgent } from '../src/inbox/agents/wholesale';
 // (the on-ramp tests below exercise maybePartnershipDraft with category 'other')
 import { DEFAULT_INBOX } from '../src/inbox/types';
+import type { ThreadReading } from '../src/inbox/thread-read';
 import { DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, type TenantConfig } from '../src/types';
 
 beforeEach(async () => { await applyD1Migrations(env.DB, env.TEST_MIGRATIONS); });
@@ -204,11 +205,18 @@ describe('maybePartnershipDraft pitch routing (live default funnel_voucher)', ()
     expect((await s.getApplicantByThread(tid))!.stage).toBe('passed_to_form');
   });
 
-  it('a service vendor replying after the decline falls through to the generic drafter', async () => {
+  // Design 2026-11-19, 2a: a declined applicant no longer falls through to the
+  // generic drafter. A vendor (the reader says marketer) whose decline never
+  // went out gets the one final answer drafted.
+  it('a service vendor replying after the decline, before any decline went out, gets the final answer', async () => {
     const { s, tid } = await seedFirstTouch('svr.myshopify.com', 'Our agency offers product listing services.');
     await s.upsertApplicant({ threadId: tid, contactEmail: 'p@x.com', stage: 'declined' });
     const got = (await s.getThreadWithMessages(tid))!;
-    expect(await maybePartnershipDraft({ ...env } as any, s, CFG, got.thread, got, noFetch)).toBeNull();
+    const marketer: ThreadReading = { senderRole: 'marketer', openAsks: [], offered: 'listing services', alreadyAnswered: [], replyNeeded: true, supplier: null, productQuery: null, senderName: null };
+    const r = await maybePartnershipDraft({ ...env } as any, s, CFG, got.thread, got, noFetch, undefined, marketer);
+    expect((r as { send: boolean }).send).toBe(false);
+    const draft = (await s.getPendingDraft(tid))!;
+    expect(draft.body_text).toBe(buildCollaborationDecline('Sam'));
   });
 
   it('creator who also mentions SEO gets the funnel, never the service decline', async () => {
