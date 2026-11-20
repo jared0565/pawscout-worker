@@ -892,3 +892,33 @@ describe('renderApplyForm: the browser states and enforces the server\'s rules',
     expect(script).toContain('cf-turnstile-response');
   });
 });
+
+// Theme agent, 2026-11-20 (owner's request): the field edge was --line
+// #ded8cf, 1.42:1 on the white card, under WCAG 1.4.11's 3:1, and it is the
+// only thing showing where each field is. The form must pass with NO theme
+// tokens, so the fallback colour itself is what is measured here.
+describe('renderApplyForm: field edges are visible without the theme', () => {
+  const luminance = (hex: string): number => {
+    const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255)
+      .map((v) => (v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4)));
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  };
+  const contrast = (a: string, b: string): number => {
+    const [x, y] = [luminance(a), luminance(b)];
+    return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
+  };
+
+  it('every text field and textarea border is at least 3:1 against the card, from its fallback alone', async () => {
+    const html = await renderApplyForm(ENABLED_CFG, baseEnv(), NOW);
+    const fieldRule = html.match(/\.apaff-form textarea \{[^}]*width: 100%[^}]*\}/)?.[0];
+    expect(fieldRule, 'the shared field rule').toBeTruthy();
+    const border = fieldRule!.match(/border: 1px solid var\(--([a-z-]+), (#[0-9a-f]{6})\)/);
+    expect(border, 'a token border with a hex fallback').toBeTruthy();
+    expect(border![1]).toBe('field-line');
+    const card = html.match(/\.apaff-card \{[^}]*background: var\(--panel, (#[0-9a-f]{6})\)/)?.[1];
+    expect(card).toBe('#ffffff');
+    expect(contrast(border![2], card!)).toBeGreaterThanOrEqual(3);
+    // The same rule names every text input type the form uses.
+    for (const t of ['text', 'email', 'url']) expect(html).toContain('.apaff-form input[type="' + t + '"]');
+  });
+});
