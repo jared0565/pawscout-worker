@@ -6,8 +6,8 @@ import {
   DEFAULT_GATES, DEFAULT_PRICING, DEFAULT_FLOORS, DEFAULT_LLM, DEFAULT_ADDONS, DEFAULT_FULFIL, DEFAULT_INBOX,
   DEFAULT_SELF_SERVE, type TenantConfig, type Env
 } from '../src/types';
-import { signTimestamp, MIN_SUBMIT_MS, APPLY_FIELD_LIMITS } from '../src/affiliate/gates';
-import { handleAffiliateApply, renderApplyForm, renderTermsPage, mxExists, verifyTurnstile, GENERIC_APPLY_MESSAGE, RESEND_COOLDOWN_MS, type ApplyFields } from '../src/affiliate/apply';
+import { signTimestamp, MIN_SUBMIT_MS, APPLY_FIELD_LIMITS, TIMESTAMP_MAX_AGE_MS } from '../src/affiliate/gates';
+import { handleAffiliateApply, renderApplyForm, renderTermsPage, mxExists, verifyTurnstile, applyFieldError, GENERIC_APPLY_MESSAGE, RESEND_COOLDOWN_MS, type ApplyFields } from '../src/affiliate/apply';
 import { app } from '../src/index';
 import { signAppProxy } from '../src/proxy/verify';
 import { hmacHex } from '../src/retention';
@@ -65,7 +65,7 @@ async function validFields(overrides: Partial<ApplyFields> = {}, nowMs = NOW): P
     name: 'Jane Doe', email: 'jane@example.com', channel_url: 'https://mypetblog.com/reviews',
     audience: 'A pet-focused blog with about 5000 monthly readers interested in dog care.',
     plan: 'I will write a review post and share it across my newsletter and social channels.',
-    terms: 'on', website: '', ts, 'cf-turnstile-response': 'tok',
+    terms: 'on', apaff_hp: '', ts, 'cf-turnstile-response': 'tok',
     ...overrides
   };
 }
@@ -143,7 +143,7 @@ describe('handleAffiliateApply: Turnstile', () => {
 
 describe('handleAffiliateApply: honeypot + timestamp (silent reject)', () => {
   it('a filled honeypot returns the SAME body as a real success, with nothing recorded', async () => {
-    const fields = await validFields({ website: 'http://spam.example' });
+    const fields = await validFields({ apaff_hp: 'http://spam.example' });
     const r = await handleAffiliateApply({ store: store(), cfg: ENABLED_CFG, env: baseEnv(), fields, ip: '1.1.1.1', nowMs: NOW, fetchImpl: fakeFetch() });
     expect(r).toEqual({ status: 200, body: { ok: true, message: GENERIC_APPLY_MESSAGE } });
     expect(await store().applicationByEmail('jane@example.com')).toBeNull();
@@ -162,6 +162,59 @@ describe('handleAffiliateApply: honeypot + timestamp (silent reject)', () => {
     const r = await handleAffiliateApply({ store: store(), cfg: ENABLED_CFG, env: baseEnv(), fields, ip: '1.1.1.1', nowMs: NOW, fetchImpl: fakeFetch() });
     expect(r.body).toEqual({ ok: true, message: GENERIC_APPLY_MESSAGE });
     expect(await store().applicationByEmail('jane@example.com')).toBeNull();
+  });
+
+  // Theme agent audit, 2026-11-20: if autofill or a password manager ever
+  // fills the hidden field, a real applicant is dropped behind the success
+  // dialog. Each silent reject is logged with its reason (no personal data),
+  // so a dropped human shows up in Workers Logs instead of nowhere.
+  const SILENT: Array<[string, () => Promise<Partial<ApplyFields>>, RegExp]> = [
+    ['hidden field filled', async () => ({ apaff_hp: 'x' }), /hidden field/],
+    ['too fast', async () => ({ ts: await signTimestamp(NOW - 500, SECRET) }), /too fast/],
+    ['bad timestamp', async () => ({ ts: 'garbage' }), /timestamp/]
+  ];
+  for (const [label, overrides, says] of SILENT) {
+    it('logs a silent reject (' + label + ') with its reason and nothing personal', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const fields = await validFields(await overrides());
+      await handleAffiliateApply({ store: store(), cfg: ENABLED_CFG, env: baseEnv(), fields, ip: '1.1.1.1', nowMs: NOW, fetchImpl: fakeFetch() });
+      const lines = warn.mock.calls.map((c) => String(c[0]));
+      const hit = lines.find((l) => l.includes('silent reject'));
+      expect(hit, lines.join('\n')).toBeTruthy();
+      expect(hit).toMatch(says);
+      expect(hit).not.toContain('jane');
+      expect(hit).not.toContain('1.1.1.1');
+    });
+  }
+
+  it('the old honeypot name is no longer the hidden field', async () => {
+    const r = await handleAffiliateApply({
+      store: store(), cfg: ENABLED_CFG, env: baseEnv(), ip: '1.1.1.1', nowMs: NOW, fetchImpl: fakeFetch(),
+      fields: { ...(await validFields()), website: 'https://janes-homepage.example' } as ApplyFields
+    });
+    expect(r.body.ok).toBe(true);
+    expect((await store().applicationByEmail('jane@example.com'))?.stage).toBe('submitted');
+  });
+});
+
+// Theme agent audit, 2026-11-20: creators type their link the way they see
+// it ("instagram.com/name"), and the form now takes that as text.
+describe('handleAffiliateApply: the channel link as creators type it', () => {
+  const run = async (channel_url: string) =>
+    handleAffiliateApply({ store: store(), cfg: ENABLED_CFG, env: baseEnv(), fields: await validFields({ channel_url }), ip: '1.1.1.1', nowMs: NOW, fetchImpl: fakeFetch() });
+
+  it('a link without https:// is accepted and stored with it', async () => {
+    expect((await run('instagram.com/janedoe')).body.ok).toBe(true);
+    expect((await store().applicationByEmail('jane@example.com'))?.channel_url).toBe('https://instagram.com/janedoe');
+  });
+
+  it('a handle, a bare word or another scheme is refused with an example of what works', async () => {
+    for (const raw of ['@janedoe', 'janedoe', 'javascript:alert(1)', 'https://@janedoe']) {
+      const r = await run(raw);
+      expect(r.body, raw).toMatchObject({ ok: false, field: 'channel_url' });
+      expect(r.body.error, raw).toContain('channel URL');
+      expect(r.body.error, raw).toContain('instagram.com/yourname');
+    }
   });
 });
 
@@ -549,7 +602,7 @@ describe('renderApplyForm', () => {
   it('renders the form with the Turnstile widget, the honeypot field, and a signed timestamp', async () => {
     const html = await renderApplyForm(ENABLED_CFG, baseEnv(), NOW);
     expect(html).toContain('class="cf-turnstile"');
-    expect(html).toContain('name="website"');
+    expect(html).toContain('name="apaff_hp"');
     expect(html).toContain('name="ts"');
     expect(html).toContain('name="terms"');
     const match = html.match(/name="ts" value="([^"]+)"/);
@@ -808,7 +861,7 @@ describe('HTTP level: /proxy/affiliate/apply - fault isolation', () => {
       name: 'Jane Doe', email: 'jane@example.com', channel_url: 'https://mypetblog.com/reviews',
       audience: 'A pet blog with real readers interested in dog care and grooming tips.',
       plan: 'I will write reviews and share them with my newsletter subscribers.',
-      terms: 'on', website: '', ts, 'cf-turnstile-response': 'tok'
+      terms: 'on', apaff_hp: '', ts, 'cf-turnstile-response': 'tok'
     });
     const url = await signedProxyUrl('/proxy/affiliate/apply');
     const testEnv = { ...proxyEnv(), TURNSTILE_SECRET: 'test-turnstile-secret' } as unknown as Env;
@@ -973,8 +1026,11 @@ describe('renderApplyForm: field edges are visible without the theme', () => {
     const card = html.match(/\.apaff-card \{[^}]*background: var\(--panel, (#[0-9a-f]{6})\)/)?.[1];
     expect(card).toBe('#ffffff');
     expect(contrast(border![2], card!)).toBeGreaterThanOrEqual(3);
-    // The same rule names every text input type the form uses.
-    for (const t of ['text', 'email', 'url']) expect(html).toContain('.apaff-form input[type="' + t + '"]');
+    // The same rule names every text input type the visible form uses.
+    const form = html.match(/<form[\s\S]*?<\/form>/)![0];
+    const types = new Set([...form.matchAll(/<input[^>]*type="(text|email|url)"/g)].map((m) => m[1]));
+    expect(types.size).toBeGreaterThan(0);
+    for (const t of types) expect(html).toContain('.apaff-form input[type="' + t + '"]');
   });
 });
 
@@ -1126,4 +1182,186 @@ describe('renderApplyForm: a successful submit says what to do next, in a dialog
     expect(m, 'no message block in the dialog').toBeTruthy();
     return m![0];
   };
+});
+
+// Theme agent audit of the live apply page, 2026-11-20 (owner's request),
+// measured read only. Numbers in the test names are the audit's items.
+describe('renderApplyForm: the theme agent audit of 2026-11-20', () => {
+  const page = () => renderApplyForm(ENABLED_CFG, baseEnv(), NOW);
+  const tagOf = (html: string, id: string): string => {
+    const m = html.match(new RegExp('<(?:input|textarea)[^>]*id="' + id + '"[^>]*>'));
+    expect(m, 'no field with id ' + id).toBeTruthy();
+    return m![0];
+  };
+  const scriptOf = (html: string): string => [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+  const textOf = (markup: string): string => markup.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  const heroOf = (html: string): string => html.match(/<section class="apaff-hero">[\s\S]*?<\/section>/)![0];
+  const ruleOf = (html: string, selector: string): string => {
+    const esc = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const m = html.match(new RegExp('(?:^|\\n)\\s*' + esc + ' \\{([^}]*)\\}'));
+    expect(m, 'no CSS rule for ' + selector).toBeTruthy();
+    return m![1];
+  };
+  const FIELDS: Array<['name' | 'email' | 'channel_url' | 'audience' | 'plan' | 'terms', string]> = [
+    ['name', 'apaff-name'], ['email', 'apaff-email'], ['channel_url', 'apaff-channel'],
+    ['audience', 'apaff-audience'], ['plan', 'apaff-plan'], ['terms', 'apaff-terms']
+  ];
+
+  it('1. name, email and channel say what they hold (WCAG 1.3.5), and email and channel are not spell-checked or capitalised', async () => {
+    const html = await page();
+    expect(tagOf(html, 'apaff-name')).toContain('autocomplete="name"');
+    const email = tagOf(html, 'apaff-email');
+    for (const a of ['autocomplete="email"', 'spellcheck="false"', 'autocapitalize="off"']) expect(email).toContain(a);
+    const channel = tagOf(html, 'apaff-channel');
+    for (const a of ['type="text"', 'inputmode="url"', 'autocomplete="url"', 'spellcheck="false"', 'autocapitalize="off"']) expect(channel).toContain(a);
+  });
+
+  it('1. the hidden field has a name no autofill knows, and asks password managers to leave it alone', async () => {
+    const html = await page();
+    expect(html).not.toContain('name="website"');
+    const hp = html.match(/<input[^>]*name="apaff_hp"[^>]*>/)?.[0];
+    expect(hp, 'the hidden field').toBeTruthy();
+    for (const a of ['autocomplete="off"', 'tabindex="-1"', 'data-1p-ignore', 'data-lpignore="true"', 'data-bwignore', 'data-form-type="other"']) expect(hp).toContain(a);
+  });
+
+  it('2. the form comes straight after the hero, which links to it, and how it works comes after the form', async () => {
+    const html = await page();
+    const hero = heroOf(html);
+    expect(hero).toMatch(/<a [^>]*href="#apply"[^>]*>Apply now<\/a>/);
+    const apply = html.indexOf('id="apply"');
+    expect(apply).toBeGreaterThan(-1);
+    // Nothing to read between the hero and the form's own section tag.
+    expect(textOf(html.slice(html.indexOf(hero) + hero.length, html.lastIndexOf('<', apply)))).toBe('');
+    expect(html.indexOf('id="apaff-name"')).toBeGreaterThan(apply);
+    expect(html.indexOf('id="apaff-name"')).toBeLessThan(html.indexOf('class="apaff-steps"'));
+    // The jump target clears the live theme's sticky header stack (124px on a 390px phone).
+    const margin = Number(ruleOf(html, '.apaff-apply').match(/scroll-margin-top: (\d+)px/)?.[1]);
+    expect(margin).toBeGreaterThanOrEqual(124);
+  });
+
+  it('3. the channel field says what to type, tied to it', async () => {
+    const html = await page();
+    const ids = tagOf(html, 'apaff-channel').match(/aria-describedby="([^"]+)"/)?.[1].split(' ') ?? [];
+    expect(ids.length).toBeGreaterThan(0);
+    const hint = html.match(new RegExp('id="' + ids[0] + '"[^>]*>([^<]*)<'))?.[1];
+    expect(hint).toContain('instagram.com/yourname');
+  });
+
+  it('4. every field carries the server\'s own message and has an error slot after it', async () => {
+    const html = await page();
+    for (const [key, id] of FIELDS) {
+      expect(tagOf(html, id), id).toContain('data-error="' + applyFieldError(key) + '"');
+      expect(html, id).toMatch(new RegExp('<p class="apaff-field-error" id="' + id + '-error" hidden></p>'));
+      expect(html.indexOf('id="' + id + '-error"'), id).toBeGreaterThan(html.indexOf('id="' + id + '"'));
+    }
+    expect(tagOf(html, 'apaff-email')).toContain('data-error-format="Please enter a valid email address."');
+  });
+
+  it('4. the script checks every field before it spends the human check, and shows each error under its field', async () => {
+    const script = scriptOf(await page());
+    expect(script).toContain("setAttribute('novalidate'");
+    expect(script).toContain("getAttribute('data-error')");
+    expect(script).toContain("'-error'");
+    const submit = script.slice(script.indexOf("addEventListener('submit'"));
+    expect(submit.indexOf('checkFields(')).toBeGreaterThan(-1);
+    expect(submit.indexOf('checkFields(')).toBeLessThan(submit.indexOf('humanToken()'));
+  });
+
+  it('4. a field error is read out once, from the field, while the top copy is plain text', async () => {
+    const html = await page();
+    const summary = html.match(/<p[^>]*id="apaff-error-summary"[^>]*>/)?.[0];
+    expect(summary, 'a top summary').toBeTruthy();
+    expect(summary).not.toMatch(/aria-live|role=/);
+    expect(summary).toMatch(/\shidden[\s>]/);
+    expect(html.indexOf('id="apaff-error-summary"')).toBeLessThan(html.indexOf('<form'));
+  });
+
+  it('5. says all fields are required, under Apply now', async () => {
+    const html = await page();
+    const req = html.indexOf('All fields are required.');
+    expect(req).toBeGreaterThan(html.indexOf('>Apply now</h2>'));
+    expect(req).toBeLessThan(html.indexOf('<form'));
+  });
+
+  it('6. headings never skip a level on the way down', async () => {
+    const html = await page();
+    const levels = [...html.matchAll(/<h([1-6])[\s>]/g)].map((m) => Number(m[1]));
+    expect(levels[0]).toBe(1);
+    for (let i = 1; i < levels.length; i++) expect(levels[i], levels.join(',')).toBeLessThanOrEqual(levels[i - 1]! + 1);
+    expect(html).toMatch(/<h2[^>]*>How it works<\/h2>/);
+  });
+
+  it('7. without JavaScript the page says applying needs it, and hides the form that cannot work', async () => {
+    const html = await page();
+    const ns = html.match(/<noscript>[\s\S]*?<\/noscript>/)?.[0];
+    expect(ns).toBeTruthy();
+    expect(ns).not.toMatch(/processed normally|still received/);
+    expect(textOf(ns!)).toContain('JavaScript is needed to apply');
+    expect(ns).toContain('#applyForm { display: none; }');
+  });
+
+  it('7. ...which is true: a submit with no human-check token is refused and nothing is recorded', async () => {
+    const { 'cf-turnstile-response': _token, ...noToken } = await validFields();
+    const r = await handleAffiliateApply({ store: store(), cfg: ENABLED_CFG, env: baseEnv(), fields: noToken, ip: '1.1.1.1', nowMs: NOW, fetchImpl: fakeFetch() });
+    expect(r.body.ok).toBe(false);
+    expect(await store().applicationByEmail('jane@example.com')).toBeNull();
+  });
+
+  it('8. step 2 describes the real review: a check, sometimes the team, and the outcome by email, with no promised time', async () => {
+    const steps = textOf((await page()).match(/<ol class="apaff-steps">[\s\S]*?<\/ol>/)![0]);
+    expect(steps).not.toContain('automatically, then by email');
+    expect(steps).toMatch(/our team/);
+    expect(steps).toMatch(/email you the outcome/);
+    expect(steps).not.toMatch(/\bperson\b/);
+    expect(steps).not.toMatch(/\d+ (hours?|days?|minutes?)/);
+  });
+
+  it('9. the script names the tab', async () => {
+    expect(scriptOf(await page())).toContain("document.title = 'Apply to the Partner Program - Active Paw';");
+  });
+
+  it('10. no small label above the h1, which names the Partner Program itself; the terms page keeps its label', async () => {
+    const hero = heroOf(await page());
+    expect(hero).not.toContain('apaff-kicker');
+    expect(hero.match(/<h1>([^<]*)<\/h1>/)?.[1]).toContain('Partner Program');
+    expect(renderTermsPage(ENABLED_CFG)).toContain('<span class="apaff-kicker">');
+  });
+
+  it('11. the questions line links its address', async () => {
+    const foot = (await page()).match(/<p class="apaff-foot">[\s\S]*?<\/p>/)![0];
+    expect(foot).toContain('<a href="mailto:sales@activepaw.co.uk">sales@activepaw.co.uk</a>');
+  });
+
+  it('12. the checkbox is 20px, in the theme accent', async () => {
+    const r = ruleOf(await page(), '.apaff-agree input');
+    for (const d of ['width: 20px', 'height: 20px', 'accent-color: var(--accent, #d24000)']) expect(r).toContain(d);
+  });
+
+  it('14. every fallback colour is the live theme\'s, and white on the accent fallback passes 4.5:1', async () => {
+    const css = (await page()).match(/<style>[\s\S]*?<\/style>/)![0];
+    expect(css).not.toMatch(/#f05a28|#ba3d1a/i);
+    for (const m of css.matchAll(/var\(--accent, (#[0-9a-f]{6})\)/g)) expect(m[1]).toBe('#d24000');
+    for (const m of css.matchAll(/var\(--accent-dark, (#[0-9a-f]{6})\)/g)) expect(m[1]).toBe('#b33700');
+    expect(contrast('#ffffff', '#d24000')).toBeGreaterThanOrEqual(4.5);
+  });
+
+  it('15. the terms link says it opens a new tab', async () => {
+    const a = (await page()).match(/<a href="\/apps\/pawscout\/affiliate\/terms"[^>]*>[\s\S]*?<\/a>/)![0];
+    expect(a).toContain('target="_blank"');
+    expect(a).toContain('<span class="apaff-sr-only"> (opens in a new tab)</span>');
+  });
+
+  it('the new text passes contrast from its fallbacks alone', async () => {
+    const html = await page();
+    const err = ruleOf(html, '.apaff-form .apaff-field-error').match(/color: var\(--accent-dark, (#[0-9a-f]{6})\)/)?.[1];
+    expect(contrast(err!, '#ffffff')).toBeGreaterThanOrEqual(4.5);
+    const req = ruleOf(html, '.apaff-card .apaff-req').match(/color: var\(--muted, (#[0-9a-f]{6})\)/)?.[1];
+    expect(contrast(req!, '#ffffff')).toBeGreaterThanOrEqual(4.5);
+  });
+
+  it('a page left open past the form\'s lifetime asks for a reload instead of being dropped behind a success', async () => {
+    const script = scriptOf(await page());
+    expect(script).toContain(String(TIMESTAMP_MAX_AGE_MS - 10 * 60 * 1000));
+    expect(script).toMatch(/reload this page/i);
+  });
 });

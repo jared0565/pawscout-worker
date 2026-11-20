@@ -84,6 +84,20 @@ function isActivePawHost(host: string): boolean {
 
 export interface ChannelHostCheck { ok: boolean; host: string | null; reason?: string }
 
+/** What creators type, as a link: "instagram.com/name" becomes
+ *  "https://instagram.com/name" (theme agent audit 2026-11-20: a type=url
+ *  field refused it). Only when the text reads as a host with a dot and an
+ *  optional port and path; a handle ("@name"), a bare word, a space, or any
+ *  existing scheme (javascript:, ftp:) is returned trimmed and unchanged,
+ *  for channelHostAllowed to refuse. */
+export function normalizeChannelUrl(raw: string): string {
+  const s = (raw ?? '').trim();
+  // Host first, so "mypetblog.com:8080/x" is a host and port, not a scheme.
+  if (/^[a-z0-9-]+(?:\.[a-z0-9-]+)+(?::\d+)?(?:[/?#]\S*)?$/i.test(s)) return `https://${s}`;
+  if (s.startsWith('//')) return `https:${s}`;
+  return s;
+}
+
 /** http(s) + parseable, not a coupon/deal/cashback host, not an activepaw
  *  domain, and on a shared platform it names an account. Does NOT check
  *  whether another application holds the channel (that needs D1 - the
@@ -94,6 +108,11 @@ export function channelHostAllowed(url: string): ChannelHostCheck {
   if (u.protocol !== 'http:' && u.protocol !== 'https:') return { ok: false, host: null, reason: 'bad_protocol' };
   const host = u.hostname.toLowerCase().replace(/\.+$/, '');
   if (!host) return { ok: false, host: null, reason: 'no_host' };
+  // "https://@name" parses with host "name"; a channel is a public site, so
+  // a login in the link (even an empty one) or a host with no dot is not one.
+  const authority = (url ?? '').trim().replace(/^[a-z][a-z0-9+.-]*:\/\//i, '').split(/[/?#]/)[0] ?? '';
+  if (u.username || u.password || authority.includes('@')) return { ok: false, host, reason: 'credentials' };
+  if (!host.includes('.')) return { ok: false, host, reason: 'bad_host' };
   if (isCouponHost(host)) return { ok: false, host, reason: 'coupon_host' };
   if (isActivePawHost(host)) return { ok: false, host, reason: 'activepaw_domain' };
   if (platformOf(bareHost(host)) && !platformAccount(u)) return { ok: false, host, reason: 'platform_root' };

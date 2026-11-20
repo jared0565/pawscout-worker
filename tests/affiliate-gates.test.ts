@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  validEmailSyntax, isDisposableDomain, isMainstreamEmailDomain, isCouponHost, channelHostAllowed, channelKey,
+  validEmailSyntax, isDisposableDomain, isMainstreamEmailDomain, isCouponHost, channelHostAllowed, channelKey, normalizeChannelUrl,
   honeypotOk, signTimestamp, verifyTimestamp, validateFields, MIN_SUBMIT_MS, TIMESTAMP_MAX_AGE_MS,
   APPLY_FIELD_LIMITS
 } from '../src/affiliate/gates';
@@ -99,6 +99,32 @@ describe('channelHostAllowed', () => {
       expect(r.reason, url).toBe('platform_root');
     }
     expect(channelHostAllowed('https://www.instagram.com/alice').ok).toBe(true);
+  });
+});
+
+// Theme agent audit, 2026-11-20: creators type "instagram.com/name", which a
+// type=url field refused. A missing scheme is added when the rest reads as a
+// host and a path; anything else is left for channelHostAllowed to refuse.
+describe('normalizeChannelUrl', () => {
+  it('adds https:// to what creators type without one', () => {
+    expect(normalizeChannelUrl('instagram.com/yourname')).toBe('https://instagram.com/yourname');
+    expect(normalizeChannelUrl('  www.youtube.com/@dogtv ')).toBe('https://www.youtube.com/@dogtv');
+    expect(normalizeChannelUrl('mypetblog.co.uk')).toBe('https://mypetblog.co.uk');
+    expect(normalizeChannelUrl('//mypetblog.com/x')).toBe('https://mypetblog.com/x');
+  });
+  it('leaves a link that already has a scheme alone', () => {
+    expect(normalizeChannelUrl('http://mypetblog.com')).toBe('http://mypetblog.com');
+    expect(normalizeChannelUrl('HTTPS://Instagram.com/x')).toBe('HTTPS://Instagram.com/x');
+  });
+  it('never turns a handle, a bare word or another scheme into an accepted link', () => {
+    for (const raw of ['@yourname', 'yourname', 'javascript:alert(1)', 'ftp://example.com/x', 'my blog.com']) {
+      expect(channelHostAllowed(normalizeChannelUrl(raw)).ok, raw).toBe(false);
+    }
+  });
+  it('refuses a link whose host carries a login or has no dot', () => {
+    expect(channelHostAllowed('https://@yourname').ok).toBe(false);
+    expect(channelHostAllowed('https://user:pw@mypetblog.com').ok).toBe(false);
+    expect(channelHostAllowed('https://localhost/x').ok).toBe(false);
   });
 });
 
