@@ -229,6 +229,61 @@ describe('handleAffiliateApply: channel URL gates', () => {
   });
 });
 
+// Production, 2026-11-20: the dedupe matched on the host alone, and one
+// facebook.com application was on file, so every later Facebook creator was
+// told "This channel is already linked to another application."
+describe('handleAffiliateApply: one channel is one account, not one platform', () => {
+  const apply = async (s: TenantStore, email: string, channel_url: string, ip: string) =>
+    handleAffiliateApply({ store: s, cfg: ENABLED_CFG, env: baseEnv(), fields: await validFields({ email, channel_url }), ip, nowMs: NOW, fetchImpl: fakeFetch() });
+
+  it('a second creator on the same platform is admitted', async () => {
+    const s = store();
+    expect((await apply(s, 'alice@example.com', 'https://www.facebook.com/alicedogs', '1.1.1.1')).body.ok).toBe(true);
+    const bob = await apply(s, 'bob@example.com', 'https://facebook.com/bobcats', '2.2.2.2');
+    expect(bob.body).toEqual({ ok: true, message: GENERIC_APPLY_MESSAGE });
+    expect((await s.applicationByEmail('bob@example.com'))?.stage).toBe('submitted');
+  });
+
+  it('the same account under another email, in another form of the link, is still already linked', async () => {
+    const s = store();
+    expect((await apply(s, 'alice@example.com', 'https://instagram.com/alice', '1.1.1.1')).body.ok).toBe(true);
+    const again = await apply(s, 'alice.other@example.com', 'https://www.instagram.com/Alice/?hl=en', '2.2.2.2');
+    expect(again.body).toMatchObject({ ok: false, field: 'channel_url' });
+    expect(again.body.error).toContain('already linked');
+  });
+
+  it('finds the account however the stored link was spelled (the lookup is never narrower than the key)', async () => {
+    const s = store();
+    await s.insertApplication({ email: 'first@example.com', channelUrl: 'https://twitter.com/%41lice', stage: 'submitted' });
+    const r = await apply(s, 'second@example.com', 'https://x.com/alice', '1.1.1.1');
+    expect(r.body).toMatchObject({ ok: false, field: 'channel_url' });
+  });
+
+  it('stores the parsed form of the link', async () => {
+    const s = store();
+    expect((await apply(s, 'jane@example.com', 'https://WWW.Example.com/Reviews', '1.1.1.1')).body.ok).toBe(true);
+    expect((await s.applicationByEmail('jane@example.com'))?.channel_url).toBe('https://www.example.com/Reviews');
+  });
+
+  it('an account whose name contains another one is a different channel', async () => {
+    const s = store();
+    expect((await apply(s, 'al@example.com', 'https://instagram.com/al', '1.1.1.1')).body.ok).toBe(true);
+    expect((await apply(s, 'alice@example.com', 'https://instagram.com/alice', '2.2.2.2')).body.ok).toBe(true);
+  });
+
+  it('a site whose host merely contains a registered one is a different channel', async () => {
+    const s = store();
+    await s.insertApplication({ email: 'first@example.com', channelUrl: 'https://notexample.com/x', stage: 'submitted' });
+    expect((await apply(s, 'second@example.com', 'https://example.com/x', '1.1.1.1')).body.ok).toBe(true);
+  });
+
+  it('a platform link with no account in it asks for the applicant\'s own channel', async () => {
+    const r = await apply(store(), 'jane@example.com', 'https://www.instagram.com/', '1.1.1.1');
+    expect(r.body).toMatchObject({ ok: false, field: 'channel_url' });
+    expect(r.body.error).toMatch(/your own/);
+  });
+});
+
 describe('handleAffiliateApply: former-partner gate', () => {
   it('routes a former partner to owner_queue and returns the generic uniform body (no email sent)', async () => {
     const s = store();
