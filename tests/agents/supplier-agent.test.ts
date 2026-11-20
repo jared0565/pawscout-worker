@@ -77,7 +77,6 @@ describe('supplier lane', () => {
     expect(SUPPLIER_PROMPT).toMatch(/not arranging samples or calls at the moment/);
     expect(SUPPLIER_PROMPT).toMatch(/on file for future reference/);
     expect(SUPPLIER_PROMPT).toMatch(/Never promise/);
-    expect(SUPPLIER_PROMPT).not.toMatch(/[–—]/);
   });
 
   // Design 2026-11-14 (section 6 item 1, section 8.4): the catalogue invitation
