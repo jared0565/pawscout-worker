@@ -3426,36 +3426,36 @@ export class TenantStore {
       .first<AffiliateApplicationRow>();
   }
 
-  /** Dedup check for a promoted channel: true if any LIVE partner or pending
-   *  application already lists a channel_url containing this host. A loose
-   *  substring match (host "example.com" also matches "notexample.com") -
-   *  acceptable for a funnel dedup nudge, not a security boundary.
+  /** Candidates for the promoted-channel dedup: every partner and
+   *  application channel_url (any stage or status) whose lower case contains
+   *  `fragment`. A loose substring prefilter only: the caller decides which
+   *  are really the same channel by comparing channelKey (src/affiliate/
+   *  gates.ts), since a substring alone would make "example.com" match
+   *  "notexample.com" and one facebook.com row match every Facebook creator.
    *
-   *  `excludeEmail` (optional, backward-compatible - existing callers that
-   *  omit it get the exact prior behavior) excludes rows owned by that email
-   *  from the match. Callers that fall through a TERMINAL application stage
-   *  (approved/declined/deflected) and re-check this as a "genuinely new
-   *  applicant" MUST pass their own email here - otherwise this matches the
-   *  submitter's OWN prior terminal row and returns a distinguishable
-   *  "already linked" rejection instead of the uniform no-enumeration body,
-   *  which is itself an oracle (see src/affiliate/apply.ts step 8). */
-  async channelUrlRegistered(host: string, excludeEmail?: string): Promise<boolean> {
-    const h = host.trim().toLowerCase();
-    if (!h) return false;
-    const needle = `%${h}%`;
+   *  `excludeEmail` leaves out rows owned by that email. Callers that fall
+   *  through a TERMINAL application stage (approved/declined/deflected) and
+   *  re-check this as a "genuinely new applicant" MUST pass their own email
+   *  here - otherwise this matches the submitter's OWN prior terminal row and
+   *  returns a distinguishable "already linked" rejection instead of the
+   *  uniform no-enumeration body, which is itself an oracle (see
+   *  src/affiliate/apply.ts step 8). */
+  async channelUrlsContaining(fragment: string, excludeEmail?: string): Promise<string[]> {
+    const f = fragment.trim().toLowerCase();
+    if (!f) return [];
+    const needle = `%${f}%`;
     const ex = excludeEmail ? excludeEmail.trim().toLowerCase() : null;
-    const row = await this.db
+    const rs = await this.db
       .prepare(
-        `SELECT 1 AS hit FROM affiliate_partners WHERE shop = ?1 AND channel_url IS NOT NULL AND lower(channel_url) LIKE ?2
+        `SELECT channel_url AS url FROM affiliate_partners WHERE shop = ?1 AND channel_url IS NOT NULL AND lower(channel_url) LIKE ?2
            AND (?3 IS NULL OR lower(contact_email) <> ?3)
          UNION ALL
-         SELECT 1 AS hit FROM affiliate_applications WHERE shop = ?1 AND channel_url IS NOT NULL AND lower(channel_url) LIKE ?2
-           AND (?3 IS NULL OR lower(email) <> ?3)
-         LIMIT 1`
+         SELECT channel_url AS url FROM affiliate_applications WHERE shop = ?1 AND channel_url IS NOT NULL AND lower(channel_url) LIKE ?2
+           AND (?3 IS NULL OR lower(email) <> ?3)`
       )
       .bind(this.shop, needle, ex)
-      .first<{ hit: number }>();
-    return row !== null;
+      .all<{ url: string }>();
+    return (rs.results ?? []).map((r) => r.url);
   }
 
   /** Applications submitted since `sinceIso`, optionally scoped to one abuse

@@ -85,8 +85,9 @@ function isActivePawHost(host: string): boolean {
 export interface ChannelHostCheck { ok: boolean; host: string | null; reason?: string }
 
 /** http(s) + parseable, not a coupon/deal/cashback host, not an activepaw
- *  domain. Does NOT check `channelUrlRegistered` (that needs D1 - the
- *  caller, apply.ts, does that separately). */
+ *  domain, and on a shared platform it names an account. Does NOT check
+ *  whether another application holds the channel (that needs D1 - the
+ *  caller, apply.ts, does that separately, by channelKey). */
 export function channelHostAllowed(url: string): ChannelHostCheck {
   let u: URL;
   try { u = new URL((url ?? '').trim()); } catch { return { ok: false, host: null, reason: 'unparseable' }; }
@@ -95,7 +96,65 @@ export function channelHostAllowed(url: string): ChannelHostCheck {
   if (!host) return { ok: false, host: null, reason: 'no_host' };
   if (isCouponHost(host)) return { ok: false, host, reason: 'coupon_host' };
   if (isActivePawHost(host)) return { ok: false, host, reason: 'activepaw_domain' };
+  if (isSharedPlatform(bareHost(host)) && !platformAccount(u)) return { ok: false, host, reason: 'platform_root' };
   return { ok: true, host };
+}
+
+// --- Channel identity (one channel per account, not per platform) ---------
+
+// Hosts many creators share, where the channel is the account in the path.
+// Production, 2026-11-20: matching on the host alone let one facebook.com
+// application refuse every later Facebook creator as "already linked". A
+// host not listed here is treated as a site of its own, so its host is the
+// channel (alice.substack.com and bob.substack.com differ by host already).
+export const SHARED_PLATFORM_HOSTS: ReadonlySet<string> = new Set([
+  'instagram.com', 'facebook.com', 'fb.com', 'youtube.com', 'tiktok.com', 'x.com', 'twitter.com',
+  'threads.net', 'threads.com', 'pinterest.com', 'pinterest.co.uk', 'uk.pinterest.com', 'twitch.tv',
+  'snapchat.com', 'linkedin.com', 'reddit.com', 'medium.com', 'linktr.ee', 'etsy.com', 'tumblr.com',
+  'bsky.app', 'patreon.com', 'kick.com', 'vimeo.com', 'substack.com'
+]);
+
+// A first path segment that is a section, not an account, so the account
+// is the segment after it (youtube.com/channel/ID, facebook.com/groups/name).
+const SECTION_SEGMENTS: ReadonlySet<string> = new Set([
+  'c', 'channel', 'user', 'u', 'r', 'in', 'company', 'groups', 'shop', 'people', 'pages', 'pg', 'profile'
+]);
+
+/** The host as a person reads it: lower case, without www./m./mobile. */
+function bareHost(host: string): string {
+  return host.toLowerCase().replace(/^(?:www|m|mobile)\./, '');
+}
+
+function isSharedPlatform(bare: string): boolean {
+  return SHARED_PLATFORM_HOSTS.has(bare);
+}
+
+/** The account a shared-platform link names, lower case ('' when none). */
+function platformAccount(u: URL): string {
+  const segs = u.pathname.split('/').filter(Boolean).map((s) => s.toLowerCase());
+  if (segs.length === 0) return '';
+  if (segs[0] === 'profile.php') {
+    const id = u.searchParams.get('id');
+    return id ? `profile.php?id=${id.toLowerCase()}` : '';
+  }
+  if (SECTION_SEGMENTS.has(segs[0]!)) return segs.length > 1 ? `${segs[0]}/${segs[1]}` : '';
+  return segs[0]!;
+}
+
+/** Which channel a link names: on a shared platform the host plus the
+ *  account (instagram.com/alice), elsewhere the host without www
+ *  (mypetblog.com). Two links are the same channel exactly when their keys
+ *  are equal. null when the link names no channel (unparseable, or a
+ *  platform with no account in it). */
+export function channelKey(url: string): string | null {
+  let u: URL;
+  try { u = new URL((url ?? '').trim()); } catch { return null; }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
+  const host = bareHost(u.hostname);
+  if (!host) return null;
+  if (!isSharedPlatform(host)) return host;
+  const account = platformAccount(u);
+  return account ? `${host}/${account}` : null;
 }
 
 // --- Honeypot + min time-to-submit ---------------------------------------

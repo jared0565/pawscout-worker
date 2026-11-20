@@ -29,7 +29,7 @@ import {
 } from '../inbox/partnership';
 import { hmacHex } from '../retention';
 import {
-  validEmailSyntax, isDisposableDomain, isMainstreamEmailDomain, channelHostAllowed,
+  validEmailSyntax, isDisposableDomain, isMainstreamEmailDomain, channelHostAllowed, channelKey,
   honeypotOk, signTimestamp, verifyTimestamp, validateFields, APPLY_FIELD_LIMITS,
   type ApplicationFieldsInput, type ApplyFieldKey
 } from './gates';
@@ -240,9 +240,9 @@ export async function issueLoginLink(
  * (uniform response) -> channel-REGISTERED DB check (new applicant only) ->
  * rate-limit (uniform response) -> insert + issue verify token + send one
  * email. The channel-registered DB check runs AFTER the email-keyed dedupe
- * decision, not alongside the other channel gates: `channelUrlRegistered`
- * matches a submitter's OWN prior application/partner row too (loose
- * substring dedupe, see tenant-store.ts), so a real applicant retrying with
+ * decision, not alongside the other channel gates: the channel lookup
+ * matches a submitter's OWN prior application/partner row too (see
+ * tenant-store.ts channelUrlsContaining), so a real applicant retrying with
  * the same email AND the same channel_url must be identified by email FIRST
  * or the mid-application/live-partner branches below are unreachable, always
  * shadowed by a "channel already linked" rejection against themselves. Every
@@ -310,7 +310,11 @@ export async function handleAffiliateApply(deps: ApplyDeps): Promise<ApplyResult
   //    cashback, not an activepaw domain. The DB "already registered to
   //    someone else" check is deliberately NOT run here - see step 8.
   const ch = channelHostAllowed(channelUrlRaw);
-  if (!ch.ok || !ch.host) return fieldError('channel_url', 'Please enter a valid channel URL.');
+  if (ch.reason === 'platform_root') {
+    return fieldError('channel_url', 'Please enter the link to your own channel or profile, for example https://instagram.com/yourname.');
+  }
+  const channel = channelKey(channelUrlRaw);
+  if (!ch.ok || !ch.host || !channel) return fieldError('channel_url', 'Please enter a valid channel URL.');
 
   // Minor fix (2026-07-13 final review): keyed HMAC, not a bare SHA-256 - a
   // raw hash of an IP is brute-forceable offline (the whole IPv4 space is
@@ -336,7 +340,7 @@ export async function handleAffiliateApply(deps: ApplyDeps): Promise<ApplyResult
   // 7. Dedupe: live partner / mid-application / new applicant. This MUST run
   //    before any channel-registered lookup (step 8) - a real applicant's
   //    retry submits the SAME email AND the SAME channel_url, and
-  //    channelUrlRegistered() matches their own prior application/partner
+  //    the channel lookup matches their own prior application/partner
   //    row, so deciding identity by email FIRST is the only way the
   //    mid-application resend path (and the live-partner login path) is ever
   //    reachable rather than dead code shadowed by "channel already linked".
@@ -372,8 +376,11 @@ export async function handleAffiliateApply(deps: ApplyDeps): Promise<ApplyResult
   //    declined/deflected -> treat as new" comment) - excludeEmail=email
   //    keeps that path from matching the submitter's OWN prior terminal row
   //    (which would otherwise leak a distinguishable "already linked" body,
-  //    an enumeration oracle - see tenant-store.ts's channelUrlRegistered doc).
-  if (await store.channelUrlRegistered(ch.host, email)) {
+  //    an enumeration oracle - see tenant-store.ts's channelUrlsContaining doc).
+  //    Same channel = same channelKey: the account on a shared platform, the
+  //    host elsewhere, never a substring of either.
+  const candidates = await store.channelUrlsContaining(channel, email);
+  if (candidates.some((u) => channelKey(u) === channel)) {
     return fieldError('channel_url', 'This channel is already linked to another application.');
   }
 

@@ -147,19 +147,27 @@ describe('affiliate self-serve store layer (migration 0032)', () => {
     });
   });
 
-  describe('channelUrlRegistered', () => {
-    it('detects a registered host from an application channel_url', async () => {
+  describe('channelUrlsContaining', () => {
+    it('returns application channel_urls containing the fragment, case-insensitively', async () => {
       const s = store();
-      expect(await s.channelUrlRegistered('example.com')).toBe(false);
-      await s.insertApplication({ email: 'c@x.com', channelUrl: 'https://example.com/my-blog', stage: 'submitted' });
-      expect(await s.channelUrlRegistered('example.com')).toBe(true);
-      expect(await s.channelUrlRegistered('totally-different.com')).toBe(false);
+      expect(await s.channelUrlsContaining('example.com')).toEqual([]);
+      await s.insertApplication({ email: 'c@x.com', channelUrl: 'https://Example.com/my-blog', stage: 'submitted' });
+      expect(await s.channelUrlsContaining('example.com')).toEqual(['https://Example.com/my-blog']);
+      expect(await s.channelUrlsContaining('totally-different.com')).toEqual([]);
     });
 
-    it('detects a registered host from a live affiliate_partners channel_url', async () => {
+    it('returns partner channel_urls too', async () => {
       const s = store();
       await s.upsertAffiliatePartner({ contactEmail: 'partner@x.com', channelUrl: 'https://petsite.co.uk/reviews' });
-      expect(await s.channelUrlRegistered('petsite.co.uk')).toBe(true);
+      expect(await s.channelUrlsContaining('petsite.co.uk')).toEqual(['https://petsite.co.uk/reviews']);
+    });
+
+    it('leaves out the rows of the email it is told to exclude', async () => {
+      const s = store();
+      await s.insertApplication({ email: 'me@x.com', channelUrl: 'https://petsite.co.uk/a', stage: 'declined' });
+      await s.upsertAffiliatePartner({ contactEmail: 'Me@x.com', channelUrl: 'https://petsite.co.uk/b' });
+      expect(await s.channelUrlsContaining('petsite.co.uk', 'me@x.com')).toEqual([]);
+      expect((await s.channelUrlsContaining('petsite.co.uk')).sort()).toEqual(['https://petsite.co.uk/a', 'https://petsite.co.uk/b']);
     });
   });
 
