@@ -63,6 +63,22 @@ export const LIQUID_STYLE = `<style>
   .apaff-result { font-weight: 700; margin: 0 0 14px; }
   .apaff-result.ok { color: var(--green, #1f7a5a); }
   .apaff-result.error { color: var(--accent-dark, #ba3d1a); }
+  .apaff-done-note { margin: 0 0 14px; }
+  .apaff-done-note:focus-visible { outline: 2px solid var(--accent, #d24000); outline-offset: 4px; }
+  .apaff-done-note h3 { margin: 0 0 8px; font-size: 18px; }
+  .apaff-done-note p, .apaff-dialog p { margin: 0 0 10px; }
+  .apaff-done-email { font-weight: 700; overflow-wrap: anywhere; }
+  .apaff-dialog { box-sizing: border-box; width: min(520px, calc(100vw - 32px)); max-height: calc(100vh - 32px); max-height: calc(100dvh - 32px); overflow-y: auto; margin: auto; padding: clamp(20px, 5vw, 32px); border: 1px solid var(--field-line, #8a8073); border-radius: 14px; background: var(--panel, #ffffff); color: var(--ink, #101820); line-height: 1.6; }
+  .apaff-dialog::backdrop { background: rgba(16, 24, 32, 0.6); }
+  .apaff-dialog h2 { margin: 0 0 12px; font-size: 22px; line-height: 1.25; }
+  .apaff-dialog h2:focus { outline: none; }
+  .apaff-dialog a, .apaff-done-note a { color: var(--accent-dark, #b33700); text-decoration: underline; font-weight: 700; }
+  .apaff-dialog .apaff-dialog-actions { margin: 18px 0 0; }
+  .apaff-dialog-close { min-height: 44px; min-width: 120px; padding: 10px 22px; border: 0; border-radius: 8px; background: var(--accent, #d24000); color: #ffffff; font: inherit; font-weight: 800; cursor: pointer; }
+  .apaff-dialog-close:focus-visible { outline: 3px solid var(--ink, #101820); outline-offset: 2px; }
+  @media (prefers-reduced-motion: no-preference) { .apaff-dialog[open] { animation: apaff-dialog-in 160ms ease-out; } .apaff-dialog[open]::backdrop { animation: apaff-fade-in 160ms ease-out; } }
+  @keyframes apaff-dialog-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+  @keyframes apaff-fade-in { from { opacity: 0; } to { opacity: 1; } }
   .apaff-foot { text-align: center; color: var(--muted, #5d6670); font-size: 13.5px; }
   .apaff-foot a { color: var(--accent-dark, #ba3d1a); text-decoration: underline; }
   .apaff-preview { text-align: center; background: var(--ink, #101820); color: #fff; border-radius: 10px; padding: 10px 16px; font-size: 13.5px; font-weight: 700; }
