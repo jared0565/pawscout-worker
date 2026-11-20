@@ -59,8 +59,25 @@ describe('supplier lane', () => {
     expect(isOffNicheGrounding(failed)).toBe(false);
   });
 
+  // "for future reference" is the owner's own edit on an off-niche reply (2026-11-16).
   it('the off-niche prompt is the spec copy: noted, on file, no files, no asks, no promises', () => {
-    expect(OFF_NICHE_SUPPLIER_PROMPT).toBe('This sender offers goods or services outside our range (dog and cat products). Write one or two short sentences after the opener: say we have noted their details and keep them on file for reference. Answer a direct question only from the store facts. Do not invite a catalogue or any file, do not ask for links, do not ask about dropshipping, do not mention files, and promise nothing.');
+    expect(OFF_NICHE_SUPPLIER_PROMPT).toBe('This sender offers goods or services outside our range (dog and cat products). Write one or two short sentences after the opener: say we have noted their details and keep them on file for future reference. Answer a direct question only from the store facts. Do not invite a catalogue or any file, do not ask for links, do not ask about dropshipping, do not mention files, and promise nothing.');
+  });
+
+  // Owner 2026-11-20: a supplier "no" is worded as not for now, in any natural
+  // words ("not this time", "at the moment", "for now", "at present"). Four of
+  // the owner's six edits since 2026-11-14 added exactly that by hand, because
+  // the 2026-09-27 prompt banned "for now". It still promises nothing.
+  it('words a refusal as not for now, in any natural words, and still promises nothing', () => {
+    expect(SUPPLIER_PROMPT).not.toMatch(/never write "at this stage" or "for now"/);
+    expect(SUPPLIER_PROMPT).toMatch(/"not this time"/);
+    expect(SUPPLIER_PROMPT).toMatch(/"at the moment"/);
+    expect(SUPPLIER_PROMPT).toMatch(/never as a permanent no/i);
+    expect(SUPPLIER_PROMPT).toMatch(/never say when or whether it will change/i);
+    expect(SUPPLIER_PROMPT).toMatch(/not arranging samples or calls at the moment/);
+    expect(SUPPLIER_PROMPT).toMatch(/on file for future reference/);
+    expect(SUPPLIER_PROMPT).toMatch(/Never promise/);
+    expect(SUPPLIER_PROMPT).not.toMatch(/[–—]/);
   });
 
   // Design 2026-11-14 (section 6 item 1, section 8.4): the catalogue invitation
